@@ -478,6 +478,11 @@ fn toggle_ticket_sort(
 #[component]
 pub fn TicketListPage() -> Element {
     use_page_title("Tickets");
+    // mokosh-contact-login prompt 006: gate the "New Ticket" CTA on
+    // `tickets:write`. Staff / platform sessions always see it (the
+    // hook returns true unconditionally for them); contacts see it
+    // only when their role carries the cap.
+    let can_create_ticket = crate::hooks::capabilities::use_capability("tickets:write");
     let mut search = use_signal(String::new);
     let mut status_filter = use_signal(String::new);
     let mut priority_filter = use_signal(String::new);
@@ -662,12 +667,14 @@ pub fn TicketListPage() -> Element {
             title: "Tickets",
             subtitle: "Manage support tickets and service requests",
             actions: rsx! {
-                Link {
-                    to: Route::TicketNew {},
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Ticket"
+                if can_create_ticket {
+                    Link {
+                        to: Route::TicketNew {},
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                            "New Ticket"
+                        }
                     }
                 }
             },
@@ -879,12 +886,14 @@ pub fn TicketListPage() -> Element {
                             description: "Create your first ticket to start tracking support work."
                                 .to_string(),
                             actions: rsx! {
-                                Link {
-                                    to: Route::TicketNew {},
-                                    Button {
-                                        variant: ButtonVariant::Primary,
-                                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                        "New Ticket"
+                                if can_create_ticket {
+                                    Link {
+                                        to: Route::TicketNew {},
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                            "New Ticket"
+                                        }
                                     }
                                 }
                             },
@@ -1804,6 +1813,14 @@ pub struct TicketDetailPageProps {
 #[component]
 #[allow(unused_variables)]
 pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
+    // mokosh-contact-login prompt 006: capability gates. `can_comment`
+    // covers the customer-facing reply surface; every other mutation
+    // control (Log Time, Delete, inline status/priority/assignee
+    // editors, internal-note type) sits behind `STAFF_ONLY` so a
+    // mis-configured contact JWT can never render them.
+    let can_comment = crate::hooks::capabilities::use_capability("tickets:comment");
+    let staff_only =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
     let mut show_note_modal = use_signal(|| false);
     let mut note_type = use_signal(|| "internal".to_string());
     let mut note_content = use_signal(String::new);
@@ -2049,38 +2066,50 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         PageHeader {
             title: "{header_title}",
             actions: rsx! {
-                Button {
-                    variant: ButtonVariant::Secondary,
-                    // MAPPS-357: block adding a note while the server is down.
-                    disabled: !can_mutate,
-                    title: (!can_mutate).then(|| "Can't add a note while the server is unreachable".to_string()),
-                    onclick: move |_| {
-                        note_error.set(String::new());
-                        show_note_modal.set(true);
-                    },
-                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                    "Add Note"
-                }
-                a {
-                    href: "{log_time_href}",
+                if can_comment {
                     Button {
-                        variant: ButtonVariant::Primary,
-                        ClockIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "Log Time"
+                        variant: ButtonVariant::Secondary,
+                        // MAPPS-357: block adding a note while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't add a note while the server is unreachable".to_string()),
+                        onclick: move |_| {
+                            note_error.set(String::new());
+                            // Contacts never see the note-type selector,
+                            // so force `public` before opening the modal
+                            // to keep the submit from posting an
+                            // internal note by default (server rejects
+                            // it anyway per prompt 008).
+                            if !staff_only {
+                                note_type.set("public".to_string());
+                            }
+                            show_note_modal.set(true);
+                        },
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "Add Note"
                     }
                 }
-                // MAPPS-313: per-ticket Delete affordance, matching
-                // the pattern on Company / Contract / Asset detail.
-                Button {
-                    variant: ButtonVariant::Danger,
-                    // MAPPS-357: block delete while the server is unreachable.
-                    disabled: deleting_ticket() || !can_mutate,
-                    title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                    onclick: move |_| {
-                        delete_ticket_error.set(String::new());
-                        confirming_ticket_delete.set(true);
-                    },
-                    "Delete"
+                if staff_only {
+                    a {
+                        href: "{log_time_href}",
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            ClockIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                            "Log Time"
+                        }
+                    }
+                    // MAPPS-313: per-ticket Delete affordance, matching
+                    // the pattern on Company / Contract / Asset detail.
+                    Button {
+                        variant: ButtonVariant::Danger,
+                        // MAPPS-357: block delete while the server is unreachable.
+                        disabled: deleting_ticket() || !can_mutate,
+                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
+                        onclick: move |_| {
+                            delete_ticket_error.set(String::new());
+                            confirming_ticket_delete.set(true);
+                        },
+                        "Delete"
+                    }
                 }
             },
         }
@@ -2361,7 +2390,8 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                                 options: status_options,
                                                 value: current_status,
                                                 // MAPPS-357: this Select PUTs on change; block it while down.
-                                                disabled: !can_mutate,
+                                                // Prompt 006: contacts see the value but cannot mutate it.
+                                                disabled: !can_mutate || !staff_only,
                                                 onchange,
                                             }
                                         },
@@ -2423,7 +2453,8 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                                 options: priority_options,
                                                 value: current_priority,
                                                 // MAPPS-357: this Select PUTs on change; block it while down.
-                                                disabled: !can_mutate,
+                                                // Prompt 006: contacts see the value but cannot mutate it.
+                                                disabled: !can_mutate || !staff_only,
                                                 onchange,
                                             }
                                         },
@@ -2497,7 +2528,8 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                                 options: user_options,
                                                 value: current_assignee,
                                                 // MAPPS-357: this Select PUTs on change; block it while down.
-                                                disabled: !can_mutate,
+                                                // Prompt 006: contacts see the value but cannot mutate it.
+                                                disabled: !can_mutate || !staff_only,
                                                 onchange,
                                             }
                                         },
@@ -2913,15 +2945,17 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                 if !note_error.read().is_empty() {
                     ErrorBanner { "{note_error}" }
                 }
-                Select {
-                    name: "note_type",
-                    label: "Note Type",
-                    options: vec![
-                        SelectOption::new("internal", "Internal Note"),
-                        SelectOption::new("public", "Public Note (visible to customer)"),
-                    ],
-                    value: note_type.read().clone(),
-                    onchange: move |e: FormEvent| note_type.set(e.value()),
+                if staff_only {
+                    Select {
+                        name: "note_type",
+                        label: "Note Type",
+                        options: vec![
+                            SelectOption::new("internal", "Internal Note"),
+                            SelectOption::new("public", "Public Note (visible to customer)"),
+                        ],
+                        value: note_type.read().clone(),
+                        onchange: move |e: FormEvent| note_type.set(e.value()),
+                    }
                 }
                 Textarea {
                     name: "content",

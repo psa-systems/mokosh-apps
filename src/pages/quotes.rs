@@ -131,6 +131,11 @@ pub fn QuoteListPage() -> Element {
 
 #[component]
 fn QuoteListBody() -> Element {
+    // mokosh-contact-login prompt 006: the "New Quote" CTA is
+    // staff-only. Contact-facing accept/decline lives in the detail
+    // body, not this list.
+    let staff_only =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
     let mut company_filter =
         use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     let mut status_filter = use_signal(String::new);
@@ -215,12 +220,14 @@ fn QuoteListBody() -> Element {
             title: "Quotes",
             subtitle: "Scope and price work, get it signed off, turn it into a project",
             actions: rsx! {
-                Link {
-                    to: Route::QuoteNew {},
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Quote"
+                if staff_only {
+                    Link {
+                        to: Route::QuoteNew {},
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                            "New Quote"
+                        }
                     }
                 }
             },
@@ -300,12 +307,14 @@ fn QuoteListBody() -> Element {
                             description: "Create a quote to scope and price work before it starts."
                                 .to_string(),
                             actions: rsx! {
-                                Link {
-                                    to: Route::QuoteNew {},
-                                    Button {
-                                        variant: ButtonVariant::Primary,
-                                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                        "New Quote"
+                                if staff_only {
+                                    Link {
+                                        to: Route::QuoteNew {},
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                            "New Quote"
+                                        }
                                     }
                                 }
                             },
@@ -398,6 +407,12 @@ pub fn QuoteDetailPage(id: String) -> Element {
 
 #[component]
 fn QuoteDetailBody(id: String) -> Element {
+    // mokosh-contact-login prompt 006: all quote lifecycle controls
+    // on this detail (Submit/Approve/Reject/Send/Convert/Cancel/Edit)
+    // are staff-only. The customer-facing Accept/Decline UI is not
+    // in this codebase today; skipped gracefully.
+    let staff_only =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
     let mut version = use_signal(|| 0u32);
     // Not `mut` locally: these are handed by value to the action helpers,
     // which take their own mutable binding.
@@ -456,7 +471,7 @@ fn QuoteDetailBody(id: String) -> Element {
                                 to: Route::QuoteList {},
                                 Button { variant: ButtonVariant::Secondary, "Back to Quotes" }
                             }
-                            if can_edit {
+                            if can_edit && staff_only {
                                 Link {
                                     to: Route::QuoteEdit { id: quote_id.clone() },
                                     Button { variant: ButtonVariant::Secondary, "Edit" }
@@ -569,6 +584,7 @@ fn QuoteDetailBody(id: String) -> Element {
                                 }
                             }
 
+                            if staff_only {
                             Card { title: "Actions",
                                 div { class: "flex flex-col gap-2",
                                     if status::can_submit(&st) {
@@ -651,6 +667,7 @@ fn QuoteDetailBody(id: String) -> Element {
                                         }
                                     }
                                 }
+                            }
                             }
                         }
                     }

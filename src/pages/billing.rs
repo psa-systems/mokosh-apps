@@ -235,9 +235,15 @@ pub fn InvoiceListPage() -> Element {
         .as_ref()
         .map(|u| u.role.can_manage_billing())
         .unwrap_or(false);
+    // mokosh-contact-login prompt 006: a contact with `invoices:read`
+    // reaches the list too. `use_capability` returns true for staff
+    // and platform sessions unconditionally, so this predicate stays
+    // true for the pre-pivot personas and additionally lets the
+    // capable contact through.
+    let contact_can_read = crate::hooks::capabilities::use_capability("invoices:read");
 
     use_page_title("Invoices");
-    if !has_finance {
+    if !has_finance && !contact_can_read {
         return rsx! { NoFinancePermission { title: "Invoices" } };
     }
 
@@ -246,6 +252,11 @@ pub fn InvoiceListPage() -> Element {
 
 #[component]
 fn InvoiceListBody() -> Element {
+    // mokosh-contact-login prompt 006: staff-only list actions
+    // (New / Tax rates / Gateways). Contact-facing "Pay now" does
+    // not exist in the codebase today; skipped gracefully.
+    let staff_only =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
     // MAPPS-249: seed the company filter from `?company_id=<uuid>` so a context
     // card's "View All" lands here scoped to that company.
     let mut company_filter =
@@ -332,20 +343,22 @@ fn InvoiceListBody() -> Element {
             title: "Invoices",
             subtitle: "Manage customer invoices and billing",
             actions: rsx! {
-                Link {
-                    to: Route::TaxRateList {},
-                    Button { variant: ButtonVariant::Secondary, "Tax Rates" }
-                }
-                Link {
-                    to: Route::PaymentGatewayConfig {},
-                    Button { variant: ButtonVariant::Secondary, "Gateways" }
-                }
-                Link {
-                    to: Route::InvoiceNew {},
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Invoice"
+                if staff_only {
+                    Link {
+                        to: Route::TaxRateList {},
+                        Button { variant: ButtonVariant::Secondary, "Tax Rates" }
+                    }
+                    Link {
+                        to: Route::PaymentGatewayConfig {},
+                        Button { variant: ButtonVariant::Secondary, "Gateways" }
+                    }
+                    Link {
+                        to: Route::InvoiceNew {},
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                            "New Invoice"
+                        }
                     }
                 }
             },
@@ -431,12 +444,14 @@ fn InvoiceListBody() -> Element {
                         title: "No invoices yet".to_string(),
                         description: "Create your first invoice to start billing customers.".to_string(),
                         actions: rsx! {
-                            Link {
-                                to: Route::InvoiceNew {},
-                                Button {
-                                    variant: ButtonVariant::Primary,
-                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                    "New Invoice"
+                            if staff_only {
+                                Link {
+                                    to: Route::InvoiceNew {},
+                                    Button {
+                                        variant: ButtonVariant::Primary,
+                                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                        "New Invoice"
+                                    }
                                 }
                             }
                         },
@@ -591,6 +606,11 @@ pub struct InvoiceDetailPageProps {
 
 #[component]
 pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
+    // mokosh-contact-login prompt 006: Edit / Send / Void / Record
+    // Payment are staff-only. Contact-facing "Pay now" does not
+    // exist in the codebase today; skipped gracefully.
+    let staff_only =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
     let id_for_resource = props.id.clone();
     let mut invoice_resource = use_resource(move || {
         let id = id_for_resource.clone();
@@ -719,7 +739,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         PageHeader {
             title: "{header_title}",
             actions: rsx! {
-                if editable {
+                if editable && staff_only {
                     Button {
                         variant: ButtonVariant::Secondary,
                         // MAPPS-357: block edits while the server is down.
@@ -765,7 +785,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         "Send"
                     }
                 }
-                if collectible {
+                if collectible && staff_only {
                     Button {
                         variant: ButtonVariant::Secondary,
                         // MAPPS-357: block recording a payment while down.
@@ -778,7 +798,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         "Record Payment"
                     }
                 }
-                if editable {
+                if editable && staff_only {
                     Button {
                         variant: ButtonVariant::Danger,
                         loading: *busy.read(),

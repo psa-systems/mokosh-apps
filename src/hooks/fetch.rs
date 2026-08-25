@@ -298,6 +298,17 @@ pub mod api {
         ACCESS_TOKEN.with(|t| t.borrow().clone())
     }
 
+    /// Test-only setter that seeds the staff `ACCESS_TOKEN` holder WITHOUT
+    /// bumping the `TENANT_GENERATION` `GlobalSignal`. The production
+    /// [`set_access_token`] writes that signal, which panics outside a
+    /// Dioxus runtime; unit tests that only need to observe
+    /// `current_access_token().is_some()` (the capability-hook staff
+    /// bypass) go through this helper instead.
+    #[cfg(all(test, feature = "web"))]
+    pub(crate) fn set_access_token_for_test(token: Option<String>) {
+        ACCESS_TOKEN.with(|t| *t.borrow_mut() = token);
+    }
+
     // MAPPS-395: the client-portal session token, a separate token class from
     // `ACCESS_TOKEN`. mokosh-server mints it at `POST /portal/auth/login` with
     // `typ: "portal_access"` over a `contacts` row, and every `/portal/*` route

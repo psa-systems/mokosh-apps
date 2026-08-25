@@ -311,6 +311,60 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
     // sees a ContentUnavailable page.
     let is_org_tenant = auth.read().is_org_tenant();
 
+    // mokosh-contact-login prompt 006: capability gates for the
+    // sidebar. Each `use_capability` returns true unconditionally
+    // for a staff or platform-admin session, so the pre-pivot nav
+    // shape for those personas is preserved; only a contact
+    // session gets a trimmed sidebar based on their `caps` claim.
+    // `STAFF_ONLY` is the client-side sentinel for entries no
+    // contact ever sees (see `hooks::capabilities`).
+    let show_dashboard = crate::hooks::capabilities::use_any_capability(&[
+        "tickets:read",
+        "invoices:read",
+        "quotes:read",
+    ]);
+    let show_tickets = crate::hooks::capabilities::use_capability("tickets:read");
+    let show_time_entries =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    let show_timesheets =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    let show_projects = crate::hooks::capabilities::use_capability("projects:read");
+    let show_companies =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    let show_contacts =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    let show_calendar =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    let show_dispatch =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    let show_scheduling_templates =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    let show_contracts = crate::hooks::capabilities::use_capability("contracts:read");
+    let show_quotes = crate::hooks::capabilities::use_capability("quotes:read");
+    let show_rate_cards =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    let show_invoices = crate::hooks::capabilities::use_capability("invoices:read");
+    let show_payments =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    let show_assets = crate::hooks::capabilities::use_capability("assets:read");
+    let show_kb = crate::hooks::capabilities::use_capability("kb:read");
+    let show_reports =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    // Any Service Desk / Projects / CRM / Operations section header
+    // vanishes when every item under it is gated out for a contact.
+    // Precomputed so the `if` right around the `NavSection` renders
+    // no header for a contact whose caps are empty for that group.
+    let show_service_desk_section =
+        show_tickets || show_time_entries || show_timesheets || can_manage;
+    let show_projects_section = show_projects;
+    let show_crm_section = show_companies || show_contacts;
+    let show_operations_section = show_calendar || show_dispatch || show_scheduling_templates;
+    let show_billing_section =
+        show_contracts || show_quotes || show_rate_cards || show_invoices || show_payments;
+    let show_assets_section = show_assets;
+    let show_knowledge_section = show_kb;
+    let show_analytics_section = show_reports;
+
     // MAPPS-203: App-root-owned scroll offset that survives the
     // AppLayout re-mount on each navigation. Only the persistent desktop
     // sidebar (`persist_scroll`) reads/writes it; the mobile drawer
@@ -358,7 +412,9 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                         }
                     }
                 },
-                NavItem { to: Route::Dashboard {}, icon: rsx!(HomeIcon {}), label: "Dashboard", collapsed }
+                if show_dashboard {
+                    NavItem { to: Route::Dashboard {}, icon: rsx!(HomeIcon {}), label: "Dashboard", collapsed }
+                }
 
             // MAPPS-358: every section below is hidden while the server is
             // unreachable, leaving Dashboard as the only navigable
@@ -366,48 +422,98 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
             // marks the server reachable again.
             if show_full_nav {
 
-            NavSection { title: "Service Desk", rail_collapsed: collapsed, color: SectionColor::Blue,
-                NavItem { to: Route::TicketList {}, icon: rsx!(TicketIcon {}), label: "Tickets", collapsed }
-                NavItem { to: Route::TimeEntryList {}, icon: rsx!(ClockIcon {}), label: "Time Entries", collapsed }
-                NavItem { to: Route::Timesheets {}, icon: rsx!(DocumentIcon {}), label: "Timesheets", collapsed }
-                if can_manage {
-                    NavItem { to: Route::TimesheetApprovals {}, icon: rsx!(DocumentCheckIcon {}), label: "Timesheet Approvals", collapsed }
+            if show_service_desk_section {
+                NavSection { title: "Service Desk", rail_collapsed: collapsed, color: SectionColor::Blue,
+                    if show_tickets {
+                        NavItem { to: Route::TicketList {}, icon: rsx!(TicketIcon {}), label: "Tickets", collapsed }
+                    }
+                    if show_time_entries {
+                        NavItem { to: Route::TimeEntryList {}, icon: rsx!(ClockIcon {}), label: "Time Entries", collapsed }
+                    }
+                    if show_timesheets {
+                        NavItem { to: Route::Timesheets {}, icon: rsx!(DocumentIcon {}), label: "Timesheets", collapsed }
+                    }
+                    if can_manage {
+                        NavItem { to: Route::TimesheetApprovals {}, icon: rsx!(DocumentCheckIcon {}), label: "Timesheet Approvals", collapsed }
+                    }
                 }
             }
 
-            NavSection { title: "Projects", rail_collapsed: collapsed, color: SectionColor::Indigo,
-                NavItem { to: Route::ProjectList {}, icon: rsx!(FolderIcon {}), label: "Projects", collapsed }
+            if show_projects_section {
+                NavSection { title: "Projects", rail_collapsed: collapsed, color: SectionColor::Indigo,
+                    if show_projects {
+                        NavItem { to: Route::ProjectList {}, icon: rsx!(FolderIcon {}), label: "Projects", collapsed }
+                    }
+                }
             }
 
-            NavSection { title: "CRM", rail_collapsed: collapsed, color: SectionColor::Cyan,
-                NavItem { to: Route::CompanyList {}, icon: rsx!(BuildingIcon {}), label: "Companies", collapsed }
-                NavItem { to: Route::ContactList {}, icon: rsx!(UsersIcon {}), label: "Contacts", collapsed }
+            if show_crm_section {
+                NavSection { title: "CRM", rail_collapsed: collapsed, color: SectionColor::Cyan,
+                    if show_companies {
+                        NavItem { to: Route::CompanyList {}, icon: rsx!(BuildingIcon {}), label: "Companies", collapsed }
+                    }
+                    if show_contacts {
+                        NavItem { to: Route::ContactList {}, icon: rsx!(UsersIcon {}), label: "Contacts", collapsed }
+                    }
+                }
             }
 
-            NavSection { title: "Operations", rail_collapsed: collapsed, color: SectionColor::Emerald,
-                NavItem { to: Route::Calendar {}, icon: rsx!(CalendarIcon {}), label: "Calendar", collapsed }
-                NavItem { to: Route::DispatchBoard {}, icon: rsx!(TruckIcon {}), label: "Dispatch", collapsed }
-                NavItem { to: Route::SchedulingTemplates {}, icon: rsx!(SwatchIcon {}), label: "Scheduling Templates", collapsed }
+            if show_operations_section {
+                NavSection { title: "Operations", rail_collapsed: collapsed, color: SectionColor::Emerald,
+                    if show_calendar {
+                        NavItem { to: Route::Calendar {}, icon: rsx!(CalendarIcon {}), label: "Calendar", collapsed }
+                    }
+                    if show_dispatch {
+                        NavItem { to: Route::DispatchBoard {}, icon: rsx!(TruckIcon {}), label: "Dispatch", collapsed }
+                    }
+                    if show_scheduling_templates {
+                        NavItem { to: Route::SchedulingTemplates {}, icon: rsx!(SwatchIcon {}), label: "Scheduling Templates", collapsed }
+                    }
+                }
             }
 
-            NavSection { title: "Contracts & Billing", rail_collapsed: collapsed, color: SectionColor::Amber,
-                NavItem { to: Route::ContractList {}, icon: rsx!(ScaleIcon {}), label: "Contracts", collapsed }
-                NavItem { to: Route::QuoteList {}, icon: rsx!(DocumentIcon {}), label: "Quotes", collapsed }
-                NavItem { to: Route::RateCardList {}, icon: rsx!(TagIcon {}), label: "Rate Cards", collapsed }
-                NavItem { to: Route::InvoiceList {}, icon: rsx!(CurrencyIcon {}), label: "Invoices", collapsed }
-                NavItem { to: Route::PaymentList {}, icon: rsx!(CreditCardIcon {}), label: "Payments", collapsed }
+            if show_billing_section {
+                NavSection { title: "Contracts & Billing", rail_collapsed: collapsed, color: SectionColor::Amber,
+                    if show_contracts {
+                        NavItem { to: Route::ContractList {}, icon: rsx!(ScaleIcon {}), label: "Contracts", collapsed }
+                    }
+                    if show_quotes {
+                        NavItem { to: Route::QuoteList {}, icon: rsx!(DocumentIcon {}), label: "Quotes", collapsed }
+                    }
+                    if show_rate_cards {
+                        NavItem { to: Route::RateCardList {}, icon: rsx!(TagIcon {}), label: "Rate Cards", collapsed }
+                    }
+                    if show_invoices {
+                        NavItem { to: Route::InvoiceList {}, icon: rsx!(CurrencyIcon {}), label: "Invoices", collapsed }
+                    }
+                    if show_payments {
+                        NavItem { to: Route::PaymentList {}, icon: rsx!(CreditCardIcon {}), label: "Payments", collapsed }
+                    }
+                }
             }
 
-            NavSection { title: "Assets", rail_collapsed: collapsed, color: SectionColor::Teal,
-                NavItem { to: Route::AssetList {}, icon: rsx!(ServerIcon {}), label: "Assets", collapsed }
+            if show_assets_section {
+                NavSection { title: "Assets", rail_collapsed: collapsed, color: SectionColor::Teal,
+                    if show_assets {
+                        NavItem { to: Route::AssetList {}, icon: rsx!(ServerIcon {}), label: "Assets", collapsed }
+                    }
+                }
             }
 
-            NavSection { title: "Knowledge", rail_collapsed: collapsed, color: SectionColor::Fuchsia,
-                NavItem { to: Route::KBHome {}, icon: rsx!(BookIcon {}), label: "Knowledge Base", collapsed }
+            if show_knowledge_section {
+                NavSection { title: "Knowledge", rail_collapsed: collapsed, color: SectionColor::Fuchsia,
+                    if show_kb {
+                        NavItem { to: Route::KBHome {}, icon: rsx!(BookIcon {}), label: "Knowledge Base", collapsed }
+                    }
+                }
             }
 
-            NavSection { title: "Analytics", rail_collapsed: collapsed, color: SectionColor::Rose,
-                NavItem { to: Route::Reports {}, icon: rsx!(ChartIcon {}), label: "Reports", collapsed }
+            if show_analytics_section {
+                NavSection { title: "Analytics", rail_collapsed: collapsed, color: SectionColor::Rose,
+                    if show_reports {
+                        NavItem { to: Route::Reports {}, icon: rsx!(ChartIcon {}), label: "Reports", collapsed }
+                    }
+                }
             }
 
             // MAPPS-520 walkthrough: the platform super-admin has its

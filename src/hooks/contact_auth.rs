@@ -29,6 +29,19 @@ struct RefreshBody {
 struct RefreshResp {
     access_token: String,
     refresh_token: String,
+    // Fresh contact snapshot the server returns on a successful
+    // refresh (prompt 004 `ContactLoginResponse`). Prompt 006 pulls
+    // `caps` off this into the capability hook so a role revoke
+    // lands within one tick.
+    #[serde(default)]
+    contact: Option<RefreshContactSnippet>,
+}
+
+#[cfg(feature = "web")]
+#[derive(Deserialize, Default)]
+struct RefreshContactSnippet {
+    #[serde(default)]
+    caps: Vec<String>,
 }
 
 /// Rotate the contact session using the stored refresh token.
@@ -42,6 +55,7 @@ struct RefreshResp {
 pub async fn refresh_contact_session() -> Result<(), String> {
     let Some(refresh) = crate::hooks::fetch::api::current_contact_refresh_token() else {
         crate::hooks::fetch::api::clear_contact_session();
+        crate::hooks::capabilities::clear_contact_capabilities();
         return Err("no contact refresh token".to_string());
     };
     let body = RefreshBody {
@@ -51,12 +65,19 @@ pub async fn refresh_contact_session() -> Result<(), String> {
         .await
     {
         Ok(resp) => {
+            let caps = resp
+                .contact
+                .as_ref()
+                .map(|c| c.caps.clone())
+                .unwrap_or_default();
             crate::hooks::fetch::api::set_contact_access_token(Some(resp.access_token));
             crate::hooks::fetch::api::set_contact_refresh_token(Some(resp.refresh_token));
+            crate::hooks::capabilities::set_contact_capabilities(Some(caps));
             Ok(())
         }
         Err(e) => {
             crate::hooks::fetch::api::clear_contact_session();
+            crate::hooks::capabilities::clear_contact_capabilities();
             Err(e.to_string())
         }
     }

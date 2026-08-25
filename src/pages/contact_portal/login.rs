@@ -32,6 +32,18 @@ struct LoginResp {
     refresh_token: String,
     #[serde(default)]
     mfa_required: bool,
+    // Snapshot of the authenticated contact, populated on the full
+    // session return. Prompt 006 pulls `caps` off this into the
+    // capability hook so the sidebar and row actions gate off the
+    // fresh claim without another round-trip.
+    #[serde(default)]
+    contact: Option<ContactSnippet>,
+}
+
+#[derive(Deserialize, Clone, Debug, Default)]
+struct ContactSnippet {
+    #[serde(default)]
+    caps: Vec<String>,
 }
 
 /// Public host hint served at `GET /contact/portal/{slug}/host` per
@@ -150,11 +162,17 @@ pub fn ContactLoginPage(slug: String) -> Element {
                             .set("Enter the 6-digit code from your authenticator app.".to_string());
                     }
                     Ok(resp) => {
+                        let caps = resp
+                            .contact
+                            .as_ref()
+                            .map(|c| c.caps.clone())
+                            .unwrap_or_default();
                         crate::hooks::fetch::api::set_contact_access_token(Some(resp.access_token));
                         crate::hooks::fetch::api::set_contact_refresh_token(Some(
                             resp.refresh_token,
                         ));
                         crate::hooks::fetch::api::set_contact_last_slug(&slug);
+                        crate::hooks::capabilities::set_contact_capabilities(Some(caps));
                         nav.replace(Route::Dashboard {});
                     }
                     Err(ApiError::Status { code: 401, .. }) => {
