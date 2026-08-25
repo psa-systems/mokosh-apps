@@ -6,6 +6,7 @@
 use pulldown_cmark::{html, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
 use crate::utils::highlight;
+use crate::utils::mentions::{self, Mention};
 
 /// Markdown -> raw (unsanitized) HTML, with the GFM extensions we render.
 ///
@@ -14,7 +15,7 @@ use crate::utils::highlight;
 /// only fenced-code text, and autolinking must see only text that is not
 /// already inside a link or a code span. A regex over the finished HTML cannot
 /// tell those apart and would happily rewrite the inside of an `href`.
-fn to_html(src: &str) -> String {
+fn to_html(src: &str, people: &[Mention]) -> String {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
@@ -56,7 +57,7 @@ fn to_html(src: &str) -> String {
                 events.push(event);
             }
             Event::Text(ref text) if link_depth == 0 => {
-                autolink_into(text, &mut events);
+                autolink_into(text, people, &mut events);
             }
             other => events.push(other),
         }
@@ -73,29 +74,47 @@ fn to_html(src: &str) -> String {
 /// pulldown-cmark 0.12 has no GFM autolink option (`ENABLE_GFM` covers
 /// blockquote alerts, not literal links), so a pasted URL rendered as plain
 /// text while `[label](url)` worked. Authors paste URLs.
-fn autolink_into<'a>(text: &str, events: &mut Vec<Event<'a>>) {
+fn autolink_into<'a>(text: &str, people: &[Mention], events: &mut Vec<Event<'a>>) {
     let mut rest = text;
-    let mut plain_start = 0usize;
     let mut pushed_any = false;
 
-    while let Some(found) = find_url(&rest[plain_start..]) {
-        let start = plain_start + found.start;
-        let end = plain_start + found.end;
+    loop {
+        // Whichever comes first in the remaining text. Handled in one walk
+        // rather than two passes because a second pass would be scanning
+        // markup emitted by the first.
+        let url = find_url(rest);
+        let mention = find_mention(rest, people);
+        let take_url = match (&url, &mention) {
+            (Some(u), Some(m)) => u.start <= m.start,
+            (Some(_), None) => true,
+            _ => false,
+        };
+
+        let (start, end) = match (take_url, &url, &mention) {
+            (true, Some(u), _) => (u.start, u.end),
+            (false, _, Some(m)) => (m.start, m.end),
+            _ => break,
+        };
+
         if start > 0 {
             events.push(Event::Text(rest[..start].to_string().into()));
         }
-        let url = rest[start..end].to_string();
-        events.push(Event::Start(Tag::Link {
-            link_type: pulldown_cmark::LinkType::Autolink,
-            dest_url: url.clone().into(),
-            title: "".into(),
-            id: "".into(),
-        }));
-        events.push(Event::Text(url.into()));
-        events.push(Event::End(TagEnd::Link));
+        if take_url {
+            let href = rest[start..end].to_string();
+            events.push(Event::Start(Tag::Link {
+                link_type: pulldown_cmark::LinkType::Autolink,
+                dest_url: href.clone().into(),
+                title: "".into(),
+                id: "".into(),
+            }));
+            events.push(Event::Text(href.into()));
+            events.push(Event::End(TagEnd::Link));
+        } else {
+            let m = mention.as_ref().expect("branch taken only when present");
+            events.push(Event::Html(m.html.clone().into()));
+        }
         pushed_any = true;
         rest = &rest[end..];
-        plain_start = 0;
     }
 
     if pushed_any {
@@ -105,6 +124,69 @@ fn autolink_into<'a>(text: &str, events: &mut Vec<Event<'a>>) {
     } else {
         events.push(Event::Text(text.to_string().into()));
     }
+}
+
+/// A resolved mention found in a run of text.
+struct FoundMention {
+    start: usize,
+    end: usize,
+    html: String,
+}
+
+/// Locate the first `@handle` in `s` that resolves to somebody in `people`.
+///
+/// An `@` that does not resolve is skipped, not marked: the text stays exactly
+/// as the author wrote it. That is the whole point, so an unresolved mention
+/// is visibly unresolved rather than looking authoritative (MAPPS-578).
+fn find_mention(s: &str, people: &[Mention]) -> Option<FoundMention> {
+    if people.is_empty() {
+        return None;
+    }
+    let mut at = 0usize;
+    while let Some(p) = s[at..].find('@') {
+        let start = at + p;
+        if let Some(end) = mentions::handle_end(s, start) {
+            let handle = &s[start + 1..end];
+            if let Some(person) = mentions::resolve(handle, people) {
+                return Some(FoundMention {
+                    start,
+                    end,
+                    html: mention_html(person),
+                });
+            }
+        }
+        at = start + 1;
+    }
+    None
+}
+
+/// Markup for one resolved mention.
+///
+/// A `span`, not an `a`. Rendered Markdown is injected with
+/// `dangerous_inner_html`, so a real `href` would leave the SPA router and
+/// reload the whole WASM bundle. `data-mention` carries the user id and the
+/// `Markdown` component's existing delegated click listener routes on it, for
+/// viewers who can reach the destination.
+fn mention_html(person: &Mention) -> String {
+    format!(
+        "<span class=\"mention\" data-mention=\"{}\" title=\"{}\">@{}</span>",
+        escape_attr(&person.id),
+        escape_attr(&format!("{} <{}>", person.display, person.email)),
+        escape_text(&person.display),
+    )
+}
+
+fn escape_attr(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn escape_text(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 struct Found {
@@ -174,7 +256,15 @@ fn sanitize(html: &str) -> String {
         // permits these VALUES on `class` and nothing else, so an author who
         // writes raw `<span class="...">` in an article cannot reach for an
         // arbitrary app style; the tag also has to be one we already allow.
-        .add_allowed_classes("span", highlight::CLASSES.iter().copied())
+        // MAPPS-578: the mention chip, alongside the highlighter's tokens.
+        .add_allowed_classes(
+            "span",
+            highlight::CLASSES.iter().copied().chain(["mention"]),
+        )
+        // `data-mention` carries the user id for the delegated click listener;
+        // `title` carries the name and email the chip shows on hover. Both are
+        // scoped to `span`, so nothing else in an article gains them.
+        .add_tag_attributes("span", ["data-mention", "title"])
         // The language marker pulldown puts on a fenced block. Kept for the
         // block styling and so a reader can see what the fence claimed, even
         // though the colours come from the spans inside.
@@ -247,7 +337,16 @@ fn safe_color_style(value: &str) -> Option<String> {
 /// Render Markdown source to sanitized HTML. Task-list checkboxes render
 /// `disabled` (read-only display).
 pub fn render_markdown(src: &str) -> String {
-    sanitize(&to_html(src))
+    render_markdown_with_mentions(src, &[])
+}
+
+/// Like [`render_markdown`], resolving `@handle` against `people` (MAPPS-578).
+///
+/// An empty directory renders every `@` as the plain text it already was, so
+/// this is a superset of [`render_markdown`] and a caller with no directory
+/// loses nothing.
+pub fn render_markdown_with_mentions(src: &str, people: &[Mention]) -> String {
+    sanitize(&to_html(src, people))
 }
 
 /// Like [`render_markdown`] but task-list checkboxes are interactive
@@ -256,10 +355,15 @@ pub fn render_markdown(src: &str) -> String {
 /// click handler can map the click back to a task item. Used only where the
 /// host wires an `on_toggle` callback.
 pub fn render_markdown_interactive(src: &str) -> String {
+    render_markdown_interactive_with_mentions(src, &[])
+}
+
+/// [`render_markdown_interactive`] with a mention directory (MAPPS-578).
+pub fn render_markdown_interactive_with_mentions(src: &str, people: &[Mention]) -> String {
     // pulldown emits each task checkbox as `<input disabled="" type="checkbox"`
     // (optionally ` checked=""`). Drop `disabled` to make them clickable, then
     // tag each in document order with its index.
-    let html = to_html(src).replace(" disabled=\"\"", "");
+    let html = to_html(src, people).replace(" disabled=\"\"", "");
     let needle = "<input type=\"checkbox\"";
     let mut out = String::with_capacity(html.len());
     let mut rest = html.as_str();
@@ -581,6 +685,135 @@ mod tests {
         }
     }
 
+    // MAPPS-578 -------------------------------------------------------------
+
+    fn directory() -> Vec<Mention> {
+        vec![
+            Mention {
+                id: "u-long".to_string(),
+                display: "Long Le".to_string(),
+                email: "long@niceguyit.com".to_string(),
+            },
+            Mention {
+                id: "u-nate".to_string(),
+                display: "Nate Fisher".to_string(),
+                email: "nate@niceguyit.com".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn a_resolved_mention_becomes_a_chip_naming_the_person() {
+        let out = render_markdown_with_mentions("ask @long about it", &directory());
+        assert!(out.contains(r#"class="mention""#), "{out}");
+        assert!(
+            out.contains(r#"data-mention="u-long""#),
+            "the id rides along: {out}"
+        );
+        assert!(out.contains("@Long Le"), "the chip shows the person: {out}");
+        // ammonia re-serializes, and `<` is legal inside a quoted attribute
+        // value, so it comes back raw rather than as the entity we wrote.
+        assert!(
+            out.contains(r#"title="Long Le <long@niceguyit.com>""#),
+            "hover answers who this is: {out}"
+        );
+    }
+
+    /// The half that matters more. An `@` that names nobody must come out
+    /// exactly as written, with no chip, or an unresolved mention looks
+    /// authoritative.
+    #[test]
+    fn an_unresolved_mention_stays_plain_text() {
+        let out = render_markdown_with_mentions("ask @nobody about it", &directory());
+        assert!(!out.contains("mention"), "{out}");
+        assert!(out.contains("@nobody"), "{out}");
+    }
+
+    /// An `@` that is not a mention at all is never touched, wherever it sits.
+    #[test]
+    fn an_at_in_prose_code_or_a_link_is_left_alone() {
+        let people = directory();
+
+        // An email address in prose. `@niceguyit.com` must not resolve, and the
+        // address must survive whole.
+        let email = render_markdown_with_mentions("mail long@niceguyit.com today", &people);
+        assert!(!email.contains("mention"), "{email}");
+        assert!(email.contains("long@niceguyit.com"), "{email}");
+
+        // Inside code, both kinds.
+        let code = render_markdown_with_mentions("`@long`", &people);
+        assert!(!code.contains("mention"), "{code}");
+        let fenced =
+            render_markdown_with_mentions("```python\n@decorator\ndef f(): pass\n```", &people);
+        assert!(!fenced.contains("mention"), "{fenced}");
+
+        // Inside an existing link's text.
+        let linked = render_markdown_with_mentions("[@long](https://x.test)", &people);
+        assert!(!linked.contains("mention"), "{linked}");
+        assert!(linked.contains(r#"href="https://x.test""#), "{linked}");
+    }
+
+    /// A mention and a URL in one run of text: both are found, in order, and
+    /// neither eats the other.
+    #[test]
+    fn a_mention_and_a_url_in_the_same_text_both_render() {
+        let out = render_markdown_with_mentions(
+            "see https://x.test/a then ask @nate about it",
+            &directory(),
+        );
+        assert!(out.contains(r#"href="https://x.test/a""#), "{out}");
+        assert!(out.contains(r#"data-mention="u-nate""#), "{out}");
+        // And in the order they appear.
+        let link_at = out.find("href=").expect("link renders");
+        let chip_at = out.find("data-mention=").expect("chip renders");
+        assert!(link_at < chip_at, "{out}");
+    }
+
+    /// Ambiguity resolves to nothing rather than to a guess, end to end.
+    #[test]
+    fn an_ambiguous_mention_renders_as_plain_text() {
+        let people = vec![
+            Mention {
+                id: "a".to_string(),
+                display: "Chris Adams".to_string(),
+                email: "chris@x.test".to_string(),
+            },
+            Mention {
+                id: "b".to_string(),
+                display: "Chris Brown".to_string(),
+                email: "chrisb@x.test".to_string(),
+            },
+        ];
+        let out = render_markdown_with_mentions("ping @chris", &people);
+        assert!(!out.contains("mention"), "{out}");
+        assert!(out.contains("@chris"), "{out}");
+    }
+
+    /// With no directory, every `@` is plain text and the output matches the
+    /// no-mention renderer exactly. A caller that cannot load a directory
+    /// loses nothing.
+    #[test]
+    fn an_empty_directory_changes_nothing() {
+        let src = "ask @long and see https://x.test";
+        assert_eq!(
+            render_markdown_with_mentions(src, &[]),
+            render_markdown(src)
+        );
+        assert!(!render_markdown(src).contains("mention"));
+    }
+
+    /// The chip's own attributes are permitted; a `data-` attribute the markup
+    /// does not use is still dropped, so this did not open `span` generally.
+    #[test]
+    fn only_the_mention_attributes_are_allowed_on_a_span() {
+        let out =
+            sanitize(r#"<span data-mention="x" title="t" data-evil="y" onclick="z">a</span>"#);
+        assert!(out.contains(r#"data-mention="x""#), "{out}");
+        assert!(out.contains(r#"title="t""#), "{out}");
+        assert!(!out.contains("data-evil"), "{out}");
+        assert!(!out.contains("onclick"), "{out}");
+    }
+
     /// Highlighting must not change what the code says. The escaping in the
     /// highlighter and the sanitizer run in sequence, so this pins that the
     /// pair of them leaves the text intact.
@@ -640,6 +873,46 @@ export TOKEN="$MOKOSH_TOKEN"
             "variable inside the quoted string highlighted: {out}"
         );
         assert!(out.contains(r#"<code class="language-bash""#), "{out}");
+    }
+
+    /// MAPPS-578 against the same article. `@niceguyit` is the mention it
+    /// actually carries, and whether it resolves is a property of the tenant's
+    /// directory, not of the text. Both outcomes are pinned, because the
+    /// unresolved one is the half that must not decorate anything.
+    #[test]
+    fn the_reported_article_resolves_a_mention_only_when_somebody_matches() {
+        let known = vec![Mention {
+            id: "u-ngit".to_string(),
+            display: "Nice Guy IT".to_string(),
+            email: "niceguyit@niceguyit.com".to_string(),
+        }];
+        let resolved = render_markdown_with_mentions(SRC, &known);
+        assert!(
+            resolved.contains(r#"data-mention="u-ngit""#),
+            "the handle names somebody, so it becomes a chip: {resolved}"
+        );
+        assert!(resolved.contains("@Nice Guy IT"), "{resolved}");
+
+        // Nobody by that handle: the text stays exactly as the author wrote it.
+        let stranger = [Mention {
+            id: "u-other".to_string(),
+            display: "Someone Else".to_string(),
+            email: "someone@x.test".to_string(),
+        }];
+        for directory in [&stranger[..], &[][..]] {
+            let out = render_markdown_with_mentions(SRC, directory);
+            assert!(!out.contains("data-mention"), "no chip: {out}");
+            assert!(out.contains("@niceguyit"), "text unchanged: {out}");
+        }
+
+        // The article's own inline-code and fenced content is never touched,
+        // whatever the directory says. `$MOKOSH_TOKEN` is not a mention and
+        // neither is anything inside the bash block.
+        assert!(
+            !resolved.contains(r#"<span class="mention"#)
+                || resolved.matches("data-mention").count() == 1,
+            "exactly one mention in the whole article: {resolved}"
+        );
     }
 
     #[test]
