@@ -213,6 +213,40 @@ struct RemoteCompany {
     open_ticket_count: Option<i64>,
 }
 
+/// PMS-926 `GET /contacts/companies/{id}/deletion-preview`.
+///
+/// The client deliberately holds no list of which tables block a delete. It
+/// held one until MAPPS-577, and that copy went stale the moment PMS-919
+/// changed the rules: the dialog kept warning about projects, appointments and
+/// sub-companies long after those started unlinking instead of blocking.
+#[derive(Clone, Debug, Default, Deserialize)]
+struct DeletionPreview {
+    #[serde(default)]
+    can_delete: bool,
+    /// Refused for what the company IS (the tenant's own company, PMS-919)
+    /// rather than for what references it, so `blocking` is empty and the
+    /// delete still fails.
+    #[serde(default)]
+    is_own_company: bool,
+    #[serde(default)]
+    blocking: Vec<DeletionRecords>,
+    #[serde(default)]
+    unlinked: Vec<DeletionRecords>,
+    #[serde(default)]
+    removed: Vec<DeletionRecords>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+struct DeletionRecords {
+    label: String,
+    count: i64,
+    /// PMS-920: these exist to be KEPT. Telling somebody to clear their
+    /// invoices to tidy a client list destroys the record the refusal is
+    /// protecting, so the two read differently.
+    #[serde(default)]
+    retained: bool,
+}
+
 /// Server-side paginated envelope (`PaginatedResponse<CompanyResponse>`).
 #[derive(Clone, Debug, Deserialize)]
 struct PaginatedCompanies {
@@ -1931,11 +1965,35 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     let edit_id = company_id_for_edit.clone();
     let delete_id = company_id_for_delete.clone();
     let mut confirming_delete = use_signal(|| false);
+    // MAPPS-577: what a delete would actually do, from the server (PMS-926).
+    // NOT derived from the Statistics card: `open_ticket_count` counts only
+    // open tickets while the delete guard counts every one, so a company with
+    // closed tickets and none open reads as deletable there and is refused.
+    // Fetched when the dialog opens rather than on page load, because a page
+    // view is not an intent to delete.
+    let preview_id = company_id_str.clone();
+    let deletion_preview = use_resource(move || {
+        let id = preview_id.clone();
+        let open = confirming_delete();
+        async move {
+            if !open {
+                return None;
+            }
+            let _reachable = crate::hooks::use_server_reachable();
+            crate::hooks::fetch::api::get_authed::<DeletionPreview>(&format!(
+                "/contacts/companies/{id}/deletion-preview"
+            ))
+            .await
+            .ok()
+        }
+    });
     // MAPPS-574: why the last delete attempt was refused. The server answers a
     // blocked delete with 400 and an actionable message ("Cannot delete company
     // with existing tickets", or the PMS-170 related-records list); this holds
     // it for the dialog.
     let mut delete_error = use_signal(String::new);
+    // MAPPS-577: the archive alternative offered when a delete is refused.
+    let mut archiving = use_signal(|| false);
     // MAPPS-357: gate the destructive Delete while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
     let on_confirm_delete = move |_: ()| {
@@ -1989,32 +2047,161 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     }
 
     rsx! {
-        crate::components::ConfirmDialog {
-            open: confirming_delete(),
-            title: "Delete company".to_string(),
-            // MAPPS-574: the old wording ("unlink its contacts/tickets") was
-            // wrong about tickets, and wrong in the direction that makes a
-            // refusal read as a broken button: a ticket is not unlinked, it
-            // blocks the delete outright. Sites and contacts were right - sites
-            // CASCADE (migration 004) and `contacts.company_id` is SET NULL
-            // (migration 110, PMS-812) - so say what actually happens, and say
-            // what stops it, before the name is typed rather than after.
-            message: "Delete this company? Its sites are removed and its contacts are unlinked, and this cannot be undone. A company that still has tickets, contracts, invoices, payments, projects, assets, time entries, appointments or sub-companies cannot be deleted; remove those first.".to_string(),
-            confirm_text: "Delete".to_string(),
-            cancel_text: "Cancel".to_string(),
-            destructive: true,
-            // PMS-369: this delete cascades (removes sites, unlinks contacts),
-            // so gate it behind typing the company name.
-            confirm_phrase: header_title.clone(),
-            error: delete_error.read().clone(),
-            loading: *deleting.read(),
-            onconfirm: on_confirm_delete,
-            oncancel: move |_| {
-                if !*deleting.read() {
-                    confirming_delete.set(false);
-                    delete_error.set(String::new());
+        {
+            let snapshot = deletion_preview.read_unchecked().clone().flatten();
+            // MAPPS-577 AC7: a preview that has not arrived, or failed, must
+            // not block the delete. With none, the dialog behaves exactly as it
+            // did before this change: a generic warning, the phrase gate, an
+            // attempt, and the server's own refusal if it is refused. The
+            // delete path never depends on a second request succeeding.
+            let preview = snapshot.clone().unwrap_or_default();
+            let known = snapshot.is_some();
+            let blocked = known && !preview.can_delete;
+
+            // MAPPS-577 AC1: no hardcoded list of tables. Everything specific
+            // comes from the server, so the two cannot drift again.
+            let message = if !known {
+                "Delete this company? Its sites are removed and its contacts are unlinked, and this cannot be undone."
+                    .to_string()
+            } else if preview.is_own_company {
+                "This is your organisation's own company record, which general and overhead time is logged against. It cannot be deleted."
+                    .to_string()
+            } else if blocked {
+                "This company cannot be deleted while these records exist.".to_string()
+            } else {
+                "Delete this company? This cannot be undone.".to_string()
+            };
+
+            let retained: Vec<DeletionRecords> = preview
+                .blocking
+                .iter()
+                .filter(|r| r.retained)
+                .cloned()
+                .collect();
+            let removable: Vec<DeletionRecords> = preview
+                .blocking
+                .iter()
+                .filter(|r| !r.retained)
+                .cloned()
+                .collect();
+            let effects: Vec<(String, Vec<DeletionRecords>)> = vec![
+                ("Removed".to_string(), preview.removed.clone()),
+                ("Unlinked, not deleted".to_string(), preview.unlinked.clone()),
+            ];
+
+            let archive_id = company_id_str.clone();
+            rsx! {
+                crate::components::ConfirmDialog {
+                    open: confirming_delete(),
+                    title: "Delete company".to_string(),
+                    message,
+                    confirm_text: "Delete".to_string(),
+                    cancel_text: if blocked { "Close".to_string() } else { "Cancel".to_string() },
+                    destructive: true,
+                    // AC5: withheld while blocked, so nobody types a company
+                    // name to enable a button that cannot work.
+                    blocked,
+                    // PMS-369: the delete unlinks and removes, so gate it behind
+                    // typing the company name.
+                    confirm_phrase: header_title.clone(),
+                    error: delete_error.read().clone(),
+                    loading: *deleting.read(),
+                    body: rsx! {
+                        if !retained.is_empty() {
+                            div { class: "space-y-1",
+                                p { class: "text-xs font-medium text-content",
+                                    "Kept as a permanent record, so they are not something to clear:"
+                                }
+                                ul { class: "list-disc pl-5 text-sm text-muted",
+                                    for row in retained.iter() {
+                                        li { key: "{row.label}", "{row.count} {row.label}" }
+                                    }
+                                }
+                            }
+                        }
+                        if !removable.is_empty() {
+                            div { class: "mt-2 space-y-1",
+                                p { class: "text-xs font-medium text-content",
+                                    "Remove or reassign these first, or archive the company instead:"
+                                }
+                                ul { class: "list-disc pl-5 text-sm text-muted",
+                                    for row in removable.iter() {
+                                        li { key: "{row.label}", "{row.count} {row.label}" }
+                                    }
+                                }
+                            }
+                        }
+                        // AC2: what the delete WOULD do, shown whether or not
+                        // anything blocks it. On a deletable company this is
+                        // the whole point of opening the dialog.
+                        for (heading , rows) in effects.iter() {
+                            if !rows.is_empty() {
+                                div { key: "{heading}", class: "mt-2 space-y-1",
+                                    p { class: "text-xs font-medium text-content", "{heading}:" }
+                                    ul { class: "list-disc pl-5 text-sm text-muted",
+                                        for row in rows.iter() {
+                                            li { key: "{row.label}", "{row.count} {row.label}" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    // AC4: the refusal already names archiving; this makes it a
+                    // control rather than an instruction to go and find it.
+                    // Absent on the own-company refusal, where archiving is not
+                    // the answer either.
+                    alternative: (blocked && !preview.is_own_company).then(|| rsx! {
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            loading: *archiving.read(),
+                            disabled: !can_mutate,
+                            onclick: move |_| {
+                                if *archiving.read() { return; }
+                                archiving.set(true);
+                                delete_error.set(String::new());
+                                let id = archive_id.clone();
+                                spawn(async move {
+                                    #[cfg(feature = "web")]
+                                    {
+                                        let path = format!("/contacts/companies/{id}");
+                                        let body = serde_json::json!({ "status": "inactive" });
+                                        match crate::hooks::fetch::api::put_authed_typed::<
+                                            serde_json::Value,
+                                            _,
+                                        >(&path, &body)
+                                            .await
+                                        {
+                                            Ok(_) => {
+                                                crate::hooks::toast::push_toast(
+                                                    crate::components::AlertType::Success,
+                                                    "Company archived. Its history is kept and it is out of your active lists.",
+                                                );
+                                                confirming_delete.set(false);
+                                                let mut cr = company_resource;
+                                                cr.restart();
+                                            }
+                                            Err(e) => delete_error
+                                                .set(format!("Could not archive: {}", e.user_message())),
+                                        }
+                                    }
+                                    #[cfg(not(feature = "web"))]
+                                    let _ = &id;
+                                    archiving.set(false);
+                                });
+                            },
+                            "Archive instead"
+                        }
+                    }),
+                    onconfirm: on_confirm_delete,
+                    oncancel: move |_| {
+                        if !*deleting.read() {
+                            confirming_delete.set(false);
+                            delete_error.set(String::new());
+                        }
+                    },
                 }
-            },
+            }
         }
         // MAPPS-575: an archived company is out of the default lists and
         // pickers, so anyone who reaches this page has arrived by a link or a
@@ -6838,6 +7025,127 @@ mod archive_scope_tests {
                 r#"!search_text.is_empty() || !type_text.is_empty() || status_text != "active""#
             ),
             "an empty tenant must read as \"No companies yet\", not as a filtered-out list"
+        );
+    }
+}
+
+/// MAPPS-577: the delete dialog's decisions, none of which a rendered snapshot
+/// shows. Source scans for the same reason the other page suites use them: the
+/// preview fetch and the archive PUT only run under the `web` feature.
+#[cfg(test)]
+mod delete_dialog_tests {
+    const SRC: &str = include_str!("contacts.rs");
+
+    /// Shipping code only, whitespace-collapsed. Excludes this module, because
+    /// every assertion quotes the pattern it looks for and would match itself.
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod delete_dialog_tests")
+            .expect("this module is part of this file");
+        SRC[..end]
+            .lines()
+            .map(|l| match l.find("//") {
+                Some(i) => &l[..i],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// AC1, and the defect MAPPS-577 reported. The client held an English copy
+    /// of the server's blocking rules; PMS-919 changed them and the copy went
+    /// stale, so the dialog kept warning that projects, appointments and
+    /// sub-companies block a delete long after they started unlinking.
+    #[test]
+    fn the_dialog_holds_no_copy_of_which_tables_block() {
+        let code = code_only();
+        for stale in [
+            "cannot be deleted; remove those first",
+            "appointments or sub-companies",
+        ] {
+            assert!(
+                !code.contains(stale),
+                "the dialog must not restate the server's blocking rules: found {stale:?}"
+            );
+        }
+        assert!(
+            code.contains("deletion-preview"),
+            "what blocks a delete comes from PMS-926, so the two cannot drift"
+        );
+    }
+
+    /// AC8. The Statistics card cannot answer this: `open_ticket_count` filters
+    /// on `closed_at IS NULL` while the delete guard counts every ticket, so a
+    /// company with closed tickets and none open reads as deletable there and
+    /// is then refused.
+    #[test]
+    fn the_counts_are_not_re_derived_from_the_statistics_card() {
+        let code = code_only();
+        let preview_block = {
+            let start = code
+                .find("let deletion_preview = use_resource")
+                .expect("the preview resource exists");
+            &code[start..start + 600]
+        };
+        assert!(
+            !preview_block.contains("open_ticket_count"),
+            "the preview must not be built from the page's own counts"
+        );
+    }
+
+    /// AC5. A refused delete offers no gate and no Delete button.
+    #[test]
+    fn a_blocked_delete_withholds_the_gate() {
+        let code = code_only();
+        assert!(
+            code.contains("let blocked = known && !preview.can_delete;"),
+            "blocked follows the server's own verdict"
+        );
+        assert!(
+            code.contains("blocked,"),
+            "and is passed to the dialog, which withholds the gate and the \
+             confirm button"
+        );
+    }
+
+    /// AC7. The delete path never depends on the preview arriving. An unknown
+    /// preview degrades to the pre-MAPPS-577 behaviour rather than blocking the
+    /// dialog or disabling the delete.
+    #[test]
+    fn an_absent_preview_does_not_block_the_delete() {
+        let code = code_only();
+        assert!(
+            code.contains("let known = snapshot.is_some();"),
+            "the dialog distinguishes 'no preview' from 'preview says blocked'"
+        );
+        assert!(
+            code.contains("let blocked = known && !preview.can_delete;"),
+            "an absent preview is NOT blocked: without the `known &&`, a failed \
+             fetch would withhold the Delete button on every company"
+        );
+    }
+
+    /// AC4. Archiving is a control in the dialog, not an instruction to go and
+    /// find the edit form.
+    #[test]
+    fn a_blocked_delete_offers_archiving_in_place() {
+        let code = code_only();
+        assert!(
+            code.contains(r#""status": "inactive""#),
+            "the alternative performs the archive itself"
+        );
+        assert!(
+            code.contains("Archive instead"),
+            "and is labelled as the alternative it is"
+        );
+        // The own-company refusal is not solved by archiving either, so the
+        // action is withheld there rather than offered and then failing.
+        assert!(
+            code.contains("(blocked && !preview.is_own_company).then("),
+            "archiving is not offered where it would not help"
         );
     }
 }

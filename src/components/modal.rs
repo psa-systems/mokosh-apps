@@ -236,6 +236,21 @@ pub struct ConfirmDialogProps {
     /// onto with no obvious link to what they did.
     #[props(default)]
     error: String,
+    /// MAPPS-577: extra content between the message and the phrase input.
+    /// Used to show what the action would affect BEFORE the name is typed,
+    /// rather than reporting it as a refusal afterwards.
+    #[props(default)]
+    body: Option<Element>,
+    /// MAPPS-577: the action cannot succeed, so the dialog does not pretend it
+    /// can. The phrase gate and the confirm button are both withheld: asking
+    /// somebody to type a company name to enable a button that will be refused
+    /// is the wasted effort this flag exists to remove.
+    #[props(default = false)]
+    blocked: bool,
+    /// MAPPS-577: an alternative action in the footer, for the case where the
+    /// destructive one is refused and there IS something useful to do instead.
+    #[props(default)]
+    alternative: Option<Element>,
     /// Confirm handler
     onconfirm: EventHandler<()>,
     /// Cancel/close handler
@@ -277,6 +292,9 @@ pub fn ConfirmDialog(props: ConfirmDialogProps) -> Element {
             loading: props.loading,
             confirm_phrase: props.confirm_phrase.clone(),
             error: props.error.clone(),
+            body: props.body.clone(),
+            blocked: props.blocked,
+            alternative: props.alternative.clone(),
             onconfirm: props.onconfirm,
             oncancel: props.oncancel,
         }
@@ -296,6 +314,9 @@ fn OpenConfirmDialog(
     loading: bool,
     confirm_phrase: String,
     error: String,
+    body: Option<Element>,
+    blocked: bool,
+    alternative: Option<Element>,
     onconfirm: EventHandler<()>,
     oncancel: EventHandler<()>,
 ) -> Element {
@@ -310,7 +331,9 @@ fn OpenConfirmDialog(
     // (or empty) phrase keeps the button disabled, so a different entity's
     // name never carries over an enabled state.
     let mut typed = use_signal(String::new);
-    let gated = !confirm_phrase.trim().is_empty();
+    // MAPPS-577: no gate when the action is refused. There is nothing for the
+    // phrase to unlock.
+    let gated = !blocked && !confirm_phrase.trim().is_empty();
     let satisfied = confirm_phrase_satisfied(&typed.read(), &confirm_phrase);
     let confirm_disabled = loading || !satisfied;
     let phrase = confirm_phrase.clone();
@@ -322,22 +345,34 @@ fn OpenConfirmDialog(
             size: ModalSize::Small,
             onclose: move |_| oncancel.call(()),
             footer: rsx! {
+                if let Some(alternative) = alternative {
+                    {alternative}
+                }
                 Button {
                     variant: ButtonVariant::Secondary,
                     onclick: move |_| oncancel.call(()),
                     disabled: loading,
                     "{cancel_text}"
                 }
-                Button {
-                    variant: confirm_variant,
-                    onclick: move |_| onconfirm.call(()),
-                    loading: loading,
-                    disabled: confirm_disabled,
-                    "{confirm_text}"
+                // MAPPS-577: withheld entirely when the action is refused,
+                // rather than rendered disabled. A greyed-out Delete invites
+                // the user to work out what would enable it; absent, the
+                // alternative beside it is the obvious next move.
+                if !blocked {
+                    Button {
+                        variant: confirm_variant,
+                        onclick: move |_| onconfirm.call(()),
+                        loading: loading,
+                        disabled: confirm_disabled,
+                        "{confirm_text}"
+                    }
                 }
             },
             p { class: "text-sm text-muted",
                 "{message}"
+            }
+            if let Some(body) = body {
+                div { class: "mt-3", {body} }
             }
             // MAPPS-574: why the last attempt did not happen. Above the phrase
             // input, so the reason and the control the user is about to reuse
@@ -813,6 +848,81 @@ mod tests {
         assert!(
             !wrapper.contains("use_signal"),
             "ConfirmDialog does not unmount when the dialog closes, so any state              it holds outlives the attempt it belongs to. Put it in              OpenConfirmDialog, which mounts with the dialog. Found in: {wrapper}"
+        );
+    }
+
+    /// MAPPS-577: a refused action offers no gate and no confirm button.
+    ///
+    /// Rendered through the REAL `ConfirmDialog`. Asking somebody to type a
+    /// company name to enable a button that will be refused is exactly the
+    /// wasted effort the issue reported, and a DISABLED button is not enough:
+    /// it invites the user to work out what would enable it.
+    #[component]
+    fn BlockedDialog() -> Element {
+        rsx! {
+            ConfirmDialog {
+                open: true,
+                title: "Delete company".to_string(),
+                message: "BODY-MARKER".to_string(),
+                confirm_text: "Delete".to_string(),
+                destructive: true,
+                blocked: true,
+                confirm_phrase: "Acme Corp".to_string(),
+                body: rsx! { p { "2 invoices" } },
+                alternative: rsx! { button { "Archive instead" } },
+                onconfirm: move |_| {},
+                oncancel: move |_| {},
+            }
+        }
+    }
+
+    #[test]
+    fn a_blocked_dialog_offers_no_gate_and_no_confirm() {
+        let html = render(BlockedDialog);
+        assert!(
+            !html.contains("<input"),
+            "no phrase gate: there is nothing for it to unlock; got: {html}"
+        );
+        assert!(
+            !html.contains("to confirm"),
+            "and no instruction to type one; got: {html}"
+        );
+        assert!(
+            !html.contains(">Delete<"),
+            "the confirm button is withheld, not disabled; got: {html}"
+        );
+        assert!(html.contains("Archive instead"), "{html}");
+        assert!(html.contains("2 invoices"), "the body renders: {html}");
+    }
+
+    /// And the ordinary path is untouched: a deletable company still gets its
+    /// gate and its Delete button. This must not become a two-step flow for the
+    /// common case.
+    #[component]
+    fn AllowedWithBody() -> Element {
+        rsx! {
+            ConfirmDialog {
+                open: true,
+                title: "Delete company".to_string(),
+                message: "BODY-MARKER".to_string(),
+                confirm_text: "Delete".to_string(),
+                destructive: true,
+                confirm_phrase: "Acme Corp".to_string(),
+                body: rsx! { p { "3 sites" } },
+                onconfirm: move |_| {},
+                oncancel: move |_| {},
+            }
+        }
+    }
+
+    #[test]
+    fn an_allowed_dialog_keeps_its_gate_and_gains_the_body() {
+        let html = render(AllowedWithBody);
+        assert!(html.contains("<input"), "the gate is intact: {html}");
+        assert!(html.contains(">Delete<"), "{html}");
+        assert!(
+            html.contains("3 sites"),
+            "and it can still say what the delete would do: {html}"
         );
     }
 
