@@ -158,6 +158,9 @@ fn QuoteListBody() -> Element {
         SelectOption::new("cancelled", "Cancelled"),
     ];
 
+    // MAPPS-575: NOT narrowed to active. This is the quotes LIST filter; an
+    // archived company's quotes still exist, and being able to look at them is
+    // what archiving-instead-of-deleting is for.
     let companies_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_all_authed::<CompanyOption>(&format!(

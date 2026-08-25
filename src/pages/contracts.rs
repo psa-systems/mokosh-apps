@@ -155,6 +155,10 @@ fn ContractListBody() -> Element {
     ];
 
     // Company filter is a dropdown populated from the companies endpoint.
+    //
+    // MAPPS-575: NOT narrowed to active. An archived company's contracts still
+    // exist and looking at them is exactly what archiving-instead-of-deleting
+    // is for, so it has to stay selectable here.
     let companies_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_all_authed::<CompanyOption>(&format!(
@@ -758,10 +762,17 @@ fn ContractForm(props: ContractFormProps) -> Element {
 
     // Company dropdown options (create flow needs to pick a company; the
     // server forbids changing it on update so the edit flow disables it).
+    //
+    // MAPPS-575: active only. This picks the company a NEW contract is written
+    // against, which is day-to-day use, and offering an archived company here
+    // would put it straight back into the state it was archived to leave. The
+    // contracts LIST filter above deliberately does not narrow: an archived
+    // company's contracts still exist, and being able to look at them is the
+    // reason archiving keeps history in the first place.
     let companies_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_all_authed::<CompanyOption>(&format!(
-            "/contacts/companies?{COMPANIES_BY_NAME_SORT}"
+            "/contacts/companies?status=active&{COMPANIES_BY_NAME_SORT}"
         ))
         .await
         .ok()
