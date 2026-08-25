@@ -186,6 +186,16 @@ jobs:
           bash scripts/check-types-pin.sh --self-test
           bash scripts/check-types-pin.sh
 
+      # MAPPS-584: @tailwindcss/typography writes .prose into `@layer utilities`
+      # and the MAPPS-573 corrections were written into `@layer components`, so
+      # the plugin won every declaration the two shared and the whole block
+      # shipped inert. Nothing caught it because MAPPS-573's tests cover the
+      # Rust renderer and the stylesheet had none.
+      - name: Prose cascade-layer guard
+        run: |
+          bash scripts/check-prose-layer.sh --self-test
+          bash scripts/check-prose-layer.sh
+
       # MAPPS-534: a send button carries a MailIcon, a send action goes through
       # EmailPreview, and every listed path still has a caller. This ran only
       # in `just check` until now, so a PR that broke it merged green.
