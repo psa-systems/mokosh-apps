@@ -778,6 +778,38 @@ mod tests {
         }
     }
 
+    /// The Rust list, the stylesheet rules and the theme tokens are three
+    /// places that have to agree, and nothing fails when they do not: an
+    /// unstyled class renders in the body colour, and a token missing from
+    /// `.dark` keeps its light value and goes unreadable on the dark code
+    /// block. Both are invisible to every other test in this repo.
+    #[test]
+    fn every_class_has_a_rule_and_a_token_in_both_themes() {
+        const CSS: &str = include_str!("../../input.css");
+        // `.dark { ... }` is the second token block; split there so a token
+        // defined only in `:root` is not counted as defined in both.
+        let dark_at = CSS.find("\n.dark {").expect("input.css has a .dark block");
+        let (light, dark) = CSS.split_at(dark_at);
+
+        for class in CLASSES {
+            assert!(
+                CSS.contains(&format!(".{class} ")) || CSS.contains(&format!(".{class}{{")),
+                "`{class}` is emitted by the highlighter but has no rule in input.css, \
+                 so it renders in the body colour"
+            );
+            let token = format!("--{class}:");
+            assert!(
+                light.contains(&token),
+                "`{class}` has no --{class} token in :root"
+            );
+            assert!(
+                dark.contains(&token),
+                "`{class}` has no --{class} token in .dark, so it keeps its light value \
+                 and goes unreadable on the dark code block"
+            );
+        }
+    }
+
     #[test]
     fn every_emitted_class_is_declared_in_classes() {
         // Render a sample of each language, pull every class out of the output,
