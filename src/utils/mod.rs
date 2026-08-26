@@ -22,6 +22,7 @@ pub mod text;
 pub mod url;
 pub mod validation;
 pub mod version;
+pub mod word_diff;
 
 // Re-exports
 pub use envelope::{Paginated, PaginatedMeta};
