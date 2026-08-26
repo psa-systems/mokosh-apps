@@ -109,15 +109,30 @@ pub fn Markdown(props: MarkdownProps) -> Element {
             install_click_listener(
                 dom_id.clone(),
                 interactive.then_some(on_toggle),
-                // The navigation is passed as a closure rather than as a
-                // navigator plus a route, so the listener needs no router type
-                // in scope and stays a plain DOM concern.
+                // MAPPS-586: an `EventHandler`, not a bare closure.
+                //
+                // This runs from a raw DOM listener, so there is no dioxus
+                // scope on the stack. `navigator.push` writes the router's
+                // signals, which asks the runtime for the current scope, and
+                // `Runtime::current_scope_id` unwraps an empty stack. That
+                // panic fires while it still holds a shared borrow of the
+                // scope stack, and the release profile is `panic = "abort"`,
+                // so nothing unwinds and the borrow guard never drops. From
+                // that moment every render in the page panics on
+                // `scope_stack.borrow_mut()` and the whole app is dead. The
+                // reported symptom was a page that stopped responding.
+                //
+                // `EventHandler::call` is what makes this safe: it takes a
+                // `RuntimeGuard` and pushes its origin scope before running
+                // the body, so the navigation happens inside the scope it was
+                // created in. The sibling checkbox branch has always gone
+                // through one, which is why only mentions killed the page.
                 mention_route.clone().map(|route| {
-                    Box::new(move || {
+                    EventHandler::new(move |()| {
                         // The router reports an external-navigation failure,
                         // which cannot happen for an in-app route.
                         let _ = navigator.push(route.clone());
-                    }) as Box<dyn Fn()>
+                    })
                 }),
             );
             #[cfg(not(target_arch = "wasm32"))]
@@ -208,11 +223,21 @@ fn use_mention_directory(enabled: bool) -> Resource<Option<Vec<Mention>>> {
 /// A mention chip is a `span`, never an `a`. A real `href` inside injected HTML
 /// leaves the SPA router and reloads the whole WASM bundle, so routing goes
 /// through the navigator instead.
+///
+/// MAPPS-586: both callbacks are `EventHandler`s, and that is load-bearing
+/// rather than stylistic. This closure runs from a raw DOM listener, so no
+/// dioxus scope is on the stack; anything that asks the runtime which scope it
+/// is in panics inside `Runtime::current_scope_id`, which unwraps an empty
+/// stack WHILE holding a shared borrow of it. Release builds are
+/// `panic = "abort"`, so nothing unwinds, the borrow guard never drops, and
+/// every render afterwards panics on `scope_stack.borrow_mut()`. One click
+/// killed the page for good. `EventHandler::call` pushes its origin scope
+/// first, which is exactly what the bare boxed closure it replaced did not do.
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 fn install_click_listener(
     dom_id: String,
     on_toggle: Option<EventHandler<usize>>,
-    on_mention: Option<Box<dyn Fn()>>,
+    on_mention: Option<EventHandler<()>>,
 ) {
     use wasm_bindgen::closure::Closure;
     use wasm_bindgen::JsCast;
@@ -238,11 +263,11 @@ fn install_click_listener(
                 return;
             }
         }
-        if let Some(go) = on_mention.as_ref() {
+        if let Some(go) = on_mention {
             // The chip's own text is a child node, so a click can land on it
             // rather than the span; `closest` walks up to the chip either way.
             if el.closest("[data-mention]").ok().flatten().is_some() {
-                go();
+                go.call(());
             }
         }
     }) as Box<dyn FnMut(web_sys::Event)>);
@@ -280,6 +305,40 @@ mod mention_wiring_tests {
             .find("mod mention_wiring_tests")
             .expect("this module is part of this file");
         SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// MAPPS-586: everything the raw click listener calls is an
+    /// `EventHandler`.
+    ///
+    /// The listener runs from a plain DOM event, so nothing has pushed a
+    /// dioxus scope. `navigator.push` writes the router's signals, which asks
+    /// the runtime for the current scope; `Runtime::current_scope_id` unwraps
+    /// an empty stack while holding a shared borrow of it, and because release
+    /// builds are `panic = "abort"` that borrow guard never drops. Every later
+    /// render then panics on `scope_stack.borrow_mut()`, so a single click on
+    /// a mention chip left the page permanently unresponsive.
+    ///
+    /// `EventHandler::call` takes a `RuntimeGuard` and pushes its origin scope
+    /// before running the body. The checkbox branch always went through one,
+    /// which is why only mentions did this. Reproduced and fixed against a
+    /// real browser; the harness is described on MAPPS-586.
+    #[test]
+    fn the_raw_listener_only_calls_things_that_carry_their_own_scope() {
+        let code = code_only();
+        assert!(
+            !code.contains("Box<dyn Fn()>"),
+            "a bare closure called from a DOM listener has no dioxus scope, and \
+             the panic that causes is unrecoverable for the rest of the page"
+        );
+        assert!(
+            code.contains("EventHandler::new(move |()|"),
+            "the mention navigation must go through an EventHandler, which \
+             pushes its origin scope before it runs"
+        );
+        assert!(
+            code.contains("on_mention: Option<EventHandler<()>>"),
+            "and the listener must accept nothing weaker"
+        );
     }
 
     /// MAPPS-585: the container says whether a chip is clickable.
