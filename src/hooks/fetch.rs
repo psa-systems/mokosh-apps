@@ -1048,6 +1048,40 @@ pub mod api {
         handle_response(resp).await
     }
 
+    /// MAPPS-587: POST a single file as `multipart/form-data` under the part
+    /// name `file`, with the caller's bearer token.
+    ///
+    /// The same shape as [`put_file_authed`] and split from it only by method:
+    /// the tenant logo is a PUT because there is one of them, and a KB
+    /// attachment is a POST because an article has many. Everything the doc
+    /// comment there says about leaving `Content-Type` alone applies here for
+    /// the same reason - setting it by hand omits the boundary parameter and
+    /// the server cannot split the body.
+    #[cfg(feature = "web")]
+    pub async fn post_file_authed<T: DeserializeOwned>(
+        path: &str,
+        file_name: &str,
+        mime: &str,
+        bytes: &[u8],
+    ) -> Result<T, ApiError> {
+        ensure_fresh_access_token().await;
+        let token = current_access_token()
+            .ok_or_else(|| ApiError::Network("not authenticated".to_string()))?;
+
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::post(&url)
+            .header("Authorization", &format!("Bearer {token}"))
+            .multipart_file(file_name, mime, bytes)
+            .map_err(network_err)?
+            .send()
+            .await
+            .map_err(network_err)?;
+        if resp.status() == 401 {
+            note_agent_unauthorized().await;
+        }
+        handle_response(resp).await
+    }
+
     // --- Auto-authed wrappers --------------------------------------------
     //
     // These read the current access token from the thread-local holder so

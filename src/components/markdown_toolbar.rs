@@ -49,6 +49,17 @@ pub struct MarkdownToolbarProps {
     /// request arrives as a flag the toolbar consumes and clears.
     #[props(default)]
     pub open_link: Option<Signal<bool>>,
+    /// MAPPS-587: where to send a file the author picks, when the host can
+    /// store one. `None` leaves the Image dialog URL-only, which is what every
+    /// surface other than the KB editor still is: the upload route belongs to
+    /// an article, so a toolbar over a ticket note has nowhere to put a file.
+    ///
+    /// The toolbar deliberately does not upload. It reads the bytes and hands
+    /// them over; the host owns the endpoint, the article the file attaches to,
+    /// and the decision to create one. That keeps this component ignorant of
+    /// articles, which is the only reason it can be shared.
+    #[props(default)]
+    pub on_file: Option<EventHandler<(String, String, Vec<u8>)>>,
 }
 
 /// Length of `value` in UTF-16 code units, which is what the DOM counts.
@@ -305,15 +316,43 @@ pub fn MarkdownToolbar(props: MarkdownToolbarProps) -> Element {
                                 }
                             },
                             Some(Dialog::Image) => rsx! {
+                                // MAPPS-587: a picker, when the host can store
+                                // what it picks. Above the URL field because it
+                                // is what most people came here to do; the URL
+                                // stays for an image that already lives
+                                // somewhere.
+                                if let Some(on_file) = props.on_file {
+                                    crate::components::FileField {
+                                        name: "md_image_file",
+                                        label: "Upload an image",
+                                        accept: crate::utils::image_upload::accept_attribute(),
+                                        help: "PNG, JPEG, WebP or GIF, up to 5 MB. It is stored with this article.".to_string(),
+                                        onchange: move |evt: FormEvent| {
+                                            let Some(file) = evt.files().into_iter().next() else {
+                                                return;
+                                            };
+                                            // Closed on selection: the upload and
+                                            // the insert happen in the host, and
+                                            // leaving the dialog open over them
+                                            // would hide the result.
+                                            dialog.set(None);
+                                            spawn(async move {
+                                                let name = file.name();
+                                                let mime = file
+                                                    .content_type()
+                                                    .unwrap_or_default();
+                                                if let Ok(bytes) = file.read_bytes().await {
+                                                    on_file.call((name, mime, bytes.to_vec()));
+                                                }
+                                            });
+                                        },
+                                    }
+                                }
                                 crate::components::Input {
                                     name: "md_image_url",
                                     label: "Image URL",
                                     placeholder: "https://example.com/diagram.png",
-                                    // There is no endpoint an article can upload
-                                    // to (only ticket-note attachments exist), so
-                                    // the dialog takes a URL and says so rather
-                                    // than offering a file picker that cannot work.
-                                    help: "Paste a link to an image. Uploading files from here is not available yet.".to_string(),
+                                    help: "Or paste a link to an image that already lives somewhere.".to_string(),
                                     value: image_url.read().clone(),
                                     oninput: move |e: FormEvent| image_url.set(e.value()),
                                 }

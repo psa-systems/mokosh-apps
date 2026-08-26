@@ -8,6 +8,7 @@ pub mod error;
 pub mod form_guard;
 // MAPPS-573: fenced-code syntax highlighting for the markdown renderer.
 pub mod highlight;
+pub mod image_upload;
 pub mod markdown;
 pub mod md_edit;
 pub mod mentions;
