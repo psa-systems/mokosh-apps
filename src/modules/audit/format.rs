@@ -109,6 +109,19 @@ pub fn fmt_change_value(v: &Option<serde_json::Value>) -> String {
     }
 }
 
+/// The headline for a change-history entry: what happened, and to what.
+///
+/// "Updated: Description". An entry with no named columns (a create, a delete,
+/// or an action the server records without a field list) is the action alone.
+pub fn headline(action: &str, changed_fields: &[String]) -> String {
+    let label = action_label(action);
+    if changed_fields.is_empty() {
+        label
+    } else {
+        format!("{label}: {}", fields_label(changed_fields))
+    }
+}
+
 /// `"Feb 28, 2025 15:04"` for a history timestamp.
 pub fn fmt_history_dt(dt: DateTime<Utc>) -> String {
     dt.format("%b %-d, %Y %H:%M").to_string()
@@ -185,6 +198,13 @@ mod tests {
         let out = fmt_change_value(&Some(json!(long)));
         assert!(out.ends_with('…'), "{out}");
         assert_eq!(out.chars().count(), VALUE_CHARS + 1);
+    }
+
+    #[test]
+    fn a_headline_names_the_action_and_the_columns() {
+        let fields = vec!["description".to_string()];
+        assert_eq!(headline("update", &fields), "Updated: Description");
+        assert_eq!(headline("create", &[]), "Created");
     }
 
     /// MAPPS-596: these five lived in three pages at once. `title_field`,

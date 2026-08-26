@@ -9,11 +9,10 @@ use crate::components::{
     SearchInput, Select, SelectOption, StatCard, Table, TableBody, TableCell, TableHead,
     TableHeader, TableRow, Textarea,
 };
+use crate::components::{ChangeHistoryEntry, ChangeLine};
 // MAPPS-596: the change-history wording lives in one place now; these were
 // three copies across projects, assets and tickets.
-use crate::modules::audit::{
-    action_label, fields_label, fmt_change_value, fmt_history_dt, title_field,
-};
+use crate::modules::audit::{fmt_history_dt, headline};
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
@@ -150,6 +149,18 @@ fn user_name(users: &[RemoteUser], id: &Option<uuid::Uuid>) -> String {
             .unwrap_or_else(|| "Unknown".to_string()),
         None => "Unassigned".to_string(),
     }
+}
+
+/// The renderable before/after lines for one audit entry (MAPPS-596).
+///
+/// `FieldChange` is this page's decoding of the server's `changes` array, so
+/// the adapter lives here while the formatting and the drop rule live in
+/// `ChangeLine::build`.
+fn change_lines(changes: &[FieldChange]) -> Vec<ChangeLine> {
+    changes
+        .iter()
+        .filter_map(|c| ChangeLine::build(&c.field, &c.old, &c.new))
+        .collect()
 }
 
 /// Resolve a history actor id to a display name; "" when unknown (the caller
@@ -1642,47 +1653,12 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 } else {
                                     div { class: "space-y-3 text-sm",
                                         for e in project_history.iter().take(20) {
-                                            {
-                                                let label = action_label(&e.action);
-                                                let fields = fields_label(&e.changed_fields);
-                                                let who = actor_name(&users, &e.user_id);
-                                                let when = fmt_history_dt(e.timestamp);
-                                                rsx! {
-                                                    div { class: "flex justify-between gap-2",
-                                                        div { class: "min-w-0",
-                                                            p { class: "text-content",
-                                                                if fields.is_empty() {
-                                                                    "{label}"
-                                                                } else {
-                                                                    "{label}: {fields}"
-                                                                }
-                                                            }
-                                                            if !who.is_empty() {
-                                                                p { class: "text-xs text-subtle", "by {who}" }
-                                                            }
-                                                            for c in e.changes.iter() {
-                                                                {
-                                                                    let old = fmt_change_value(&c.old);
-                                                                    let new = fmt_change_value(&c.new);
-                                                                    let fname = title_field(&c.field);
-                                                                    if old == "(reference)" && new == "(reference)" {
-                                                                        rsx! {}
-                                                                    } else {
-                                                                        rsx! {
-                                                                            p { class: "text-xs text-muted mt-1",
-                                                                                span { class: "font-medium", "{fname}: " }
-                                                                                span { class: "line-through text-subtle", "{old}" }
-                                                                                " → "
-                                                                                span { "{new}" }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                        span { class: "text-subtle whitespace-nowrap", "{when}" }
-                                                    }
-                                                }
+                                            ChangeHistoryEntry {
+                                                key: "{e.timestamp}",
+                                                headline: headline(&e.action, &e.changed_fields),
+                                                who: actor_name(&users, &e.user_id),
+                                                when: fmt_history_dt(e.timestamp),
+                                                changes: change_lines(&e.changes),
                                             }
                                         }
                                     }
@@ -2613,47 +2589,12 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                     } else {
                         div { class: "space-y-2 text-sm max-h-48 overflow-y-auto",
                             for e in task_history.iter().take(20) {
-                                {
-                                    let label = action_label(&e.action);
-                                    let fields = fields_label(&e.changed_fields);
-                                    let who = actor_name(&users, &e.user_id);
-                                    let when = fmt_history_dt(e.timestamp);
-                                    rsx! {
-                                        div { class: "flex justify-between gap-2",
-                                            div { class: "min-w-0",
-                                                p { class: "text-content",
-                                                    if fields.is_empty() {
-                                                        "{label}"
-                                                    } else {
-                                                        "{label}: {fields}"
-                                                    }
-                                                }
-                                                if !who.is_empty() {
-                                                    p { class: "text-xs text-subtle", "by {who}" }
-                                                }
-                                                for c in e.changes.iter() {
-                                                    {
-                                                        let old = fmt_change_value(&c.old);
-                                                        let new = fmt_change_value(&c.new);
-                                                        let fname = title_field(&c.field);
-                                                        if old == "(reference)" && new == "(reference)" {
-                                                            rsx! {}
-                                                        } else {
-                                                            rsx! {
-                                                                p { class: "text-xs text-muted mt-1",
-                                                                    span { class: "font-medium", "{fname}: " }
-                                                                    span { class: "line-through text-subtle", "{old}" }
-                                                                    " → "
-                                                                    span { "{new}" }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            span { class: "text-subtle whitespace-nowrap", "{when}" }
-                                        }
-                                    }
+                                ChangeHistoryEntry {
+                                    key: "{e.timestamp}",
+                                    headline: headline(&e.action, &e.changed_fields),
+                                    who: actor_name(&users, &e.user_id),
+                                    when: fmt_history_dt(e.timestamp),
+                                    changes: change_lines(&e.changes),
                                 }
                             }
                         }
