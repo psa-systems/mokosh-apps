@@ -538,6 +538,14 @@ pub enum Route {
     #[route("/companies/:id/edit")]
     CompanyEdit { id: String },
 
+    // MAPPS-590 (mokosh-contact-login prompt 012): Company-scoped
+    // portal role editor. `:id == "new"` creates a Company-scoped
+    // role; any UUID edits an existing scoped role. The list of
+    // scoped roles for a Company lives on the CompanyRolesCard
+    // rendered inside `CompanyDetailPage`.
+    #[route("/companies/:company_id/roles/:id")]
+    CompanyRoleEdit { company_id: String, id: String },
+
     #[route("/contacts")]
     ContactList {},
 
@@ -1108,6 +1116,15 @@ fn CompanyDetail(id: String) -> Element {
 #[component]
 fn CompanyEdit(id: String) -> Element {
     rsx! { contacts::CompanyEditPage { id } }
+}
+
+// MAPPS-590 (mokosh-contact-login prompt 012): thin wrapper so the
+// `Routable` derive resolves `Route::CompanyRoleEdit { company_id, id }`
+// to the CompanyRoleEditPage component. Two positional path params
+// (company_id + id) are forwarded verbatim.
+#[component]
+fn CompanyRoleEdit(company_id: String, id: String) -> Element {
+    rsx! { company_role_edit::CompanyRoleEditPage { company_id, id } }
 }
 
 #[component]

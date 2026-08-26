@@ -1626,6 +1626,15 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                             CompanyPortalAccessCard {
                                 company_id: company_id_str.clone(),
                             }
+                            // MAPPS-590 (prompt 012): Company-scoped
+                            // portal roles. Sits right after the
+                            // Contacts + Portal Access cards since
+                            // roles are what portal-access grants;
+                            // tenant-wide roles stay on Settings >
+                            // Contact Roles.
+                            CompanyRolesCard {
+                                company_id: company_id_str.clone(),
+                            }
                             // Sites
                             CompanySitesCard {
                                 company_id: company_id_str.clone(),
@@ -2274,6 +2283,280 @@ fn CompanyPortalAccessCard(company_id: String) -> Element {
             }
         }
     }
+}
+
+/// MAPPS-590 (prompt 012): Company detail page's Roles section.
+///
+/// Reads `GET /api/v1/contacts/companies/{company_id}/portal-roles`
+/// (the union of tenant-wide + this Company's scoped roles), then
+/// client-side-filters to `company_id.is_some()` so the card only
+/// lists roles this Company owns. Tenant-wide rows returned in the
+/// same envelope are still visible in Settings > Contact Roles
+/// (unchanged) and in the ContactPortalCard picker's union view.
+///
+/// Delete gate mirrors the Settings > Contact Roles list:
+///   - `contacts_count > 0` disables the button with a tooltip naming
+///     the count of assignments to remove first (server also returns
+///     409 with the same message; the tooltip is the pre-emptive UX).
+///   - a defensive `is_builtin` guard is kept even though a scoped
+///     built-in should not occur - the seeded trio stays tenant-wide.
+#[component]
+fn CompanyRolesCard(company_id: String) -> Element {
+    let id_for_resource = company_id.clone();
+    let mut resource = use_resource(move || {
+        let id = id_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
+            #[cfg(feature = "web")]
+            {
+                let path = format!("/contacts/companies/{id}/portal-roles");
+                crate::hooks::fetch::api::get_authed_typed::<Vec<PortalRoleSummaryWire>>(&path)
+                    .await
+                    .ok()
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                let _ = id;
+                None::<Vec<PortalRoleSummaryWire>>
+            }
+        }
+    });
+
+    let snap = resource.read_unchecked();
+    let all_rows: Vec<PortalRoleSummaryWire> =
+        snap.as_ref().and_then(|s| s.clone()).unwrap_or_default();
+    // Client-side filter: the union endpoint returns tenant-wide rows
+    // too, but this card only lists roles this Company owns. Tenant-wide
+    // rows are managed under Settings > Contact Roles.
+    let (_, scoped) = crate::pages::company_role_edit::partition_roles_by_scope(&all_rows);
+    let count = Some(scoped.len() as u64);
+    let can_mutate = crate::hooks::use_can_mutate();
+
+    let new_href = format!("/companies/{company_id}/roles/new");
+
+    rsx! {
+        CollapsibleCard {
+            title: "Roles",
+            count,
+            actions: rsx! {
+                a {
+                    href: "{new_href}",
+                    class: "text-sm text-accent hover:opacity-90",
+                    "+ New Role"
+                }
+            },
+            padding: false,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Name" }
+                        TableHeader { "Capabilities" }
+                        TableHeader { class: "text-right", "Contacts" }
+                        TableHeader { class: "text-right", "Actions" }
+                    }
+                }
+                match &*snap {
+                    None => rsx! { TableLoading { columns: 4, rows: 3 } },
+                    Some(None) => rsx! { TableEmpty { columns: 4, message: "Could not load roles.".to_string() } },
+                    Some(Some(_)) if scoped.is_empty() => rsx! {
+                        TableEmpty {
+                            columns: 4,
+                            message: "No Company-specific roles yet. Contacts of this Company can still hold tenant-wide roles from Settings.".to_string(),
+                        }
+                    },
+                    Some(Some(_)) => {
+                        let rows = scoped.clone();
+                        let company_id = company_id.clone();
+                        rsx! {
+                            TableBody {
+                                for row in rows.into_iter() {
+                                    CompanyRoleRow {
+                                        key: "{row.id}",
+                                        company_id: company_id.clone(),
+                                        row: row.clone(),
+                                        can_mutate,
+                                        on_deleted: move |_| resource.restart(),
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct CompanyRoleRowProps {
+    company_id: String,
+    row: PortalRoleSummaryWire,
+    can_mutate: bool,
+    on_deleted: EventHandler<()>,
+}
+
+/// One row of the CompanyRolesCard. Pulled out into its own component
+/// so the per-row delete state (loading spinner) has its own signal
+/// lifecycle instead of one shared signal for the whole table (same
+/// shape as `settings_contact_roles::ContactRoleRow`).
+#[component]
+fn CompanyRoleRow(props: CompanyRoleRowProps) -> Element {
+    let row = props.row.clone();
+    let can_mutate = props.can_mutate;
+    let on_deleted = props.on_deleted;
+    let id_str = row.id.to_string();
+    let company_id = props.company_id.clone();
+
+    let mut deleting = use_signal(|| false);
+
+    // Delete gate: still-in-use is the common case for a scoped role;
+    // a defensive built-in guard is included even though a scoped
+    // built-in should not occur (the seeded trio stays tenant-wide).
+    let is_builtin = row.is_builtin;
+    let contacts_count = row.contacts_count.unwrap_or(0);
+    let in_use = contacts_count > 0;
+    let disabled_reason: Option<String> = if is_builtin {
+        Some("Built-in roles cannot be deleted.".to_string())
+    } else if in_use {
+        Some(format!(
+            "{contacts_count} contact{plural} hold this role; remove those assignments first.",
+            plural = if contacts_count == 1 { "" } else { "s" }
+        ))
+    } else if !can_mutate {
+        Some("Can't delete while the server is unreachable.".to_string())
+    } else {
+        None
+    };
+    let can_delete = disabled_reason.is_none();
+
+    // Comma-list of capability keys, truncated to ~60 characters so
+    // the row stays one line at typical grid widths. Matches the
+    // shape used by Settings > Contact Roles (kept local so this
+    // module does not reach across into `settings_contact_roles`).
+    let caps_display = truncate_capability_list_for_row(&row.capabilities);
+    let contacts_display = match row.contacts_count {
+        Some(n) => n.to_string(),
+        None => "-".to_string(),
+    };
+
+    let edit_href = format!("/companies/{company_id}/roles/{id_str}");
+    let delete_company_id = company_id.clone();
+    let delete_id = id_str.clone();
+    let delete_name = row.name.clone();
+    let on_delete = move |_| {
+        if !can_delete || *deleting.read() {
+            return;
+        }
+        #[cfg(feature = "web")]
+        let confirmed = web_sys::window()
+            .and_then(|w| {
+                w.confirm_with_message(&format!(
+                    "Delete role \"{}\"? This cannot be undone.",
+                    delete_name
+                ))
+                .ok()
+            })
+            .unwrap_or(false);
+        #[cfg(not(feature = "web"))]
+        let confirmed = false;
+        if !confirmed {
+            return;
+        }
+        let cid = delete_company_id.clone();
+        let id = delete_id.clone();
+        deleting.set(true);
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let path = format!("/contacts/companies/{cid}/portal-roles/{id}");
+                match crate::hooks::fetch::api::delete_authed_typed(&path).await {
+                    Ok(()) => {
+                        crate::hooks::toast::push_toast(
+                            crate::components::AlertType::Success,
+                            "Role deleted.".to_string(),
+                        );
+                        on_deleted.call(());
+                    }
+                    Err(err) => {
+                        // 409 (in-use) carries a server-side count message;
+                        // surface it verbatim so the operator sees the same
+                        // reason the disabled-tooltip would have shown had
+                        // the local count been current.
+                        let msg = err.user_message();
+                        crate::hooks::toast::push_toast(
+                            crate::components::AlertType::Error,
+                            format!("Could not delete role: {msg}"),
+                        );
+                    }
+                }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                let _ = (cid, id);
+            }
+            deleting.set(false);
+        });
+    };
+
+    rsx! {
+        TableRow {
+            TableCell {
+                span { class: "font-medium text-content", "{row.name}" }
+            }
+            TableCell {
+                span {
+                    class: "text-sm text-muted",
+                    title: row.capabilities.join(", "),
+                    if caps_display.is_empty() {
+                        "-"
+                    } else {
+                        "{caps_display}"
+                    }
+                }
+            }
+            TableCell { class: "text-right", "{contacts_display}" }
+            TableCell { class: "text-right",
+                div { class: "flex justify-end gap-2",
+                    a {
+                        href: "{edit_href}",
+                        class: "inline-flex items-center justify-center rounded-md bg-surface-2 text-content border border-line px-2.5 py-1.5 text-xs font-medium hover:opacity-90",
+                        "Edit"
+                    }
+                    Button {
+                        variant: ButtonVariant::Danger,
+                        size: crate::components::ButtonSize::Small,
+                        disabled: !can_delete,
+                        loading: *deleting.read(),
+                        title: disabled_reason.clone(),
+                        onclick: on_delete,
+                        "Delete"
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Capability-list truncation for the CompanyRolesCard's "Capabilities"
+/// column. Local (not shared with `settings_contact_roles`) so a future
+/// tweak here does not affect the Settings list, and so this module
+/// does not depend on a private helper across the module boundary.
+fn truncate_capability_list_for_row(caps: &[String]) -> String {
+    const CAP_TRUNCATE: usize = 60;
+    let joined = caps.join(", ");
+    if joined.chars().count() <= CAP_TRUNCATE {
+        return joined;
+    }
+    let mut out = String::new();
+    for c in joined.chars() {
+        if out.chars().count() >= CAP_TRUNCATE {
+            break;
+        }
+        out.push(c);
+    }
+    out.push_str("...");
+    out
 }
 
 /// MAPPS-207: "Add Contact" modal for a company. Lets the user search and
@@ -4685,6 +4968,13 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
 
                             ContactPortalCard {
                                 contact_id: portal_id,
+                                // MAPPS-590 (prompt 012): thread the
+                                // contact's Company id so the role
+                                // picker fetches the scope-aware
+                                // union endpoint. `None` on an
+                                // unaffiliated contact falls back to
+                                // the tenant-wide list.
+                                company_id: company_id.clone(),
                                 is_portal_user,
                                 toggling: portal_toggling,
                                 on_change: move |_| { contact.restart(); },
@@ -4810,6 +5100,15 @@ fn ContactTicketsCard(tickets_resource: Resource<Option<PaginatedTicketSummaries
 #[derive(Props, Clone, PartialEq)]
 struct ContactPortalCardProps {
     contact_id: String,
+    /// MAPPS-590 (prompt 012): the contact's owning Company id, used
+    /// to fetch the scope-aware union of portal roles
+    /// (`/contacts/companies/{company_id}/portal-roles`) so the picker
+    /// sees tenant-wide + this Company's own scoped roles. `None` for
+    /// an unaffiliated contact (`ContactResponse.company_id = null`);
+    /// the picker falls back to the pre-PMS-929 tenant-wide endpoint
+    /// so the operator still sees the built-in roles even though an
+    /// unaffiliated contact cannot hold a Company-scoped role.
+    company_id: Option<String>,
     is_portal_user: bool,
     toggling: Signal<bool>,
     on_change: EventHandler<()>,
@@ -4833,15 +5132,29 @@ struct PortalGrantOutcomeWire {
 }
 
 /// mokosh-contact-login prompt 003: one row of GET
-/// /contacts/portal-roles. Mirrors the server's `PortalRoleSummary`.
+/// /contacts/portal-roles (prompt 003) or, since prompt 012, of GET
+/// /contacts/companies/{company_id}/portal-roles. Mirrors the server's
+/// `PortalRoleSummary`.
+///
+/// MAPPS-590 (prompt 012): `company_id` distinguishes tenant-wide rows
+/// (`None`) from Company-scoped rows (`Some(<uuid>)`). Absent from
+/// pre-PMS-929 server responses; `#[serde(default)]` handles the
+/// transition. `contacts_count` is likewise optional so the
+/// CompanyRolesCard renders a "-" when the server has not shipped
+/// the field yet.
+///
+/// `pub(crate)` so `pages::company_role_edit` (the partition helper +
+/// its tests) can consume the same shape without a second wire copy.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
-struct PortalRoleSummaryWire {
-    id: uuid::Uuid,
-    name: String,
-    #[allow(dead_code)]
-    capabilities: Vec<String>,
-    #[allow(dead_code)]
-    is_builtin: bool,
+pub(crate) struct PortalRoleSummaryWire {
+    pub(crate) id: uuid::Uuid,
+    pub(crate) name: String,
+    pub(crate) capabilities: Vec<String>,
+    pub(crate) is_builtin: bool,
+    #[serde(default)]
+    pub(crate) company_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    pub(crate) contacts_count: Option<u32>,
 }
 
 #[component]
@@ -4856,14 +5169,32 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
     // + the contact's current assigned role_ids so the modal below can
     // pre-check the correct boxes.
     //
+    // MAPPS-590 (prompt 012): the fetch now targets the scope-aware
+    // union endpoint (`/contacts/companies/{company_id}/portal-roles`)
+    // so a contact of Company X sees every role available to Company X
+    // (tenant-wide + Company-X-scoped). For an unaffiliated contact
+    // (`props.company_id == None`) the pre-PMS-929 tenant-wide endpoint
+    // is used as a fallback: an unaffiliated contact cannot be granted
+    // a Company-scoped role anyway (the server would reject it), so
+    // showing the built-in tenant-wide trio is the useful outcome.
+    //
     // Preserves the Err arm (previously `.unwrap_or_default()`) so a
     // 401/403/500 renders as "Could not load portal roles: {msg}" in
     // the modal instead of the misleading "No portal roles configured
     // yet" empty-list copy.
-    let roles_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Vec<PortalRoleSummaryWire>>("/contacts/portal-roles")
-            .await
+    let roles_company_id = props.company_id.clone();
+    let roles_resource = use_resource(move || {
+        let company_id = roles_company_id.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let path = match company_id.as_deref() {
+                Some(cid) if !cid.is_empty() => {
+                    format!("/contacts/companies/{cid}/portal-roles")
+                }
+                _ => "/contacts/portal-roles".to_string(),
+            };
+            crate::hooks::fetch::api::get_authed::<Vec<PortalRoleSummaryWire>>(&path).await
+        }
     });
     let assigned_id = contact_id.clone();
     let assigned_resource = use_resource(move || {
@@ -5149,6 +5480,14 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                                                     span { class: "font-medium", "{role.name}" }
                                                     if role.is_builtin {
                                                         span { class: "ml-2 text-xs text-muted", "(built-in)" }
+                                                    }
+                                                    // MAPPS-590 (prompt 012): label
+                                                    // Company-scoped rows so the
+                                                    // operator can tell them apart
+                                                    // from tenant-wide rows in the
+                                                    // union picker.
+                                                    if role.company_id.is_some() {
+                                                        span { class: "ml-2 text-xs text-muted", "(Company only)" }
                                                     }
                                                 }
                                             }

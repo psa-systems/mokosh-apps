@@ -17,6 +17,11 @@ pub mod big_view;
 pub mod billing;
 pub mod button_showcase;
 pub mod calendar;
+// MAPPS-590 (mokosh-contact-login prompt 012): Company-scoped portal
+// role editor. New page `/companies/:company_id/roles/:id`; the list
+// of Company-scoped roles lives on the `CompanyRolesCard` inside
+// `contacts.rs`.
+pub mod company_role_edit;
 pub mod contacts;
 pub mod contracts;
 pub mod create_org;

@@ -47,16 +47,25 @@ const CAPABILITY_LIST_TRUNCATE: usize = 60;
 /// the server currently returns only `id / name / capabilities /
 /// is_builtin`; a missing field falls through to `None` and the list
 /// renders "-" instead of a count.
+///
+/// MAPPS-590 (prompt 012): `company_id` distinguishes tenant-wide rows
+/// (`None`) from Company-scoped rows (`Some(<uuid>)`). Absent from
+/// pre-PMS-929 server responses; `#[serde(default)]` keeps decoding
+/// safe. Settings > Contact Roles renders only tenant-wide rows in
+/// practice, but the field is carried so the same struct can back the
+/// Company detail page's scoped-roles table.
 #[derive(Deserialize, Clone, Debug, PartialEq)]
-struct PortalRoleWire {
-    id: uuid::Uuid,
-    name: String,
+pub(crate) struct PortalRoleWire {
+    pub(crate) id: uuid::Uuid,
+    pub(crate) name: String,
     #[serde(default)]
-    capabilities: Vec<String>,
+    pub(crate) capabilities: Vec<String>,
     #[serde(default)]
-    is_builtin: bool,
+    pub(crate) is_builtin: bool,
     #[serde(default)]
-    contacts_count: Option<u32>,
+    pub(crate) contacts_count: Option<u32>,
+    #[serde(default)]
+    pub(crate) company_id: Option<uuid::Uuid>,
 }
 
 /// Full portal-role row returned by `GET /api/v1/portal-roles/{id}`
