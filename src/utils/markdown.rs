@@ -11,11 +11,13 @@ use crate::utils::mentions::{self, Mention};
 /// Markdown -> raw (unsanitized) HTML, with the GFM extensions we render.
 ///
 /// The event stream is transformed rather than post-processed on the HTML,
-/// because both passes here need to know WHERE they are: highlighting must see
-/// only fenced-code text, and autolinking must see only text that is not
-/// already inside a link or a code span. A regex over the finished HTML cannot
-/// tell those apart and would happily rewrite the inside of an `href`.
-fn to_html(src: &str, people: &[Mention]) -> String {
+/// because all three passes here need to know WHERE they are: highlighting must
+/// see only fenced-code text, autolinking must see only text that is not
+/// already inside a link or a code span, and the attachment rewrite must see an
+/// image destination rather than any other URL-shaped string. A regex over the
+/// finished HTML cannot tell those apart and would happily rewrite the inside
+/// of an `href`.
+fn to_html(src: &str, people: &[Mention], api_origin: &str) -> String {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
@@ -47,6 +49,20 @@ fn to_html(src: &str, people: &[Mention]) -> String {
                 // Already-escaped HTML, so it goes back as `Html`, not `Text`:
                 // pushing it as text would escape the spans we just added.
                 events.push(Event::Html(highlight::highlight_html(lang, text).into()));
+            }
+            // MAPPS-595: an attachment path is stored relative and joined here.
+            Event::Start(Tag::Image {
+                link_type,
+                dest_url,
+                title,
+                id,
+            }) => {
+                events.push(Event::Start(Tag::Image {
+                    link_type,
+                    dest_url: absolutize_attachment(&dest_url, api_origin).into(),
+                    title,
+                    id,
+                }));
             }
             Event::Start(Tag::Link { .. }) => {
                 link_depth += 1;
@@ -241,6 +257,37 @@ fn find_url(s: &str) -> Option<Found> {
     Some(Found { start, end })
 }
 
+/// Join a server-supplied attachment path onto the API origin (MAPPS-595).
+///
+/// `KbAttachmentService` hands back `/api/v1/public/kb/attachments/{id}` and
+/// documents it as relative on purpose, because nothing on the server knows
+/// which origin a given client reaches it on. The SPA is that client and has to
+/// do the join, exactly as it already does for `branding.logo_url` (PMS-758).
+///
+/// Skipping it is invisible in dev and broken everywhere else: `api_base()`
+/// resolves to the same-origin `/api/v1` on any host that is not `msp.*`, and
+/// the `dx` dev server proxies `/api/*` to the server container, so the image
+/// loads. On a split-origin deployment the browser asks the SPA host instead
+/// and Caddy's SPA fallback answers `index.html` with a 200, so an `<img>` is
+/// handed an HTML document and draws the broken-image box. There is no 404, no
+/// console error and no CSP violation to notice, because the request never
+/// leaves the SPA origin.
+///
+/// Applied at render rather than baked into the markdown at upload time. The
+/// stored body then carries no deployment hostname, and an article uploaded
+/// before this fix renders correctly with no migration.
+///
+/// Only `/api/` destinations. An author who writes a relative image path to
+/// anything else keeps what they wrote, and an absolute URL is already
+/// addressed. An empty origin (dev, where the SPA and the API share one) is a
+/// no-op, so what ships there is byte-identical to what shipped before.
+pub fn absolutize_attachment(dest: &str, api_origin: &str) -> String {
+    if api_origin.is_empty() || !dest.starts_with("/api/") {
+        return dest.to_string();
+    }
+    format!("{api_origin}{dest}")
+}
+
 /// Scrub raw HTML with ammonia, additionally allowing the task-list checkbox
 /// `<input>` that `ENABLE_TASKLISTS` emits (the default allowlist drops it,
 /// leaving the checkbox text bare - PMS-347). `type` is permitted only via
@@ -339,7 +386,7 @@ fn safe_color_style(value: &str) -> Option<String> {
 /// Render Markdown source to sanitized HTML. Task-list checkboxes render
 /// `disabled` (read-only display).
 pub fn render_markdown(src: &str) -> String {
-    render_markdown_with_mentions(src, &[])
+    render_markdown_with_mentions(src, &[], "")
 }
 
 /// Like [`render_markdown`], resolving `@handle` against `people` (MAPPS-578).
@@ -347,8 +394,8 @@ pub fn render_markdown(src: &str) -> String {
 /// An empty directory renders every `@` as the plain text it already was, so
 /// this is a superset of [`render_markdown`] and a caller with no directory
 /// loses nothing.
-pub fn render_markdown_with_mentions(src: &str, people: &[Mention]) -> String {
-    sanitize(&to_html(src, people))
+pub fn render_markdown_with_mentions(src: &str, people: &[Mention], api_origin: &str) -> String {
+    sanitize(&to_html(src, people, api_origin))
 }
 
 /// Like [`render_markdown`] but task-list checkboxes are interactive
@@ -357,15 +404,19 @@ pub fn render_markdown_with_mentions(src: &str, people: &[Mention]) -> String {
 /// click handler can map the click back to a task item. Used only where the
 /// host wires an `on_toggle` callback.
 pub fn render_markdown_interactive(src: &str) -> String {
-    render_markdown_interactive_with_mentions(src, &[])
+    render_markdown_interactive_with_mentions(src, &[], "")
 }
 
 /// [`render_markdown_interactive`] with a mention directory (MAPPS-578).
-pub fn render_markdown_interactive_with_mentions(src: &str, people: &[Mention]) -> String {
+pub fn render_markdown_interactive_with_mentions(
+    src: &str,
+    people: &[Mention],
+    api_origin: &str,
+) -> String {
     // pulldown emits each task checkbox as `<input disabled="" type="checkbox"`
     // (optionally ` checked=""`). Drop `disabled` to make them clickable, then
     // tag each in document order with its index.
-    let html = to_html(src, people).replace(" disabled=\"\"", "");
+    let html = to_html(src, people, api_origin).replace(" disabled=\"\"", "");
     let needle = "<input type=\"checkbox\"";
     let mut out = String::with_capacity(html.len());
     let mut rest = html.as_str();
@@ -727,9 +778,95 @@ mod tests {
         ]
     }
 
+    /// MAPPS-595: an attachment path is joined onto the API origin.
+    ///
+    /// The server returns `/api/v1/public/kb/attachments/{id}` and says in its
+    /// own doc comment that the SPA is expected to join it with the API base.
+    /// It did not, so on a split-origin deployment the browser asked the SPA
+    /// host, Caddy's SPA fallback answered `index.html` with a 200, and the
+    /// `<img>` drew the broken-image box with the alt text under it. Verified
+    /// against staging while diagnosing: `msp.a8n.systems` answered that path
+    /// `200 text/html` and `api.msp.a8n.systems` answered it `404 application/json`.
+    #[test]
+    fn an_attachment_path_is_joined_onto_the_api_origin() {
+        let out = render_markdown_with_mentions(
+            "![a screenshot](/api/v1/public/kb/attachments/abc)",
+            &[],
+            "https://api.msp.a8n.systems",
+        );
+        assert!(
+            out.contains(r#"src="https://api.msp.a8n.systems/api/v1/public/kb/attachments/abc""#),
+            "the image is addressed to the API, not to whatever host serves the SPA: {out}"
+        );
+        assert!(out.contains(r#"alt="a screenshot""#), "{out}");
+    }
+
+    /// Dev parity: the origin is empty where the SPA and the API share one, and
+    /// an empty origin has to leave the destination exactly as it was rather
+    /// than producing a bare `/api/...` prefixed with nothing or, worse, a
+    /// scheme-relative `//api/...`.
+    #[test]
+    fn an_empty_origin_leaves_the_path_exactly_as_it_was() {
+        let out =
+            render_markdown_with_mentions("![shot](/api/v1/public/kb/attachments/abc)", &[], "");
+        assert!(
+            out.contains(r#"src="/api/v1/public/kb/attachments/abc""#),
+            "{out}"
+        );
+    }
+
+    /// The rewrite is scoped to `/api/`, so an author who writes a relative
+    /// image path to anything else keeps what they wrote, and an already
+    /// absolute URL is left alone.
+    #[test]
+    fn only_an_api_path_is_rewritten() {
+        let origin = "https://api.msp.a8n.systems";
+        for (src, expect) in [
+            ("![x](/assets/diagram.png)", r#"src="/assets/diagram.png""#),
+            (
+                "![x](https://cdn.test/a.png)",
+                r#"src="https://cdn.test/a.png""#,
+            ),
+            ("![x](../sibling.png)", r#"src="../sibling.png""#),
+        ] {
+            let out = render_markdown_with_mentions(src, &[], origin);
+            assert!(out.contains(expect), "{src} -> {out}");
+            assert!(!out.contains(origin), "nothing else gains an origin: {out}");
+        }
+    }
+
+    /// A link is not an image. `/api/` in an `href` addresses the SPA router or
+    /// a real API page depending on the deployment, and guessing which would be
+    /// the regex-over-finished-HTML mistake the module header warns about.
+    #[test]
+    fn a_link_destination_is_not_touched() {
+        let out = render_markdown_with_mentions(
+            "[docs](/api/v1/docs)",
+            &[],
+            "https://api.msp.a8n.systems",
+        );
+        assert!(out.contains(r#"href="/api/v1/docs""#), "{out}");
+    }
+
+    /// The interactive renderer shares `to_html`, so it shares the join. It is
+    /// the one the KB article page uses, which is the surface the bug was
+    /// reported on.
+    #[test]
+    fn the_interactive_renderer_joins_too() {
+        let out = render_markdown_interactive_with_mentions(
+            "- [ ] check ![shot](/api/v1/public/kb/attachments/abc)",
+            &[],
+            "https://api.msp.a8n.systems",
+        );
+        assert!(
+            out.contains(r#"src="https://api.msp.a8n.systems/api/v1/public/kb/attachments/abc""#),
+            "{out}"
+        );
+    }
+
     #[test]
     fn a_resolved_mention_becomes_a_chip_naming_the_person() {
-        let out = render_markdown_with_mentions("ask @long about it", &directory());
+        let out = render_markdown_with_mentions("ask @long about it", &directory(), "");
         assert!(out.contains(r#"class="mention""#), "{out}");
         assert!(
             out.contains(r#"data-mention="u-long""#),
@@ -747,7 +884,7 @@ mod tests {
     /// authoritative.
     #[test]
     fn an_unresolved_mention_stays_plain_text() {
-        let out = render_markdown_with_mentions("ask @nobody about it", &directory());
+        let out = render_markdown_with_mentions("ask @nobody about it", &directory(), "");
         assert!(!out.contains("mention"), "{out}");
         assert!(out.contains("@nobody"), "{out}");
     }
@@ -759,19 +896,19 @@ mod tests {
 
         // An email address in prose. `@niceguyit.com` must not resolve, and the
         // address must survive whole.
-        let email = render_markdown_with_mentions("mail long@niceguyit.com today", &people);
+        let email = render_markdown_with_mentions("mail long@niceguyit.com today", &people, "");
         assert!(!email.contains("mention"), "{email}");
         assert!(email.contains("long@niceguyit.com"), "{email}");
 
         // Inside code, both kinds.
-        let code = render_markdown_with_mentions("`@long`", &people);
+        let code = render_markdown_with_mentions("`@long`", &people, "");
         assert!(!code.contains("mention"), "{code}");
         let fenced =
-            render_markdown_with_mentions("```python\n@decorator\ndef f(): pass\n```", &people);
+            render_markdown_with_mentions("```python\n@decorator\ndef f(): pass\n```", &people, "");
         assert!(!fenced.contains("mention"), "{fenced}");
 
         // Inside an existing link's text.
-        let linked = render_markdown_with_mentions("[@long](https://x.test)", &people);
+        let linked = render_markdown_with_mentions("[@long](https://x.test)", &people, "");
         assert!(!linked.contains("mention"), "{linked}");
         assert!(linked.contains(r#"href="https://x.test""#), "{linked}");
     }
@@ -783,6 +920,7 @@ mod tests {
         let out = render_markdown_with_mentions(
             "see https://x.test/a then ask @nate about it",
             &directory(),
+            "",
         );
         assert!(out.contains(r#"href="https://x.test/a""#), "{out}");
         assert!(out.contains(r#"data-mention="u-nate""#), "{out}");
@@ -807,7 +945,7 @@ mod tests {
                 handle: "chrisb".to_string(),
             },
         ];
-        let out = render_markdown_with_mentions("ping @chris", &people);
+        let out = render_markdown_with_mentions("ping @chris", &people, "");
         assert!(!out.contains("mention"), "{out}");
         assert!(out.contains("@chris"), "{out}");
     }
@@ -819,7 +957,7 @@ mod tests {
     fn an_empty_directory_changes_nothing() {
         let src = "ask @long and see https://x.test";
         assert_eq!(
-            render_markdown_with_mentions(src, &[]),
+            render_markdown_with_mentions(src, &[], ""),
             render_markdown(src)
         );
         assert!(!render_markdown(src).contains("mention"));
@@ -909,7 +1047,7 @@ export TOKEN="$MOKOSH_TOKEN"
             display: "Nice Guy IT".to_string(),
             handle: "niceguyit".to_string(),
         }];
-        let resolved = render_markdown_with_mentions(SRC, &known);
+        let resolved = render_markdown_with_mentions(SRC, &known, "");
         assert!(
             resolved.contains(r#"data-mention="u-ngit""#),
             "the handle names somebody, so it becomes a chip: {resolved}"
@@ -923,7 +1061,7 @@ export TOKEN="$MOKOSH_TOKEN"
             handle: "someone".to_string(),
         }];
         for directory in [&stranger[..], &[][..]] {
-            let out = render_markdown_with_mentions(SRC, directory);
+            let out = render_markdown_with_mentions(SRC, directory, "");
             assert!(!out.contains("data-mention"), "no chip: {out}");
             assert!(out.contains("@niceguyit"), "text unchanged: {out}");
         }
