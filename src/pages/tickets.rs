@@ -12,6 +12,9 @@ use crate::components::{
     TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea,
     UserCircleIcon,
 };
+use crate::components::{ChangeDetails, ChangeLine};
+// MAPPS-596: shared with the project, task and asset change-history panes.
+use crate::modules::audit::{action_label, fields_label, title_field};
 use crate::utils::{FormGuard, Paginated, Rule};
 
 /// MAPPS-546: rows per page on the ticket list, sent to the server rather than
@@ -391,77 +394,6 @@ fn actor_name(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
     }
 }
 
-/// Humanize an audit action code for the change-history feed.
-fn action_label(action: &str) -> &'static str {
-    match action {
-        "create" => "Created",
-        "update" => "Updated",
-        "delete" => "Deleted",
-        _ => "Changed",
-    }
-}
-
-/// "description, status" to "Description, Status" for the change summary.
-fn fields_label(fields: &[String]) -> String {
-    fields
-        .iter()
-        .map(|f| title_field(f))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// "due_date" to "Due date" for a single field name.
-///
-/// PMS-370: column names for foreign-key fields end in `_id`
-/// (`status_id`, `priority_id`, `assigned_to_id`). The audit log records
-/// the raw column name, so without trimming the suffix the change-history
-/// feed reads "Status id" / "Priority id" / "Assigned to id". Strip the
-/// trailing `_id` first so future FK fields render cleanly without a
-/// per-column allow-list.
-fn title_field(f: &str) -> String {
-    let trimmed = f.strip_suffix("_id").unwrap_or(f);
-    let mut s = trimmed.replace('_', " ");
-    if let Some(first) = s.get_mut(0..1) {
-        first.make_ascii_uppercase();
-    }
-    s
-}
-
-/// A 36-char hyphenated UUID, which is not worth showing as before/after text.
-fn looks_like_uuid(s: &str) -> bool {
-    s.len() == 36
-        && s.as_bytes().iter().enumerate().all(|(i, b)| {
-            if matches!(i, 8 | 13 | 18 | 23) {
-                *b == b'-'
-            } else {
-                b.is_ascii_hexdigit()
-            }
-        })
-}
-
-/// Render an audit value for display: "(empty)" for null/blank, the trimmed
-/// text (truncated) for strings, a coarse marker for references/objects.
-fn fmt_change_value(v: &Option<serde_json::Value>) -> String {
-    match v {
-        None | Some(serde_json::Value::Null) => "(empty)".to_string(),
-        Some(serde_json::Value::String(s)) => {
-            let t = s.trim();
-            if t.is_empty() {
-                "(empty)".to_string()
-            } else if looks_like_uuid(t) {
-                "(reference)".to_string()
-            } else if t.chars().count() > 160 {
-                format!("{}…", t.chars().take(160).collect::<String>())
-            } else {
-                t.to_string()
-            }
-        }
-        Some(serde_json::Value::Bool(b)) => b.to_string(),
-        Some(serde_json::Value::Number(n)) => n.to_string(),
-        Some(_) => "(updated)".to_string(),
-    }
-}
-
 /// MAPPS-517: one line of the ticket journal, whatever source it came from.
 ///
 /// The journal replaced an Activity card that rendered notes alone, so a
@@ -474,9 +406,18 @@ struct JournalEntry {
     who: String,
     /// Predicate, rendered after the name: "added an internal note".
     action: String,
-    /// Body block under the headline: the note text, the before/after values
-    /// of an edit, or a time entry's notes. `None` renders the headline alone.
+    /// Body block under the headline: the note text or a time entry's notes.
+    /// `None` renders the headline alone.
+    ///
+    /// MAPPS-596: an edit's before/after is NOT here. It used to be, flattened
+    /// into this string, which is how a description edit came to print two
+    /// 160-character values into the middle of the journal. It carries its own
+    /// field below instead, so it can collapse when it is large while a note
+    /// stays visible: a note's text is the entry, not metadata about it.
     body: Option<String>,
+    /// The before/after lines when this entry came from the audit log. Empty
+    /// for a note or a time entry.
+    changes: Vec<ChangeLine>,
 }
 
 /// The name to attribute a journal line to. `actor_name` yields "-" for an
@@ -510,22 +451,15 @@ fn history_action(entry: &HistoryEntry) -> String {
     }
 }
 
-/// The before/after lines for an audit entry, or `None` when every change on
-/// it is a bare reference (a FK swap the audit log records as two UUIDs).
-fn history_body(entry: &HistoryEntry) -> Option<String> {
-    let lines: Vec<String> = entry
+/// The before/after lines for an audit entry. Empty when every change on it is
+/// a bare reference (a FK swap the audit log records as two UUIDs), which
+/// `ChangeLine::build` drops because it reads as "(reference) → (reference)".
+fn history_changes(entry: &HistoryEntry) -> Vec<ChangeLine> {
+    entry
         .changes
         .iter()
-        .filter_map(|c| {
-            let old = fmt_change_value(&c.old);
-            let new = fmt_change_value(&c.new);
-            if old == "(reference)" && new == "(reference)" {
-                return None;
-            }
-            Some(format!("{}: {} -> {}", title_field(&c.field), old, new))
-        })
-        .collect();
-    (!lines.is_empty()).then(|| lines.join("\n"))
+        .filter_map(|c| ChangeLine::build(&c.field, &c.old, &c.new))
+        .collect()
 }
 
 /// MAPPS-517: merge every source this page already fetches into one
@@ -569,6 +503,7 @@ fn build_journal(
             },
             action,
             body: (!n.content.trim().is_empty()).then(|| n.content.clone()),
+            changes: Vec::new(),
         });
     }
 
@@ -577,7 +512,8 @@ fn build_journal(
             at: h.timestamp,
             who: journal_actor(users, &h.user_id),
             action: history_action(h),
-            body: history_body(h),
+            body: None,
+            changes: history_changes(h),
         });
     }
 
@@ -594,6 +530,7 @@ fn build_journal(
             who: journal_actor(users, &e.user_id),
             action: format!("logged {} min on {}{billable}", e.duration_minutes, e.date),
             body: e.notes.clone().filter(|s| !s.trim().is_empty()),
+            changes: Vec::new(),
         });
     }
 
@@ -2593,6 +2530,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                             action: entry.action.clone(),
                                             time: fmt_datetime(entry.at),
                                             content: entry.body.clone(),
+                                            changes: entry.changes.clone(),
                                             is_last: i + 1 == shown_journal_count,
                                         }
                                     }
@@ -3178,6 +3116,11 @@ struct TimelineItemProps {
     action: String,
     time: String,
     content: Option<String>,
+    /// MAPPS-596: an edit's before/after, which collapses behind a `Details`
+    /// toggle when it is large. Empty for a note or a time entry, whose text
+    /// is the entry itself and always shows.
+    #[props(default)]
+    changes: Vec<ChangeLine>,
     is_last: bool,
 }
 
@@ -3209,6 +3152,7 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                                     "{content}"
                                 }
                             }
+                            ChangeDetails { changes: props.changes.clone() }
                         }
                         div { class: "whitespace-nowrap text-right text-sm text-muted",
                             "{props.time}"
@@ -3590,7 +3534,9 @@ mod procedure_kb_tests {
 
 #[cfg(test)]
 mod mapps517_journal_tests {
-    use super::{build_journal, HistoryEntry, JournalEntry, RemoteNote, RemoteTimeEntry, UserOpt};
+    use super::{
+        build_journal, ChangeLine, HistoryEntry, JournalEntry, RemoteNote, RemoteTimeEntry, UserOpt,
+    };
 
     fn note(json: &str) -> RemoteNote {
         serde_json::from_str(json).expect("deserialise note")
@@ -3695,7 +3641,10 @@ mod mapps517_journal_tests {
     }
 
     /// A FK swap the audit log records as two UUIDs carries no readable
-    /// before/after, and a body of "(reference) -> (reference)" is noise.
+    /// before/after, and "(reference) → (reference)" is noise. MAPPS-596 moved
+    /// the before/after off `body` and into `changes`, so it can collapse when
+    /// it is large; the drop rule is unchanged and now lives in
+    /// `ChangeLine::build`.
     #[test]
     fn a_reference_only_change_renders_no_body() {
         let h = history(
@@ -3707,8 +3656,18 @@ mod mapps517_journal_tests {
 
         let journal = build_journal(&[], &[h, readable], &[], &users());
 
-        assert_eq!(journal[0].body, None);
-        assert_eq!(journal[1].body.as_deref(), Some("Priority: Low -> High"));
+        assert!(journal[0].changes.is_empty(), "{:?}", journal[0].changes);
+        assert_eq!(
+            journal[1].changes,
+            vec![ChangeLine {
+                field: "Priority".to_string(),
+                old: "Low".to_string(),
+                new: "High".to_string(),
+            }]
+        );
+        // An edit's before/after never rides on `body` any more; that is what
+        // put two 160-character values into the middle of the journal.
+        assert!(journal.iter().all(|e| e.body.is_none()));
     }
 
     /// An actor no `/auth/users` row matches reads as "Someone", never as the
