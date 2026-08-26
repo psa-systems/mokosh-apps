@@ -184,7 +184,15 @@ pub fn ContactGenericLoginPage() -> Element {
                         name: "portal_id",
                         r#type: "text",
                         inputmode: "numeric",
-                        pattern: "[0-9]{9}",
+                        // Deliberately no HTML5 `pattern` attribute:
+                        // native pattern validation fires BEFORE the
+                        // submit handler and shows a browser-native
+                        // "Please match the requested format" tooltip
+                        // that overrides the friendly inline error
+                        // rendered below. The Rust-side check
+                        // (handle_is_portal_id_shape + parse::<i64>)
+                        // covers the same validation with a message
+                        // the user can actually act on.
                         maxlength: PORTAL_ID_DIGITS as i64,
                         class: "block w-full rounded-md border-line shadow-sm focus:border-accent focus:ring-accent bg-surface text-content sm:text-sm",
                         placeholder: "555556666",

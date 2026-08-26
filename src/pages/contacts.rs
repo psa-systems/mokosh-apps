@@ -2013,19 +2013,39 @@ fn CompanyContactsCard(
     // attach-existing flow and its own "create instead" fallback link;
     // this is a first-class button so the create path is one click,
     // not two.
+    //
+    // Uses `window.location.set_href` on click instead of a bare
+    // `<a href>` because the Dioxus router intercepts anchor clicks
+    // on same-origin URLs and dispatches them through its
+    // typed-route matcher; `/contacts/new` matches `Route::ContactNew`
+    // but the router does not thread the `?company_id=X&company_name=Y`
+    // query segments through the destination component's mount, which
+    // meant the created contact silently lost its Company link. A
+    // hard nav via `set_href` forces a full page load so
+    // `window.location.search` on the ContactNewPage mount reflects
+    // the query, and `read_company_prefill_from_url` picks it up.
     let new_contact_href = format!(
         "/contacts/new?company_id={}&company_name={}",
         urlencoding_minimal(&company_id),
         urlencoding_minimal(&company_name),
     );
+    let go_new_contact = {
+        let href = new_contact_href.clone();
+        move |_| {
+            #[cfg(feature = "web")]
+            if let Some(win) = web_sys::window() {
+                let _ = win.location().set_href(&href);
+            }
+        }
+    };
     rsx! {
         CollapsibleCard {
             title: "Contacts",
             count,
             actions: rsx! {
-                a {
-                    href: "{new_contact_href}",
-                    class: "text-sm text-accent hover:opacity-90",
+                Button {
+                    variant: ButtonVariant::Link,
+                    onclick: go_new_contact,
                     "+ New Contact"
                 }
                 Button {
@@ -2681,9 +2701,26 @@ fn AddContactModal(
                     "Search for a contact to attach to this company. Attaching moves the contact to this company."
                 }
                 div { class: "border-t border-line pt-3",
-                    a {
-                        href: "{new_href}",
+                    // Hard nav via window.location instead of a bare
+                    // `<a href>`: the Dioxus router intercepts
+                    // same-origin anchor clicks and dispatches through
+                    // its typed-route matcher, which does NOT thread
+                    // `?company_id=X&company_name=Y` query segments
+                    // into the destination page's mount. Full page
+                    // load makes `window.location.search` reflect the
+                    // prefill for read_company_prefill_from_url.
+                    button {
+                        r#type: "button",
                         class: "text-sm text-accent hover:opacity-90",
+                        onclick: {
+                            let href = new_href.clone();
+                            move |_| {
+                                #[cfg(feature = "web")]
+                                if let Some(win) = web_sys::window() {
+                                    let _ = win.location().set_href(&href);
+                                }
+                            }
+                        },
                         "+ Create a new contact instead"
                     }
                 }
