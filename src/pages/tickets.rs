@@ -177,6 +177,9 @@ struct RemoteUserLookup {
 /// A ticket note (`GET /tickets/:id/notes`), rendered as a journal entry.
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteNote {
+    /// MAPPS-593: needed to address the note for an edit. The server has always
+    /// sent it (`TicketNoteResponse.id`); this DTO simply never read it.
+    id: uuid::Uuid,
     #[serde(default)]
     note_type: String,
     #[serde(default)]
@@ -188,7 +191,50 @@ struct RemoteNote {
     /// journal states what happened rather than what was asked for.
     #[serde(default)]
     is_email_sent: bool,
+    /// MAPPS-593: who wrote it, so the viewer can be told apart from everyone
+    /// else without comparing display names.
+    #[serde(default)]
+    created_by_id: Option<uuid::Uuid>,
+    /// PMS-449: set when a portal contact wrote the note. An agent never edits
+    /// the customer's own words, so this is one of the reasons a note carries
+    /// no Edit control.
+    #[serde(default)]
+    created_by_contact_id: Option<uuid::Uuid>,
     created_at: DateTime<Utc>,
+    /// PMS-931: when it was last written. Equal to `created_at` for a note
+    /// nobody has edited, because both come from the same transaction's `NOW()`,
+    /// so "edited" is a strict `>`. Optional so a client running against a
+    /// server that predates PMS-931 decodes rather than failing the whole list.
+    #[serde(default)]
+    updated_at: Option<DateTime<Utc>>,
+}
+
+/// MAPPS-593: whether this viewer may edit this note.
+///
+/// Mirrors `TicketService::update_note`'s two gates so the affordance and the
+/// answer agree; a control that 403s or 409s is worse than no control. The
+/// server is the authority and its refusal is still handled, because these
+/// rules can only be enforced there.
+///
+/// The state half: a note the customer wrote through the portal is never an
+/// agent's to edit, an emailed public note is frozen because the customer holds
+/// the original in their inbox, and a `time_entry` note is edited through its
+/// time entry. The permission half: the author, or an admin.
+fn note_is_editable(note: &RemoteNote, viewer: Option<uuid::Uuid>, viewer_is_admin: bool) -> bool {
+    if note.created_by_contact_id.is_some() {
+        return false;
+    }
+    let kind_allows = match note.note_type.as_str() {
+        "internal" | "resolution" => true,
+        "public" => !note.is_email_sent,
+        // `time_entry`, and anything a future server adds. Unknown means no:
+        // guessing wrong here offers a control that cannot work.
+        _ => false,
+    };
+    if !kind_allows {
+        return false;
+    }
+    viewer_is_admin || (viewer.is_some() && viewer == note.created_by_id)
 }
 
 /// One change-history entry (`GET /audit-log/entity/tickets/:id`, PMS-182).
@@ -418,6 +464,15 @@ struct JournalEntry {
     /// The before/after lines when this entry came from the audit log. Empty
     /// for a note or a time entry.
     changes: Vec<ChangeLine>,
+    /// MAPPS-593: the note this entry came from, when it is one THIS viewer may
+    /// edit. `None` on a change-history line, a time entry, or a note the
+    /// viewer may not edit, and that is what decides whether the Edit control
+    /// is rendered at all.
+    editable_note: Option<uuid::Uuid>,
+    /// MAPPS-593: the note has been edited since it was written. Marked on
+    /// screen, because an unmarked edit means the reader cannot tell that the
+    /// text in front of them is not what was written.
+    edited: bool,
 }
 
 /// The name to attribute a journal line to. `actor_name` yields "-" for an
@@ -478,6 +533,8 @@ fn build_journal(
     history: &[HistoryEntry],
     time_entries: &[RemoteTimeEntry],
     users: &[UserOpt],
+    viewer: Option<uuid::Uuid>,
+    viewer_is_admin: bool,
 ) -> Vec<JournalEntry> {
     let mut entries: Vec<JournalEntry> =
         Vec::with_capacity(notes.len() + history.len() + time_entries.len());
@@ -504,6 +561,11 @@ fn build_journal(
             action,
             body: (!n.content.trim().is_empty()).then(|| n.content.clone()),
             changes: Vec::new(),
+            editable_note: note_is_editable(n, viewer, viewer_is_admin).then_some(n.id),
+            // Strictly greater: both timestamps come from the same
+            // transaction's `NOW()` on insert, so an unedited note has them
+            // exactly equal.
+            edited: n.updated_at.is_some_and(|u| u > n.created_at),
         });
     }
 
@@ -514,6 +576,8 @@ fn build_journal(
             action: history_action(h),
             body: None,
             changes: history_changes(h),
+            editable_note: None,
+            edited: false,
         });
     }
 
@@ -531,6 +595,8 @@ fn build_journal(
             action: format!("logged {} min on {}{billable}", e.duration_minutes, e.date),
             body: e.notes.clone().filter(|s| !s.trim().is_empty()),
             changes: Vec::new(),
+            editable_note: None,
+            edited: false,
         });
     }
 
@@ -2132,8 +2198,27 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let total_minutes: i32 = time_entries.iter().map(|e| e.duration_minutes).sum();
     let total_hours_label = format!("{:.1} hours", total_minutes as f64 / 60.0);
 
+    // MAPPS-593: who is looking, so the journal knows which notes carry an Edit
+    // control. Read once here rather than per entry.
+    let (viewer_id, viewer_is_admin) = {
+        let auth = crate::hooks::use_auth();
+        let a = auth.read();
+        (
+            a.user.as_ref().map(|u| u.id),
+            a.has_role(crate::modules::auth::UserRole::Admin)
+                || a.has_role(crate::modules::auth::UserRole::SuperAdmin),
+        )
+    };
+
     // MAPPS-517: one stream out of the three sources the page already holds.
-    let journal = build_journal(&notes, &history, &time_entries, &users);
+    let journal = build_journal(
+        &notes,
+        &history,
+        &time_entries,
+        &users,
+        viewer_id,
+        viewer_is_admin,
+    );
     let shown_journal_count = journal.len().min(JOURNAL_LIMIT);
     // Whichever of the three did not load, named. An unreadable source has to
     // be visible here: the journal is the record, and a silently short stream
@@ -2535,13 +2620,38 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             div { class: "flow-root",
                                 ul { class: "-mb-8",
                                     for (i , entry) in journal.iter().take(JOURNAL_LIMIT).enumerate() {
+                                        // MAPPS-593: keyed, and load-bearing now
+                                        // that an entry owns edit state. Without
+                                        // a key Dioxus reuses component state
+                                        // positionally, so a note arriving at the
+                                        // top after a refetch would inherit the
+                                        // draft of whatever used to be first. A
+                                        // note has an id; the other sources are
+                                        // identified by when they happened.
+                                        {
+                                            let entry_key = match entry.editable_note {
+                                                Some(id) => id.to_string(),
+                                                None => format!("{}-{i}", entry.at),
+                                            };
+                                            rsx! {
                                         TimelineItem {
+                                            key: "{entry_key}",
                                             user: entry.who.clone(),
                                             action: entry.action.clone(),
                                             time: fmt_datetime(entry.at),
                                             content: entry.body.clone(),
                                             changes: entry.changes.clone(),
+                                            editable_note: entry.editable_note,
+                                            edited: entry.edited,
+                                            ticket_id: props.id.clone(),
+                                            can_edit: can_mutate,
+                                            on_saved: move |()| {
+                                                let mut nr = notes_resource;
+                                                nr.restart();
+                                            },
                                             is_last: i + 1 == shown_journal_count,
+                                        }
+                                            }
                                         }
                                     }
                                 }
@@ -3140,11 +3250,84 @@ struct TimelineItemProps {
     /// is the entry itself and always shows.
     #[props(default)]
     changes: Vec<ChangeLine>,
+    /// MAPPS-593: the note behind this entry, when THIS viewer may edit it.
+    /// `None` renders no control, which covers a change-history line, a time
+    /// entry, and every note the viewer may not edit.
+    #[props(default)]
+    editable_note: Option<uuid::Uuid>,
+    /// MAPPS-593: the note has been edited since it was written.
+    #[props(default = false)]
+    edited: bool,
+    /// Ticket the note belongs to, for the PUT path.
+    #[props(default)]
+    ticket_id: String,
+    /// Whether an edit may be attempted at all (MAPPS-357's write gate).
+    #[props(default = true)]
+    can_edit: bool,
+    /// Fires after a successful save, so the host can refetch the journal.
+    #[props(default)]
+    on_saved: EventHandler<()>,
     is_last: bool,
 }
 
 #[component]
 fn TimelineItem(props: TimelineItemProps) -> Element {
+    // MAPPS-593: the edit state belongs to this entry, so two open notes on one
+    // ticket do not share a draft. Component-per-entry is what makes that free.
+    let mut editing = use_signal(|| false);
+    let mut draft = use_signal(String::new);
+    let mut edit_error = use_signal(String::new);
+    let mut saving = use_signal(|| false);
+
+    let original = props.content.clone().unwrap_or_default();
+    let original_for_open = original.clone();
+    let note_dom_id = props
+        .editable_note
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+
+    let save_note = {
+        let ticket_id = props.ticket_id.clone();
+        let note_id = props.editable_note;
+        let on_saved = props.on_saved;
+        move |_| {
+            if saving() {
+                return;
+            }
+            let Some(note_id) = note_id else { return };
+            let next = draft.read().trim().to_string();
+            if next.is_empty() {
+                // The same rule the server applies. An edit that blanks a note
+                // is a delete wearing an edit's clothes.
+                edit_error.set("A note cannot be empty.".to_string());
+                return;
+            }
+            let path = format!("/tickets/{ticket_id}/notes/{note_id}");
+            spawn(async move {
+                saving.set(true);
+                let body = serde_json::json!({ "content": next });
+                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                    .await
+                {
+                    Ok(_) => {
+                        saving.set(false);
+                        editing.set(false);
+                        on_saved.call(());
+                    }
+                    Err(e) => {
+                        saving.set(false);
+                        // Next to the note, not as a toast: the refusal is
+                        // about THIS note and a toast outlives the context it
+                        // belongs to. The server owns the rules that can
+                        // refuse (a 409 on an emailed or portal-authored note),
+                        // and its sentence is what the author needs to read.
+                        edit_error.set(e);
+                    }
+                }
+            });
+        }
+    };
+
     rsx! {
         li {
             div { class: "relative pb-8",
@@ -3165,9 +3348,68 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                             p { class: "text-sm text-muted",
                                 span { class: "font-medium text-content", "{props.user}" }
                                 " {props.action}"
+                                if props.edited {
+                                    // MAPPS-593: an unmarked edit means the
+                                    // reader cannot tell that the text in front
+                                    // of them is not what was written.
+                                    span { class: "ml-1 text-xs text-subtle italic", "(edited)" }
+                                }
+                                if props.editable_note.is_some() && !editing() {
+                                    button {
+                                        r#type: "button",
+                                        class: "ml-2 text-xs text-accent hover:underline disabled:opacity-40 disabled:cursor-not-allowed disabled:no-underline",
+                                        disabled: !props.can_edit,
+                                        title: if props.can_edit { None } else { Some("Can't edit while the server is unreachable".to_string()) },
+                                        onclick: move |_| {
+                                            draft.set(original_for_open.clone());
+                                            edit_error.set(String::new());
+                                            editing.set(true);
+                                        },
+                                        "Edit"
+                                    }
+                                }
                             }
-                            if let Some(content) = &props.content {
-                                div { class: "mt-2 text-sm text-content bg-surface-2 rounded-md p-3",
+                            if editing() {
+                                // MAPPS-593: inline, not a modal. A note is
+                                // short and the thread around it is the context
+                                // for the edit; a modal would hide exactly what
+                                // the author is correcting against.
+                                div { class: "mt-2 space-y-2",
+                                    Textarea {
+                                        name: "edit-note-{note_dom_id}",
+                                        label: "Edit note",
+                                        rows: 4,
+                                        required: true,
+                                        rules: vec![Rule::Required],
+                                        error: edit_error.read().clone(),
+                                        value: draft.read().clone(),
+                                        oninput: move |e: FormEvent| {
+                                            edit_error.set(String::new());
+                                            draft.set(e.value());
+                                        },
+                                    }
+                                    div { class: "flex gap-2",
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            loading: saving(),
+                                            onclick: save_note,
+                                            "Save"
+                                        }
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            onclick: move |_| {
+                                                // Cancel restores what was
+                                                // written; nothing is sent.
+                                                draft.set(original.clone());
+                                                edit_error.set(String::new());
+                                                editing.set(false);
+                                            },
+                                            "Cancel"
+                                        }
+                                    }
+                                }
+                            } else if let Some(content) = &props.content {
+                                div { class: "mt-2 text-sm text-content bg-surface-2 rounded-md p-3 whitespace-pre-wrap",
                                     "{content}"
                                 }
                             }
@@ -3588,7 +3830,7 @@ mod mapps517_journal_tests {
     #[test]
     fn merges_every_source_newest_first() {
         let notes = vec![note(
-            r#"{"note_type":"internal","content":"Rebooted the switch","created_by_name":"Dana Reeve","created_at":"2026-08-20T09:00:00Z"}"#,
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000001","note_type":"internal","content":"Rebooted the switch","created_by_name":"Dana Reeve","created_at":"2026-08-20T09:00:00Z"}"#,
         )];
         let history = vec![
             history(
@@ -3602,7 +3844,7 @@ mod mapps517_journal_tests {
             r#"{"date":"2026-08-20","duration_minutes":45,"is_billable":true,"user_id":"11111111-1111-4111-8111-111111111111","created_at":"2026-08-20T12:00:00Z"}"#,
         )];
 
-        let journal = build_journal(&notes, &history, &time, &users());
+        let journal = build_journal(&notes, &history, &time, &users(), None, false);
 
         assert_eq!(
             actions(&journal),
@@ -3620,10 +3862,10 @@ mod mapps517_journal_tests {
     #[test]
     fn falls_back_to_notes_when_the_other_sources_are_empty() {
         let notes = vec![note(
-            r#"{"note_type":"public","content":"Emailed the client","created_by_name":"Dana Reeve","is_email_sent":true,"created_at":"2026-08-20T09:00:00Z"}"#,
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000002","note_type":"public","content":"Emailed the client","created_by_name":"Dana Reeve","is_email_sent":true,"created_at":"2026-08-20T09:00:00Z"}"#,
         )];
 
-        let journal = build_journal(&notes, &[], &[], &users());
+        let journal = build_journal(&notes, &[], &[], &users(), None, false);
 
         assert_eq!(
             actions(&journal),
@@ -3634,7 +3876,7 @@ mod mapps517_journal_tests {
     /// An untouched ticket is an empty journal, not a failure.
     #[test]
     fn an_empty_ticket_yields_an_empty_journal() {
-        assert!(build_journal(&[], &[], &[], &users()).is_empty());
+        assert!(build_journal(&[], &[], &[], &users(), None, false).is_empty());
     }
 
     /// Whether the email went out is the note's own outcome, so the line says
@@ -3642,13 +3884,13 @@ mod mapps517_journal_tests {
     #[test]
     fn a_note_line_records_whether_the_email_was_sent() {
         let public_unsent = note(
-            r#"{"note_type":"public","content":"c","created_by_name":"Dana Reeve","created_at":"2026-08-20T09:00:00Z"}"#,
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000003","note_type":"public","content":"c","created_by_name":"Dana Reeve","created_at":"2026-08-20T09:00:00Z"}"#,
         );
         let internal = note(
-            r#"{"note_type":"internal","content":"c","created_by_name":"Dana Reeve","created_at":"2026-08-20T08:00:00Z"}"#,
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000004","note_type":"internal","content":"c","created_by_name":"Dana Reeve","created_at":"2026-08-20T08:00:00Z"}"#,
         );
 
-        let journal = build_journal(&[public_unsent, internal], &[], &[], &users());
+        let journal = build_journal(&[public_unsent, internal], &[], &[], &users(), None, false);
 
         assert_eq!(
             actions(&journal),
@@ -3673,7 +3915,7 @@ mod mapps517_journal_tests {
             r#"{"action":"update","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":["priority_id"],"changes":[{"field":"priority","old":"Low","new":"High"}],"timestamp":"2026-08-20T10:00:00Z"}"#,
         );
 
-        let journal = build_journal(&[], &[h, readable], &[], &users());
+        let journal = build_journal(&[], &[h, readable], &[], &users(), None, false);
 
         assert!(journal[0].changes.is_empty(), "{:?}", journal[0].changes);
         assert_eq!(
@@ -3697,7 +3939,7 @@ mod mapps517_journal_tests {
             r#"{"action":"create","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
         );
 
-        let journal = build_journal(&[], &[h], &[], &users());
+        let journal = build_journal(&[], &[h], &[], &users(), None, false);
 
         assert_eq!(
             actions(&journal),
@@ -3776,5 +4018,231 @@ mod mapps592_description_editor_tests {
             window.contains("disabled: !can_mutate"),
             "the editor is gated with the form it sits in: {window}"
         );
+    }
+}
+
+#[cfg(test)]
+mod mapps593_note_edit_tests {
+    use super::{build_journal, note_is_editable, RemoteNote, UserOpt};
+
+    const VIEWER: &str = "11111111-1111-4111-8111-111111111111";
+    const SOMEONE_ELSE: &str = "22222222-2222-4222-8222-222222222222";
+    const CONTACT: &str = "33333333-3333-4333-8333-333333333333";
+
+    fn viewer() -> uuid::Uuid {
+        VIEWER.parse().expect("viewer uuid")
+    }
+
+    fn note(json: &str) -> RemoteNote {
+        serde_json::from_str(json).expect("deserialise note")
+    }
+
+    /// A note of `kind` authored by `author`, with the two frozen-state flags.
+    fn make(kind: &str, author: &str, emailed: bool, contact: Option<&str>) -> RemoteNote {
+        let contact = match contact {
+            Some(c) => format!(r#","created_by_contact_id":"{c}""#),
+            None => String::new(),
+        };
+        note(&format!(
+            r#"{{"id":"aaaaaaaa-0000-4000-8000-00000000000f","note_type":"{kind}",
+                "content":"c","created_by_name":"Dana Reeve","is_email_sent":{emailed},
+                "created_by_id":"{author}","created_at":"2026-08-20T09:00:00Z"{contact}}}"#
+        ))
+    }
+
+    /// The reported case: the author corrects their own internal note.
+    #[test]
+    fn the_author_may_edit_their_own_internal_note() {
+        assert!(note_is_editable(
+            &make("internal", VIEWER, false, None),
+            Some(viewer()),
+            false
+        ));
+    }
+
+    /// And the title's case: the MSP owner corrects anyone's.
+    #[test]
+    fn an_admin_may_edit_somebody_elses() {
+        let n = make("internal", SOMEONE_ELSE, false, None);
+        assert!(!note_is_editable(&n, Some(viewer()), false), "not as staff");
+        assert!(note_is_editable(&n, Some(viewer()), true), "yes as admin");
+    }
+
+    /// The state rules, mirrored from `TicketService::update_note` so the
+    /// affordance and the answer agree. A control that 409s is worse than no
+    /// control, and the server is still the authority.
+    #[test]
+    fn a_frozen_note_offers_no_control_even_to_an_admin() {
+        // Emailed to the customer: they hold the original in their inbox.
+        assert!(!note_is_editable(
+            &make("public", VIEWER, true, None),
+            Some(viewer()),
+            true
+        ));
+        // The customer's own words, through the portal.
+        assert!(!note_is_editable(
+            &make("internal", VIEWER, false, Some(CONTACT)),
+            Some(viewer()),
+            true
+        ));
+        // Edited through its time entry, not here.
+        assert!(!note_is_editable(
+            &make("time_entry", VIEWER, false, None),
+            Some(viewer()),
+            true
+        ));
+    }
+
+    /// A public note nobody emailed is still editable: the customer may have
+    /// read it in the portal, but no copy exists outside the system.
+    #[test]
+    fn a_public_note_that_was_never_emailed_is_editable() {
+        assert!(note_is_editable(
+            &make("public", VIEWER, false, None),
+            Some(viewer()),
+            false
+        ));
+    }
+
+    /// An unfamiliar note type offers nothing. Guessing yes would put a control
+    /// on a row the server refuses, which is the failure this mirror exists to
+    /// avoid.
+    #[test]
+    fn an_unknown_note_type_offers_no_control() {
+        assert!(!note_is_editable(
+            &make("something_new", VIEWER, false, None),
+            Some(viewer()),
+            true
+        ));
+    }
+
+    /// A signed-out or unresolved viewer is nobody's author, and `None == None`
+    /// must not read as a match against a note with no recorded author.
+    #[test]
+    fn an_unknown_viewer_is_not_the_author_of_an_unattributed_note() {
+        let orphan = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-00000000000e","note_type":"internal",
+                "content":"c","created_by_name":"","created_at":"2026-08-20T09:00:00Z"}"#,
+        );
+        assert!(!note_is_editable(&orphan, None, false));
+        assert!(
+            note_is_editable(&orphan, None, true),
+            "an admin still may, because the permission does not rest on authorship"
+        );
+    }
+
+    /// The journal carries the decision per entry, and only a note carries one.
+    /// A change-history line or a time entry growing an Edit control would send
+    /// a PUT to a note endpoint with no note.
+    #[test]
+    fn only_a_note_line_carries_an_edit_handle() {
+        let users: Vec<UserOpt> = Vec::new();
+        let mine = make("internal", VIEWER, false, None);
+        let theirs = make("internal", SOMEONE_ELSE, false, None);
+        let history = vec![serde_json::from_str(
+            r#"{"action":"update","user_id":"11111111-1111-4111-8111-111111111111",
+                "changed_fields":["status_id"],"changes":[],
+                "timestamp":"2026-08-20T11:00:00Z"}"#,
+        )
+        .expect("history entry")];
+
+        let journal = build_journal(
+            &[mine, theirs],
+            &history,
+            &[],
+            &users,
+            Some(viewer()),
+            false,
+        );
+
+        let with_handles = journal.iter().filter(|e| e.editable_note.is_some()).count();
+        assert_eq!(
+            with_handles, 1,
+            "the viewer's own note, and neither the other author's nor the history line"
+        );
+    }
+
+    /// An edit has to be visible as one. Both timestamps come from the same
+    /// transaction's `NOW()` on insert, so an untouched note has them exactly
+    /// equal and the marker is a strict `>`.
+    #[test]
+    fn a_note_is_marked_edited_only_after_it_was() {
+        let users: Vec<UserOpt> = Vec::new();
+        let untouched = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-00000000000a","note_type":"internal","content":"c",
+                "created_by_name":"D","created_at":"2026-08-20T09:00:00Z",
+                "updated_at":"2026-08-20T09:00:00Z"}"#,
+        );
+        let edited = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-00000000000b","note_type":"internal","content":"c",
+                "created_by_name":"D","created_at":"2026-08-20T08:00:00Z",
+                "updated_at":"2026-08-20T10:00:00Z"}"#,
+        );
+        let journal = build_journal(&[untouched, edited], &[], &[], &users, None, false);
+        // Newest first: the untouched note (09:00) sorts above the edited one
+        // (created 08:00), because the journal is ordered on when it happened.
+        assert!(!journal[0].edited, "{:?}", journal[0]);
+        assert!(journal[1].edited, "{:?}", journal[1]);
+    }
+
+    /// A server that predates PMS-931 sends no `updated_at`. That has to decode
+    /// as "never edited" rather than failing the whole notes list, which would
+    /// empty the journal on a version skew.
+    #[test]
+    fn a_note_without_updated_at_still_decodes() {
+        let users: Vec<UserOpt> = Vec::new();
+        let old = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-00000000000c","note_type":"internal","content":"c",
+                "created_by_name":"D","created_at":"2026-08-20T09:00:00Z"}"#,
+        );
+        let journal = build_journal(&[old], &[], &[], &users, None, false);
+        assert_eq!(journal.len(), 1);
+        assert!(!journal[0].edited);
+    }
+
+    /// MAPPS-593: the journal loop is keyed, and that became load-bearing the
+    /// moment an entry started owning edit state. Dioxus reuses component state
+    /// positionally, so an unkeyed loop hands a newly-prepended note the draft
+    /// of whatever used to be first. This is the same trap MAPPS-596 hit with
+    /// the change-history panes.
+    #[test]
+    fn the_journal_is_keyed_so_a_draft_cannot_follow_the_wrong_note() {
+        const SRC: &str = include_str!("tickets.rs");
+        let end = SRC
+            .find("mod mapps593_note_edit_tests")
+            .expect("this module is part of this file");
+        let code = SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ");
+        let loop_at = code
+            .find("for (i , entry) in journal.iter()")
+            .expect("the journal loop");
+        let window = &code[loop_at..code.len().min(loop_at + 700)];
+        assert!(
+            window.contains("key: \"{entry_key}\""),
+            "the journal loop is keyed: {window}"
+        );
+        assert!(
+            window.contains("Some(id) => id.to_string()"),
+            "and a note is keyed on its own id, not its position: {window}"
+        );
+    }
+
+    /// The refusal belongs next to the note. A toast outlives the context it is
+    /// about, and the server's 409 sentence is the thing the author has to read
+    /// to know which of four rules they hit.
+    #[test]
+    fn a_refusal_lands_next_to_the_note_it_is_about() {
+        const SRC: &str = include_str!("tickets.rs");
+        let end = SRC
+            .find("mod mapps593_note_edit_tests")
+            .expect("this module is part of this file");
+        let code = SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            code.contains("edit_error.set(e);"),
+            "the server's message becomes the field's error"
+        );
+        let save = code.find("let path = format!(\"/tickets/{ticket_id}/notes/{note_id}\");");
+        let save = save.expect("the save handler");
+        let window = &code[save..code.len().min(save + 900)];
+        assert!(!window.contains("push_toast"), "and not a toast: {window}");
     }
 }
