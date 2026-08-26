@@ -65,10 +65,21 @@ pub fn Markdown(props: MarkdownProps) -> Element {
         .flatten()
         .unwrap_or_default();
 
+    // MAPPS-595: the origin an attachment path is joined onto. Empty in dev,
+    // where the SPA and the API already share one; the API's own origin on a
+    // split-origin deployment, where a bare `/api/v1/...` would be answered by
+    // the SPA's own fallback with an HTML document and render as a broken
+    // image. This component is the only place article markdown becomes HTML,
+    // so it is the only place the join has to happen.
+    let api_origin = crate::hooks::fetch::api::api_origin();
     let html = if props.interactive {
-        crate::utils::markdown::render_markdown_interactive_with_mentions(&props.content, &people)
+        crate::utils::markdown::render_markdown_interactive_with_mentions(
+            &props.content,
+            &people,
+            &api_origin,
+        )
     } else {
-        crate::utils::markdown::render_markdown_with_mentions(&props.content, &people)
+        crate::utils::markdown::render_markdown_with_mentions(&props.content, &people, &api_origin)
     };
 
     // MAPPS-578: whether a mention chip should route on click. Only for a
@@ -420,6 +431,28 @@ mod mention_wiring_tests {
             code.contains(".await .ok()?"),
             "the fetch swallows its error into `None` rather than surfacing an \
              error state for something the reader cannot act on"
+        );
+    }
+
+    /// MAPPS-595: the render call passes the API origin.
+    ///
+    /// `utils::markdown` cannot know it, and this component is the only place
+    /// article markdown becomes HTML, so this call is the single point where
+    /// the join can be dropped. Dropping it is invisible in dev, where the
+    /// origin is empty and the same-origin path already resolves, and breaks
+    /// every image on every split-origin deployment. Pinned here because the
+    /// two-argument form still reads as complete.
+    #[test]
+    fn the_render_call_carries_the_api_origin() {
+        let code = code_only();
+        assert!(
+            code.contains("let api_origin = crate::hooks::fetch::api::api_origin();"),
+            "the component resolves the API origin"
+        );
+        assert_eq!(
+            code.matches("&api_origin").count(),
+            2,
+            "and passes it to BOTH renderers, interactive and not"
         );
     }
 
