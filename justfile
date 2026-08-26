@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer
+check: check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding
 
 # Check web/WASM compilation
 [group: 'check']
@@ -66,6 +66,12 @@ check-desktop:
 check-theme-tokens:
     bash scripts/check-theme-tokens.sh --self-test
     bash scripts/check-theme-tokens.sh
+
+# MAPPS-585: keep a shared form field's value on the `value:` attribute. As a textarea CHILD it is only the default value, so every toolbar transform died on the first keystroke. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-field-value-binding:
+    bash scripts/check-field-value-binding.sh --self-test
+    bash scripts/check-field-value-binding.sh
 
 # MAPPS-584: keep the Markdown corrections in a cascade layer that outranks @tailwindcss/typography. In `@layer components` they lost to the plugin and shipped inert. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']

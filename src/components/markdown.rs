@@ -127,10 +127,25 @@ pub fn Markdown(props: MarkdownProps) -> Element {
     #[cfg(not(feature = "web"))]
     let _ = &mention_target;
 
+    // MAPPS-585: say which chips are actually clickable.
+    //
+    // The rendered HTML is the same for every reader, because the markup is
+    // built before anyone knows who is looking. Only the listener differs, so
+    // until now an inert chip and a live one were pixel-identical: no pointer,
+    // no hover, and a title naming the person rather than a destination. The
+    // reporter asked what a mention was for, having clicked one that was
+    // inert. The class goes on the container, which is the one element that
+    // does know whether routing was wired.
+    let mention_class = if mention_target.is_some() {
+        " mentions-open"
+    } else {
+        ""
+    };
+
     rsx! {
         div {
             id: "{dom_id}",
-            class: "prose dark:prose-invert max-w-none {props.class}",
+            class: "prose dark:prose-invert max-w-none{mention_class} {props.class}",
             dangerous_inner_html: html,
         }
     }
@@ -265,6 +280,34 @@ mod mention_wiring_tests {
             .find("mod mention_wiring_tests")
             .expect("this module is part of this file");
         SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// MAPPS-585: the container says whether a chip is clickable.
+    ///
+    /// The chip markup is identical for every reader, because it is built
+    /// before anyone knows who is looking; only the click listener differs. So
+    /// an inert chip and a live one looked the same, and the reporter clicked
+    /// one that did nothing and asked what mentions were for. `mentions-open`
+    /// is the one thing that separates them, and the stylesheet hangs the
+    /// pointer and the hover on it, so both halves have to stay.
+    #[test]
+    fn the_container_marks_a_chip_that_actually_routes() {
+        let code = code_only();
+        assert!(
+            code.contains("mentions-open"),
+            "the container must mark itself when routing is wired"
+        );
+        assert!(
+            code.contains("mention_target.is_some()"),
+            "and the mark must come from whether there is a destination, not \
+             from anything a reader without one also sees"
+        );
+        const CSS: &str = include_str!("../../input.css");
+        assert!(
+            CSS.contains(".prose.mentions-open") && CSS.contains("cursor: pointer"),
+            "and the stylesheet must give the live chip a pointer, or the mark \
+             changes nothing anyone can see"
+        );
     }
 
     /// A chip must never be an `<a href>`. Rendered Markdown is injected with

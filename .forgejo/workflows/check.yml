@@ -186,6 +186,15 @@ jobs:
           bash scripts/check-types-pin.sh --self-test
           bash scripts/check-types-pin.sh
 
+      # MAPPS-585: a shared field's value must be the `value:` attribute. As a
+      # textarea CHILD it is only the DEFAULT value, so the first keystroke
+      # dirties the element and every later write lands on textContent instead.
+      # That killed the whole Markdown toolbar for anyone who had typed.
+      - name: Field value-binding guard
+        run: |
+          bash scripts/check-field-value-binding.sh --self-test
+          bash scripts/check-field-value-binding.sh
+
       # MAPPS-584: @tailwindcss/typography writes .prose into `@layer utilities`
       # and the MAPPS-573 corrections were written into `@layer components`, so
       # the plugin won every declaration the two shared and the whole block

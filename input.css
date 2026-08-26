@@ -426,6 +426,18 @@
     line-height: 1.35;
     white-space: nowrap;
   }
+  /* MAPPS-585: a chip that goes somewhere has to look like it does, and a
+     chip that goes nowhere has to look like it does not. The markup is
+     identical for every reader (it is built before anyone knows who is
+     looking), so the container carries `mentions-open` when the click listener
+     was actually wired and this is the only rule that separates the two. */
+  .prose.mentions-open :where(.mention):not(:where([class~="not-prose"] *)) {
+    cursor: pointer;
+  }
+  .prose.mentions-open :where(.mention):not(:where([class~="not-prose"] *)):hover {
+    text-decoration: underline;
+  }
+
   .dark .prose :where(.mention):not(:where([class~="not-prose"] *)) {
     background-color: var(--accent-900);
     color: var(--accent-100);
