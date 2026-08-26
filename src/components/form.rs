@@ -410,10 +410,24 @@ pub fn Textarea(props: TextareaProps) -> Element {
                 disabled: props.disabled,
                 // MAPPS-582: same choke point as `Input`. A textarea has no
                 // password variant, so there is nothing to exempt.
+                // MAPPS-585: the value is an ATTRIBUTE, never a child.
+                //
+                // A `<textarea>`'s text child is its DEFAULT value: the browser
+                // copies it into `.value` only while the element is still
+                // "clean". The first keystroke dirties it, and from then on
+                // writing the child changes `textContent` and nothing the
+                // author can see. That is why every toolbar action stopped
+                // working the moment anyone typed - the source signal and the
+                // preview updated, the field did not, and the next keystroke
+                // sent the stale DOM text back up and overwrote the transform.
+                //
+                // `Input` has always passed `value:` here. This is the same
+                // choke point, and dioxus maps the `value` attribute onto the
+                // `.value` PROPERTY, which is what a dirty element reads.
+                value: "{props.value}",
                 oninput: move |e: FormEvent| props.oninput.call(sanitized(e)),
                 onkeydown: move |e| props.onkeydown.call(e),
                 onblur: move |_| touched.set(true),
-                "{props.value}"
             }
             if !shown_error.is_empty() {
                 p { class: "text-sm leading-5 text-red-600 dark:text-red-400",
