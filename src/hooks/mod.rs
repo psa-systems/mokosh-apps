@@ -14,6 +14,7 @@ pub mod auth;
 pub mod dropdown_nav;
 pub mod edit_queue;
 pub mod fetch;
+pub mod mentions;
 pub mod remote_data;
 pub mod server_status;
 mod sidebar;
@@ -29,6 +30,7 @@ pub use auth::*;
 pub use dropdown_nav::{use_dropdown_nav, DropdownNav, NavAction};
 pub use edit_queue::{use_replay_pending_edits, PendingEdit};
 pub use fetch::*;
+pub use mentions::{mention_people, use_mention_directory};
 pub use remote_data::{classify_remote, use_remote_resource, RemoteData};
 pub use server_status::{
     use_can_mutate, use_server_reachable, use_server_status_monitor, use_update_pending,
