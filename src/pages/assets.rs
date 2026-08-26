@@ -11,8 +11,7 @@ use crate::components::{
     Select, SelectOption, Table, TableBody, TableCell, TableEmptyRow, TableHead, TableHeader,
     TableRow, Textarea, TrashIcon,
 };
-// MAPPS-596: shared with the project, task and ticket change-history panes.
-use crate::modules::audit::{action_label, fmt_change_value, title_field};
+use crate::components::{ChangeHistoryEntry, ChangeLine};
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
@@ -234,6 +233,39 @@ fn fmt_datetime(s: &Option<String>) -> String {
 
 /// Resolve an actor id to a display name via the loaded user list; "-" when
 /// unknown so the audit/edited markers never show a bare UUID.
+/// The headline for one asset audit entry (MAPPS-596).
+///
+/// An asset's `changes` is an object `{event: ...}` for a reveal operation and
+/// an array of `{field, old, new}` for an edit (PMS-204), so the event name is
+/// what this page has in place of the changed-column list the other panes use.
+fn audit_headline(e: &AuditEntry) -> String {
+    let label = crate::modules::audit::action_label(&e.action);
+    let event = e
+        .changes
+        .as_ref()
+        .and_then(|c| c.get("event"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if event.is_empty() {
+        label
+    } else {
+        format!("{label}: {event}")
+    }
+}
+
+/// The renderable before/after lines for one asset audit entry. An entry whose
+/// `changes` is the reveal-operation object rather than an edit array decodes
+/// to nothing, which renders no detail and no toggle.
+fn change_lines(e: &AuditEntry) -> Vec<ChangeLine> {
+    e.changes
+        .as_ref()
+        .and_then(|c| serde_json::from_value::<Vec<FieldChange>>(c.clone()).ok())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|c| ChangeLine::build(&c.field, &c.old, &c.new))
+        .collect()
+}
+
 fn actor_name(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
     match id {
         Some(uid) => users
@@ -2116,59 +2148,21 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     div { class: "space-y-3 text-sm",
                                         for e in audit.iter().take(15) {
                                             {
-                                                // `changes` is an object {event:...} for reveal ops,
-                                                // or an array of {field, old, new} for edits (PMS-204).
-                                                let event = e
-                                                    .changes
-                                                    .as_ref()
-                                                    .and_then(|c| c.get("event"))
-                                                    .and_then(|v| v.as_str())
-                                                    .unwrap_or("")
-                                                    .to_string();
-                                                let field_changes: Vec<FieldChange> = e
-                                                    .changes
-                                                    .as_ref()
-                                                    .and_then(|c| {
-                                                        serde_json::from_value::<Vec<FieldChange>>(c.clone()).ok()
-                                                    })
-                                                    .unwrap_or_default();
-                                                let label = action_label(&e.action);
-                                                let when = fmt_datetime(&e.performed_at);
                                                 let who = actor_name(&users, &e.performed_by_id);
+                                                // The audit row carries no id of its own, so the
+                                                // key is the timestamp it was written at.
+                                                let key = e.performed_at.clone().unwrap_or_default();
                                                 rsx! {
-                                                    div { class: "flex justify-between gap-2",
-                                                        div { class: "min-w-0",
-                                                            p { class: "text-content",
-                                                                if event.is_empty() {
-                                                                    "{label}"
-                                                                } else {
-                                                                    "{label}: {event}"
-                                                                }
-                                                            }
-                                                            if who != "-" {
-                                                                p { class: "text-xs text-subtle", "by {who}" }
-                                                            }
-                                                            for c in field_changes.iter() {
-                                                                {
-                                                                    let old = fmt_change_value(&c.old);
-                                                                    let new = fmt_change_value(&c.new);
-                                                                    let fname = title_field(&c.field);
-                                                                    if old == "(reference)" && new == "(reference)" {
-                                                                        rsx! {}
-                                                                    } else {
-                                                                        rsx! {
-                                                                            p { class: "text-xs text-muted mt-1",
-                                                                                span { class: "font-medium", "{fname}: " }
-                                                                                span { class: "line-through text-subtle", "{old}" }
-                                                                                " → "
-                                                                                span { "{new}" }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                        span { class: "text-subtle whitespace-nowrap", "{when}" }
+                                                    ChangeHistoryEntry {
+                                                        key: "{key}",
+                                                        headline: audit_headline(e),
+                                                        // MAPPS-596: "-" is this page's sentinel for an
+                                                        // actor no `/auth/users` row matches. The shared
+                                                        // entry omits the line for an empty name, so the
+                                                        // sentinel is dropped here rather than printed.
+                                                        who: if who == "-" { String::new() } else { who },
+                                                        when: fmt_datetime(&e.performed_at),
+                                                        changes: change_lines(e),
                                                     }
                                                 }
                                             }
