@@ -9,6 +9,11 @@ use crate::components::{
     SearchInput, Select, SelectOption, StatCard, Table, TableBody, TableCell, TableHead,
     TableHeader, TableRow, Textarea,
 };
+// MAPPS-596: the change-history wording lives in one place now; these were
+// three copies across projects, assets and tickets.
+use crate::modules::audit::{
+    action_label, fields_label, fmt_change_value, fmt_history_dt, title_field,
+};
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
@@ -159,86 +164,6 @@ fn actor_name(users: &[RemoteUser], id: &Option<uuid::Uuid>) -> String {
             .unwrap_or_default(),
         None => String::new(),
     }
-}
-
-/// Humanize an audit action code for the change-history feed.
-fn action_label(action: &str) -> &'static str {
-    match action {
-        "create" => "Created",
-        "update" => "Updated",
-        "delete" => "Deleted",
-        _ => "Changed",
-    }
-}
-
-/// "description, status" to "Description, Status" for the change summary.
-fn fields_label(fields: &[String]) -> String {
-    fields
-        .iter()
-        .map(|f| title_field(f))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// "due_date" to "Due date" for a single field name.
-///
-/// PMS-370: column names for foreign-key fields end in `_id`
-/// (`project_manager_id`, `client_company_id`). The audit log records
-/// the raw column name, so without trimming the suffix the
-/// change-history feed reads "Project manager id" / "Client company id".
-/// Strip the trailing `_id` first so future FK fields render cleanly
-/// without a per-column allow-list.
-fn title_field(f: &str) -> String {
-    let trimmed = f.strip_suffix("_id").unwrap_or(f);
-    let mut s = trimmed.replace('_', " ");
-    if let Some(first) = s.get_mut(0..1) {
-        first.make_ascii_uppercase();
-    }
-    s
-}
-
-/// A 36-char hyphenated UUID, not worth showing as before/after text.
-fn looks_like_uuid(s: &str) -> bool {
-    s.len() == 36
-        && s.as_bytes().iter().enumerate().all(|(i, b)| {
-            if matches!(i, 8 | 13 | 18 | 23) {
-                *b == b'-'
-            } else {
-                b.is_ascii_hexdigit()
-            }
-        })
-}
-
-/// Render an audit value for display: "(empty)" for null/blank, the trimmed
-/// text (truncated) for strings, a coarse marker for references/objects.
-fn fmt_change_value(v: &Option<serde_json::Value>) -> String {
-    match v {
-        None | Some(serde_json::Value::Null) => "(empty)".to_string(),
-        Some(serde_json::Value::String(s)) => {
-            let t = s.trim();
-            if t.is_empty() {
-                "(empty)".to_string()
-            } else if let Ok(d) = chrono::NaiveDate::parse_from_str(t, "%Y-%m-%d") {
-                // PMS-317: show dates the way the rest of the app does
-                // ("Mar 1, 2026"), not the raw yyyy-mm-dd the audit stores.
-                d.format("%b %-d, %Y").to_string()
-            } else if looks_like_uuid(t) {
-                "(reference)".to_string()
-            } else if t.chars().count() > 160 {
-                format!("{}…", t.chars().take(160).collect::<String>())
-            } else {
-                t.to_string()
-            }
-        }
-        Some(serde_json::Value::Bool(b)) => b.to_string(),
-        Some(serde_json::Value::Number(n)) => n.to_string(),
-        Some(_) => "(updated)".to_string(),
-    }
-}
-
-/// "Feb 28, 2025 15:04" for a history timestamp.
-fn fmt_history_dt(dt: chrono::DateTime<chrono::Utc>) -> String {
-    dt.format("%b %-d, %Y %H:%M").to_string()
 }
 
 /// Validate an optional `yyyy-mm-dd` date field (PMS-317 / PMS-346). Blank is

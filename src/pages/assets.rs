@@ -11,6 +11,8 @@ use crate::components::{
     Select, SelectOption, Table, TableBody, TableCell, TableEmptyRow, TableHead, TableHeader,
     TableRow, Textarea, TrashIcon,
 };
+// MAPPS-596: shared with the project, task and ticket change-history panes.
+use crate::modules::audit::{action_label, fmt_change_value, title_field};
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
@@ -241,79 +243,6 @@ fn actor_name(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
             .filter(|n| !n.trim().is_empty())
             .unwrap_or_else(|| "-".to_string()),
         None => "-".to_string(),
-    }
-}
-
-/// Humanize an asset audit `action` code for display.
-fn action_label(action: &str) -> String {
-    match action {
-        "created" => "Created".to_string(),
-        "updated" => "Updated".to_string(),
-        "status_changed" => "Status changed".to_string(),
-        "credential_created" => "Credential added".to_string(),
-        "credential_deleted" => "Credential removed".to_string(),
-        "credential_revealed" => "Credential revealed".to_string(),
-        "configuration_revealed" => "Configuration revealed".to_string(),
-        other => {
-            // snake_case to Sentence case fallback.
-            let mut s = other.replace('_', " ");
-            if let Some(first) = s.get_mut(0..1) {
-                first.make_ascii_uppercase();
-            }
-            s
-        }
-    }
-}
-
-/// "warranty_expiry" to "Warranty expiry" for a single field name.
-///
-/// PMS-370: column names for foreign-key fields end in `_id`
-/// (`asset_type_id`, `company_id`, `account_manager_id`). The audit log
-/// records the raw column name, so without trimming the suffix the
-/// change-history feed reads "Asset type id" / "Company id". Strip the
-/// trailing `_id` first so future FK fields render cleanly without a
-/// per-column allow-list.
-fn title_field(f: &str) -> String {
-    let trimmed = f.strip_suffix("_id").unwrap_or(f);
-    let mut s = trimmed.replace('_', " ");
-    if let Some(first) = s.get_mut(0..1) {
-        first.make_ascii_uppercase();
-    }
-    s
-}
-
-/// A 36-char hyphenated UUID, not worth showing as before/after text.
-fn looks_like_uuid(s: &str) -> bool {
-    s.len() == 36
-        && s.as_bytes().iter().enumerate().all(|(i, b)| {
-            if matches!(i, 8 | 13 | 18 | 23) {
-                *b == b'-'
-            } else {
-                b.is_ascii_hexdigit()
-            }
-        })
-}
-
-/// Render an audit value for display: "(empty)" for null/blank, the trimmed
-/// text (truncated) for strings, a coarse marker for references/objects.
-fn fmt_change_value(v: &Option<serde_json::Value>) -> String {
-    match v {
-        None | Some(serde_json::Value::Null) => "(empty)".to_string(),
-        Some(serde_json::Value::String(s)) => {
-            let t = s.trim();
-            if t.is_empty() {
-                "(empty)".to_string()
-            } else if looks_like_uuid(t) {
-                "(reference)".to_string()
-            } else if t.chars().count() > 160 {
-                format!("{}…", t.chars().take(160).collect::<String>())
-            } else {
-                t.to_string()
-            }
-        }
-        Some(serde_json::Value::Bool(b)) => b.to_string(),
-        Some(serde_json::Value::Number(n)) => n.to_string(),
-        Some(_) => "(updated)".to_string(),
     }
 }
 
