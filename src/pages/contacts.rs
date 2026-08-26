@@ -303,17 +303,29 @@ pub fn CompanyListPage() -> Element {
             if let Some((field, dir)) = sort {
                 path.push_str(&format!("&sort={field}&sort_dir={dir}"));
             }
-            crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>(&path, &token)
-                .await
-                .ok()
+            // Surface the actual server error (`Result<_, String>` from
+            // get_with_auth already carries the mapped copy: 403 hydrates
+            // from the server envelope message, 401 says "session expired",
+            // etc.) so the operator sees WHY the load failed instead of the
+            // generic "Could not load companies" banner. Previously this
+            // was `.ok()` which threw the reason away.
+            match crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>(&path, &token).await
+            {
+                Ok(payload) => Some(Ok(payload)),
+                Err(msg) => Some(Err(msg)),
+            }
         }
     });
 
     let resource_snapshot = companies_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
-    let fetch_failed = matches!(*resource_snapshot, Some(None));
+    let fetch_error: Option<String> = match &*resource_snapshot {
+        Some(Some(Err(msg))) => Some(msg.clone()),
+        _ => None,
+    };
+    let fetch_failed = fetch_error.is_some();
     let (page_rows, total): (Vec<RemoteCompany>, u64) = match &*resource_snapshot {
-        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        Some(Some(Ok(resp))) => (resp.data.clone(), resp.meta.total),
         _ => (Vec::new(), 0),
     };
     let has_filters = !search_text.is_empty() || !type_text.is_empty();
@@ -378,8 +390,8 @@ pub fn CompanyListPage() -> Element {
             }
         }
 
-        if fetch_failed {
-            ErrorBanner { class: "mb-3", "Could not load companies. Refresh the page to retry." }
+        if let Some(msg) = fetch_error.as_deref() {
+            ErrorBanner { class: "mb-3", "Could not load companies: {msg}" }
         }
 
         // Companies table
