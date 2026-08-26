@@ -4112,16 +4112,19 @@ mod mapps592_description_editor_tests {
         );
     }
 
-    /// The edit modal's editor follows the same write gate as its Save button.
+    /// The description editor follows the same write gate as its Save button.
     /// MAPPS-357's rule: while the server is unreachable, a control that leads
-    /// to a PUT should not invite the click.
+    /// to a PUT should not invite the click. MAPPS-594 moved it out of the modal
+    /// and into the page; the gate came with it.
     #[test]
-    fn the_modal_editor_is_disabled_with_the_rest_of_the_form() {
+    fn the_description_editor_is_disabled_with_the_rest_of_the_form() {
         let code = code_only();
         let modal = code
             .find("name: \"edit-description\".to_string()")
-            .expect("the modal's editor");
-        let window = &code[modal..code.len().min(modal + 400)];
+            .expect("the description editor");
+        // Wide enough to clear the comments between the props: the assertion is
+        // about the prop being present on this editor, not about its position.
+        let window = &code[modal..code.len().min(modal + 900)];
         assert!(
             window.contains("disabled: !can_mutate"),
             "the editor is gated with the form it sits in: {window}"
