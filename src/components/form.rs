@@ -345,6 +345,16 @@ pub struct TextareaProps {
     rules: Vec<crate::utils::validation::Rule>,
     #[props(default)]
     help: String,
+    /// MAPPS-592: keep the label out of the flow while still using it.
+    ///
+    /// A Markdown field is a toolbar sitting directly on top of the box, and
+    /// the label belongs above BOTH. Rendering it here puts it between the two,
+    /// which reads as a caption on the toolbar rather than a label on the
+    /// field. The host renders it instead; the value is still what names the
+    /// field in a validation message and to a screen reader, so this hides it
+    /// rather than dropping it.
+    #[props(default = false)]
+    label_hidden: bool,
     /// `maxlength` attribute. Caps how many characters the textarea accepts so
     /// over-long text is blocked at the input rather than failing server-side.
     /// `i64` to match [`Input::maxlength`] so both take a bare integer cap.
@@ -384,7 +394,7 @@ pub fn Textarea(props: TextareaProps) -> Element {
 
     rsx! {
         div { class: "space-y-1",
-            if !props.label.is_empty() {
+            if !props.label.is_empty() && !props.label_hidden {
                 label {
                     r#for: "{props.name}",
                     class: "block text-sm font-medium text-content",

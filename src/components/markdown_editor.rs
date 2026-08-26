@@ -82,7 +82,26 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
     let on_change = props.oninput;
 
     rsx! {
-        div { class: "{props.class}",
+        div { class: "space-y-1 {props.class}",
+            // The label belongs above the toolbar AND the field, because the
+            // two are one control. `Textarea` would otherwise draw it between
+            // them, where it reads as a caption on the toolbar. Still a real
+            // `<label for>`, so the field keeps its accessible name.
+            if !props.label.is_empty() {
+                label {
+                    r#for: "{props.name}",
+                    class: "block text-sm font-medium text-content",
+                    "{props.label}"
+                    if props.required {
+                        span {
+                            class: "text-red-500 dark:text-red-400 ml-1",
+                            aria_label: "required",
+                            role: "img",
+                            "*"
+                        }
+                    }
+                }
+            }
             MarkdownToolbar {
                 target_id: props.name.clone(),
                 value: props.value.clone(),
@@ -94,6 +113,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
             Textarea {
                 name: props.name.clone(),
                 label: props.label.clone(),
+                label_hidden: true,
                 placeholder: props.placeholder.clone(),
                 rows: props.rows,
                 required: props.required,
@@ -209,6 +229,25 @@ mod tests {
         assert!(
             code.contains("value: props.value.clone()"),
             "it renders what the host holds"
+        );
+    }
+
+    /// The label sits above the whole control, not between the toolbar and the
+    /// box. `Textarea` draws its own label above the field, which put it under
+    /// the toolbar and read as a caption on it; the label is hidden there and
+    /// rendered here instead, still as a real `<label for>` so the field keeps
+    /// its accessible name and the validation message keeps its field name.
+    #[test]
+    fn the_label_is_above_the_toolbar_not_between_it_and_the_field() {
+        let code = code_only();
+        let label = code
+            .find("label { r#for:")
+            .expect("the editor renders a label");
+        let toolbar = code.find("MarkdownToolbar {").expect("the toolbar");
+        assert!(label < toolbar, "the label comes first");
+        assert!(
+            code.contains("label_hidden: true"),
+            "and the field does not draw a second one"
         );
     }
 
