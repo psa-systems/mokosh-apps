@@ -1999,15 +1999,30 @@ fn CompanyContactsCard(
     // scoped contact list (a plain anchor, matching the file's existing
     // query-param navigation pattern).
     let view_all_href = format!("/contacts?company_id={}", urlencoding_minimal(&company_id));
+    // Direct "create a new contact scoped to this Company" affordance
+    // that skips the picker modal. The modal still hosts the
+    // attach-existing flow and its own "create instead" fallback link;
+    // this is a first-class button so the create path is one click,
+    // not two.
+    let new_contact_href = format!(
+        "/contacts/new?company_id={}&company_name={}",
+        urlencoding_minimal(&company_id),
+        urlencoding_minimal(&company_name),
+    );
     rsx! {
         CollapsibleCard {
             title: "Contacts",
             count,
             actions: rsx! {
+                a {
+                    href: "{new_contact_href}",
+                    class: "text-sm text-accent hover:opacity-90",
+                    "+ New Contact"
+                }
                 Button {
                     variant: ButtonVariant::Link,
                     onclick: move |_| show_add.set(true),
-                    "Add Contact"
+                    "Attach Existing"
                 }
                 a {
                     href: "{view_all_href}",
@@ -4840,11 +4855,15 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
     // mokosh-contact-login prompt 003: fetch the tenant's portal_roles
     // + the contact's current assigned role_ids so the modal below can
     // pre-check the correct boxes.
+    //
+    // Preserves the Err arm (previously `.unwrap_or_default()`) so a
+    // 401/403/500 renders as "Could not load portal roles: {msg}" in
+    // the modal instead of the misleading "No portal roles configured
+    // yet" empty-list copy.
     let roles_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_authed::<Vec<PortalRoleSummaryWire>>("/contacts/portal-roles")
             .await
-            .unwrap_or_default()
     });
     let assigned_id = contact_id.clone();
     let assigned_resource = use_resource(move || {
@@ -4858,7 +4877,15 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
             .unwrap_or_default()
         }
     });
-    let roles = roles_resource.read_unchecked().clone().unwrap_or_default();
+    let roles_snap = roles_resource.read_unchecked().clone();
+    let roles: Vec<PortalRoleSummaryWire> = match &roles_snap {
+        Some(Ok(v)) => v.clone(),
+        _ => Vec::new(),
+    };
+    let roles_fetch_error: Option<String> = match &roles_snap {
+        Some(Err(e)) => Some(e.to_string()),
+        _ => None,
+    };
     let assigned = assigned_resource
         .read_unchecked()
         .clone()
@@ -5085,9 +5112,13 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                         p { class: "text-xs text-muted",
                             "Pick every role this contact should hold. Effective capabilities are the union across all picked roles."
                         }
-                        if roles.is_empty() {
+                        if let Some(err_msg) = roles_fetch_error.as_deref() {
+                            p { role: "alert", class: "text-sm text-red-600 dark:text-red-400",
+                                "Could not load portal roles: {err_msg}"
+                            }
+                        } else if roles.is_empty() {
                             p { class: "text-sm text-muted",
-                                "No portal roles configured yet. Ask an admin to create one in Settings > Contact Roles."
+                                "No portal roles configured yet. Open Settings, then Service & Asset Types, then Contact Roles to create one."
                             }
                         } else {
                             div { class: "space-y-2 max-h-64 overflow-y-auto",
