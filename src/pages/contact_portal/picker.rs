@@ -75,6 +75,13 @@ pub struct ContactLoginResponseWire {
     pub mfa_required: bool,
     #[serde(default)]
     pub contact: Option<ContactSnippetWire>,
+    /// mokosh-contact-login option-1 first-login gate: server refused
+    /// to mint the session because the target contact has never set a
+    /// password. SPA MUST navigate to this URL so the recipient
+    /// completes the set-password step before landing on `/dashboard`.
+    /// `None` on the happy path.
+    #[serde(default)]
+    pub password_setup_url: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Debug, Default, PartialEq)]
@@ -134,6 +141,11 @@ pub enum RedeemBranch {
     InstallSession,
     /// Single-match, MFA required: render TOTP input.
     PromptMfa,
+    /// mokosh-contact-login option-1 first-login gate: server told us
+    /// the target contact has never set a password. Carries the
+    /// server-supplied `/portal/{slug}/set-password?token=...` URL the
+    /// page must navigate to before any session is installed.
+    RedirectToSetPassword(String),
     /// Multi-match with a non-empty candidate list: render the picker.
     ShowPicker,
     /// Everything else (both `None`, or an empty candidate list, or
@@ -147,6 +159,15 @@ pub enum RedeemBranch {
 /// running Dioxus tree.
 pub fn classify_redeem(outcome: &LoginLinkRedeemOutcomeWire) -> RedeemBranch {
     if let Some(resp) = &outcome.auto {
+        // option-1: password_setup_url wins over both mfa_required and
+        // the session-install path. Server won't have set both, but if
+        // it does the setup URL takes precedence because we CAN'T
+        // install a session that wasn't minted.
+        if let Some(url) = resp.password_setup_url.as_ref() {
+            if !url.is_empty() {
+                return RedeemBranch::RedirectToSetPassword(url.clone());
+            }
+        }
         if resp.mfa_required {
             return RedeemBranch::PromptMfa;
         }
@@ -170,6 +191,17 @@ mod tests {
             refresh_token: "rt".into(),
             mfa_required: mfa,
             contact: None,
+            password_setup_url: None,
+        }
+    }
+
+    fn resp_needs_setup(url: &str) -> ContactLoginResponseWire {
+        ContactLoginResponseWire {
+            access_token: String::new(),
+            refresh_token: String::new(),
+            mfa_required: false,
+            contact: None,
+            password_setup_url: Some(url.to_string()),
         }
     }
 
@@ -215,6 +247,35 @@ mod tests {
     fn invalid_link_when_both_none() {
         let outcome = LoginLinkRedeemOutcomeWire::default();
         assert_eq!(classify_redeem(&outcome), RedeemBranch::InvalidLink);
+    }
+
+    #[test]
+    fn redirect_to_set_password_branch() {
+        let url = "/portal/K3F9M7N2Q8XR5J4W/set-password?token=abc.def";
+        let outcome = LoginLinkRedeemOutcomeWire {
+            auto: Some(resp_needs_setup(url)),
+            candidates: None,
+        };
+        assert_eq!(
+            classify_redeem(&outcome),
+            RedeemBranch::RedirectToSetPassword(url.to_string())
+        );
+    }
+
+    #[test]
+    fn setup_url_takes_precedence_over_mfa() {
+        let url = "/portal/K3F9M7N2Q8XR5J4W/set-password?token=abc.def";
+        let mut r = resp_needs_setup(url);
+        r.mfa_required = true;
+        let outcome = LoginLinkRedeemOutcomeWire {
+            auto: Some(r),
+            candidates: None,
+        };
+        assert_eq!(
+            classify_redeem(&outcome),
+            RedeemBranch::RedirectToSetPassword(url.to_string()),
+            "option-1 setup gate must win over MFA prompt: cannot MFA a session that was never minted"
+        );
     }
 
     #[test]
@@ -282,6 +343,19 @@ pub fn ContactPickerPage(token: String) -> Element {
                         }
                         RedeemBranch::PromptMfa => {
                             state.set(PickerState::MfaAuto);
+                        }
+                        RedeemBranch::RedirectToSetPassword(url) => {
+                            // option-1 first-login gate: hard-nav to the
+                            // server-supplied /portal/{slug}/set-password
+                            // URL. Cannot use nav.push() (Dioxus router
+                            // works on the typed Route enum, not raw
+                            // path strings) so hop through
+                            // window.location.
+                            if let Some(win) = web_sys::window() {
+                                let _ = win.location().set_href(&url);
+                            } else {
+                                state.set(PickerState::Invalid);
+                            }
                         }
                         RedeemBranch::ShowPicker => {
                             if let Some(cands) = outcome.candidates {
@@ -397,6 +471,20 @@ pub fn ContactPickerPage(token: String) -> Element {
             {
                 match post_select(&sel_tok, cid, None).await {
                     Ok(resp) => {
+                        if let Some(url) = resp.password_setup_url.as_ref() {
+                            if !url.is_empty() {
+                                // option-1 first-login gate on the
+                                // select path: hard-nav to the setup URL
+                                // scoped to the picked contact's Company.
+                                if let Some(win) = web_sys::window() {
+                                    let _ = win.location().set_href(url);
+                                } else {
+                                    state.set(PickerState::Invalid);
+                                }
+                                submitting.set(false);
+                                return;
+                            }
+                        }
                         if resp.mfa_required {
                             state.set(PickerState::MfaSelect {
                                 selection_token: sel_tok,
