@@ -2312,6 +2312,23 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         }
     };
 
+    // MAPPS-588: paste a screenshot straight into the body.
+    //
+    // Installed from an effect because the textarea has to exist first, and
+    // through an `EventHandler` because the listener behind this runs with no
+    // dioxus scope on the stack (MAPPS-586: a bare closure there killed the
+    // page). Installing is idempotent, so a re-render cannot stack up
+    // listeners and upload the same paste twice.
+    use_effect(move || {
+        crate::platform::clipboard::on_paste_image(
+            "content",
+            EventHandler::new(move |f: (String, String, Vec<u8>)| {
+                let mut upload = upload_image;
+                upload(f);
+            }),
+        );
+    });
+
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
         error.set(String::new());
@@ -4213,6 +4230,38 @@ mod editor_ux_tests {
         assert!(
             create.contains(r#"status: "draft".to_string()"#),
             "the auto-created article must be a draft, found: {create}"
+        );
+    }
+
+    /// MAPPS-588. Paste goes through the platform listener and an
+    /// `EventHandler`, and reuses the same uploader the picker and the drop
+    /// use.
+    ///
+    /// The `EventHandler` is the load-bearing half: that listener runs with no
+    /// dioxus scope, and a bare closure there is the MAPPS-586 crash. Reusing
+    /// `upload_image` is the other half, because it carries the type and size
+    /// checks, the create-the-article-if-needed step and the error reporting;
+    /// a second path would have to grow all of it again.
+    #[test]
+    fn a_pasted_image_takes_the_same_route_as_a_picked_one() {
+        let code = code_only();
+        assert!(
+            code.contains("crate::platform::clipboard::on_paste_image("),
+            "the paste listener lives in the platform layer (MAPPS-504)"
+        );
+        assert!(
+            code.contains("EventHandler::new(move |f: (String, String, Vec<u8>)| {"),
+            "and reports through an EventHandler, which pushes its own scope"
+        );
+        // One uploader, three ways in: declared once, then reached by the
+        // toolbar's picker, the drop handler and the paste handler. A fourth
+        // way in that built its own path would have to grow the size checks,
+        // the create-the-article step and the error reporting all over again.
+        assert_eq!(
+            code.matches("upload_image").count(),
+            4,
+            "one declaration and three entry points: the picker, the drop and \
+             the paste"
         );
     }
 

@@ -117,6 +117,12 @@ js-sys = "0.3"
 # desktop build has no console to forward to and keeps the default Rust
 # panic handler, which already writes a backtrace to stderr.
 console_error_panic_hook = "0.1"
+# MAPPS-588: awaiting a JS promise from the platform layer. A pasted image
+# arrives as a `File`, and turning one into bytes is `Blob::array_buffer()`,
+# which returns a promise. The alternative is `FileReader` plus a second
+# forgotten `Closure` for its `load` event, and forgotten closures around
+# dioxus state are what MAPPS-586 was.
+wasm-bindgen-futures = "0.4"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies.getrandom]
 version = "0.3"
@@ -167,6 +173,14 @@ features = [
     # MAPPS-432: /auth/callback logs one console.error line before it silently
     # restarts the login flow, so the suppressed error leaves a record.
     "console",
+    # MAPPS-588: paste an image into the KB body. dioxus-html 0.7's
+    # `ClipboardData` carries no files, only the event, so the paste is read
+    # from a real listener over `clipboardData.items`.
+    "ClipboardEvent",
+    "DataTransfer",
+    "DataTransferItem",
+    "DataTransferItemList",
+    "File",
 ]
 
 # MAPPS-504: the native half of `src/platform/`. `reqwest` replaces browser

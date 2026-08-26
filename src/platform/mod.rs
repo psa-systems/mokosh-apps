@@ -17,6 +17,7 @@
 //! target and produced bindings that panicked when called, which is the
 //! failure mode this arrangement exists to prevent.
 
+pub mod clipboard;
 pub mod clock;
 pub mod config;
 pub mod dom;
