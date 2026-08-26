@@ -291,6 +291,26 @@ mod tests {
         );
     }
 
+    /// MAPPS-596: the before/after block existed three times, as the same rsx
+    /// copy-pasted into the project, task and asset panes. `line-through` on a
+    /// value is its signature, and it belongs to this component alone now. A
+    /// page that inlines the block again gets its own collapse rule, or none.
+    #[test]
+    fn the_before_after_block_is_rendered_here_and_nowhere_else() {
+        const PAGES: [(&str, &str); 3] = [
+            ("pages/projects.rs", include_str!("../pages/projects.rs")),
+            ("pages/assets.rs", include_str!("../pages/assets.rs")),
+            ("pages/tickets.rs", include_str!("../pages/tickets.rs")),
+        ];
+        for (path, src) in PAGES {
+            assert!(
+                !src.contains("line-through text-subtle"),
+                "{path} renders its own before/after block; it should render \
+                 ChangeHistoryEntry or ChangeDetails instead"
+            );
+        }
+    }
+
     /// The toggle is a real button carrying its state, not a clickable span.
     /// It is the only way to reach the content, so a keyboard user who cannot
     /// reach it cannot read the history at all.
