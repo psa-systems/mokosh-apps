@@ -67,6 +67,14 @@ pub struct MarkdownEditorProps {
     /// MAPPS-587: where a picked file goes. See the module header.
     #[props(default)]
     pub on_file: Option<EventHandler<(String, String, Vec<u8>)>>,
+    /// MAPPS-594: keep the label out of the flow while still using it.
+    ///
+    /// For a host that already names the field, such as a card whose title is
+    /// "Description" wrapping the description editor. The label still names the
+    /// field in a validation message and still gives the textarea its
+    /// accessible name; it is only the second visible copy that goes.
+    #[props(default = false)]
+    pub label_hidden: bool,
     /// Extra classes on the wrapper.
     #[props(default)]
     pub class: String,
@@ -87,7 +95,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
             // two are one control. `Textarea` would otherwise draw it between
             // them, where it reads as a caption on the toolbar. Still a real
             // `<label for>`, so the field keeps its accessible name.
-            if !props.label.is_empty() {
+            if !props.label.is_empty() && !props.label_hidden {
                 label {
                     r#for: "{props.name}",
                     class: "block text-sm font-medium text-content",
@@ -113,6 +121,8 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
             Textarea {
                 name: props.name.clone(),
                 label: props.label.clone(),
+                // Always hidden on the field itself: this component draws the
+                // label above the toolbar, or the host does.
                 label_hidden: true,
                 placeholder: props.placeholder.clone(),
                 rows: props.rows,
