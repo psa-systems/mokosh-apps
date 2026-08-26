@@ -14,12 +14,15 @@
 
 use chrono::{DateTime, Utc};
 
-/// The point past which a value is cut. Long enough to recognise a sentence,
-/// short enough that a full description does not land in the pane.
+/// The point past which a value is cut when it is shown WHOLE.
 ///
-/// MAPPS-601 will replace both-sides-truncated with a word-level diff, at
-/// which point this cap moves onto the diff rather than onto each side.
-const VALUE_CHARS: usize = 160;
+/// MAPPS-601 moved the cut off `fmt_change_value` and onto this, because
+/// truncating each side independently is exactly what made a description edit
+/// unreadable: two 160-character strings, identical except somewhere in the
+/// middle, both ending mid-word. A pair that can be diffed is now shortened by
+/// eliding what did not change, and only a pair that cannot (a short field, a
+/// wholesale rewrite) is cut here.
+pub const VALUE_CHARS: usize = 160;
 
 /// Humanize an audit `action` code.
 ///
@@ -79,8 +82,12 @@ pub fn looks_like_uuid(s: &str) -> bool {
 }
 
 /// Render an audit value for display: `"(empty)"` for null or blank, the
-/// trimmed text (truncated) for strings, a coarse marker for a reference or
-/// an object.
+/// trimmed text for strings, a coarse marker for a reference or an object.
+///
+/// MAPPS-601: NOT truncated. The word diff needs both values whole, or it
+/// diffs two strings that were already cut at 160 characters and reports the
+/// cut as a change. [`shorten`] is what applies the cap, at the point a value
+/// is about to be shown whole.
 ///
 /// PMS-317's date branch used to exist only in the projects copy, so an asset
 /// warranty date or a ticket due date rendered as the raw `2026-03-01` the
@@ -97,8 +104,6 @@ pub fn fmt_change_value(v: &Option<serde_json::Value>) -> String {
                 d.format("%b %-d, %Y").to_string()
             } else if looks_like_uuid(t) {
                 "(reference)".to_string()
-            } else if t.chars().count() > VALUE_CHARS {
-                format!("{}…", t.chars().take(VALUE_CHARS).collect::<String>())
             } else {
                 t.to_string()
             }
@@ -119,6 +124,18 @@ pub fn headline(action: &str, changed_fields: &[String]) -> String {
         label
     } else {
         format!("{label}: {}", fields_label(changed_fields))
+    }
+}
+
+/// Cut a value that is about to be shown whole, marking that it was cut.
+///
+/// Only for the path where there is no diff to show: a short field, or two
+/// values with too little in common to be worth interleaving.
+pub fn shorten(s: &str) -> String {
+    if s.chars().count() > VALUE_CHARS {
+        format!("{}…", s.chars().take(VALUE_CHARS).collect::<String>())
+    } else {
+        s.to_string()
     }
 }
 
@@ -192,12 +209,24 @@ mod tests {
         assert_eq!(fmt_change_value(&Some(json!({"a": 1}))), "(updated)");
     }
 
+    /// MAPPS-601: the formatter hands back the whole value. Truncating here is
+    /// what made a description edit unreadable, because the diff then compared
+    /// two strings that had already been cut at the same offset and reported
+    /// the cut as unchanged text.
     #[test]
-    fn a_long_value_is_cut_and_says_so() {
+    fn a_long_value_arrives_whole() {
         let long = "x".repeat(VALUE_CHARS + 40);
-        let out = fmt_change_value(&Some(json!(long)));
+        let out = fmt_change_value(&Some(json!(long.clone())));
+        assert_eq!(out, long, "nothing is cut on the way out of the formatter");
+    }
+
+    #[test]
+    fn shorten_is_what_cuts_and_it_says_so() {
+        let long = "x".repeat(VALUE_CHARS + 40);
+        let out = shorten(&long);
         assert!(out.ends_with('…'), "{out}");
         assert_eq!(out.chars().count(), VALUE_CHARS + 1);
+        assert_eq!(shorten("short"), "short", "a short value is untouched");
     }
 
     #[test]
