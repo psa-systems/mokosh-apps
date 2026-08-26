@@ -456,8 +456,25 @@ pub mod api {
     /// session can send them to `/portal/{slug}/login` rather than the
     /// staff `/login`. Written by the contact-login page on success;
     /// cleared alongside the refresh token on logout.
+    ///
+    /// DEPRECATED post MAPPS-589 (prompt 011): kept for one release
+    /// cycle so a cold-load on old client code still finds a value.
+    /// New writes flow through both this key and
+    /// [`CONTACT_LAST_PORTAL_ID_STORAGE_KEY`]; bootstrap prefers the
+    /// portal-id key when present.
     #[cfg(feature = "web")]
     pub const CONTACT_LAST_SLUG_STORAGE_KEY: &str = "mokosh:contact_last_slug";
+
+    /// MAPPS-589 (prompt 011): `localStorage` key that remembers "this
+    /// browser last signed in as a contact on Portal ID N" so the
+    /// AuthGuard bounce for an expired session can send them to
+    /// `/portal/{portal_id}/login` (the new URL shape) rather than the
+    /// slug-based path. Written by every contact login flow that gets
+    /// a Portal ID (either from the URL handle or from the server
+    /// response's `contact.portal_id` field, once PMS-928 lands).
+    /// Cleared alongside the refresh token on logout.
+    #[cfg(feature = "web")]
+    pub const CONTACT_LAST_PORTAL_ID_STORAGE_KEY: &str = "mokosh:contact_last_portal_id";
 
     /// Set the contact access token. `None` clears the in-memory slot.
     /// Does NOT bump [`super::TENANT_GENERATION`]: the contact plane
@@ -552,12 +569,52 @@ pub mod api {
         }
     }
 
+    /// MAPPS-589 (prompt 011): remember the last Portal ID this
+    /// browser signed in on. Written by every contact login flow that
+    /// receives a numeric Portal ID; preferred by the AuthGuard
+    /// cold-load bootstrap over the legacy slug key.
+    #[cfg(feature = "web")]
+    pub fn set_contact_last_portal_id(value: &str) {
+        if let Some(win) = web_sys::window() {
+            if let Ok(Some(storage)) = win.local_storage() {
+                let _ = storage.set_item(CONTACT_LAST_PORTAL_ID_STORAGE_KEY, value);
+            }
+        }
+    }
+
+    /// MAPPS-589 (prompt 011): read the last-known Portal ID this
+    /// browser signed in on. `None` when no contact login carrying a
+    /// Portal ID has happened yet (the legacy slug-only flow leaves
+    /// this key unset).
+    #[cfg(feature = "web")]
+    pub fn current_contact_last_portal_id() -> Option<String> {
+        let win = web_sys::window()?;
+        let storage = win.local_storage().ok().flatten()?;
+        let stored = storage
+            .get_item(CONTACT_LAST_PORTAL_ID_STORAGE_KEY)
+            .ok()
+            .flatten()?;
+        if stored.is_empty() {
+            None
+        } else {
+            Some(stored)
+        }
+    }
+
     /// Clear the entire contact session. Setting the refresh token to
-    /// `None` clears its localStorage mirror as well.
+    /// `None` clears its localStorage mirror as well; both last-*
+    /// keys are wiped so a follow-up cold-load starts blank rather
+    /// than latching onto a stale hint.
     #[cfg(feature = "web")]
     pub fn clear_contact_session() {
         set_contact_access_token(None);
         set_contact_refresh_token(None);
+        if let Some(win) = web_sys::window() {
+            if let Ok(Some(storage)) = win.local_storage() {
+                let _ = storage.remove_item(CONTACT_LAST_SLUG_STORAGE_KEY);
+                let _ = storage.remove_item(CONTACT_LAST_PORTAL_ID_STORAGE_KEY);
+            }
+        }
     }
 
     // The web-only API helpers below are grouped under this `api`

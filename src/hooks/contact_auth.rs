@@ -42,6 +42,16 @@ struct RefreshResp {
 struct RefreshContactSnippet {
     #[serde(default)]
     caps: Vec<String>,
+    /// MAPPS-589 (prompt 011): carried when PMS-928 has landed so the
+    /// AuthGuard bootstrap can prefer the Portal-ID bounce path.
+    /// Optional so the deserialise still round-trips a legacy
+    /// response body that pre-dates the field.
+    #[serde(default)]
+    portal_id: Option<i64>,
+    /// Legacy slug the session is scoped to (kept during the
+    /// transition window that keeps `portal_slug` on the server).
+    #[serde(default)]
+    portal_slug: String,
 }
 
 /// Rotate the contact session using the stored refresh token.
@@ -72,6 +82,18 @@ pub async fn refresh_contact_session() -> Result<(), String> {
                 .unwrap_or_default();
             crate::hooks::fetch::api::set_contact_access_token(Some(resp.access_token));
             crate::hooks::fetch::api::set_contact_refresh_token(Some(resp.refresh_token));
+            // MAPPS-589 (prompt 011): mirror last_slug + last_portal_id
+            // from the refresh response, so a long-lived tab that has
+            // never re-logged-in also picks up the Portal ID as soon as
+            // PMS-928 starts returning it.
+            if let Some(snippet) = resp.contact.as_ref() {
+                if !snippet.portal_slug.is_empty() {
+                    crate::hooks::fetch::api::set_contact_last_slug(&snippet.portal_slug);
+                }
+                if let Some(pid) = snippet.portal_id {
+                    crate::hooks::fetch::api::set_contact_last_portal_id(&pid.to_string());
+                }
+            }
             crate::hooks::capabilities::set_contact_capabilities(Some(caps));
             Ok(())
         }

@@ -78,7 +78,7 @@ pub fn ContactForgotPasswordPage(slug: String) -> Element {
                         r#type: "button".to_string(),
                         class: "w-full".to_string(),
                         onclick: move |_| {
-                            nav.replace(Route::ContactLogin { slug: slug_for_done.clone() });
+                            nav.replace(Route::ContactHandleLogin { handle: slug_for_done.clone() });
                         },
                         "Back to sign in"
                     }
@@ -126,7 +126,7 @@ pub fn ContactForgotPasswordPage(slug: String) -> Element {
                             r#type: "button".to_string(),
                             class: "w-full".to_string(),
                             onclick: move |_| {
-                                nav.replace(Route::ContactLogin { slug: slug_for_back.clone() });
+                                nav.replace(Route::ContactHandleLogin { handle: slug_for_back.clone() });
                             },
                             "Back to sign in"
                         }

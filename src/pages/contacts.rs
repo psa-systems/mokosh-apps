@@ -4791,10 +4791,18 @@ struct ContactPortalCardProps {
 /// mokosh-contact-login prompt 003: response shape from POST
 /// /contacts/contacts/{id}/grant-portal-access. Mirrors the server's
 /// `PortalGrantOutcome`.
+///
+/// MAPPS-589 (prompt 011): `portal_id` is an `Option<i64>` so the
+/// deserialiser accepts both a pre-PMS-928 body (field absent) and a
+/// post-PMS-928 body carrying the 9-digit numeric Portal ID assigned
+/// to the Company by `ensure_portal_id`. When `None`, the card falls
+/// back to the legacy slug-based setup URL.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct PortalGrantOutcomeWire {
     portal_slug: String,
     setup_link: String,
+    #[serde(default)]
+    portal_id: Option<i64>,
 }
 
 /// mokosh-contact-login prompt 003: one row of GET
@@ -4849,6 +4857,12 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
     let mut picked: Signal<Vec<uuid::Uuid>> = use_signal(Vec::new);
     let mut error = use_signal(String::new);
     let mut last_setup_link = use_signal(String::new);
+    // MAPPS-589 (prompt 011): captured from the grant response so the
+    // card can render "Portal ID: 555556666" alongside the setup link
+    // once PMS-928 lands. `None` when the server response pre-dates
+    // the field (the card falls back to showing the slug-based setup
+    // link on its own).
+    let mut last_portal_id: Signal<Option<i64>> = use_signal(|| None);
 
     // Every time we open the modal, seed `picked` with the current
     // assignment set so the operator sees pre-checked boxes.
@@ -4882,6 +4896,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
             {
                 Ok(outcome) => {
                     last_setup_link.set(outcome.setup_link.clone());
+                    last_portal_id.set(outcome.portal_id);
                     crate::hooks::toast::push_toast(
                         crate::components::AlertType::Success,
                         "Portal access granted. Setup email queued.".to_string(),
@@ -4981,6 +4996,19 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                                     Badge { key: "{name}", variant: BadgeVariant::Blue, "{name}" }
                                 }
                             }
+                        }
+                    }
+                    // MAPPS-589 (prompt 011): render the Portal ID
+                    // beside the setup link so the operator can read
+                    // it back to the customer over the phone. Only
+                    // shown when the grant response carried a
+                    // `portal_id` (post-PMS-928); pre-PMS-928
+                    // responses fall through to the setup-link-only
+                    // shape below.
+                    if let Some(pid) = *last_portal_id.read() {
+                        p { class: "text-xs text-muted",
+                            span { class: "font-medium text-content", "Portal ID: " }
+                            code { class: "text-xs", "{pid}" }
                         }
                     }
                     if !last_setup_link.read().is_empty() {

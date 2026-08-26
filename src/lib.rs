@@ -376,8 +376,21 @@ pub enum Route {
     // password-write routes arrives via the MAPPS-560 query-segment
     // shape so the component receives it as a prop rather than
     // scraping `window.location.search`.
-    #[route("/portal/:slug/login")]
-    ContactLogin { slug: String },
+    //
+    // MAPPS-589 (prompt 011): the primary three-field login page
+    // (Portal ID + email + password) mounts at `/portal/login`; the
+    // Portal-ID-scoped page shares the `/portal/:handle/login` path
+    // shape with the legacy slug login and is dispatched at render
+    // time by the `ContactHandleLogin` wrapper (shape check on the
+    // handle: 9 ASCII digits -> Portal ID, otherwise legacy slug).
+    // Collapsing the two into ONE route avoids the Dioxus route
+    // collision that having two `/portal/:X/login` shapes would
+    // create.
+    #[route("/portal/login")]
+    ContactGenericLogin {},
+
+    #[route("/portal/:handle/login")]
+    ContactHandleLogin { handle: String },
 
     #[route("/portal/:slug/set-password?:token")]
     ContactSetPassword { slug: String, token: String },
@@ -388,12 +401,18 @@ pub enum Route {
     #[route("/portal/:slug/reset-password?:token")]
     ContactResetPassword { slug: String, token: String },
 
-    // MAPPS-572 (prompt 010): slug-less magic-link finder + Company
-    // picker. Both public (no AuthGuard). Finder accepts an optional
+    // MAPPS-572 (prompt 010): magic-link finder + Company picker.
+    // Both public (no AuthGuard). Finder accepts an optional
     // `?email=` query segment so the picker's "Request a new sign-in
     // link" button, and the password-login page's "sign in without a
     // password" affordance, can pre-fill the field on hop.
-    #[route("/portal/login?:email")]
+    //
+    // MAPPS-589 (prompt 011): moved from `/portal/login` to
+    // `/portal/find?:email` so the shorter path can host the primary
+    // three-field password page. The finder path change is contained
+    // to the router: every in-code Link/nav.replace still uses the
+    // `Route::ContactMagicLinkLogin` variant.
+    #[route("/portal/find?:email")]
     ContactMagicLinkLogin { email: String },
 
     #[route("/portal/pick?:token")]
@@ -1517,9 +1536,33 @@ fn Teams() -> Element {
 // contact-plane replacements below land per prompt 005 under a new
 // route family (`ContactLogin` etc.) with no PortalGuard layout.
 
+// MAPPS-589 (prompt 011): the two new public login routes.
+//
+// - `ContactGenericLogin` at `/portal/login` renders the three-field
+//   Portal ID + email + password form.
+// - `ContactHandleLogin` at `/portal/:handle/login` collapses the
+//   legacy `/portal/:slug/login` and the new
+//   `/portal/:portal_id/login` into ONE route so we do not ship two
+//   `/portal/:X/login` shapes (Dioxus would not be able to
+//   deterministically pick between them). The wrapper inspects the
+//   `handle` at render time: a 9-digit numeric handle mounts the
+//   `ContactLoginByPortalIdPage`; anything else falls through to the
+//   legacy `ContactLoginPage`, which itself fires the slug ->
+//   portal_id resolve-and-redirect on mount (see
+//   `src/pages/contact_portal/login.rs`). Live invitation emails
+//   built against a slug URL continue to work through this path.
 #[component]
-fn ContactLogin(slug: String) -> Element {
-    rsx! { contact_portal::login::ContactLoginPage { slug } }
+fn ContactGenericLogin() -> Element {
+    rsx! { contact_portal::generic_login::ContactGenericLoginPage {} }
+}
+
+#[component]
+fn ContactHandleLogin(handle: String) -> Element {
+    if contact_portal::generic_login::handle_is_portal_id_shape(&handle) {
+        rsx! { contact_portal::portal_id_login::ContactLoginByPortalIdPage { portal_id: handle } }
+    } else {
+        rsx! { contact_portal::login::ContactLoginPage { slug: handle } }
+    }
 }
 
 #[component]
@@ -1622,12 +1665,43 @@ mod contact_portal_routes {
     use super::Route;
     use std::str::FromStr;
 
+    // MAPPS-589 (prompt 011): the legacy slug route
+    // `/portal/:slug/login` and the new portal_id route
+    // `/portal/:portal_id/login` share the same `/portal/:X/login`
+    // shape and are collapsed into ONE `ContactHandleLogin` route.
+    // Both legacy Crockford-slug URLs and 9-digit-numeric Portal ID
+    // URLs resolve here; the wrapper (`src/lib.rs
+    // ContactHandleLogin`) dispatches at render time based on the
+    // handle shape.
     #[test]
-    fn login_resolves_with_slug() {
-        let route = Route::from_str("/portal/abc/login").expect("login parses");
+    fn login_with_legacy_slug_resolves_to_handle_route() {
+        let route =
+            Route::from_str("/portal/K3F9M7N2Q8XR5J4W/login").expect("legacy slug login parses");
         match route {
-            Route::ContactLogin { slug } => assert_eq!(slug, "abc"),
-            other => panic!("expected ContactLogin, got {other:?}"),
+            Route::ContactHandleLogin { handle } => {
+                assert_eq!(handle, "K3F9M7N2Q8XR5J4W");
+            }
+            other => panic!("expected ContactHandleLogin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn login_with_portal_id_resolves_to_handle_route() {
+        let route = Route::from_str("/portal/555556666/login").expect("portal-id login parses");
+        match route {
+            Route::ContactHandleLogin { handle } => {
+                assert_eq!(handle, "555556666");
+            }
+            other => panic!("expected ContactHandleLogin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn generic_login_resolves() {
+        let route = Route::from_str("/portal/login").expect("generic login parses");
+        match route {
+            Route::ContactGenericLogin {} => {}
+            other => panic!("expected ContactGenericLogin, got {other:?}"),
         }
     }
 
@@ -1671,9 +1745,14 @@ mod contact_portal_routes {
     // `?:email` per MAPPS-560) so the emailed magic link a server
     // builds under a bare `/portal/pick?token=...` URL round-trips
     // through the router without stripping the token.
+    //
+    // MAPPS-589 (prompt 011): the finder path moved from
+    // `/portal/login` to `/portal/find?:email` so the shorter path
+    // can host the primary three-field password page. The picker's
+    // token-carrying URL is unchanged.
     #[test]
     fn magic_link_login_resolves() {
-        let route = Route::from_str("/portal/login").expect("magic-link login parses");
+        let route = Route::from_str("/portal/find").expect("magic-link login parses");
         match route {
             Route::ContactMagicLinkLogin { email } => assert_eq!(email, ""),
             other => panic!("expected ContactMagicLinkLogin, got {other:?}"),
@@ -1682,7 +1761,7 @@ mod contact_portal_routes {
 
     #[test]
     fn magic_link_login_carries_email() {
-        let route = Route::from_str("/portal/login?email=alice%40example.com")
+        let route = Route::from_str("/portal/find?email=alice%40example.com")
             .expect("magic-link login with email parses");
         match route {
             Route::ContactMagicLinkLogin { email } => {

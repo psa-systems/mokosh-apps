@@ -1,25 +1,20 @@
-//! mokosh-contact-login prompt 005: contact-plane login page.
+//! MAPPS-589 (mokosh-contact-login prompt 011): Portal-ID-scoped
+//! contact login page.
 //!
-//! Mounted at `/portal/{slug}/login` via the `ContactHandleLogin`
-//! wrapper (`src/lib.rs`), which forwards here whenever the URL
-//! handle does NOT match the 9-digit Portal ID shape (i.e. a legacy
-//! Crockford slug bookmark). Public (no `AuthGuard`). The slug
-//! arrives as a component prop so no `window.location` scraping is
-//! needed to route the visitor back on failure. On success the
-//! contact-session tokens land in the in-memory + localStorage
-//! holders (`hooks::fetch::api::set_contact_*_token`) and the
-//! visitor is navigated to `/dashboard`, where the same mokosh
-//! workspace routes render but subsequent fetches carry the contact
-//! JWT (`typ: "contact"`, minted by the server in prompt 004).
+//! Mounted at `/portal/{portal_id}/login` via the `ContactHandleLogin`
+//! wrapper (see `src/lib.rs`), which forwards here whenever the URL
+//! handle matches the 9-digit numeric Portal ID shape. Public (no
+//! `AuthGuard`). Mirrors prompt 005's `ContactLoginPage` in every way
+//! except that the Portal ID is a READ-ONLY field ABOVE email and the
+//! login POST body carries `portal_id: i64` (no slug) so the server
+//! can resolve the Company without the legacy slug lookup.
 //!
-//! MAPPS-589 (prompt 011): before painting the slug-based form, this
-//! page fires `GET /contact/portal/{slug}/resolve-to-portal-id` on
-//! mount. On 200 (`{ portal_id: N }`), `nav.replace` the visitor
-//! into the Portal-ID-scoped page so live invitation emails
-//! transparently migrate. On 404 / any error, the slug form still
-//! renders as a fallback so a mid-transition visitor is never
-//! stranded (the server's dual-accept path still honours slug
-//! logins during the compat window).
+//! On success the contact-session tokens land in the in-memory +
+//! localStorage holders (`hooks::fetch::api::set_contact_*_token`) and
+//! the visitor is navigated to `/dashboard`. During the release cycle
+//! that keeps `portal_slug` around we ALSO write the deprecated
+//! `mokosh:contact_last_slug` key when the server response carries a
+//! slug, so a cold-load bootstrap on old code still finds a value.
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -27,20 +22,12 @@ use serde::{Deserialize, Serialize};
 use crate::components::{AuthLayout, Button, ButtonVariant, Input};
 use crate::Route;
 
-/// Server response shape for
-/// `GET /api/v1/contact/portal/{slug}/resolve-to-portal-id`
-/// (PMS-928). 200 with a numeric `portal_id` means the slug maps
-/// to a Company that has been assigned a Portal ID; 404 means the
-/// slug is unknown or has not been backfilled yet.
-#[derive(Deserialize, Clone, Debug)]
-struct ResolveToPortalIdResp {
-    #[serde(default)]
-    portal_id: Option<i64>,
-}
-
+/// Login request body. Portal ID is parsed to `i64` at submit time so
+/// the server's `ContactLoginRequest` receives the numeric shape the
+/// PMS-928 DTO defines (see prompt 011 §Login endpoint change).
 #[derive(Serialize)]
 struct LoginBody {
-    slug: String,
+    portal_id: i64,
     email: String,
     password: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -55,10 +42,6 @@ struct LoginResp {
     refresh_token: String,
     #[serde(default)]
     mfa_required: bool,
-    // Snapshot of the authenticated contact, populated on the full
-    // session return. Prompt 006 pulls `caps` off this into the
-    // capability hook so the sidebar and row actions gate off the
-    // fresh claim without another round-trip.
     #[serde(default)]
     contact: Option<ContactSnippet>,
 }
@@ -67,12 +50,25 @@ struct LoginResp {
 struct ContactSnippet {
     #[serde(default)]
     caps: Vec<String>,
+    /// Portal slug of the Company this session is for (kept during the
+    /// prompt 011 transition so callers still bootstrap the legacy key
+    /// on cold-load). Server drops this field alongside the
+    /// `portal_slug` column removal in a follow-up ticket.
+    #[serde(default)]
+    portal_slug: String,
+    /// Portal ID of the Company this session is for. Present once
+    /// PMS-928 ships; the client stores it in localStorage so a
+    /// subsequent cold-load reaches `/portal/{portal_id}/login`
+    /// directly instead of the slug-based bounce.
+    #[serde(default)]
+    portal_id: Option<i64>,
 }
 
-/// Public host hint served at `GET /contact/portal/{slug}/host` per
-/// prompt 004. Not authenticated; used to paint the branding block
-/// and the "portal not available" splash when the owning tenant is
-/// not active.
+/// Public host hint served at
+/// `GET /contact/portal/{portal_id}/host` (PMS-928 parallel to the
+/// existing slug endpoint). Not authenticated; used to paint the
+/// branding block and the MAPPS-559 "portal not available" splash
+/// when the owning tenant is not active.
 #[derive(Deserialize, Clone, Debug)]
 struct HostHint {
     #[serde(default)]
@@ -84,7 +80,7 @@ struct HostHint {
 }
 
 #[component]
-pub fn ContactLoginPage(slug: String) -> Element {
+pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
     let nav = use_navigator();
     let mut email = use_signal(String::new);
     let mut password = use_signal(String::new);
@@ -93,50 +89,20 @@ pub fn ContactLoginPage(slug: String) -> Element {
     let mut error = use_signal(String::new);
     let mut saving = use_signal(|| false);
 
-    // MAPPS-589 (prompt 011): resolve-and-redirect. Fire once on
-    // mount; if the server maps this slug to a Portal ID, hop the
-    // visitor into the Portal-ID-scoped page. Any failure (404,
-    // network, or 5xx) falls through to the slug form below - the
-    // server's dual-accept login still honours the slug during the
-    // compat window, so a mid-transition visitor is never stranded.
-    let slug_for_resolve = slug.clone();
-    use_effect(move || {
-        let slug = slug_for_resolve.clone();
-        spawn(async move {
-            #[cfg(feature = "web")]
-            {
-                let path = format!("/contact/portal/{slug}/resolve-to-portal-id");
-                if let Ok(resp) =
-                    crate::hooks::fetch::api::get_typed::<ResolveToPortalIdResp>(&path).await
-                {
-                    if let Some(pid) = resp.portal_id {
-                        nav.replace(Route::ContactHandleLogin {
-                            handle: pid.to_string(),
-                        });
-                    }
-                }
-            }
-            #[cfg(not(feature = "web"))]
-            {
-                let _ = slug;
-            }
-        });
-    });
-
-    let slug_for_host = slug.clone();
+    let portal_id_for_host = portal_id.clone();
     let host_resource: Resource<Option<HostHint>> = use_resource(move || {
-        let slug = slug_for_host.clone();
+        let pid = portal_id_for_host.clone();
         async move {
             #[cfg(feature = "web")]
             {
-                let path = format!("/contact/portal/{slug}/host");
+                let path = format!("/contact/portal/{pid}/host");
                 crate::hooks::fetch::api::get_typed::<HostHint>(&path)
                     .await
                     .ok()
             }
             #[cfg(not(feature = "web"))]
             {
-                let _ = slug;
+                let _ = pid;
                 None
             }
         }
@@ -160,9 +126,9 @@ pub fn ContactLoginPage(slug: String) -> Element {
         .map(|h| h.tenant_status.trim().to_ascii_lowercase())
         .unwrap_or_default();
     let host_loaded = host.is_some();
-    // MAPPS-559 shape: hide the form entirely when the owning tenant
-    // is suspended / terminated. A missing host hint (network / 404)
-    // falls through to the form so a bad slug still lets the visitor
+    // MAPPS-559 shape (mirrored from prompt 005): hide the form when
+    // the owning tenant is not active. A missing host hint falls
+    // through to the form so a bad Portal ID still lets the visitor
     // see a coherent page (submit will 401 or fail closed).
     let tenant_inactive = host_loaded && tenant_status != "active";
 
@@ -173,7 +139,7 @@ pub fn ContactLoginPage(slug: String) -> Element {
         _ => "Client Portal".to_string(),
     };
 
-    let slug_for_submit = slug.clone();
+    let portal_id_for_submit = portal_id.clone();
     let mut submit = move |_| {
         if saving() {
             return;
@@ -190,7 +156,15 @@ pub fn ContactLoginPage(slug: String) -> Element {
         } else {
             Some(mfa_raw)
         };
-        let slug = slug_for_submit.clone();
+        let pid_str = portal_id_for_submit.clone();
+        let Ok(pid_i64) = pid_str.parse::<i64>() else {
+            // The wrapper only forwards 9-digit numeric handles, so a
+            // parse failure here means the wrapper's shape check has
+            // drifted from what the server accepts. Surface as an
+            // opaque error rather than firing a garbage POST.
+            error.set("Invalid Portal ID.".to_string());
+            return;
+        };
         saving.set(true);
         error.set(String::new());
         spawn(async move {
@@ -198,7 +172,7 @@ pub fn ContactLoginPage(slug: String) -> Element {
             {
                 use crate::hooks::fetch::api::ApiError;
                 let body = LoginBody {
-                    slug: slug.clone(),
+                    portal_id: pid_i64,
                     email: em,
                     password: pw,
                     mfa_code: mfa,
@@ -215,18 +189,7 @@ pub fn ContactLoginPage(slug: String) -> Element {
                             .set("Enter the 6-digit code from your authenticator app.".to_string());
                     }
                     Ok(resp) => {
-                        let caps = resp
-                            .contact
-                            .as_ref()
-                            .map(|c| c.caps.clone())
-                            .unwrap_or_default();
-                        crate::hooks::fetch::api::set_contact_access_token(Some(resp.access_token));
-                        crate::hooks::fetch::api::set_contact_refresh_token(Some(
-                            resp.refresh_token,
-                        ));
-                        crate::hooks::fetch::api::set_contact_last_slug(&slug);
-                        crate::hooks::capabilities::set_contact_capabilities(Some(caps));
-                        nav.replace(Route::Dashboard {});
+                        install_session(&nav, resp, &pid_str);
                     }
                     Err(ApiError::Status { code: 401, .. }) => {
                         error.set("Invalid credentials.".to_string());
@@ -239,13 +202,13 @@ pub fn ContactLoginPage(slug: String) -> Element {
             }
             #[cfg(not(feature = "web"))]
             {
-                let _ = slug;
+                let _ = (pid_i64, pid_str);
             }
             saving.set(false);
         });
     };
 
-    let slug_for_forgot = slug.clone();
+    let portal_id_readonly = portal_id.clone();
     rsx! {
         AuthLayout {
             if tenant_inactive {
@@ -268,6 +231,17 @@ pub fn ContactLoginPage(slug: String) -> Element {
                         evt.prevent_default();
                         submit(());
                     },
+                    // Portal ID displayed as a read-only field ABOVE
+                    // email so the contact learns / recognises the
+                    // number they can dictate over the phone (prompt
+                    // 011 primary UX goal).
+                    Input {
+                        name: "portal_id",
+                        label: "Portal ID",
+                        r#type: "text".to_string(),
+                        value: portal_id_readonly.clone(),
+                        disabled: true,
+                    }
                     Input {
                         name: "email",
                         label: "Email",
@@ -317,37 +291,58 @@ pub fn ContactLoginPage(slug: String) -> Element {
                             class: "w-full".to_string(),
                             "Sign in"
                         }
-                        Button {
-                            variant: ButtonVariant::Secondary,
-                            disabled: saving(),
-                            r#type: "button".to_string(),
-                            class: "w-full".to_string(),
-                            onclick: move |_| {
-                                nav.push(Route::ContactForgotPassword { slug: slug_for_forgot.clone() });
-                            },
-                            "Forgot password?"
-                        }
                     }
-                    // MAPPS-572 (prompt 010): magic-link escape hatch.
-                    // Hands the typed email over via the `?email=`
-                    // query so the finder can pre-fill without a
-                    // re-type. Rendered as a plain link (not a full
-                    // Button) so it does not compete visually with
-                    // the primary sign-in / forgot-password affordances.
+                    // Magic-link escape hatch. Points at the generic
+                    // three-field page (`/portal/login`), which
+                    // itself carries a "Or sign in without a password"
+                    // link to the actual magic-link finder. Two hops
+                    // out to the finder rather than one keeps the
+                    // portal-id-scoped page focused on password login
+                    // and matches the prompt 011 spec wording.
                     div { class: "pt-4 text-center",
-                        {
-                            let hop_email = email.read().trim().to_string();
-                            rsx! {
-                                Link {
-                                    to: Route::ContactMagicLinkLogin { email: hop_email },
-                                    class: "text-sm text-accent hover:underline",
-                                    "Or sign in without a password"
-                                }
-                            }
+                        Link {
+                            to: Route::ContactGenericLogin {},
+                            class: "text-sm text-accent hover:underline",
+                            "Or sign in without a password"
                         }
                     }
                 }
             }
         }
     }
+}
+
+/// Install the tokens + capabilities from a successful login response
+/// and hop to `/dashboard`. Kept behind `#[cfg(feature = "web")]` so
+/// the non-web build compiles without touching localStorage.
+#[cfg(feature = "web")]
+fn install_session(nav: &dioxus::router::Navigator, resp: LoginResp, portal_id_str: &str) {
+    let caps = resp
+        .contact
+        .as_ref()
+        .map(|c| c.caps.clone())
+        .unwrap_or_default();
+    let slug = resp
+        .contact
+        .as_ref()
+        .map(|c| c.portal_slug.clone())
+        .unwrap_or_default();
+    let response_portal_id = resp.contact.as_ref().and_then(|c| c.portal_id);
+    crate::hooks::fetch::api::set_contact_access_token(Some(resp.access_token));
+    crate::hooks::fetch::api::set_contact_refresh_token(Some(resp.refresh_token));
+    // Prefer the server-supplied portal_id (source of truth once PMS-928
+    // ships); fall back to the URL handle so a pre-PMS-928 response still
+    // writes the key.
+    let portal_id_to_store = response_portal_id
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| portal_id_str.to_string());
+    crate::hooks::fetch::api::set_contact_last_portal_id(&portal_id_to_store);
+    // Transition-window write: keep the legacy last-slug key populated
+    // when the server carries a slug so a hard refresh on old client
+    // code still finds a value.
+    if !slug.is_empty() {
+        crate::hooks::fetch::api::set_contact_last_slug(&slug);
+    }
+    crate::hooks::capabilities::set_contact_capabilities(Some(caps));
+    nav.replace(Route::Dashboard {});
 }

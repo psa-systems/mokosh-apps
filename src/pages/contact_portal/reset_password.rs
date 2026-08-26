@@ -147,7 +147,7 @@ pub fn ContactResetPasswordPage(slug: String, token: String) -> Element {
                         r#type: "button".to_string(),
                         class: "w-full".to_string(),
                         onclick: move |_| {
-                            nav.replace(Route::ContactLogin { slug: slug_for_link.clone() });
+                            nav.replace(Route::ContactHandleLogin { handle: slug_for_link.clone() });
                         },
                         "Go to sign in"
                     }

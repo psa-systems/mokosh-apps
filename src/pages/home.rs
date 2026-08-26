@@ -25,17 +25,20 @@ pub fn HomePage() -> Element {
                         // first and falls back to the tenant
                         // credential on 401.
                         //
-                        // MAPPS-572 (prompt 010): "Client portal"
-                        // rejoins the nav as a secondary affordance
-                        // beside the staff sign-in. It hops to the
-                        // slug-less magic-link finder, which reveals
-                        // nothing pre-auth about any specific Company
-                        // or portal, so putting it back on the
-                        // marketing landing does not leak the
-                        // enumeration signal the MAPPS-520 collapse
-                        // was worried about.
+                        // MAPPS-572 (prompt 010) / MAPPS-589 (prompt
+                        // 011): "Client portal" rejoins the nav as a
+                        // secondary affordance beside the staff
+                        // sign-in. Post-011 it hops to the generic
+                        // three-field password page (Portal ID +
+                        // email + password), which reveals nothing
+                        // pre-auth about any specific Company or
+                        // portal (heading is neutral, no branding
+                        // fetch happens without a Portal ID), so
+                        // putting it back on the marketing landing
+                        // does not leak the enumeration signal the
+                        // MAPPS-520 collapse was worried about.
                         Link {
-                            to: Route::ContactMagicLinkLogin { email: String::new() },
+                            to: Route::ContactGenericLogin {},
                             class: "text-white border border-white/60 px-4 py-2 rounded-md font-medium hover:bg-white/10 transition-colors", // theme-guard-allow: marketing hero CTA on brand gradient
                             "Client portal"
                         }

@@ -9,8 +9,18 @@
 pub mod forgot_password;
 pub mod login;
 // MAPPS-572 (prompt 010): magic-link finder + Company picker land as
-// two sibling routes at `/portal/login` and `/portal/pick?:token`.
+// two sibling routes. Post MAPPS-589 (prompt 011) the finder moved
+// from `/portal/login` to `/portal/find?:email` so the shorter path
+// can host the primary three-field password login page.
 pub mod magic_link_login;
 pub mod picker;
 pub mod reset_password;
 pub mod set_password;
+// MAPPS-589 (prompt 011): Portal-ID login pages.
+// - `generic_login` at `/portal/login` (three-field: Portal ID +
+//   email + password).
+// - `portal_id_login` at `/portal/{portal_id}/login` via the
+//   `ContactHandleLogin` wrapper (Portal ID read-only, email +
+//   password editable).
+pub mod generic_login;
+pub mod portal_id_login;
