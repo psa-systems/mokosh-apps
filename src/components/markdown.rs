@@ -456,6 +456,45 @@ mod mention_wiring_tests {
         );
     }
 
+    /// MAPPS-592: list density lives in the stylesheet, and nothing else in
+    /// the crate would notice it going missing.
+    ///
+    /// The plugin's `li { margin: 0.5em 0 }` put 8px between every bullet on
+    /// top of a 28px line box, so a six-item list of hostnames ran to 211px and
+    /// read as six paragraphs. The three rules below are the whole fix; the
+    /// `check-prose-layer.sh` guard is what keeps them outranking the plugin,
+    /// and this is what keeps them present and in the right order relative to
+    /// each other.
+    #[test]
+    fn a_list_is_denser_than_the_prose_around_it() {
+        const CSS: &str = include_str!("../../input.css");
+        for rule in [
+            ".prose :where(li):not(:where([class~=\"not-prose\"] *))",
+            ".prose :where(li > p):not(:where([class~=\"not-prose\"] *))",
+            ".prose :where(li > ul, li > ol):not(:where([class~=\"not-prose\"] *))",
+        ] {
+            assert!(CSS.contains(rule), "the stylesheet must carry `{rule}`");
+        }
+        // A tight item closes right up; a loose one (its text wrapped in a `<p>`
+        // because the author left a blank line) keeps more air than that. The
+        // ordering is the decision, so it is what gets asserted.
+        let tight = CSS
+            .find(".prose :where(li):not")
+            .expect("the tight-item rule");
+        let loose = CSS
+            .find(".prose :where(li > p):not")
+            .expect("the loose-item rule");
+        assert!(
+            CSS[tight..loose].contains("margin-top: 0.125em;"),
+            "a tight list item is the densest of the three"
+        );
+        assert!(
+            CSS[loose..].contains("margin-top: 0.5em;"),
+            "a loose list item keeps more room than a tight one, because \
+             Markdown distinguishes the two on purpose"
+        );
+    }
+
     /// PMS-921: mentions resolve against the staff directory, not against user
     /// management. `/auth/users` is `RequireManager`, so resolving there meant
     /// a Technician saw every mention as plain text, which is the reader the

@@ -443,6 +443,39 @@
     color: var(--accent-100);
   }
 
+  /* MAPPS-592: list density.
+
+     The plugin sets `li { margin: 0.5em 0 }`. Adjacent margins collapse, so
+     every item sits 8px from the next on top of a 28px line box, and a
+     six-item list of hostnames occupied 211px. It stopped reading as a list
+     and read as six paragraphs, which is what was reported.
+
+     A TIGHT list closes right up. A LOOSE one keeps more air than a tight one
+     but less than it had: Markdown distinguishes the two on purpose (an item
+     separated by a blank line is wrapped in a `<p>`), so an author who wrote a
+     loose list asked for the separation and still gets it. The plugin puts
+     1.25em on the first and last paragraph inside an item, which is a
+     paragraph's worth of space at each end of every item; those come down to
+     match the rest.
+
+     The block margins around a whole list are deliberately untouched. That
+     space separates the list from the paragraph above it, and it is not what
+     was reported. */
+  .prose :where(li):not(:where([class~="not-prose"] *)) {
+    margin-top: 0.125em;
+    margin-bottom: 0.125em;
+  }
+  .prose :where(li > p):not(:where([class~="not-prose"] *)) {
+    margin-top: 0.5em;
+    margin-bottom: 0.5em;
+  }
+  /* A nested list belongs to the item above it, so it hugs that item instead
+     of inheriting the 1.25em block margin a top-level list gets. */
+  .prose :where(li > ul, li > ol):not(:where([class~="not-prose"] *)) {
+    margin-top: 0.125em;
+    margin-bottom: 0.125em;
+  }
+
   /* GFM suppresses the list marker on a task item; the plugin draws it, so
      every checkbox was preceded by a stray bullet. pulldown emits no
      `task-list-item` class to hang this on, so the selector matches the
