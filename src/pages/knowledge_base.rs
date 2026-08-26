@@ -22,6 +22,7 @@
 //! loading / empty / error states match the contacts pages.
 
 use chrono::{DateTime, Utc};
+use dioxus::html::HasFileData;
 use dioxus::prelude::*;
 
 use crate::components::{
@@ -33,7 +34,7 @@ use crate::components::{
 };
 use crate::modules::kb::{
     ArticleMeasuredDuration, CreateKbArticleRequest, CreateKbCategoryRequest, KbArticle,
-    KbArticleFeedback, KbArticleVersion, KbCategory, TopTicketDrivingArticle,
+    KbArticleFeedback, KbArticleVersion, KbAttachmentResponse, KbCategory, TopTicketDrivingArticle,
     UpdateKbArticleRequest, UpdateKbCategoryRequest,
 };
 use crate::utils::url::urlencoding_minimal;
@@ -2056,6 +2057,26 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         SelectOption::new("archived", "Archived"),
     ];
 
+    // MAPPS-587: the article's id, which is NOT the same thing as the form's
+    // mode. An image upload needs an id (`POST /kb/articles/{id}/attachments`,
+    // and `article_id` is NOT NULL), and a new article has none until it is
+    // saved, so the first upload on a new article creates it as a draft and
+    // records the id here. From that moment the form is editing a real row
+    // while still saying Create in its mode, so everything that decides
+    // between POST and DELETE reads THIS rather than the mode.
+    let mut article_id = use_signal(|| match &props.mode {
+        ArticleFormMode::Edit { id } => Some(id.clone()),
+        ArticleFormMode::Create => None,
+    });
+    // Whether that row exists only because an upload needed somewhere to put a
+    // file. If the author then discards, the row is litter and gets deleted;
+    // an article they opened for editing obviously does not.
+    let mut auto_created = use_signal(|| false);
+    // Surfaced under the body field. Uploads are not silent: a failure has to
+    // say so, because the author is watching for an image to appear.
+    let mut upload_error = use_signal(String::new);
+    let mut uploading = use_signal(|| false);
+
     let mut tab = use_signal(|| BodyTab::Write);
     // MAPPS-584: side by side is opt-in and remembered, not the only layout.
     // MAPPS-579 put the source and the preview on the page together at every
@@ -2155,6 +2176,142 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     // MAPPS-357: block create / update while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
 
+    // MAPPS-587: take a file from the author's machine and put it in the body.
+    //
+    // The awkward part is not the upload, it is that the upload route is
+    // `POST /kb/articles/{id}/attachments` and a new article has no id. So the
+    // first upload on a new article CREATES it, as a draft, and the form
+    // carries on editing that row. Two consequences worth stating because
+    // neither is invisible to the author: their work is saved from that moment,
+    // and if they then discard, the row has to be cleaned up (see the Cancel
+    // handler below).
+    //
+    // The alternative was holding bytes in memory and uploading on save, which
+    // means the preview shows a `blob:` URL that dies on reload and markdown
+    // that has to be rewritten underneath the author. This way the URL in the
+    // body is the real, permanent one from the moment it is inserted.
+    let mut upload_image = move |(file_name, mime, bytes): (String, String, Vec<u8>)| {
+        upload_error.set(String::new());
+        // Checked here as a courtesy so the author is not told after sending
+        // five megabytes. The server re-checks and is the authority.
+        if let Err(msg) = crate::utils::image_upload::check(&mime, bytes.len()) {
+            upload_error.set(msg);
+            return;
+        }
+        if *uploading.read() {
+            return;
+        }
+        uploading.set(true);
+        #[cfg(feature = "web")]
+        spawn(async move {
+            let existing = article_id.read().clone();
+            let id = match existing {
+                Some(id) => Some(id),
+                None => {
+                    let title_val = title.read().trim().to_string();
+                    let slug_val = slug.read().trim().to_string();
+                    // The metadata block stays open until both are filled
+                    // (MAPPS-579), so an author who has reached the body has
+                    // normally filled them. Saying which one is missing beats
+                    // a 422 from a request they did not know was being made.
+                    if title_val.is_empty() || slug_val.is_empty() {
+                        upload_error.set(
+                            "Give the article a title and a slug first: an uploaded image is \
+                             stored against the article, so there has to be one."
+                                .to_string(),
+                        );
+                        uploading.set(false);
+                        return;
+                    }
+                    let body = CreateKbArticleRequest {
+                        title: title_val,
+                        slug: slug_val,
+                        content: content.read().clone(),
+                        summary: {
+                            let v = summary.read().trim().to_string();
+                            (!v.is_empty()).then_some(v)
+                        },
+                        category_id: {
+                            let v = category_id.read().clone();
+                            v.parse::<uuid::Uuid>().ok()
+                        },
+                        visibility: visibility.read().clone(),
+                        // Never published behind the author's back. They have
+                        // not pressed anything that means "publish" yet.
+                        status: "draft".to_string(),
+                        tags: sanitize_tags(&tags.read()),
+                        company_ids: {
+                            let ids: Vec<uuid::Uuid> = companies
+                                .read()
+                                .iter()
+                                .filter_map(|(id, _)| id.parse().ok())
+                                .collect();
+                            (!ids.is_empty()).then_some(ids)
+                        },
+                    };
+                    match crate::hooks::fetch::api::post_authed::<KbArticle, _>(
+                        "/kb/articles",
+                        &body,
+                    )
+                    .await
+                    {
+                        Ok(a) => {
+                            let id = a.id.to_string();
+                            article_id.set(Some(id.clone()));
+                            auto_created.set(true);
+                            Some(id)
+                        }
+                        Err(e) => {
+                            upload_error.set(format!(
+                                "Could not start the article to attach the image to: {e}"
+                            ));
+                            None
+                        }
+                    }
+                }
+            };
+            let Some(id) = id else {
+                uploading.set(false);
+                return;
+            };
+            let path = format!("/kb/articles/{id}/attachments");
+            match crate::hooks::fetch::api::post_file_authed::<KbAttachmentResponse>(
+                &path, &file_name, &mime, &bytes,
+            )
+            .await
+            {
+                Ok(att) => {
+                    let alt = crate::utils::image_upload::alt_from_file_name(&file_name);
+                    let body_now = content.read().clone();
+                    // The same path the toolbar's URL field takes, so an
+                    // uploaded image and a linked one land identically and the
+                    // caret ends up in the same place.
+                    crate::components::run_action(
+                        "content",
+                        &body_now,
+                        &crate::utils::md_edit::Action::Image {
+                            alt,
+                            url: att.url.clone(),
+                        },
+                        &EventHandler::new(move |next: String| {
+                            content_error.set(String::new());
+                            content.set(next);
+                        }),
+                    );
+                }
+                Err(e) => {
+                    upload_error.set(format!("Could not upload that image: {}", e.user_message()));
+                }
+            }
+            uploading.set(false);
+        });
+        #[cfg(not(feature = "web"))]
+        {
+            let _ = (file_name, mime, bytes);
+            uploading.set(false);
+        }
+    };
+
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
         error.set(String::new());
@@ -2247,28 +2404,15 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
             None
         };
 
-        let mode = mode.clone();
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let result = match &mode {
-                    ArticleFormMode::Create => {
-                        let body = CreateKbArticleRequest {
-                            title: title_val.clone(),
-                            slug: slug_val.clone(),
-                            content: content_val.clone(),
-                            summary: summary_opt.clone(),
-                            category_id: category_opt,
-                            visibility: visibility_val.clone(),
-                            status: status_val.clone(),
-                            tags: tags_vec.clone(),
-                            company_ids: company_ids_opt.clone(),
-                        };
-                        crate::hooks::fetch::api::post_authed::<KbArticle, _>("/kb/articles", &body)
-                            .await
-                            .map(|a| a.id.to_string())
-                    }
-                    ArticleFormMode::Edit { id } => {
+                // MAPPS-587: keyed on `article_id()`, not on the mode. A new
+                // article whose first image upload created it already has a row,
+                // and POSTing again would leave a second, image-less copy behind.
+                let existing = article_id.read().clone();
+                let result = match existing {
+                    Some(id) => {
                         let body = UpdateKbArticleRequest {
                             title: Some(title_val.clone()),
                             slug: Some(slug_val.clone()),
@@ -2284,6 +2428,22 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                         crate::hooks::fetch::api::put_authed::<KbArticle, _>(&path, &body)
                             .await
                             .map(|_| id.clone())
+                    }
+                    None => {
+                        let body = CreateKbArticleRequest {
+                            title: title_val.clone(),
+                            slug: slug_val.clone(),
+                            content: content_val.clone(),
+                            summary: summary_opt.clone(),
+                            category_id: category_opt,
+                            visibility: visibility_val.clone(),
+                            status: status_val.clone(),
+                            tags: tags_vec.clone(),
+                            company_ids: company_ids_opt.clone(),
+                        };
+                        crate::hooks::fetch::api::post_authed::<KbArticle, _>("/kb/articles", &body)
+                            .await
+                            .map(|a| a.id.to_string())
                     }
                 };
                 match result {
@@ -2645,11 +2805,42 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                         },
                         div {
                             class: body_pane_class(tab() == BodyTab::Write, split()),
+                            // MAPPS-587: drop an image anywhere on the write
+                            // pane. `ondragover` has to prevent the default or
+                            // the browser never fires `ondrop` and instead
+                            // navigates away to the file, losing the article.
+                            ondragover: move |e: DragEvent| e.prevent_default(),
+                            ondrop: move |e: DragEvent| {
+                                let files = e.files();
+                                if files.is_empty() {
+                                    return;
+                                }
+                                // Only when there is a file. A drag of selected
+                                // text inside the textarea is an ordinary move
+                                // and must keep working.
+                                e.prevent_default();
+                                let Some(file) = files.into_iter().next() else {
+                                    return;
+                                };
+                                let mut upload = upload_image;
+                                spawn(async move {
+                                    let name = file.name();
+                                    let mime = file.content_type().unwrap_or_default();
+                                    if let Ok(bytes) = file.read_bytes().await {
+                                        upload((name, mime, bytes.to_vec()));
+                                    }
+                                });
+                            },
                             crate::components::MarkdownToolbar {
                                 target_id: "content".to_string(),
                                 value: content.read().clone(),
                                 disabled: !can_mutate,
                                 open_link: link_shortcut,
+                                // MAPPS-587: the KB editor is the one surface
+                                // with somewhere to put a file.
+                                on_file: EventHandler::new(
+                                    move |f: (String, String, Vec<u8>)| upload_image(f),
+                                ),
                                 onchange: move |next: String| {
                                     content_error.set(String::new());
                                     content.set(next);
@@ -2736,6 +2927,23 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             // MAPPS-579: what the author is up against. The body
                             // has a server-side cap, so the character count is
                             // the one that can actually block a save.
+                            // MAPPS-587: an upload is the one action here that
+                            // takes long enough to doubt and can fail on the
+                            // server after passing every check this client can
+                            // make. Both states are said out loud, next to the
+                            // field the image is going into.
+                            if uploading() {
+                                p { class: "mt-1 text-xs text-muted", role: "status",
+                                    "Uploading the image…"
+                                }
+                            }
+                            if !upload_error().is_empty() {
+                                p {
+                                    class: "mt-1 text-sm leading-5 text-red-600 dark:text-red-400",
+                                    role: "alert",
+                                    "{upload_error}"
+                                }
+                            }
                             {
                                 let body = content.read();
                                 let words = body.split_whitespace().count();
@@ -2792,8 +3000,19 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                 crate::components::ConfirmDialog {
                     open: confirming_cancel(),
                     title: "Discard your changes?".to_string(),
-                    message: "This article has unsaved changes. Discarding them cannot be undone."
-                        .to_string(),
+                    // MAPPS-587: an upload on a new article creates the article,
+                    // so from that point discarding deletes something rather
+                    // than merely abandoning it. Saying "unsaved" there would be
+                    // false, and the author would have no way to know a row and
+                    // its images were about to go.
+                    message: if auto_created() {
+                        "This article was started when you added an image, and discarding \
+                         deletes it along with anything uploaded to it. This cannot be undone."
+                            .to_string()
+                    } else {
+                        "This article has unsaved changes. Discarding them cannot be undone."
+                            .to_string()
+                    },
                     confirm_text: "Discard changes".to_string(),
                     cancel_text: "Keep editing".to_string(),
                     destructive: true,
@@ -2801,6 +3020,44 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                         let to = cancel_route.clone();
                         move |_| {
                             confirming_cancel.set(false);
+                            // MAPPS-587: clean up the row the upload created.
+                            // Its attachments go with it (ON DELETE CASCADE).
+                            //
+                            // It does NOT hold up leaving: the author asked to
+                            // discard, and trapping them on the form because a
+                            // cleanup DELETE failed would be worse than a stray
+                            // draft. But it is not silent either, which is the
+                            // MAPPS-574 rule and it applies here as much as
+                            // anywhere: a failure leaves an article in the KB
+                            // that the author never meant to create, so they
+                            // are told it is there and what it is called.
+                            #[cfg(feature = "web")]
+                            if auto_created() {
+                                if let Some(id) = article_id.read().clone() {
+                                    let name = title.read().trim().to_string();
+                                    spawn(async move {
+                                        let path = format!("/kb/articles/{id}");
+                                        match crate::hooks::fetch::api::delete_authed(&path).await {
+                                            Ok(()) => {}
+                                            Err(err) => {
+                                                let named = if name.is_empty() {
+                                                    "the draft article".to_string()
+                                                } else {
+                                                    format!("\"{name}\"")
+                                                };
+                                                crate::hooks::push_toast(
+                                                    crate::components::AlertType::Warning,
+                                                    format!(
+                                                        "Your changes were discarded, but {named} \
+                                                         could not be removed and is still in the \
+                                                         knowledge base as a draft: {err}"
+                                                    ),
+                                                );
+                                            }
+                                        }
+                                    });
+                                }
+                            }
                             navigator.push(to.clone());
                         }
                     },
@@ -2813,7 +3070,12 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                         onclick: {
                             let to = cancel_route.clone();
                             move |_| {
-                                if dirty() {
+                                // MAPPS-587: `auto_created()` as well as
+                                // `dirty()`. An upload creates a real article,
+                                // and an author who then edited their way back
+                                // to the starting text is not dirty but does
+                                // have a row and an image to answer for.
+                                if dirty() || auto_created() {
                                     confirming_cancel.set(true);
                                 } else {
                                     navigator.push(to.clone());
@@ -3871,9 +4133,86 @@ mod editor_ux_tests {
         );
         // The clean-form path still leaves at once: a confirmation whose answer
         // is always the same is a click tax, not a safeguard.
+        // MAPPS-587 widened the gate: an upload creates a real article, so a
+        // form that is no longer dirty can still have a row to answer for. What
+        // has to survive is that a form with NEITHER leaves at once, because a
+        // confirmation whose answer is always the same is a click tax.
         assert!(
-            code.contains("if dirty() {"),
-            "an untouched form must still cancel immediately"
+            code.contains("if dirty() || auto_created() {"),
+            "an untouched form with nothing created must still cancel immediately"
+        );
+    }
+
+    /// MAPPS-587. The save path keys on the article's id, never on the form's
+    /// mode.
+    ///
+    /// An image upload on a NEW article creates the article, so from then on
+    /// the form is editing a real row while its mode still says Create. A save
+    /// that branched on the mode would POST a second article: the author would
+    /// end up with an empty draft holding their image and a published copy
+    /// holding a link to it.
+    #[test]
+    fn saving_after_an_upload_updates_the_article_the_upload_created() {
+        let code = code_only();
+        assert!(
+            code.contains("let existing = article_id.read().clone();"),
+            "the save has to ask which article exists, not which mode it started in"
+        );
+        assert!(
+            !code.contains("let result = match &mode {"),
+            "branching the save on the form mode is what creates the duplicate"
+        );
+    }
+
+    /// MAPPS-587. An article that exists only because an upload needed
+    /// somewhere to put a file is litter if the author then discards, so it is
+    /// deleted - and a failure to delete it is said out loud rather than
+    /// swallowed, which is the MAPPS-574 rule.
+    #[test]
+    fn discarding_removes_an_article_the_upload_created() {
+        let code = code_only();
+        assert!(
+            code.contains("auto_created.set(true)"),
+            "the form has to know the row was its own doing"
+        );
+        assert!(
+            code.contains("if auto_created() {") && code.contains("delete_authed(&path)"),
+            "and discard has to remove it"
+        );
+        assert!(
+            code.contains("push_toast"),
+            "a cleanup that failed leaves an article the author never meant to \
+             create; they have to be told"
+        );
+        // The author is told what they are agreeing to. "Unsaved changes" would
+        // be false once a row exists.
+        assert!(
+            code.contains("message: if auto_created() {"),
+            "the confirmation has to say that discarding deletes the article"
+        );
+    }
+
+    /// MAPPS-587. The upload never publishes anything.
+    ///
+    /// The author has pressed a file picker, not Publish. Creating the article
+    /// at whatever status the form currently shows would put an unfinished
+    /// article in front of readers because someone added a screenshot.
+    #[test]
+    fn an_upload_creates_a_draft_and_nothing_else() {
+        let code = code_only();
+        // The upload's create request is the first one in the file; the
+        // submit handler's is the second. Sliced to the call that sends it
+        // rather than to a brace, because the request body has nested ones.
+        let create = code
+            .split("let body = CreateKbArticleRequest {")
+            .nth(1)
+            .expect("the upload builds a create request");
+        let create = &create[..create
+            .find("post_authed::<KbArticle")
+            .unwrap_or(create.len())];
+        assert!(
+            create.contains(r#"status: "draft".to_string()"#),
+            "the auto-created article must be a draft, found: {create}"
         );
     }
 

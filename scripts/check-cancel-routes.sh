@@ -63,6 +63,12 @@ fi
 # Button, not a Link, because they have to ask first, so the `to:` scan above
 # cannot see them. Same rule: the destination is the mode-derived
 # `cancel_route`, and an untouched form still leaves without a prompt.
+#
+# MAPPS-587 loosened the last pattern from `if dirty() {` to `if dirty()`: an
+# image upload on a new article creates the article, so the gate is now
+# `dirty() || auto_created()`. What is being guarded is that SOMETHING gates the
+# prompt, not the exact expression - a form with nothing to lose still leaves at
+# once, and the page's own test pins the full condition.
 for f in src/pages/knowledge_base.rs; do
   # Only the shipping code. These files carry tests that quote the very
   # patterns below to assert on them, so a whole-file grep would match the
@@ -77,9 +83,9 @@ for f in src/pages/knowledge_base.rs; do
     echo "cancel_route, the record being edited, not to a fixed list route)"
     status=1
   elif ! printf '%s' "$code" | grep -q 'confirming_cancel.set(true)' ||
-    ! printf '%s' "$code" | grep -q 'if dirty() {'; then
+    ! printf '%s' "$code" | grep -q 'if dirty()'; then
     echo "cancel-route guard: FAIL ($f: a confirmed Cancel must ask only when"
-    echo "there is unsaved work; an untouched form leaves immediately)"
+    echo "there is something to lose; an untouched form leaves immediately)"
     status=1
   fi
 done
