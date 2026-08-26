@@ -152,6 +152,23 @@ pub struct CreateKbArticleRequest {
     pub company_ids: Option<Vec<Uuid>>,
 }
 
+/// One uploaded image, as `POST /kb/articles/{id}/attachments` returns it
+/// (MAPPS-587, server side PMS-923).
+///
+/// Only `url` is read today, and it is the reason the rest is here: the field
+/// is relative on purpose, because nothing server-side can know the API base
+/// the SPA is talking to. It goes into the Markdown as-is and the browser
+/// resolves it against the page.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct KbAttachmentResponse {
+    pub id: Uuid,
+    pub article_id: Uuid,
+    pub file_name: String,
+    pub mime_type: String,
+    pub file_size: i64,
+    pub url: String,
+}
+
 /// `UpdateKbArticleRequest`. Every field is optional; the edit form sends
 /// the full set so omitted-vs-cleared is unambiguous.
 #[derive(Clone, Debug, PartialEq, Serialize)]
