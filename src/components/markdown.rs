@@ -58,12 +58,8 @@ pub fn Markdown(props: MarkdownProps) -> Element {
     // them. A failure leaves it empty, which renders every `@` as the plain
     // text it already was, so a technician who cannot read `/auth/users` (it is
     // manager-gated) sees exactly what shipped before this.
-    let directory = use_mention_directory(props.mentions);
-    let people: Vec<Mention> = directory
-        .read_unchecked()
-        .clone()
-        .flatten()
-        .unwrap_or_default();
+    let directory = crate::hooks::use_mention_directory(props.mentions);
+    let people: Vec<Mention> = crate::hooks::mention_people(&directory);
 
     // MAPPS-595: the origin an attachment path is joined onto. Empty in dev,
     // where the SPA and the API already share one; the API's own origin on a
@@ -175,53 +171,6 @@ pub fn Markdown(props: MarkdownProps) -> Element {
             dangerous_inner_html: html,
         }
     }
-}
-
-/// The tenant's staff directory, for resolving `@handle` (MAPPS-578).
-///
-/// `GET /auth/directory` (PMS-921), not `/auth/users`. The latter is
-/// `RequireManager`, so resolving against it meant a Technician got a 403 and
-/// saw every mention as plain text: a KB article is written for technicians and
-/// its mentions assign ownership, so the reader who most needed to know who was
-/// named was the one who could not see it. The directory is `RequireAuth` and
-/// returns id, name and handle only.
-///
-/// A failure is still not an error state: it yields an empty directory and
-/// every `@` renders as the plain text it already was. Nothing about a mention
-/// is worth blocking an article over.
-fn use_mention_directory(enabled: bool) -> Resource<Option<Vec<Mention>>> {
-    use_resource(move || async move {
-        if !enabled {
-            return None;
-        }
-        #[cfg(feature = "web")]
-        {
-            let _gen = crate::hooks::fetch::active_tenant_generation();
-            #[derive(serde::Deserialize)]
-            struct DirectoryEntry {
-                id: uuid::Uuid,
-                #[serde(default)]
-                name: String,
-                #[serde(default)]
-                handle: String,
-            }
-            let rows =
-                crate::hooks::fetch::api::get_all_authed::<DirectoryEntry>("/auth/directory")
-                    .await
-                    .ok()?;
-            Some(
-                rows.into_iter()
-                    .map(|u| Mention {
-                        id: u.id.to_string(),
-                        display: u.name,
-                        handle: u.handle,
-                    })
-                    .collect(),
-            )
-        }
-        #[cfg(not(feature = "web"))]
-        None
-    })
 }
 
 /// Install one delegated `click` listener on the rendered markdown container.
@@ -416,24 +365,6 @@ mod mention_wiring_tests {
         );
     }
 
-    /// A failed directory load is not an error state: it yields an empty
-    /// directory and every `@` renders as the plain text it already was.
-    /// Nothing about a mention is worth blocking an article over.
-    #[test]
-    fn a_failed_directory_load_degrades_to_plain_text() {
-        let code = code_only();
-        assert!(
-            code.contains(".flatten() .unwrap_or_default()"),
-            "an absent or failed directory must collapse to an empty list, not \
-             block rendering"
-        );
-        assert!(
-            code.contains(".await .ok()?"),
-            "the fetch swallows its error into `None` rather than surfacing an \
-             error state for something the reader cannot act on"
-        );
-    }
-
     /// MAPPS-595: the render call passes the API origin.
     ///
     /// `utils::markdown` cannot know it, and this component is the only place
@@ -456,22 +387,63 @@ mod mention_wiring_tests {
         );
     }
 
-    /// PMS-921: mentions resolve against the staff directory, not against user
-    /// management. `/auth/users` is `RequireManager`, so resolving there meant
-    /// a Technician saw every mention as plain text, which is the reader the
-    /// feature is for. Pinned because the two paths look interchangeable and
-    /// only one of them works for the audience.
+    /// MAPPS-592: list density lives in the stylesheet, and nothing else in
+    /// the crate would notice it going missing.
+    ///
+    /// The plugin's `li { margin: 0.5em 0 }` put 8px between every bullet on
+    /// top of a 28px line box, so a six-item list of hostnames ran to 211px and
+    /// read as six paragraphs. The three rules below are the whole fix; the
+    /// `check-prose-layer.sh` guard is what keeps them outranking the plugin,
+    /// and this is what keeps them present and in the right order relative to
+    /// each other.
     #[test]
-    fn the_directory_is_the_source_not_user_management() {
-        let code = code_only();
+    fn a_list_is_denser_than_the_prose_around_it() {
+        const CSS: &str = include_str!("../../input.css");
+        for rule in [
+            ".prose :where(li):not(:where([class~=\"not-prose\"] *))",
+            ".prose :where(li > p):not(:where([class~=\"not-prose\"] *))",
+            ".prose :where(li > ul, li > ol):not(:where([class~=\"not-prose\"] *))",
+        ] {
+            assert!(CSS.contains(rule), "the stylesheet must carry `{rule}`");
+        }
+        // A tight item closes right up; a loose one (its text wrapped in a `<p>`
+        // because the author left a blank line) keeps more air than that. The
+        // ordering is the decision, so it is what gets asserted.
+        let tight = CSS
+            .find(".prose :where(li):not")
+            .expect("the tight-item rule");
+        let loose = CSS
+            .find(".prose :where(li > p):not")
+            .expect("the loose-item rule");
         assert!(
-            code.contains("\"/auth/directory\""),
-            "mentions resolve against the unprivileged staff directory"
+            CSS[tight..loose].contains("margin-top: 0.125em;"),
+            "a tight list item is the densest of the three"
         );
         assert!(
-            !code.contains("\"/auth/users\""),
-            "and never against the manager-gated user-management list, which a \
-             Technician cannot read"
+            CSS[loose..].contains("margin-top: 0.5em;"),
+            "a loose list item keeps more room than a tight one, because \
+             Markdown distinguishes the two on purpose"
+        );
+    }
+
+    /// MAPPS-592: the component reads the directory through the shared hook.
+    ///
+    /// Three surfaces need the same list and each had fetched it for itself,
+    /// which is how the KB editor's copy came to fall back to the handle for a
+    /// nameless row while this one did not. The endpoint choice (PMS-921's
+    /// `/auth/directory`, never the manager-gated `/auth/users`) and the
+    /// degrade-to-empty rule are pinned in `hooks::mentions` now, where they
+    /// have one definition.
+    #[test]
+    fn the_directory_comes_from_the_shared_hook() {
+        let code = code_only();
+        assert!(
+            code.contains("crate::hooks::use_mention_directory(props.mentions)"),
+            "the fetch is not this component's to own"
+        );
+        assert!(
+            !code.contains("get_all_authed"),
+            "and it must not grow its own copy back"
         );
     }
 }

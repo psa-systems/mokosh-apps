@@ -2077,6 +2077,9 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     let mut upload_error = use_signal(String::new);
     let mut uploading = use_signal(|| false);
 
+    // MAPPS-579: whether the metadata block is expanded. Starts closed; a form
+    // missing Title or Slug forces it open regardless (see the block itself).
+    let mut meta_open = use_signal(|| false);
     let mut tab = use_signal(|| BodyTab::Write);
     // MAPPS-584: side by side is opt-in and remembered, not the only layout.
     // MAPPS-579 put the source and the preview on the page together at every
@@ -2084,53 +2087,12 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     // very long page. Off by default, so the editor opens as the tabs it looks
     // like; the reader who wants both turns it on once.
     let mut split = use_signal(|| crate::utils::prefs::get_bool("kb_split_preview", false));
-    // MAPPS-579: Ctrl+K in the body asks the toolbar to open its link dialog.
-    // A signal rather than a direct call because the shortcut fires on the
-    // textarea and the dialog belongs to the toolbar.
-    let mut link_shortcut = use_signal(|| false);
-    // MAPPS-579: whether the metadata block is expanded. Starts closed; a form
-    // missing Title or Slug forces it open regardless (see the block itself).
-    let mut meta_open = use_signal(|| false);
-    // MAPPS-580: who can be mentioned. Fetched once for the editor; an empty
-    // list disables the autocomplete entirely, which is the right degrade
-    // because a handle typed by hand still resolves at render time.
-    let mention_people = use_resource(move || async move {
-        #[cfg(feature = "web")]
-        {
-            let _gen = crate::hooks::fetch::active_tenant_generation();
-            #[derive(serde::Deserialize)]
-            struct Row {
-                id: uuid::Uuid,
-                #[serde(default)]
-                name: String,
-                #[serde(default)]
-                handle: String,
-            }
-            // PMS-921's directory, not `/auth/users`. The latter is
-            // `RequireManager`, so a Technician got a 403 and no autocomplete at
-            // all: the same gap PMS-921 was filed to close for the renderer.
-            // This is also the only source that carries `handle`, which is what
-            // resolution matches on.
-            let rows = crate::hooks::fetch::api::get_all_authed::<Row>("/auth/directory")
-                .await
-                .ok()?;
-            Some(
-                rows.into_iter()
-                    .map(|r| crate::utils::mentions::Mention {
-                        id: r.id.to_string(),
-                        display: if r.name.trim().is_empty() {
-                            r.handle.clone()
-                        } else {
-                            r.name
-                        },
-                        handle: r.handle,
-                    })
-                    .collect::<Vec<_>>(),
-            )
-        }
-        #[cfg(not(feature = "web"))]
-        None
-    });
+    // MAPPS-580: who can be mentioned. MAPPS-592: through the shared hook, so
+    // the editor, the renderer and the ticket description all read one list
+    // from one endpoint. An empty list disables the autocomplete entirely,
+    // which is the right degrade because a handle typed by hand still resolves
+    // at render time.
+    let mention_people = crate::hooks::use_mention_directory(true);
     // MAPPS-573: Cancel with unsaved work asks first.
     let mut confirming_cancel = use_signal(|| false);
 
@@ -2848,98 +2810,33 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                                     }
                                 });
                             },
-                            crate::components::MarkdownToolbar {
-                                target_id: "content".to_string(),
-                                value: content.read().clone(),
+                            // MAPPS-592: the toolbar, the shortcuts and the
+                            // mention completion moved into a shared component
+                            // so the ticket description could have them too.
+                            // The tabs, the split and the drop zone stay here:
+                            // they are this page's layout, not the field.
+                            crate::components::MarkdownEditor {
+                                name: "content".to_string(),
+                                label: "Body (Markdown)".to_string(),
+                                placeholder: "## Overview\n\nWrite the article in Markdown…"
+                                    .to_string(),
+                                rows: 18,
+                                required: true,
                                 disabled: !can_mutate,
-                                open_link: link_shortcut,
+                                maxlength: BODY_MAX as i64,
+                                rules: vec![Rule::Required],
+                                error: content_error.read().clone(),
+                                value: content.read().clone(),
+                                people: crate::hooks::mention_people(&mention_people),
                                 // MAPPS-587: the KB editor is the one surface
                                 // with somewhere to put a file.
                                 on_file: EventHandler::new(
                                     move |f: (String, String, Vec<u8>)| upload_image(f),
                                 ),
-                                onchange: move |next: String| {
+                                oninput: move |next: String| {
                                     content_error.set(String::new());
                                     content.set(next);
                                 },
-                            }
-                            crate::components::Textarea {
-                                name: "content",
-                                label: "Body (Markdown)",
-                                placeholder: "## Overview\n\nWrite the article in Markdown…",
-                                rows: 18,
-                                required: true,
-                                maxlength: BODY_MAX as i64,
-                                rules: vec![Rule::Required],
-                                // The toolbar draws the top border and corners,
-                                // so the field joins onto it instead of sitting
-                                // in its own box below one.
-                                class: "rounded-t-none resize-y".to_string(),
-                                error: content_error.read().clone(),
-                                value: content.read().clone(),
-                                oninput: move |e: FormEvent| {
-                                    content_error.set(String::new());
-                                    content.set(e.value());
-                                },
-                                onkeydown: move |e: KeyboardEvent| {
-                                    let mods = e.modifiers();
-                                    let chord = mods.ctrl() || mods.meta();
-                                    let key = match e.key() {
-                                        Key::Character(c) => c,
-                                        _ => String::new(),
-                                    };
-                                    // Link opens a dialog rather than applying a
-                                    // transform, so it is handled here while the
-                                    // marks go through the shared mapping.
-                                    if chord && key.eq_ignore_ascii_case("k") {
-                                        e.prevent_default();
-                                        link_shortcut.set(true);
-                                        return;
-                                    }
-                                    if let Some(action) =
-                                        crate::components::shortcut_action(chord, &key)
-                                    {
-                                        e.prevent_default();
-                                        let handler = EventHandler::new(move |next: String| {
-                                            content_error.set(String::new());
-                                            content.set(next);
-                                        });
-                                        crate::components::run_action(
-                                            "content",
-                                            &content.read().clone(),
-                                            &action,
-                                            &handler,
-                                        );
-                                    }
-                                },
-                            }
-                            // MAPPS-580: the mention list, under the field it
-                            // completes for. Renders nothing unless an `@` is
-                            // being typed that the RENDERER would also read as
-                            // a mention.
-                            {
-                                let people = mention_people
-                                    .read_unchecked()
-                                    .clone()
-                                    .flatten()
-                                    .unwrap_or_default();
-                                rsx! {
-                                    crate::components::MentionAutocomplete {
-                                        target_id: "content".to_string(),
-                                        value: content.read().clone(),
-                                        people,
-                                        onaccept: move |(text, caret): (String, u32)| {
-                                            content_error.set(String::new());
-                                            content.set(text);
-                                            spawn(async move {
-                                                crate::platform::timer::sleep_ms(0).await;
-                                                crate::platform::dom::set_textarea_selection(
-                                                    "content", caret, caret,
-                                                );
-                                            });
-                                        },
-                                    }
-                                }
                             }
                             // MAPPS-579: what the author is up against. The body
                             // has a server-side cap, so the character count is
@@ -4271,9 +4168,16 @@ mod editor_ux_tests {
     #[test]
     fn the_body_has_a_toolbar_that_wraps_rather_than_scrolling() {
         let code = code_only();
+        // MAPPS-592: the toolbar reaches the body through `MarkdownEditor`,
+        // which is what the ticket description mounts too.
         assert!(
-            code.contains("crate::components::MarkdownToolbar {"),
+            code.contains("crate::components::MarkdownEditor {"),
             "the body field needs a formatting toolbar"
+        );
+        const EDITOR: &str = include_str!("../components/markdown_editor.rs");
+        assert!(
+            EDITOR.contains("MarkdownToolbar {"),
+            "and the editor is what mounts it"
         );
         const TOOLBAR: &str = include_str!("../components/markdown_toolbar.rs");
         assert!(
@@ -4308,20 +4212,27 @@ mod editor_ux_tests {
     /// rather than wrapping bare syntax, because a link needs a URL.
     #[test]
     fn the_body_field_takes_the_formatting_shortcuts() {
-        let code = code_only();
+        // MAPPS-592: the handler moved into `MarkdownEditor` with the toolbar,
+        // so the ticket description gets the same chords rather than a second
+        // copy of them.
+        const EDITOR: &str = include_str!("../components/markdown_editor.rs");
         assert!(
-            code.contains("crate::components::shortcut_action(chord, &key)"),
+            EDITOR.contains("shortcut_action(chord, &key)"),
             "the body field routes Ctrl/Cmd chords to the shared mapping"
         );
         assert!(
-            code.contains("mods.ctrl() || mods.meta()"),
+            EDITOR.contains("mods.ctrl() || mods.meta()"),
             "both modifiers, so the same shortcut works on macOS and elsewhere \
              without the component asking which platform it is on"
         );
         assert!(
-            code.contains(r#"key.eq_ignore_ascii_case("k")"#)
-                && code.contains("link_shortcut.set(true)"),
+            EDITOR.contains(r#"key.eq_ignore_ascii_case("k")"#)
+                && EDITOR.contains("link_shortcut.set(true)"),
             "Ctrl+K opens the link dialog, since a link needs a URL rather than a wrap"
+        );
+        assert!(
+            code_only().contains("crate::components::MarkdownEditor {"),
+            "and this page mounts the editor that carries them"
         );
     }
 

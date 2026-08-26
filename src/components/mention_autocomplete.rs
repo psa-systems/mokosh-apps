@@ -192,21 +192,32 @@ mod tests {
     /// Pinned because this exact collision already happened once: MAPPS-580 was
     /// written against `/auth/users` on a branch that predated the rename, and
     /// merging both broke `main`.
+    ///
+    /// MAPPS-592 turned it from a rule three files had to keep into one they
+    /// cannot break: there is a single fetch now, in `hooks::mentions`, and
+    /// what this guards is that nobody grows another.
     #[test]
     fn every_mention_source_is_the_staff_directory() {
+        const HOOK: &str = include_str!("../hooks/mentions.rs");
+        assert!(
+            HOOK.contains("\"/auth/directory\""),
+            "the one fetch reads the staff directory"
+        );
         for (what, src) in [
             ("the editor", include_str!("../pages/knowledge_base.rs")),
             ("the renderer", include_str!("markdown.rs")),
+            (
+                "the ticket description",
+                include_str!("../pages/tickets.rs"),
+            ),
         ] {
             assert!(
-                src.contains("\"/auth/directory\""),
-                "{what} must read the staff directory"
-            );
-            assert!(
-                !src.contains("get_all_authed::<Row>(\"/auth/users\")")
-                    && !src.contains("DirectoryUser>(\"/auth/users\")"),
-                "{what} must not resolve mentions against the manager-gated user \
-                 list, or a Technician gets no mentions at all"
+                !src.contains("get_all_authed::<Row>(\"/auth")
+                    && !src.contains("DirectoryEntry>(\"/auth")
+                    && !src.contains("DirectoryUser>(\"/auth"),
+                "{what} must read the directory through `use_mention_directory`, \
+                 not fetch its own: three copies is how one of them came to \
+                 handle a nameless row differently from the others"
             );
         }
     }

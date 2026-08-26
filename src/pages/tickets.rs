@@ -1352,6 +1352,8 @@ pub fn TicketNewPage() -> Element {
     let mut title_error = use_signal(String::new);
     // PMS-518: per-field error for the now-enforced required Description.
     let mut description_error = use_signal(String::new);
+    // MAPPS-592: who `@handle` completes against while the ticket is written.
+    let mention_directory = crate::hooks::use_mention_directory(true);
     // MAPPS-322: per-field error for the required Company, routed into the
     // CompanyPicker's own inline slot instead of the form-level banner.
     let mut company_error = use_signal(String::new);
@@ -1772,18 +1774,22 @@ pub fn TicketNewPage() -> Element {
                     }
                 }
 
-                Textarea {
-                    name: "description",
-                    label: "Description",
-                    placeholder: "Provide detailed information about the issue…",
-                    rows: 6,
+                // MAPPS-592: the same field as the edit modal's, so it gets the
+                // same editor. A description written here is rendered as
+                // Markdown from the moment the ticket exists.
+                crate::components::MarkdownEditor {
+                    name: "description".to_string(),
+                    label: "Description".to_string(),
+                    placeholder: "Provide detailed information about the issue…".to_string(),
+                    rows: 8,
                     required: true,
                     rules: vec![Rule::Required],
                     error: description_error.read().clone(),
                     value: description.read().clone(),
-                    oninput: move |e: FormEvent| {
+                    people: crate::hooks::mention_people(&mention_directory),
+                    oninput: move |next: String| {
                         description_error.set(String::new());
-                        description.set(e.value());
+                        description.set(next);
                     },
                 }
 
@@ -2006,6 +2012,10 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let mut e_desc_error = use_signal(String::new);
     let mut e_submitting = use_signal(|| false);
     let mut e_error = use_signal(String::new);
+    // MAPPS-592: who `@handle` completes against in the description editor.
+    // Same list the renderer already resolves a chip from, so a mention typed
+    // here is one the reader will see resolved.
+    let mention_directory = crate::hooks::use_mention_directory(true);
     let id_for_save = props.id.clone();
 
     // MAPPS-313: delete-ticket affordance on the detail page. The
@@ -3054,17 +3064,26 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                 e_title.set(e.value());
                             },
                         }
-                        Textarea {
-                            name: "edit-description",
-                            label: "Description",
-                            rows: 8,
+                        // MAPPS-592: the description is Markdown and is
+                        // rendered as Markdown, but it was edited in a bare
+                        // textarea: same syntax as a KB article, none of the
+                        // help. This is the KB write pane, minus the preview
+                        // (the modal has nowhere to put a second pane) and
+                        // minus uploading (the upload route belongs to an
+                        // article; a ticket has nothing to attach a file to).
+                        crate::components::MarkdownEditor {
+                            name: "edit-description".to_string(),
+                            label: "Description".to_string(),
+                            rows: 10,
                             required: true,
+                            disabled: !can_mutate,
                             rules: vec![Rule::Required],
                             error: e_desc_error.read().clone(),
-                            value: "{e_desc}",
-                            oninput: move |e: FormEvent| {
+                            value: e_desc.read().clone(),
+                            people: crate::hooks::mention_people(&mention_directory),
+                            oninput: move |next: String| {
                                 e_desc_error.set(String::new());
-                                e_desc.set(e.value());
+                                e_desc.set(next);
                             },
                         }
                     }
@@ -3683,6 +3702,79 @@ mod mapps517_journal_tests {
         assert_eq!(
             actions(&journal),
             vec!["Someone created the ticket".to_string()]
+        );
+    }
+}
+
+#[cfg(test)]
+mod mapps592_description_editor_tests {
+    const SRC: &str = include_str!("tickets.rs");
+
+    /// The shipping code with runs of whitespace collapsed, excluding this
+    /// module: every assertion quotes the pattern it looks for, so a scan
+    /// including its own source matches itself and passes regardless.
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod mapps592_description_editor_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// MAPPS-592: both description fields are the KB write pane.
+    ///
+    /// A ticket description is Markdown, is rendered as Markdown by the same
+    /// component a KB article is, and was written in a bare textarea: the same
+    /// syntax with none of the help. Both fields, because they are the same
+    /// field: the one on the create form and the one in the edit modal.
+    #[test]
+    fn both_description_fields_get_the_editor() {
+        let code = code_only();
+        assert_eq!(
+            code.matches("crate::components::MarkdownEditor {").count(),
+            2,
+            "the create form and the edit modal"
+        );
+        assert!(
+            !code.contains("Textarea { name: \"description\","),
+            "and neither is a bare textarea any more"
+        );
+        assert!(
+            !code.contains("Textarea { name: \"edit-description\","),
+            "including the one in the modal"
+        );
+    }
+
+    /// A mention typed in the description has to be one the READER will see
+    /// resolved, so the completion list and the renderer's list are the same
+    /// list. They are, because both come from `use_mention_directory`.
+    #[test]
+    fn the_completion_list_is_the_one_the_renderer_resolves_against() {
+        let code = code_only();
+        assert_eq!(
+            code.matches("crate::hooks::use_mention_directory(true)")
+                .count(),
+            2,
+            "one per page component, the list page's create form and the detail page"
+        );
+        assert!(
+            code.contains("people: crate::hooks::mention_people(&mention_directory)"),
+            "and it is what the editor completes against"
+        );
+    }
+
+    /// The edit modal's editor follows the same write gate as its Save button.
+    /// MAPPS-357's rule: while the server is unreachable, a control that leads
+    /// to a PUT should not invite the click.
+    #[test]
+    fn the_modal_editor_is_disabled_with_the_rest_of_the_form() {
+        let code = code_only();
+        let modal = code
+            .find("name: \"edit-description\".to_string()")
+            .expect("the modal's editor");
+        let window = &code[modal..code.len().min(modal + 400)];
+        assert!(
+            window.contains("disabled: !can_mutate"),
+            "the editor is gated with the form it sits in: {window}"
         );
     }
 }
