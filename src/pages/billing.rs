@@ -620,6 +620,14 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     // exist in the codebase today; skipped gracefully.
     let staff_only =
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    // MAPPS-607: PMS-936 exposes `GET /invoices/{id}/pdf` behind the
+    // `invoices:download_pdf` cap. Staff / platform sessions bypass
+    // unconditionally via `use_capability`, so this button renders for
+    // them without a role grant.
+    let can_download_pdf = crate::hooks::capabilities::use_capability("invoices:download_pdf");
+    let mut pdf_downloading = use_signal(|| false);
+    let mut pdf_error = use_signal(String::new);
+    let id_for_pdf = props.id.clone();
     let id_for_resource = props.id.clone();
     let mut invoice_resource = use_resource(move || {
         let id = id_for_resource.clone();
@@ -748,6 +756,64 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         PageHeader {
             title: "{header_title}",
             actions: rsx! {
+                if can_download_pdf {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        loading: *pdf_downloading.read(),
+                        onclick: move |_| {
+                            if *pdf_downloading.read() {
+                                return;
+                            }
+                            pdf_error.set(String::new());
+                            pdf_downloading.set(true);
+                            let id = id_for_pdf.clone();
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    let path = format!("/invoices/{id}/pdf");
+                                    match crate::hooks::fetch::api::get_authed_any_bytes(&path).await {
+                                        Ok((bytes, filename)) => {
+                                            let name = filename
+                                                .unwrap_or_else(|| format!("invoice-{id}.pdf"));
+                                            if let Err(e) =
+                                                crate::utils::download::save_bytes_as_file(&bytes, &name)
+                                            {
+                                                pdf_error.set(format!(
+                                                    "Fetched the PDF but could not save it: {e}"
+                                                ));
+                                            }
+                                        }
+                                        Err(crate::hooks::fetch::api::ApiError::Status {
+                                            code: 501,
+                                            ..
+                                        }) => {
+                                            // MAPPS-607: PMS-936 may ship the
+                                            // PDF endpoint as a stub returning
+                                            // 501 while the server-side
+                                            // generator lands in a later
+                                            // slice. Render an honest inline
+                                            // message rather than a raw
+                                            // status.
+                                            pdf_error.set(
+                                                "PDF generation not available yet".to_string(),
+                                            );
+                                        }
+                                        Err(err) => {
+                                            pdf_error.set(format!(
+                                                "Could not download PDF: {}",
+                                                err.user_message()
+                                            ));
+                                        }
+                                    }
+                                }
+                                #[cfg(not(feature = "web"))]
+                                let _ = &id;
+                                pdf_downloading.set(false);
+                            });
+                        },
+                        "Download PDF"
+                    }
+                }
                 if editable && staff_only {
                     Button {
                         variant: ButtonVariant::Secondary,
@@ -837,6 +903,13 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
 
         if !act_err.is_empty() {
             ErrorBanner { class: "mb-3", "{act_err}" }
+        }
+        // MAPPS-607: PDF download failures land inline just like the
+        // action errors above. Kept separate so a lifecycle-action
+        // toast and a PDF fetch failure do not fight for the same
+        // banner slot.
+        if !pdf_error.read().is_empty() {
+            ErrorBanner { class: "mb-3", "{pdf_error}" }
         }
 
         match &*snap {

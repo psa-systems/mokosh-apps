@@ -1270,6 +1270,21 @@ pub struct AssetDetailPageProps {
 
 #[component]
 pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
+    // MAPPS-607: PMS-936 exposes `POST /assets/{id}/report-issue` behind
+    // the `assets:report_issue` cap; the endpoint creates a ticket
+    // pre-linked to this asset and returns it in the response. Staff and
+    // platform sessions bypass unconditionally via `use_capability`, so
+    // the button renders for them without a role grant.
+    let can_report_issue = crate::hooks::capabilities::use_capability("assets:report_issue");
+    let mut show_report = use_signal(|| false);
+    let mut report_summary = use_signal(String::new);
+    let mut report_description = use_signal(String::new);
+    let mut report_summary_error = use_signal(String::new);
+    let mut report_description_error = use_signal(String::new);
+    let report_submitting = use_signal(|| false);
+    let mut report_error = use_signal(String::new);
+    let id_for_report = props.id.clone();
+    let report_nav = use_navigator();
     // MAPPS-357: primary resource - the fetched asset entity. Kept as a
     // hand-rolled `use_resource` (not `use_remote_resource`) because the edit /
     // delete flows call `asset_resource.restart()`. The fetcher keeps `.ok()`
@@ -1610,6 +1625,23 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             title: "{header_title}",
             subtitle: "Configuration item",
             actions: rsx! {
+                if can_report_issue {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        // MAPPS-357 parity: block issue reporting while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't report an issue while the server is unreachable".to_string()),
+                        onclick: move |_| {
+                            report_summary.set(String::new());
+                            report_description.set(String::new());
+                            report_summary_error.set(String::new());
+                            report_description_error.set(String::new());
+                            report_error.set(String::new());
+                            show_report.set(true);
+                        },
+                        "Report an issue"
+                    }
+                }
                 Button {
                     variant: ButtonVariant::Danger,
                     loading: *deleting.read(),
@@ -2998,6 +3030,139 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                             onchange: move |e: FormEvent| {
                                 nr_type_err.set(String::new());
                                 nr_type.set(e.value());
+                            },
+                        }
+                    }
+                }
+            }
+        }
+
+        // MAPPS-607: Report an issue modal. Posts
+        // `POST /assets/{id}/report-issue` with the entered summary +
+        // description; the server creates a ticket pre-linked to this
+        // asset and returns it. On success we navigate to that ticket's
+        // detail so the caller can immediately keep working with the
+        // linked ticket.
+        {
+            let mut submitting = report_submitting;
+            let mut open = show_report;
+            let mut err = report_error;
+            let mut sum_err = report_summary_error;
+            let mut desc_err = report_description_error;
+            let report_id = id_for_report.clone();
+            let on_submit = move |_| {
+                if submitting() {
+                    return;
+                }
+                err.set(String::new());
+                let mut guard = FormGuard::new();
+                let summary_v = report_summary.read().trim().to_string();
+                sum_err.set(guard.field(
+                    "report-summary",
+                    &summary_v,
+                    "Summary",
+                    &[Rule::Required],
+                ));
+                let description_v = report_description.read().trim().to_string();
+                desc_err.set(guard.field(
+                    "report-description",
+                    &description_v,
+                    "Description",
+                    &[Rule::Required],
+                ));
+                if guard.blocked() {
+                    return;
+                }
+                submitting.set(true);
+                let path = format!("/assets/{report_id}/report-issue");
+                spawn(async move {
+                    #[cfg(feature = "web")]
+                    {
+                        #[derive(serde::Deserialize)]
+                        struct ReportIssueResponse {
+                            #[serde(default)]
+                            id: Option<uuid::Uuid>,
+                        }
+                        let body = serde_json::json!({
+                            "summary": summary_v,
+                            "description": description_v,
+                        });
+                        match crate::hooks::fetch::api::post_authed_any_typed::<
+                            ReportIssueResponse,
+                            _,
+                        >(&path, &body)
+                        .await
+                        {
+                            Ok(resp) => {
+                                open.set(false);
+                                crate::hooks::toast::push_toast(
+                                    crate::components::AlertType::Success,
+                                    "Ticket created for this asset.",
+                                );
+                                if let Some(new_id) = resp.id {
+                                    report_nav.push(Route::TicketDetail {
+                                        id: new_id.to_string(),
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                err.set(format!(
+                                    "Could not report the issue: {}",
+                                    e.user_message()
+                                ));
+                            }
+                        }
+                    }
+                    submitting.set(false);
+                });
+            };
+            rsx! {
+                Modal {
+                    open: show_report(),
+                    title: "Report an issue",
+                    onclose: move |_| show_report.set(false),
+                    footer: rsx! {
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            onclick: move |_| show_report.set(false),
+                            "Cancel"
+                        }
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            loading: report_submitting(),
+                            disabled: report_submitting() || !can_mutate,
+                            title: (!can_mutate).then(|| "Can't report while the server is unreachable".to_string()),
+                            onclick: on_submit,
+                            "Create ticket"
+                        }
+                    },
+                    div { class: "space-y-3",
+                        if !report_error.read().is_empty() {
+                            ErrorBanner { "{report_error}" }
+                        }
+                        Input {
+                            name: "report-summary",
+                            label: "Summary",
+                            required: true,
+                            rules: vec![Rule::Required],
+                            error: report_summary_error.read().clone(),
+                            value: report_summary.read().clone(),
+                            oninput: move |e: FormEvent| {
+                                report_summary_error.set(String::new());
+                                report_summary.set(e.value());
+                            },
+                        }
+                        Textarea {
+                            name: "report-description",
+                            label: "Description",
+                            rows: 6,
+                            required: true,
+                            rules: vec![Rule::Required],
+                            error: report_description_error.read().clone(),
+                            value: report_description.read().clone(),
+                            oninput: move |e: FormEvent| {
+                                report_description_error.set(String::new());
+                                report_description.set(e.value());
                             },
                         }
                     }

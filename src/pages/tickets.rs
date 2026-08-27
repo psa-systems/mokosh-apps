@@ -14,6 +14,30 @@ use crate::components::{
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
+/// MAPPS-607: cap on a client-side attachment upload before base64
+/// encoding. Larger files are rejected with an inline copy string so the
+/// SPA never fires a `POST /tickets/{id}/attachments` that the server
+/// would slice down anyway. 5 MB, in bytes.
+pub(crate) const TICKET_ATTACHMENT_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+/// MAPPS-607: should the Reopen button render? Split out of the render
+/// body so the status-name match is unit-testable on the native target
+/// (touching `use_capability` from here would panic on the non-web
+/// `cargo test --lib` path). Matches case-insensitively on `contains`
+/// because tenants coin their own status names (e.g. `Closed - won`,
+/// `Resolved (dup)`), so an exact-match against `"closed"` /
+/// `"resolved"` would miss the common shapes. The extra cap gate is
+/// AND-ed on top so a status match alone doesn't render the button for
+/// a contact who lacks `tickets:reopen`; staff sessions bypass the cap
+/// unconditionally via `use_capability`.
+pub(crate) fn should_show_reopen(status_name: &str, has_reopen_cap: bool) -> bool {
+    if !has_reopen_cap {
+        return false;
+    }
+    let s = status_name.to_ascii_lowercase();
+    s.contains("closed") || s.contains("resolved")
+}
+
 /// Subset of mokosh-server's `TicketResponse` we render in the list. The
 /// server returns more fields; serde silently drops the ones we don't
 /// ask for, so adding columns later just means extending this struct.
@@ -1827,6 +1851,24 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let can_comment = crate::hooks::capabilities::use_capability("tickets:comment");
     let staff_only =
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    // MAPPS-607: new dual-plane caps introduced by PMS-936. Staff and
+    // platform-admin sessions bypass unconditionally via `use_capability`,
+    // so the buttons still render for them regardless of the contact
+    // grant. Reopen is additionally guarded by the ticket's status name;
+    // Attach hides when the contact lacks the cap.
+    let can_reopen = crate::hooks::capabilities::use_capability("tickets:reopen");
+    let can_attach = crate::hooks::capabilities::use_capability("tickets:attach_file");
+    // MAPPS-607: transient state for the reopen POST and the attach
+    // upload. The reopen button doubles as its own spinner; the attach
+    // flow uses a hidden `<input type="file">` triggered from a button
+    // (labels retain default browser text which reads poorly on the
+    // page's chrome).
+    let mut reopen_submitting = use_signal(|| false);
+    let mut reopen_error = use_signal(String::new);
+    let mut attach_submitting = use_signal(|| false);
+    let mut attach_error = use_signal(String::new);
+    let ticket_id_for_reopen = props.id.clone();
+    let ticket_id_for_attach = props.id.clone();
     let mut show_note_modal = use_signal(|| false);
     let mut note_type = use_signal(|| "internal".to_string());
     let mut note_content = use_signal(String::new);
@@ -2099,10 +2141,70 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     // `?ticket_id=`; the router still intercepts the same-origin anchor click.
     let log_time_href = format!("/time/new?ticket_id={}", props.id);
 
+    // MAPPS-607: Reopen renders only when the ticket landed in a closed/
+    // resolved state AND the caller holds `tickets:reopen`. The status
+    // check reuses the pure helper at the top of this file so the
+    // "closed" / "resolved" name-match stays testable on the native
+    // target. `ticket` is still `Option<_>` here (fetch may not have
+    // resolved), so a loading page renders no button.
+    let show_reopen = ticket
+        .as_ref()
+        .map(|t| should_show_reopen(&t.status.name, can_reopen))
+        .unwrap_or(false);
+
     rsx! {
         PageHeader {
             title: "{header_title}",
             actions: rsx! {
+                if show_reopen {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        loading: *reopen_submitting.read(),
+                        // MAPPS-357 parity: block reopening while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't reopen while the server is unreachable".to_string()),
+                        onclick: move |_| {
+                            if *reopen_submitting.read() {
+                                return;
+                            }
+                            reopen_error.set(String::new());
+                            reopen_submitting.set(true);
+                            let id = ticket_id_for_reopen.clone();
+                            let mut tr = ticket_resource;
+                            let mut hr = history_resource;
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    let path = format!("/tickets/{id}/reopen");
+                                    let empty = serde_json::json!({});
+                                    match crate::hooks::fetch::api::post_authed_any_typed::<
+                                        serde_json::Value,
+                                        _,
+                                    >(&path, &empty)
+                                    .await
+                                    {
+                                        Ok(_) => {
+                                            tr.restart();
+                                            hr.restart();
+                                            crate::hooks::toast::push_toast(
+                                                crate::components::AlertType::Success,
+                                                "Ticket reopened.",
+                                            );
+                                        }
+                                        Err(err) => {
+                                            reopen_error
+                                                .set(format!("Could not reopen ticket: {}", err.user_message()));
+                                        }
+                                    }
+                                }
+                                #[cfg(not(feature = "web"))]
+                                let _ = &id;
+                                reopen_submitting.set(false);
+                            });
+                        },
+                        "Reopen"
+                    }
+                }
                 if can_comment {
                     Button {
                         variant: ButtonVariant::Secondary,
@@ -2123,6 +2225,40 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         },
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "Add Note"
+                    }
+                }
+                // MAPPS-607: Attach file. Rendered next to Add Note so
+                // the composer surface holds every content-add control
+                // together. The button triggers the hidden
+                // `<input type="file">` further down (browser file
+                // pickers require an actual `input` element in the
+                // DOM; a synthesised click on a detached input is
+                // silently swallowed on Safari).
+                if can_attach {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        loading: *attach_submitting.read(),
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't attach a file while the server is unreachable".to_string()),
+                        onclick: move |_| {
+                            attach_error.set(String::new());
+                            #[cfg(feature = "web")]
+                            {
+                                if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                                    if let Some(el) = doc.get_element_by_id("mapps-607-attach-input") {
+                                        use wasm_bindgen::JsCast;
+                                        if let Ok(input) = el.dyn_into::<web_sys::HtmlInputElement>() {
+                                            // Clear so re-selecting the same file
+                                            // still fires `change` (browsers
+                                            // dedupe the identical FileList).
+                                            input.set_value("");
+                                            input.click();
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Attach file"
                     }
                 }
                 if staff_only {
@@ -2149,6 +2285,95 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     }
                 }
             },
+        }
+        // MAPPS-607: surface reopen / attach failures inline just below
+        // the header actions so the caller does not lose their place
+        // scrolling the sidebar. Success paths self-clear these signals
+        // before the next click.
+        if !reopen_error.read().is_empty() {
+            ErrorBanner { class: "mb-3", "{reopen_error}" }
+        }
+        if !attach_error.read().is_empty() {
+            ErrorBanner { class: "mb-3", "{attach_error}" }
+        }
+        // MAPPS-607: hidden file input backing the Attach button. The
+        // button's `onclick` synthesises a click on this input, and its
+        // `onchange` reads the FileData, base64-encodes the bytes, and
+        // POSTs `/tickets/{id}/attachments`. Kept in the DOM (rather
+        // than created on demand) so the click event actually opens
+        // the picker on Safari, which discards synthetic clicks on
+        // detached inputs.
+        if can_attach {
+            input {
+                id: "mapps-607-attach-input",
+                r#type: "file",
+                style: "display:none",
+                onchange: move |evt: FormEvent| {
+                    if *attach_submitting.read() {
+                        return;
+                    }
+                    let Some(file) = evt.files().into_iter().next() else {
+                        return;
+                    };
+                    let filename = file.name();
+                    let content_type = file
+                        .content_type()
+                        .unwrap_or_else(|| "application/octet-stream".to_string());
+                    let size = file.size();
+                    if size > TICKET_ATTACHMENT_MAX_BYTES {
+                        attach_error.set("File too large".to_string());
+                        return;
+                    }
+                    attach_submitting.set(true);
+                    attach_error.set(String::new());
+                    let id = ticket_id_for_attach.clone();
+                    let mut nr = notes_resource;
+                    spawn(async move {
+                        #[cfg(feature = "web")]
+                        {
+                            use base64::{engine::general_purpose::STANDARD, Engine as _};
+                            match file.read_bytes().await {
+                                Ok(bytes) => {
+                                    let data_base64 = STANDARD.encode(&bytes);
+                                    let body = serde_json::json!({
+                                        "filename": filename,
+                                        "content_type": content_type,
+                                        "data_base64": data_base64,
+                                    });
+                                    let path = format!("/tickets/{id}/attachments");
+                                    match crate::hooks::fetch::api::post_authed_any_typed::<
+                                        serde_json::Value,
+                                        _,
+                                    >(&path, &body)
+                                    .await
+                                    {
+                                        Ok(_) => {
+                                            nr.restart();
+                                            crate::hooks::toast::push_toast(
+                                                crate::components::AlertType::Success,
+                                                "File attached.",
+                                            );
+                                        }
+                                        Err(err) => {
+                                            attach_error.set(format!(
+                                                "Could not attach file: {}",
+                                                err.user_message()
+                                            ));
+                                        }
+                                    }
+                                }
+                                Err(_) => {
+                                    attach_error
+                                        .set("Could not read the selected file.".to_string());
+                                }
+                            }
+                        }
+                        #[cfg(not(feature = "web"))]
+                        let _ = (&id, &filename, &content_type);
+                        attach_submitting.set(false);
+                    });
+                },
+            }
         }
         // MAPPS-313: confirm-before-delete for the ticket. Success
         // toasts, navigates back to the list. Failure surfaces the
@@ -3421,6 +3646,64 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                     oninput: move |e: FormEvent| request_notes.set(e.value()),
                 }
             }
+        }
+    }
+}
+
+/// MAPPS-607: pure-function tests for the Reopen button's visibility.
+/// Kept native-safe (no `web_sys`, no `use_signal`), so they run under
+/// `cargo test --lib`. Also pins the ticket-detail route resolution so
+/// a future rename of the URL shape doesn't silently 404 the reopen
+/// entry point.
+#[cfg(test)]
+mod mapps_607_tests {
+    use super::{should_show_reopen, TICKET_ATTACHMENT_MAX_BYTES};
+    use crate::Route;
+    use std::str::FromStr;
+
+    // Reopen visibility
+
+    #[test]
+    fn reopen_hidden_without_capability() {
+        assert!(!should_show_reopen("Closed", false));
+        assert!(!should_show_reopen("Resolved", false));
+    }
+
+    #[test]
+    fn reopen_visible_on_closed_status_with_capability() {
+        assert!(should_show_reopen("Closed", true));
+        assert!(should_show_reopen("closed", true));
+        assert!(should_show_reopen("Closed - won", true));
+    }
+
+    #[test]
+    fn reopen_visible_on_resolved_status_with_capability() {
+        assert!(should_show_reopen("Resolved", true));
+        assert!(should_show_reopen("resolved (dup)", true));
+    }
+
+    #[test]
+    fn reopen_hidden_on_open_status_even_with_capability() {
+        assert!(!should_show_reopen("Open", true));
+        assert!(!should_show_reopen("In Progress", true));
+        assert!(!should_show_reopen("New", true));
+        assert!(!should_show_reopen("", true));
+    }
+
+    // Attachment size cap
+    #[test]
+    fn attachment_max_is_five_megabytes() {
+        assert_eq!(TICKET_ATTACHMENT_MAX_BYTES, 5 * 1024 * 1024);
+    }
+
+    // Route resolution
+    #[test]
+    fn ticket_detail_route_resolves() {
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        let r = Route::from_str(&format!("/tickets/{uuid}")).expect("ticket detail parses");
+        match r {
+            Route::TicketDetail { id } => assert_eq!(id, uuid),
+            other => panic!("expected TicketDetail, got {other:?}"),
         }
     }
 }

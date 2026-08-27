@@ -1532,6 +1532,94 @@ pub mod api {
         handle_response(resp).await
     }
 
+    /// MAPPS-607: typed POST that picks the caller's bearer (contact
+    /// first, staff second, anon otherwise) the same way
+    /// [`get_authed_any_typed`] does. Used by the ticket detail's
+    /// Reopen and Attach controls and the asset detail's Report an
+    /// Issue, all of which sit on dual-plane routes gated per-cap on
+    /// the server. Surfaces `ApiError::Status` so a caller can branch
+    /// on 403 (missing cap) or 501 (not implemented yet) without
+    /// re-parsing the envelope.
+    #[cfg(feature = "web")]
+    pub async fn post_authed_any_typed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let url = format!("{}{}", api_base(), path);
+        let mut req = Request::post(&url).header("Content-Type", "application/json");
+        let bearer = current_contact_access_token().or_else(current_access_token);
+        if let Some(t) = bearer {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let resp = req
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    /// MAPPS-607: bytes GET that picks the caller's bearer (contact
+    /// first, staff second, anon otherwise) - shape identical to
+    /// [`get_authed_bytes`] except for the two-bearer selection. Used
+    /// by the invoice and quote detail Download PDF controls, both on
+    /// dual-plane routes. Surfaces the raw response body plus the
+    /// server's `Content-Disposition` filename, or `ApiError::Status`
+    /// so a caller can branch on 501 (PDF generation stubbed out) and
+    /// render the fallback copy inline.
+    #[cfg(feature = "web")]
+    pub async fn get_authed_any_bytes(path: &str) -> Result<(Vec<u8>, Option<String>), ApiError> {
+        let url = format!("{}{}", api_base(), path);
+        let mut req = Request::get(&url);
+        let bearer = current_contact_access_token().or_else(current_access_token);
+        if let Some(t) = bearer {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let resp = req.send().await.map_err(network_err)?;
+        let status = resp.status();
+        super::note_response_status(status);
+        if !(200..300).contains(&status) {
+            let body = resp.text().await.unwrap_or_default();
+            let (message, fields, envelope_code, envelope_body) =
+                match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
+                    Ok(env) => {
+                        let code = env.error.code.clone();
+                        let raw = serde_json::from_str::<serde_json::Value>(&body).ok();
+                        (
+                            env.error.message,
+                            env.error.errors.unwrap_or_default(),
+                            code,
+                            raw,
+                        )
+                    }
+                    Err(_) => (
+                        body.chars().take(200).collect(),
+                        Vec::new(),
+                        String::new(),
+                        None,
+                    ),
+                };
+            return Err(ApiError::Status {
+                code: status,
+                message,
+                fields,
+                envelope_code,
+                envelope_body,
+            });
+        }
+        let filename = resp
+            .headers()
+            .get("content-disposition")
+            .as_deref()
+            .and_then(content_disposition_filename);
+        let bytes = resp
+            .binary()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
+        Ok((bytes, filename))
+    }
+
     // --- Platform-authed wrappers (MAPPS-518) ---------------------------
     //
     // MAPPS-518: the platform super-admin persona lives in
