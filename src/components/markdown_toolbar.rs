@@ -17,8 +17,9 @@ use dioxus::prelude::*;
 
 use super::button::{Button, ButtonVariant};
 use super::icons::{
-    BoldIcon, BulletListIcon, ChecklistIcon, CodeBlockIcon, CodeIcon, HeadingIcon, IconSize,
-    ItalicIcon, LinkIcon, NumberedListIcon, PhotoIcon, QuoteIcon, StrikethroughIcon, TableIcon,
+    AlignTableIcon, BoldIcon, BulletListIcon, ChecklistIcon, CodeBlockIcon, CodeIcon, HeadingIcon,
+    IconSize, ItalicIcon, LinkIcon, NumberedListIcon, PhotoIcon, QuoteIcon, StrikethroughIcon,
+    TableIcon,
 };
 use super::modal::Modal;
 use crate::utils::md_edit::{self, Action};
@@ -235,6 +236,14 @@ pub fn MarkdownToolbar(props: MarkdownToolbarProps) -> Element {
                 label: "Table".to_string(), shortcut: None, disabled,
                 onclick: move |_| dialog.set(Some(Dialog::Table)),
                 TableIcon { size: IconSize::Small }
+            }
+            // MAPPS-600: tidy the table the caret is in. Next to the button
+            // that inserts one, because that is where an author looks after
+            // typing into it and finding the pipes ragged.
+            ToolButton {
+                label: "Align table".to_string(), shortcut: None, disabled,
+                onclick: fire(Action::FormatTable),
+                AlignTableIcon { size: IconSize::Small }
             }
             ToolButton {
                 label: "Image".to_string(), shortcut: None, disabled,

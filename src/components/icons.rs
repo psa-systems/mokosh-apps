@@ -1285,6 +1285,33 @@ pub fn ChecklistIcon(#[props(default)] size: IconSize, #[props(default)] class: 
 }
 /// MAPPS-579: markdown editor toolbar.
 #[component]
+pub fn AlignTableIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    // MAPPS-600: three bars of even length, for "make these line up". Distinct
+    // from `TableIcon` (a grid), which inserts a table rather than tidying one.
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M3.75 6.75h16.5M3.75 12h16.5M3.75 17.25h16.5",
+            }
+        }
+    }
+}
+
+#[component]
 pub fn TableIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
     let size_class = size.class();
     let class = format!("{} {}", size_class, class);
