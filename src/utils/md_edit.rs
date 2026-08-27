@@ -116,17 +116,7 @@ pub fn apply(src: &str, start: u32, end: u32, action: &Action) -> EditResult {
                 label.chars().count(),
             )
         }
-        Action::Image { alt, url } => {
-            let label = if alt.trim().is_empty() { "image" } else { alt };
-            insert(
-                src,
-                a,
-                b,
-                &format!("![{label}]({url})"),
-                2,
-                label.chars().count(),
-            )
-        }
+        Action::Image { alt, url } => image(src, a, b, alt, url),
         Action::CodeBlock { lang } => code_block(src, a, b, lang),
         Action::Table { rows, cols } => table(src, a, b, *rows, *cols),
         Action::FormatTable => format_table(src, a, b),
@@ -657,6 +647,43 @@ fn heading(src: &str, a: usize, b: usize, level: u8) -> EditResult {
 
 /// Fence the selection, on its own lines. An empty selection leaves the caret
 /// inside the fence, which is where the author is about to type.
+/// PMS-939: an image takes its own line.
+///
+/// This used to insert `![alt](url)` at the caret with no whitespace handling
+/// at all, alone among the block inserts - `code_block` and `table` both guard
+/// their leading newline. Dropping a file while the caret sat at the end of a
+/// word produced `Features![4th Floor Meeting](/api/v1/...)`, one run-on line
+/// where the author meant a paragraph and a picture.
+///
+/// Markdown images ARE inline, so this is a product decision rather than a
+/// spec fix: the toolbar button and the drop-to-upload path both mean "put a
+/// picture here", and neither has a way to say "inline badge". Typing one by
+/// hand still works.
+///
+/// The caret still lands on the alt text, which is the part worth typing over.
+fn image(src: &str, a: usize, b: usize, alt: &str, url: &str) -> EditResult {
+    let label = if alt.trim().is_empty() { "image" } else { alt };
+    let lead = if a == 0 || src[..a].ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    let tail = if b == src.len() || src[b..].starts_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    let body = format!("{lead}![{label}]({url}){tail}");
+    insert(
+        src,
+        a,
+        b,
+        &body,
+        lead.chars().count() + 2,
+        label.chars().count(),
+    )
+}
+
 fn code_block(src: &str, a: usize, b: usize, lang: &str) -> EditResult {
     let selected = &src[a..b];
     let lead = if a == 0 || src[..a].ends_with('\n') {
@@ -861,6 +888,55 @@ mod tests {
         );
         assert_eq!(r.text, "![A diagram](https://x.test/d.png)");
         assert_eq!(selected(&r), "A diagram");
+    }
+
+    /// PMS-939. Dropping a file with the caret at the end of a word produced
+    /// `Features![4th Floor Meeting](...)`: one run-on line where the author
+    /// meant a paragraph and then a picture.
+    #[test]
+    fn an_image_dropped_mid_line_takes_its_own_line() {
+        let r = run(
+            "Features",
+            (8, 8),
+            Action::Image {
+                alt: "Poster".to_string(),
+                url: "/api/v1/x.png".to_string(),
+            },
+        );
+        assert_eq!(r.text, "Features\n![Poster](/api/v1/x.png)");
+        assert_eq!(
+            selected(&r),
+            "Poster",
+            "the alt text is still what is selected"
+        );
+    }
+
+    #[test]
+    fn an_image_inserted_into_a_paragraph_is_fenced_on_both_sides() {
+        let r = run(
+            "beforeafter",
+            (6, 6),
+            Action::Image {
+                alt: "P".to_string(),
+                url: "/i.png".to_string(),
+            },
+        );
+        assert_eq!(r.text, "before\n![P](/i.png)\nafter");
+    }
+
+    #[test]
+    fn an_image_already_on_its_own_line_gains_no_blank_lines() {
+        // The guard is "is this a line boundary", not "add a newline", so
+        // pressing the button twice does not walk the image down the document.
+        let r = run(
+            "intro\n\nend",
+            (7, 7),
+            Action::Image {
+                alt: "P".to_string(),
+                url: "/i.png".to_string(),
+            },
+        );
+        assert_eq!(r.text, "intro\n\n![P](/i.png)\nend");
     }
 
     #[test]

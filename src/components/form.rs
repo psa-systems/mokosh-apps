@@ -362,6 +362,13 @@ pub struct TextareaProps {
     maxlength: Option<i64>,
     #[props(default)]
     class: String,
+    /// PMS-939: classes on the wrapper `div` around label, field and error.
+    ///
+    /// A field that has to fill a flex column cannot do it from the `<textarea>`
+    /// alone: the wrapper is the flex item, so a `flex-1` on the field inside it
+    /// stretches nothing. Empty for every host that just wants `rows`.
+    #[props(default)]
+    wrapper_class: String,
     #[props(default)]
     oninput: EventHandler<FormEvent>,
     /// MAPPS-579: keyboard shortcuts. The editor toolbar needs Cmd/Ctrl+B, I
@@ -391,9 +398,10 @@ pub fn Textarea(props: TextareaProps) -> Element {
     };
 
     let class = format!("{} {}", input_class, props.class);
+    let wrapper = format!("space-y-1 {}", props.wrapper_class);
 
     rsx! {
-        div { class: "space-y-1",
+        div { class: "{wrapper}",
             if !props.label.is_empty() && !props.label_hidden {
                 label {
                     r#for: "{props.name}",
