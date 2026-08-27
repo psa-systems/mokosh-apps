@@ -29,6 +29,17 @@ pub struct CollapsibleCardProps {
     /// Optional item count shown beside the title (typically `meta.total`).
     #[props(default)]
     count: Option<u64>,
+    /// MAPPS-597: optional line under the title, inside the header.
+    ///
+    /// The same slot `Card` has carried since PMS-765, and for the same reason:
+    /// a card that needs a sentence of explanation otherwise puts one at the top
+    /// of its body, where it lands under the header rule with whatever padding
+    /// that card happens to have, which is none at all on a `padding: false`
+    /// card sitting directly on a table header row. Here it is part of the
+    /// heading, above the rule, at the size the rest of the app uses for
+    /// descriptive copy.
+    #[props(default)]
+    subtitle: String,
     /// Optional header actions (e.g. a "View all" link); stay visible while
     /// collapsed.
     actions: Option<Element>,
@@ -74,27 +85,42 @@ pub fn CollapsibleCard(props: CollapsibleCardProps) -> Element {
     rsx! {
         div { class: "{class}",
             div {
-                class: "flex items-center justify-between px-6 pt-6 pb-4 border-b border-line",
-                button {
-                    r#type: "button",
-                    class: "flex items-center gap-2 text-left",
-                    aria_expanded: if open() { "true" } else { "false" },
-                    aria_controls: "{body_id}",
-                    onclick: move |_| {
-                        let next = !open();
-                        open.set(next);
-                    },
-                    if open() {
-                        ChevronDownIcon { size: IconSize::Small, class: "text-subtle".to_string() }
-                    } else {
-                        ChevronRightIcon { size: IconSize::Small, class: "text-subtle".to_string() }
-                    }
-                    h3 { class: "text-lg font-medium text-content", "{props.title}" }
-                    if let Some(count) = props.count {
-                        span {
-                            class: "ml-1 rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium text-muted",
-                            "{count}"
+                // `items-start` rather than `items-center` once a subtitle is in
+                // play, matching `CardHeader`: with two lines of heading,
+                // centring the actions against the pair leaves them floating
+                // beside the description instead of level with the title.
+                class: if props.subtitle.is_empty() {
+                    "flex items-center justify-between px-6 pt-6 pb-4 border-b border-line"
+                } else {
+                    "flex items-start justify-between px-6 pt-6 pb-4 border-b border-line"
+                },
+                div {
+                    button {
+                        r#type: "button",
+                        class: "flex items-center gap-2 text-left",
+                        aria_expanded: if open() { "true" } else { "false" },
+                        aria_controls: "{body_id}",
+                        onclick: move |_| {
+                            let next = !open();
+                            open.set(next);
+                        },
+                        if open() {
+                            ChevronDownIcon { size: IconSize::Small, class: "text-subtle".to_string() }
+                        } else {
+                            ChevronRightIcon { size: IconSize::Small, class: "text-subtle".to_string() }
                         }
+                        h3 { class: "text-lg font-medium text-content", "{props.title}" }
+                        if let Some(count) = props.count {
+                            span {
+                                class: "ml-1 rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium text-muted",
+                                "{count}"
+                            }
+                        }
+                    }
+                    if !props.subtitle.is_empty() {
+                        // Aligned with the title rather than the chevron, so the
+                        // two lines of heading read as one block.
+                        p { class: "mt-1 ml-6 text-sm text-muted", "{props.subtitle}" }
                     }
                 }
                 div { class: "flex items-center space-x-2",
@@ -107,5 +133,57 @@ pub fn CollapsibleCard(props: CollapsibleCardProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod mapps597_subtitle_tests {
+    const SRC: &str = include_str!("collapsible_card.rs");
+
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod mapps597_subtitle_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// MAPPS-597: the subtitle is part of the HEADER, above the rule.
+    ///
+    /// A card that needs a sentence of explanation otherwise puts one at the
+    /// top of its body, which on a `padding: false` card is directly against a
+    /// table header row with no padding at all. PMS-765 settled that for
+    /// `Card`; this is the same slot in the same place, so the two headers stay
+    /// consistent rather than one card explaining itself differently.
+    #[test]
+    fn the_subtitle_lives_in_the_header() {
+        let code = code_only();
+        let header = code
+            .find("border-b border-line")
+            .expect("the header, which is what carries the rule");
+        let body = code.find("{props.children}").expect("the body");
+        let subtitle = code
+            .find("p { class: \"mt-1 ml-6 text-sm text-muted\", \"{props.subtitle}\" }")
+            .expect("the subtitle line");
+        assert!(
+            subtitle > header && subtitle < body,
+            "the subtitle sits between the header and the body, not inside the body"
+        );
+    }
+
+    /// A card with nothing to explain must look exactly as it did. The
+    /// alignment switch is the only thing a subtitle changes about the header,
+    /// and it only applies when there is one.
+    #[test]
+    fn a_card_without_a_subtitle_is_unchanged() {
+        let code = code_only();
+        assert!(
+            code.contains("if props.subtitle.is_empty() { \"flex items-center justify-between"),
+            "no subtitle keeps the centred header"
+        );
+        assert!(
+            code.contains("} else { \"flex items-start justify-between"),
+            "and a subtitle switches to items-start, as CardHeader does, so the \
+             actions sit level with the title rather than beside the description"
+        );
     }
 }
