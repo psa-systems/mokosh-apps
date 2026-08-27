@@ -2959,6 +2959,14 @@ fn CompanySitesCard(
     rsx! {
         CollapsibleCard {
             title: "Sites",
+            // MAPPS-597: say what a site IS, on the card that introduces them.
+            // The word was read as "web sites", which this page invites by
+            // carrying a Website field a few inches away. "Site" stays because
+            // it is what ConnectWise, HaloPSA and Atera call this and so is the
+            // word the audience already has; "Location" is taken by the
+            // appointment field, and "Office" is wrong for a warehouse or a
+            // datacenter. See the ticket for the rename that was rejected.
+            subtitle: "Offices, warehouses and other addresses where this company operates.",
             count,
             actions: rsx! {
                 Button {
@@ -2986,7 +2994,15 @@ fn CompanySitesCard(
                     None => rsx! { TableLoading { columns: 4, rows: 2 } },
                     Some(None) => rsx! { TableEmpty { columns: 4, message: "Could not load sites.".to_string() } },
                     Some(Some(page)) if page.is_empty() => rsx! {
-                        TableEmpty { columns: 4, message: "No sites for this company yet.".to_string() }
+                        // MAPPS-597: an empty state is where a reader who does
+                        // not know what a site is meets the word. Saying only
+                        // that there are none teaches them nothing; this says
+                        // what to add and why they would.
+                        TableEmpty {
+                            columns: 4,
+                            message: "No locations recorded yet. Add the addresses you visit or support."
+                                .to_string(),
+                        }
                     },
                     Some(Some(page)) => {
                         // MAPPS-316: render every site the fetch
@@ -3331,6 +3347,14 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
             onclose: move |_| onclose.call(()),
             footer,
             div { class: "space-y-4",
+                // MAPPS-597: the same sentence the card carries, once, where
+                // somebody is about to type an address into the form. Only on
+                // the create path: an edit already has the answer in front of it.
+                if !is_edit {
+                    p { class: "text-sm text-muted",
+                        "A site is an office, warehouse or other address where this company operates."
+                    }
+                }
                 if !error.read().is_empty() {
                     ErrorBanner { "{error.read()}" }
                 }
@@ -7146,6 +7170,88 @@ mod delete_dialog_tests {
         assert!(
             code.contains("(blocked && !preview.is_own_company).then("),
             "archiving is not offered where it would not help"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mapps597_site_wording_tests {
+    const SRC: &str = include_str!("contacts.rs");
+
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod mapps597_site_wording_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// MAPPS-597: the word stays, and the card says what it means.
+    ///
+    /// "Site" is what ConnectWise, HaloPSA and Atera call a customer's physical
+    /// location, so it is the word staff arriving from those tools already
+    /// have. What it lacked was any statement of what it means, on a page that
+    /// also carries a Website field.
+    #[test]
+    fn the_sites_card_says_what_a_site_is() {
+        let code = code_only();
+        let card = code
+            .find("CollapsibleCard { title: \"Sites\",")
+            .expect("the Sites card");
+        let window = &code[card..code.len().min(card + 900)];
+        assert!(
+            window.contains("subtitle: \"Offices, warehouses and other addresses"),
+            "the card explains the term in its header: {window}"
+        );
+    }
+
+    /// An empty state is where a reader who does not know the word meets it.
+    /// Saying only that there are none teaches nothing.
+    #[test]
+    fn the_empty_state_says_what_to_add() {
+        let code = code_only();
+        assert!(
+            !code.contains("No sites for this company yet."),
+            "the bare count-of-zero message is gone"
+        );
+        assert!(
+            code.contains("No locations recorded yet. Add the addresses you visit or support."),
+            "and says what a site is for"
+        );
+    }
+
+    /// The rename was investigated and rejected: "Location" is taken by the
+    /// appointment field, "Office" is wrong for a warehouse or a datacenter,
+    /// and "Branch" is not a term any PSA uses. Pinned because a later reader
+    /// hitting the same ambiguity will reach for the same rename, and the
+    /// reasons live in the ticket rather than in the diff.
+    #[test]
+    fn nothing_was_renamed() {
+        let code = code_only();
+        for kept in [
+            "CollapsibleCard { title: \"Sites\",",
+            "\"New Site\"",
+            "\"Edit Site\"",
+            "\"Create Site\"",
+        ] {
+            assert!(code.contains(kept), "{kept} still says Site");
+        }
+        assert!(
+            code.contains("\"/contacts/sites\""),
+            "and the API path is untouched, because this is copy and not a contract change"
+        );
+    }
+
+    /// The hint belongs where somebody is about to type an address, and only
+    /// there: an edit form already has the answer filled in above it.
+    #[test]
+    fn the_create_form_explains_itself_once() {
+        let code = code_only();
+        assert!(
+            code.contains(
+                "if !is_edit { p { class: \"text-sm text-muted\", \
+                 \"A site is an office, warehouse or other address where this company operates.\" } }"
+            ),
+            "the create path carries the sentence and the edit path does not"
         );
     }
 }
