@@ -78,6 +78,14 @@ pub struct MarkdownEditorProps {
     /// Extra classes on the wrapper.
     #[props(default)]
     pub class: String,
+    /// PMS-939: extra classes on the `<textarea>` itself.
+    ///
+    /// `rows` sets an intrinsic height, which is right for a field in a form
+    /// and wrong for the one field that is meant to fill the screen. The KB
+    /// editor passes `flex-1 min-h-0` and makes its own wrapper a flex column;
+    /// every other host leaves this empty and keeps its rows.
+    #[props(default)]
+    pub field_class: String,
 }
 
 #[component]
@@ -133,7 +141,15 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                 error: props.error.clone(),
                 // The toolbar draws the top border and corners, so the field
                 // joins onto it instead of sitting in its own box below one.
-                class: "rounded-t-none resize-y".to_string(),
+                class: format!("rounded-t-none resize-y {}", props.field_class),
+                // The wrapper is the flex item, so a field asked to stretch
+                // needs the wrapper to stretch with it AND to be a flex column
+                // itself, or the field inside it has nothing to stretch against.
+                wrapper_class: if props.field_class.is_empty() {
+                    String::new()
+                } else {
+                    format!("flex flex-col {}", props.field_class)
+                },
                 value: props.value.clone(),
                 oninput: move |e: FormEvent| on_change.call(e.value()),
                 onkeydown: {
