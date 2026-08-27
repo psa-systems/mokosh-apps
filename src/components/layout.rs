@@ -1047,6 +1047,50 @@ fn UserMenu() -> Element {
 
     let logout = move |_| {
         open.set(false);
+        // MAPPS-605: a contact-plane session goes through its own
+        // logout endpoint + destination. Route BEFORE touching the
+        // staff/OIDC path so the two never cross: a staff session's
+        // localStorage should not leak into the contact bounce and
+        // vice versa.
+        #[cfg(feature = "web")]
+        if crate::hooks::fetch::api::has_contact_session() {
+            let refresh = crate::hooks::fetch::api::current_contact_refresh_token();
+            if let Some(rt) = refresh {
+                // Fire-and-forget: server revokes the contact_sessions
+                // row. Failure leaves the row live until natural TTL,
+                // but the local clear below still signs the user out
+                // client-side.
+                spawn(async move {
+                    let body = serde_json::json!({ "refresh_token": rt });
+                    let _ = crate::hooks::fetch::api::post_typed_no_content(
+                        "/contact/auth/logout",
+                        &body,
+                    )
+                    .await;
+                });
+            }
+            crate::hooks::fetch::api::clear_contact_session();
+            // Route back to a contact-flavoured login page. Prefer the
+            // 9-digit portal_id (prompt 011 primary URL) when we
+            // captured it on the way in; fall back to the legacy slug
+            // shape from prompt 005 for a mid-transition returning
+            // visitor; last resort is the generic three-field entry
+            // page (prompt 011 secondary URL) which the visitor can
+            // sign into by re-typing all three fields.
+            let dest = if let Some(pid) = crate::hooks::fetch::api::current_contact_last_portal_id() {
+                format!("/portal/{pid}/login")
+            } else if let Some(slug) = crate::hooks::fetch::api::current_contact_last_slug() {
+                format!("/portal/{slug}/login")
+            } else {
+                "/portal/login".to_string()
+            };
+            if let Some(win) = web_sys::window() {
+                let _ = win.location().replace(&dest);
+            }
+            return;
+        }
+        // Staff sign-out (existing behaviour):
+        //
         // Order matters here: any write to the auth signal BEFORE
         // `location.replace` schedules
         // a Dioxus re-render. On that re-render `use_require_auth` (the

@@ -1850,10 +1850,18 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             // Subscribe to reachability so it auto-refetches on reconnect, and
             // keep `.ok()` (Option) so a failed load stays distinguishable from
             // a real "ticket not found" 404.
+            //
+            // MAPPS-605: get_authed_any tries the contact bearer first,
+            // falls back to staff. Prior get_authed only read the staff
+            // bearer, so a contact clicking a ticket from the Dashboard
+            // recent-activity list failed client-side with "not
+            // authenticated" before the request even left the browser.
             let _reachable = crate::hooks::use_server_reachable();
-            crate::hooks::fetch::api::get_authed::<RemoteTicketDetail>(&format!("/tickets/{id}"))
-                .await
-                .ok()
+            crate::hooks::fetch::api::get_authed_any::<RemoteTicketDetail>(&format!(
+                "/tickets/{id}"
+            ))
+            .await
+            .ok()
         }
     });
     let id_for_notes = props.id.clone();
@@ -1861,7 +1869,10 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         let id = id_for_notes.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<RemoteNote>>(&format!(
+            // MAPPS-605: contact-plane GET is dual-planed on the server
+            // (redacts internal notes for contacts, keeps them for
+            // staff). Pick the caller's bearer via get_authed_any.
+            crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteNote>>(&format!(
                 "/tickets/{id}/notes"
             ))
             .await
@@ -1873,6 +1884,17 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         let id = id_for_time.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-605: time entries are staff-only per prompt 008
+            // scope enforcement. Skip the fetch entirely on a contact
+            // session so the SPA doesn't chase a guaranteed 403 (or
+            // client-side "not authenticated" when no staff bearer).
+            #[cfg(feature = "web")]
+            if crate::hooks::fetch::api::has_contact_session() {
+                return Some(crate::utils::envelope::Paginated::<RemoteTimeEntry> {
+                    data: Vec::new(),
+                    meta: crate::utils::envelope::PaginatedMeta::default(),
+                });
+            }
             crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimeEntry>>(&format!(
                 "/time-entries?ticket_id={id}"
             ))

@@ -186,9 +186,19 @@ pub fn ContactGenericLoginPage() -> Element {
                         span { class: "text-red-500 ml-1", aria_label: "required", role: "img", "*" }
                     }
                     input {
-                        id: "portal_id",
-                        name: "portal_id",
+                        id: "portal_id_input",
+                        // Renamed off `portal_id` because Chrome's
+                        // autofill matcher latches on to any input
+                        // whose id/name reads like a user identifier
+                        // and prefills a saved email. Native
+                        // `autocomplete="off"` alone doesn't suppress
+                        // that on Chrome; combining an unfamiliar
+                        // `name` with `autocomplete="off"` is what
+                        // actually stops the browser from injecting an
+                        // email into the Portal ID slot.
+                        name: "portal_id_input",
                         r#type: "text",
+                        autocomplete: "off",
                         inputmode: "numeric",
                         // Deliberately no HTML5 `pattern` attribute:
                         // native pattern validation fires BEFORE the
