@@ -73,6 +73,12 @@ struct ContactSnippet {
     /// to their previous URL-derived path.
     #[serde(default)]
     company_id: Option<uuid::Uuid>,
+    /// MAPPS-609: the UUID of the Contact behind this session. Optional
+    /// so a pre-PMS-937 server that omits the field still deserialises;
+    /// the store is left at `None` and ticket-detail ownership gates
+    /// fall closed.
+    #[serde(default)]
+    contact_id: Option<uuid::Uuid>,
 }
 
 /// Public host hint served at `GET /contact/portal/{slug}/host` per
@@ -227,6 +233,7 @@ pub fn ContactLoginPage(slug: String) -> Element {
                             .map(|c| c.caps.clone())
                             .unwrap_or_default();
                         let company_id = resp.contact.as_ref().and_then(|c| c.company_id);
+                        let contact_id = resp.contact.as_ref().and_then(|c| c.contact_id);
                         crate::hooks::fetch::api::set_contact_access_token(Some(resp.access_token));
                         crate::hooks::fetch::api::set_contact_refresh_token(Some(
                             resp.refresh_token,
@@ -234,6 +241,10 @@ pub fn ContactLoginPage(slug: String) -> Element {
                         crate::hooks::fetch::api::set_contact_last_slug(&slug);
                         // MAPPS-604: hydrate the session's Company scope.
                         crate::hooks::fetch::api::set_contact_company_id(company_id);
+                        // MAPPS-609: hydrate the session's Contact UUID
+                        // so the ticket-detail Edit button can gate on
+                        // ownership.
+                        crate::hooks::fetch::api::set_contact_id(contact_id);
                         crate::hooks::capabilities::set_contact_capabilities(Some(caps));
                         nav.replace(Route::Dashboard {});
                     }

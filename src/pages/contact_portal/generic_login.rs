@@ -72,6 +72,12 @@ struct ContactSnippet {
     /// to their previous URL-derived path.
     #[serde(default)]
     company_id: Option<uuid::Uuid>,
+    /// MAPPS-609: the UUID of the Contact behind this session. Optional
+    /// so a pre-PMS-937 server that omits the field still deserialises;
+    /// the store is left at `None` and ticket-detail ownership gates
+    /// fall closed.
+    #[serde(default)]
+    contact_id: Option<uuid::Uuid>,
 }
 
 #[component]
@@ -310,10 +316,14 @@ fn install_session(nav: &dioxus::router::Navigator, resp: LoginResp, portal_id_s
         .unwrap_or_default();
     let response_portal_id = resp.contact.as_ref().and_then(|c| c.portal_id);
     let response_company_id = resp.contact.as_ref().and_then(|c| c.company_id);
+    let response_contact_id = resp.contact.as_ref().and_then(|c| c.contact_id);
     crate::hooks::fetch::api::set_contact_access_token(Some(resp.access_token));
     crate::hooks::fetch::api::set_contact_refresh_token(Some(resp.refresh_token));
     // MAPPS-604: stash the session's Company UUID for scoped-URL builders.
     crate::hooks::fetch::api::set_contact_company_id(response_company_id);
+    // MAPPS-609: stash the session's Contact UUID so ownership gates
+    // (e.g. the ticket-detail Edit button) know who this contact is.
+    crate::hooks::fetch::api::set_contact_id(response_contact_id);
     let portal_id_to_store = response_portal_id
         .map(|n| n.to_string())
         .unwrap_or_else(|| portal_id_str.to_string());

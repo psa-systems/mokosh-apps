@@ -38,6 +38,35 @@ pub(crate) fn should_show_reopen(status_name: &str, has_reopen_cap: bool) -> boo
     s.contains("closed") || s.contains("resolved")
 }
 
+/// MAPPS-609: can THIS contact edit this ticket? The Edit affordance on
+/// the ticket-detail Description card renders for staff unconditionally
+/// (staff bypass `use_capability`) and for a contact only when BOTH:
+///
+/// - `has_edit_own` is true (i.e. the contact holds `tickets:edit_own`), AND
+/// - the ticket's reporter contact id matches this contact's own id.
+///
+/// Any `None` on either side (server pre-PMS-937 that omits
+/// `reporter_contact_id`, or a pre-PMS-937 login response that never
+/// stashed `contact_id`) short-circuits to false so the button hides
+/// rather than surfacing a guaranteed 403 on submit.
+///
+/// Split out of the render body so the four combinations are unit-testable
+/// on the native `cargo test --lib` target (touching `use_capability`
+/// from here would panic without the wasm environment).
+pub(crate) fn contact_can_edit_ticket(
+    reporter_contact_id: Option<uuid::Uuid>,
+    my_contact_id: Option<uuid::Uuid>,
+    has_edit_own: bool,
+) -> bool {
+    if !has_edit_own {
+        return false;
+    }
+    match (reporter_contact_id, my_contact_id) {
+        (Some(r), Some(m)) => r == m,
+        _ => false,
+    }
+}
+
 /// Subset of mokosh-server's `TicketResponse` we render in the list. The
 /// server returns more fields; serde silently drops the ones we don't
 /// ask for, so adding columns later just means extending this struct.
@@ -93,6 +122,13 @@ struct RemoteTicketDetail {
     company_name: String,
     #[serde(default)]
     contact_name: Option<String>,
+    /// MAPPS-609: the Contact who reported this ticket. Used by the
+    /// Description-card Edit button's ownership gate for a contact
+    /// session (`contact_can_edit_ticket`). `#[serde(default)]` so a
+    /// pre-PMS-937 server that omits the field still deserialises; a
+    /// `None` here short-circuits the gate to false and the button hides.
+    #[serde(default)]
+    reporter_contact_id: Option<uuid::Uuid>,
     #[serde(default)]
     queue_name: String,
     #[serde(default)]
@@ -1858,6 +1894,17 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     // Attach hides when the contact lacks the cap.
     let can_reopen = crate::hooks::capabilities::use_capability("tickets:reopen");
     let can_attach = crate::hooks::capabilities::use_capability("tickets:attach_file");
+    // MAPPS-609: two new dual-plane caps introduced by PMS-937. Staff
+    // and platform-admin sessions bypass `use_capability` unconditionally,
+    // so both controls stay visible for them regardless of the contact
+    // grant. `tickets:edit_own` gates the Description-card Edit button
+    // for a contact and is additionally ownership-scoped
+    // (`contact_can_edit_ticket`); `tickets:request_approval` gates the
+    // sidebar "Request approval" affordance that fires
+    // `POST /tickets/{id}/approvals/request`.
+    let can_edit_own = crate::hooks::capabilities::use_capability("tickets:edit_own");
+    let can_request_approval =
+        crate::hooks::capabilities::use_capability("tickets:request_approval");
     // MAPPS-607: transient state for the reopen POST and the attach
     // upload. The reopen button doubles as its own spinner; the attach
     // flow uses a hidden `<input type="file">` triggered from a button
@@ -1869,6 +1916,16 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let mut attach_error = use_signal(String::new);
     let ticket_id_for_reopen = props.id.clone();
     let ticket_id_for_attach = props.id.clone();
+    // MAPPS-609: state for the contact-facing "Request approval" modal.
+    // Server validates 1-2000 chars for `note`; the client applies the
+    // same bounds via FormGuard's Required + max-length rules so a
+    // caller sees the failure inline rather than the raw 422 envelope.
+    let mut show_request_approval = use_signal(|| false);
+    let mut request_approval_note = use_signal(String::new);
+    let mut request_approval_note_error = use_signal(String::new);
+    let mut request_approval_submitting = use_signal(|| false);
+    let mut request_approval_error = use_signal(String::new);
+    let ticket_id_for_request_approval = props.id.clone();
     let mut show_note_modal = use_signal(|| false);
     let mut note_type = use_signal(|| "internal".to_string());
     let mut note_content = use_signal(String::new);
@@ -2462,6 +2519,36 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         .as_ref()
                         .map(|t| t.title.clone())
                         .unwrap_or_default();
+                    // MAPPS-609: on a contact session, the Edit button
+                    // is ownership-scoped - it renders only when this
+                    // contact reported the ticket AND holds
+                    // `tickets:edit_own`. Staff sessions bypass
+                    // `use_capability` unconditionally, so `can_edit_own`
+                    // is `true` for them and the existing staff Edit
+                    // behavior is preserved.
+                    #[cfg(feature = "web")]
+                    let my_contact_id = crate::hooks::fetch::api::current_contact_id();
+                    #[cfg(not(feature = "web"))]
+                    let my_contact_id: Option<uuid::Uuid> = None;
+                    #[cfg(feature = "web")]
+                    let is_contact_session =
+                        crate::hooks::fetch::api::has_contact_session();
+                    #[cfg(not(feature = "web"))]
+                    let is_contact_session = false;
+                    let reporter_contact_id =
+                        ticket.as_ref().and_then(|t| t.reporter_contact_id);
+                    let show_edit = if is_contact_session {
+                        contact_can_edit_ticket(
+                            reporter_contact_id,
+                            my_contact_id,
+                            can_edit_own,
+                        )
+                    } else {
+                        // Staff / platform-admin path: the button has
+                        // always rendered here on staff sessions since
+                        // PMS-182, gated only on the ticket having loaded.
+                        true
+                    };
                     let open_edit = move |_| {
                         e_title.set(cur_title.clone());
                         e_desc.set(cur_desc.clone());
@@ -2472,7 +2559,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     rsx! {
                         Card {
                             title: "Description",
-                            actions: if ticket_loaded {
+                            actions: if ticket_loaded && show_edit {
                                 Some(rsx! {
                                     Button {
                                         variant: ButtonVariant::Secondary,
@@ -2594,6 +2681,34 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
 
             // Sidebar
             div { class: "space-y-6",
+                // MAPPS-609: contact-facing "Request approval" affordance.
+                // Sits in its own Actions card at the top of the sidebar
+                // so it lives outside the staff Approvals section (MAPPS-606
+                // hides that section entirely on contact sessions). Staff
+                // and platform-admin sessions bypass `use_capability`
+                // unconditionally, so the button also renders for them;
+                // that is fine because clicking simply opens the
+                // contact-request modal, which posts to a dual-plane
+                // endpoint the server accepts on either bearer.
+                if can_request_approval {
+                    Card { title: "Actions",
+                        div { class: "flex flex-col gap-2",
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357 parity: block the request POST while the server is down.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't request an approval while the server is unreachable".to_string()),
+                                onclick: move |_| {
+                                    request_approval_error.set(String::new());
+                                    request_approval_note_error.set(String::new());
+                                    request_approval_note.set(String::new());
+                                    show_request_approval.set(true);
+                                },
+                                "Request approval"
+                            }
+                        }
+                    }
+                }
                 Card { title: "Details",
                     if let Some(t) = ticket.as_ref() {
                         dl { class: "space-y-4",
@@ -3069,12 +3184,44 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         "title": title_v,
                         "description": desc_v,
                     });
-                    match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
-                        &format!("/tickets/{save_id}"),
-                        &body,
-                    )
-                    .await
-                    {
+                    let path = format!("/tickets/{save_id}");
+                    // MAPPS-609: contact sessions hit
+                    // `PATCH /tickets/{id}` (server accepts only title +
+                    // description on that verb and verifies the caller
+                    // is the reporter); staff sessions keep the existing
+                    // PUT so priority/status/etc callers that share this
+                    // endpoint shape aren't affected. `patch_authed_any_typed`
+                    // picks the contact bearer first, staff second, so
+                    // routing off `has_contact_session` avoids ambiguous
+                    // dual-plane cases where both bearers are held.
+                    #[cfg(feature = "web")]
+                    let is_contact = crate::hooks::fetch::api::has_contact_session();
+                    #[cfg(not(feature = "web"))]
+                    let is_contact = false;
+                    let result: Result<(), String> = if is_contact {
+                        #[cfg(feature = "web")]
+                        {
+                            crate::hooks::fetch::api::patch_authed_any_typed::<
+                                serde_json::Value,
+                                _,
+                            >(&path, &body)
+                            .await
+                            .map(|_| ())
+                            .map_err(|e| e.user_message())
+                        }
+                        #[cfg(not(feature = "web"))]
+                        {
+                            Err("Editing tickets is only available in the browser."
+                                .to_string())
+                        }
+                    } else {
+                        crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                            &path, &body,
+                        )
+                        .await
+                        .map(|_| ())
+                    };
+                    match result {
                         Ok(_) => {
                             e_submitting.set(false);
                             editing_desc.set(false);
@@ -3241,6 +3388,109 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     oninput: move |e: FormEvent| {
                         note_content_error.set(String::new());
                         note_content.set(e.value());
+                    },
+                }
+            }
+        }
+
+        // MAPPS-609: contact-facing "Request approval" modal. Fires
+        // `POST /tickets/{id}/approvals/request` with `{ note }` via
+        // `post_authed_any_typed` (contact bearer first, staff fallback).
+        // The server validates 1-2000 chars for `note`; the client mirrors
+        // that via FormGuard so a bad length surfaces inline rather than
+        // as a raw 422 envelope. This modal lives outside the
+        // `ApprovalsSection` (MAPPS-606 hides that section entirely on
+        // contact sessions) so a contact never sees the staff Approvals
+        // workflow, only the request affordance.
+        Modal {
+            open: *show_request_approval.read(),
+            title: "Request approval",
+            size: crate::components::ModalSize::Medium,
+            onclose: move |_| show_request_approval.set(false),
+            footer: rsx! {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| show_request_approval.set(false),
+                    "Cancel"
+                }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    loading: *request_approval_submitting.read(),
+                    // MAPPS-357 parity: block the request POST while the server is down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't request an approval while the server is unreachable".to_string()),
+                    onclick: move |_| {
+                        if *request_approval_submitting.read() {
+                            return;
+                        }
+                        request_approval_error.set(String::new());
+                        let mut guard = FormGuard::new();
+                        let note_v = request_approval_note.read().trim().to_string();
+                        request_approval_note_error.set(guard.field(
+                            "request-approval-note",
+                            &note_v,
+                            "Note",
+                            &[Rule::Required, Rule::MaxLen(2000)],
+                        ));
+                        if guard.blocked() {
+                            return;
+                        }
+                        let id = ticket_id_for_request_approval.clone();
+                        request_approval_submitting.set(true);
+                        spawn(async move {
+                            #[cfg(feature = "web")]
+                            {
+                                let body = serde_json::json!({ "note": note_v });
+                                let path = format!("/tickets/{id}/approvals/request");
+                                match crate::hooks::fetch::api::post_authed_any_typed::<
+                                    serde_json::Value,
+                                    _,
+                                >(&path, &body)
+                                .await
+                                {
+                                    Ok(_) => {
+                                        crate::hooks::toast::push_toast(
+                                            crate::components::AlertType::Success,
+                                            "Approval requested. Your MSP will follow up.",
+                                        );
+                                        request_approval_note.set(String::new());
+                                        show_request_approval.set(false);
+                                    }
+                                    Err(err) => {
+                                        request_approval_error.set(format!(
+                                            "Could not request approval: {}",
+                                            err.user_message()
+                                        ));
+                                    }
+                                }
+                            }
+                            #[cfg(not(feature = "web"))]
+                            let _ = &id;
+                            request_approval_submitting.set(false);
+                        });
+                    },
+                    "Send request"
+                }
+            },
+            div { class: "space-y-4",
+                if !request_approval_error.read().is_empty() {
+                    ErrorBanner { "{request_approval_error}" }
+                }
+                p { class: "text-xs text-subtle",
+                    "Add a short note explaining what you're asking your MSP to review (1-2000 characters)."
+                }
+                Textarea {
+                    name: "request-approval-note",
+                    label: "Note",
+                    placeholder: "What would you like your MSP to review?",
+                    rows: 5,
+                    required: true,
+                    rules: vec![Rule::Required, Rule::MaxLen(2000)],
+                    error: request_approval_note_error.read().clone(),
+                    value: request_approval_note.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        request_approval_note_error.set(String::new());
+                        request_approval_note.set(e.value());
                     },
                 }
             }
@@ -3657,7 +3907,7 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
 /// entry point.
 #[cfg(test)]
 mod mapps_607_tests {
-    use super::{should_show_reopen, TICKET_ATTACHMENT_MAX_BYTES};
+    use super::{contact_can_edit_ticket, should_show_reopen, TICKET_ATTACHMENT_MAX_BYTES};
     use crate::Route;
     use std::str::FromStr;
 
@@ -3694,6 +3944,44 @@ mod mapps_607_tests {
     #[test]
     fn attachment_max_is_five_megabytes() {
         assert_eq!(TICKET_ATTACHMENT_MAX_BYTES, 5 * 1024 * 1024);
+    }
+
+    // MAPPS-609: contact ownership gate for the Description-card Edit
+    // button. Renders iff the contact holds `tickets:edit_own` AND the
+    // ticket's reporter contact id matches the caller's own; every
+    // other combination hides the button so a mis-configured JWT can
+    // never surface a guaranteed 403.
+
+    #[test]
+    fn edit_hidden_without_edit_own_capability() {
+        let mine = uuid::Uuid::from_u128(0x1);
+        // Even a perfect ownership match must not open the door without
+        // the capability - the cap is the necessary first gate.
+        assert!(!contact_can_edit_ticket(Some(mine), Some(mine), false));
+    }
+
+    #[test]
+    fn edit_visible_when_cap_and_ownership_match() {
+        let mine = uuid::Uuid::from_u128(0x1);
+        assert!(contact_can_edit_ticket(Some(mine), Some(mine), true));
+    }
+
+    #[test]
+    fn edit_hidden_when_cap_but_ownership_mismatch() {
+        let mine = uuid::Uuid::from_u128(0x1);
+        let other = uuid::Uuid::from_u128(0x2);
+        assert!(!contact_can_edit_ticket(Some(other), Some(mine), true));
+    }
+
+    #[test]
+    fn edit_hidden_when_reporter_and_my_ids_missing() {
+        // A pre-PMS-937 server that omits `reporter_contact_id` and a
+        // pre-PMS-937 login response that never stashed `contact_id`
+        // both fall through to `None`. Both must fail-closed.
+        assert!(!contact_can_edit_ticket(None, None, true));
+        let mine = uuid::Uuid::from_u128(0x1);
+        assert!(!contact_can_edit_ticket(None, Some(mine), true));
+        assert!(!contact_can_edit_ticket(Some(mine), None, true));
     }
 
     // Route resolution

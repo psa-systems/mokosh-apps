@@ -99,6 +99,12 @@ pub struct ContactSnippetWire {
     /// to their previous URL-derived path.
     #[serde(default)]
     pub company_id: Option<Uuid>,
+    /// MAPPS-609: the UUID of the Contact behind this session. Optional
+    /// so a pre-PMS-937 server that omits the field still deserialises;
+    /// the store is left at `None` and ticket-detail ownership gates
+    /// fall closed.
+    #[serde(default)]
+    pub contact_id: Option<Uuid>,
 }
 
 #[derive(Deserialize, Clone, Debug, Default, PartialEq)]
@@ -751,10 +757,14 @@ fn install_session_and_go(nav: &Navigator, resp: &ContactLoginResponseWire) {
         .map(|c| c.portal_slug.clone())
         .unwrap_or_default();
     let company_id = resp.contact.as_ref().and_then(|c| c.company_id);
+    let contact_id = resp.contact.as_ref().and_then(|c| c.contact_id);
     crate::hooks::fetch::api::set_contact_access_token(Some(resp.access_token.clone()));
     crate::hooks::fetch::api::set_contact_refresh_token(Some(resp.refresh_token.clone()));
     // MAPPS-604: stash the session's Company UUID for scoped-URL builders.
     crate::hooks::fetch::api::set_contact_company_id(company_id);
+    // MAPPS-609: stash the session's Contact UUID so ownership gates
+    // (e.g. the ticket-detail Edit button) know who this contact is.
+    crate::hooks::fetch::api::set_contact_id(contact_id);
     if !slug.is_empty() {
         crate::hooks::fetch::api::set_contact_last_slug(&slug);
     }

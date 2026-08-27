@@ -454,6 +454,17 @@ pub mod api {
         /// URLs (e.g. the Cross-Company probe check) without re-parsing
         /// the current route.
         static CONTACT_COMPANY_ID: std::cell::RefCell<Option<uuid::Uuid>> = const { std::cell::RefCell::new(None) };
+        /// MAPPS-609: the UUID of the Contact behind the current session.
+        /// Populated from the `contact.contact_id` field on every
+        /// /contact/auth/{login,refresh,login-link/select} response
+        /// (PMS-937 extends the wire shape). Pages read it via
+        /// [`current_contact_id`] to gate ownership-scoped controls -
+        /// specifically the "edit ticket" Edit affordance on
+        /// ticket detail (rendered only for the ticket's reporter).
+        /// Optional so a pre-PMS-937 server that omits the field still
+        /// deserialises; the store is left at `None` and any ownership
+        /// gate that requires the id falls closed.
+        static CONTACT_ID: std::cell::RefCell<Option<uuid::Uuid>> = const { std::cell::RefCell::new(None) };
     }
 
     #[cfg(feature = "web")]
@@ -626,6 +637,23 @@ pub mod api {
         CONTACT_COMPANY_ID.with(|slot| *slot.borrow())
     }
 
+    /// MAPPS-609: overwrite the contact UUID this session belongs to.
+    /// `None` clears it (called on logout / session drop).
+    #[cfg(feature = "web")]
+    pub fn set_contact_id(id: Option<uuid::Uuid>) {
+        CONTACT_ID.with(|slot| *slot.borrow_mut() = id);
+    }
+
+    /// MAPPS-609: read the contact UUID the current session belongs to.
+    /// `None` before the first `/contact/auth/*` response that carries
+    /// `contact_id` (pre-PMS-937 servers omit the field, so a contact
+    /// signed in against an older mokosh sees `None`; callers that need
+    /// ownership must treat that as "unknown" and fall closed).
+    #[cfg(feature = "web")]
+    pub fn current_contact_id() -> Option<uuid::Uuid> {
+        CONTACT_ID.with(|slot| *slot.borrow())
+    }
+
     /// Clear the entire contact session. Setting the refresh token to
     /// `None` clears its localStorage mirror as well; both last-*
     /// keys are wiped so a follow-up cold-load starts blank rather
@@ -635,6 +663,7 @@ pub mod api {
         set_contact_access_token(None);
         set_contact_refresh_token(None);
         set_contact_company_id(None);
+        set_contact_id(None);
         if let Some(win) = web_sys::window() {
             if let Ok(Some(storage)) = win.local_storage() {
                 let _ = storage.remove_item(CONTACT_LAST_SLUG_STORAGE_KEY);
@@ -1560,6 +1589,34 @@ pub mod api {
         handle_response(resp).await
     }
 
+    /// MAPPS-609: typed PATCH that picks the caller's bearer (contact
+    /// first, staff second, anon otherwise) the same way
+    /// [`post_authed_any_typed`] does. Used by the ticket detail's
+    /// contact-visible Edit button, which fires `PATCH /tickets/{id}`
+    /// with `{ title, description }` on a dual-plane route gated
+    /// per-cap on the server. Surfaces `ApiError::Status` so a caller
+    /// can branch on 403 (missing cap / not-owner) without re-parsing
+    /// the envelope.
+    #[cfg(feature = "web")]
+    pub async fn patch_authed_any_typed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let url = format!("{}{}", api_base(), path);
+        let mut req = Request::patch(&url).header("Content-Type", "application/json");
+        let bearer = current_contact_access_token().or_else(current_access_token);
+        if let Some(t) = bearer {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let resp = req
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
     /// MAPPS-607: bytes GET that picks the caller's bearer (contact
     /// first, staff second, anon otherwise) - shape identical to
     /// [`get_authed_bytes`] except for the two-bearer selection. Used
@@ -2398,5 +2455,19 @@ mod contact_session_tests {
         assert_eq!(current_contact_company_id(), Some(id));
         set_contact_company_id(None);
         assert_eq!(current_contact_company_id(), None);
+    }
+
+    /// MAPPS-609: the contact UUID slot round-trips independently from
+    /// the token holders; setting `None` clears it. Verifies the state
+    /// wiring in `set_contact_id` / `current_contact_id`, mirroring the
+    /// company-id round-trip above.
+    #[test]
+    fn contact_id_roundtrip() {
+        use super::api::{current_contact_id, set_contact_id};
+        let id = uuid::Uuid::from_u128(0xaabb_ccdd_eeff_0011_2233_4455_6677_8899);
+        set_contact_id(Some(id));
+        assert_eq!(current_contact_id(), Some(id));
+        set_contact_id(None);
+        assert_eq!(current_contact_id(), None);
     }
 }

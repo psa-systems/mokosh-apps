@@ -57,6 +57,12 @@ struct RefreshContactSnippet {
     /// legacy response the SPA falls back to its old URL-derived path.
     #[serde(default)]
     company_id: Option<uuid::Uuid>,
+    /// MAPPS-609: the UUID of the Contact behind this session. `Option`
+    /// because pre-PMS-937 servers omit the field; on a legacy response
+    /// the SPA leaves the store empty and ownership gates (e.g. the
+    /// ticket-detail Edit button) fall closed.
+    #[serde(default)]
+    contact_id: Option<uuid::Uuid>,
 }
 
 /// Rotate the contact session using the stored refresh token.
@@ -102,6 +108,9 @@ pub async fn refresh_contact_session() -> Result<(), String> {
                 // the refresh response so pages can build Company-scoped
                 // URLs without a second round-trip.
                 crate::hooks::fetch::api::set_contact_company_id(snippet.company_id);
+                // MAPPS-609: pick up the session's Contact UUID so the
+                // ticket-detail Edit button can gate on ownership.
+                crate::hooks::fetch::api::set_contact_id(snippet.contact_id);
             }
             crate::hooks::capabilities::set_contact_capabilities(Some(caps));
             Ok(())
