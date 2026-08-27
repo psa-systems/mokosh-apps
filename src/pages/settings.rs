@@ -1208,6 +1208,18 @@ pub fn ImportExportSettingsPage() -> Element {
     // across renders; it only reads context and feeds the tenant-name
     // confirmation used past the gate.
     let auth = crate::hooks::use_auth();
+    // MAPPS-602: and the tenant read has to be above the gate for the same
+    // reason MAPPS-377 moved `use_auth` there. It was left below, so a render
+    // that took the early exit ran one hook fewer than a render that did not,
+    // and `use_is_admin` flips from false to true the moment `/me` resolves.
+    // The next render then panics in dioxus-core on the hook index, and because
+    // WASM does not unwind that panic poisons the runtime for the life of the
+    // page.
+    let tenant = use_resource(move || async move {
+        crate::hooks::fetch::api::get_authed::<TenantView>(TENANT_PATH)
+            .await
+            .ok()
+    });
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Import & Export" } };
     }
@@ -1233,11 +1245,6 @@ pub fn ImportExportSettingsPage() -> Element {
     // configured to mint it, and the failure hid behind the switcher-name
     // fallback below: the page then asked for a confirmation phrase the server
     // would never accept.
-    let tenant = use_resource(move || async move {
-        crate::hooks::fetch::api::get_authed::<TenantView>(TENANT_PATH)
-            .await
-            .ok()
-    });
     let fetched_name = match &*tenant.read_unchecked() {
         Some(Some(t)) if !t.name.is_empty() => Some(t.name.clone()),
         _ => None,

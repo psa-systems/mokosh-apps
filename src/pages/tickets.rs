@@ -2112,6 +2112,27 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     // reachable is a real 404 (deleted / cross-tenant / bad link) and keeps the
     // existing not-found body below. Writes are blocked while down; `can_mutate`
     // disables every mutating control on the page.
+    // MAPPS-593: who is looking, so the journal knows which notes carry an Edit
+    // control. Read once here rather than per entry.
+    //
+    // MAPPS-602: this HAS to sit above the two early returns below. `use_auth`
+    // is `use_context`, which is a hook, and a hook after a `return` runs on
+    // some renders and not others. The render where `ticket_fetch_failed` is
+    // true then leaves the component one hook short, and the next render panics
+    // in dioxus-core with "Unable to retrieve the hook that was initialized at
+    // this index". WASM does not unwind, so that panic poisons the runtime: the
+    // page stops responding entirely, and a save that reaches the database goes
+    // on rendering the old value, which reads as a stale-data bug and is not
+    // one.
+    let (viewer_id, viewer_is_admin) = {
+        let auth = crate::hooks::use_auth();
+        let a = auth.read();
+        (
+            a.user.as_ref().map(|u| u.id),
+            a.has_role(crate::modules::auth::UserRole::Admin)
+                || a.has_role(crate::modules::auth::UserRole::SuperAdmin),
+        )
+    };
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
     // MAPPS-366: set the tab title once, before the early returns (use_page_title
@@ -2197,18 +2218,6 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let time_entries: Vec<RemoteTimeEntry> = time_snap.flatten().unwrap_or_default();
     let total_minutes: i32 = time_entries.iter().map(|e| e.duration_minutes).sum();
     let total_hours_label = format!("{:.1} hours", total_minutes as f64 / 60.0);
-
-    // MAPPS-593: who is looking, so the journal knows which notes carry an Edit
-    // control. Read once here rather than per entry.
-    let (viewer_id, viewer_is_admin) = {
-        let auth = crate::hooks::use_auth();
-        let a = auth.read();
-        (
-            a.user.as_ref().map(|u| u.id),
-            a.has_role(crate::modules::auth::UserRole::Admin)
-                || a.has_role(crate::modules::auth::UserRole::SuperAdmin),
-        )
-    };
 
     // MAPPS-517: one stream out of the three sources the page already holds.
     let journal = build_journal(
