@@ -26,6 +26,7 @@ pub mod http;
 pub mod location;
 pub mod log;
 pub mod prefs;
+pub mod scroll_sync;
 pub mod store;
 pub mod timer;
 pub mod tz;

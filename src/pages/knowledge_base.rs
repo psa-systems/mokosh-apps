@@ -44,6 +44,12 @@ use crate::Route;
 /// Rows per page for the article list (mirrors contacts `PER_PAGE`).
 const PER_PAGE: usize = 25;
 
+/// MAPPS-600: the id of the preview's scroll box, and the id of the source
+/// field, so the split view can tie their scrolling together. The source id is
+/// the `Textarea`'s `name`, which is what it renders as its `id`.
+const KB_PREVIEW_ID: &str = "kb-body-preview";
+const KB_SOURCE_ID: &str = "content";
+
 /// How many recent articles the home page surfaces.
 const RECENT_LIMIT: usize = 5;
 
@@ -2093,6 +2099,16 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     // which is the right degrade because a handle typed by hand still resolves
     // at render time.
     let mention_people = crate::hooks::use_mention_directory(true);
+    // MAPPS-600: tie the two panes' scrolling together while both are on
+    // screen. In an effect rather than at mount because the preview box only
+    // exists in split view, and re-running is free: `link` is idempotent, it
+    // marks the elements it has already wired.
+    use_effect(move || {
+        if split() {
+            crate::platform::scroll_sync::link(KB_SOURCE_ID, KB_PREVIEW_ID);
+        }
+    });
+
     // MAPPS-573: Cancel with unsaved work asks first.
     let mut confirming_cancel = use_signal(|| false);
 
@@ -2816,7 +2832,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             // The tabs, the split and the drop zone stay here:
                             // they are this page's layout, not the field.
                             crate::components::MarkdownEditor {
-                                name: "content".to_string(),
+                                name: KB_SOURCE_ID.to_string(),
                                 label: "Body (Markdown)".to_string(),
                                 placeholder: "## Overview\n\nWrite the article in Markdown…"
                                     .to_string(),
@@ -2881,6 +2897,16 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             // fixed prose density instead of the reader's.
                             // A preview that is not the article is the bug this
                             // whole surface exists to avoid.
+                            // MAPPS-600: the scroll box, and the element the
+                            // source pane is synced to. It is a wrapper rather
+                            // than the `Markdown` container itself because
+                            // `Markdown` owns its own id for the delegated
+                            // click listener, and giving the shared component a
+                            // second identity for one caller's benefit is how a
+                            // component starts serving a page.
+                            div {
+                                id: KB_PREVIEW_ID,
+                                class: "p-2 border border-line rounded h-full max-h-[34rem] overflow-y-auto",
                             crate::components::Markdown {
                                 // No floor of its own: the panel above sets the
                                 // height and the grid row stretches both columns
@@ -2895,9 +2921,8 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                                 // same height whichever tab is up, which is the
                                 // MAPPS-573 floor doing its job from the other
                                 // side.
-                                class: "p-2 border border-line rounded h-full max-h-[34rem] overflow-y-auto"
-                                    .to_string(),
                                 content: content.read().clone(),
+                            }
                             }
                         }
                     }
@@ -4287,6 +4312,73 @@ mod editor_ux_tests {
             0,
             "no surface may render markdown directly any more; the editor preview and \
              the published article must go through the same component or they drift"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mapps600_split_editor_tests {
+    const SRC: &str = include_str!("knowledge_base.rs");
+
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod mapps600_split_editor_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// MAPPS-600: the two panes are tied together, and only while both are on
+    /// screen. With one pane visible there is nothing to sync and the preview
+    /// box does not exist to be found.
+    #[test]
+    fn the_panes_are_linked_only_in_split_view() {
+        let code = code_only();
+        assert!(
+            code.contains(
+                "if split() { crate::platform::scroll_sync::link(KB_SOURCE_ID, KB_PREVIEW_ID); }"
+            ),
+            "the link is conditional on the split view"
+        );
+    }
+
+    /// The ids are shared between the element that carries them and the call
+    /// that looks them up. A literal on either side is a link that silently
+    /// does nothing the day somebody renames the field.
+    #[test]
+    fn both_panes_are_addressed_by_the_same_constants() {
+        let code = code_only();
+        assert!(
+            code.contains("id: KB_PREVIEW_ID,"),
+            "the preview box carries it"
+        );
+        assert!(
+            code.contains("name: KB_SOURCE_ID.to_string(),"),
+            "and the source field's name, which Textarea renders as its id"
+        );
+        assert!(
+            !code.contains("scroll_sync::link(\"content\""),
+            "neither side hardcodes the string"
+        );
+    }
+
+    /// The scrolling box is the wrapper, not the `Markdown` container. The
+    /// shared component owns its own id for the delegated click listener, and
+    /// giving it a second identity for one caller's benefit is how a component
+    /// starts serving a page.
+    #[test]
+    fn the_preview_scrolls_in_a_wrapper_the_page_owns() {
+        let code = code_only();
+        let wrapper = code
+            .find("id: KB_PREVIEW_ID,")
+            .expect("the preview wrapper");
+        let window = &code[wrapper..code.len().min(wrapper + 260)];
+        assert!(
+            window.contains("overflow-y-auto"),
+            "the wrapper is the scroll box: {window}"
+        );
+        assert!(
+            window.contains("crate::components::Markdown {"),
+            "and the renderer sits inside it: {window}"
         );
     }
 }
