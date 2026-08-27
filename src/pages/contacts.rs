@@ -2165,12 +2165,30 @@ fn CompanyPortalAccessCard(company_id: String) -> Element {
             .ok()
         }
     });
+    // MAPPS-608: tenant portal-role lookup used to translate the per-
+    // contact role_id lists into readable role names. Fetched once for
+    // the whole card. Uses the double-nested URL prompt 003 shipped
+    // (matches server route `.route("/contacts/portal-roles")` inside
+    // contact_routes nested at `/api/v1/contacts`).
+    let all_roles = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Vec<PortalRoleSummaryWire>>(
+            "/contacts/contacts/portal-roles",
+        )
+        .await
+        .ok()
+        .unwrap_or_default()
+    });
     let can_mutate = crate::hooks::use_can_mutate();
     // Per-row spinner tracking: whichever contact is mid-toggle disables its
     // own button rather than freezing the whole card. Uuid keys the map.
     let mut toggling: Signal<std::collections::HashSet<uuid::Uuid>> =
         use_signal(std::collections::HashSet::new);
     let snap = roster.read_unchecked();
+    let all_roles_snap: Vec<PortalRoleSummaryWire> = all_roles
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
     let count = match &*snap {
         Some(Some(page)) => Some(page.meta.total),
         _ => None,
@@ -2186,14 +2204,20 @@ fn CompanyPortalAccessCard(company_id: String) -> Element {
                         TableHeader { "Contact" }
                         TableHeader { "Email" }
                         TableHeader { "Status" }
+                        // MAPPS-608: assigned portal roles per contact
+                        // so the operator can see who holds Billing /
+                        // Support / Read-Only / any Company-scoped
+                        // custom role without opening the contact
+                        // detail.
+                        TableHeader { "Roles" }
                         TableHeader { span { class: "sr-only", "Action" } }
                     }
                 }
                 match &*snap {
-                    None => rsx! { TableLoading { columns: 4, rows: 3 } },
-                    Some(None) => rsx! { TableEmpty { columns: 4, message: "Could not load contacts.".to_string() } },
+                    None => rsx! { TableLoading { columns: 5, rows: 3 } },
+                    Some(None) => rsx! { TableEmpty { columns: 5, message: "Could not load contacts.".to_string() } },
                     Some(Some(page)) if page.data.is_empty() => rsx! {
-                        TableEmpty { columns: 4, message: "No contacts at this company yet. Add one to grant portal access.".to_string() }
+                        TableEmpty { columns: 5, message: "No contacts at this company yet. Add one to grant portal access.".to_string() }
                     },
                     Some(Some(page)) => {
                         let rows: Vec<_> = page.data.iter().cloned().collect();
@@ -2223,6 +2247,16 @@ fn CompanyPortalAccessCard(company_id: String) -> Element {
                                                         Badge { variant: BadgeVariant::Green, "Granted" }
                                                     } else {
                                                         Badge { variant: BadgeVariant::Gray, "Not granted" }
+                                                    }
+                                                }
+                                                TableCell {
+                                                    if is_portal_user {
+                                                        ContactRoleBadges {
+                                                            contact_id: contact_id_str.clone(),
+                                                            all_roles: all_roles_snap.clone(),
+                                                        }
+                                                    } else {
+                                                        span { class: "text-xs text-muted", "-" }
                                                     }
                                                 }
                                                 TableCell { class: "text-right w-32",
@@ -2299,6 +2333,55 @@ fn CompanyPortalAccessCard(company_id: String) -> Element {
                             }
                         }
                     },
+                }
+            }
+        }
+    }
+}
+
+/// MAPPS-608: render the assigned portal roles for one contact as a
+/// row of small blue badges. Fetches the contact's role_ids inline via
+/// `GET /contacts/contacts/{id}/portal-roles`, translates them against
+/// the parent's tenant-role snapshot (name lookup by id). Rendering "-"
+/// when the fetch is still loading, has failed, or has resolved to
+/// zero assignments keeps the column concise for the "granted but no
+/// roles yet" corner case.
+#[component]
+fn ContactRoleBadges(contact_id: String, all_roles: Vec<PortalRoleSummaryWire>) -> Element {
+    let contact_id_for_resource = contact_id.clone();
+    let assigned = use_resource(move || {
+        let id = contact_id_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<Vec<uuid::Uuid>>(&format!(
+                "/contacts/contacts/{id}/portal-roles"
+            ))
+            .await
+            .ok()
+            .unwrap_or_default()
+        }
+    });
+    let assigned_snap: Vec<uuid::Uuid> = assigned.read_unchecked().clone().unwrap_or_default();
+    let names: Vec<String> = assigned_snap
+        .iter()
+        .filter_map(|role_id| {
+            all_roles
+                .iter()
+                .find(|r| r.id == *role_id)
+                .map(|r| r.name.clone())
+        })
+        .collect();
+    rsx! {
+        if names.is_empty() {
+            span { class: "text-xs text-muted", "-" }
+        } else {
+            div { class: "flex flex-wrap gap-1",
+                for name in names.iter() {
+                    Badge {
+                        key: "{name}",
+                        variant: BadgeVariant::Blue,
+                        "{name}"
+                    }
                 }
             }
         }
