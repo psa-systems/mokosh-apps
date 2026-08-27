@@ -78,33 +78,36 @@ pub fn Markdown(props: MarkdownProps) -> Element {
         crate::utils::markdown::render_markdown_with_mentions(&props.content, &people, &api_origin)
     };
 
-    // MAPPS-578: whether a mention chip should route on click. Only for a
-    // viewer who can actually open the destination: `/admin/team` is an
-    // admin-only surface, and there is no per-user page to send anyone else
-    // to, so for everyone else the chip stays informative and inert rather
-    // than being a link that 403s.
-    let mention_target = {
-        let auth = crate::hooks::use_auth();
-        let a = auth.read();
-        (a.has_role(crate::modules::auth::UserRole::Admin)
-            || a.has_role(crate::modules::auth::UserRole::SuperAdmin))
-        .then_some(crate::Route::Team {})
-    };
-
-    // One delegated click listener on the container: a checkbox carries
-    // `data-ti="<index>"` and a mention chip carries `data-mention="<id>"`, so
-    // reading the attributes on click maps it to whichever it was. Attached
-    // once; it survives content re-renders because only the container's
-    // innerHTML changes, not the element itself.
+    // One delegated click listener on the container, for the task-list
+    // checkboxes. A checkbox carries `data-ti="<index>"`, so reading the
+    // attribute on click maps it back to the item. Attached once; it survives
+    // content re-renders because only the container's innerHTML changes, not
+    // the element itself.
+    //
+    // MAPPS-603: a mention chip is NOT clickable, for anybody.
+    //
+    // It used to route to `/admin/team` for an Admin and do nothing for anyone
+    // else. That page does not list team members: it invites people and manages
+    // pending invitations, and nothing in this app shows a user. So the click
+    // navigated an admin away from what they were reading to a page that said
+    // nothing about the person they clicked, and gave everyone else a chip that
+    // looked different for no reason they could act on.
+    //
+    // What a mention is worth is identity, and the chip already carries it:
+    // MAPPS-578 puts the name and email in `title`, which every reader gets on
+    // hover whatever their role. Removing the navigation costs nothing that was
+    // worth having and takes three pieces of machinery with it: the container
+    // class that existed to make two kinds of chip look different (MAPPS-585),
+    // the router call from a raw DOM listener that killed the page when it
+    // panicked (MAPPS-586), and the role read that made an article render
+    // differently for two people reading the same words.
     #[cfg(feature = "web")]
     {
         let dom_id = dom_id.clone();
         let on_toggle = props.on_toggle;
         let interactive = props.interactive;
-        let navigator = use_navigator();
-        let mention_route = mention_target.clone();
         use_effect(move || {
-            if !interactive && mention_route.is_none() {
+            if !interactive {
                 return;
             }
             // MAPPS-504: the rendered markdown is raw HTML, so these clicks are
@@ -113,61 +116,16 @@ pub fn Markdown(props: MarkdownProps) -> Element {
             // On the desktop the checkboxes render but do not toggle. Tracked
             // in MAPPS-511.
             #[cfg(target_arch = "wasm32")]
-            install_click_listener(
-                dom_id.clone(),
-                interactive.then_some(on_toggle),
-                // MAPPS-586: an `EventHandler`, not a bare closure.
-                //
-                // This runs from a raw DOM listener, so there is no dioxus
-                // scope on the stack. `navigator.push` writes the router's
-                // signals, which asks the runtime for the current scope, and
-                // `Runtime::current_scope_id` unwraps an empty stack. That
-                // panic fires while it still holds a shared borrow of the
-                // scope stack, and the release profile is `panic = "abort"`,
-                // so nothing unwinds and the borrow guard never drops. From
-                // that moment every render in the page panics on
-                // `scope_stack.borrow_mut()` and the whole app is dead. The
-                // reported symptom was a page that stopped responding.
-                //
-                // `EventHandler::call` is what makes this safe: it takes a
-                // `RuntimeGuard` and pushes its origin scope before running
-                // the body, so the navigation happens inside the scope it was
-                // created in. The sibling checkbox branch has always gone
-                // through one, which is why only mentions killed the page.
-                mention_route.clone().map(|route| {
-                    EventHandler::new(move |()| {
-                        // The router reports an external-navigation failure,
-                        // which cannot happen for an in-app route.
-                        let _ = navigator.push(route.clone());
-                    })
-                }),
-            );
+            install_click_listener(dom_id.clone(), interactive.then_some(on_toggle));
             #[cfg(not(target_arch = "wasm32"))]
-            let _ = (&dom_id, on_toggle, &mention_route, navigator);
+            let _ = (&dom_id, on_toggle);
         });
     }
-    #[cfg(not(feature = "web"))]
-    let _ = &mention_target;
-
-    // MAPPS-585: say which chips are actually clickable.
-    //
-    // The rendered HTML is the same for every reader, because the markup is
-    // built before anyone knows who is looking. Only the listener differs, so
-    // until now an inert chip and a live one were pixel-identical: no pointer,
-    // no hover, and a title naming the person rather than a destination. The
-    // reporter asked what a mention was for, having clicked one that was
-    // inert. The class goes on the container, which is the one element that
-    // does know whether routing was wired.
-    let mention_class = if mention_target.is_some() {
-        " mentions-open"
-    } else {
-        ""
-    };
 
     rsx! {
         div {
             id: "{dom_id}",
-            class: "prose dark:prose-invert max-w-none{mention_class} {props.class}",
+            class: "prose dark:prose-invert max-w-none {props.class}",
             dangerous_inner_html: html,
         }
     }
@@ -175,16 +133,11 @@ pub fn Markdown(props: MarkdownProps) -> Element {
 
 /// Install one delegated `click` listener on the rendered markdown container.
 ///
-/// It serves two things, because both are raw HTML injected with
-/// `dangerous_inner_html` and neither can carry a Dioxus handler: a task-list
-/// checkbox reports its `data-ti` index back to the caller, and a mention chip
-/// reports its `data-mention` id and routes.
+/// A task-list checkbox is raw HTML injected with `dangerous_inner_html` and
+/// cannot carry a Dioxus handler, so it reports its `data-ti` index back to the
+/// caller through this listener instead.
 ///
-/// A mention chip is a `span`, never an `a`. A real `href` inside injected HTML
-/// leaves the SPA router and reloads the whole WASM bundle, so routing goes
-/// through the navigator instead.
-///
-/// MAPPS-586: both callbacks are `EventHandler`s, and that is load-bearing
+/// MAPPS-586: the callback is an `EventHandler`, and that is load-bearing
 /// rather than stylistic. This closure runs from a raw DOM listener, so no
 /// dioxus scope is on the stack; anything that asks the runtime which scope it
 /// is in panics inside `Runtime::current_scope_id`, which unwraps an empty
@@ -192,13 +145,13 @@ pub fn Markdown(props: MarkdownProps) -> Element {
 /// `panic = "abort"`, so nothing unwinds, the borrow guard never drops, and
 /// every render afterwards panics on `scope_stack.borrow_mut()`. One click
 /// killed the page for good. `EventHandler::call` pushes its origin scope
-/// first, which is exactly what the bare boxed closure it replaced did not do.
+/// first, which is what a bare boxed closure does not do.
+///
+/// MAPPS-603 removed the other caller, a mention chip that routed to the team
+/// page. The rule outlives it: whatever this listener calls next has to carry
+/// its own scope.
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
-fn install_click_listener(
-    dom_id: String,
-    on_toggle: Option<EventHandler<usize>>,
-    on_mention: Option<EventHandler<()>>,
-) {
+fn install_click_listener(dom_id: String, on_toggle: Option<EventHandler<usize>>) {
     use wasm_bindgen::closure::Closure;
     use wasm_bindgen::JsCast;
     let Some(container) = web_sys::window()
@@ -221,13 +174,6 @@ fn install_click_listener(
             {
                 on_toggle.call(idx);
                 return;
-            }
-        }
-        if let Some(go) = on_mention {
-            // The chip's own text is a child node, so a click can land on it
-            // rather than the span; `closest` walks up to the chip either way.
-            if el.closest("[data-mention]").ok().flatten().is_some() {
-                go.call(());
             }
         }
     }) as Box<dyn FnMut(web_sys::Event)>);
@@ -271,97 +217,59 @@ mod mention_wiring_tests {
     /// `EventHandler`.
     ///
     /// The listener runs from a plain DOM event, so nothing has pushed a
-    /// dioxus scope. `navigator.push` writes the router's signals, which asks
-    /// the runtime for the current scope; `Runtime::current_scope_id` unwraps
-    /// an empty stack while holding a shared borrow of it, and because release
-    /// builds are `panic = "abort"` that borrow guard never drops. Every later
-    /// render then panics on `scope_stack.borrow_mut()`, so a single click on
-    /// a mention chip left the page permanently unresponsive.
+    /// dioxus scope. Anything that asks the runtime which scope it is in
+    /// unwraps an empty stack while holding a shared borrow of it, and because
+    /// release builds are `panic = "abort"` that borrow guard never drops.
+    /// Every later render then panics on `scope_stack.borrow_mut()`, so a
+    /// single click left the page permanently unresponsive.
     ///
-    /// `EventHandler::call` takes a `RuntimeGuard` and pushes its origin scope
-    /// before running the body. The checkbox branch always went through one,
-    /// which is why only mentions did this. Reproduced and fixed against a
-    /// real browser; the harness is described on MAPPS-586.
+    /// MAPPS-603 removed the caller that did it (the mention chip's
+    /// navigation). The rule outlives it: the checkbox branch is what is left,
+    /// and whatever is added next has to carry its own scope too.
     #[test]
     fn the_raw_listener_only_calls_things_that_carry_their_own_scope() {
         let code = code_only();
         assert!(
             !code.contains("Box<dyn Fn()>"),
             "a bare closure called from a DOM listener has no dioxus scope, and \
-             the panic that causes is unrecoverable for the rest of the page"
+             a panic inside one poisons the runtime for the life of the page"
         );
         assert!(
-            code.contains("EventHandler::new(move |()|"),
-            "the mention navigation must go through an EventHandler, which \
-             pushes its origin scope before it runs"
-        );
-        assert!(
-            code.contains("on_mention: Option<EventHandler<()>>"),
-            "and the listener must accept nothing weaker"
+            code.contains("on_toggle: Option<EventHandler<usize>>"),
+            "the checkbox callback is an EventHandler, which pushes its origin \
+             scope before running"
         );
     }
 
-    /// MAPPS-585: the container says whether a chip is clickable.
+    /// MAPPS-603: a mention chip is inert, for every reader.
     ///
-    /// The chip markup is identical for every reader, because it is built
-    /// before anyone knows who is looking; only the click listener differs. So
-    /// an inert chip and a live one looked the same, and the reporter clicked
-    /// one that did nothing and asked what mentions were for. `mentions-open`
-    /// is the one thing that separates them, and the stylesheet hangs the
-    /// pointer and the hover on it, so both halves have to stay.
+    /// It used to route to `/admin/team` for an Admin and do nothing for anyone
+    /// else. That page does not list team members: it invites people and
+    /// manages pending invitations, and nothing in this app shows a user. So
+    /// the click took an admin away from what they were reading to a page that
+    /// said nothing about the person they clicked.
+    ///
+    /// Pinned because "a mention should be clickable" is an easy assumption to
+    /// re-make, and acting on it means finding somewhere for it to go first.
     #[test]
-    fn the_container_marks_a_chip_that_actually_routes() {
+    fn a_mention_chip_does_not_navigate() {
         let code = code_only();
         assert!(
-            code.contains("mentions-open"),
-            "the container must mark itself when routing is wired"
+            !code.contains("navigator.push"),
+            "nothing here navigates: the chip's worth is the name and email it \
+             already carries in `title`"
         );
         assert!(
-            code.contains("mention_target.is_some()"),
-            "and the mark must come from whether there is a destination, not \
-             from anything a reader without one also sees"
-        );
-        const CSS: &str = include_str!("../../input.css");
-        assert!(
-            CSS.contains(".prose.mentions-open") && CSS.contains("cursor: pointer"),
-            "and the stylesheet must give the live chip a pointer, or the mark \
-             changes nothing anyone can see"
-        );
-    }
-
-    /// A chip must never be an `<a href>`. Rendered Markdown is injected with
-    /// `dangerous_inner_html`, so a real href leaves the SPA router and reloads
-    /// the whole WASM bundle. Routing goes through the navigator instead.
-    #[test]
-    fn a_mention_routes_through_the_router_not_an_href() {
-        let code = code_only();
-        assert!(
-            code.contains("navigator.push("),
-            "a mention click must route through the SPA navigator, never an href: \
-             rendered Markdown is injected raw, so a real href leaves the router \
-             and reloads the whole WASM bundle"
+            !code.contains("data-mention"),
+            "and the listener does not look for a chip at all"
         );
         assert!(
-            code.contains("[data-mention]"),
-            "and find its chip by the data attribute, since the click can land \
-             on the chip's text node rather than the span"
-        );
-    }
-
-    /// The chip is only clickable for a viewer who can open the destination.
-    /// `/admin/team` is admin-gated and there is no per-user page, so everyone
-    /// else gets an informative chip rather than a link that 403s.
-    #[test]
-    fn only_a_viewer_who_can_open_the_roster_gets_a_destination() {
-        let code = code_only();
-        assert!(
-            code.contains("UserRole::Admin") && code.contains("UserRole::SuperAdmin"),
-            "the destination is gated on the roles that can actually open it"
+            !code.contains("mentions-open"),
+            "so there is one kind of chip, not two"
         );
         assert!(
-            code.contains("then_some(crate::Route::Team {})"),
-            "and resolves to no destination at all otherwise, rather than to a \
-             route the viewer cannot open"
+            !code.contains("UserRole::Admin"),
+            "and an article renders the same for two people reading the same words"
         );
     }
 
