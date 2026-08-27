@@ -2071,13 +2071,19 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let mut editing_desc = use_signal(|| false);
     let mut e_title = use_signal(String::new);
     let mut e_desc = use_signal(String::new);
-    // PMS-518: per-field inline errors for the Edit Ticket modal's required
+    // PMS-518: per-field inline errors for the in-page ticket editor's required
     // Title + Description, surfaced in each field's own slot by the FormGuard
     // in `on_save`.
     let mut e_title_error = use_signal(String::new);
     let mut e_desc_error = use_signal(String::new);
     let mut e_submitting = use_signal(|| false);
     let mut e_error = use_signal(String::new);
+    // MAPPS-594: Cancel asks first, but only when there is something to lose.
+    let mut confirming_cancel = use_signal(|| false);
+    // What the editor opened with, so "dirty" survives a refetch of the ticket
+    // and so retyping a value back to what it was stops being dirty.
+    let mut e_baseline_title = use_signal(String::new);
+    let mut e_baseline_desc = use_signal(String::new);
     // MAPPS-592: who `@handle` completes against in the description editor.
     // Same list the renderer already resolves a chip from, so a mention typed
     // here is one the reader will see resolved.
@@ -2102,6 +2108,25 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     // forever. Capture the failure before flattening and short-circuit to a
     // "Ticket not found" state, mirroring the explicit `Some(None)` arm on the
     // invoice/contract/company detail pages.
+    // MAPPS-594: `read_unchecked`, deliberately, and NOT because it is best.
+    //
+    // It skips the reactive subscription, so `restart()` refetches the ticket
+    // and this component does not re-render from the result: after a save the
+    // page shows the OLD description until a reload. That is a real defect and
+    // it is not fixed here, because both obvious fixes are worse and were
+    // measured to be, in a browser against a real server:
+    //
+    //   * `read()` suspends while the fetch is in flight, which aborts this
+    //     render part-way through its hook list. The next render then panics in
+    //     dioxus-core with "Unable to retrieve the hook that was initialized at
+    //     this index" and the page renders nothing at all.
+    //   * `value().read()` neither suspends nor re-renders, and additionally
+    //     stopped the Edit button opening the editor.
+    //
+    // `read_unchecked` on a resource is the pattern this whole codebase uses
+    // (13 reads in contracts.rs, 13 in assets.rs, and so on), so the staleness
+    // is app-wide rather than this page's, and picking at it inside a UX ticket
+    // is how a layout change takes a detail page down. Filed separately.
     let ticket_snapshot = ticket_resource.read_unchecked().clone();
     let ticket_fetch_failed = matches!(ticket_snapshot, Some(None));
     let ticket = ticket_snapshot.flatten();
@@ -2156,6 +2181,25 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         header_title.clone()
     };
     use_page_title(&title);
+
+    // MAPPS-594: is there unsaved work in the in-page editor?
+    //
+    // A `use_memo` whose body reads only a plain local computes once and never
+    // again, because it has no reactive dependency to re-run on; the guard would
+    // then be stuck on whatever the first render decided. Every input here is a
+    // signal, so the memo actually tracks.
+    let editor_dirty = use_memo(move || {
+        editing_desc()
+            && (*e_title.read() != *e_baseline_title.read()
+                || *e_desc.read() != *e_baseline_desc.read())
+    });
+    // Covers the browser-level exits: reload, tab close. It does NOT cover an
+    // in-app route change, because `beforeunload` never fires on one; that gap
+    // belongs to the router and is why Cancel asks separately below. The modal
+    // this replaced could not be navigated away from at all, so the risk is
+    // created by editing in the page and is answered here rather than inherited.
+    crate::hooks::use_unsaved_guard(editor_dirty.into());
+
     if ticket_fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Ticket".to_string() }
@@ -2219,6 +2263,68 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let total_minutes: i32 = time_entries.iter().map(|e| e.duration_minutes).sum();
     let total_hours_label = format!("{:.1} hours", total_minutes as f64 / 60.0);
 
+    // MAPPS-594: the save path is unchanged from the modal it replaced;
+    // only where the fields live changed. Hoisted out of the modal block so
+    // the Description card can drive it.
+    let mut ticket_res = ticket_resource;
+    let mut history_res = history_resource;
+    let save_id = id_for_save.clone();
+    let on_save = move |_: MouseEvent| {
+        if e_submitting() {
+            return;
+        }
+        e_error.set(String::new());
+        // PMS-518: validate the required Title + Description through
+        // the shared FormGuard so both failures surface inline at
+        // once and the first invalid field is focused. The ids match
+        // each field component's `name` prop. MAPPS-188: Title is
+        // still trimmed (the server validates length >= 1) so a
+        // whitespace-only value never reaches the PUT.
+        let mut guard = FormGuard::new();
+        let title_v = e_title().trim().to_string();
+        e_title_error.set(guard.field("edit-title", &title_v, "Title", &[Rule::Required]));
+        let desc_v = e_desc().trim().to_string();
+        e_desc_error.set(guard.field(
+            "edit-description",
+            &desc_v,
+            "Description",
+            &[Rule::Required],
+        ));
+        if guard.blocked() {
+            return;
+        }
+        let save_id = save_id.clone();
+        spawn(async move {
+            e_submitting.set(true);
+            e_error.set(String::new());
+            // MAPPS-322: send the trimmed, guard-validated values.
+            // `desc_v` is already non-empty (the FormGuard above
+            // blocks a blank edit), so an edit can no longer blank
+            // an existing description.
+            let body = serde_json::json!({
+                "title": title_v,
+                "description": desc_v,
+            });
+            match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                &format!("/tickets/{save_id}"),
+                &body,
+            )
+            .await
+            {
+                Ok(_) => {
+                    e_submitting.set(false);
+                    editing_desc.set(false);
+                    ticket_res.restart();
+                    history_res.restart();
+                }
+                Err(err) => {
+                    e_submitting.set(false);
+                    e_error.set(err);
+                }
+            }
+        });
+    };
+
     // MAPPS-517: one stream out of the three sources the page already holds.
     let journal = build_journal(
         &notes,
@@ -2260,6 +2366,24 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     rsx! {
         PageHeader {
             title: "{header_title}",
+            // MAPPS-594: while editing, the title is edited where the title is.
+            // The reference in the report does exactly this, and it is what
+            // makes an in-page edit read as editing the ticket rather than
+            // editing a copy of it behind a scrim.
+            title_slot: editing_desc().then(|| rsx! {
+                crate::components::Input {
+                    name: "edit-title",
+                    label: "Title",
+                    required: true,
+                    rules: vec![Rule::Required],
+                    error: e_title_error.read().clone(),
+                    value: "{e_title}",
+                    oninput: move |e: FormEvent| {
+                        e_title_error.set(String::new());
+                        e_title.set(e.value());
+                    },
+                }
+            }),
             // PMS-746: a route back to the list, matching ContractDetailPage.
             breadcrumbs: rsx! {
                 crate::components::Breadcrumbs {
@@ -2293,6 +2417,34 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                 }
             },
         }
+        // MAPPS-594: Cancel used to be a modal's footer button, and a modal
+        // cannot be navigated away from, so discarding was always deliberate.
+        // Editing in the page removes that guarantee: a sidebar link, a
+        // breadcrumb or a journal link would drop a reworked description with no
+        // confirmation and no way back. `use_unsaved_guard` above does not cover
+        // it, because `beforeunload` never fires on an in-app route change.
+        //
+        // Only when there is something to lose. Cancelling an untouched editor
+        // still leaves immediately, because a confirmation there is a dialog
+        // whose answer is always the same.
+        crate::components::ConfirmDialog {
+            open: confirming_cancel(),
+            title: "Discard your changes?".to_string(),
+            message: "The edits to this ticket have not been saved. Discarding them cannot be undone."
+                .to_string(),
+            confirm_text: "Discard".to_string(),
+            cancel_text: "Keep editing".to_string(),
+            destructive: true,
+            oncancel: move |_| confirming_cancel.set(false),
+            onconfirm: move |_| {
+                confirming_cancel.set(false);
+                e_error.set(String::new());
+                e_title_error.set(String::new());
+                e_desc_error.set(String::new());
+                editing_desc.set(false);
+            },
+        }
+
         // MAPPS-313: confirm-before-delete for the ticket. Success
         // toasts, navigates back to the list. Failure surfaces the
         // server message inline in the dialog so the user can
@@ -2383,6 +2535,10 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     let open_edit = move |_| {
                         e_title.set(cur_title.clone());
                         e_desc.set(cur_desc.clone());
+                        // The baseline is what the editor opened with, which is
+                        // what "unchanged" means for the rest of this edit.
+                        e_baseline_title.set(cur_title.clone());
+                        e_baseline_desc.set(cur_desc.clone());
                         e_error.set(String::new());
                         editing_desc.set(true);
                     };
@@ -2390,11 +2546,16 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     rsx! {
                         Card {
                             title: "Description",
-                            actions: if ticket_loaded {
+                            // MAPPS-594: no Edit button while editing. The Save
+                            // and Cancel pair at the foot of the editor is the
+                            // whole control surface for the edit, and a second
+                            // way in from the header would be a no-op the reader
+                            // has to reason about.
+                            actions: if ticket_loaded && !editing_desc() {
                                 Some(rsx! {
                                     Button {
                                         variant: ButtonVariant::Secondary,
-                                        // MAPPS-357: block the edit modal while the server is down.
+                                        // MAPPS-357: block editing while the server is down.
                                         disabled: !can_mutate,
                                         title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
                                         onclick: open_edit,
@@ -2405,7 +2566,72 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             } else {
                                 None
                             },
-                            if let Some(t) = ticket.as_ref() {
+                            if editing_desc() {
+                                // MAPPS-594: the editor is here, in the page,
+                                // where the description it replaces was. The
+                                // sidebar, the journal and the change history
+                                // stay readable beside it, which is the point:
+                                // the author is reworking a long document
+                                // against material a modal used to cover.
+                                div { class: "space-y-3",
+                                    if !e_error().is_empty() {
+                                        p { class: "text-sm text-red-600 dark:text-red-400", "{e_error}" }
+                                    }
+                                    crate::components::MarkdownEditor {
+                                        name: "edit-description".to_string(),
+                                        label: "Description".to_string(),
+                                        // The card is already titled
+                                        // "Description"; a second copy of the
+                                        // word between the two is noise. The
+                                        // label still names the field in a
+                                        // validation message and to a screen
+                                        // reader.
+                                        label_hidden: true,
+                                        // Sized for a page rather than for a
+                                        // 672px dialog, which is what the report
+                                        // was about.
+                                        rows: 24,
+                                        required: true,
+                                        disabled: !can_mutate,
+                                        rules: vec![Rule::Required],
+                                        error: e_desc_error.read().clone(),
+                                        value: e_desc.read().clone(),
+                                        people: crate::hooks::mention_people(&mention_directory),
+                                        oninput: move |next: String| {
+                                            e_desc_error.set(String::new());
+                                            e_desc.set(next);
+                                        },
+                                    }
+                                    div { class: "flex justify-end gap-2",
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            onclick: move |_| {
+                                                // Only asks when there is
+                                                // something to lose; a
+                                                // confirmation whose answer is
+                                                // always the same is a dialog
+                                                // nobody reads.
+                                                if editor_dirty() {
+                                                    confirming_cancel.set(true);
+                                                } else {
+                                                    e_error.set(String::new());
+                                                    editing_desc.set(false);
+                                                }
+                                            },
+                                            "Cancel"
+                                        }
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            loading: e_submitting(),
+                                            // MAPPS-357: block the save PUT while the server is down.
+                                            disabled: !can_mutate,
+                                            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
+                                            onclick: on_save,
+                                            "Save Changes"
+                                        }
+                                    }
+                                }
+                            } else if let Some(t) = ticket.as_ref() {
                                 if let Some(desc) = t.description.as_ref().filter(|d| !d.trim().is_empty()) {
                                     // PMS-309: render Markdown (sanitized). PMS-348:
                                     // task-list checkboxes are clickable - toggling
@@ -3082,133 +3308,6 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             }
         }
 
-        // PMS-182 description edit modal.
-        {
-            let mut ticket_res = ticket_resource;
-            let mut history_res = history_resource;
-            let save_id = id_for_save.clone();
-            let on_save = move |_| {
-                if e_submitting() {
-                    return;
-                }
-                e_error.set(String::new());
-                // PMS-518: validate the required Title + Description through
-                // the shared FormGuard so both failures surface inline at
-                // once and the first invalid field is focused. The ids match
-                // each field component's `name` prop. MAPPS-188: Title is
-                // still trimmed (the server validates length >= 1) so a
-                // whitespace-only value never reaches the PUT.
-                let mut guard = FormGuard::new();
-                let title_v = e_title().trim().to_string();
-                e_title_error
-                    .set(guard.field("edit-title", &title_v, "Title", &[Rule::Required]));
-                let desc_v = e_desc().trim().to_string();
-                e_desc_error.set(guard.field(
-                    "edit-description",
-                    &desc_v,
-                    "Description",
-                    &[Rule::Required],
-                ));
-                if guard.blocked() {
-                    return;
-                }
-                let save_id = save_id.clone();
-                spawn(async move {
-                    e_submitting.set(true);
-                    e_error.set(String::new());
-                    // MAPPS-322: send the trimmed, guard-validated values.
-                    // `desc_v` is already non-empty (the FormGuard above
-                    // blocks a blank edit), so an edit can no longer blank
-                    // an existing description.
-                    let body = serde_json::json!({
-                        "title": title_v,
-                        "description": desc_v,
-                    });
-                    match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
-                        &format!("/tickets/{save_id}"),
-                        &body,
-                    )
-                    .await
-                    {
-                        Ok(_) => {
-                            e_submitting.set(false);
-                            editing_desc.set(false);
-                            ticket_res.restart();
-                            history_res.restart();
-                        }
-                        Err(err) => {
-                            e_submitting.set(false);
-                            e_error.set(err);
-                        }
-                    }
-                });
-            };
-            rsx! {
-                Modal {
-                    open: editing_desc(),
-                    title: "Edit Ticket",
-                    size: crate::components::ModalSize::Large,
-                    onclose: move |_| editing_desc.set(false),
-                    footer: rsx! {
-                        Button {
-                            variant: ButtonVariant::Secondary,
-                            onclick: move |_| editing_desc.set(false),
-                            "Cancel"
-                        }
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            loading: e_submitting(),
-                            // MAPPS-357: block the save PUT while the server is down.
-                            disabled: !can_mutate,
-                            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
-                            onclick: on_save,
-                            "Save Changes"
-                        }
-                    },
-                    div { class: "space-y-3",
-                        if !e_error().is_empty() {
-                            p { class: "text-sm text-red-600 dark:text-red-400", "{e_error}" }
-                        }
-                        // MAPPS-188: title is now editable alongside the
-                        // description (previously description-only).
-                        crate::components::Input {
-                            name: "edit-title",
-                            label: "Title",
-                            required: true,
-                            rules: vec![Rule::Required],
-                            error: e_title_error.read().clone(),
-                            value: "{e_title}",
-                            oninput: move |e: FormEvent| {
-                                e_title_error.set(String::new());
-                                e_title.set(e.value());
-                            },
-                        }
-                        // MAPPS-592: the description is Markdown and is
-                        // rendered as Markdown, but it was edited in a bare
-                        // textarea: same syntax as a KB article, none of the
-                        // help. This is the KB write pane, minus the preview
-                        // (the modal has nowhere to put a second pane) and
-                        // minus uploading (the upload route belongs to an
-                        // article; a ticket has nothing to attach a file to).
-                        crate::components::MarkdownEditor {
-                            name: "edit-description".to_string(),
-                            label: "Description".to_string(),
-                            rows: 10,
-                            required: true,
-                            disabled: !can_mutate,
-                            rules: vec![Rule::Required],
-                            error: e_desc_error.read().clone(),
-                            value: e_desc.read().clone(),
-                            people: crate::hooks::mention_people(&mention_directory),
-                            oninput: move |next: String| {
-                                e_desc_error.set(String::new());
-                                e_desc.set(next);
-                            },
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -4013,16 +4112,19 @@ mod mapps592_description_editor_tests {
         );
     }
 
-    /// The edit modal's editor follows the same write gate as its Save button.
+    /// The description editor follows the same write gate as its Save button.
     /// MAPPS-357's rule: while the server is unreachable, a control that leads
-    /// to a PUT should not invite the click.
+    /// to a PUT should not invite the click. MAPPS-594 moved it out of the modal
+    /// and into the page; the gate came with it.
     #[test]
-    fn the_modal_editor_is_disabled_with_the_rest_of_the_form() {
+    fn the_description_editor_is_disabled_with_the_rest_of_the_form() {
         let code = code_only();
         let modal = code
             .find("name: \"edit-description\".to_string()")
-            .expect("the modal's editor");
-        let window = &code[modal..code.len().min(modal + 400)];
+            .expect("the description editor");
+        // Wide enough to clear the comments between the props: the assertion is
+        // about the prop being present on this editor, not about its position.
+        let window = &code[modal..code.len().min(modal + 900)];
         assert!(
             window.contains("disabled: !can_mutate"),
             "the editor is gated with the form it sits in: {window}"
@@ -4253,5 +4355,157 @@ mod mapps593_note_edit_tests {
         let save = save.expect("the save handler");
         let window = &code[save..code.len().min(save + 900)];
         assert!(!window.contains("push_toast"), "and not a toast: {window}");
+    }
+}
+
+#[cfg(test)]
+mod mapps594_in_page_edit_tests {
+    const SRC: &str = include_str!("tickets.rs");
+
+    /// The shipping code with runs of whitespace collapsed, excluding this
+    /// module: every assertion quotes the pattern it looks for.
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod mapps594_in_page_edit_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// MAPPS-594: the edit modal is gone, not resized.
+    ///
+    /// `ModalSize::Full` exists and would have taken the panel to `max-w-7xl`
+    /// in one enum value. That is the cheap answer and the wrong one: a wider
+    /// cover is still a cover, and what the author is editing against is the
+    /// page underneath. Pinned because "make the modal bigger" is the obvious
+    /// thing for a later change to reach for.
+    #[test]
+    fn the_edit_modal_is_gone_rather_than_bigger() {
+        let code = code_only();
+        assert!(
+            !code.contains(r#"title: "Edit Ticket""#),
+            "no Edit Ticket modal"
+        );
+        assert!(
+            !code.contains("ModalSize::Full"),
+            "and it was not simply widened"
+        );
+        // The one Modal left on this page is the approvals request, which is a
+        // short self-contained task and is what a modal is for.
+        assert_eq!(
+            code.matches("Modal { open:").count(),
+            1,
+            "only the approvals modal remains: {code:?}"
+        );
+    }
+
+    /// The editor renders in the Description card, where the description it
+    /// replaces was, and the title in the header where the title was.
+    #[test]
+    fn the_editor_renders_in_the_page() {
+        let code = code_only();
+        let card = code
+            .find(r#"Card { title: "Description""#)
+            .expect("the Description card");
+        let window = &code[card..code.len().min(card + 4000)];
+        assert!(
+            window.contains("if editing_desc() {"),
+            "the card switches into edit mode"
+        );
+        assert!(
+            window.contains("crate::components::MarkdownEditor {"),
+            "and the editor is what it switches to"
+        );
+        assert!(
+            code.contains("title_slot: editing_desc().then("),
+            "the title is edited where the title is"
+        );
+    }
+
+    /// A second way into an edit that is already open is a no-op the reader has
+    /// to reason about.
+    #[test]
+    fn the_edit_button_hides_while_editing() {
+        let code = code_only();
+        assert!(
+            code.contains("actions: if ticket_loaded && !editing_desc() {"),
+            "the header Edit button is not offered during an edit"
+        );
+    }
+
+    /// A modal cannot be navigated away from; a page can. That risk is created
+    /// by this change rather than inherited, so both halves of the answer are
+    /// pinned: the browser-level exits and the in-app one.
+    #[test]
+    fn unsaved_work_is_guarded_both_ways() {
+        let code = code_only();
+        assert!(
+            code.contains("crate::hooks::use_unsaved_guard(editor_dirty.into())"),
+            "reload and tab close warn"
+        );
+        assert!(
+            code.contains("confirming_cancel.set(true)"),
+            "and Cancel asks before discarding"
+        );
+        assert!(
+            code.contains("ConfirmDialog { open: confirming_cancel()"),
+            "through a real confirmation rather than a native confirm()"
+        );
+    }
+
+    /// Only when there is something to lose. A confirmation whose answer is
+    /// always the same is a dialog nobody reads, so an untouched editor closes
+    /// immediately.
+    #[test]
+    fn cancelling_an_untouched_editor_does_not_ask() {
+        let code = code_only();
+        let cancel = code
+            .find("if editor_dirty() { confirming_cancel.set(true); } else {")
+            .expect("Cancel is conditional on there being changes");
+        let window = &code[cancel..code.len().min(cancel + 200)];
+        assert!(
+            window.contains("editing_desc.set(false)"),
+            "an untouched editor closes straight away: {window}"
+        );
+    }
+
+    /// The dirty flag has to TRACK. A `use_memo` whose body reads only a plain
+    /// local computes once and never again, because it has no reactive
+    /// dependency to re-run on, and the guard would then be stuck on whatever
+    /// the first render decided. Every input is a signal read.
+    #[test]
+    fn the_dirty_flag_is_computed_from_signals() {
+        let code = code_only();
+        let memo = code
+            .find("let editor_dirty = use_memo(move || {")
+            .expect("the dirty memo");
+        let window = &code[memo..code.len().min(memo + 300)];
+        for read in [
+            "editing_desc()",
+            "*e_title.read()",
+            "*e_baseline_title.read()",
+            "*e_desc.read()",
+            "*e_baseline_desc.read()",
+        ] {
+            assert!(window.contains(read), "the memo must read {read}: {window}");
+        }
+    }
+
+    /// Nothing about what is saved changed: the same PUT, the same guard, the
+    /// same write gate. Only where the fields live did.
+    #[test]
+    fn the_save_path_is_the_one_the_modal_used() {
+        let code = code_only();
+        assert!(
+            code.contains(r#"&format!("/tickets/{save_id}")"#),
+            "the same PUT the modal made"
+        );
+        assert!(
+            code.contains(r#"guard.field("edit-title","#),
+            "the title still validates through the shared FormGuard"
+        );
+        assert!(
+            code.contains(r#"guard.field( "edit-description","#),
+            "and so does the description"
+        );
     }
 }

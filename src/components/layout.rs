@@ -1298,6 +1298,19 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
 #[derive(Props, Clone, PartialEq)]
 pub struct PageHeaderProps {
     title: String,
+    /// MAPPS-594: render this in place of the heading text.
+    ///
+    /// The ticket detail page edits its title where the title is, which is what
+    /// the reference in the report does and what makes an in-page edit read as
+    /// editing the thing rather than editing a copy of it. A slot rather than an
+    /// "editing" flag: this component keeps knowing nothing about edit state,
+    /// and the breadcrumbs, actions and responsive layout stay shared instead of
+    /// being reimplemented by a page that wants one different element.
+    ///
+    /// `title` is still required and still what the tab and any caller-side
+    /// label read, so a page cannot become nameless by passing a slot.
+    #[props(default)]
+    title_slot: Option<Element>,
     #[props(default)]
     subtitle: String,
     actions: Option<Element>,
@@ -1321,8 +1334,12 @@ pub fn PageHeader(props: PageHeaderProps) -> Element {
                     // page title at sm and up. Bump line-height to
                     // `leading-9` (36px) at the same breakpoint as the
                     // larger font so descenders sit inside the line box.
-                    h2 { class: "text-2xl font-bold leading-7 text-content sm:truncate sm:text-3xl sm:leading-9 sm:tracking-tight",
-                        "{props.title}"
+                    if let Some(slot) = props.title_slot.clone() {
+                        {slot}
+                    } else {
+                        h2 { class: "text-2xl font-bold leading-7 text-content sm:truncate sm:text-3xl sm:leading-9 sm:tracking-tight",
+                            "{props.title}"
+                        }
                     }
                     if !props.subtitle.is_empty() {
                         p { class: "mt-1 text-sm text-muted",
@@ -1438,6 +1455,56 @@ pub fn EmptyState(props: EmptyStateProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod page_header_tests {
+    const SRC: &str = include_str!("layout.rs");
+
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod page_header_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// MAPPS-594: the slot replaces the heading TEXT and nothing else.
+    ///
+    /// A page that edits its title in place needs a different element where the
+    /// `h2` is; it does not need its own breadcrumbs, its own actions or its own
+    /// responsive layout, and reimplementing those to change one element is how
+    /// a header stops matching every other page's.
+    #[test]
+    fn the_title_slot_replaces_only_the_heading() {
+        let code = code_only();
+        assert!(
+            code.contains("if let Some(slot) = props.title_slot.clone() { {slot} } else {"),
+            "the slot stands in for the heading"
+        );
+        assert!(
+            code.contains(r#"h2 { class: "text-2xl font-bold"#),
+            "and the plain heading is still what a page without one gets"
+        );
+    }
+
+    /// `title` stays required, so a page cannot become nameless by passing a
+    /// slot: the tab title and any caller-side label still read it.
+    #[test]
+    fn a_page_with_a_slot_still_has_a_title() {
+        let code = code_only();
+        let props = code
+            .find("pub struct PageHeaderProps {")
+            .expect("the props struct");
+        let window = &code[props..code.len().min(props + 900)];
+        assert!(
+            window.contains("title: String,"),
+            "title is not optional: {window}"
+        );
+        assert!(
+            window.contains("title_slot: Option<Element>"),
+            "and the slot is: {window}"
+        );
     }
 }
 
