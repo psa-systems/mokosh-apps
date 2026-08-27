@@ -1928,17 +1928,26 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     // and reused by the three inline editors on the sidebar. Same
     // Paginated envelope the New Ticket form's priorities fetch uses
     // (PMS-358).
+    // MAPPS-606: statuses + priorities are tenant-wide lookup lists
+    // and must be reachable on a contact session so the Details
+    // sidebar's Status + Priority pills render the correct labels
+    // (Select maps the ticket's status_id / priority_id to an option
+    // label; with an empty options list the pill renders blank).
+    // get_authed_any tries the contact bearer first, falls back to
+    // staff.
     let statuses_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketStatus>>("/tickets/statuses")
-            .await
-            .ok()
-            .map(|p| p.data)
-            .unwrap_or_default()
+        crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteTicketStatus>>(
+            "/tickets/statuses",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
     });
     let priorities_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketPriority>>(
+        crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteTicketPriority>>(
             "/tickets/priorities",
         )
         .await
@@ -2321,7 +2330,17 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                 // component owns its own fetch, modal state, and refresh
                 // cycle; rendered above the activity timeline so the
                 // open approval requests are immediately visible.
-                ApprovalsSection { entity_id: props.id.clone() }
+                //
+                // MAPPS-606: hide the Approvals section entirely on a
+                // contact session. The staff /approvals fetch + the
+                // /auth/users users_resource fetch both require a
+                // staff bearer (approvals is a staff workflow contacts
+                // have no cap for). Rendering the card only to show
+                // "Could not load approvals" is noise; the workflow is
+                // not one the contact can participate in.
+                if !crate::hooks::fetch::api::has_contact_session() {
+                    ApprovalsSection { entity_id: props.id.clone() }
+                }
 
                 // Activity timeline (real ticket notes; there is no audit
                 // feed yet, so status / assignment events do not appear).
