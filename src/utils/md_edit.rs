@@ -56,6 +56,16 @@ pub enum Action {
         rows: usize,
         cols: usize,
     },
+    /// MAPPS-600: re-align the GFM table the caret is sitting in, so its pipes
+    /// line up. A caret outside any table leaves the document alone.
+    ///
+    /// On demand rather than while typing, which is where this differs from the
+    /// JetBrains editor it was asked to match. Reflowing on every keystroke
+    /// means rewriting the text around the caret on every character, and
+    /// putting the caret back in the right cell afterwards is the whole
+    /// difficulty; getting it wrong moves the cursor mid-word, which is a worse
+    /// bug than ragged pipes.
+    FormatTable,
 }
 
 /// Byte offset of the `n`th UTF-16 code unit in `s`, clamped to the string.
@@ -119,6 +129,289 @@ pub fn apply(src: &str, start: u32, end: u32, action: &Action) -> EditResult {
         }
         Action::CodeBlock { lang } => code_block(src, a, b, lang),
         Action::Table { rows, cols } => table(src, a, b, *rows, *cols),
+        Action::FormatTable => format_table(src, a, b),
+    }
+}
+
+/// MAPPS-600: re-align the GFM table the caret is in.
+///
+/// Returns the source unchanged when the caret is not inside one, so the
+/// toolbar button is safe to press anywhere.
+///
+/// The caret is preserved by CELL rather than by offset: padding changes every
+/// offset after the first cell, so restoring the raw index would move the caret
+/// into a different column of a wider table. Finding which cell it was in and
+/// putting it back at the end of that cell's text keeps the author's place.
+fn format_table(src: &str, a: usize, b: usize) -> EditResult {
+    let Some(range) = table_range(src, a) else {
+        return unchanged(src, a, b);
+    };
+    let original = &src[range.clone()];
+    let rows: Vec<Vec<String>> = original.lines().map(split_row).collect();
+    if rows.len() < 2 || !is_delimiter_row(&rows[1]) {
+        return unchanged(src, a, b);
+    }
+
+    // Where the caret was, as (row, column), so it can be put back after the
+    // widths change underneath it.
+    let caret = caret_cell(original, a.saturating_sub(range.start), &rows);
+
+    let alignments: Vec<Alignment> = rows[1].iter().map(|c| alignment_of(c)).collect();
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let mut widths = vec![0usize; columns];
+    for (i, row) in rows.iter().enumerate() {
+        if i == 1 {
+            // The delimiter row is rebuilt from the alignments, so its current
+            // width must not drag the columns wider.
+            continue;
+        }
+        for (c, cell) in row.iter().enumerate() {
+            widths[c] = widths[c].max(cell.chars().count());
+        }
+    }
+    // A dashed run needs three characters to stay a valid delimiter, plus one
+    // for each colon the alignment carries.
+    for (c, width) in widths.iter_mut().enumerate() {
+        let floor = match alignments.get(c).copied().unwrap_or(Alignment::None) {
+            Alignment::None => 3,
+            Alignment::Left | Alignment::Right => 4,
+            Alignment::Center => 5,
+        };
+        *width = (*width).max(floor);
+    }
+
+    let mut out = String::with_capacity(original.len() + 32);
+    for (i, row) in rows.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push('|');
+        for (c, width) in widths.iter().enumerate().take(columns) {
+            let cell = if i == 1 {
+                delimiter_cell(
+                    alignments.get(c).copied().unwrap_or(Alignment::None),
+                    *width,
+                )
+            } else {
+                let text = row.get(c).map(String::as_str).unwrap_or("");
+                format!("{text}{}", " ".repeat(width - text.chars().count()))
+            };
+            out.push(' ');
+            out.push_str(&cell);
+            out.push_str(" |");
+        }
+    }
+
+    let caret_at = caret
+        .map(|(row, col)| range.start + cell_end_offset(&out, row, col))
+        .unwrap_or(range.start + out.len());
+    let mut text = String::with_capacity(src.len() + 32);
+    text.push_str(&src[..range.start]);
+    text.push_str(&out);
+    text.push_str(&src[range.end..]);
+    let sel = byte_to_utf16(&text, caret_at);
+    EditResult {
+        text,
+        sel_start: sel,
+        sel_end: sel,
+    }
+}
+
+/// How a delimiter cell marks its column.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Alignment {
+    None,
+    Left,
+    Center,
+    Right,
+}
+
+fn alignment_of(cell: &str) -> Alignment {
+    let c = cell.trim();
+    match (c.starts_with(':'), c.ends_with(':')) {
+        (true, true) => Alignment::Center,
+        (true, false) => Alignment::Left,
+        (false, true) => Alignment::Right,
+        (false, false) => Alignment::None,
+    }
+}
+
+fn delimiter_cell(alignment: Alignment, width: usize) -> String {
+    match alignment {
+        Alignment::None => "-".repeat(width),
+        Alignment::Left => format!(":{}", "-".repeat(width - 1)),
+        Alignment::Right => format!("{}:", "-".repeat(width - 1)),
+        Alignment::Center => format!(":{}:", "-".repeat(width - 2)),
+    }
+}
+
+/// A row is a delimiter row when every cell is dashes with optional edge
+/// colons. This is what separates a table from a run of pipe-containing text.
+///
+/// ONE dash is enough to detect, because GFM says so ("cells whose only content
+/// are hyphens and optionally a leading or trailing colon"), and a table an
+/// author wrote as `| - |` is still a table they want aligned. The three-dash
+/// floor applies to what is written back out, not to what is recognised.
+fn is_delimiter_row(cells: &[String]) -> bool {
+    !cells.is_empty()
+        && cells.iter().all(|c| {
+            let c = c.trim();
+            let dashes = c.trim_matches(':');
+            !dashes.is_empty() && dashes.chars().all(|ch| ch == '-')
+        })
+}
+
+/// Split one table row into its cells.
+///
+/// A pipe escaped as `\|` is cell content, not a separator, which is the only
+/// way to put a literal pipe in a GFM cell.
+fn split_row(line: &str) -> Vec<String> {
+    let trimmed = line.trim();
+    let inner = trimmed
+        .strip_prefix('|')
+        .unwrap_or(trimmed)
+        .strip_suffix('|')
+        .unwrap_or_else(|| trimmed.strip_prefix('|').unwrap_or(trimmed));
+    let mut cells = Vec::new();
+    let mut current = String::new();
+    let mut escaped = false;
+    for ch in inner.chars() {
+        if escaped {
+            current.push('\\');
+            current.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '|' {
+            cells.push(current.trim().to_string());
+            current = String::new();
+        } else {
+            current.push(ch);
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    cells.push(current.trim().to_string());
+    cells
+}
+
+/// The byte range of the table block containing `at`, or `None`.
+///
+/// A table is a run of consecutive lines that all contain an unescaped pipe;
+/// the caller checks that the second one is a delimiter row before treating it
+/// as a table.
+fn table_range(src: &str, at: usize) -> Option<std::ops::Range<usize>> {
+    let mut starts = Vec::new();
+    let mut offset = 0usize;
+    for line in src.split_inclusive('\n') {
+        starts.push((offset, line));
+        offset += line.len();
+    }
+    let idx = starts
+        .iter()
+        .position(|(start, line)| at >= *start && at <= start + line.len())
+        .or(starts.len().checked_sub(1))?;
+    if !has_unescaped_pipe(starts[idx].1) {
+        return None;
+    }
+    let mut first = idx;
+    while first > 0 && has_unescaped_pipe(starts[first - 1].1) {
+        first -= 1;
+    }
+    let mut last = idx;
+    while last + 1 < starts.len() && has_unescaped_pipe(starts[last + 1].1) {
+        last += 1;
+    }
+    let start = starts[first].0;
+    let end = starts[last].0 + starts[last].1.trim_end_matches('\n').len();
+    Some(start..end)
+}
+
+fn has_unescaped_pipe(line: &str) -> bool {
+    let mut escaped = false;
+    for ch in line.chars() {
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '|' {
+            return true;
+        }
+    }
+    false
+}
+
+/// Which (row, column) the caret was in, given an offset into the table block.
+fn caret_cell(block: &str, at: usize, rows: &[Vec<String>]) -> Option<(usize, usize)> {
+    let mut offset = 0usize;
+    for (r, line) in block.split_inclusive('\n').enumerate() {
+        if at <= offset + line.len() {
+            let within = at - offset;
+            let before = &line[..within.min(line.len())];
+            // Cell index is how many separators the caret has passed, minus the
+            // leading pipe the row starts with.
+            let seps = count_unescaped_pipes(before);
+            let col = seps.saturating_sub(usize::from(line.trim_start().starts_with('|')));
+            let max = rows.get(r).map(|c| c.len().saturating_sub(1)).unwrap_or(0);
+            return Some((r, col.min(max)));
+        }
+        offset += line.len();
+    }
+    None
+}
+
+fn count_unescaped_pipes(s: &str) -> usize {
+    let mut escaped = false;
+    let mut n = 0;
+    for ch in s.chars() {
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '|' {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Byte offset just past the text of cell `col` on row `row` of a formatted
+/// table, so the caret lands where the author was typing.
+fn cell_end_offset(formatted: &str, row: usize, col: usize) -> usize {
+    let mut offset = 0usize;
+    for (r, line) in formatted.split_inclusive('\n').enumerate() {
+        if r == row {
+            let mut seen = 0usize;
+            let mut cell_start = 0usize;
+            let mut escaped = false;
+            for (i, ch) in line.char_indices() {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '|' {
+                    if seen == col + 1 {
+                        // End of the wanted cell: back up over the padding.
+                        return offset + line[cell_start..i].trim_end().len() + cell_start;
+                    }
+                    seen += 1;
+                    cell_start = i + 1;
+                }
+            }
+            return offset + line.trim_end().len();
+        }
+        offset += line.len();
+    }
+    formatted.len()
+}
+
+/// An edit that changes nothing, keeping the caller's selection.
+fn unchanged(src: &str, a: usize, b: usize) -> EditResult {
+    EditResult {
+        text: src.to_string(),
+        sel_start: byte_to_utf16(src, a),
+        sel_end: byte_to_utf16(src, b),
     }
 }
 
@@ -750,5 +1043,151 @@ mod raw_html_fidelity {
             out.text, "<span style=\"color:red\">*REST API*</span>",
             "the mark goes inside the tags, and the tags are untouched"
         );
+    }
+}
+
+#[cfg(test)]
+mod mapps600_table_tests {
+    use super::{apply, Action};
+
+    /// Run FormatTable with the caret at a byte offset expressed as UTF-16.
+    fn fmt(src: &str, caret: u32) -> (String, u32) {
+        let r = apply(src, caret, caret, &Action::FormatTable);
+        (r.text, r.sel_start)
+    }
+
+    const RAGGED: &str = "| Level | Visibility | Portal Users |\n| --- | --- | --- |\n| Tenant | MSP Tenant | X |\n| Company | Does not log in | X |";
+
+    /// The reported case: a table whose pipes do not line up.
+    #[test]
+    fn a_ragged_table_comes_back_even() {
+        let (out, _) = fmt(RAGGED, 2);
+        let lines: Vec<&str> = out.lines().collect();
+        let widths: Vec<usize> = lines.iter().map(|l| l.chars().count()).collect();
+        assert!(
+            widths.iter().all(|w| *w == widths[0]),
+            "every row is the same width: {lines:#?}"
+        );
+        assert_eq!(lines[0], "| Level   | Visibility      | Portal Users |");
+        assert_eq!(lines[1], "| ------- | --------------- | ------------ |");
+        assert_eq!(lines[2], "| Tenant  | MSP Tenant      | X            |");
+    }
+
+    /// The delimiter row is what makes it a table AND what carries the column
+    /// alignment. Rebuilding it must not drop the colons.
+    #[test]
+    fn alignment_markers_survive() {
+        let src = "| a | b | c |\n|:---|:---:|---:|\n| 1 | 2 | 3 |";
+        let (out, _) = fmt(src, 2);
+        let delim = out.lines().nth(1).expect("delimiter row");
+        assert!(delim.contains("| :-"), "left stays left: {delim}");
+        assert!(delim.contains(":- |") || delim.contains("-: |"), "{delim}");
+        let cells: Vec<&str> = delim.trim_matches('|').split('|').map(str::trim).collect();
+        assert!(
+            cells[0].starts_with(':') && !cells[0].ends_with(':'),
+            "{cells:?}"
+        );
+        assert!(
+            cells[1].starts_with(':') && cells[1].ends_with(':'),
+            "{cells:?}"
+        );
+        assert!(
+            !cells[2].starts_with(':') && cells[2].ends_with(':'),
+            "{cells:?}"
+        );
+    }
+
+    /// A dashed run has to stay at least three characters or it stops being a
+    /// delimiter and the table stops being a table.
+    #[test]
+    fn a_narrow_column_keeps_a_valid_delimiter() {
+        let src = "| a |\n| - |\n| b |";
+        let (out, _) = fmt(src, 2);
+        let delim = out.lines().nth(1).expect("delimiter");
+        let dashes = delim.trim_matches('|').trim();
+        assert!(dashes.len() >= 3, "still a valid delimiter: {delim}");
+    }
+
+    /// `\|` is the only way to put a pipe inside a cell, so it is content and
+    /// must not split the row.
+    #[test]
+    fn an_escaped_pipe_stays_inside_its_cell() {
+        let src = "| a | b |\n| --- | --- |\n| x \\| y | z |";
+        let (out, _) = fmt(src, 2);
+        let row = out.lines().nth(2).expect("body row");
+        assert!(row.contains("x \\| y"), "the escaped pipe survives: {row}");
+        assert_eq!(
+            row.matches('|').count() - row.matches("\\|").count(),
+            3,
+            "three separators, not four: {row}"
+        );
+    }
+
+    /// The button is on a toolbar that is always visible, so pressing it
+    /// outside a table has to be harmless.
+    #[test]
+    fn a_caret_outside_a_table_changes_nothing() {
+        let src = "Just a paragraph.\n\nAnother one.";
+        let (out, caret) = fmt(src, 5);
+        assert_eq!(out, src);
+        assert_eq!(caret, 5, "and does not move the caret");
+    }
+
+    /// A run of pipe-containing lines with no delimiter row is not a table.
+    /// Reformatting it would rewrite ordinary prose.
+    #[test]
+    fn pipes_without_a_delimiter_row_are_not_a_table() {
+        let src = "a | b\nc | d";
+        let (out, _) = fmt(src, 1);
+        assert_eq!(out, src);
+    }
+
+    /// Padding moves every offset after the first cell, so a raw offset would
+    /// put the caret in a different column. It is restored by cell.
+    #[test]
+    fn the_caret_stays_in_the_cell_it_was_in() {
+        // Caret just after "Tenant" on the third line.
+        let caret = RAGGED.find("| Tenant").expect("row") as u32 + "| Tenant".len() as u32;
+        let (out, moved) = fmt(RAGGED, caret);
+        let before = &out[..moved as usize];
+        let line = before.lines().last().expect("caret line");
+        assert!(
+            line.starts_with("| Tenant"),
+            "still in the first cell of that row: {line:?}"
+        );
+        assert!(
+            before.ends_with("Tenant"),
+            "and at the end of its text, not out in the padding: {before:?}"
+        );
+    }
+
+    /// A table that is already aligned is left byte-identical, so pressing the
+    /// button twice is not an edit and does not dirty the form.
+    #[test]
+    fn formatting_an_aligned_table_is_a_no_op() {
+        let once = fmt(RAGGED, 2).0;
+        let twice = fmt(&once, 2).0;
+        assert_eq!(once, twice);
+    }
+
+    /// Only the table is touched. Text above and below it is not the action's
+    /// business and rewriting it would be a surprise.
+    #[test]
+    fn only_the_table_block_is_rewritten() {
+        let src = format!("Before.\n\n{RAGGED}\n\nAfter.");
+        let caret = src.find("| Level").expect("table") as u32 + 2;
+        let (out, _) = fmt(&src, caret);
+        assert!(out.starts_with("Before.\n\n"), "{out}");
+        assert!(out.ends_with("\n\nAfter."), "{out}");
+    }
+
+    /// A row with a missing trailing cell is padded out rather than producing a
+    /// short row, because a ragged table is exactly what this is for.
+    #[test]
+    fn a_short_row_is_filled_out() {
+        let src = "| a | b | c |\n| --- | --- | --- |\n| 1 | 2 |";
+        let (out, _) = fmt(src, 2);
+        let last = out.lines().last().expect("row");
+        assert_eq!(last.matches('|').count(), 4, "three cells: {last}");
     }
 }
