@@ -194,6 +194,8 @@ jobs:
         run: |
           bash scripts/check-field-value-binding.sh --self-test
           bash scripts/check-field-value-binding.sh
+          bash scripts/check-hooks-before-return.sh --self-test
+          bash scripts/check-hooks-before-return.sh
 
       # MAPPS-584: @tailwindcss/typography writes .prose into `@layer utilities`
       # and the MAPPS-573 corrections were written into `@layer components`, so
