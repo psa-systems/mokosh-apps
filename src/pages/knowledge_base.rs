@@ -163,6 +163,17 @@ fn body_pane_class(active: bool, split: bool) -> &'static str {
     }
 }
 
+/// MAPPS-612: does the metadata panel have to be open?
+///
+/// True while the article is missing a required field, which is what an
+/// untouched new article looks like. It is the ONE direction the form decides
+/// for itself: an unfinished form forces the panel open, and only the author's
+/// own click closes it. Deriving both directions is what collapsed the panel
+/// around the focused input on the first character typed.
+fn meta_must_be_open(title: &str, slug: &str) -> bool {
+    title.trim().is_empty() || slug.trim().is_empty()
+}
+
 fn body_tab_class(active: bool) -> &'static str {
     if active {
         "px-3 py-1 text-sm border-b-2 border-accent text-accent font-medium"
@@ -2083,9 +2094,28 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     let mut upload_error = use_signal(String::new);
     let mut uploading = use_signal(|| false);
 
-    // MAPPS-579: whether the metadata block is expanded. Starts closed; a form
-    // missing Title or Slug forces it open regardless (see the block itself).
-    let mut meta_open = use_signal(|| false);
+    // MAPPS-579: whether the metadata block is expanded.
+    //
+    // MAPPS-612: this is a REAL state, seeded once from the article the form
+    // opened with, not a value derived per render from whether the form is
+    // finished. It used to be `incomplete || meta_open()`, and the Title field
+    // auto-fills the Slug, so the first character typed into a new article made
+    // Title AND Slug non-empty in one event, flipped the panel to `hidden`, and
+    // took the focused input with it. One keystroke, because the slug is
+    // derived rather than typed.
+    //
+    // A new article starts open (there is nothing yet to summarise); an
+    // existing one starts collapsed.
+    let mut meta_open = use_signal(|| meta_must_be_open(&initial.title, &initial.slug));
+    // MAPPS-612: an unfinished form OPENS the panel and never closes it.
+    // Closing is the button's job alone: anything else can close the panel
+    // around the field the author is typing in, which is the bug above.
+    // Opening is safe because it never moves focus.
+    use_effect(move || {
+        if meta_must_be_open(&title.read(), &slug.read()) {
+            meta_open.set(true);
+        }
+    });
     let mut tab = use_signal(|| BodyTab::Write);
     // MAPPS-584: side by side is opt-in and remembered, not the only layout.
     // MAPPS-579 put the source and the preview on the page together at every
@@ -2508,8 +2538,11 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                 {
                     let title_v = title.read().clone();
                     let slug_v = slug.read().clone();
-                    let incomplete = title_v.trim().is_empty() || slug_v.trim().is_empty();
-                    let open = incomplete || meta_open();
+                    // Still gates the Hide button: an unfinished form is not
+                    // collapsible by hand. It no longer decides `open`, which
+                    // is what MAPPS-612 was.
+                    let incomplete = meta_must_be_open(&title_v, &slug_v);
+                    let open = meta_open();
                     // Named apart from the form's own `summary` field, which
                     // is one of the controls being collapsed.
                     let meta_summary = {
@@ -4267,15 +4300,19 @@ mod editor_ux_tests {
     fn the_metadata_block_collapses_but_not_while_it_is_incomplete() {
         let code = code_only();
         assert!(
-            code.contains(
-                "let incomplete = title_v.trim().is_empty() || slug_v.trim().is_empty();"
-            ),
+            code.contains("let incomplete = meta_must_be_open(&title_v, &slug_v);"),
             "an unfinished form is not collapsible"
         );
         assert!(
-            code.contains("let open = incomplete || meta_open();"),
-            "and incompleteness wins over the toggle, rather than the toggle \
-             being able to hide a field the author still has to fill"
+            code.contains("let open = meta_open();"),
+            "MAPPS-612: the panel's open state is real, not derived from whether \
+             the form is finished - a derived one collapsed around the focused \
+             field on the first character typed"
+        );
+        assert!(
+            code.contains("meta_open.set(true);"),
+            "an unfinished form still forces the panel open; it is only the \
+             closing direction that the author owns"
         );
         assert!(
             code.contains(r#"aria_expanded: if open { "true" } else { "false" }"#),
@@ -4380,5 +4417,39 @@ mod mapps600_split_editor_tests {
             window.contains("crate::components::Markdown {"),
             "and the renderer sits inside it: {window}"
         );
+    }
+}
+
+#[cfg(test)]
+mod mapps612_details_panel_tests {
+    use super::meta_must_be_open;
+
+    #[test]
+    fn an_untouched_new_article_forces_the_panel_open() {
+        assert!(meta_must_be_open("", ""));
+        assert!(meta_must_be_open("   ", "  "));
+    }
+
+    #[test]
+    fn one_character_is_enough_to_stop_forcing_it() {
+        // The Title auto-fills the Slug, so both arrive non-empty in the same
+        // event. This returning false is correct - what was wrong was letting
+        // it CLOSE the panel, which pulled the focused input off the page.
+        assert!(!meta_must_be_open("H", "h"));
+    }
+
+    #[test]
+    fn a_missing_slug_forces_it_open_on_its_own() {
+        // The author can clear the slug by hand once they have touched it, and
+        // an article cannot be saved without one.
+        assert!(meta_must_be_open("How to reset a password", ""));
+    }
+
+    #[test]
+    fn a_complete_article_does_not_force_it() {
+        assert!(!meta_must_be_open(
+            "How to reset a password",
+            "how-to-reset-a-password"
+        ));
     }
 }
