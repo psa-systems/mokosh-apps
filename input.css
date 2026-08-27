@@ -413,8 +413,11 @@
      person rather than as running text, and distinct from a link because it
      does not always navigate: only a viewer who can open the team roster gets
      a destination, and there is no per-user page to send anyone else to.
-     `cursor` follows that, set on the span only where the delegated listener
-     will act on it. */
+     MAPPS-603: no cursor and no hover, because a chip does not navigate for
+     anybody. It used to route to the team page for an Admin, which does not
+     list team members, so the click took a reader away from what they were
+     reading to a page that said nothing about the person. What a mention is
+     worth is identity, and `title` carries it for every reader. */
   .prose :where(.mention):not(:where([class~="not-prose"] *)) {
     display: inline-block;
     border-radius: 0.25rem;
@@ -426,18 +429,6 @@
     line-height: 1.35;
     white-space: nowrap;
   }
-  /* MAPPS-585: a chip that goes somewhere has to look like it does, and a
-     chip that goes nowhere has to look like it does not. The markup is
-     identical for every reader (it is built before anyone knows who is
-     looking), so the container carries `mentions-open` when the click listener
-     was actually wired and this is the only rule that separates the two. */
-  .prose.mentions-open :where(.mention):not(:where([class~="not-prose"] *)) {
-    cursor: pointer;
-  }
-  .prose.mentions-open :where(.mention):not(:where([class~="not-prose"] *)):hover {
-    text-decoration: underline;
-  }
-
   .dark .prose :where(.mention):not(:where([class~="not-prose"] *)) {
     background-color: var(--accent-900);
     color: var(--accent-100);
