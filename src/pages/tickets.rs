@@ -1848,6 +1848,11 @@ pub fn TicketNewPage() -> Element {
                     label: "Description".to_string(),
                     placeholder: "Provide detailed information about the issue…".to_string(),
                     rows: 8,
+                    // MAPPS-610: the same switcher the KB body has. One key for
+                    // both description editors, so a reporter who writes in
+                    // split view keeps it when they come back to edit.
+                    views: true,
+                    view_pref_key: "ticket_desc_view_mode".to_string(),
                     required: true,
                     rules: vec![Rule::Required],
                     error: description_error.read().clone(),
@@ -2591,6 +2596,8 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                         // 672px dialog, which is what the report
                                         // was about.
                                         rows: 24,
+                                        views: true,
+                                        view_pref_key: "ticket_desc_view_mode".to_string(),
                                         required: true,
                                         disabled: !can_mutate,
                                         rules: vec![Rule::Required],
@@ -2709,18 +2716,25 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         if !note_error.read().is_empty() {
                             ErrorBanner { "{note_error}" }
                         }
-                        Textarea {
-                            name: "content",
-                            label: "Add a note",
-                            placeholder: "Enter your note…",
+                        // MAPPS-610: the same editor as the description, so a
+                        // note can carry a list, a table or an `@handle`
+                        // instead of being the one Markdown field on this page
+                        // with no help writing it.
+                        crate::components::MarkdownEditor {
+                            name: "content".to_string(),
+                            label: "Add a note".to_string(),
+                            placeholder: "Enter your note…".to_string(),
                             rows: 4,
+                            views: true,
+                            view_pref_key: "ticket_note_view_mode".to_string(),
                             required: true,
                             rules: vec![Rule::Required],
                             error: note_content_error.read().clone(),
                             value: note_content.read().clone(),
-                            oninput: move |e: FormEvent| {
+                            people: crate::hooks::mention_people(&mention_directory),
+                            oninput: move |next: String| {
                                 note_content_error.set(String::new());
-                                note_content.set(e.value());
+                                note_content.set(next);
                             },
                         }
                         div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
@@ -3386,6 +3400,11 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
     let mut draft = use_signal(String::new);
     let mut edit_error = use_signal(String::new);
     let mut saving = use_signal(|| false);
+    // MAPPS-610: the directory the inline editor completes `@` against. The
+    // hook shares one fetch across the page, so a journal of thirty entries
+    // still makes one request. MAPPS-602: it is a hook, so it sits with the
+    // others at the top, above anything that can return early.
+    let mention_directory = crate::hooks::use_mention_directory(true);
 
     let original = props.content.clone().unwrap_or_default();
     let original_for_open = original.clone();
@@ -3483,17 +3502,28 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                                 // for the edit; a modal would hide exactly what
                                 // the author is correcting against.
                                 div { class: "mt-2 space-y-2",
-                                    Textarea {
-                                        name: "edit-note-{note_dom_id}",
-                                        label: "Edit note",
+                                    // MAPPS-610: the same editor the composer
+                                    // has. A correction is written the same way
+                                    // the note was.
+                                    crate::components::MarkdownEditor {
+                                        // `format!`, not a literal with braces
+                                        // in it: the id has to be unique per
+                                        // entry or every inline editor in the
+                                        // journal answers to the same one, and
+                                        // the toolbar addresses the field by it.
+                                        name: format!("edit-note-{note_dom_id}"),
+                                        label: "Edit note".to_string(),
                                         rows: 4,
+                                        views: true,
+                                        view_pref_key: "ticket_note_view_mode".to_string(),
                                         required: true,
                                         rules: vec![Rule::Required],
                                         error: edit_error.read().clone(),
                                         value: draft.read().clone(),
-                                        oninput: move |e: FormEvent| {
+                                        people: crate::hooks::mention_people(&mention_directory),
+                                        oninput: move |next: String| {
                                             edit_error.set(String::new());
-                                            draft.set(e.value());
+                                            draft.set(next);
                                         },
                                     }
                                     div { class: "flex gap-2",
@@ -3517,8 +3547,21 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                                     }
                                 }
                             } else if let Some(content) = &props.content {
-                                div { class: "mt-2 text-sm text-content bg-surface-2 rounded-md p-3 whitespace-pre-wrap",
-                                    "{content}"
+                                // MAPPS-610: Markdown, not raw text in a
+                                // `whitespace-pre-wrap` box. The composer now
+                                // has a formatting toolbar, and a toolbar over
+                                // a plain-text renderer posts `**bold**` and
+                                // shows `**bold**`. The description has
+                                // rendered this way since PMS-309.
+                                //
+                                // Consequence, taken deliberately: notes
+                                // written before this are now parsed as
+                                // Markdown, so a line that happens to start
+                                // with `#` reads as a heading. The output is
+                                // sanitized either way, and `@handle` now
+                                // resolves (MAPPS-578), which is the upside.
+                                div { class: "mt-2 bg-surface-2 rounded-md p-3",
+                                    crate::components::Markdown { content: content.clone() }
                                 }
                             }
                             ChangeDetails { changes: props.changes.clone() }
@@ -4070,27 +4113,58 @@ mod mapps592_description_editor_tests {
         SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
-    /// MAPPS-592: both description fields are the KB write pane.
+    /// MAPPS-592: both description fields are the KB write pane. MAPPS-610:
+    /// so are both note fields.
     ///
     /// A ticket description is Markdown, is rendered as Markdown by the same
     /// component a KB article is, and was written in a bare textarea: the same
-    /// syntax with none of the help. Both fields, because they are the same
-    /// field: the one on the create form and the one in the edit modal.
+    /// syntax with none of the help. A note was further behind still - no
+    /// toolbar at all - and it is the field on this page people actually spend
+    /// the day in.
     #[test]
-    fn both_description_fields_get_the_editor() {
+    fn every_markdown_field_on_this_page_gets_the_editor() {
         let code = code_only();
         assert_eq!(
             code.matches("crate::components::MarkdownEditor {").count(),
-            2,
-            "the create form and the edit modal"
+            4,
+            "the create form, the in-page description edit, the note composer \
+             and the inline note edit"
+        );
+        for bare in [
+            "Textarea { name: \"description\",",
+            "Textarea { name: \"edit-description\",",
+            "Textarea { name: \"content\",",
+        ] {
+            assert!(
+                !code.contains(bare),
+                "{bare} is not a bare textarea any more"
+            );
+        }
+    }
+
+    /// MAPPS-610: a toolbar over a plain-text renderer posts `**bold**` and
+    /// shows `**bold**`. The note renderer changes with the note editor.
+    #[test]
+    fn a_note_is_rendered_as_markdown_not_as_raw_text() {
+        let code = code_only();
+        assert!(
+            code.contains("crate::components::Markdown { content: content.clone() }"),
+            "the journal renders a note through the shared renderer"
         );
         assert!(
-            !code.contains("Textarea { name: \"description\","),
-            "and neither is a bare textarea any more"
+            !code.contains(r#"rounded-md p-3 whitespace-pre-wrap", "{content}""#),
+            "and not as the raw string in a pre-wrap box"
+        );
+        const PORTAL: &str = include_str!("portal.rs");
+        assert!(
+            PORTAL.contains("content: note.content.clone(),"),
+            "the portal too: a public note reaches the customer as Markdown, so \
+             rendering it plain would show them the asterisks"
         );
         assert!(
-            !code.contains("Textarea { name: \"edit-description\","),
-            "including the one in the modal"
+            PORTAL.contains("mentions: false,"),
+            "with staff handles left unresolved there - a contact has no business \
+             reading the directory, and /auth/users is manager-gated anyway"
         );
     }
 
@@ -4103,8 +4177,9 @@ mod mapps592_description_editor_tests {
         assert_eq!(
             code.matches("crate::hooks::use_mention_directory(true)")
                 .count(),
-            2,
-            "one per page component, the list page's create form and the detail page"
+            3,
+            "one per component that hosts an editor: the list page's create form, \
+             the detail page, and the journal entry with the inline note editor"
         );
         assert!(
             code.contains("people: crate::hooks::mention_people(&mention_directory)"),

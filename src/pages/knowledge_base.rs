@@ -22,7 +22,6 @@
 //! loading / empty / error states match the contacts pages.
 
 use chrono::{DateTime, Utc};
-use dioxus::html::HasFileData;
 use dioxus::prelude::*;
 
 use crate::components::{
@@ -44,10 +43,9 @@ use crate::Route;
 /// Rows per page for the article list (mirrors contacts `PER_PAGE`).
 const PER_PAGE: usize = 25;
 
-/// MAPPS-600: the id of the preview's scroll box, and the id of the source
-/// field, so the split view can tie their scrolling together. The source id is
-/// the `Textarea`'s `name`, which is what it renders as its `id`.
-const KB_PREVIEW_ID: &str = "kb-body-preview";
+/// The id of the body's source field. `MarkdownEditor` renders it as the
+/// `Textarea`'s `id` and derives the preview box's id from it (MAPPS-610), so
+/// this is the one identity the page has to name.
 const KB_SOURCE_ID: &str = "content";
 
 /// How many recent articles the home page surfaces.
@@ -134,120 +132,6 @@ fn next_slug(new_title: &str, touched: bool) -> Option<String> {
         None
     } else {
         Some(slugify(new_title))
-    }
-}
-
-/// What the author is looking at in the article body editor.
-///
-/// PMS-939: one state, three values. It replaces a `Write | Preview` tab pair
-/// and a separate `Split view: on/off` pill, which were two components in two
-/// visual languages at opposite ends of the same row, controlling the same
-/// thing. With split on, `Write` stayed underlined and `Preview` stayed
-/// offered, so a mode showing both panes still claimed one of them was current.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ViewMode {
-    Write,
-    Split,
-    Preview,
-}
-
-/// The three, in the order they are drawn and cycled.
-const VIEW_MODES: [ViewMode; 3] = [ViewMode::Write, ViewMode::Split, ViewMode::Preview];
-
-impl ViewMode {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Write => "Write",
-            Self::Split => "Split",
-            Self::Preview => "Preview",
-        }
-    }
-
-    /// Persisted form. Named rather than an index, so a value written by one
-    /// release still means the same thing after the order changes.
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Write => "write",
-            Self::Split => "split",
-            Self::Preview => "preview",
-        }
-    }
-
-    /// Anything unrecognised is Write: an author whose stored preference has
-    /// gone stale gets the editor, which is what this screen is for.
-    fn from_str(s: &str) -> Self {
-        match s {
-            "split" => Self::Split,
-            "preview" => Self::Preview,
-            _ => Self::Write,
-        }
-    }
-
-    /// Step `delta` places through the group, wrapping at both ends.
-    ///
-    /// PMS-939: this wrap-around IS the mode cycling. No global chord is bound
-    /// for it, because every plausible one (`Ctrl+Shift+E/M/P/V`) opens a
-    /// devtools panel or pastes as plain text in at least one of Chrome and
-    /// Firefox, and a shortcut that steals a browser feature is worse than
-    /// tabbing to the group and pressing an arrow.
-    fn stepped(self, delta: i32) -> Self {
-        let len = VIEW_MODES.len() as i32;
-        let at = VIEW_MODES.iter().position(|m| *m == self).unwrap_or(0) as i32;
-        VIEW_MODES[(((at + delta) % len + len) % len) as usize]
-    }
-
-    /// Is the source pane on the page in this mode?
-    fn shows_source(self) -> bool {
-        self != Self::Preview
-    }
-
-    /// Is the preview pane on the page in this mode?
-    fn shows_preview(self) -> bool {
-        self != Self::Write
-    }
-}
-
-/// Class for one of the two body panes.
-///
-/// Hidden rather than unmounted, because a `match` on the mode throws away the
-/// caret and the textarea's scroll offset (MAPPS-573).
-///
-/// PMS-939: the pane is on the page or it is not, with no `lg:` in either
-/// branch. MAPPS-584 hid the split control below `lg` on the grounds that a
-/// stacked "side by side" is the same page twice. That was right while Split
-/// was an extra on top of the tabs; it is wrong now that it is one of three
-/// segments, because a segment that does nothing at that width is exactly the
-/// dead control this pass is about. Below `lg`, Split stacks the two panes
-/// instead, which is what the mode promises.
-fn body_pane_class(visible: bool) -> &'static str {
-    if visible {
-        // A flex column so the field inside can stretch, and `flex-1` so the
-        // pane itself stretches when it is the only one (a grid item already
-        // stretches; a block child of a fixed-height box does not).
-        "min-w-0 flex flex-col flex-1"
-    } else {
-        "hidden"
-    }
-}
-
-/// Class for one option in the view switcher.
-///
-/// PMS-939: the house segmented-control style, taken from the theme picker's
-/// Base mode row (`components/theme_picker.rs`) - a `bg-surface-2` track with a
-/// raised `bg-surface` pill on the selected option. Selection reads as
-/// elevation and weight, not colour alone.
-/// Choose a mode and remember it. One place, so the click path and the
-/// keyboard path cannot drift over whether the choice is persisted.
-fn set_view_mode(view: &mut Signal<ViewMode>, next: ViewMode) {
-    view.set(next);
-    crate::utils::prefs::set_str("kb_view_mode", next.as_str());
-}
-
-fn view_mode_class(selected: bool) -> &'static str {
-    if selected {
-        "px-3 py-1 rounded-md text-sm font-semibold bg-surface text-content shadow-sm"
-    } else {
-        "px-3 py-1 rounded-md text-sm font-medium text-muted hover:text-content"
     }
 }
 
@@ -2196,29 +2080,12 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
             meta_open.set(true);
         }
     });
-    // PMS-939: one signal for what the author is looking at, persisted whole.
-    // It replaces a per-mount `tab` and a persisted `split` bool, so the chosen
-    // view now survives a reload in all three cases rather than two thirds of
-    // one. Write by default: the editor opens as an editor.
-    let mut view = use_signal(|| {
-        let stored = crate::utils::prefs::get_str("kb_view_mode", ViewMode::Write.as_str());
-        ViewMode::from_str(&stored)
-    });
     // MAPPS-580: who can be mentioned. MAPPS-592: through the shared hook, so
     // the editor, the renderer and the ticket description all read one list
     // from one endpoint. An empty list disables the autocomplete entirely,
     // which is the right degrade because a handle typed by hand still resolves
     // at render time.
     let mention_people = crate::hooks::use_mention_directory(true);
-    // MAPPS-600: tie the two panes' scrolling together while both are on
-    // screen. In an effect rather than at mount because the preview box only
-    // exists in split view, and re-running is free: `link` is idempotent, it
-    // marks the elements it has already wired.
-    use_effect(move || {
-        if view() == ViewMode::Split {
-            crate::platform::scroll_sync::link(KB_SOURCE_ID, KB_PREVIEW_ID);
-        }
-    });
 
     // MAPPS-573: Cancel with unsaved work asks first.
     let mut confirming_cancel = use_signal(|| false);
@@ -2853,81 +2720,23 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                 }
 
                 // MAPPS-573: both panes stay mounted and the panel carries a
-                // floor height. Two separate bugs shared one cause.
+                // floor height. Two separate bugs shared one cause: the page
+                // jumped because swapping the panes changed the document's
+                // height and the browser clamped `scrollTop`, and unmounting
+                // the textarea threw away the caret and its scroll offset.
                 //
-                // The page jumped because `match tab()` swapped a 16-row
-                // textarea plus its label, roughly 26rem, for a preview with
-                // `min-h-40`, which is 10rem. On a short article the document
-                // shrank by two thirds and the browser clamped `scrollTop` to
-                // the new maximum. That clamp IS the jump, so the fix is that
-                // the panel cannot shrink below what the write pane occupies.
-                //
-                // Unmounting the textarea also threw away the caret and its
-                // scroll offset, so returning from Preview landed at the top of
-                // the body. `hidden` keeps the element and its state alive,
-                // which is what the JetBrains editor does and the half that
-                // made the toggle feel wrong even when nothing scrolled.
-                div {
-                    // PMS-939: one segmented control where the tabs used to be.
-                    //
-                    // `radiogroup` / `radio` rather than a row of toggles: this
-                    // is one-of-N, and `aria-pressed` on three buttons says
-                    // three independent things are on or off. Roving tabindex,
-                    // so Tab reaches the group once and lands on the current
-                    // mode; the arrows move within it.
-                    div {
-                        class: "mb-2",
-                        div {
-                            class: "inline-flex gap-1 rounded-lg bg-surface-2 p-1",
-                            role: "radiogroup",
-                            aria_label: "Editor view",
-                            for option in VIEW_MODES {
-                                {
-                                    let selected = view() == option;
-                                    rsx! {
-                                        button {
-                                            key: "{option.as_str()}",
-                                            id: "kb-view-{option.as_str()}",
-                                            r#type: "button",
-                                            role: "radio",
-                                            class: view_mode_class(selected),
-                                            aria_checked: if selected { "true" } else { "false" },
-                                            // Roving: only the selected option
-                                            // is in the tab order, which is what
-                                            // makes the group one stop rather
-                                            // than three.
-                                            tabindex: if selected { "0" } else { "-1" },
-                                            onclick: move |_| set_view_mode(&mut view, option),
-                                            onkeydown: move |e: KeyboardEvent| {
-                                                // Selection follows focus, so a
-                                                // step both moves and chooses.
-                                                let delta = match e.key() {
-                                                    Key::ArrowRight | Key::ArrowDown => 1,
-                                                    Key::ArrowLeft | Key::ArrowUp => -1,
-                                                    _ => 0,
-                                                };
-                                                if delta == 0 {
-                                                    return;
-                                                }
-                                                e.prevent_default();
-                                                let next = option.stepped(delta);
-                                                set_view_mode(&mut view, next);
-                                                crate::platform::dom::focus_by_id(
-                                                    &format!("kb-view-{}", next.as_str()),
-                                                );
-                                            },
-                                            "{option.label()}"
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // MAPPS-579: source and preview side by side. Both panes
-                    // stay mounted and the panel keeps its floor, so neither
-                    // the breakpoint nor the mode can shrink the document and
-                    // scroll the page (MAPPS-573).
-                    //
+                // MAPPS-610: all of that, the Write/Split/Preview switcher and
+                // the scroll link now live in `MarkdownEditor`, so the ticket
+                // description and the note editors get the same control instead
+                // of a copy each. What stays here is what belongs to an article:
+                // how tall this screen's editor is, where an uploaded file goes,
+                // and the counts underneath.
+                crate::components::MarkdownEditor {
+                    name: KB_SOURCE_ID.to_string(),
+                    label: "Body (Markdown)".to_string(),
+                    placeholder: "## Overview\n\nWrite the article in Markdown…".to_string(),
+                    views: true,
+                    view_pref_key: "kb_view_mode".to_string(),
                     // PMS-939: the panel takes its height from the window
                     // instead of from 18 rows of text. On a tall screen the old
                     // fixed field left most of the page empty while the author
@@ -2941,158 +2750,52 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     // height and the page scrolls, which is the same thing that
                     // happens today. Collapsing the block, which the summary row
                     // is there to encourage, fits the whole thing again.
-                    div {
-                        class: if view() == ViewMode::Split {
-                            // Two equal rows below `lg`, two equal columns from
-                            // `lg` up. Explicit rows because the container has a
-                            // definite height and implicit `auto` rows would
-                            // size to content and overflow it.
-                            "h-[calc(100vh-22rem)] min-h-[26rem] grid gap-4 grid-cols-1 grid-rows-2 lg:grid-cols-2 lg:grid-rows-1"
-                        } else {
-                            "h-[calc(100vh-22rem)] min-h-[26rem] flex flex-col"
-                        },
-                        div {
-                            class: body_pane_class(view().shows_source()),
-                            // MAPPS-587: drop an image anywhere on the write
-                            // pane. `ondragover` has to prevent the default or
-                            // the browser never fires `ondrop` and instead
-                            // navigates away to the file, losing the article.
-                            ondragover: move |e: DragEvent| e.prevent_default(),
-                            ondrop: move |e: DragEvent| {
-                                let files = e.files();
-                                if files.is_empty() {
-                                    return;
-                                }
-                                // Only when there is a file. A drag of selected
-                                // text inside the textarea is an ordinary move
-                                // and must keep working.
-                                e.prevent_default();
-                                let Some(file) = files.into_iter().next() else {
-                                    return;
-                                };
-                                let mut upload = upload_image;
-                                spawn(async move {
-                                    let name = file.name();
-                                    let mime = file.content_type().unwrap_or_default();
-                                    if let Ok(bytes) = file.read_bytes().await {
-                                        upload((name, mime, bytes.to_vec()));
-                                    }
-                                });
-                            },
-                            // MAPPS-592: the toolbar, the shortcuts and the
-                            // mention completion moved into a shared component
-                            // so the ticket description could have them too.
-                            // The tabs, the split and the drop zone stay here:
-                            // they are this page's layout, not the field.
-                            crate::components::MarkdownEditor {
-                                name: KB_SOURCE_ID.to_string(),
-                                label: "Body (Markdown)".to_string(),
-                                placeholder: "## Overview\n\nWrite the article in Markdown…"
-                                    .to_string(),
-                                // PMS-939: the floor, for the case where the
-                                // panel is at its `min-h`. `field_class` is
-                                // what makes it grow past this on a taller
-                                // window, so the two are a floor and a
-                                // stretch rather than two competing heights.
-                                rows: 18,
-                                class: "flex flex-col min-h-0 flex-1".to_string(),
-                                field_class: "flex-1 min-h-0".to_string(),
-                                required: true,
-                                disabled: !can_mutate,
-                                maxlength: BODY_MAX as i64,
-                                rules: vec![Rule::Required],
-                                error: content_error.read().clone(),
-                                value: content.read().clone(),
-                                people: crate::hooks::mention_people(&mention_people),
-                                // MAPPS-587: the KB editor is the one surface
-                                // with somewhere to put a file.
-                                on_file: EventHandler::new(
-                                    move |f: (String, String, Vec<u8>)| upload_image(f),
-                                ),
-                                oninput: move |next: String| {
-                                    content_error.set(String::new());
-                                    content.set(next);
-                                },
-                            }
-                            // MAPPS-579: what the author is up against. The body
-                            // has a server-side cap, so the character count is
-                            // the one that can actually block a save.
-                            // MAPPS-587: an upload is the one action here that
-                            // takes long enough to doubt and can fail on the
-                            // server after passing every check this client can
-                            // make. Both states are said out loud, next to the
-                            // field the image is going into.
-                            if uploading() {
-                                p { class: "mt-1 text-xs text-muted", role: "status",
-                                    "Uploading the image…"
-                                }
-                            }
-                            if !upload_error().is_empty() {
-                                p {
-                                    class: "mt-1 text-sm leading-5 text-red-600 dark:text-red-400",
-                                    role: "alert",
-                                    "{upload_error}"
-                                }
-                            }
-                            {
-                                let body = content.read();
-                                let words = body.split_whitespace().count();
-                                let chars = body.chars().count();
-                                rsx! {
-                                    p { class: "mt-1 text-xs text-subtle", role: "status",
-                                        "{words} words · {chars} of {BODY_MAX} characters"
-                                    }
-                                }
-                            }
-                        }
-                        div {
-                            class: body_pane_class(view().shows_preview()),
-                            // PMS-939: the same label treatment as
-                            // "Body (Markdown)" on the other pane. It was
-                            // `text-xs text-muted`, which read as a caption on
-                            // the box rather than a label on a second field.
-                            p { class: "mb-1 block text-sm font-medium text-content", "Preview" }
-                            // MAPPS-579: the SAME component the published
-                            // article renders through, not just the same
-                            // function. Calling `render_markdown` directly here
-                            // meant the preview silently differed from the
-                            // article in three ways: no resolved @mentions
-                            // (MAPPS-578), checkboxes rendered disabled, and a
-                            // fixed prose density instead of the reader's.
-                            // A preview that is not the article is the bug this
-                            // whole surface exists to avoid.
-                            // MAPPS-600: the scroll box, and the element the
-                            // source pane is synced to. It is a wrapper rather
-                            // than the `Markdown` container itself because
-                            // `Markdown` owns its own id for the delegated
-                            // click listener, and giving the shared component a
-                            // second identity for one caller's benefit is how a
-                            // component starts serving a page.
-                            div {
-                                id: KB_PREVIEW_ID,
-                                // PMS-939: `h-full` alone now. The panel has a
-                                // definite height, so the ceiling MAPPS-584
-                                // added to stop a long article growing the page
-                                // is the panel's, and a second one at 34rem
-                                // just ended the preview above the editor.
-                                class: "p-2 border border-line rounded h-full overflow-y-auto",
-                            crate::components::Markdown {
-                                // No floor of its own: the panel above sets the
-                                // height and the grid row stretches both columns
-                                // to it. Two competing minimums is what made the
-                                // tab swap shrink the document (MAPPS-573).
-                                // MAPPS-584: the preview scrolls inside its own
-                                // box. Left to grow, a long article made the
-                                // page several thousand pixels tall and put
-                                // Save Changes at the bottom of all of it, so
-                                // previewing meant losing the editor and the
-                                // buttons both. A ceiling keeps the panel the
-                                // same height whichever tab is up, which is the
-                                // MAPPS-573 floor doing its job from the other
-                                // side.
-                                content: content.read().clone(),
-                            }
-                            }
+                    panel_class: "h-[calc(100vh-22rem)] min-h-[26rem]".to_string(),
+                    // The floor, for the case where the panel is at its `min-h`.
+                    // `field_class` is what makes it grow past this on a taller
+                    // window, so the two are a floor and a stretch rather than
+                    // two competing heights.
+                    rows: 18,
+                    field_class: "flex-1 min-h-0".to_string(),
+                    required: true,
+                    disabled: !can_mutate,
+                    maxlength: BODY_MAX as i64,
+                    rules: vec![Rule::Required],
+                    error: content_error.read().clone(),
+                    value: content.read().clone(),
+                    people: crate::hooks::mention_people(&mention_people),
+                    // MAPPS-587: the KB editor is the one surface with somewhere
+                    // to put a file, until PMS-941 gives tickets one too.
+                    on_file: EventHandler::new(move |f: (String, String, Vec<u8>)| upload_image(f)),
+                    oninput: move |next: String| {
+                        content_error.set(String::new());
+                        content.set(next);
+                    },
+                }
+                // MAPPS-579: what the author is up against. The body has a
+                // server-side cap, so the character count is the one that can
+                // actually block a save.
+                // MAPPS-587: an upload is the one action here that takes long
+                // enough to doubt and can fail on the server after passing every
+                // check this client can make. Both states are said out loud,
+                // under the field the image is going into.
+                if uploading() {
+                    p { class: "mt-1 text-xs text-muted", role: "status", "Uploading the image…" }
+                }
+                if !upload_error().is_empty() {
+                    p {
+                        class: "mt-1 text-sm leading-5 text-red-600 dark:text-red-400",
+                        role: "alert",
+                        "{upload_error}"
+                    }
+                }
+                {
+                    let body = content.read();
+                    let words = body.split_whitespace().count();
+                    let chars = body.chars().count();
+                    rsx! {
+                        p { class: "mt-1 text-xs text-subtle", role: "status",
+                            "{words} words · {chars} of {BODY_MAX} characters"
                         }
                     }
                 }
@@ -4106,8 +3809,6 @@ mod tests {
 /// and the decision is visible in the source.
 #[cfg(test)]
 mod editor_ux_tests {
-    use super::body_pane_class;
-
     const SRC: &str = include_str!("knowledge_base.rs");
 
     /// The page's code, with two things removed.
@@ -4140,97 +3841,30 @@ mod editor_ux_tests {
     /// preview with `min-h-40`. On a short article the document shrank by two
     /// thirds and the browser clamped `scrollTop`, which is the jump. A floor
     /// on the panel is what makes the swap height-neutral.
+    ///
+    /// MAPPS-610 moved the panes and the switcher into `MarkdownEditor`, so
+    /// what this page still owns is the height it asks that panel for. The
+    /// pane behaviour is pinned in `components::markdown_editor`.
     #[test]
-    fn the_body_panel_cannot_shrink_when_the_tab_changes() {
-        let code = code_only();
-        // MAPPS-584 made the panel class conditional on split view, so the
-        // floor has to be on BOTH branches: an author with split off gets the
-        // other one, and a floor on only one of them is a floor half the
-        // users never see. PMS-939 gave the panel a viewport height on top of
-        // the floor; the floor is what holds on a short window.
-        assert_eq!(
-            code.matches("min-h-[26rem]").count(),
-            2,
-            "the body panel needs a height floor on both the split and the single \
-             class, or switching to Preview shrinks the document and the browser \
-             scrolls the page up"
-        );
-        assert_eq!(
-            code.matches("h-[calc(100vh-22rem)]").count(),
-            2,
-            "PMS-939: and a viewport height on both, or the editor is 18 rows on a \
-             screen with room for forty"
-        );
-        assert!(
-            !code.contains("min-h-40"),
-            "the preview's own smaller floor is what the panel floor replaces; leaving \
-             it invites the two to disagree"
-        );
-        // MAPPS-584, the other side of the same guarantee: the preview cannot
-        // grow past the panel either. PMS-939 gave the panel a definite height,
-        // so the ceiling is now the panel's and the preview takes `h-full`; a
-        // second ceiling at 34rem only ended the preview above the editor.
-        assert!(
-            code.contains("rounded h-full overflow-y-auto"),
-            "the preview needs a ceiling and its own scrollbar, or a long article \
-             makes the page thousands of pixels tall and buries Save Changes"
-        );
-        assert!(
-            !code.contains("max-h-[34rem]"),
-            "and only one of them, or the two disagree about how tall the pane is"
-        );
-    }
-
-    /// AC1, the caret. `hidden` keeps the textarea mounted, so its caret and
-    /// scroll offset survive a trip to Preview. A `match` that unmounts it
-    /// throws both away and returns the user to the top of the body.
-    #[test]
-    fn the_write_pane_stays_mounted_while_previewing() {
+    fn the_body_panel_states_its_own_height() {
         let code = code_only();
         assert!(
-            code.contains("body_pane_class(view().shows_source())"),
-            "both panes take their class from the shared helper, so the mounted-but-\
-             hidden guarantee below covers the write pane too"
+            code.contains(r#"panel_class: "h-[calc(100vh-22rem)] min-h-[26rem]".to_string()"#),
+            "a viewport height so the editor is not 18 rows on a screen with room \
+             for forty, and a floor so it does not collapse on a short one"
         );
         assert!(
-            !code.contains("match view()"),
-            "a match on the mode unmounts the inactive pane, which is the behaviour \
-             this replaced"
-        );
-    }
-
-    /// MAPPS-573 and MAPPS-584 together. Hiding is not unmounting: the caret
-    /// and the textarea's scroll offset only survive a trip to Preview because
-    /// the element stays in the DOM. Every branch of the helper has to hide.
-    #[test]
-    fn an_inactive_pane_is_hidden_rather_than_unmounted() {
-        assert!(body_pane_class(true).starts_with("min-w-0"));
-        assert!(
-            body_pane_class(false).starts_with("hidden"),
-            "an inactive pane is hidden, never dropped"
-        );
-    }
-
-    /// MAPPS-584 AC1, as PMS-939 leaves it. The mode is the only thing that
-    /// puts both panes on the page, and it is remembered. MAPPS-584's
-    /// `lg:block` is gone: Split now stacks below `lg` rather than being
-    /// unavailable, because a segment that does nothing at that width is a dead
-    /// control.
-    #[test]
-    fn the_mode_decides_the_panes_and_is_remembered() {
-        assert!(
-            !body_pane_class(false).contains("lg:"),
-            "a hidden pane is hidden at every width"
-        );
-        let code = code_only();
-        assert!(
-            code.contains(r#"prefs::get_str("kb_view_mode""#),
-            "the view mode reads back what the author last chose"
+            code.contains("views: true"),
+            "and the body is the editor that gets the switcher"
         );
         assert!(
-            code.contains(r#"prefs::set_str("kb_view_mode", next.as_str())"#),
-            "and the choice is persisted, or it is a setting that resets on every \
-             article"
+            code.contains(r#"view_pref_key: "kb_view_mode".to_string()"#),
+            "under this page's own key, so an author's choice here does not follow \
+             them into a ticket"
+        );
+        assert!(
+            !code.contains("min-h-40") && !code.contains("max-h-[34rem]"),
+            "no second height on this page to disagree with the panel's"
         );
         assert!(
             !code.contains("kb_split_preview"),
@@ -4357,15 +3991,16 @@ mod editor_ux_tests {
             code.contains("EventHandler::new(move |f: (String, String, Vec<u8>)| {"),
             "and reports through an EventHandler, which pushes its own scope"
         );
-        // One uploader, three ways in: declared once, then reached by the
-        // toolbar's picker, the drop handler and the paste handler. A fourth
-        // way in that built its own path would have to grow the size checks,
-        // the create-the-article step and the error reporting all over again.
+        // One uploader, two ways in from this page: declared once, then
+        // reached by the toolbar's picker (through `on_file`) and the paste
+        // handler. MAPPS-610 moved the drop zone into `MarkdownEditor`, where
+        // it arrives through that same `on_file`, so a third path that built
+        // its own would have to grow the size checks, the create-the-article
+        // step and the error reporting all over again.
         assert_eq!(
             code.matches("upload_image").count(),
-            4,
-            "one declaration and three entry points: the picker, the drop and \
-             the paste"
+            3,
+            "one declaration and two entry points: the picker and the paste"
         );
     }
 
@@ -4503,73 +4138,6 @@ mod editor_ux_tests {
 }
 
 #[cfg(test)]
-mod mapps600_split_editor_tests {
-    const SRC: &str = include_str!("knowledge_base.rs");
-
-    fn code_only() -> String {
-        let end = SRC
-            .find("mod mapps600_split_editor_tests")
-            .expect("this module is part of this file");
-        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
-    }
-
-    /// MAPPS-600: the two panes are tied together, and only while both are on
-    /// screen. With one pane visible there is nothing to sync and the preview
-    /// box does not exist to be found.
-    #[test]
-    fn the_panes_are_linked_only_in_split_view() {
-        let code = code_only();
-        assert!(
-            code.contains(
-                "if view() == ViewMode::Split { crate::platform::scroll_sync::link(KB_SOURCE_ID, KB_PREVIEW_ID); }"
-            ),
-            "the link is conditional on the split view"
-        );
-    }
-
-    /// The ids are shared between the element that carries them and the call
-    /// that looks them up. A literal on either side is a link that silently
-    /// does nothing the day somebody renames the field.
-    #[test]
-    fn both_panes_are_addressed_by_the_same_constants() {
-        let code = code_only();
-        assert!(
-            code.contains("id: KB_PREVIEW_ID,"),
-            "the preview box carries it"
-        );
-        assert!(
-            code.contains("name: KB_SOURCE_ID.to_string(),"),
-            "and the source field's name, which Textarea renders as its id"
-        );
-        assert!(
-            !code.contains("scroll_sync::link(\"content\""),
-            "neither side hardcodes the string"
-        );
-    }
-
-    /// The scrolling box is the wrapper, not the `Markdown` container. The
-    /// shared component owns its own id for the delegated click listener, and
-    /// giving it a second identity for one caller's benefit is how a component
-    /// starts serving a page.
-    #[test]
-    fn the_preview_scrolls_in_a_wrapper_the_page_owns() {
-        let code = code_only();
-        let wrapper = code
-            .find("id: KB_PREVIEW_ID,")
-            .expect("the preview wrapper");
-        let window = &code[wrapper..code.len().min(wrapper + 700)];
-        assert!(
-            window.contains("overflow-y-auto"),
-            "the wrapper is the scroll box: {window}"
-        );
-        assert!(
-            window.contains("crate::components::Markdown {"),
-            "and the renderer sits inside it: {window}"
-        );
-    }
-}
-
-#[cfg(test)]
 mod mapps612_details_panel_tests {
     use super::meta_must_be_open;
 
@@ -4600,166 +4168,5 @@ mod mapps612_details_panel_tests {
             "How to reset a password",
             "how-to-reset-a-password"
         ));
-    }
-}
-
-#[cfg(test)]
-mod pms939_view_switcher_tests {
-    use super::{body_pane_class, view_mode_class, ViewMode, VIEW_MODES};
-
-    const SRC: &str = include_str!("knowledge_base.rs");
-
-    fn code_only() -> String {
-        let end = SRC
-            .find("mod pms939_view_switcher_tests")
-            .expect("this module is part of this file");
-        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
-    }
-
-    /// The whole point of the pass: one control, one selected state, and no
-    /// mode in which a visible control means nothing.
-    #[test]
-    fn exactly_one_mode_is_selected_and_every_mode_shows_a_pane() {
-        for mode in VIEW_MODES {
-            let selected = VIEW_MODES.iter().filter(|m| **m == mode).count();
-            assert_eq!(
-                selected,
-                1,
-                "{:?} selects exactly one segment",
-                mode.label()
-            );
-            assert!(
-                mode.shows_source() || mode.shows_preview(),
-                "{} must put something on the page",
-                mode.label()
-            );
-        }
-        assert!(ViewMode::Split.shows_source() && ViewMode::Split.shows_preview());
-        assert!(!ViewMode::Write.shows_preview());
-        assert!(!ViewMode::Preview.shows_source());
-    }
-
-    /// Arrow keys cycle, wrapping at both ends. This IS the mode-cycling
-    /// shortcut: no global chord is bound, because every plausible one collides
-    /// with a browser feature in Chrome or Firefox.
-    #[test]
-    fn the_arrows_cycle_through_the_group_and_wrap() {
-        assert!(ViewMode::Write.stepped(1) == ViewMode::Split);
-        assert!(ViewMode::Split.stepped(1) == ViewMode::Preview);
-        assert!(
-            ViewMode::Preview.stepped(1) == ViewMode::Write,
-            "wraps forward"
-        );
-        assert!(
-            ViewMode::Write.stepped(-1) == ViewMode::Preview,
-            "wraps back"
-        );
-        assert!(ViewMode::Split.stepped(-1) == ViewMode::Write);
-    }
-
-    /// The persisted form is a name, not an index, so reordering the group
-    /// later cannot silently change what an author's stored choice means.
-    #[test]
-    fn the_stored_mode_round_trips_by_name() {
-        for mode in VIEW_MODES {
-            assert!(ViewMode::from_str(mode.as_str()) == mode);
-        }
-        assert!(
-            ViewMode::from_str("side-by-side") == ViewMode::Write,
-            "an unreadable stored value opens the editor, not a blank preview"
-        );
-        assert!(ViewMode::from_str("") == ViewMode::Write);
-    }
-
-    /// Selection reads as elevation and weight, so it survives a viewer who
-    /// cannot tell the two colours apart.
-    #[test]
-    fn the_selected_segment_is_not_marked_by_colour_alone() {
-        let on = view_mode_class(true);
-        let off = view_mode_class(false);
-        assert!(on.contains("shadow-sm") && on.contains("bg-surface"));
-        assert!(!off.contains("shadow-sm"));
-        assert!(on.contains("font-semibold") && off.contains("font-medium"));
-    }
-
-    /// One-of-N is a radio group. Three `aria-pressed` toggles would say three
-    /// independent things are on or off, which is what the old tabs-plus-pill
-    /// pair actually claimed.
-    #[test]
-    fn the_group_carries_radio_semantics_and_a_roving_tabindex() {
-        let code = code_only();
-        assert!(
-            code.contains(r#"role: "radiogroup","#),
-            "the group says what it is"
-        );
-        assert!(
-            code.contains(r#"role: "radio","#),
-            "and each option does too"
-        );
-        assert!(
-            code.contains(r#"aria_checked: if selected { "true" } else { "false" }"#),
-            "selection is exposed, not implied by a class"
-        );
-        assert!(
-            code.contains(r#"tabindex: if selected { "0" } else { "-1" }"#),
-            "roving tabindex, so the group is one tab stop rather than three"
-        );
-        assert!(
-            !code.contains(r#"aria_pressed: if split()"#),
-            "the split toggle is gone, not left alongside the group"
-        );
-    }
-
-    /// Split has to work at every width now that it is a segment. Hiding it
-    /// below `lg`, which is what MAPPS-584 did to the old toggle, would leave a
-    /// segment that does nothing - the exact defect this pass is about.
-    #[test]
-    fn split_stacks_below_lg_rather_than_being_unavailable() {
-        let code = code_only();
-        assert!(
-            code.contains("grid gap-4 grid-cols-1 grid-rows-2 lg:grid-cols-2 lg:grid-rows-1"),
-            "two equal rows below lg, two equal columns above"
-        );
-        assert!(
-            !body_pane_class(true).contains("lg:") && !body_pane_class(false).contains("lg:"),
-            "a pane's visibility no longer depends on the width"
-        );
-    }
-
-    /// The two panes are labelled the same way, because they are two labelled
-    /// fields rather than a field and a caption.
-    #[test]
-    fn both_panes_carry_the_same_label_treatment() {
-        let code = code_only();
-        assert!(
-            code.contains(
-                r#"p { class: "mb-1 block text-sm font-medium text-content", "Preview" }"#
-            ),
-            "the preview label matches Body (Markdown)"
-        );
-        assert!(
-            !code.contains(r#"text-xs font-medium text-muted", "Preview""#),
-            "and the old caption styling is gone"
-        );
-    }
-
-    /// The field stretches to the panel instead of standing at 18 rows, and the
-    /// stretch has to reach it through every wrapper in between.
-    #[test]
-    fn the_body_field_stretches_to_the_panel() {
-        let code = code_only();
-        assert!(
-            code.contains(r#"field_class: "flex-1 min-h-0".to_string()"#),
-            "the field is told to stretch"
-        );
-        assert!(
-            code.contains(r#"class: "flex flex-col min-h-0 flex-1".to_string()"#),
-            "and the editor around it is a flex column that stretches too"
-        );
-        const EDITOR: &str = include_str!("../components/markdown_editor.rs");
-        assert!(
-            EDITOR.contains("wrapper_class:"),
-            "the stretch reaches the textarea's own wrapper, which is the flex item"
-        );
     }
 }

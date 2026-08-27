@@ -502,8 +502,18 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
                                             }
                                         }
                                     }
-                                    p { class: "text-sm text-content whitespace-pre-wrap",
-                                        "{note.content}"
+                                    // MAPPS-610: agents now write notes with a
+                                    // Markdown toolbar, so a public note reaches
+                                    // a customer as Markdown. Rendered plain, it
+                                    // would show them the asterisks.
+                                    //
+                                    // `mentions: false`: a contact has no
+                                    // business resolving staff handles, and
+                                    // `/auth/users` is manager-gated, so the
+                                    // lookup would fail anyway.
+                                    crate::components::Markdown {
+                                        content: note.content.clone(),
+                                        mentions: false,
                                     }
                                 }
                             }
