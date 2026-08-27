@@ -5228,7 +5228,16 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                 Some(cid) if !cid.is_empty() => {
                     format!("/contacts/companies/{cid}/portal-roles")
                 }
-                _ => "/contacts/portal-roles".to_string(),
+                // Note the double `/contacts/`: contacts routes nest at
+                // /api/v1/contacts and the tenant-wide portal-roles read
+                // was registered as `.route("/contacts/portal-roles",
+                // ...)` inside that nest (prompt 003), so the URL is
+                // `/api/v1/contacts/contacts/portal-roles`. Missing that
+                // double `contacts` was the fallback path's 404 on
+                // unaffiliated contacts (contact has no company_id ->
+                // scoped branch skipped -> this fallback -> single
+                // contacts -> unmatched route -> 404).
+                _ => "/contacts/contacts/portal-roles".to_string(),
             };
             crate::hooks::fetch::api::get_authed::<Vec<PortalRoleSummaryWire>>(&path).await
         }
