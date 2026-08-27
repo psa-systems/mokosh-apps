@@ -61,11 +61,19 @@ struct MeResponse {
 /// omitted so the server's existing validation rejects any attempt to
 /// change them. Empty optionals are sent as `None` (no-op on the
 /// server) rather than empty strings.
+///
+/// PMS-512: `first_name`, `last_name`, and `phone` are deliberately
+/// absent from the wire even though the form still binds them to
+/// input signals for display. The server dropped them silently because
+/// Bunyip is the identity source of truth for the names + phone (mokosh
+/// keeps them as a read-only cache refreshed on every login via
+/// `upsert_user_from_oidc`). Sending them here was worse than not
+/// asking: the user typed a new name, hit Save, saw no error, and
+/// nothing actually changed. The input fields stay visible so the user
+/// can see the current bunyip-sourced values; the wire strips them so
+/// the request stops pretending to persist edits it never persisted.
 #[derive(Clone, Debug, Serialize)]
 struct UpdateMeRequest {
-    first_name: Option<String>,
-    last_name: Option<String>,
-    phone: Option<String>,
     mobile: Option<String>,
     title: Option<String>,
     timezone: Option<String>,
@@ -410,10 +418,9 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
         saving.set(true);
         error.set(String::new());
         saved.set(false);
+        // PMS-512: first_name / last_name / phone stripped from the
+        // wire; bunyip owns those fields (see UpdateMeRequest doc).
         let body = UpdateMeRequest {
-            first_name: optional_field(&first_name()),
-            last_name: optional_field(&last_name()),
-            phone: optional_field(&phone()),
             mobile: optional_field(&mobile()),
             title: optional_field(&title()),
             timezone: optional_field(&timezone()),

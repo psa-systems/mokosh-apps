@@ -5,11 +5,20 @@
 //! `profile_completed_at` NULL. The SPA's `AuthGuard` redirects every
 //! `profile_completed = false` user to this screen and gates all other
 //! authenticated routes behind it. Submitting first + last name calls
-//! `PUT /api/v1/auth/me`; the server side flips
-//! `profile_completed_at = COALESCE(profile_completed_at, NOW())` and
-//! `/api/v1/auth/me` starts reporting `profile_completed = true`. The
-//! SPA refreshes its in-memory `CurrentUser` from the PUT response so
-//! the gate stops firing on the same tick.
+//! `POST /api/v1/auth/me/complete-onboarding` with the two names in the
+//! body; the server side writes them (only on the first completion,
+//! guarded by `WHERE profile_completed_at IS NULL`) then stamps
+//! `profile_completed_at = COALESCE(...)`. The SPA refreshes its
+//! in-memory `CurrentUser` from the response so the gate stops firing
+//! on the same tick.
+//!
+//! Prior version PUT /auth/me with `{first_name, last_name}` and the
+//! server dropped both fields silently (PMS-512 removed them from
+//! UpdateUserRequest so bunyip stays authoritative on the OIDC path).
+//! Nothing stamped the profile and the AuthGuard bounced the user
+//! straight back to /onboarding/profile forever. The dedicated
+//! complete-onboarding endpoint is the standalone bootstrap fallback
+//! for users whose bunyip claims did not carry names.
 //!
 //! Why a dedicated page (not a modal on the dashboard): the gate must
 //! be impossible to bypass via direct URL or refresh, and the
@@ -25,9 +34,11 @@ use crate::components::{AuthLayout, Button, ButtonVariant, Input};
 use crate::utils::{FormGuard, Rule};
 use crate::Route;
 
-/// What `PUT /api/v1/auth/me` accepts. Only the two required fields are
-/// sent from the onboarding screen; the server's `update_user` handler
-/// flips `profile_completed_at` once it sees both as non-empty.
+/// Body for `POST /api/v1/auth/me/complete-onboarding`. Server-side
+/// contract: both fields are optional (a caller with no name fields
+/// still stamps the timestamp); when supplied they're written ONLY on
+/// first completion and locked thereafter so a replay can't overwrite
+/// a subsequent bunyip-refreshed name.
 #[derive(Clone, Debug, Serialize)]
 struct OnboardingRequest {
     first_name: Option<String>,
@@ -115,8 +126,9 @@ pub fn Onboarding() -> Element {
                     first_name: Some(first.clone()),
                     last_name: Some(last.clone()),
                 };
-                match crate::hooks::fetch::api::put_authed_typed::<OnboardingResponse, _>(
-                    "/auth/me", &body,
+                match crate::hooks::fetch::api::post_authed_typed::<OnboardingResponse, _>(
+                    "/auth/me/complete-onboarding",
+                    &body,
                 )
                 .await
                 {
