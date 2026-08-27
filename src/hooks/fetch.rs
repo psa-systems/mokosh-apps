@@ -446,6 +446,14 @@ pub mod api {
     thread_local! {
         static CONTACT_ACCESS_TOKEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
         static CONTACT_REFRESH_TOKEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+        /// MAPPS-604: the Company UUID the current contact session is
+        /// scoped to. Populated from the `contact.company_id` field on
+        /// every /contact/auth/{login,refresh,login-link/select}
+        /// response (PMS-935 extends the wire shape with this id). Pages
+        /// read it via [`current_contact_company_id`] to build scoped
+        /// URLs (e.g. the Cross-Company probe check) without re-parsing
+        /// the current route.
+        static CONTACT_COMPANY_ID: std::cell::RefCell<Option<uuid::Uuid>> = const { std::cell::RefCell::new(None) };
     }
 
     #[cfg(feature = "web")]
@@ -601,6 +609,23 @@ pub mod api {
         }
     }
 
+    /// MAPPS-604: overwrite the Company UUID this contact session is
+    /// scoped to. `None` clears it (called on logout / session drop).
+    #[cfg(feature = "web")]
+    pub fn set_contact_company_id(id: Option<uuid::Uuid>) {
+        CONTACT_COMPANY_ID.with(|slot| *slot.borrow_mut() = id);
+    }
+
+    /// MAPPS-604: read the Company UUID this contact session is scoped
+    /// to. `None` before the first `/contact/auth/*` response that
+    /// carries `company_id` (pre-PMS-935 servers omit the field, so a
+    /// contact signed in against an older mokosh sees `None` and
+    /// callers fall back to whatever URL-derived id they have).
+    #[cfg(feature = "web")]
+    pub fn current_contact_company_id() -> Option<uuid::Uuid> {
+        CONTACT_COMPANY_ID.with(|slot| *slot.borrow())
+    }
+
     /// Clear the entire contact session. Setting the refresh token to
     /// `None` clears its localStorage mirror as well; both last-*
     /// keys are wiped so a follow-up cold-load starts blank rather
@@ -609,6 +634,7 @@ pub mod api {
     pub fn clear_contact_session() {
         set_contact_access_token(None);
         set_contact_refresh_token(None);
+        set_contact_company_id(None);
         if let Some(win) = web_sys::window() {
             if let Ok(Some(storage)) = win.local_storage() {
                 let _ = storage.remove_item(CONTACT_LAST_SLUG_STORAGE_KEY);
@@ -1464,6 +1490,48 @@ pub mod api {
         })
     }
 
+    // --- Session-agnostic authed helpers (MAPPS-604) -------------------
+    //
+    // The prompt 013 pages (dashboard, tickets, billing, quotes,
+    // contracts, assets, projects) share ONE URL space between the staff
+    // workspace and the contact portal: `RequireCallerContext` on the
+    // server accepts either bearer and scopes the response accordingly.
+    // These wrappers pick the RIGHT bearer for the caller: contact
+    // session first when held (so the server sees `typ: "contact"` and
+    // filters to `company_id = contact.company_id`), else staff bearer,
+    // else unauth (mirrors `get_authed`'s legacy anon fall-through so a
+    // no-session caller does not spuriously 401 the whole page).
+
+    /// GET the same path with whichever bearer the caller holds today.
+    /// Prefers the contact bearer over the staff bearer so a contact
+    /// session on a URL that ALSO renders for staff routes through the
+    /// contact identity and lands on the contact-scoped filter path.
+    #[cfg(feature = "web")]
+    pub async fn get_authed_any<T: DeserializeOwned>(path: &str) -> Result<T, String> {
+        if let Some(t) = current_contact_access_token() {
+            return get_with_auth(path, &t).await;
+        }
+        match current_access_token() {
+            Some(t) => get_with_auth(path, &t).await,
+            None => get(path).await,
+        }
+    }
+
+    /// Typed sibling of [`get_authed_any`]. Same contact-first bearer
+    /// selection; surfaces `ApiError::Status` so a page can branch on
+    /// 401 / 403 / 404 without re-parsing the envelope.
+    #[cfg(feature = "web")]
+    pub async fn get_authed_any_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
+        let url = format!("{}{}", api_base(), path);
+        let mut req = Request::get(&url).header("Content-Type", "application/json");
+        let bearer = current_contact_access_token().or_else(current_access_token);
+        if let Some(t) = bearer {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let resp = req.send().await.map_err(network_err)?;
+        handle_response(resp).await
+    }
+
     // --- Platform-authed wrappers (MAPPS-518) ---------------------------
     //
     // MAPPS-518: the platform super-admin persona lives in
@@ -2228,5 +2296,19 @@ mod contact_session_tests {
         set_contact_access_token(None);
         assert_eq!(current_contact_access_token(), None);
         assert!(!has_contact_session());
+    }
+
+    /// MAPPS-604: the Company UUID slot round-trips independently from
+    /// the token holders; setting `None` clears it. Verifies the state
+    /// wiring in `set_contact_company_id` /
+    /// `current_contact_company_id`.
+    #[test]
+    fn contact_company_id_roundtrip() {
+        use super::api::{current_contact_company_id, set_contact_company_id};
+        let id = uuid::Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888);
+        set_contact_company_id(Some(id));
+        assert_eq!(current_contact_company_id(), Some(id));
+        set_contact_company_id(None);
+        assert_eq!(current_contact_company_id(), None);
     }
 }

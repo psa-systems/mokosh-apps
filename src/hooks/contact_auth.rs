@@ -52,6 +52,11 @@ struct RefreshContactSnippet {
     /// transition window that keeps `portal_slug` on the server).
     #[serde(default)]
     portal_slug: String,
+    /// MAPPS-604 (prompt 013): the Company UUID this session is scoped
+    /// to. `Option` because pre-PMS-935 servers omit the field; on a
+    /// legacy response the SPA falls back to its old URL-derived path.
+    #[serde(default)]
+    company_id: Option<uuid::Uuid>,
 }
 
 /// Rotate the contact session using the stored refresh token.
@@ -93,6 +98,10 @@ pub async fn refresh_contact_session() -> Result<(), String> {
                 if let Some(pid) = snippet.portal_id {
                     crate::hooks::fetch::api::set_contact_last_portal_id(&pid.to_string());
                 }
+                // MAPPS-604: pick up the session's Company scope from
+                // the refresh response so pages can build Company-scoped
+                // URLs without a second round-trip.
+                crate::hooks::fetch::api::set_contact_company_id(snippet.company_id);
             }
             crate::hooks::capabilities::set_contact_capabilities(Some(caps));
             Ok(())

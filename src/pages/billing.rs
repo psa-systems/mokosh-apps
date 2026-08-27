@@ -301,7 +301,16 @@ fn InvoiceListBody() -> Element {
             // MAPPS-357: subscribe to reachability so the list auto-refetches
             // the instant the server comes back (paired with the recovery poll).
             let _reachable = crate::hooks::use_server_reachable();
-            let token = crate::hooks::fetch::api::current_access_token()?;
+            // MAPPS-604: allow either staff or contact bearer; the server
+            // `RequireCallerContext` filters `company_id` to
+            // `contact.company_scope()` when the caller is a Contact,
+            // so a contact sees only their own invoices without touching
+            // this fetch path.
+            if crate::hooks::fetch::api::current_access_token().is_none()
+                && !crate::hooks::fetch::api::has_contact_session()
+            {
+                return None;
+            }
             let mut path = format!("/invoices?page={current_page}&per_page={PER_PAGE}");
             // `company` is a UUID filter (`InvoiceFilter.company_id`). Only
             // send it when it parses, otherwise the server 422s.
@@ -311,7 +320,7 @@ fn InvoiceListBody() -> Element {
             if !status.is_empty() {
                 path.push_str(&format!("&status={status}"));
             }
-            crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteInvoice>>(&path, &token)
+            crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteInvoice>>(&path)
                 .await
                 .ok()
         }

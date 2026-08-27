@@ -66,6 +66,12 @@ struct ContactSnippet {
     portal_slug: String,
     #[serde(default)]
     portal_id: Option<i64>,
+    /// MAPPS-604 (prompt 013): Company UUID this session is scoped to.
+    /// Optional so a pre-PMS-935 server that omits the field still
+    /// deserialises; the store is left at `None` and pages fall back
+    /// to their previous URL-derived path.
+    #[serde(default)]
+    company_id: Option<uuid::Uuid>,
 }
 
 #[component]
@@ -293,8 +299,11 @@ fn install_session(nav: &dioxus::router::Navigator, resp: LoginResp, portal_id_s
         .map(|c| c.portal_slug.clone())
         .unwrap_or_default();
     let response_portal_id = resp.contact.as_ref().and_then(|c| c.portal_id);
+    let response_company_id = resp.contact.as_ref().and_then(|c| c.company_id);
     crate::hooks::fetch::api::set_contact_access_token(Some(resp.access_token));
     crate::hooks::fetch::api::set_contact_refresh_token(Some(resp.refresh_token));
+    // MAPPS-604: stash the session's Company UUID for scoped-URL builders.
+    crate::hooks::fetch::api::set_contact_company_id(response_company_id);
     let portal_id_to_store = response_portal_id
         .map(|n| n.to_string())
         .unwrap_or_else(|| portal_id_str.to_string());

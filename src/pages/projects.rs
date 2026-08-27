@@ -455,7 +455,9 @@ pub fn ProjectListPage() -> Element {
         if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
             path.push_str(&format!("?company_id={company_id}"));
         }
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteProject>>(&path)
+        // MAPPS-604: contact-first bearer selection so a signed-in
+        // contact sees only their Company's projects.
+        crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteProject>>(&path)
             .await
             .map(|p| p.data)
     });

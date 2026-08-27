@@ -119,7 +119,13 @@ fn permission_required() -> Element {
 #[component]
 pub fn QuoteListPage() -> Element {
     use_page_title("Quotes");
-    if !use_can_manage_billing() {
+    // MAPPS-604: a contact with `quotes:read` reaches the list too.
+    // `use_capability` returns true for staff and platform sessions
+    // unconditionally, so the pre-pivot behaviour is preserved: only
+    // roles WITHOUT `quotes:read` (a non-finance staff role, no contact
+    // cap) still land on the `PermissionRequired` splash.
+    let contact_can_read = crate::hooks::capabilities::use_capability("quotes:read");
+    if !use_can_manage_billing() && !contact_can_read {
         return permission_required();
     }
 
@@ -185,7 +191,13 @@ fn QuoteListBody() -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let _reachable = crate::hooks::use_server_reachable();
-            let token = crate::hooks::fetch::api::current_access_token()?;
+            // MAPPS-604: allow either staff or contact bearer; server
+            // scopes to `contact.company_id` for the contact plane.
+            if crate::hooks::fetch::api::current_access_token().is_none()
+                && !crate::hooks::fetch::api::has_contact_session()
+            {
+                return None;
+            }
             let mut path = format!("/quotes?page={current_page}&per_page={PER_PAGE}");
             if !company.is_empty() {
                 path.push_str(&format!("&company_id={}", urlencoding_minimal(&company)));
@@ -193,7 +205,7 @@ fn QuoteListBody() -> Element {
             if !status.is_empty() {
                 path.push_str(&format!("&status={}", urlencoding_minimal(&status)));
             }
-            crate::hooks::fetch::api::get_with_auth::<Paginated<QuoteResponse>>(&path, &token)
+            crate::hooks::fetch::api::get_authed_any::<Paginated<QuoteResponse>>(&path)
                 .await
                 .ok()
         }

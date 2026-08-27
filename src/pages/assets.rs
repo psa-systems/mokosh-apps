@@ -416,7 +416,10 @@ pub fn AssetListPage() -> Element {
         if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
             path.push_str(&format!("?company_id={company_id}"));
         }
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteAsset>>(&path)
+        // MAPPS-604: contact-first bearer selection so a signed-in
+        // contact sees only their Company's assets. Staff sessions
+        // continue to use the workspace bearer, unchanged.
+        crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteAsset>>(&path)
             .await
             .ok()
             .map(|p| p.data)

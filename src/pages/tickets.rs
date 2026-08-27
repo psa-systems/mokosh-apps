@@ -537,17 +537,20 @@ pub fn TicketListPage() -> Element {
         // instant the server returns, and so a failed load stays distinguishable
         // from an empty one (the third tuple element records the failure).
         let _reachable = crate::hooks::use_server_reachable();
-        let token = match crate::hooks::fetch::api::current_access_token() {
-            Some(t) => t,
-            None => return (Vec::<RemoteTicket>::new(), TicketSource::Demo, false),
-        };
+        // MAPPS-604: prefer the contact bearer when the caller holds
+        // one, so a signed-in contact sees only their Company's
+        // tickets (server scopes on `typ: "contact"`). Staff sessions
+        // fall through to the workspace bearer, unchanged.
+        let has_staff = crate::hooks::fetch::api::current_access_token().is_some();
+        let has_contact = crate::hooks::fetch::api::has_contact_session();
+        if !has_staff && !has_contact {
+            return (Vec::<RemoteTicket>::new(), TicketSource::Demo, false);
+        }
         let mut path = String::from("/tickets");
         if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
             path.push_str(&format!("?company_id={company_id}"));
         }
-        match crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteTicket>>(&path, &token)
-            .await
-        {
+        match crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteTicket>>(&path).await {
             Ok(page) => (page.data, TicketSource::Backend, false),
             // MAPPS-357: keep the demo fallback for a 4xx while reachable, but
             // flag the failure so an outage (failed while unreachable) can render
@@ -718,7 +721,10 @@ pub fn TicketListPage() -> Element {
             }
         }
 
-        if source == TicketSource::Demo && !is_loading {
+        // MAPPS-604: staff-only demo-rows banner. Contact-plane visitors
+        // never see the "demo rows" affordance; they see the honest empty
+        // state below instead.
+        if source == TicketSource::Demo && !is_loading && !crate::hooks::fetch::api::has_contact_session() {
             div {
                 class: "mb-3 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
                 "Backend tickets API not reachable - showing demo rows."
@@ -876,7 +882,7 @@ pub fn TicketListPage() -> Element {
                 }
                 if is_loading {
                     TableLoading { columns: 6, rows: 5 }
-                } else if source == TicketSource::Backend && filtered_tickets.is_empty() {
+                } else if (source == TicketSource::Backend || crate::hooks::fetch::api::has_contact_session()) && filtered_tickets.is_empty() {
                     if remote_tickets.is_empty() {
                         // PMS-354: helpful empty state with a primary CTA,
                         // matching the Contracts reference pattern.
@@ -923,7 +929,7 @@ pub fn TicketListPage() -> Element {
                     }
                 } else {
                     TableBody {
-                        if source == TicketSource::Backend {
+                        if source == TicketSource::Backend || crate::hooks::fetch::api::has_contact_session() {
                             for ticket in filtered_tickets.iter().cloned() {
                                 TicketRow {
                                     key: "{ticket.id}",

@@ -67,6 +67,12 @@ struct LoginResp {
 struct ContactSnippet {
     #[serde(default)]
     caps: Vec<String>,
+    /// MAPPS-604 (prompt 013): Company UUID this session is scoped to.
+    /// Optional so a pre-PMS-935 server that omits the field still
+    /// deserialises; the store is left at `None` and pages fall back
+    /// to their previous URL-derived path.
+    #[serde(default)]
+    company_id: Option<uuid::Uuid>,
 }
 
 /// Public host hint served at `GET /contact/portal/{slug}/host` per
@@ -220,11 +226,14 @@ pub fn ContactLoginPage(slug: String) -> Element {
                             .as_ref()
                             .map(|c| c.caps.clone())
                             .unwrap_or_default();
+                        let company_id = resp.contact.as_ref().and_then(|c| c.company_id);
                         crate::hooks::fetch::api::set_contact_access_token(Some(resp.access_token));
                         crate::hooks::fetch::api::set_contact_refresh_token(Some(
                             resp.refresh_token,
                         ));
                         crate::hooks::fetch::api::set_contact_last_slug(&slug);
+                        // MAPPS-604: hydrate the session's Company scope.
+                        crate::hooks::fetch::api::set_contact_company_id(company_id);
                         crate::hooks::capabilities::set_contact_capabilities(Some(caps));
                         nav.replace(Route::Dashboard {});
                     }

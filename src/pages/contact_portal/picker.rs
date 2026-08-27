@@ -93,6 +93,12 @@ pub struct ContactSnippetWire {
     /// remembers where to send the visitor.
     #[serde(default)]
     pub portal_slug: String,
+    /// MAPPS-604 (prompt 013): Company UUID this session is scoped to.
+    /// Optional so a pre-PMS-935 server that omits the field still
+    /// deserialises; the store is left at `None` and pages fall back
+    /// to their previous URL-derived path.
+    #[serde(default)]
+    pub company_id: Option<Uuid>,
 }
 
 #[derive(Deserialize, Clone, Debug, Default, PartialEq)]
@@ -744,8 +750,11 @@ fn install_session_and_go(nav: &Navigator, resp: &ContactLoginResponseWire) {
         .as_ref()
         .map(|c| c.portal_slug.clone())
         .unwrap_or_default();
+    let company_id = resp.contact.as_ref().and_then(|c| c.company_id);
     crate::hooks::fetch::api::set_contact_access_token(Some(resp.access_token.clone()));
     crate::hooks::fetch::api::set_contact_refresh_token(Some(resp.refresh_token.clone()));
+    // MAPPS-604: stash the session's Company UUID for scoped-URL builders.
+    crate::hooks::fetch::api::set_contact_company_id(company_id);
     if !slug.is_empty() {
         crate::hooks::fetch::api::set_contact_last_slug(&slug);
     }

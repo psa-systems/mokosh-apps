@@ -172,6 +172,16 @@ pub fn SavedDashboardViewPage(id: String) -> Element {
 /// renders the v1 hardcoded dashboard as the fallback.
 #[component]
 pub fn DefaultDashboardPage() -> Element {
+    // MAPPS-604: a contact-plane session has no `/dashboards/*` surface
+    // (those are staff-scoped saved layouts). Short-circuit to the
+    // hardcoded `DashboardPage` which itself branches to the
+    // contact-summary path when `has_contact_session()` is true.
+    #[cfg(feature = "web")]
+    if crate::hooks::fetch::api::has_contact_session()
+        && crate::hooks::fetch::api::current_access_token().is_none()
+    {
+        return rsx! { crate::pages::dashboard::DashboardPage {} };
+    }
     // MAPPS-357: the pinned-default lookup is this page's PRIMARY resource.
     // On an outage the old `.ok().flatten()` collapsed a failed fetch to
     // `None`, which silently fell through to the hardcoded dashboard and hid
