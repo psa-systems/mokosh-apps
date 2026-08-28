@@ -9,9 +9,12 @@
 //!   stored refresh token and, on success, writes both fresh tokens
 //!   through the fetch helpers. On any failure it clears both so the
 //!   visitor lands on `/portal/{slug}/login` rather than looping.
-//! - `use_contact_auto_refresh` runs a ~12-minute loop that calls
+//! - `use_contact_auto_refresh` runs a periodic loop that calls
 //!   `refresh_contact_session` while a session is held, so a long-lived
-//!   tab keeps its access token fresh without a user round-trip.
+//!   tab keeps its access token fresh without a user round-trip. It
+//!   also registers a `window` `focus` listener so the caps + roles on
+//!   the SPA rehydrate the instant the visitor tabs back into the app
+//!   (MAPPS-616).
 
 use dioxus::prelude::*;
 
@@ -130,17 +133,33 @@ pub async fn refresh_contact_session() -> Result<(), String> {
     Err("contact refresh unavailable outside web".to_string())
 }
 
-/// Background auto-refresh loop. Mount once near the app root. Sleeps
-/// ~12 minutes between ticks (the server mints a 15-minute contact
-/// access token, so a 12-minute cadence leaves a comfortable margin);
-/// each tick calls `refresh_contact_session` only when a session is
-/// held, so the loop no-ops on the staff-only browser session.
+/// Background auto-refresh + focus-driven refresh. Mount once near the
+/// app root.
+///
+/// Two triggers, layered:
+///
+/// - Periodic tick every 2 minutes (was 12 min prior to MAPPS-616).
+///   Server mints a 15-minute access token so 2 minutes still leaves
+///   plenty of margin; the trade is 6x more `/refresh` calls per idle
+///   session per hour, which is cheap. Cadence caps the WORST-CASE
+///   latency for a staff-side role change to reflect in the contact
+///   SPA at ~2 minutes.
+/// - Window `focus` event. Fires the instant the visitor tabs back
+///   into the app so caps + roles rehydrate BEFORE any click has a
+///   chance to render stale UI. Server-side enforcement (prompt 008
+///   DB-load per request) is already live; this closes the last
+///   client-side gap where a role revoke could sit invisible on the
+///   contact's own screen until the next tick.
+///
+/// Each trigger only fires the network call when a contact session is
+/// actually held, so the hook no-ops on the staff-only browser
+/// session.
 pub fn use_contact_auto_refresh() {
     use_future(move || async move {
         loop {
             #[cfg(feature = "web")]
             {
-                gloo_timers::future::TimeoutFuture::new(720_000).await;
+                gloo_timers::future::TimeoutFuture::new(120_000).await;
                 if crate::hooks::fetch::api::has_contact_session() {
                     let _ = refresh_contact_session().await;
                 }
@@ -153,4 +172,49 @@ pub fn use_contact_auto_refresh() {
             }
         }
     });
+
+    #[cfg(feature = "web")]
+    use_effect(move || {
+        install_focus_refresh_listener();
+    });
+}
+
+/// MAPPS-616: register a single `window` `focus` listener that fires
+/// `refresh_contact_session` on tab-focus regain, but only when a
+/// contact session is held. Guarded by a thread-local `bool` so a
+/// remount / hot-reload does not stack duplicate listeners; the
+/// closure itself is `.forget()`-ed because the listener lives for
+/// the wasm module's lifetime (the auth.rs `pageshow` hook uses the
+/// same pattern).
+#[cfg(feature = "web")]
+fn install_focus_refresh_listener() {
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen::JsCast;
+
+    thread_local! {
+        static FOCUS_INSTALLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if FOCUS_INSTALLED.with(|f| f.get()) {
+        return;
+    }
+
+    let Some(win) = web_sys::window() else {
+        return;
+    };
+    let cb = Closure::wrap(Box::new(move |_evt: web_sys::Event| {
+        if !crate::hooks::fetch::api::has_contact_session() {
+            return;
+        }
+        dioxus::prelude::spawn(async move {
+            let _ = refresh_contact_session().await;
+        });
+    }) as Box<dyn FnMut(web_sys::Event)>);
+    if let Err(err) =
+        win.add_event_listener_with_callback("focus", cb.as_ref().unchecked_ref())
+    {
+        tracing::warn!(error = ?err, "use_contact_auto_refresh: focus listener install failed");
+        return;
+    }
+    cb.forget();
+    FOCUS_INSTALLED.with(|f| f.set(true));
 }

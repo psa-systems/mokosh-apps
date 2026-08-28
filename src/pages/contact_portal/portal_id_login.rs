@@ -85,8 +85,13 @@ struct ContactSnippet {
 struct HostHint {
     #[serde(default)]
     company_name: String,
-    #[serde(default)]
-    tenant_display_name: String,
+    // MAPPS-616 dropped the "at {tenant_display_name}" heading suffix
+    // but the server still ships the field. Keep it accepted (and
+    // ignored) on the wire so a serde deserialise doesn't reject a
+    // future payload that starts sending it again.
+    #[serde(default, rename = "tenant_display_name")]
+    #[allow(dead_code)]
+    _tenant_display_name: String,
     #[serde(default)]
     tenant_status: String,
 }
@@ -129,10 +134,6 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
         .as_ref()
         .map(|h| h.company_name.trim().to_string())
         .filter(|s| !s.is_empty());
-    let tenant_display_name = host
-        .as_ref()
-        .map(|h| h.tenant_display_name.trim().to_string())
-        .filter(|s| !s.is_empty());
     let tenant_status = host
         .as_ref()
         .map(|h| h.tenant_status.trim().to_ascii_lowercase())
@@ -144,11 +145,19 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
     // see a coherent page (submit will 401 or fail closed).
     let tenant_inactive = host_loaded && tenant_status != "active";
 
-    let heading = match (company_name.as_deref(), tenant_display_name.as_deref()) {
-        (Some(cn), Some(tn)) => format!("Sign in to {cn} at {tn}"),
-        (Some(cn), None) => format!("Sign in to {cn}"),
-        (None, Some(tn)) => format!("Sign in to {tn}"),
-        _ => "Client Portal".to_string(),
+    // MAPPS-616 (prompt 014 followup): heading drops the "at
+    // {tenant_display_name}" suffix from prompt 011. Every mokosh
+    // instance ships with a seeded tenant literally named "Default";
+    // contacts of that instance saw "Sign in to Test at Default"
+    // which reads as broken. Contacts already know their MSP (they
+    // got the invite email from them); the tenant name is either
+    // "Default" (worthless) or their MSP's name (redundant with the
+    // branding logo painted elsewhere on the page). Fall back to a
+    // neutral heading when the host fetch has not resolved yet or
+    // returned no Company name.
+    let heading = match company_name.as_deref() {
+        Some(cn) if !cn.is_empty() => format!("Sign in to {cn}"),
+        _ => "Sign in to your portal".to_string(),
     };
 
     let portal_id_for_submit = portal_id.clone();

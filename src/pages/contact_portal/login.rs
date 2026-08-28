@@ -89,8 +89,13 @@ struct ContactSnippet {
 struct HostHint {
     #[serde(default)]
     company_name: String,
-    #[serde(default)]
-    tenant_display_name: String,
+    // MAPPS-616 dropped the "at {tenant_display_name}" heading suffix
+    // here for parity with `portal_id_login.rs`. Field is kept on the
+    // wire (accepted + ignored) so a future payload that ships it
+    // does not fail deserialise.
+    #[serde(default, rename = "tenant_display_name")]
+    #[allow(dead_code)]
+    _tenant_display_name: String,
     #[serde(default)]
     tenant_status: String,
 }
@@ -163,10 +168,6 @@ pub fn ContactLoginPage(slug: String) -> Element {
         .as_ref()
         .map(|h| h.company_name.trim().to_string())
         .filter(|s| !s.is_empty());
-    let tenant_display_name = host
-        .as_ref()
-        .map(|h| h.tenant_display_name.trim().to_string())
-        .filter(|s| !s.is_empty());
     let tenant_status = host
         .as_ref()
         .map(|h| h.tenant_status.trim().to_ascii_lowercase())
@@ -178,11 +179,12 @@ pub fn ContactLoginPage(slug: String) -> Element {
     // see a coherent page (submit will 401 or fail closed).
     let tenant_inactive = host_loaded && tenant_status != "active";
 
-    let heading = match (company_name.as_deref(), tenant_display_name.as_deref()) {
-        (Some(cn), Some(tn)) => format!("Sign in to {cn} at {tn}"),
-        (Some(cn), None) => format!("Sign in to {cn}"),
-        (None, Some(tn)) => format!("Sign in to {tn}"),
-        _ => "Client Portal".to_string(),
+    // MAPPS-616: drop the "at {tenant_display_name}" suffix here too
+    // for parity with the Portal-ID-scoped page. See the same-numbered
+    // note in `portal_id_login.rs` for the rationale.
+    let heading = match company_name.as_deref() {
+        Some(cn) if !cn.is_empty() => format!("Sign in to {cn}"),
+        _ => "Sign in to your portal".to_string(),
     };
 
     let slug_for_submit = slug.clone();
