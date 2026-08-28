@@ -66,6 +66,12 @@ struct RefreshContactSnippet {
     /// ticket-detail Edit button) fall closed.
     #[serde(default)]
     contact_id: Option<uuid::Uuid>,
+    /// MAPPS-621 (mokosh-branding prompt 005): merged brand for this
+    /// contact's tenant + Company. Populated since MAPPS-617 lands on
+    /// the server; empty on legacy responses so the SPA falls back to
+    /// coded defaults.
+    #[serde(default)]
+    effective_branding: crate::hooks::branding::EffectiveBranding,
 }
 
 /// Rotate the contact session using the stored refresh token.
@@ -80,6 +86,7 @@ pub async fn refresh_contact_session() -> Result<(), String> {
     let Some(refresh) = crate::hooks::fetch::api::current_contact_refresh_token() else {
         crate::hooks::fetch::api::clear_contact_session();
         crate::hooks::capabilities::clear_contact_capabilities();
+        crate::hooks::branding::clear_effective_branding();
         return Err("no contact refresh token".to_string());
     };
     let body = RefreshBody {
@@ -114,6 +121,14 @@ pub async fn refresh_contact_session() -> Result<(), String> {
                 // MAPPS-609: pick up the session's Contact UUID so the
                 // ticket-detail Edit button can gate on ownership.
                 crate::hooks::fetch::api::set_contact_id(snippet.contact_id);
+                // MAPPS-621: paint the fresh brand into the global
+                // signal so `AuthLayout` and the theming pipeline
+                // repaint on the very next render (a role's brand
+                // reveal / a tenant brand tweak lands in the SPA
+                // within the same tick).
+                crate::hooks::branding::set_effective_branding(
+                    snippet.effective_branding.clone(),
+                );
             }
             crate::hooks::capabilities::set_contact_capabilities(Some(caps));
             Ok(())
@@ -121,6 +136,10 @@ pub async fn refresh_contact_session() -> Result<(), String> {
         Err(e) => {
             crate::hooks::fetch::api::clear_contact_session();
             crate::hooks::capabilities::clear_contact_capabilities();
+            // MAPPS-621: brand goes with the session; falling back to
+            // the coded default while unauthenticated keeps the
+            // login page neutral.
+            crate::hooks::branding::clear_effective_branding();
             Err(e.to_string())
         }
     }

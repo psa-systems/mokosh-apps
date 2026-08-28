@@ -23,4 +23,5 @@ pub mod set_password;
 //   `ContactHandleLogin` wrapper (Portal ID read-only, email +
 //   password editable).
 pub mod generic_login;
+pub mod portal_branding;
 pub mod portal_id_login;

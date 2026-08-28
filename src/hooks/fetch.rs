@@ -1490,6 +1490,29 @@ pub mod api {
         handle_response(resp).await
     }
 
+    /// MAPPS-620 (mokosh-branding prompt 004): contact-plane PATCH.
+    /// Powers `PATCH /contact/companies/self/branding` (JSONB merge
+    /// subset of the caller's own Company branding). Same shape as
+    /// [`put_contact_authed_typed`]; separate verb because the server
+    /// gates PATCH separately from PUT.
+    #[cfg(feature = "web")]
+    pub async fn patch_contact_authed_typed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::patch(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
     #[cfg(feature = "web")]
     pub async fn delete_contact_authed_no_content(path: &str) -> Result<(), ApiError> {
         let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;

@@ -94,6 +94,11 @@ struct HostHint {
     _tenant_display_name: String,
     #[serde(default)]
     tenant_status: String,
+    /// MAPPS-621 (mokosh-branding prompt 005): merged brand painted
+    /// on the login page before the visitor signs in. Optional so a
+    /// legacy `/host` response (pre-MAPPS-617) deserializes cleanly.
+    #[serde(default)]
+    effective_branding: crate::hooks::branding::EffectiveBranding,
 }
 
 #[component]
@@ -126,6 +131,14 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
     });
 
     let host_snap = host_resource.read_unchecked();
+    // MAPPS-621: publish the merged brand into the global signal so
+    // `AuthLayout` paints the logo + wordmark + support block BEFORE
+    // the visitor signs in. Runs on every render, but the signal
+    // dedupes writes so this stays cheap.
+    #[cfg(feature = "web")]
+    if let Some(Some(h)) = &*host_snap {
+        crate::hooks::branding::set_effective_branding(h.effective_branding.clone());
+    }
     let host: Option<HostHint> = match &*host_snap {
         Some(Some(h)) => Some(h.clone()),
         _ => None,

@@ -98,6 +98,10 @@ struct HostHint {
     _tenant_display_name: String,
     #[serde(default)]
     tenant_status: String,
+    /// MAPPS-621 (mokosh-branding prompt 005): merged brand painted
+    /// on the legacy slug login page too.
+    #[serde(default)]
+    effective_branding: crate::hooks::branding::EffectiveBranding,
 }
 
 #[component]
@@ -160,6 +164,13 @@ pub fn ContactLoginPage(slug: String) -> Element {
     });
 
     let host_snap = host_resource.read_unchecked();
+    // MAPPS-621: paint the merged brand into the global signal on
+    // the legacy slug login page too, so a stale-URL visitor still
+    // sees the branded shell.
+    #[cfg(feature = "web")]
+    if let Some(Some(h)) = &*host_snap {
+        crate::hooks::branding::set_effective_branding(h.effective_branding.clone());
+    }
     let host: Option<HostHint> = match &*host_snap {
         Some(Some(h)) => Some(h.clone()),
         _ => None,

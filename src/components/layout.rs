@@ -1418,18 +1418,46 @@ pub struct AuthLayoutProps {
 
 #[component]
 pub fn AuthLayout(props: AuthLayoutProps) -> Element {
+    // MAPPS-621 (mokosh-branding prompt 005): paint the logo +
+    // wordmark from `EFFECTIVE_BRANDING`. Falls back to the coded
+    // default when both tenant + Company sides are `None` (pre-brand
+    // instance, unauthenticated pages that have not yet fetched a
+    // `/host` snippet). Colors + background picture come with the
+    // full CSS-custom-property pipeline in a follow-up commit.
+    let brand = crate::hooks::branding::EFFECTIVE_BRANDING.read();
+    let wordmark = brand
+        .display_name
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| brand.company_name.clone().filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| "Mokosh Platform".to_string());
+    let logo_url = brand
+        .logo_url
+        .clone()
+        .filter(|s| !s.is_empty());
+    let support_email = brand.support_email.clone().filter(|s| !s.is_empty());
+    let support_phone = brand.support_phone.clone().filter(|s| !s.is_empty());
+    let support_contact = brand.support_contact_name.clone().filter(|s| !s.is_empty());
     rsx! {
         div { class: "min-h-screen flex flex-col justify-center py-12 sm:px-6 lg:px-8 bg-app",
             div { class: "sm:mx-auto sm:w-full sm:max-w-md",
                 // Logo
                 div { class: "flex flex-col items-center gap-3",
-                    img {
-                        src: asset!("/assets/icon-192.png"),
-                        alt: "Mokosh",
-                        class: "h-16 w-16",
+                    if let Some(url) = logo_url.clone() {
+                        img {
+                            src: "{url}",
+                            alt: "{wordmark}",
+                            class: "h-16 w-16 object-contain",
+                        }
+                    } else {
+                        img {
+                            src: asset!("/assets/icon-192.png"),
+                            alt: "Mokosh",
+                            class: "h-16 w-16",
+                        }
                     }
                     span { class: "text-3xl font-bold text-accent",
-                        "Mokosh Platform"
+                        "{wordmark}"
                     }
                 }
             }
@@ -1437,6 +1465,26 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
             div { class: "mt-8 sm:mx-auto sm:w-full sm:max-w-md",
                 div { class: "bg-surface py-8 px-4 shadow sm:rounded-lg sm:px-10",
                     {props.children}
+                }
+            }
+
+            // MAPPS-621: support-contact block. Renders under the
+            // form on every login / set-password / reset-password
+            // page so the visitor knows who to call when the flow
+            // dead-ends.
+            if support_email.is_some() || support_phone.is_some() {
+                div { class: "mt-6 sm:mx-auto sm:w-full sm:max-w-md text-center text-xs text-muted space-y-1",
+                    if let Some(name) = support_contact.clone() {
+                        p { "Need help? Contact {name}." }
+                    } else {
+                        p { "Need help? Contact your support team." }
+                    }
+                    if let Some(email) = support_email {
+                        a { href: "mailto:{email}", class: "text-accent hover:underline", "{email}" }
+                    }
+                    if let Some(phone) = support_phone {
+                        div { "{phone}" }
+                    }
                 }
             }
 
