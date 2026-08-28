@@ -1124,6 +1124,55 @@ pub mod api {
         handle_response(resp).await
     }
 
+    /// MAPPS-618 phase B: staff-authed PUT with a multipart body.
+    /// Powers the Company-scoped logo / favicon / background upload
+    /// (`PUT /api/v1/companies/{id}/{asset}`). Deliberately omits the
+    /// `Content-Type` header - the browser sets it (with the
+    /// `boundary=...` parameter) from the `FormData` body itself.
+    #[cfg(feature = "web")]
+    pub async fn put_authed_multipart<T: DeserializeOwned>(
+        path: &str,
+        form: &web_sys::FormData,
+    ) -> Result<T, ApiError> {
+        let t = current_access_token().ok_or_else(|| ApiError::Status {
+            code: 401,
+            message: String::new(),
+            fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
+        })?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::put(&url)
+            .header("Authorization", &format!("Bearer {t}"))
+            .body(form)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    /// MAPPS-618 phase B: contact-authed PUT with a multipart body.
+    /// Powers the same asset uploads on the contact plane
+    /// (`PUT /api/v1/contact/companies/self/{asset}`), gated on the
+    /// caller holding `settings:manage_company_branding`.
+    #[cfg(feature = "web")]
+    pub async fn put_contact_authed_multipart<T: DeserializeOwned>(
+        path: &str,
+        form: &web_sys::FormData,
+    ) -> Result<T, ApiError> {
+        let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::put(&url)
+            .header("Authorization", &format!("Bearer {t}"))
+            .body(form)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
     /// PMS-729 follow-up: portal-authed PUT with a JSON body that returns 204.
     /// Used by change-password. Surfaces `ApiError` so the caller can key on
     /// specific status codes (401 = current password wrong, 400 = new

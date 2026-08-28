@@ -17,9 +17,7 @@
 use dioxus::prelude::*;
 
 use crate::components::{BrandingEditor, ContentUnavailable};
-use crate::hooks::branding::{
-    CompanyBranding, ContactOwnCompanyBranding, TenantBranding,
-};
+use crate::hooks::branding::{CompanyBranding, ContactOwnCompanyBranding, TenantBranding};
 
 const CAP: &str = "settings:manage_company_branding";
 
@@ -107,8 +105,13 @@ pub fn ContactPortalBrandingPage() -> Element {
                 BrandingEditor {
                     current,
                     tenant_defaults: defaults,
+                    plane: crate::components::BrandingPlane::ContactSelf,
                     disabled: saving(),
                     on_save,
+                    on_asset_saved: move |_| {
+                        resource.restart();
+                        toast.set("Asset saved.".to_string());
+                    },
                 }
                 if !error().is_empty() {
                     p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }

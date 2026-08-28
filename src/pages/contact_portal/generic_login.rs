@@ -118,17 +118,18 @@ pub fn ContactGenericLoginPage() -> Element {
             {
                 use crate::hooks::fetch::api::ApiError;
                 let path = format!("/contact/portal/{pid_for_store}/host");
-                let branch = match crate::hooks::fetch::api::get_typed::<PortalHostSnippet>(&path)
-                    .await
-                {
-                    Ok(_) => classify_verify(Some(200), true, &pid_for_store),
-                    Err(ApiError::Status { code: 404, .. }) => classify_verify(Some(404), true, &pid_for_store),
-                    Err(ApiError::Status { code, .. }) => {
-                        classify_verify(Some(code), true, &pid_for_store)
-                    }
-                    Err(ApiError::Network(_)) => classify_verify(None, false, &pid_for_store),
-                    Err(_) => classify_verify(None, false, &pid_for_store),
-                };
+                let branch =
+                    match crate::hooks::fetch::api::get_typed::<PortalHostSnippet>(&path).await {
+                        Ok(_) => classify_verify(Some(200), true, &pid_for_store),
+                        Err(ApiError::Status { code: 404, .. }) => {
+                            classify_verify(Some(404), true, &pid_for_store)
+                        }
+                        Err(ApiError::Status { code, .. }) => {
+                            classify_verify(Some(code), true, &pid_for_store)
+                        }
+                        Err(ApiError::Network(_)) => classify_verify(None, false, &pid_for_store),
+                        Err(_) => classify_verify(None, false, &pid_for_store),
+                    };
                 match branch {
                     VerifyBranch::Hit(pid) => {
                         crate::hooks::fetch::api::set_contact_last_portal_id(&pid);
@@ -136,8 +137,7 @@ pub fn ContactGenericLoginPage() -> Element {
                     }
                     VerifyBranch::Miss => {
                         error.set(
-                            "Portal ID not found. Check the number your MSP sent you."
-                                .to_string(),
+                            "Portal ID not found. Check the number your MSP sent you.".to_string(),
                         );
                     }
                     VerifyBranch::NetworkError => {

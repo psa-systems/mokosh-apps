@@ -1077,7 +1077,8 @@ fn UserMenu() -> Element {
             // visitor; last resort is the generic three-field entry
             // page (prompt 011 secondary URL) which the visitor can
             // sign into by re-typing all three fields.
-            let dest = if let Some(pid) = crate::hooks::fetch::api::current_contact_last_portal_id() {
+            let dest = if let Some(pid) = crate::hooks::fetch::api::current_contact_last_portal_id()
+            {
                 format!("/portal/{pid}/login")
             } else if let Some(slug) = crate::hooks::fetch::api::current_contact_last_slug() {
                 format!("/portal/{slug}/login")
@@ -1431,10 +1432,7 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
         .filter(|s| !s.is_empty())
         .or_else(|| brand.company_name.clone().filter(|s| !s.is_empty()))
         .unwrap_or_else(|| "Mokosh Platform".to_string());
-    let logo_url = brand
-        .logo_url
-        .clone()
-        .filter(|s| !s.is_empty());
+    let logo_url = brand.logo_url.clone().filter(|s| !s.is_empty());
     let support_email = brand.support_email.clone().filter(|s| !s.is_empty());
     let support_phone = brand.support_phone.clone().filter(|s| !s.is_empty());
     let support_contact = brand.support_contact_name.clone().filter(|s| !s.is_empty());
