@@ -12,18 +12,40 @@
 //! callback receives the new override block; the caller owns the
 //! actual network call so this component stays consumer-agnostic.
 //!
-//! Fields shipped in phase-A (JSON only, no uploads): display name,
-//! primary + secondary + background colors, support email / phone /
-//! contact name. Logo + favicon + background image uploads land in
-//! a follow-up commit (MAPPS-618 asset-store extension) once the
-//! server has the multipart endpoints; the widget already reserves
-//! space for the upload rows via commented-out placeholders so the
-//! layout does not shift when they land.
+//! MAPPS-618 phase B added the three asset upload rows (logo,
+//! favicon, background). Uploads go directly to the server via a
+//! multipart PUT; the widget flips a `on_asset_saved` callback so
+//! the parent can refetch the Company / branding block and repaint.
 
 use dioxus::prelude::*;
+use wasm_bindgen::JsCast;
 
 use crate::components::{Button, ButtonVariant, Card};
 use crate::hooks::branding::{CompanyBranding, TenantBranding};
+
+/// Which plane the editor writes on. Drives the URL + the fetch
+/// helper (staff bearer vs contact bearer) for asset uploads.
+#[derive(Clone, PartialEq)]
+pub enum BrandingPlane {
+    /// MSP admin editing a specific Company under their tenant.
+    /// `company_id` is the Company's UUID as a string (matches the
+    /// URL segment `/api/v1/companies/{company_id}/{asset}`).
+    Staff { company_id: String },
+    /// Contact editing their own Company (server derives target
+    /// Company from the session, so no id in the URL).
+    ContactSelf,
+}
+
+impl BrandingPlane {
+    fn asset_url(&self, asset: &str) -> String {
+        match self {
+            BrandingPlane::Staff { company_id } => {
+                format!("/companies/{company_id}/{asset}")
+            }
+            BrandingPlane::ContactSelf => format!("/contact/companies/self/{asset}"),
+        }
+    }
+}
 
 #[derive(Props, Clone, PartialEq)]
 pub struct BrandingEditorProps {
@@ -34,6 +56,9 @@ pub struct BrandingEditorProps {
     /// under each field as "Inherits from MSP default: X" so the
     /// editor knows what a `Reset` produces.
     pub tenant_defaults: TenantBranding,
+    /// Which plane the editor writes on (Staff vs ContactSelf).
+    /// Drives the asset-upload URLs + the fetch helper choice.
+    pub plane: BrandingPlane,
     /// Whether the editor is disabled (in-flight save, no permission,
     /// etc.). The parent owns the display gate; passing `true` here
     /// only greys the fields, does not hide them.
@@ -42,12 +67,11 @@ pub struct BrandingEditorProps {
     /// Called with the FULL updated override block on Save. The
     /// caller is responsible for serializing + PATCHing.
     pub on_save: EventHandler<CompanyBranding>,
-    /// Called when the user clicks "Reset every field". The caller
-    /// PATCHes an empty object which the server merges as a no-op if
-    /// there is nothing to clear; consumers that want a real "clear
-    /// all" should PATCH `{everything: null}` themselves.
+    /// Called on a successful asset upload or delete. The parent
+    /// typically refetches the branding block so previews update to
+    /// the fresh URL.
     #[props(default)]
-    pub on_reset_all: Option<EventHandler<()>>,
+    pub on_asset_saved: Option<EventHandler<()>>,
 }
 
 /// Small helper: render a "Inherits from MSP default: <value>" hint
@@ -57,6 +81,161 @@ fn hint(default: Option<&str>) -> String {
     match default {
         Some(v) if !v.is_empty() => format!("Inherits from MSP default: {v}"),
         _ => "No MSP default; portal falls back to the coded default.".to_string(),
+    }
+}
+
+/// Kick off a multipart PUT of the picked file to the given URL,
+/// using the appropriate bearer for the plane. Returns Ok on 2xx.
+async fn upload_asset(
+    plane: BrandingPlane,
+    asset: &str,
+    file: web_sys::File,
+) -> Result<(), String> {
+    let form = web_sys::FormData::new().map_err(|e| format!("{e:?}"))?;
+    form.append_with_blob_and_filename("file", file.as_ref(), &file.name())
+        .map_err(|e| format!("{e:?}"))?;
+    let url = plane.asset_url(asset);
+    match &plane {
+        BrandingPlane::Staff { .. } => {
+            crate::hooks::fetch::api::put_authed_multipart::<serde_json::Value>(&url, &form)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+        BrandingPlane::ContactSelf => {
+            crate::hooks::fetch::api::put_contact_authed_multipart::<serde_json::Value>(
+                &url, &form,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        }
+    }
+}
+
+async fn delete_asset(plane: BrandingPlane, asset: &str) -> Result<(), String> {
+    let url = plane.asset_url(asset);
+    match &plane {
+        BrandingPlane::Staff { .. } => crate::hooks::fetch::api::delete_authed_typed(&url)
+            .await
+            .map_err(|e| e.to_string()),
+        BrandingPlane::ContactSelf => {
+            crate::hooks::fetch::api::delete_contact_authed_no_content(&url)
+                .await
+                .map_err(|e| e.to_string())
+        }
+    }
+}
+
+/// One row for a single asset (logo / favicon / background). Reads
+/// current URL for the preview, offers a file picker + Remove
+/// button. Fires `on_saved` on any successful mutation so the parent
+/// can refetch + repaint.
+#[component]
+fn AssetUploadRow(
+    label: String,
+    asset: String,
+    current_url: Option<String>,
+    plane: BrandingPlane,
+    disabled: bool,
+    on_saved: EventHandler<()>,
+) -> Element {
+    let mut saving = use_signal(|| false);
+    let mut error: Signal<String> = use_signal(String::new);
+    let asset_for_upload = asset.clone();
+    let plane_for_upload = plane.clone();
+    let onchange = move |_evt: FormEvent| {
+        // Grab the picked file straight off the DOM. dioxus 0.7's
+        // `FormEvent::files()` returns a `FileEngine` that hides the
+        // raw `web_sys::File`; a multipart upload needs the native
+        // `Blob`, so bypass the engine and query the input by id.
+        let Some(el) = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.get_element_by_id(&format!("brand_upload_{}", asset_for_upload)))
+        else {
+            error.set("Could not read the picked file.".to_string());
+            return;
+        };
+        let Ok(input) = el.dyn_into::<web_sys::HtmlInputElement>() else {
+            error.set("Could not read the picked file.".to_string());
+            return;
+        };
+        let Some(file_list) = input.files() else {
+            return;
+        };
+        let Some(file) = file_list.item(0) else {
+            return;
+        };
+        saving.set(true);
+        error.set(String::new());
+        let asset = asset_for_upload.clone();
+        let plane = plane_for_upload.clone();
+        spawn(async move {
+            match upload_asset(plane, &asset, file).await {
+                Ok(_) => on_saved.call(()),
+                Err(e) => error.set(format!("Upload failed: {e}")),
+            }
+            saving.set(false);
+        });
+    };
+    let asset_for_remove = asset.clone();
+    let plane_for_remove = plane.clone();
+    let on_remove = move |_| {
+        if saving() {
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let asset = asset_for_remove.clone();
+        let plane = plane_for_remove.clone();
+        spawn(async move {
+            match delete_asset(plane, &asset).await {
+                Ok(_) => on_saved.call(()),
+                Err(e) => error.set(format!("Remove failed: {e}")),
+            }
+            saving.set(false);
+        });
+    };
+    rsx! {
+        div { class: "space-y-2",
+            label { class: "block text-sm font-medium text-content", "{label}" }
+            div { class: "flex items-center gap-4",
+                if let Some(url) = current_url.as_ref() {
+                    img {
+                        src: "{url}",
+                        alt: "{label} preview",
+                        class: "h-16 w-16 rounded border border-line object-contain bg-surface",
+                    }
+                } else {
+                    div {
+                        class: "h-16 w-16 rounded border border-dashed border-line grid place-items-center text-xs text-muted bg-surface",
+                        "No file"
+                    }
+                }
+                div { class: "flex-1 space-y-2",
+                    input {
+                        id: "brand_upload_{asset}",
+                        r#type: "file",
+                        accept: "image/png,image/jpeg,image/webp,image/gif",
+                        class: "block w-full text-sm text-content file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-accent file:text-on-accent hover:file:opacity-90",
+                        disabled: disabled || saving(),
+                        onchange,
+                    }
+                    if current_url.is_some() {
+                        button {
+                            r#type: "button",
+                            class: "text-xs text-red-600 hover:underline",
+                            disabled: disabled || saving(),
+                            onclick: on_remove,
+                            "Remove"
+                        }
+                    }
+                }
+            }
+            if !error().is_empty() {
+                p { role: "alert", class: "text-xs text-red-600 dark:text-red-400", "{error}" }
+            }
+        }
     }
 }
 
@@ -84,6 +263,13 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
     let disabled = props.disabled;
 
     let submit = move |_| {
+        // Only the JSON-owned fields land in the save block. Asset
+        // fields (logo/favicon/background url+mime) are written by
+        // the multipart upload rows above and stay `None` here so
+        // `skip_serializing_if = Option::is_none` on the wire type
+        // omits them, letting the server's `||` JSONB merge leave
+        // whatever the uploads set alone. Explicit-clear for these
+        // fields flows through the row's Remove button.
         let block = CompanyBranding {
             display_name: Some(display_name.read().clone()).filter(|s| !s.is_empty()),
             primary_color: Some(primary_color.read().clone()).filter(|s| !s.is_empty()),
@@ -93,19 +279,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
             support_phone: Some(support_phone.read().clone()).filter(|s| !s.is_empty()),
             support_contact_name: Some(support_contact_name.read().clone())
                 .filter(|s| !s.is_empty()),
-            // The following are logo / favicon / background image
-            // fields that a later commit wires to real upload widgets;
-            // preserve whatever the caller passed in so a save from
-            // this JSON-only editor does not blow away an existing
-            // uploaded asset.
-            logo_url: props.current.logo_url.clone(),
-            logo_mime: props.current.logo_mime.clone(),
-            favicon_url: props.current.favicon_url.clone(),
-            favicon_mime: props.current.favicon_mime.clone(),
-            background_url: props.current.background_url.clone(),
-            background_mime: props.current.background_mime.clone(),
-            company_name: props.current.company_name.clone(),
-            portal_domain: props.current.portal_domain.clone(),
+            ..CompanyBranding::default()
         };
         on_save.call(block);
     };
@@ -115,6 +289,50 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
             div { class: "space-y-6",
                 p { class: "text-sm text-muted",
                     "Customize how this Company's portal looks to its contacts. Empty fields inherit from the MSP-level defaults; the merged result is what the portal actually paints."
+                }
+                // Asset uploads (MAPPS-618 phase B). Each row shows
+                // the current image (or a "No file" placeholder) +
+                // a file picker + a Remove button. Uploads fire
+                // multipart PUTs directly against the branding
+                // routes; on success the parent refetches via
+                // `on_asset_saved`.
+                div { class: "space-y-4 pb-4 border-b border-line",
+                    AssetUploadRow {
+                        label: "Logo".to_string(),
+                        asset: "logo".to_string(),
+                        current_url: props.current.logo_url.clone(),
+                        plane: props.plane.clone(),
+                        disabled,
+                        on_saved: move |_| {
+                            if let Some(cb) = props.on_asset_saved.as_ref() {
+                                cb.call(());
+                            }
+                        },
+                    }
+                    AssetUploadRow {
+                        label: "Favicon".to_string(),
+                        asset: "favicon".to_string(),
+                        current_url: props.current.favicon_url.clone(),
+                        plane: props.plane.clone(),
+                        disabled,
+                        on_saved: move |_| {
+                            if let Some(cb) = props.on_asset_saved.as_ref() {
+                                cb.call(());
+                            }
+                        },
+                    }
+                    AssetUploadRow {
+                        label: "Background image".to_string(),
+                        asset: "background".to_string(),
+                        current_url: props.current.background_url.clone(),
+                        plane: props.plane.clone(),
+                        disabled,
+                        on_saved: move |_| {
+                            if let Some(cb) = props.on_asset_saved.as_ref() {
+                                cb.call(());
+                            }
+                        },
+                    }
                 }
                 // Display name
                 div { class: "space-y-1",
@@ -247,11 +465,6 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                         onclick: submit,
                         "Save branding"
                     }
-                }
-                // Placeholder note for the asset-upload rows that
-                // land with the next server slice (MAPPS-618 uploads).
-                p { class: "text-xs text-muted italic",
-                    "Logo, favicon, and background image uploads are coming next; the underlying storage endpoints are queued behind this JSON editor."
                 }
             }
         }

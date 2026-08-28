@@ -3978,13 +3978,19 @@ fn CompanyBrandingCard(
             saving.set(false);
         });
     };
+    let id_for_asset = company_id.clone();
     rsx! {
         div { class: "space-y-3",
             crate::components::BrandingEditor {
                 current,
                 tenant_defaults,
+                plane: crate::components::BrandingPlane::Staff { company_id: id_for_asset },
                 disabled: !can_mutate || saving(),
                 on_save,
+                on_asset_saved: move |_| {
+                    company_resource.restart();
+                    toast.set("Asset saved.".to_string());
+                },
             }
             if !error().is_empty() {
                 p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
