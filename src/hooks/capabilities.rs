@@ -39,20 +39,34 @@ thread_local! {
     static CONTACT_CAPABILITIES: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
 }
 
-/// True when the caller either holds a staff or platform-admin bearer
-/// (unconditional bypass), or holds a contact session whose caps
-/// snapshot contains `cap`. False in every other case.
+/// True when the caller holds `cap`. Precedence:
+///
+/// 1. If a contact session is active, the caller is a portal
+///    contact - check the contact caps snapshot ONLY. The staff
+///    bypass below is deliberately skipped so a stale staff bearer
+///    left over in the same browser tab (QA testing both planes,
+///    a returning staff user who then signs into the portal, etc.)
+///    can NEVER paint staff-only UI while the visible session is
+///    the contact plane. Fixes the report of a Read-Only contact
+///    still seeing the CRM Companies/Contacts nav items because
+///    the browser also happened to hold a staff bearer (MAPPS-625).
+/// 2. Otherwise, an active staff or platform-admin bearer bypasses
+///    the cap check unconditionally (the SPA does not know a
+///    staff user's per-role caps; the server is authoritative).
+/// 3. Otherwise, false.
 pub fn use_capability(cap: &str) -> bool {
     #[cfg(feature = "web")]
     {
+        if crate::hooks::fetch::api::has_contact_session() {
+            return current_contact_capabilities()
+                .map(|caps| caps.iter().any(|c| c == cap))
+                .unwrap_or(false);
+        }
         if crate::hooks::fetch::api::current_access_token().is_some() {
             return true;
         }
         if platform_bearer_present() {
             return true;
-        }
-        if let Some(caps) = current_contact_capabilities() {
-            return caps.iter().any(|c| c == cap);
         }
         false
     }
@@ -65,19 +79,22 @@ pub fn use_capability(cap: &str) -> bool {
 
 /// Convenience for a nav item that a caller may access under any of
 /// several caps (e.g. the Dashboard is visible whenever the contact
-/// can see tickets OR invoices OR quotes). Staff / platform bypass
-/// still applies.
+/// can see tickets OR invoices OR quotes). Same plane-precedence
+/// rules as [`use_capability`] - a live contact session shadows any
+/// stale staff bearer.
 pub fn use_any_capability(caps: &[&str]) -> bool {
     #[cfg(feature = "web")]
     {
+        if crate::hooks::fetch::api::has_contact_session() {
+            return current_contact_capabilities()
+                .map(|held| caps.iter().any(|want| held.iter().any(|c| c == want)))
+                .unwrap_or(false);
+        }
         if crate::hooks::fetch::api::current_access_token().is_some() {
             return true;
         }
         if platform_bearer_present() {
             return true;
-        }
-        if let Some(held) = current_contact_capabilities() {
-            return caps.iter().any(|want| held.iter().any(|c| c == want));
         }
         false
     }
@@ -237,6 +254,47 @@ mod tests {
             "invoices:read",
             "quotes:read"
         ]));
+        set_contact_access_token(None);
+        clear_contact_capabilities();
+    }
+
+    /// MAPPS-625: a stale staff bearer left in memory while the
+    /// visitor is signed in on the contact plane must NOT paint
+    /// staff-only UI. The precedence rule in `use_capability` treats
+    /// the contact session as authoritative when it is present, so
+    /// `__staff_only__` returns false and the sidebar hides
+    /// Companies / Contacts / Calendar / Reports / etc.
+    #[test]
+    fn contact_session_shadows_stale_staff_bearer() {
+        reset_session_state();
+        // Both tokens present at the same time.
+        set_access_token_for_test(Some("stale-staff-token".to_string()));
+        set_contact_access_token(Some("live-contact-token".to_string()));
+        // The seeded "Read-Only" role only holds *:read caps; no
+        // company / contact caps exist in the portal catalog at all.
+        set_contact_capabilities(Some(vec![
+            "tickets:read".to_string(),
+            "invoices:read".to_string(),
+            "quotes:read".to_string(),
+            "contracts:read".to_string(),
+            "assets:read".to_string(),
+            "projects:read".to_string(),
+            "kb:read".to_string(),
+            "notifications:read".to_string(),
+        ]));
+        // Contact-scoped read caps pass.
+        assert!(use_capability("tickets:read"));
+        assert!(use_capability("invoices:read"));
+        // Staff-only sidebar sentinel MUST fail even with the stale
+        // staff bearer present.
+        assert!(
+            !use_capability(STAFF_ONLY),
+            "__staff_only__ must return false while a contact session is live"
+        );
+        // Any-cap match still respects the contact snapshot.
+        assert!(use_any_capability(&["tickets:read", "invoices:pay"]));
+        assert!(!use_any_capability(&["invoices:pay", STAFF_ONLY]));
+        set_access_token_for_test(None);
         set_contact_access_token(None);
         clear_contact_capabilities();
     }
