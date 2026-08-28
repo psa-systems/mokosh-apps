@@ -780,6 +780,18 @@ pub mod api {
                         .map(|f| f.message.clone())
                         .collect::<Vec<_>>()
                         .join("; ")
+                } else if is_generic_auth_message(status, &env.error.message) {
+                    // MAPPS-624: the server ships a generic
+                    // "Authentication required" / "Access denied"
+                    // message on 401/403. Surfacing it verbatim
+                    // reads to a signed-in caller as "your session
+                    // is gone" when the real cause is "you don't
+                    // have permission for this endpoint" (portal
+                    // contact hitting a staff URL, staff missing a
+                    // capability, etc.). Replace it with the
+                    // plane-aware permission message so the copy
+                    // matches what actually happened.
+                    permission_message()
                 } else if !env.error.message.is_empty() {
                     env.error.message
                 } else {
@@ -799,12 +811,51 @@ pub mod api {
     /// migrated to the `_typed` variants already get the field-level
     /// `ApiError::user_message` treatment; this brings the legacy callers
     /// to at least non-developer-facing parity.
+    /// MAPPS-624: "Your session has expired" reads as an incorrect
+    /// signal when the caller is authenticated and only lacks
+    /// permission for the specific endpoint (e.g. a portal contact
+    /// hitting a staff-only URL). Treat 401 the same as 403 whenever
+    /// we hold any session; only bounce to the "sign in again" copy
+    /// when the browser has no session at all, which is the true
+    /// "session expired" case a returning visitor would hit.
+    /// MAPPS-624: recognise the server's generic 401/403 envelope
+    /// messages so we override them with the plane-aware
+    /// [`permission_message`]. Anything else (e.g. "This organization
+    /// is not active" for a suspended tenant, MFA-required copy)
+    /// stays verbatim so users still see the specific reason.
+    #[cfg(feature = "web")]
+    fn is_generic_auth_message(status: u16, msg: &str) -> bool {
+        if !(status == 401 || status == 403) {
+            return false;
+        }
+        let m = msg.trim();
+        matches!(
+            m,
+            ""
+                | "Authentication required"
+                | "Access denied"
+                | "Access denied: Access denied"
+                | "Forbidden"
+                | "Unauthorized"
+        )
+    }
+
+    #[cfg(feature = "web")]
+    fn permission_message() -> String {
+        let has_any_session = current_access_token().is_some()
+            || current_contact_access_token().is_some();
+        if has_any_session {
+            "You don't have permission to perform this action. Contact your administrator or support team if you think you should.".into()
+        } else {
+            "Your session has ended. Please sign in again.".into()
+        }
+    }
+
     #[cfg(feature = "web")]
     fn user_friendly_status(status: u16) -> String {
         match status {
             400 => "The request was rejected. Please check the form and try again.".into(),
-            401 => "Your session has expired. Please sign in again.".into(),
-            403 => "You do not have permission to do that.".into(),
+            401 | 403 => permission_message(),
             404 => "The requested resource was not found.".into(),
             409 => "The change conflicts with another update. Please refresh and retry.".into(),
             422 => "Validation failed. Please check the form fields.".into(),
@@ -1937,14 +1988,18 @@ pub mod api {
                     fields,
                     ..
                 } => match *code {
-                    401 => "Your session has expired. Please sign in again.".into(),
-                    // Server sends a specific message on 403 for cases the user
-                    // needs to see verbatim (e.g. suspended tenant -> "This
-                    // organization is not active"). Surface it instead of the
-                    // generic copy so a session-scope failure does not look
-                    // like a per-action permission denial.
-                    403 if !message.is_empty() => message.clone(),
-                    403 => "You do not have permission to do that.".into(),
+                    // Server sometimes ships a specific message on
+                    // 401/403 that the user must see verbatim (e.g.
+                    // suspended tenant -> "This organization is not
+                    // active", account deactivated, MFA required
+                    // mid-session). Keep those. Replace the generic
+                    // "Authentication required" / "Access denied"
+                    // envelope with the plane-aware permission
+                    // message so a signed-in caller stops seeing
+                    // "your session has expired" for a plain
+                    // permission miss (MAPPS-624).
+                    401 | 403 if !is_generic_auth_message(*code, message) => message.clone(),
+                    401 | 403 => permission_message(),
                     404 => "The requested resource was not found.".into(),
                     409 if !message.is_empty() => message.clone(),
                     // Surface the field-level validation messages when the
