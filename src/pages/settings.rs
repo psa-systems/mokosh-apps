@@ -263,6 +263,26 @@ const SETTINGS_GROUP_ORDER: &[SettingsGroupKey] = &[
     SettingsGroupKey::Data,
 ];
 
+/// MAPPS-620/622: per-surface visibility. A surface listed here
+/// still appears in the hub only when the current signed-in user
+/// clears the check. Defaults to `Always` for the vast majority of
+/// tiles.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SurfaceVisibility {
+    /// Surface always shows to any signed-in user.
+    Always,
+    /// Surface shows only to staff users whose role reports
+    /// `is_admin()`. Non-admin staff + contacts skip it.
+    StaffAdmin,
+    /// Surface shows only when the caller holds this contact-plane
+    /// capability. Staff calls to `use_capability` always return
+    /// `true` (see the staff-bypass in the hook), so this variant
+    /// effectively means "contact holding this cap OR any staff".
+    /// The linked page still gates on the cap; the visibility check
+    /// is only about hub discoverability.
+    RequiresCap(&'static str),
+}
+
 /// One configuration surface (a leaf settings page).
 struct SettingsSurface {
     route: Route,
@@ -271,6 +291,9 @@ struct SettingsSurface {
     group: SettingsGroupKey,
     /// Hidden in basic mode; shown only when "Show advanced settings" is on.
     advanced: bool,
+    /// Who sees this surface in the hub. Defaults to `Always` for
+    /// every legacy tile that predates MAPPS-620.
+    visibility: SurfaceVisibility,
 }
 
 /// localStorage key for the basic/advanced toggle (MAPPS-258). Defaults to
@@ -288,6 +311,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Theme (light, dark, or system) and accent color for your account.",
         group: SettingsGroupKey::Personalization,
         advanced: false,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsTvView {},
@@ -296,6 +320,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
             "Full-screen wall-monitor dashboard, scoped to your team. Toggle it on and pick a team.",
         group: SettingsGroupKey::Personalization,
         advanced: false,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsWorkTypes {},
@@ -303,6 +328,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Billable work categories used when logging time entries.",
         group: SettingsGroupKey::ServiceTypes,
         advanced: false,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsTaskStatuses {},
@@ -310,6 +336,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Workflow states a project task can move through.",
         group: SettingsGroupKey::ServiceTypes,
         advanced: false,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsAssetTypes {},
@@ -317,6 +344,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Categories for the assets you track per company.",
         group: SettingsGroupKey::ServiceTypes,
         advanced: false,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsCompanyIndustries {},
@@ -324,6 +352,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Suggested industries when categorizing a company.",
         group: SettingsGroupKey::ServiceTypes,
         advanced: false,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsProjectTypes {},
@@ -331,6 +360,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Classify projects (e.g. client vs internal).",
         group: SettingsGroupKey::ServiceTypes,
         advanced: false,
+        visibility: SurfaceVisibility::Always,
     },
     // mokosh-contact-login prompt 007: MSP-admin portal-role editor.
     // Bundles capabilities into named roles that admins assign to
@@ -343,6 +373,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
             "Portal roles you assign to contacts. Each role bundles a set of capabilities.",
         group: SettingsGroupKey::ServiceTypes,
         advanced: false,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsSla {},
@@ -350,6 +381,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Service-level policies, business hours, and holiday calendars.",
         group: SettingsGroupKey::Billing,
         advanced: false,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsScheduling {},
@@ -357,6 +389,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Standard due date applied to new tasks and tickets when none is set.",
         group: SettingsGroupKey::Billing,
         advanced: false,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsTimeTracking {},
@@ -364,6 +397,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Maximum hours a user may log against a single day.",
         group: SettingsGroupKey::Billing,
         advanced: false,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsRateCards {},
@@ -371,6 +405,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Hourly rates billed per work type.",
         group: SettingsGroupKey::Billing,
         advanced: false,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsTaxRates {},
@@ -378,6 +413,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Tax rates applied to invoice line items.",
         group: SettingsGroupKey::Billing,
         advanced: true,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsGateways {},
@@ -385,6 +421,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Connect and configure payment providers.",
         group: SettingsGroupKey::Billing,
         advanced: true,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsPaymentTerms {},
@@ -392,6 +429,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Options for the invoice payment-terms dropdown.",
         group: SettingsGroupKey::Billing,
         advanced: false,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsTicketStatuses {},
@@ -399,6 +437,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Workflow states a ticket can move through.",
         group: SettingsGroupKey::Tickets,
         advanced: false,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsTicketPriorities {},
@@ -406,6 +445,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Priority levels and their SLA multipliers.",
         group: SettingsGroupKey::Tickets,
         advanced: false,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsTicketTypes {},
@@ -413,6 +453,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Categories for the kind of work a ticket represents.",
         group: SettingsGroupKey::Tickets,
         advanced: false,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsTicketQueues {},
@@ -420,6 +461,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Queues tickets are routed into.",
         group: SettingsGroupKey::Tickets,
         advanced: false,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsTicketCategories {},
@@ -427,6 +469,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Hierarchical categories for classifying tickets.",
         group: SettingsGroupKey::Tickets,
         advanced: true,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsRmmConnections {},
@@ -434,6 +477,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Connect remote monitoring providers and test reachability.",
         group: SettingsGroupKey::Integrations,
         advanced: true,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsRmmDeviceMappings {},
@@ -441,6 +485,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Map monitored RMM devices to assets and companies.",
         group: SettingsGroupKey::Integrations,
         advanced: true,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsRmmAlertRules {},
@@ -448,6 +493,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Turn RMM alerts into tickets automatically.",
         group: SettingsGroupKey::Integrations,
         advanced: true,
+        visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
         route: Route::SettingsImportExport {},
@@ -456,6 +502,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
             "Download a snapshot of this tenant's data, or restore it from a previous export.",
         group: SettingsGroupKey::Data,
         advanced: false,
+        visibility: SurfaceVisibility::Always,
     },
     /// MAPPS-622: staff-side tenant branding editor. Sets the MSP
     /// defaults every Company portal inherits; per-Company overrides
@@ -466,6 +513,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "MSP-wide defaults every client portal inherits: logo, favicon, background, colors, display name, support contact.",
         group: SettingsGroupKey::Personalization,
         advanced: false,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     /// MAPPS-620: contact-plane portal branding editor. Rendered to
     /// staff too (the SettingsHome hub does not filter by
@@ -475,20 +523,71 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
     SettingsSurface {
         route: Route::ContactPortalBranding {},
         title: "My Portal Branding",
-        description: "For contacts with the 'Manage portal branding' permission: customize your own company's portal without pinging your MSP.",
+        description: "Customize your own company's portal without pinging your MSP: logo, favicon, background, colors, display name, support contact block.",
         group: SettingsGroupKey::Personalization,
         advanced: false,
+        visibility: SurfaceVisibility::RequiresCap("settings:manage_company_branding"),
     },
 ];
 
-/// Surfaces filed under `group`, honoring the basic/advanced filter.
+/// MAPPS-620/622: snapshot of the reactive hook state each surface's
+/// `visibility` field checks against. Built once per render at the
+/// top of every component that reads surfaces, then handed to
+/// [`surfaces_in_group`] + the flat SEARCH filter so both paths
+/// share one policy.
+#[derive(Clone, Copy)]
+struct SurfaceContext {
+    is_staff_admin: bool,
+    has_manage_branding_cap: bool,
+}
+
+impl SurfaceContext {
+    fn snapshot() -> Self {
+        let is_staff_admin = crate::hooks::auth::use_auth().read().is_admin();
+        // Contact plane only. `use_capability` staff-bypasses to
+        // true, but a `RequiresCap`-visibility tile is meant for
+        // contacts who genuinely hold the cap; painting it to
+        // staff (who have their own edit surface elsewhere) leads
+        // to a broken click-through when the target page fetches
+        // via a contact-only endpoint. Combine the cap check with
+        // "is there actually a contact session held" so staff
+        // never see the contact-only tiles.
+        let has_contact_session = crate::hooks::fetch::api::has_contact_session();
+        let has_manage_branding_cap = has_contact_session
+            && crate::hooks::capabilities::use_capability(
+                "settings:manage_company_branding",
+            );
+        Self {
+            is_staff_admin,
+            has_manage_branding_cap,
+        }
+    }
+
+    fn allows(&self, v: SurfaceVisibility) -> bool {
+        match v {
+            SurfaceVisibility::Always => true,
+            SurfaceVisibility::StaffAdmin => self.is_staff_admin,
+            SurfaceVisibility::RequiresCap(cap) => match cap {
+                "settings:manage_company_branding" => self.has_manage_branding_cap,
+                // Any future cap-gated surface adds its own field on
+                // `SurfaceContext`; a match arm here is the one
+                // place a new capability wires up.
+                _ => false,
+            },
+        }
+    }
+}
+
+/// Surfaces filed under `group`, honoring the basic/advanced filter
+/// AND the per-surface visibility check.
 fn surfaces_in_group(
     group: SettingsGroupKey,
     show_advanced: bool,
+    ctx: SurfaceContext,
 ) -> impl Iterator<Item = &'static SettingsSurface> {
-    SETTINGS_SURFACES
-        .iter()
-        .filter(move |s| s.group == group && (show_advanced || !s.advanced))
+    SETTINGS_SURFACES.iter().filter(move |s| {
+        s.group == group && (show_advanced || !s.advanced) && ctx.allows(s.visibility)
+    })
 }
 
 /// `/settings` - the hub index. With no search query it shows the
@@ -504,10 +603,11 @@ pub fn SettingsHomePage() -> Element {
 
     let adv = *show_advanced.read();
     let q = query.read().trim().to_lowercase();
+    let ctx = SurfaceContext::snapshot();
 
     // Personalization renders as a direct leaf (it is not nested).
     let personalization: Vec<&SettingsSurface> =
-        surfaces_in_group(SettingsGroupKey::Personalization, adv).collect();
+        surfaces_in_group(SettingsGroupKey::Personalization, adv, ctx).collect();
 
     // A group card is shown only when the group has at least one visible
     // surface in the current mode (so an all-advanced group like
@@ -517,7 +617,7 @@ pub fn SettingsHomePage() -> Element {
         SETTINGS_GROUP_ORDER
             .iter()
             .copied()
-            .filter(|g| surfaces_in_group(*g, adv).next().is_some())
+            .filter(|g| surfaces_in_group(*g, adv, ctx).next().is_some())
             .filter_map(|g| {
                 g.landing()
                     .map(|route| (g, route, g.title(), g.description()))
@@ -532,6 +632,7 @@ pub fn SettingsHomePage() -> Element {
         SETTINGS_SURFACES
             .iter()
             .filter(|s| adv || !s.advanced)
+            .filter(|s| ctx.allows(s.visibility))
             .filter(|s| {
                 s.title.to_lowercase().contains(&q) || s.description.to_lowercase().contains(&q)
             })
@@ -677,7 +778,8 @@ fn SettingsGroupLanding(group: SettingsGroupKey) -> Element {
     });
     let show_advanced = crate::utils::prefs::get_bool(PREF_SHOW_ADVANCED, false);
     let title = group.title();
-    let visible: Vec<&SettingsSurface> = surfaces_in_group(group, show_advanced).collect();
+    let ctx = SurfaceContext::snapshot();
+    let visible: Vec<&SettingsSurface> = surfaces_in_group(group, show_advanced, ctx).collect();
 
     use_page_title(title.to_string());
     rsx! {

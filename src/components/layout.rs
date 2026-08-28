@@ -350,6 +350,27 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
     let show_kb = crate::hooks::capabilities::use_capability("kb:read");
     let show_reports =
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    // MAPPS-620: contact-plane sidebar entry for the portal branding
+    // editor. `use_capability` staff-bypasses to true, but staff have
+    // their own edit surface (Settings > Portal Branding for the
+    // tenant defaults, Company detail > Portal branding for a
+    // specific Company) and hitting the contact-only endpoint would
+    // fail closed for them, so combine the cap check with a
+    // has-contact-session guard so this entry only surfaces for a
+    // portal admin.
+    let branding_link_visible = {
+        #[cfg(feature = "web")]
+        {
+            crate::hooks::fetch::api::has_contact_session()
+                && crate::hooks::capabilities::use_capability(
+                    "settings:manage_company_branding",
+                )
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            false
+        }
+    };
     // Any Service Desk / Projects / CRM / Operations section header
     // vanishes when every item under it is gated out for a contact.
     // Precomputed so the `if` right around the `NavSection` renders
@@ -414,6 +435,21 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                 },
                 if show_dashboard {
                     NavItem { to: Route::Dashboard {}, icon: rsx!(HomeIcon {}), label: "Dashboard", collapsed }
+                }
+                // MAPPS-620: direct sidebar entry for the contact-plane
+                // portal branding editor. Rendered ABOVE the
+                // `show_full_nav` gate so it stays reachable during
+                // a network wobble, and OUTSIDE the admin-only Admin
+                // section (contacts never see that block). The
+                // `branding_link_visible` predicate combines the
+                // `settings:manage_company_branding` capability with
+                // `has_contact_session()` so staff (whose
+                // `use_capability` staff-bypasses to true) do NOT
+                // see the entry - they have their own Settings >
+                // Portal Branding tile for tenant defaults + the
+                // Company detail card for per-Company overrides.
+                if branding_link_visible {
+                    NavItem { to: Route::ContactPortalBranding {}, icon: rsx!(SwatchIcon {}), label: "Portal Branding", collapsed }
                 }
 
             // MAPPS-358: every section below is hidden while the server is
