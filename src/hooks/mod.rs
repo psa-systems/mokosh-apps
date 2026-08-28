@@ -7,6 +7,7 @@
 //! - Pagination
 
 pub mod auth;
+pub mod branding;
 pub mod capabilities;
 pub mod contact_auth;
 // `fetch` is `pub` (not `mod`) because its inner `api` submodule is

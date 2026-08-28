@@ -703,6 +703,17 @@ pub enum Route {
     // nav items and buttons keep working (chosen "keep old + add Settings").
     #[route("/settings")]
     SettingsHome {},
+    /// MAPPS-620 (mokosh-branding prompt 004): contact-plane portal
+    /// branding editor. The page's first-render gate checks
+    /// `use_capability("settings:manage_company_branding")`; a
+    /// contact without the capability sees a `ContentUnavailable`
+    /// splash. Staff hitting this URL land on the same page but the
+    /// contact-only endpoint (`/contact/companies/self/branding`)
+    /// returns 401 for them, which the page surfaces as an error;
+    /// staff editing a per-Company brand goes through the Company
+    /// detail page instead (MAPPS-619).
+    #[route("/settings/portal-branding")]
+    ContactPortalBranding {},
     // MAPPS-258: per-group landing routes. The index lists these four
     // groups; each landing lists only its own leaf surfaces. The leaf
     // routes below stay flat so existing deep links keep resolving.
@@ -1353,6 +1364,14 @@ fn Profile() -> Element {
 #[component]
 fn SettingsHome() -> Element {
     rsx! { settings::SettingsHomePage {} }
+}
+
+/// MAPPS-620 (mokosh-branding prompt 004): wire the contact-plane
+/// portal branding editor into the AppShell-scoped router. Page owns
+/// its own capability gate + load state.
+#[component]
+fn ContactPortalBranding() -> Element {
+    rsx! { pages::contact_portal::portal_branding::ContactPortalBrandingPage {} }
 }
 
 // MAPPS-258 per-group landing pages.

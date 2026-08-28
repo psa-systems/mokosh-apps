@@ -1453,6 +1453,23 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         .ok()
     });
 
+    // MAPPS-619: tenant branding defaults so the per-Company branding
+    // card can render "Inherits from MSP default: X" hints per field.
+    // The response is the full Tenant DTO; we only need the `branding`
+    // block off it, so a lightweight local decode is enough.
+    let tenant_branding_resource = use_resource(move || async move {
+        #[derive(serde::Deserialize, Default, Clone)]
+        struct TenantSnippet {
+            #[serde(default)]
+            branding: crate::hooks::branding::TenantBranding,
+        }
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<TenantSnippet>("/tenants/current")
+            .await
+            .ok()
+            .map(|t| t.branding)
+    });
+
     // Statistics counts pulled from each list envelope's `meta.total`.
     let contract_count = paginated_total(&contracts_resource);
     let project_count = paginated_total(&projects_resource);
@@ -1675,6 +1692,17 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                 assets_resource,
                                 asset_types_resource,
                             }
+                            // MAPPS-619: per-Company branding overrides.
+                            // Reads current values off the Company detail
+                            // response + tenant defaults for the "Inherits
+                            // from MSP default: X" hints. Save PUTs the
+                            // Company with a JSONB-merge branding patch.
+                            CompanyBrandingCard {
+                                company_id: company_id_str.clone(),
+                                current: company.branding.clone(),
+                                tenant_defaults_resource: tenant_branding_resource,
+                                company_resource,
+                            }
                         }
                         // Sidebar
                         div { class: "space-y-6",
@@ -1808,6 +1836,13 @@ struct CompanyDetail {
     site_count: Option<i64>,
     #[serde(default)]
     open_ticket_count: Option<i64>,
+    /// MAPPS-619: per-Company branding overrides. Populated by the
+    /// server since MAPPS-617 lands; missing on a legacy response
+    /// deserializes to `CompanyBranding::default()` (all `None`) via
+    /// the `#[serde(default)]` on every field of the client-side
+    /// `CompanyBranding` type.
+    #[serde(default)]
+    branding: crate::hooks::branding::CompanyBranding,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -3890,6 +3925,72 @@ fn CompanyAssetsCard(
                         }
                     },
                 }
+            }
+        }
+    }
+}
+
+/// MAPPS-619 (mokosh-branding prompt 003): per-Company branding
+/// editor rendered as a card on the Company detail page. Loads the
+/// tenant defaults so the shared `BrandingEditor` can render the
+/// "Inherits from MSP default: X" hints per field. Save PUTs the
+/// Company with a JSONB-merge branding patch; existing tenant-level
+/// mutation gates apply (staff `role.is_admin()` on the server).
+#[component]
+fn CompanyBrandingCard(
+    company_id: String,
+    current: crate::hooks::branding::CompanyBranding,
+    tenant_defaults_resource: Resource<Option<crate::hooks::branding::TenantBranding>>,
+    mut company_resource: Resource<Option<CompanyDetail>>,
+) -> Element {
+    use crate::hooks::branding::CompanyBranding;
+    let can_mutate = crate::hooks::use_can_mutate();
+    let mut saving = use_signal(|| false);
+    let mut error: Signal<String> = use_signal(String::new);
+    let mut toast: Signal<String> = use_signal(String::new);
+    let tenant_snap = tenant_defaults_resource.read_unchecked();
+    let tenant_defaults = tenant_snap.clone().flatten().unwrap_or_default();
+    let id = company_id.clone();
+    let on_save = move |block: CompanyBranding| {
+        if saving() {
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        toast.set(String::new());
+        let id = id.clone();
+        spawn(async move {
+            let patch = serde_json::json!({ "branding": block });
+            match crate::hooks::fetch::api::put_authed_typed::<
+                serde_json::Value,
+                _,
+            >(&format!("/contacts/companies/{id}"), &patch)
+            .await
+            {
+                Ok(_) => {
+                    toast.set("Branding saved.".to_string());
+                    company_resource.restart();
+                }
+                Err(e) => {
+                    error.set(format!("Save failed: {e}"));
+                }
+            }
+            saving.set(false);
+        });
+    };
+    rsx! {
+        div { class: "space-y-3",
+            crate::components::BrandingEditor {
+                current,
+                tenant_defaults,
+                disabled: !can_mutate || saving(),
+                on_save,
+            }
+            if !error().is_empty() {
+                p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
+            }
+            if !toast().is_empty() {
+                p { class: "text-sm text-green-700 dark:text-green-400", "{toast}" }
             }
         }
     }
