@@ -2,11 +2,12 @@
 //! branding editor.
 //!
 //! Mounted at `/settings/portal-branding` under the contact plane.
-//! First-render gate: `use_capability("settings:manage_company_branding")`;
-//! false renders `ContentUnavailable` (the sidebar entry only
-//! surfaces the link when the capability is held, so a caller who
-//! reaches this URL directly still sees a clean explanation rather
-//! than a broken form).
+//! First-render gate: `use_capability("settings:manage_company_branding")`.
+//! A contact who lacks the permission (or hits a server that has not
+//! shipped the feature yet, so the branding endpoint declines) sees
+//! the shared [`NoAccessPanel`] below: no jargon, no technical
+//! details, just an explanation that they need extra access and a
+//! direct handle to their MSP for the ask.
 //!
 //! Load: `GET /api/v1/contact/companies/self/branding` returns the
 //! raw tenant + Company blocks plus the resolved effective set. Save:
@@ -16,113 +17,54 @@
 
 use dioxus::prelude::*;
 
-use crate::components::{BrandingEditor, Card, PageHeader};
-use crate::hooks::branding::{CompanyBranding, ContactOwnCompanyBranding, TenantBranding};
+use crate::components::{BrandingEditor, Card, IconSize, PageHeader, ShieldCheckIcon};
+use crate::hooks::branding::{
+    CompanyBranding, ContactOwnCompanyBranding, EffectiveBranding, TenantBranding,
+};
 
 const CAP: &str = "settings:manage_company_branding";
 
 #[component]
 pub fn ContactPortalBrandingPage() -> Element {
     if !crate::hooks::capabilities::use_capability(CAP) {
-        // The default `ContentUnavailable` widget's copy reads as
-        // "the server is unreachable", which is the wrong signal for
-        // a permission-denied state (the server is fine; the caller
-        // just lacks a role). Render a bespoke panel that spells out
-        // WHY the page is empty + how to get access. Falls back to
-        // the brand's `support_email` / `support_phone` so the
-        // contact has a direct handle to their MSP for the ask,
-        // without needing to leave the portal.
-        let brand = crate::hooks::branding::EFFECTIVE_BRANDING.read();
-        let support_email = brand.support_email.clone().filter(|s| !s.is_empty());
-        let support_phone = brand.support_phone.clone().filter(|s| !s.is_empty());
-        let support_contact = brand
-            .support_contact_name
-            .clone()
-            .filter(|s| !s.is_empty());
-        return rsx! {
-            PageHeader { title: "Portal branding".to_string() }
-            div { class: "max-w-3xl mx-auto",
-                Card {
-                    div { class: "py-8 px-6 space-y-4",
-                        h3 { class: "text-base font-semibold text-content",
-                            "You need the Manage portal branding role to customize this page."
-                        }
-                        p { class: "text-sm text-muted",
-                            "Ask your MSP administrator to grant your account the 'Manage portal branding' capability. Once they do, this page unlocks the full editor so you can set your Company's logo, colors, and support-contact block without pinging them for every change."
-                        }
-                        if support_email.is_some() || support_phone.is_some() {
-                            div { class: "text-sm border-t border-line pt-4",
-                                p { class: "text-content font-medium mb-1",
-                                    if let Some(name) = support_contact {
-                                        "Reach out to {name}"
-                                    } else {
-                                        "Reach out to your MSP"
-                                    }
-                                }
-                                if let Some(email) = support_email {
-                                    div {
-                                        a {
-                                            href: "mailto:{email}",
-                                            class: "text-accent hover:underline",
-                                            "{email}"
-                                        }
-                                    }
-                                }
-                                if let Some(phone) = support_phone {
-                                    div { class: "text-muted", "{phone}" }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        };
+        return rsx! { NoAccessPanel {} };
     }
     // Track the fetch outcome as `Result` (not the `.ok()`-flattened
-    // `Option`) so we can distinguish "still loading" from "fetch
-    // failed" from "fetch returned empty". A failed fetch surfaces
-    // in the UI so a contact whose portal server hasn't shipped
-    // MAPPS-618 yet sees the specific error instead of a spinner
-    // that never resolves.
+    // `Option`) so we can tell "still loading" from "load declined".
+    // If the server rejects the request for any reason we render the
+    // same friendly `NoAccessPanel` a permission-denied caller sees;
+    // a portal visitor should not see raw error strings, status
+    // codes, or hints about what changed on the server side.
     let mut resource = use_resource(|| async {
         let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_contact_authed::<ContactOwnCompanyBranding>(
             "/contact/companies/self/branding",
         )
         .await
-        .map_err(|e| e.to_string())
+        .ok()
     });
     let mut error: Signal<String> = use_signal(String::new);
     let mut toast: Signal<String> = use_signal(String::new);
     let mut saving = use_signal(|| false);
 
     let snap = resource.read_unchecked();
-    let (current, defaults, effective_for_paint, fetch_error): (
+    let (current, defaults, effective_for_paint): (
         CompanyBranding,
         TenantBranding,
-        crate::hooks::branding::EffectiveBranding,
-        Option<String>,
+        EffectiveBranding,
     ) = match &*snap {
-        Some(Ok(b)) => (
-            b.company.clone(),
-            b.tenant.clone(),
-            b.effective.clone(),
-            None,
-        ),
-        Some(Err(msg)) => (
+        Some(Some(b)) => (b.company.clone(), b.tenant.clone(), b.effective.clone()),
+        _ => (
             CompanyBranding::default(),
             TenantBranding::default(),
-            crate::hooks::branding::EffectiveBranding::default(),
-            Some(msg.clone()),
-        ),
-        None => (
-            CompanyBranding::default(),
-            TenantBranding::default(),
-            crate::hooks::branding::EffectiveBranding::default(),
-            None,
+            EffectiveBranding::default(),
         ),
     };
     let loading = matches!(&*snap, None);
+    let load_declined = matches!(&*snap, Some(None));
+    if load_declined {
+        return rsx! { NoAccessPanel {} };
+    }
 
     let on_save = move |block: CompanyBranding| {
         if saving() {
@@ -147,8 +89,15 @@ pub fn ContactPortalBrandingPage() -> Element {
                     toast.set("Branding saved.".to_string());
                     resource.restart();
                 }
-                Err(e) => {
-                    error.set(format!("Save failed: {e}"));
+                Err(_) => {
+                    // Never surface the underlying `ApiError` to a
+                    // portal user; the actionable read for them is
+                    // "your change did not stick, try again", which
+                    // covers both a network wobble and a 4xx from
+                    // the server.
+                    error.set(
+                        "We couldn't save that change. Try again in a moment.".to_string(),
+                    );
                 }
             }
             saving.set(false);
@@ -167,18 +116,6 @@ pub fn ContactPortalBrandingPage() -> Element {
             }
             if loading {
                 p { class: "text-sm text-muted", "Loading branding..." }
-            } else if let Some(msg) = fetch_error.clone() {
-                Card {
-                    div { class: "py-6 px-6 space-y-3",
-                        h3 { class: "text-base font-semibold text-content",
-                            "Couldn't load your portal branding."
-                        }
-                        p { class: "text-sm text-muted",
-                            "The server responded with an error. If your MSP just enabled portal branding, they may still be finishing the rollout - try again in a minute."
-                        }
-                        p { class: "text-xs text-muted italic", "Details: {msg}" }
-                    }
-                }
             } else {
                 BrandingEditor {
                     current,
@@ -196,6 +133,64 @@ pub fn ContactPortalBrandingPage() -> Element {
                 }
                 if !toast().is_empty() {
                     p { class: "text-sm text-green-700 dark:text-green-400", "{toast}" }
+                }
+            }
+        }
+    }
+}
+
+/// Friendly, jargon-free panel rendered whenever a caller cannot see
+/// the branding editor: they lack the permission client-side, OR the
+/// server-side gate declined the load. Copy deliberately avoids the
+/// words "capability", "role", "cap", "permission code", status
+/// codes, or anything a portal user would not recognize. Falls back
+/// to the brand's support contact block so the reader has one place
+/// to click for the ask.
+#[component]
+fn NoAccessPanel() -> Element {
+    let brand = crate::hooks::branding::EFFECTIVE_BRANDING.read();
+    let support_email = brand.support_email.clone().filter(|s| !s.is_empty());
+    let support_phone = brand.support_phone.clone().filter(|s| !s.is_empty());
+    let support_contact = brand
+        .support_contact_name
+        .clone()
+        .filter(|s| !s.is_empty());
+    let has_any_contact = support_email.is_some() || support_phone.is_some();
+    let contact_lead = support_contact
+        .clone()
+        .map(|name| format!("Reach out to {name}."))
+        .unwrap_or_else(|| "Reach out to your administrator or support team.".to_string());
+    rsx! {
+        PageHeader { title: "Portal branding".to_string() }
+        div { class: "max-w-2xl mx-auto",
+            Card {
+                div { class: "py-10 px-8 flex flex-col items-center text-center gap-4",
+                    div { class: "flex h-14 w-14 items-center justify-center rounded-full bg-accent/10 text-accent",
+                        ShieldCheckIcon { size: IconSize::Large }
+                    }
+                    h3 { class: "text-xl font-semibold text-content",
+                        "You don't have access to this page."
+                    }
+                    p { class: "text-sm text-muted max-w-md",
+                        "Customizing your portal's branding needs extra permissions your account doesn't have right now. Please contact your administrator or support team and ask them to enable this for you."
+                    }
+                    if has_any_contact {
+                        div { class: "mt-2 w-full border-t border-line pt-4 text-sm space-y-1",
+                            p { class: "text-content font-medium", "{contact_lead}" }
+                            if let Some(email) = support_email {
+                                div {
+                                    a {
+                                        href: "mailto:{email}",
+                                        class: "text-accent hover:underline",
+                                        "{email}"
+                                    }
+                                }
+                            }
+                            if let Some(phone) = support_phone {
+                                div { class: "text-muted", "{phone}" }
+                            }
+                        }
+                    }
                 }
             }
         }
