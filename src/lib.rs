@@ -18,6 +18,90 @@ pub use utils::error::{AppError, AppResult};
 // `Routable` derive expands the attribute at the enum site).
 use components::AppShell;
 
+/// MAPPS-623: return true when the given URL pathname is a surface a
+/// portal contact should NEVER reach. The sidebar already hides
+/// these NavItems (each is gated on `use_capability(STAFF_ONLY)` in
+/// `components/layout.rs`), but the routes themselves stayed
+/// unrestricted at the router level, so a contact who typed the URL
+/// or followed a stale bookmark could still hit e.g. `/companies`
+/// and see the SPA render a broken page whose fetches then 401. The
+/// AuthGuard's contact-plane branch consults this helper on every
+/// render and redirects any hit to `/dashboard`.
+///
+/// Denies by prefix on the pathname (the router's compiled `Route`
+/// enum is not something the guard can easily match without an
+/// exhaustive arm per variant). Ordering:
+/// - Individual prefixes for the top-level staff-only surfaces.
+/// - A special-case KB edit path since the read side (`/kb`,
+///   `/kb/articles/:id`) is contact-permitted.
+/// - Every `/settings/*` except a small contact-permitted allowlist.
+/// Anything the pathname does not match falls through to the shared
+/// Outlet so the contact-permitted routes stay reachable.
+pub fn pathname_is_contact_forbidden(path: &str) -> bool {
+    // Strip query + trailing slash so the compare is stable
+    // regardless of how the browser hands us the URL.
+    let p = path
+        .split('?')
+        .next()
+        .unwrap_or(path)
+        .trim_end_matches('/');
+    // Top-level staff-only prefixes. `starts_with("{prefix}/")` covers
+    // every nested route under the prefix; a bare equality catches
+    // the index route (`/companies` itself).
+    const DENIED_PREFIXES: &[&str] = &[
+        "/companies",
+        "/contacts",
+        "/calendar",
+        "/dispatch",
+        "/scheduling-templates",
+        "/rate-cards",
+        "/payments",
+        "/tax-rates",
+        "/payment-gateways",
+        "/reports",
+        "/time",
+        "/timesheets",
+        "/dashboards",
+        "/dashboard/tv",
+        "/big",
+        "/admin",
+        "/pick-tenant",
+        "/create-org",
+        "/invite",
+        "/dev",
+    ];
+    for prefix in DENIED_PREFIXES {
+        if p == *prefix || p.starts_with(&format!("{prefix}/")) {
+            return true;
+        }
+    }
+    // KB reads are contact-permitted (kb:read cap); creating +
+    // editing an article is staff-only. Match the two mutation URLs
+    // specifically so `/kb/articles/:id` (read-only detail) still
+    // resolves.
+    if p == "/kb/articles/new" {
+        return true;
+    }
+    if p.starts_with("/kb/articles/") && p.ends_with("/edit") {
+        return true;
+    }
+    // Every /settings/* except a small contact-permitted allowlist.
+    // `/settings` (hub, tile filter already scopes visibility),
+    // `/settings/portal-branding` (contact editor, has its own cap
+    // gate), and `/settings/appearance` (personal theme picker) are
+    // the only three surfaces a contact reaches under this tree.
+    if p == "/settings"
+        || p == "/settings/portal-branding"
+        || p == "/settings/appearance"
+    {
+        return false;
+    }
+    if p.starts_with("/settings/") || p == "/settings" {
+        return true;
+    }
+    false
+}
+
 /// Layout component that gates all authenticated routes (declared
 /// here, before the `Route` enum, because the `Routable` derive
 /// expands the `#[layout(AuthGuard)]` reference at the enum site
@@ -104,6 +188,27 @@ pub fn AuthGuard() -> Element {
         // prompt 006 to hide the staff-only surfaces.
         #[cfg(feature = "web")]
         if crate::hooks::fetch::api::has_contact_session() {
+            // MAPPS-623: hard block on staff-only surfaces. The
+            // sidebar already hides these NavItems for contacts
+            // (each is behind `use_capability(STAFF_ONLY)`), but a
+            // contact could still reach them by typing the URL,
+            // following a stale bookmark, or getting bounced from a
+            // deep-link that was authored for a staff user. Every
+            // staff-only prefix redirects to /dashboard rather than
+            // rendering a page whose data fetches would 401/403 and
+            // read as broken. Contact-permitted routes fall through
+            // to the shared Outlet unchanged.
+            let pathname = web_sys::window()
+                .and_then(|w| w.location().pathname().ok())
+                .unwrap_or_default();
+            if pathname_is_contact_forbidden(&pathname) {
+                nav.replace(Route::Dashboard {});
+                return rsx! {
+                    div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
+                        "Redirecting to your dashboard…"
+                    }
+                };
+            }
             return rsx! {
                 ErrorBoundary {
                     handle_error: |errors: ErrorContext| rsx! {
@@ -1730,6 +1835,132 @@ mod emailed_link_routes {
 // below (prompt 005) pin the four new route shapes end-to-end so a
 // magic link built server-side round-trips through the router without
 // stripping the slug or the token.
+#[cfg(test)]
+mod contact_route_gate {
+    use super::pathname_is_contact_forbidden as f;
+
+    #[test]
+    fn crm_paths_are_blocked() {
+        for p in [
+            "/companies",
+            "/companies/",
+            "/companies/new",
+            "/companies/abcd-1234",
+            "/companies/abcd-1234/edit",
+            "/contacts",
+            "/contacts/new",
+            "/contacts/abcd/edit",
+        ] {
+            assert!(f(p), "{p} should be forbidden");
+        }
+    }
+
+    #[test]
+    fn scheduling_and_ops_are_blocked() {
+        for p in [
+            "/calendar",
+            "/dispatch",
+            "/scheduling-templates",
+            "/rate-cards",
+            "/rate-cards/new",
+            "/payments",
+            "/reports",
+            "/reports/timesheet",
+            "/time",
+            "/time/new",
+            "/timesheets",
+            "/timesheets/approvals",
+        ] {
+            assert!(f(p), "{p} should be forbidden");
+        }
+    }
+
+    #[test]
+    fn admin_and_platform_are_blocked() {
+        for p in [
+            "/admin",
+            "/admin/audit",
+            "/admin/team",
+            "/dashboards",
+            "/dashboards/x/view",
+            "/dashboard/tv",
+            "/big/tickets",
+        ] {
+            assert!(f(p), "{p} should be forbidden");
+        }
+    }
+
+    #[test]
+    fn settings_hub_and_contact_surfaces_pass() {
+        for p in [
+            "/dashboard",
+            "/tickets",
+            "/tickets/new",
+            "/tickets/xyz",
+            "/invoices",
+            "/invoices/xyz",
+            "/quotes",
+            "/contracts",
+            "/assets",
+            "/assets/xyz",
+            "/projects",
+            "/kb",
+            "/kb/articles",
+            "/kb/articles/xyz",
+            "/settings",
+            "/settings/portal-branding",
+            "/settings/appearance",
+            "/profile",
+            "/system-status",
+            "/notifications",
+        ] {
+            assert!(!f(p), "{p} should be allowed for contacts");
+        }
+    }
+
+    #[test]
+    fn settings_staff_subroutes_are_blocked() {
+        for p in [
+            "/settings/branding",
+            "/settings/work-types",
+            "/settings/sla",
+            "/settings/scheduling",
+            "/settings/rate-cards",
+            "/settings/tax-rates",
+            "/settings/import-export",
+            "/settings/contact-roles",
+            "/settings/contact-roles/abc",
+            "/settings/group/service-types",
+        ] {
+            assert!(f(p), "{p} should be forbidden");
+        }
+    }
+
+    #[test]
+    fn kb_edit_is_blocked_but_read_is_open() {
+        assert!(f("/kb/articles/new"));
+        assert!(f("/kb/articles/abc/edit"));
+        assert!(!f("/kb/articles/abc"));
+        assert!(!f("/kb"));
+    }
+
+    #[test]
+    fn timesheets_does_not_leak_via_time_prefix() {
+        // Naive prefix matching would fold "/timesheets" into the
+        // "/time" entry; the entries are distinct on purpose.
+        assert!(f("/timesheets"));
+        assert!(f("/time"));
+        assert!(f("/time/new"));
+    }
+
+    #[test]
+    fn query_strings_and_trailing_slashes_are_normalised() {
+        assert!(f("/companies?filter=abc"));
+        assert!(f("/companies/"));
+        assert!(!f("/settings?tab=personalization"));
+    }
+}
+
 #[cfg(test)]
 mod contact_portal_routes {
     use super::Route;
