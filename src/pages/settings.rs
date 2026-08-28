@@ -457,6 +457,28 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Data,
         advanced: false,
     },
+    /// MAPPS-622: staff-side tenant branding editor. Sets the MSP
+    /// defaults every Company portal inherits; per-Company overrides
+    /// live on the Company detail page.
+    SettingsSurface {
+        route: Route::SettingsBranding {},
+        title: "Portal Branding",
+        description: "MSP-wide defaults every client portal inherits: logo, favicon, background, colors, display name, support contact.",
+        group: SettingsGroupKey::Personalization,
+        advanced: false,
+    },
+    /// MAPPS-620: contact-plane portal branding editor. Rendered to
+    /// staff too (the SettingsHome hub does not filter by
+    /// capability), but the page's own gate degrades to
+    /// `ContentUnavailable` unless the caller holds
+    /// `settings:manage_company_branding`.
+    SettingsSurface {
+        route: Route::ContactPortalBranding {},
+        title: "My Portal Branding",
+        description: "For contacts with the 'Manage portal branding' permission: customize your own company's portal without pinging your MSP.",
+        group: SettingsGroupKey::Personalization,
+        advanced: false,
+    },
 ];
 
 /// Surfaces filed under `group`, honoring the basic/advanced filter.

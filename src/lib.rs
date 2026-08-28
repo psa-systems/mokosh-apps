@@ -703,6 +703,13 @@ pub enum Route {
     // nav items and buttons keep working (chosen "keep old + add Settings").
     #[route("/settings")]
     SettingsHome {},
+    /// MAPPS-622 (mokosh-branding prompt 003 sibling): staff-side
+    /// tenant branding editor at `/settings/branding`. Sets the MSP
+    /// defaults every Company inherits from. Per-Company overrides
+    /// still edit on the Company detail page (MAPPS-619). Page gates
+    /// on `role.is_admin()`; non-admins get `ContentUnavailable`.
+    #[route("/settings/branding")]
+    SettingsBranding {},
     /// MAPPS-620 (mokosh-branding prompt 004): contact-plane portal
     /// branding editor. The page's first-render gate checks
     /// `use_capability("settings:manage_company_branding")`; a
@@ -1372,6 +1379,12 @@ fn SettingsHome() -> Element {
 #[component]
 fn ContactPortalBranding() -> Element {
     rsx! { pages::contact_portal::portal_branding::ContactPortalBrandingPage {} }
+}
+
+/// MAPPS-622: staff-side tenant branding editor.
+#[component]
+fn SettingsBranding() -> Element {
+    rsx! { pages::settings_branding::SettingsBrandingPage {} }
 }
 
 // MAPPS-258 per-group landing pages.

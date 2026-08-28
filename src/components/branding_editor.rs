@@ -27,6 +27,10 @@ use crate::hooks::branding::{CompanyBranding, TenantBranding};
 /// helper (staff bearer vs contact bearer) for asset uploads.
 #[derive(Clone, PartialEq)]
 pub enum BrandingPlane {
+    /// MSP admin editing the tenant-wide defaults. All Companies
+    /// inherit these unless they override at Company scope. Writes
+    /// to `/api/v1/tenants/current/branding/{asset}`.
+    StaffTenant,
     /// MSP admin editing a specific Company under their tenant.
     /// `company_id` is the Company's UUID as a string (matches the
     /// URL segment `/api/v1/companies/{company_id}/{asset}`).
@@ -39,6 +43,7 @@ pub enum BrandingPlane {
 impl BrandingPlane {
     fn asset_url(&self, asset: &str) -> String {
         match self {
+            BrandingPlane::StaffTenant => format!("/tenants/current/branding/{asset}"),
             BrandingPlane::Staff { company_id } => {
                 format!("/companies/{company_id}/{asset}")
             }
@@ -74,13 +79,16 @@ pub struct BrandingEditorProps {
     pub on_asset_saved: Option<EventHandler<()>>,
 }
 
-/// Small helper: render a "Inherits from MSP default: <value>" hint
-/// when the tenant side has a value AND the Company override for the
-/// same field is empty.
-fn hint(default: Option<&str>) -> String {
-    match default {
-        Some(v) if !v.is_empty() => format!("Inherits from MSP default: {v}"),
-        _ => "No MSP default; portal falls back to the coded default.".to_string(),
+/// Render the hint line under each field. Company/Contact scopes
+/// point at the tenant default (or "no default set"); Tenant scope
+/// only has the coded fallback, so the hint reads that instead.
+fn hint(plane: &BrandingPlane, default: Option<&str>) -> String {
+    match plane {
+        BrandingPlane::StaffTenant => "Blank falls back to the platform default.".to_string(),
+        _ => match default {
+            Some(v) if !v.is_empty() => format!("Inherits from MSP default: {v}"),
+            _ => "No MSP default; portal falls back to the coded default.".to_string(),
+        },
     }
 }
 
@@ -96,19 +104,17 @@ async fn upload_asset(
         .map_err(|e| format!("{e:?}"))?;
     let url = plane.asset_url(asset);
     match &plane {
-        BrandingPlane::Staff { .. } => {
+        BrandingPlane::StaffTenant | BrandingPlane::Staff { .. } => {
             crate::hooks::fetch::api::put_authed_multipart::<serde_json::Value>(&url, &form)
                 .await
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         }
         BrandingPlane::ContactSelf => {
-            crate::hooks::fetch::api::put_contact_authed_multipart::<serde_json::Value>(
-                &url, &form,
-            )
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+            crate::hooks::fetch::api::put_contact_authed_multipart::<serde_json::Value>(&url, &form)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
         }
     }
 }
@@ -116,9 +122,11 @@ async fn upload_asset(
 async fn delete_asset(plane: BrandingPlane, asset: &str) -> Result<(), String> {
     let url = plane.asset_url(asset);
     match &plane {
-        BrandingPlane::Staff { .. } => crate::hooks::fetch::api::delete_authed_typed(&url)
-            .await
-            .map_err(|e| e.to_string()),
+        BrandingPlane::StaffTenant | BrandingPlane::Staff { .. } => {
+            crate::hooks::fetch::api::delete_authed_typed(&url)
+                .await
+                .map_err(|e| e.to_string())
+        }
         BrandingPlane::ContactSelf => {
             crate::hooks::fetch::api::delete_contact_authed_no_content(&url)
                 .await
@@ -245,18 +253,20 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
     // block. On Save we hand the full state back through the
     // `on_save` callback; on Reset we clear a single field.
     let mut display_name = use_signal(|| props.current.display_name.clone().unwrap_or_default());
-    let mut primary_color =
-        use_signal(|| props.current.primary_color.clone().unwrap_or_default());
+    let mut primary_color = use_signal(|| props.current.primary_color.clone().unwrap_or_default());
     let mut secondary_color =
         use_signal(|| props.current.secondary_color.clone().unwrap_or_default());
     let mut background_color =
         use_signal(|| props.current.background_color.clone().unwrap_or_default());
-    let mut support_email =
-        use_signal(|| props.current.support_email.clone().unwrap_or_default());
-    let mut support_phone =
-        use_signal(|| props.current.support_phone.clone().unwrap_or_default());
-    let mut support_contact_name =
-        use_signal(|| props.current.support_contact_name.clone().unwrap_or_default());
+    let mut support_email = use_signal(|| props.current.support_email.clone().unwrap_or_default());
+    let mut support_phone = use_signal(|| props.current.support_phone.clone().unwrap_or_default());
+    let mut support_contact_name = use_signal(|| {
+        props
+            .current
+            .support_contact_name
+            .clone()
+            .unwrap_or_default()
+    });
 
     let defaults = props.tenant_defaults.clone();
     let on_save = props.on_save;
@@ -284,12 +294,21 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
         on_save.call(block);
     };
 
+    let intro_copy = match &props.plane {
+        BrandingPlane::StaffTenant => {
+            "MSP-wide defaults. Every Company under your tenant inherits these values unless it overrides them at Company scope. What contacts see on the login shell and inside the portal reads back through the tenant → Company merge."
+        }
+        BrandingPlane::Staff { .. } => {
+            "Customize how this Company's portal looks to its contacts. Empty fields inherit from the MSP-level defaults; the merged result is what the portal actually paints."
+        }
+        BrandingPlane::ContactSelf => {
+            "Customize how your Company's portal looks. Empty fields inherit from your MSP's defaults; the merged result is what your colleagues see."
+        }
+    };
     rsx! {
         Card { title: "Portal branding",
             div { class: "space-y-6",
-                p { class: "text-sm text-muted",
-                    "Customize how this Company's portal looks to its contacts. Empty fields inherit from the MSP-level defaults; the merged result is what the portal actually paints."
-                }
+                p { class: "text-sm text-muted", "{intro_copy}" }
                 // Asset uploads (MAPPS-618 phase B). Each row shows
                 // the current image (or a "No file" placeholder) +
                 // a file picker + a Remove button. Uploads fire
@@ -350,7 +369,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                         disabled,
                         oninput: move |e: FormEvent| display_name.set(e.value()),
                     }
-                    p { class: "text-xs text-muted", "{hint(defaults.display_name.as_deref())}" }
+                    p { class: "text-xs text-muted", "{hint(&props.plane, defaults.display_name.as_deref())}" }
                 }
                 // Colors
                 div { class: "grid grid-cols-1 sm:grid-cols-3 gap-4",
@@ -368,7 +387,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                             disabled,
                             oninput: move |e: FormEvent| primary_color.set(e.value()),
                         }
-                        p { class: "text-xs text-muted", "{hint(defaults.primary_color.as_deref())}" }
+                        p { class: "text-xs text-muted", "{hint(&props.plane, defaults.primary_color.as_deref())}" }
                     }
                     div { class: "space-y-1",
                         label {
@@ -384,7 +403,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                             disabled,
                             oninput: move |e: FormEvent| secondary_color.set(e.value()),
                         }
-                        p { class: "text-xs text-muted", "{hint(defaults.secondary_color.as_deref())}" }
+                        p { class: "text-xs text-muted", "{hint(&props.plane, defaults.secondary_color.as_deref())}" }
                     }
                     div { class: "space-y-1",
                         label {
@@ -400,7 +419,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                             disabled,
                             oninput: move |e: FormEvent| background_color.set(e.value()),
                         }
-                        p { class: "text-xs text-muted", "{hint(defaults.background_color.as_deref())}" }
+                        p { class: "text-xs text-muted", "{hint(&props.plane, defaults.background_color.as_deref())}" }
                     }
                 }
                 // Support contact block
@@ -420,7 +439,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                             disabled,
                             oninput: move |e: FormEvent| support_email.set(e.value()),
                         }
-                        p { class: "text-xs text-muted", "{hint(defaults.support_email.as_deref())}" }
+                        p { class: "text-xs text-muted", "{hint(&props.plane, defaults.support_email.as_deref())}" }
                     }
                     div { class: "space-y-1",
                         label {
@@ -437,7 +456,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                             disabled,
                             oninput: move |e: FormEvent| support_phone.set(e.value()),
                         }
-                        p { class: "text-xs text-muted", "{hint(defaults.support_phone.as_deref())}" }
+                        p { class: "text-xs text-muted", "{hint(&props.plane, defaults.support_phone.as_deref())}" }
                     }
                 }
                 div { class: "space-y-1",
@@ -455,7 +474,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                         disabled,
                         oninput: move |e: FormEvent| support_contact_name.set(e.value()),
                     }
-                    p { class: "text-xs text-muted", "{hint(defaults.support_contact_name.as_deref())}" }
+                    p { class: "text-xs text-muted", "{hint(&props.plane, defaults.support_contact_name.as_deref())}" }
                 }
                 // Save row
                 div { class: "flex items-center justify-end gap-3 pt-4 border-t border-line",

@@ -126,9 +126,7 @@ pub async fn refresh_contact_session() -> Result<(), String> {
                 // repaint on the very next render (a role's brand
                 // reveal / a tenant brand tweak lands in the SPA
                 // within the same tick).
-                crate::hooks::branding::set_effective_branding(
-                    snippet.effective_branding.clone(),
-                );
+                crate::hooks::branding::set_effective_branding(snippet.effective_branding.clone());
             }
             crate::hooks::capabilities::set_contact_capabilities(Some(caps));
             Ok(())
@@ -228,9 +226,7 @@ fn install_focus_refresh_listener() {
             let _ = refresh_contact_session().await;
         });
     }) as Box<dyn FnMut(web_sys::Event)>);
-    if let Err(err) =
-        win.add_event_listener_with_callback("focus", cb.as_ref().unchecked_ref())
-    {
+    if let Err(err) = win.add_event_listener_with_callback("focus", cb.as_ref().unchecked_ref()) {
         tracing::warn!(error = ?err, "use_contact_auto_refresh: focus listener install failed");
         return;
     }

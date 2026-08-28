@@ -2220,10 +2220,8 @@ fn CompanyPortalAccessCard(company_id: String) -> Element {
     let mut toggling: Signal<std::collections::HashSet<uuid::Uuid>> =
         use_signal(std::collections::HashSet::new);
     let snap = roster.read_unchecked();
-    let all_roles_snap: Vec<PortalRoleSummaryWire> = all_roles
-        .read_unchecked()
-        .clone()
-        .unwrap_or_default();
+    let all_roles_snap: Vec<PortalRoleSummaryWire> =
+        all_roles.read_unchecked().clone().unwrap_or_default();
     let count = match &*snap {
         Some(Some(page)) => Some(page.meta.total),
         _ => None,
@@ -3961,10 +3959,10 @@ fn CompanyBrandingCard(
         let id = id.clone();
         spawn(async move {
             let patch = serde_json::json!({ "branding": block });
-            match crate::hooks::fetch::api::put_authed_typed::<
-                serde_json::Value,
-                _,
-            >(&format!("/contacts/companies/{id}"), &patch)
+            match crate::hooks::fetch::api::put_authed_typed::<serde_json::Value, _>(
+                &format!("/contacts/companies/{id}"),
+                &patch,
+            )
             .await
             {
                 Ok(_) => {

@@ -17,9 +17,7 @@
 use dioxus::prelude::*;
 
 use crate::components::{BrandingEditor, ContentUnavailable};
-use crate::hooks::branding::{
-    CompanyBranding, ContactOwnCompanyBranding, TenantBranding,
-};
+use crate::hooks::branding::{CompanyBranding, ContactOwnCompanyBranding, TenantBranding};
 
 const CAP: &str = "settings:manage_company_branding";
 
