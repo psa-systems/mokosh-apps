@@ -92,10 +92,14 @@ pub fn AppShell() -> Element {
                 }
                 // The routed page renders here. Only this subtree swaps on
                 // navigation; the chrome above and below stays mounted.
-                main { class: "flex-1 overflow-y-auto overscroll-contain py-6",
-                    div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
-                        Outlet::<crate::Route> {}
-                    }
+                //
+                // MAPPS-624: `main` supplies the shared padding but no width
+                // cap. The `max-w-7xl mx-auto` that used to live here now sits
+                // on each route component in `src/lib.rs`, so how wide a page
+                // renders is that page's own choice; `KBArticleDetail` is the
+                // first to opt out and fill the window.
+                main { class: "flex-1 overflow-y-auto overscroll-contain py-6 px-4 sm:px-6 lg:px-8",
+                    Outlet::<crate::Route> {}
                 }
             }
             crate::hooks::toast::ToastRoot {}

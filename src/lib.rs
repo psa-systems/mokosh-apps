@@ -744,6 +744,13 @@ pub enum Route {
 }
 
 // Route component wrappers - these import the actual page components
+//
+// MAPPS-624: every wrapper under `#[layout(AppShell)]` carries its own
+// `div { class: "max-w-7xl mx-auto" }`. That cap used to sit in `AppShell`
+// around the `Outlet`, which fixed every page at 1280px; it is inlined per
+// route now so widening one page is a one-line change here and touches no
+// other page. `KBArticleDetail` is the one route that omits it and fills the
+// window (`scripts/check-page-width.sh` holds the rest of them to it).
 use pages::*;
 
 /// Top-level navigate to the Bunyip hub. Used by the legacy
@@ -846,17 +853,29 @@ fn SignupComplete(token: String) -> Element {
 
 #[component]
 fn Dashboard() -> Element {
-    rsx! { dashboards_view::DefaultDashboardPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            dashboards_view::DefaultDashboardPage {}
+        }
+    }
 }
 
 #[component]
 fn SavedDashboards() -> Element {
-    rsx! { dashboards::SavedDashboardsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            dashboards::SavedDashboardsPage {}
+        }
+    }
 }
 
 #[component]
 fn SavedDashboardView(id: String) -> Element {
-    rsx! { dashboards_view::SavedDashboardViewPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            dashboards_view::SavedDashboardViewPage { id }
+        }
+    }
 }
 
 #[component]
@@ -871,117 +890,209 @@ fn Onboarding() -> Element {
 
 #[component]
 fn TicketList() -> Element {
-    rsx! { tickets::TicketListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            tickets::TicketListPage {}
+        }
+    }
 }
 
 #[component]
 fn TicketNew() -> Element {
-    rsx! { tickets::TicketNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            tickets::TicketNewPage {}
+        }
+    }
 }
 
 #[component]
 fn TicketDetail(id: String) -> Element {
-    rsx! { tickets::TicketDetailPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            tickets::TicketDetailPage { id }
+        }
+    }
 }
 
 #[component]
 fn TimeEntryList() -> Element {
-    rsx! { time::TimeEntryListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            time::TimeEntryListPage {}
+        }
+    }
 }
 
 #[component]
 fn TimeEntryNew() -> Element {
-    rsx! { time::TimeEntryNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            time::TimeEntryNewPage {}
+        }
+    }
 }
 
 #[component]
 fn Timesheets() -> Element {
-    rsx! { time::TimesheetsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            time::TimesheetsPage {}
+        }
+    }
 }
 
 #[component]
 fn TimesheetApprovals() -> Element {
-    rsx! { time::TimesheetApprovalsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            time::TimesheetApprovalsPage {}
+        }
+    }
 }
 
 #[component]
 fn Approvals() -> Element {
-    rsx! { approvals::ApprovalsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            approvals::ApprovalsPage {}
+        }
+    }
 }
 
 #[component]
 fn ProjectList() -> Element {
-    rsx! { projects::ProjectListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            projects::ProjectListPage {}
+        }
+    }
 }
 
 #[component]
 fn ProjectNew() -> Element {
-    rsx! { projects::ProjectNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            projects::ProjectNewPage {}
+        }
+    }
 }
 
 #[component]
 fn ProjectDetail(id: String) -> Element {
-    rsx! { projects::ProjectDetailPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            projects::ProjectDetailPage { id }
+        }
+    }
 }
 
 #[component]
 fn ProjectTasks(id: String) -> Element {
-    rsx! { projects::ProjectTasksPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            projects::ProjectTasksPage { id }
+        }
+    }
 }
 
 #[component]
 fn CompanyList() -> Element {
-    rsx! { contacts::CompanyListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contacts::CompanyListPage {}
+        }
+    }
 }
 
 #[component]
 fn CompanyNew() -> Element {
-    rsx! { contacts::CompanyNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contacts::CompanyNewPage {}
+        }
+    }
 }
 
 #[component]
 fn CompanyDetail(id: String) -> Element {
-    rsx! { contacts::CompanyDetailPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contacts::CompanyDetailPage { id }
+        }
+    }
 }
 
 #[component]
 fn CompanyEdit(id: String) -> Element {
-    rsx! { contacts::CompanyEditPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contacts::CompanyEditPage { id }
+        }
+    }
 }
 
 #[component]
 fn ContactList() -> Element {
-    rsx! { contacts::ContactListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contacts::ContactListPage {}
+        }
+    }
 }
 
 #[component]
 fn ContactNew() -> Element {
-    rsx! { contacts::ContactNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contacts::ContactNewPage {}
+        }
+    }
 }
 
 #[component]
 fn ContactDetail(id: String) -> Element {
-    rsx! { contacts::ContactDetailPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contacts::ContactDetailPage { id }
+        }
+    }
 }
 
 #[component]
 fn ContactEdit(id: String) -> Element {
-    rsx! { contacts::ContactEditPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contacts::ContactEditPage { id }
+        }
+    }
 }
 
 #[component]
 fn Calendar() -> Element {
-    rsx! { calendar::CalendarPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            calendar::CalendarPage {}
+        }
+    }
 }
 
 #[component]
 fn DispatchBoard() -> Element {
-    rsx! { calendar::DispatchBoardPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            calendar::DispatchBoardPage {}
+        }
+    }
 }
 
 #[component]
 fn SchedulingTemplates() -> Element {
-    rsx! { calendar::SchedulingTemplatesPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            calendar::SchedulingTemplatesPage {}
+        }
+    }
 }
 
 // MAPPS-302: NOC "Big View" route handlers.
@@ -1002,119 +1113,215 @@ fn BigCalendar() -> Element {
 
 #[component]
 fn QuoteList() -> Element {
-    rsx! { quotes::QuoteListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            quotes::QuoteListPage {}
+        }
+    }
 }
 
 #[component]
 fn QuoteNew() -> Element {
-    rsx! { quotes::QuoteNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            quotes::QuoteNewPage {}
+        }
+    }
 }
 
 #[component]
 fn QuoteDetail(id: String) -> Element {
-    rsx! { quotes::QuoteDetailPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            quotes::QuoteDetailPage { id }
+        }
+    }
 }
 
 #[component]
 fn QuoteEdit(id: String) -> Element {
-    rsx! { quotes::QuoteEditPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            quotes::QuoteEditPage { id }
+        }
+    }
 }
 
 #[component]
 fn ContractList() -> Element {
-    rsx! { contracts::ContractListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contracts::ContractListPage {}
+        }
+    }
 }
 
 #[component]
 fn ContractNew() -> Element {
-    rsx! { contracts::ContractNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contracts::ContractNewPage {}
+        }
+    }
 }
 
 #[component]
 fn ContractDetail(id: String) -> Element {
-    rsx! { contracts::ContractDetailPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contracts::ContractDetailPage { id }
+        }
+    }
 }
 
 #[component]
 fn ContractEdit(id: String) -> Element {
-    rsx! { contracts::ContractEditPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contracts::ContractEditPage { id }
+        }
+    }
 }
 
 #[component]
 fn RateCardList() -> Element {
-    rsx! { contracts::RateCardListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contracts::RateCardListPage {}
+        }
+    }
 }
 
 #[component]
 fn RateCardNew() -> Element {
-    rsx! { contracts::RateCardListPage { open_create: true } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contracts::RateCardListPage { open_create: true }
+        }
+    }
 }
 
 #[component]
 fn RateCardDetail(id: String) -> Element {
-    rsx! { contracts::RateCardDetailPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contracts::RateCardDetailPage { id }
+        }
+    }
 }
 
 #[component]
 fn InvoiceList() -> Element {
-    rsx! { billing::InvoiceListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            billing::InvoiceListPage {}
+        }
+    }
 }
 
 #[component]
 fn InvoiceNew() -> Element {
-    rsx! { billing::InvoiceNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            billing::InvoiceNewPage {}
+        }
+    }
 }
 
 #[component]
 fn InvoiceDetail(id: String) -> Element {
-    rsx! { billing::InvoiceDetailPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            billing::InvoiceDetailPage { id }
+        }
+    }
 }
 
 #[component]
 fn PaymentList() -> Element {
-    rsx! { billing::PaymentListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            billing::PaymentListPage {}
+        }
+    }
 }
 
 #[component]
 fn TaxRateList() -> Element {
-    rsx! { billing::TaxRateListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            billing::TaxRateListPage {}
+        }
+    }
 }
 
 #[component]
 fn PaymentGatewayConfig() -> Element {
-    rsx! { billing::PaymentGatewayConfigPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            billing::PaymentGatewayConfigPage {}
+        }
+    }
 }
 
 #[component]
 fn AssetList() -> Element {
-    rsx! { assets::AssetListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            assets::AssetListPage {}
+        }
+    }
 }
 
 #[component]
 fn AssetNew() -> Element {
-    rsx! { assets::AssetNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            assets::AssetNewPage {}
+        }
+    }
 }
 
 #[component]
 fn AssetDetail(id: String) -> Element {
-    rsx! { assets::AssetDetailPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            assets::AssetDetailPage { id }
+        }
+    }
 }
 
 #[component]
 fn KBHome() -> Element {
-    rsx! { knowledge_base::KBHomePage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            knowledge_base::KBHomePage {}
+        }
+    }
 }
 
 #[component]
 fn KBArticleList(q: String, tag: String, category: String) -> Element {
-    rsx! { knowledge_base::KBArticleListPage { initial_q: q, initial_tag: tag, initial_category: category } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            knowledge_base::KBArticleListPage { initial_q: q, initial_tag: tag, initial_category: category }
+        }
+    }
 }
 
 #[component]
 fn KBArticleNew() -> Element {
-    rsx! { knowledge_base::KBArticleNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            knowledge_base::KBArticleNewPage {}
+        }
+    }
 }
 
+// MAPPS-624: no `max-w-7xl mx-auto` wrapper, deliberately. The reading view
+// has a left tree rail, the article body and a right rail, and at 1280px the
+// body column was the one that lost the space. It fills whatever width `main`
+// gives it.
 #[component]
 fn KBArticleDetail(id: String) -> Element {
     rsx! { knowledge_base::KBArticleDetailPage { id } }
@@ -1122,17 +1329,29 @@ fn KBArticleDetail(id: String) -> Element {
 
 #[component]
 fn KBArticleEdit(id: String) -> Element {
-    rsx! { knowledge_base::KBArticleEditPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            knowledge_base::KBArticleEditPage { id }
+        }
+    }
 }
 
 #[component]
 fn Reports() -> Element {
-    rsx! { reports::ReportsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            reports::ReportsPage {}
+        }
+    }
 }
 
 #[component]
 fn ReportDetail(report_type: String) -> Element {
-    rsx! { reports::ReportDetailPage { report_type } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            reports::ReportDetailPage { report_type }
+        }
+    }
 }
 
 #[component]
@@ -1140,12 +1359,20 @@ fn ActiveTenant() -> Element {
     // Tenant switching moved to the bunyip hub per
     // docs/migration/settings-split.md. Bookmarks at the legacy URL
     // bounce there instead of 404ing.
-    rsx! { HubRedirect { target: "/settings/active-tenant".to_string(), label: "tenant switcher" } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            HubRedirect { target: "/settings/active-tenant".to_string(), label: "tenant switcher" }
+        }
+    }
 }
 
 #[component]
 fn Profile() -> Element {
-    rsx! { profile::ProfilePage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            profile::ProfilePage {}
+        }
+    }
 }
 
 // MAPPS-169 Settings hub + sub-routes. The type editors are net-new
@@ -1153,191 +1380,339 @@ fn Profile() -> Element {
 // components so there is one source of truth per surface.
 #[component]
 fn SettingsHome() -> Element {
-    rsx! { settings::SettingsHomePage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::SettingsHomePage {}
+        }
+    }
 }
 
 // MAPPS-258 per-group landing pages.
 #[component]
 fn SettingsGroupServiceTypes() -> Element {
-    rsx! { settings::ServiceTypesGroupPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::ServiceTypesGroupPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsGroupBilling() -> Element {
-    rsx! { settings::BillingGroupPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::BillingGroupPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsGroupTickets() -> Element {
-    rsx! { settings::TicketsGroupPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::TicketsGroupPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsGroupIntegrations() -> Element {
-    rsx! { settings::IntegrationsGroupPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::IntegrationsGroupPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsGroupData() -> Element {
-    rsx! { settings::DataGroupPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::DataGroupPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsWorkTypes() -> Element {
-    rsx! { settings::WorkTypesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::WorkTypesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsTaskStatuses() -> Element {
-    rsx! { settings::TaskStatusesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::TaskStatusesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsAssetTypes() -> Element {
-    rsx! { settings::AssetTypesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::AssetTypesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsCompanyIndustries() -> Element {
-    rsx! { settings::CompanyIndustriesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::CompanyIndustriesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsProjectTypes() -> Element {
-    rsx! { settings::ProjectTypesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::ProjectTypesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsPaymentTerms() -> Element {
-    rsx! { settings::PaymentTermsSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::PaymentTermsSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsSla() -> Element {
-    rsx! { sla::SlaManagementPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            sla::SlaManagementPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsScheduling() -> Element {
-    rsx! { settings::SchedulingSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::SchedulingSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsAppearance() -> Element {
-    rsx! { settings::AppearanceSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::AppearanceSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsTvView() -> Element {
-    rsx! { settings::TvViewSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::TvViewSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsTimeTracking() -> Element {
-    rsx! { settings::MaxHoursPerDaySettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::MaxHoursPerDaySettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsRateCards() -> Element {
-    rsx! { contracts::RateCardListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contracts::RateCardListPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsTaxRates() -> Element {
-    rsx! { billing::TaxRateListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            billing::TaxRateListPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsGateways() -> Element {
-    rsx! { billing::PaymentGatewayConfigPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            billing::PaymentGatewayConfigPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsImportExport() -> Element {
-    rsx! { settings::ImportExportSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::ImportExportSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsOrganization() -> Element {
-    rsx! { settings::OrganizationSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::OrganizationSettingsPage {}
+        }
+    }
 }
 
 // MAPPS-172 ticket lookup editors.
 #[component]
 fn SettingsTicketStatuses() -> Element {
-    rsx! { settings::TicketStatusesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::TicketStatusesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsTicketPriorities() -> Element {
-    rsx! { settings::TicketPrioritiesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::TicketPrioritiesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsTicketTypes() -> Element {
-    rsx! { settings::TicketTypesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::TicketTypesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsTicketQueues() -> Element {
-    rsx! { settings::TicketQueuesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::TicketQueuesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsTicketCategories() -> Element {
-    rsx! { settings::TicketCategoriesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::TicketCategoriesSettingsPage {}
+        }
+    }
 }
 
 // MAPPS-199 RMM integration admin UI.
 #[component]
 fn SettingsRmmConnections() -> Element {
-    rsx! { settings::RmmConnectionsSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::RmmConnectionsSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsRmmDeviceMappings() -> Element {
-    rsx! { settings::RmmDeviceMappingsSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::RmmDeviceMappingsSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsRmmAlertRules() -> Element {
-    rsx! { settings::RmmAlertRulesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::RmmAlertRulesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SystemStatus() -> Element {
-    rsx! { system_status::SystemStatusPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            system_status::SystemStatusPage {}
+        }
+    }
 }
 
 #[component]
 fn ButtonShowcase() -> Element {
-    rsx! { button_showcase::ButtonShowcasePage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            button_showcase::ButtonShowcasePage {}
+        }
+    }
 }
 
 #[component]
 fn AuditLog() -> Element {
-    rsx! { audit_log::AuditLogPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            audit_log::AuditLogPage {}
+        }
+    }
 }
 
 #[component]
 fn FormsBuilder() -> Element {
-    rsx! { forms::FormsBuilderPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            forms::FormsBuilderPage {}
+        }
+    }
 }
 
 #[component]
 fn SlaManagement() -> Element {
-    rsx! { sla::SlaManagementPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            sla::SlaManagementPage {}
+        }
+    }
 }
 
 #[component]
 fn Team() -> Element {
-    rsx! { team::TeamPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            team::TeamPage {}
+        }
+    }
 }
 
 #[cfg(feature = "multi-tenant")]
 #[component]
 fn TenantManagement() -> Element {
-    rsx! { admin::TenantManagementPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            admin::TenantManagementPage {}
+        }
+    }
 }
 
 #[component]

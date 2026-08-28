@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return
+check: check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width
 
 # Check web/WASM compilation
 [group: 'check']
@@ -72,6 +72,13 @@ check-theme-tokens:
 check-field-value-binding:
     bash scripts/check-field-value-binding.sh --self-test
     bash scripts/check-field-value-binding.sh
+
+# MAPPS-624: the max-w-7xl cap lives on each AppShell route component in src/lib.rs, never back on the shell, so width stays a per-page choice. --self-test first, so a guard that stopped guarding fails loudly.
+[doc("Fail if AppShell caps every page again, or a route declares no width (MAPPS-624).")]
+[group: 'check']
+check-page-width:
+    bash scripts/check-page-width.sh --self-test
+    bash scripts/check-page-width.sh
 
 # MAPPS-602: a hook after an early return poisons the Dioxus runtime.
 [doc("Fail if a component calls a hook after an early return (MAPPS-602).")]
