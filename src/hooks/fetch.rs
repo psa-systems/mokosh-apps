@@ -601,6 +601,21 @@ pub mod api {
         }
     }
 
+    /// MAPPS-615 (prompt 014): drop the last-Portal-ID hint so a
+    /// visitor who explicitly says "not my portal" on the step 2 page
+    /// does not immediately bounce back to `/portal/{that}/login` via
+    /// the AuthGuard cold-load or last-slug-remember paths. Called
+    /// from `ContactLoginByPortalIdPage`'s "Choose a different portal"
+    /// button.
+    #[cfg(feature = "web")]
+    pub fn clear_contact_last_portal_id() {
+        if let Some(win) = web_sys::window() {
+            if let Ok(Some(storage)) = win.local_storage() {
+                let _ = storage.remove_item(CONTACT_LAST_PORTAL_ID_STORAGE_KEY);
+            }
+        }
+    }
+
     /// MAPPS-589 (prompt 011): read the last-known Portal ID this
     /// browser signed in on. `None` when no contact login carrying a
     /// Portal ID has happened yet (the legacy slug-only flow leaves

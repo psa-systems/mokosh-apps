@@ -683,7 +683,18 @@ pub fn StandaloneLogin() -> Element {
                     }
                 }
             }
-
+            // MAPPS-615 (prompt 014): cross-plane switch. A visitor who
+            // meant to sign into a client portal but landed on staff
+            // /login can jump without browser-back-buttoning. Sits
+            // below the primary form so the staff sign-in stays
+            // visually dominant.
+            div { class: "pt-6 mt-6 border-t border-line text-center",
+                Link {
+                    to: Route::ContactGenericLogin {},
+                    class: "text-sm text-accent hover:underline",
+                    "Sign in to a client portal instead"
+                }
+            }
         }
     }
 }

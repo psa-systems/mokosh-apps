@@ -221,8 +221,29 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
     };
 
     let portal_id_readonly = portal_id.clone();
+    // MAPPS-615 (prompt 014): "Not your portal? Choose a different one"
+    // button. Rendered above the branding header so a visitor
+    // recognises they landed on the wrong portal BEFORE they type
+    // credentials. Click hops back to the step-1 Portal ID entry page
+    // and clears the last-portal-id hint so the AuthGuard cold-load
+    // bootstrap does not immediately bounce back here.
+    let switch_portal = move |_| {
+        #[cfg(feature = "web")]
+        {
+            crate::hooks::fetch::api::clear_contact_last_portal_id();
+        }
+        nav.replace(Route::ContactGenericLogin {});
+    };
     rsx! {
         AuthLayout {
+            div { class: "mb-4 text-center",
+                button {
+                    r#type: "button",
+                    class: "text-sm text-accent hover:underline",
+                    onclick: switch_portal,
+                    "Not your portal? Choose a different one"
+                }
+            }
             if tenant_inactive {
                 div { class: "text-center mb-6",
                     h1 { class: "text-2xl font-semibold text-content", "This portal is not available" }
@@ -304,20 +325,28 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
                             "Sign in"
                         }
                     }
-                    // Magic-link escape hatch. Points at the generic
-                    // three-field page (`/portal/login`), which
-                    // itself carries a "Or sign in without a password"
-                    // link to the actual magic-link finder. Two hops
-                    // out to the finder rather than one keeps the
-                    // portal-id-scoped page focused on password login
-                    // and matches the prompt 011 spec wording.
+                    // MAPPS-615 (prompt 014): step 1 no longer carries
+                    // the magic-link fallback (it's Portal-ID-only now),
+                    // so this link now hops DIRECTLY to the finder
+                    // instead of routing through step 1. Carries an
+                    // empty email so the finder shows an empty input.
                     div { class: "pt-4 text-center",
                         Link {
-                            to: Route::ContactGenericLogin {},
+                            to: Route::ContactMagicLinkLogin { email: String::new() },
                             class: "text-sm text-accent hover:underline",
                             "Or sign in without a password"
                         }
                     }
+                }
+            }
+            // MAPPS-615: cross-plane switch. Consistent with the same
+            // link on the step-1 page + the staff /login page, so a
+            // visitor on the wrong plane can jump without browser-back.
+            div { class: "pt-6 mt-6 border-t border-line text-center",
+                Link {
+                    to: Route::Login {},
+                    class: "text-sm text-accent hover:underline",
+                    "MSP staff sign in instead"
                 }
             }
         }

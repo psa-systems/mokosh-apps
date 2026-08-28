@@ -114,6 +114,27 @@ pub fn AuthGuard() -> Element {
             };
         }
 
+        // MAPPS-615 (prompt 014): origin cue. A stranded visitor on a
+        // `/portal/*` URL with no session and no last_portal_id hint
+        // gets bounced to the contact login (step 1), not the staff
+        // /login. Preserves "I was on a portal URL, keep me on the
+        // portal plane" without needing localStorage to carry the id.
+        // Runs BEFORE the standalone-mode staff bounce below.
+        #[cfg(feature = "web")]
+        {
+            let on_portal_url = web_sys::window()
+                .and_then(|w| w.location().pathname().ok())
+                .is_some_and(|p| p.starts_with("/portal/") || p == "/portal");
+            if on_portal_url {
+                nav.replace(Route::ContactGenericLogin {});
+                return rsx! {
+                    div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
+                        "Redirecting to sign in…"
+                    }
+                };
+            }
+        }
+
         // MAPPS-368: a deployment with no OIDC issuer has no bunyip OP to
         // redirect to, so send the user to the standalone username/password
         // login form instead of a dead `/oauth2/authorize`.
