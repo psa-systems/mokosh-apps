@@ -2725,7 +2725,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                 // height and the browser clamped `scrollTop`, and unmounting
                 // the textarea threw away the caret and its scroll offset.
                 //
-                // MAPPS-610: all of that, the Write/Split/Preview switcher and
+                // MAPPS-610: all of that, the Write/Preview/Split switcher and
                 // the scroll link now live in `MarkdownEditor`, so the ticket
                 // description and the note editors get the same control instead
                 // of a copy each. What stays here is what belongs to an article:

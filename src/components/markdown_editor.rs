@@ -47,7 +47,13 @@ pub enum ViewMode {
 }
 
 /// The three, in the order they are drawn and cycled.
-pub(crate) const VIEW_MODES: [ViewMode; 3] = [ViewMode::Write, ViewMode::Split, ViewMode::Preview];
+///
+/// PMS-949: Write and Preview are adjacent, because they are the pair an author
+/// swaps between - the same text, being written or being read. Split is the
+/// both-at-once mode and sits at the end rather than between the two states it
+/// combines. Reordering is free: `as_str` persists the choice by name, so a
+/// preference stored under the previous order still names the mode it named.
+pub(crate) const VIEW_MODES: [ViewMode; 3] = [ViewMode::Write, ViewMode::Preview, ViewMode::Split];
 
 impl ViewMode {
     pub(crate) fn label(self) -> &'static str {
@@ -213,7 +219,7 @@ pub struct MarkdownEditorProps {
     /// every other host leaves this empty and keeps its rows.
     #[props(default)]
     pub field_class: String,
-    /// MAPPS-610: offer `Write | Split | Preview` and a preview pane.
+    /// MAPPS-610: offer `Write | Preview | Split` and a preview pane.
     ///
     /// Off by default, because a host that has nowhere to put a second pane
     /// should not be given one. On, the component owns the switcher, both
@@ -667,17 +673,17 @@ mod view_switcher_tests {
     /// with a browser feature in Chrome or Firefox.
     #[test]
     fn the_arrows_cycle_through_the_group_and_wrap() {
-        assert!(ViewMode::Write.stepped(1) == ViewMode::Split);
-        assert!(ViewMode::Split.stepped(1) == ViewMode::Preview);
+        assert!(ViewMode::Write.stepped(1) == ViewMode::Preview);
+        assert!(ViewMode::Preview.stepped(1) == ViewMode::Split);
         assert!(
-            ViewMode::Preview.stepped(1) == ViewMode::Write,
+            ViewMode::Split.stepped(1) == ViewMode::Write,
             "wraps forward"
         );
         assert!(
-            ViewMode::Write.stepped(-1) == ViewMode::Preview,
+            ViewMode::Write.stepped(-1) == ViewMode::Split,
             "wraps back"
         );
-        assert!(ViewMode::Split.stepped(-1) == ViewMode::Write);
+        assert!(ViewMode::Preview.stepped(-1) == ViewMode::Write);
     }
 
     /// The persisted form is a name, not an index, so reordering the group
