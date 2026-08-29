@@ -325,7 +325,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
             // the description and the note editors get the same one rather
             // than a copy each.
             if props.views {
-                div { class: "mb-2",
+                div { class: "mb-2 flex flex-wrap items-center gap-3",
                     div {
                         class: "inline-flex gap-1 rounded-lg bg-surface-2 p-1",
                         role: "radiogroup",
@@ -370,6 +370,54 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                                         },
                                         "{option.label()}"
                                     }
+                                }
+                            }
+                        }
+                    }
+                    // PMS-949: the answer to a tall image pulling the panes
+                    // apart. The MAPPS-600 link is proportional by pixel, and a
+                    // picture is one source line and several hundred rendered
+                    // ones, so the preview races ahead of the source through it
+                    // and the paragraph being edited is off screen. This puts
+                    // the preview back on the block the caret is in - exactly,
+                    // because a `<textarea>`'s `selectionStart` is exact and a
+                    // top-level block renders as one child element.
+                    //
+                    // Only in Split, where there are two panes to bring back
+                    // together, and on demand rather than on every keystroke:
+                    // the author scrolls the preview themselves to read ahead,
+                    // and a jump that fights that is worse than none.
+                    if showing == ViewMode::Split {
+                        {
+                            let source = props.value.clone();
+                            let field = props.name.clone();
+                            let preview = preview_box.clone();
+                            rsx! {
+                                button {
+                                    r#type: "button",
+                                    class: "rounded px-2 py-1 text-sm font-medium text-muted hover:bg-surface-2 hover:text-content focus:outline-none focus:ring-2 focus:ring-accent",
+                                    title: "Scroll the preview to the block the cursor is in",
+                                    onclick: move |_| {
+                                        let (caret, _) = crate::platform::dom::textarea_selection(
+                                            &field, 0,
+                                        );
+                                        let at = crate::utils::md_edit::utf16_to_byte(
+                                            &source, caret,
+                                        );
+                                        let blocks = crate::utils::markdown::top_level_block_ranges(
+                                            &source,
+                                        );
+                                        if let Some(index) =
+                                            crate::utils::markdown::block_index_at(&blocks, at)
+                                        {
+                                            crate::platform::scroll_sync::scroll_to_block(
+                                                &preview,
+                                                index,
+                                                blocks.len(),
+                                            );
+                                        }
+                                    },
+                                    "Sync to cursor"
                                 }
                             }
                         }
@@ -688,10 +736,7 @@ mod view_switcher_tests {
             ViewMode::Split.stepped(1) == ViewMode::Write,
             "wraps forward"
         );
-        assert!(
-            ViewMode::Write.stepped(-1) == ViewMode::Split,
-            "wraps back"
-        );
+        assert!(ViewMode::Write.stepped(-1) == ViewMode::Split, "wraps back");
         assert!(ViewMode::Preview.stepped(-1) == ViewMode::Write);
     }
 
@@ -812,6 +857,37 @@ mod view_switcher_tests {
         assert!(
             code.contains("crate::platform::scroll_sync::link(&source, &preview);"),
             "and the sync links that same pair"
+        );
+    }
+
+    /// PMS-949: the way back when a tall image has pulled the panes apart. It
+    /// is offered only in Split, where there are two panes to bring together,
+    /// and it reads the caret rather than a scroll position, which is what
+    /// makes it exact where the proportional link is approximate.
+    #[test]
+    fn split_offers_a_way_to_put_the_preview_on_the_caret() {
+        // Space-free, because the calls sit inside `rsx!` and rustfmt leaves a
+        // macro body alone: the line breaks in it are an accident of width, not
+        // something a test should be pinned to.
+        let code: String = code_only().chars().filter(|c| !c.is_whitespace()).collect();
+        let gated = code
+            .find("ifshowing==ViewMode::Split{{letsource=props.value.clone();")
+            .expect("the control is gated on Split");
+        let window = &code[gated..code.len().min(gated + 900)];
+        assert!(
+            window.contains("crate::platform::dom::textarea_selection(&field,0,)"),
+            "it starts from the caret: {window}"
+        );
+        assert!(
+            window.contains("crate::utils::md_edit::utf16_to_byte(&source,caret,)"),
+            "converted out of the UTF-16 units the DOM counts in: {window}"
+        );
+        assert!(
+            window.contains(
+                "crate::platform::scroll_sync::scroll_to_block(&preview,index,blocks.len(),)"
+            ),
+            "and the block count travels with the index, so a DOM that does not \
+             match can refuse the jump: {window}"
         );
     }
 

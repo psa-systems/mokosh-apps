@@ -69,7 +69,12 @@ pub enum Action {
 }
 
 /// Byte offset of the `n`th UTF-16 code unit in `s`, clamped to the string.
-fn utf16_to_byte(s: &str, target: u32) -> usize {
+///
+/// `pub(crate)` because a caret arrives from the DOM in UTF-16 units and has to
+/// become a byte offset before any Rust string work touches it. PMS-949's
+/// caret-to-block lookup needs the same conversion; a third private copy of it
+/// is a third place for the accent bug this function's callers document.
+pub(crate) fn utf16_to_byte(s: &str, target: u32) -> usize {
     let mut units = 0u32;
     for (byte, ch) in s.char_indices() {
         if units >= target {

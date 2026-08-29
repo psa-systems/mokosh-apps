@@ -19,6 +19,19 @@
 //! preview runs ahead of the source through it. That is the known cost, and it
 //! is still far better than two panes in unrelated places.
 //!
+//! ## Sync to cursor (PMS-949)
+//!
+//! An image is that divergence at its worst - one source line, several hundred
+//! rendered ones - and it was reported as "difficult to match after scrolling a
+//! bit". [`scroll_to_block`] is the way back: it puts the preview on the block
+//! the caret is in, exactly, on demand.
+//!
+//! It costs nothing the paragraph above rejected. The caret is exact already
+//! (`selectionStart`), and a top-level block renders as one child element, so
+//! the Nth block is the Nth child and no `data-*` attribute has to survive the
+//! renderer, the sanitizer and the published article to say which is which.
+//! `crate::utils::markdown::top_level_block_ranges` supplies the numbering.
+//!
 //! ## Why the echo guard earns its place
 //!
 //! Setting the other pane's `scrollTop` fires ITS scroll event, which answers by
@@ -80,6 +93,13 @@ pub fn link(source_id: &str, preview_id: &str) {
         let to = to.clone();
         let echo = echo.clone();
         let cb = Closure::wrap(Box::new(move |_evt: web_sys::Event| {
+            // PMS-949: a jump we made ourselves, from "sync to cursor". It is
+            // not a position the author chose to be proportional to, so it is
+            // swallowed rather than answered - otherwise landing the preview on
+            // the caret's block would drag the source pane away from the caret.
+            if take_programmatic() {
+                return;
+            }
             if echo.get() {
                 echo.set(false);
                 return;
@@ -124,6 +144,84 @@ fn scrollable_extent(el: &web_sys::Element) -> Option<i32> {
     (extent > 0).then_some(extent)
 }
 
+// Raised immediately before a scroll this module performs on purpose, and taken
+// by the first scroll event that follows. See the caller in `link`.
+//
+// Global rather than per-pair, because it guards a single user action that no
+// second editor on the page can be performing at the same instant, and because
+// the pair's own `echo` flag is owned by the closures `link` builds. It is only
+// ever raised when the write actually changes the value, so it cannot be left
+// set by a scroll that fired no event.
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+thread_local! {
+    static PROGRAMMATIC: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+fn take_programmatic() -> bool {
+    PROGRAMMATIC.with(|f| f.replace(false))
+}
+
+/// Put the preview's scroll box on its `index`th top-level block.
+///
+/// PMS-949: the answer to a tall image pulling the panes apart. The proportional
+/// link is right about "40% down" and wrong about which paragraph that is, so
+/// this maps the caret exactly instead: `crate::utils::markdown` says which
+/// top-level block the caret is in, and the Nth block renders as the Nth child
+/// of the rendered document.
+///
+/// `expected` is the number of blocks the source has. When the DOM holds a
+/// different number of children the correspondence has broken (ammonia can drop
+/// a raw HTML block), and this does nothing rather than scrolling somewhere
+/// confidently wrong. Returns whether it moved anything.
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+pub fn scroll_to_block(preview_id: &str, index: usize, expected: usize) -> bool {
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        return false;
+    };
+    let Some(box_el) = document.get_element_by_id(preview_id) else {
+        return false;
+    };
+    // The scroll box holds one child, the rendered document, and its children
+    // are the blocks. `Markdown` owns that element and its id; this only counts
+    // through it.
+    let Some(rendered) = box_el.first_element_child() else {
+        return false;
+    };
+    if rendered.child_element_count() as usize != expected {
+        return false;
+    }
+    // Walked rather than indexed through `children()`: that returns an
+    // `HtmlCollection`, which is a web-sys feature this crate does not enable,
+    // and a sibling walk needs no new binding.
+    let mut target = rendered.first_element_child();
+    for _ in 0..index {
+        target = target.and_then(|el| el.next_element_sibling());
+    }
+    let Some(target) = target else {
+        return false;
+    };
+    // Relative to the box's own scrolled content, which is what `scrollTop`
+    // counts: `offsetTop` would be relative to the nearest positioned ancestor
+    // and neither element positions itself.
+    let top = target.get_bounding_client_rect().top() - box_el.get_bounding_client_rect().top()
+        + f64::from(box_el.scroll_top());
+    let next = top.round().max(0.0) as i32;
+    if next == box_el.scroll_top() {
+        return false;
+    }
+    PROGRAMMATIC.with(|f| f.set(true));
+    box_el.set_scroll_top(next);
+    true
+}
+
+/// MAPPS-504 / MAPPS-511: no in-process DOM on the desktop build, as with
+/// [`link`].
+#[cfg(not(all(feature = "web", target_arch = "wasm32")))]
+pub fn scroll_to_block(_preview_id: &str, _index: usize, _expected: usize) -> bool {
+    false
+}
+
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 const INSTALLED_ATTR: &str = "data-scroll-synced";
 
@@ -157,6 +255,46 @@ mod tests {
         assert!(
             code.contains("echo.set(true); to.set_scroll_top("),
             "the flag is raised immediately before driving the other pane"
+        );
+    }
+
+    /// PMS-949: a jump this module makes is not a position the author chose, so
+    /// the proportional link must not answer it. Without this, landing the
+    /// preview on the caret's block would immediately drag the source pane away
+    /// from the caret, which is the one thing the button exists to avoid.
+    #[test]
+    fn a_sync_to_cursor_jump_is_not_answered_proportionally() {
+        let code = code_only();
+        let taken = code
+            .find("if take_programmatic() { return; }")
+            .expect("the scroll listener takes the programmatic flag");
+        let echo = code
+            .find("if echo.get() { echo.set(false); return; }")
+            .expect("and still has the echo guard");
+        assert!(taken < echo, "before the echo guard, not instead of it");
+        assert!(
+            code.contains("PROGRAMMATIC.with(|f| f.set(true)); box_el.set_scroll_top(next);"),
+            "and the flag is raised immediately before the jump that fires the event"
+        );
+        assert!(
+            code.contains("if next == box_el.scroll_top() { return false; }"),
+            "a write that changes nothing fires no event, so it must not raise the \
+             flag either - it would be taken by the author's next real scroll"
+        );
+    }
+
+    /// The block map is an assumption about the DOM, so it is checked against
+    /// the DOM. Ammonia can drop a raw HTML block, and every index after it
+    /// then names the wrong element; scrolling somewhere confidently wrong is
+    /// worse than not scrolling.
+    #[test]
+    fn the_block_jump_gives_up_when_the_counts_disagree() {
+        let code = code_only();
+        assert!(
+            code.contains(
+                "if rendered.child_element_count() as usize != expected { return false; }"
+            ),
+            "the rendered child count is compared against the source's block count"
         );
     }
 
