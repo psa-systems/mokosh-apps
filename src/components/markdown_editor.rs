@@ -119,7 +119,15 @@ pub(crate) fn body_pane_class(visible: bool) -> &'static str {
         // A flex column so the field inside can stretch, and `flex-1` so the
         // pane itself stretches when it is the only one (a grid item already
         // stretches; a block child of a fixed-height box does not).
-        "min-w-0 flex flex-col flex-1"
+        //
+        // PMS-949: `min-h-0` is what keeps it from stretching PAST the panel.
+        // A flex item's automatic minimum size is its content's, so without
+        // this the pane's floor is the full unclipped height of whatever is
+        // inside it, the pane grows to that, and the scroll box within it never
+        // gets a bounded box to scroll inside. Split view never showed it
+        // because Tailwind's `grid-rows-*` tracks are `minmax(0, 1fr)`, which
+        // is this same zero spelled a different way.
+        "min-w-0 min-h-0 flex flex-col flex-1"
     } else {
         "hidden"
     }
@@ -507,7 +515,13 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                     // a page.
                     div {
                         id: "{preview_box}",
-                        class: "p-2 border border-line rounded h-full overflow-y-auto",
+                        // PMS-949: `flex-1 min-h-0`, not `h-full`. The pane is a
+                        // flex column holding a label and this box, so `h-full`
+                        // asked for the whole pane and overshot it by the
+                        // label's height even once the pane itself was bounded.
+                        // It also measures as nothing during min-content sizing,
+                        // which is half of why the pane grew in the first place.
+                        class: "p-2 border border-line rounded flex-1 min-h-0 overflow-y-auto",
                         crate::components::Markdown {
                             // No floor of its own: the panel sets the height and
                             // the row stretches both columns to it. Two competing
@@ -804,6 +818,32 @@ mod view_switcher_tests {
         assert!(
             window.contains("crate::components::Markdown {"),
             "and the renderer sits inside it: {window}"
+        );
+    }
+
+    /// PMS-949: a document taller than the panel scrolls inside it instead of
+    /// running out of the card and over the word count and the Save row.
+    ///
+    /// Two zeros are needed and neither is optional. The pane needs `min-h-0`
+    /// or its automatic minimum is the whole document's height; the box inside
+    /// needs to stretch rather than ask for `h-full`, which measures as nothing
+    /// while the pane is being sized and overshoots the pane by the height of
+    /// the "Preview" label once it is.
+    #[test]
+    fn the_preview_is_bounded_by_the_panel_rather_than_growing_it() {
+        assert!(
+            body_pane_class(true).contains("min-h-0"),
+            "the pane must be allowed to shrink below its content: {}",
+            body_pane_class(true)
+        );
+        // The class literal itself, not a window around it: the comment above
+        // it names the class it replaced, and a window would read that as the
+        // code.
+        assert!(
+            code_only().contains(
+                r#"class: "p-2 border border-line rounded flex-1 min-h-0 overflow-y-auto","#
+            ),
+            "the scroll box stretches into the pane instead of asking for a percentage of it"
         );
     }
 
