@@ -8,6 +8,20 @@ use pulldown_cmark::{html, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use crate::utils::highlight;
 use crate::utils::mentions::{self, Mention};
 
+/// The GFM extensions this app renders.
+///
+/// One definition, because the block map in [`top_level_block_ranges`] has to
+/// see the same document the renderer does: an extension enabled for one and
+/// not the other changes how many top-level blocks there are, and the map is
+/// nothing but an index into them.
+fn render_options() -> Options {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TASKLISTS);
+    options
+}
+
 /// Markdown -> raw (unsanitized) HTML, with the GFM extensions we render.
 ///
 /// The event stream is transformed rather than post-processed on the HTML,
@@ -18,11 +32,7 @@ use crate::utils::mentions::{self, Mention};
 /// finished HTML cannot tell those apart and would happily rewrite the inside
 /// of an `href`.
 fn to_html(src: &str, people: &[Mention], api_origin: &str) -> String {
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_TABLES);
-    options.insert(Options::ENABLE_STRIKETHROUGH);
-    options.insert(Options::ENABLE_TASKLISTS);
-    let parser = Parser::new_ext(src, options);
+    let parser = Parser::new_ext(src, render_options());
 
     let mut events: Vec<Event> = Vec::new();
     // Fence info string while inside a fenced block; `None` outside one.
@@ -504,8 +514,115 @@ fn task_marker_pos(content: &str) -> Option<usize> {
     }
 }
 
+/// The byte range of each top-level block in `src`, in document order.
+///
+/// PMS-949: this is the whole of the caret-to-preview mapping. `pulldown-cmark`
+/// already knows where every block started - `into_offset_iter` yields a byte
+/// range beside each event - and a top-level block renders as exactly one child
+/// element of the rendered document. So the Nth range here is the Nth child of
+/// the preview, and no `data-*` attribute has to be carried through the
+/// renderer and the sanitizer into the published article to say so. That cost
+/// is what ruled out line-mapped scrolling in `platform::scroll_sync`, and this
+/// avoids all of it by counting instead of labelling.
+///
+/// The correspondence is an assumption, not a guarantee: ammonia can drop a raw
+/// HTML block, which would shift every index after it. The caller compares this
+/// length against the number of children it actually finds and does nothing
+/// when they disagree, rather than scrolling somewhere confidently wrong.
+pub fn top_level_block_ranges(src: &str) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut depth = 0usize;
+    for (event, range) in Parser::new_ext(src, render_options()).into_offset_iter() {
+        match event {
+            Event::Start(_) => {
+                if depth == 0 {
+                    ranges.push(range);
+                }
+                depth += 1;
+            }
+            Event::End(_) => depth = depth.saturating_sub(1),
+            // A rule or a raw HTML block is a top-level element with no
+            // Start/End pair of its own.
+            _ if depth == 0 => ranges.push(range),
+            _ => {}
+        }
+    }
+    ranges
+}
+
+/// Which of `ranges` a byte offset falls in.
+///
+/// The last block that starts at or before the offset, so a caret in the blank
+/// line between two paragraphs belongs to the one above it rather than to
+/// nothing. `None` only for an empty document.
+pub fn block_index_at(ranges: &[std::ops::Range<usize>], byte_offset: usize) -> Option<usize> {
+    if ranges.is_empty() {
+        return None;
+    }
+    Some(
+        ranges
+            .iter()
+            .rposition(|r| r.start <= byte_offset)
+            .unwrap_or(0),
+    )
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// PMS-949: the caret's block, which is what "put the preview back where I
+    /// am" resolves to.
+    #[test]
+    fn a_caret_resolves_to_the_block_it_is_in() {
+        let src = "# Title\n\nFirst paragraph.\n\n![shot](a.png)\n\n- one\n- two\n\nLast.\n";
+        let ranges = top_level_block_ranges(src);
+        assert_eq!(ranges.len(), 5, "{ranges:?}");
+        let at = |needle: &str| {
+            block_index_at(&ranges, src.find(needle).expect("in the source")).expect("a block")
+        };
+        assert_eq!(at("# Title"), 0);
+        assert_eq!(at("First"), 1);
+        // An image on its own line is a paragraph holding an image, which is
+        // one block and one rendered element - the case the report is about.
+        assert_eq!(at("![shot]"), 2);
+        assert_eq!(at("- two"), 3, "a list is one block, not one per item");
+        assert_eq!(at("Last"), 4);
+    }
+
+    /// A caret in the blank line between two blocks belongs to the one above
+    /// it. Scrolling to the block the author just left is right; scrolling
+    /// nowhere because the gap is in neither block is not.
+    #[test]
+    fn a_caret_between_blocks_belongs_to_the_one_above() {
+        let src = "First.\n\nSecond.\n";
+        let ranges = top_level_block_ranges(src);
+        let gap = src.find("\n\n").expect("the blank line") + 1;
+        assert_eq!(block_index_at(&ranges, gap), Some(0));
+        assert_eq!(
+            block_index_at(&ranges, src.len()),
+            Some(1),
+            "and a caret at the very end is in the last block"
+        );
+    }
+
+    /// Nothing to scroll to in an empty document, and no panic asking.
+    #[test]
+    fn an_empty_document_has_no_block_to_land_in() {
+        assert!(top_level_block_ranges("").is_empty());
+        assert_eq!(block_index_at(&[], 0), None);
+    }
+
+    /// The blocks are counted from the same document the renderer builds. Two
+    /// option sets would mean two different documents, and the map is nothing
+    /// but an index into the renderer's.
+    #[test]
+    fn the_map_and_the_renderer_read_the_same_extensions() {
+        // A table is only one block when ENABLE_TABLES is on; without it these
+        // lines are one paragraph.
+        let src = "| a | b |\n| - | - |\n| 1 | 2 |\n\nAfter.\n";
+        assert_eq!(top_level_block_ranges(src).len(), 2);
+        assert!(render_markdown(src).contains("<table>"));
+    }
     use super::*;
 
     #[test]

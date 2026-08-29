@@ -2725,7 +2725,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                 // height and the browser clamped `scrollTop`, and unmounting
                 // the textarea threw away the caret and its scroll offset.
                 //
-                // MAPPS-610: all of that, the Write/Split/Preview switcher and
+                // MAPPS-610: all of that, the Write/Preview/Split switcher and
                 // the scroll link now live in `MarkdownEditor`, so the ticket
                 // description and the note editors get the same control instead
                 // of a copy each. What stays here is what belongs to an article:
@@ -2740,17 +2740,25 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     // PMS-939: the panel takes its height from the window
                     // instead of from 18 rows of text. On a tall screen the old
                     // fixed field left most of the page empty while the author
-                    // read a long article through a small window. The subtrahend
-                    // is this screen's chrome above and below the panel (page
-                    // header, the article's summary row, the switcher, the
-                    // toolbar, the word count, the save row); the floor keeps it
-                    // honest on a short one.
+                    // read a long article through a small window.
                     //
-                    // With the metadata block expanded the panel keeps this
-                    // height and the page scrolls, which is the same thing that
-                    // happens today. Collapsing the block, which the summary row
-                    // is there to encourage, fits the whole thing again.
-                    panel_class: "h-[calc(100vh-22rem)] min-h-[26rem]".to_string(),
+                    // PMS-949: 22rem was the chrome above AND below the panel
+                    // with nothing scrolled away, page header and expanded
+                    // details card included, and it cost the editor 96px on a
+                    // 726px window - roughly a fifth of the writing area, to
+                    // hold space for two things the author has already scrolled
+                    // past by the time they are writing.
+                    //
+                    // The subtrahend is now what has to stay on screen BESIDE
+                    // the panel and cannot scroll away from it, because it is
+                    // inside the same card: the card's own padding, the label
+                    // and the switcher above (~5.25rem), the word count, the
+                    // Save row and the card's bottom padding below (~6.25rem),
+                    // and the page's own `py-6` (3rem). The page header and the
+                    // details block are deliberately not counted - scrolling
+                    // them off is what MAPPS-612's collapsible summary row is
+                    // for. The floor keeps it honest on a short window.
+                    panel_class: "h-[calc(100vh-16rem)] min-h-[26rem]".to_string(),
                     // The floor, for the case where the panel is at its `min-h`.
                     // `field_class` is what makes it grow past this on a taller
                     // window, so the two are a floor and a stretch rather than
@@ -3849,7 +3857,7 @@ mod editor_ux_tests {
     fn the_body_panel_states_its_own_height() {
         let code = code_only();
         assert!(
-            code.contains(r#"panel_class: "h-[calc(100vh-22rem)] min-h-[26rem]".to_string()"#),
+            code.contains(r#"panel_class: "h-[calc(100vh-16rem)] min-h-[26rem]".to_string()"#),
             "a viewport height so the editor is not 18 rows on a screen with room \
              for forty, and a floor so it does not collapse on a short one"
         );

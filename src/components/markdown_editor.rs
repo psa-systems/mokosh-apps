@@ -47,7 +47,13 @@ pub enum ViewMode {
 }
 
 /// The three, in the order they are drawn and cycled.
-pub(crate) const VIEW_MODES: [ViewMode; 3] = [ViewMode::Write, ViewMode::Split, ViewMode::Preview];
+///
+/// PMS-949: Write and Preview are adjacent, because they are the pair an author
+/// swaps between - the same text, being written or being read. Split is the
+/// both-at-once mode and sits at the end rather than between the two states it
+/// combines. Reordering is free: `as_str` persists the choice by name, so a
+/// preference stored under the previous order still names the mode it named.
+pub(crate) const VIEW_MODES: [ViewMode; 3] = [ViewMode::Write, ViewMode::Preview, ViewMode::Split];
 
 impl ViewMode {
     pub(crate) fn label(self) -> &'static str {
@@ -119,7 +125,15 @@ pub(crate) fn body_pane_class(visible: bool) -> &'static str {
         // A flex column so the field inside can stretch, and `flex-1` so the
         // pane itself stretches when it is the only one (a grid item already
         // stretches; a block child of a fixed-height box does not).
-        "min-w-0 flex flex-col flex-1"
+        //
+        // PMS-949: `min-h-0` is what keeps it from stretching PAST the panel.
+        // A flex item's automatic minimum size is its content's, so without
+        // this the pane's floor is the full unclipped height of whatever is
+        // inside it, the pane grows to that, and the scroll box within it never
+        // gets a bounded box to scroll inside. Split view never showed it
+        // because Tailwind's `grid-rows-*` tracks are `minmax(0, 1fr)`, which
+        // is this same zero spelled a different way.
+        "min-w-0 min-h-0 flex flex-col flex-1"
     } else {
         "hidden"
     }
@@ -205,7 +219,7 @@ pub struct MarkdownEditorProps {
     /// every other host leaves this empty and keeps its rows.
     #[props(default)]
     pub field_class: String,
-    /// MAPPS-610: offer `Write | Split | Preview` and a preview pane.
+    /// MAPPS-610: offer `Write | Preview | Split` and a preview pane.
     ///
     /// Off by default, because a host that has nowhere to put a second pane
     /// should not be given one. On, the component owns the switcher, both
@@ -264,11 +278,20 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
     // screen. In an effect rather than at mount because the preview box only
     // exists in split view; re-running is free, `link` marks what it has wired.
     // MAPPS-610: it moved here with the panes, so every host gets it.
+    //
+    // PMS-949: the mode is read INSIDE the closure, and that is the whole
+    // mechanism, not a style choice. A Dioxus effect subscribes to the signals
+    // it reads while it runs, so the version that closed over `showing` - a
+    // plain `ViewMode` computed above - had no subscriptions at all and ran
+    // exactly once, at mount. Switching into Split afterwards never installed
+    // the listener, and the panes only scrolled together when the stored
+    // preference already said `split` on load.
     {
         let source = field_id.clone();
         let preview = preview_box.clone();
+        let views = props.views;
         use_effect(move || {
-            if showing == ViewMode::Split {
+            if views && view() == ViewMode::Split {
                 crate::platform::scroll_sync::link(&source, &preview);
             }
         });
@@ -302,7 +325,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
             // the description and the note editors get the same one rather
             // than a copy each.
             if props.views {
-                div { class: "mb-2",
+                div { class: "mb-2 flex flex-wrap items-center gap-3",
                     div {
                         class: "inline-flex gap-1 rounded-lg bg-surface-2 p-1",
                         role: "radiogroup",
@@ -347,6 +370,54 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                                         },
                                         "{option.label()}"
                                     }
+                                }
+                            }
+                        }
+                    }
+                    // PMS-949: the answer to a tall image pulling the panes
+                    // apart. The MAPPS-600 link is proportional by pixel, and a
+                    // picture is one source line and several hundred rendered
+                    // ones, so the preview races ahead of the source through it
+                    // and the paragraph being edited is off screen. This puts
+                    // the preview back on the block the caret is in - exactly,
+                    // because a `<textarea>`'s `selectionStart` is exact and a
+                    // top-level block renders as one child element.
+                    //
+                    // Only in Split, where there are two panes to bring back
+                    // together, and on demand rather than on every keystroke:
+                    // the author scrolls the preview themselves to read ahead,
+                    // and a jump that fights that is worse than none.
+                    if showing == ViewMode::Split {
+                        {
+                            let source = props.value.clone();
+                            let field = props.name.clone();
+                            let preview = preview_box.clone();
+                            rsx! {
+                                button {
+                                    r#type: "button",
+                                    class: "rounded px-2 py-1 text-sm font-medium text-muted hover:bg-surface-2 hover:text-content focus:outline-none focus:ring-2 focus:ring-accent",
+                                    title: "Scroll the preview to the block the cursor is in",
+                                    onclick: move |_| {
+                                        let (caret, _) = crate::platform::dom::textarea_selection(
+                                            &field, 0,
+                                        );
+                                        let at = crate::utils::md_edit::utf16_to_byte(
+                                            &source, caret,
+                                        );
+                                        let blocks = crate::utils::markdown::top_level_block_ranges(
+                                            &source,
+                                        );
+                                        if let Some(index) =
+                                            crate::utils::markdown::block_index_at(&blocks, at)
+                                        {
+                                            crate::platform::scroll_sync::scroll_to_block(
+                                                &preview,
+                                                index,
+                                                blocks.len(),
+                                            );
+                                        }
+                                    },
+                                    "Sync to cursor"
                                 }
                             }
                         }
@@ -507,7 +578,13 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                     // a page.
                     div {
                         id: "{preview_box}",
-                        class: "p-2 border border-line rounded h-full overflow-y-auto",
+                        // PMS-949: `flex-1 min-h-0`, not `h-full`. The pane is a
+                        // flex column holding a label and this box, so `h-full`
+                        // asked for the whole pane and overshot it by the
+                        // label's height even once the pane itself was bounded.
+                        // It also measures as nothing during min-content sizing,
+                        // which is half of why the pane grew in the first place.
+                        class: "p-2 border border-line rounded flex-1 min-h-0 overflow-y-auto",
                         crate::components::Markdown {
                             // No floor of its own: the panel sets the height and
                             // the row stretches both columns to it. Two competing
@@ -653,17 +730,14 @@ mod view_switcher_tests {
     /// with a browser feature in Chrome or Firefox.
     #[test]
     fn the_arrows_cycle_through_the_group_and_wrap() {
-        assert!(ViewMode::Write.stepped(1) == ViewMode::Split);
-        assert!(ViewMode::Split.stepped(1) == ViewMode::Preview);
+        assert!(ViewMode::Write.stepped(1) == ViewMode::Preview);
+        assert!(ViewMode::Preview.stepped(1) == ViewMode::Split);
         assert!(
-            ViewMode::Preview.stepped(1) == ViewMode::Write,
+            ViewMode::Split.stepped(1) == ViewMode::Write,
             "wraps forward"
         );
-        assert!(
-            ViewMode::Write.stepped(-1) == ViewMode::Preview,
-            "wraps back"
-        );
-        assert!(ViewMode::Split.stepped(-1) == ViewMode::Write);
+        assert!(ViewMode::Write.stepped(-1) == ViewMode::Split, "wraps back");
+        assert!(ViewMode::Preview.stepped(-1) == ViewMode::Write);
     }
 
     /// The persisted form is a name, not an index, so reordering the group
@@ -786,6 +860,61 @@ mod view_switcher_tests {
         );
     }
 
+    /// PMS-949: the way back when a tall image has pulled the panes apart. It
+    /// is offered only in Split, where there are two panes to bring together,
+    /// and it reads the caret rather than a scroll position, which is what
+    /// makes it exact where the proportional link is approximate.
+    #[test]
+    fn split_offers_a_way_to_put_the_preview_on_the_caret() {
+        // Space-free, because the calls sit inside `rsx!` and rustfmt leaves a
+        // macro body alone: the line breaks in it are an accident of width, not
+        // something a test should be pinned to.
+        let code: String = code_only().chars().filter(|c| !c.is_whitespace()).collect();
+        let gated = code
+            .find("ifshowing==ViewMode::Split{{letsource=props.value.clone();")
+            .expect("the control is gated on Split");
+        let window = &code[gated..code.len().min(gated + 900)];
+        assert!(
+            window.contains("crate::platform::dom::textarea_selection(&field,0,)"),
+            "it starts from the caret: {window}"
+        );
+        assert!(
+            window.contains("crate::utils::md_edit::utf16_to_byte(&source,caret,)"),
+            "converted out of the UTF-16 units the DOM counts in: {window}"
+        );
+        assert!(
+            window.contains(
+                "crate::platform::scroll_sync::scroll_to_block(&preview,index,blocks.len(),)"
+            ),
+            "and the block count travels with the index, so a DOM that does not \
+             match can refuse the jump: {window}"
+        );
+    }
+
+    /// PMS-949: the effect has to READ the mode signal, not close over a copy
+    /// of it. A Dioxus effect subscribes to what it reads while it runs, so an
+    /// effect that reads nothing runs once at mount and never again, and
+    /// switching into Split later never installs the scroll listener. This was
+    /// live for the whole of MAPPS-610: the KB page it moved from read `view()`
+    /// inside the closure, and the move quietly replaced that with the plain
+    /// `ViewMode` computed above the effect.
+    #[test]
+    fn the_scroll_link_re_arms_when_the_mode_changes() {
+        let code = code_only();
+        let effect = code
+            .find("use_effect(move || { if views")
+            .expect("the scroll-link effect");
+        let window = &code[effect..code.len().min(effect + 200)];
+        assert!(
+            window.contains("view() == ViewMode::Split"),
+            "the mode is read inside the effect, which is what subscribes it: {window}"
+        );
+        assert!(
+            !window.contains("showing == ViewMode::Split"),
+            "a value computed above the effect subscribes to nothing: {window}"
+        );
+    }
+
     /// MAPPS-600, moved here with the panes. The scrolling box is the wrapper,
     /// not the `Markdown` container: the shared renderer owns its own id for
     /// the delegated click listener, and giving it a second identity for one
@@ -804,6 +933,32 @@ mod view_switcher_tests {
         assert!(
             window.contains("crate::components::Markdown {"),
             "and the renderer sits inside it: {window}"
+        );
+    }
+
+    /// PMS-949: a document taller than the panel scrolls inside it instead of
+    /// running out of the card and over the word count and the Save row.
+    ///
+    /// Two zeros are needed and neither is optional. The pane needs `min-h-0`
+    /// or its automatic minimum is the whole document's height; the box inside
+    /// needs to stretch rather than ask for `h-full`, which measures as nothing
+    /// while the pane is being sized and overshoots the pane by the height of
+    /// the "Preview" label once it is.
+    #[test]
+    fn the_preview_is_bounded_by_the_panel_rather_than_growing_it() {
+        assert!(
+            body_pane_class(true).contains("min-h-0"),
+            "the pane must be allowed to shrink below its content: {}",
+            body_pane_class(true)
+        );
+        // The class literal itself, not a window around it: the comment above
+        // it names the class it replaced, and a window would read that as the
+        // code.
+        assert!(
+            code_only().contains(
+                r#"class: "p-2 border border-line rounded flex-1 min-h-0 overflow-y-auto","#
+            ),
+            "the scroll box stretches into the pane instead of asking for a percentage of it"
         );
     }
 
