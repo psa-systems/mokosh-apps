@@ -278,11 +278,20 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
     // screen. In an effect rather than at mount because the preview box only
     // exists in split view; re-running is free, `link` marks what it has wired.
     // MAPPS-610: it moved here with the panes, so every host gets it.
+    //
+    // PMS-949: the mode is read INSIDE the closure, and that is the whole
+    // mechanism, not a style choice. A Dioxus effect subscribes to the signals
+    // it reads while it runs, so the version that closed over `showing` - a
+    // plain `ViewMode` computed above - had no subscriptions at all and ran
+    // exactly once, at mount. Switching into Split afterwards never installed
+    // the listener, and the panes only scrolled together when the stored
+    // preference already said `split` on load.
     {
         let source = field_id.clone();
         let preview = preview_box.clone();
+        let views = props.views;
         use_effect(move || {
-            if showing == ViewMode::Split {
+            if views && view() == ViewMode::Split {
                 crate::platform::scroll_sync::link(&source, &preview);
             }
         });
@@ -803,6 +812,30 @@ mod view_switcher_tests {
         assert!(
             code.contains("crate::platform::scroll_sync::link(&source, &preview);"),
             "and the sync links that same pair"
+        );
+    }
+
+    /// PMS-949: the effect has to READ the mode signal, not close over a copy
+    /// of it. A Dioxus effect subscribes to what it reads while it runs, so an
+    /// effect that reads nothing runs once at mount and never again, and
+    /// switching into Split later never installs the scroll listener. This was
+    /// live for the whole of MAPPS-610: the KB page it moved from read `view()`
+    /// inside the closure, and the move quietly replaced that with the plain
+    /// `ViewMode` computed above the effect.
+    #[test]
+    fn the_scroll_link_re_arms_when_the_mode_changes() {
+        let code = code_only();
+        let effect = code
+            .find("use_effect(move || { if views")
+            .expect("the scroll-link effect");
+        let window = &code[effect..code.len().min(effect + 200)];
+        assert!(
+            window.contains("view() == ViewMode::Split"),
+            "the mode is read inside the effect, which is what subscribes it: {window}"
+        );
+        assert!(
+            !window.contains("showing == ViewMode::Split"),
+            "a value computed above the effect subscribes to nothing: {window}"
         );
     }
 
