@@ -52,6 +52,13 @@ struct RemoteTimeEntry {
     notes: Option<String>,
     #[serde(default)]
     is_billable: bool,
+    // PMS-942 / MAPPS-626: "client" or "employee". The only field that tells
+    // the MSP's own overhead apart from a client's unticketed work, because
+    // `work_category` is derived from the absence of a ticket and a project
+    // and reads "general" for both. `None` on a server that predates PMS-942,
+    // which reads as client work: the behaviour before the split.
+    #[serde(default)]
+    entry_kind: Option<String>,
     // MAPPS-383: the shared enum, not a free `String`, so an unknown wire tag
     // fails decoding instead of reaching the UI as raw text.
     #[serde(default)]
@@ -191,6 +198,16 @@ fn work_item_label(e: &RemoteTimeEntry) -> String {
     }
 }
 
+/// PMS-942 / MAPPS-626: is this the MSP's own time rather than a client's?
+///
+/// Employee time can never be billed (the server settles `is_billable` from
+/// the kind), so a list that only knows "billable" and "non-billable" files
+/// the MSP's own overhead in with client work that simply has not been billed
+/// yet, and nothing on the row says which is which.
+fn is_employee_time(e: &RemoteTimeEntry) -> bool {
+    e.entry_kind.as_deref() == Some("employee")
+}
+
 /// Time entry list page
 #[component]
 pub fn TimeEntryListPage() -> Element {
@@ -254,7 +271,14 @@ pub fn TimeEntryListPage() -> Element {
     let today_h = hours(sum_minutes(&entries, |e| e.date == today));
     let week_h = hours(sum_minutes(&entries, |e| e.date >= week_start));
     let billable_h = hours(sum_minutes(&entries, |e| e.is_billable));
-    let nonbillable_h = hours(sum_minutes(&entries, |e| !e.is_billable));
+    // MAPPS-626: client work that has not been billed, which is what this
+    // figure has always meant. Employee time is non-billable by construction
+    // since PMS-942, so counting it here would inflate every tenant's
+    // unbilled client work by the whole of its own overhead.
+    let nonbillable_h = hours(sum_minutes(&entries, |e| {
+        !e.is_billable && !is_employee_time(e)
+    }));
+    let own_time_h = hours(sum_minutes(&entries, is_employee_time));
     let total = entries.len();
 
     rsx! {
@@ -273,11 +297,12 @@ pub fn TimeEntryListPage() -> Element {
             },
         }
 
-        div { class: "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 mb-6",
+        div { class: "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5 mb-6",
             StatCard { label: "Today", value: "{today_h}" }
             StatCard { label: "This Week", value: "{week_h}" }
             StatCard { label: "Billable", value: "{billable_h}" }
             StatCard { label: "Non-Billable", value: "{nonbillable_h}" }
+            StatCard { label: "Own Time", value: "{own_time_h}" }
         }
 
         if load_failed {
@@ -370,7 +395,13 @@ pub fn TimeEntryListPage() -> Element {
                                         TableCell { class: "max-w-xs truncate", "{note}" }
                                         TableCell { class: "font-medium", "{hrs}" }
                                         TableCell {
-                                            if e.is_billable {
+                                            if is_employee_time(e) {
+                                                // MAPPS-626: the MSP's own time. Not
+                                                // "Non-Billable", which reads as client
+                                                // work nobody has billed yet; this can
+                                                // never be billed at all.
+                                                Badge { variant: BadgeVariant::Blue, "Own time" }
+                                            } else if e.is_billable {
                                                 Badge { variant: BadgeVariant::Green, "Billable" }
                                             } else {
                                                 Badge { variant: BadgeVariant::Gray, "Non-Billable" }
@@ -2868,6 +2899,7 @@ mod tests {
             task_title: None,
             notes: None,
             is_billable: false,
+            entry_kind: None,
             billing_status: BillingStatus::NotBilled,
             created_at: None,
             updated_at: None,
