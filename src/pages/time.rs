@@ -588,9 +588,11 @@ pub fn TimeEntryNewPage() -> Element {
 
     // MAPPS-243: the tenant's own-company id (PMS-413), the company_id a
     // General / overhead entry is attributed to. Sourced from the cached
-    // `/auth/me` user. `None` only on a tenant that predates the backfill;
-    // in that case the General option is offered but disabled (see below)
-    // rather than POSTing a null company_id.
+    // `/auth/me` user. MAPPS-626: `None` is no longer a dead end. PMS-942
+    // made the column nullable, so an overhead entry with no company at all
+    // is a legal row the server reads as employee time. We still send the
+    // own-company when the tenant has one, purely so existing overhead stays
+    // attributed where it already is.
     let own_company_id: Option<uuid::Uuid> =
         auth.read().user.as_ref().and_then(|u| u.own_company_id);
 
@@ -601,14 +603,15 @@ pub fn TimeEntryNewPage() -> Element {
     // empty and let the Select's placeholder do that job.
     let mut work_item_options: Vec<SelectOption> = Vec::new();
     // MAPPS-243: a deliberate General (no ticket or project) overhead entry,
-    // modeled like the required Work Type field. Offered only when the tenant
-    // has an own-company to attribute it to; otherwise the option is disabled
-    // (see the inline notice under the picker) so we never send a null
-    // company_id.
-    work_item_options.push(SelectOption {
-        disabled: own_company_id.is_none(),
-        ..SelectOption::new("general", "General (no ticket or project)")
-    });
+    // modeled like the required Work Type field. MAPPS-626: always offered.
+    // It was disabled on a tenant with no own-company because the column was
+    // NOT NULL and there was nothing to put there, which left exactly the
+    // people with no internal company unable to log their own time at all.
+    // There is no longer a company to invent.
+    work_item_options.push(SelectOption::new(
+        "general",
+        "General (no ticket or project)",
+    ));
     work_item_options.extend(tickets.iter().map(|t| {
         SelectOption::new(
             format!("ticket:{}", t.id),
@@ -639,14 +642,6 @@ pub fn TimeEntryNewPage() -> Element {
     let tickets_for_submit = tickets.clone();
     let projects_for_submit = projects.clone();
     let err = error.read().clone();
-    // MAPPS-243: explain the disabled "General" option when the tenant has no
-    // own-company on file yet (pre-backfill), so the greyed-out row is not a
-    // dead end. Empty otherwise (no help text).
-    let work_item_help = if own_company_id.is_none() {
-        "General (no ticket or project) needs your company on file, which isn't set yet."
-    } else {
-        ""
-    };
 
     // MAPPS-357: N/A for ContentUnavailable - this is a write (create) form, not
     // a data-display page. The tickets / projects / work-types / tasks resources
@@ -738,24 +733,16 @@ pub fn TimeEntryNewPage() -> Element {
                     // server classifies it via work_category (PMS-394).
                     let (ticket_id, project_id, task_id, company_id, work_category) =
                         if wi == "general" {
-                            // MAPPS-243: a deliberate overhead entry. The
-                            // option is UI-disabled when own_company_id is
-                            // None, but re-check here so we never POST a
-                            // null company_id (no invented fallback).
-                            match own_company_id {
-                                Some(cid) => (None, None, None, cid, "general"),
-                                None => {
-                                    error.set(
-                                        "General time needs your company on file, which isn't set yet. Pick a ticket or project, or contact an admin."
-                                            .to_string(),
-                                    );
-                                    return;
-                                }
-                            }
+                            // MAPPS-626: the MSP's own time. Send the tenant's
+                            // own-company when it has one, and no company at
+                            // all when it has none; PMS-942 reads both as
+                            // employee time, so the two tenants get the same
+                            // kind of row and neither is refused.
+                            (None, None, None, own_company_id, "general")
                         } else if let Some(tid) = wi.strip_prefix("ticket:") {
                             match tickets_for_submit.iter().find(|t| t.id.to_string() == tid) {
                                 Some(t) => {
-                                    (Some(tid.to_string()), None, None, t.company_id, "ticketed")
+                                    (Some(tid.to_string()), None, None, Some(t.company_id), "ticketed")
                                 }
                                 None => {
                                     error.set("Could not resolve the ticket.".to_string());
@@ -768,7 +755,7 @@ pub fn TimeEntryNewPage() -> Element {
                                     Some(cid) => {
                                         let tk = task.read().clone();
                                         let tk = if tk.is_empty() { None } else { Some(tk) };
-                                        (None, Some(pid.to_string()), tk, cid, "project")
+                                        (None, Some(pid.to_string()), tk, Some(cid), "project")
                                     }
                                     None => {
                                         error.set(
@@ -805,6 +792,9 @@ pub fn TimeEntryNewPage() -> Element {
                                 "date": date,
                                 "duration_minutes": duration_minutes,
                                 "work_type_id": wtid,
+                                // MAPPS-626: null on a tenant with no internal
+                                // company. PMS-942 made that a legal employee
+                                // entry rather than a 400.
                                 "company_id": company_id,
                                 // MAPPS-243 / PMS-394: classify the entry so
                                 // reports split overhead ("general") from
@@ -864,7 +854,6 @@ pub fn TimeEntryNewPage() -> Element {
                         required: true,
                         rules: vec![Rule::Required],
                         error: work_item_error.read().clone(),
-                        help: work_item_help.to_string(),
                         onchange: move |e: FormEvent| {
                             work_item_error.set(String::new());
                             work_item.set(e.value());
