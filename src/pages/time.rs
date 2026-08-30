@@ -208,6 +208,28 @@ fn is_employee_time(e: &RemoteTimeEntry) -> bool {
     e.entry_kind.as_deref() == Some("employee")
 }
 
+/// MAPPS-626: client work that has not been billed, which is what the
+/// "Non-Billable" figure has always meant. Employee time is non-billable by
+/// construction since PMS-942, so it is excluded here rather than inflating
+/// every tenant's unbilled client work by the whole of its own overhead.
+fn is_unbilled_client_work(e: &RemoteTimeEntry) -> bool {
+    !e.is_billable && !is_employee_time(e)
+}
+
+/// MAPPS-626: does this work-item selection produce the MSP's own time?
+///
+/// General is the only selection that does, and it does so on every tenant:
+/// the form sends the tenant's internal company when it has one and no
+/// company when it does not, and PMS-942 derives `employee` from both. A
+/// ticket or a project always names a client, so it never does.
+///
+/// One definition, because two places act on the answer: the Billable
+/// checkbox, which must not offer what the server will discard, and the
+/// request body, which must not send it.
+fn work_item_is_own_time(work_item: &str) -> bool {
+    work_item == "general"
+}
+
 /// Time entry list page
 #[component]
 pub fn TimeEntryListPage() -> Element {
@@ -271,13 +293,7 @@ pub fn TimeEntryListPage() -> Element {
     let today_h = hours(sum_minutes(&entries, |e| e.date == today));
     let week_h = hours(sum_minutes(&entries, |e| e.date >= week_start));
     let billable_h = hours(sum_minutes(&entries, |e| e.is_billable));
-    // MAPPS-626: client work that has not been billed, which is what this
-    // figure has always meant. Employee time is non-billable by construction
-    // since PMS-942, so counting it here would inflate every tenant's
-    // unbilled client work by the whole of its own overhead.
-    let nonbillable_h = hours(sum_minutes(&entries, |e| {
-        !e.is_billable && !is_employee_time(e)
-    }));
+    let nonbillable_h = hours(sum_minutes(&entries, is_unbilled_client_work));
     let own_time_h = hours(sum_minutes(&entries, is_employee_time));
     let total = entries.len();
 
@@ -674,7 +690,7 @@ pub fn TimeEntryNewPage() -> Element {
     // names the tenant's internal company or no company at all, and PMS-942
     // settles `is_billable` from the kind rather than from the request. So a
     // ticked Billable box on this selection is discarded server-side.
-    let is_general_item = work_item.read().as_str() == "general";
+    let is_general_item = work_item_is_own_time(work_item.read().as_str());
     let billable_help = if is_general_item {
         "General time is your own, not a client's, so it is never billed."
     } else {
@@ -825,7 +841,7 @@ pub fn TimeEntryNewPage() -> Element {
                     // MAPPS-626: match the server rather than send it something
                     // it will drop. PMS-942 makes employee time non-billable
                     // whatever the request says, and General is employee time.
-                    let billable = billable && work_category != "general";
+                    let billable = billable && !work_item_is_own_time(&wi);
                     let date = Utc::now().date_naive().to_string();
 
                     is_submitting.set(true);
@@ -2951,6 +2967,85 @@ mod tests {
     #[test]
     fn work_item_label_unlinked_entry_reads_dash() {
         assert_eq!(work_item_label(&entry()), "-");
+    }
+
+    // ---- PMS-942 / MAPPS-626: whose time is it ----------------------------
+
+    // The MSP's own time is the kind, never the category: `work_category` is
+    // derived from the absence of a ticket and a project, so it says "general"
+    // for the employee's overhead AND for a client's unticketed phone call.
+    #[test]
+    fn the_category_does_not_say_whose_time_it_is() {
+        let own = RemoteTimeEntry {
+            work_category: Some("general".to_string()),
+            entry_kind: Some("employee".to_string()),
+            ..entry()
+        };
+        let clients = RemoteTimeEntry {
+            work_category: Some("general".to_string()),
+            entry_kind: Some("client".to_string()),
+            ..entry()
+        };
+        assert_eq!(work_item_label(&own), work_item_label(&clients));
+        assert!(is_employee_time(&own));
+        assert!(!is_employee_time(&clients));
+    }
+
+    // A server that predates PMS-942 sends no `entry_kind` at all. That must
+    // read as client work, which is what every entry was before the split, and
+    // not blank the row or reclassify it.
+    #[test]
+    fn a_server_that_sends_no_kind_reads_as_client_work() {
+        assert!(!is_employee_time(&entry()));
+        assert!(is_unbilled_client_work(&entry()));
+    }
+
+    // The "Non-Billable" total means client work nobody has billed. Employee
+    // time is non-billable by construction since PMS-942, so leaving it in
+    // would grow that figure by the whole of the tenant's own overhead while
+    // still calling it client work.
+    #[test]
+    fn the_unbilled_client_total_leaves_out_the_msps_own_hours() {
+        let billed = RemoteTimeEntry {
+            duration_minutes: 60,
+            is_billable: true,
+            entry_kind: Some("client".to_string()),
+            ..entry()
+        };
+        let unbilled = RemoteTimeEntry {
+            duration_minutes: 30,
+            is_billable: false,
+            entry_kind: Some("client".to_string()),
+            ..entry()
+        };
+        let own = RemoteTimeEntry {
+            duration_minutes: 90,
+            is_billable: false,
+            entry_kind: Some("employee".to_string()),
+            ..entry()
+        };
+        let rows = vec![billed, unbilled, own];
+
+        assert_eq!(sum_minutes(&rows, |e| e.is_billable), 60);
+        assert_eq!(sum_minutes(&rows, is_unbilled_client_work), 30);
+        assert_eq!(sum_minutes(&rows, is_employee_time), 90);
+    }
+
+    // General is the employee's own time on EVERY tenant, including one with
+    // an internal company to attribute it to: the form sends that company and
+    // PMS-942 derives `employee` from it just as it does from no company at
+    // all. This is what locks the Billable checkbox and what strips the flag
+    // out of the request body, so the two cannot drift apart.
+    #[test]
+    fn general_is_own_time_and_a_work_item_never_is() {
+        assert!(work_item_is_own_time("general"));
+        assert!(!work_item_is_own_time(
+            "ticket:2a1c9d5e-0000-0000-0000-000000000000"
+        ));
+        assert!(!work_item_is_own_time(
+            "project:2a1c9d5e-0000-0000-0000-000000000000"
+        ));
+        assert!(!work_item_is_own_time(""));
     }
 
     // Ticket and project labels are unchanged by the general branch.
