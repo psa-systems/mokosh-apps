@@ -670,6 +670,16 @@ pub fn TimeEntryNewPage() -> Element {
     );
 
     let is_project_item = work_item.read().starts_with("project:");
+    // MAPPS-626: a General selection is the employee's own time, whether it
+    // names the tenant's internal company or no company at all, and PMS-942
+    // settles `is_billable` from the kind rather than from the request. So a
+    // ticked Billable box on this selection is discarded server-side.
+    let is_general_item = work_item.read().as_str() == "general";
+    let billable_help = if is_general_item {
+        "General time is your own, not a client's, so it is never billed."
+    } else {
+        "Mark this time entry as billable to the customer"
+    };
     let tickets_for_submit = tickets.clone();
     let projects_for_submit = projects.clone();
     let err = error.read().clone();
@@ -812,6 +822,10 @@ pub fn TimeEntryNewPage() -> Element {
                             return;
                         }
                     };
+                    // MAPPS-626: match the server rather than send it something
+                    // it will drop. PMS-942 makes employee time non-billable
+                    // whatever the request says, and General is employee time.
+                    let billable = billable && work_category != "general";
                     let date = Utc::now().date_naive().to_string();
 
                     is_submitting.set(true);
@@ -957,8 +971,12 @@ pub fn TimeEntryNewPage() -> Element {
                 crate::components::Checkbox {
                     name: "billable",
                     label: "Billable",
-                    checked: *is_billable.read(),
-                    help: "Mark this time entry as billable to the customer",
+                    // MAPPS-626: off and locked on General, where the server
+                    // will not bill it. The signal itself is left alone, so
+                    // picking a ticket or project again restores the choice.
+                    checked: *is_billable.read() && !is_general_item,
+                    disabled: is_general_item,
+                    help: billable_help.to_string(),
                     // PMS-571: drive state from the event's actual checked
                     // value (re-anchoring to the DOM) instead of inverting
                     // stored state, which could desync a controlled checkbox
@@ -2648,6 +2666,15 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
     let mut date_error = use_signal(String::new);
 
     let wi_label = work_item_label(&entry);
+    // MAPPS-626: an employee entry is the MSP's own time and PMS-942 keeps it
+    // non-billable server-side, so offering the checkbox here would let an
+    // edit look like it changed something it cannot.
+    let own_time = is_employee_time(&entry);
+    let billable_help = if own_time {
+        "This is your own time, not a client's, so it is never billed."
+    } else {
+        "Mark this time entry as billable to the customer"
+    };
 
     let handle_save = move |_| {
         if *saving.read() || *deleting.read() {
@@ -2705,7 +2732,7 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                     "duration_minutes": duration_minutes,
                     "work_type_id": wtid,
                     "notes": desc,
-                    "is_billable": billable,
+                    "is_billable": billable && !own_time,
                     "ticket_id": ticket_id,
                     "project_id": project_id,
                 });
@@ -2853,7 +2880,9 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                 Checkbox {
                     name: "edit_billable",
                     label: "Billable",
-                    checked: *is_billable.read(),
+                    checked: *is_billable.read() && !own_time,
+                    disabled: own_time,
+                    help: billable_help.to_string(),
                     // PMS-571: re-anchor to the event's checked value (see the
                     // create-form billable checkbox) so the toggle is reliable.
                     onchange: move |e: FormEvent| is_billable.set(e.checked()),
