@@ -7346,3 +7346,110 @@ mod mapps597_site_wording_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod mapps614_notes_as_markdown_tests {
+    use super::*;
+
+    const SRC: &str = include_str!("contacts.rs");
+
+    /// The shipping code with runs of whitespace collapsed, excluding this
+    /// module: every assertion quotes the pattern it looks for, so a scan
+    /// including its own source would match itself and pass regardless.
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod mapps614_notes_as_markdown_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// The trap this whole field walks into, and the reason `clearable_string`
+    /// exists beside `optional_string` instead of reusing it.
+    ///
+    /// The server adds `notes = $n` to its UPDATE only when the request
+    /// carries a value (PMS-952 pins that from the other side), so a null is
+    /// "leave it alone" and not "erase it". Sent through `optional_string`, a
+    /// user who selects their notes, deletes them and saves would get a
+    /// success toast and find the old text still on the record.
+    #[test]
+    fn an_emptied_note_clears_the_record_rather_than_being_ignored() {
+        assert_eq!(clearable_string(""), serde_json::json!(""));
+        assert_eq!(clearable_string("   "), serde_json::json!(""));
+        assert!(
+            optional_string("").is_null(),
+            "the contrast is the point: the general helper sends null, which \
+             the server reads as no change"
+        );
+        // A real value is trimmed and sent as itself, so nothing else changes.
+        assert_eq!(
+            clearable_string("  Renews in March.  "),
+            serde_json::json!("Renews in March.")
+        );
+    }
+
+    /// Both records edit the note in the shared editor, so the toolbar, the
+    /// shortcuts and the Write/Preview/Split switcher come with it. A bare
+    /// textarea would be the same syntax with none of the help, which is the
+    /// state MAPPS-610 moved every other Markdown surface out of.
+    #[test]
+    fn both_records_edit_their_note_in_the_shared_editor() {
+        let code = code_only();
+        assert_eq!(
+            code.matches("crate::components::MarkdownEditor {").count(),
+            2,
+            "one on the company form, one on the contact form"
+        );
+        for name in ["\"company_notes\"", "\"contact_notes\""] {
+            assert!(
+                code.contains(&format!(
+                    "name: {name}.to_string(), label: \"Notes\".to_string(),"
+                )),
+                "{name} is the shared editor's field, labelled Notes"
+            );
+        }
+        assert!(
+            !code.contains("Textarea { name: \"notes\","),
+            "neither note is a bare textarea"
+        );
+    }
+
+    /// Both detail pages render through the shared component, which is the
+    /// only path in this app from Markdown source to HTML and is already
+    /// scrubbed with ammonia. Rendering here instead would mean a second
+    /// sanitiser to keep in step with the first.
+    #[test]
+    fn both_records_render_their_note_through_the_shared_renderer() {
+        let code = code_only();
+        assert_eq!(
+            code.matches("crate::components::Markdown { content: notes.clone() }")
+                .count(),
+            2,
+            "one on the company detail page, one on the contact detail page"
+        );
+        // Hidden when there is nothing in it, so a record nobody has written
+        // on does not grow a blank card.
+        assert_eq!(
+            code.matches("if !notes.trim().is_empty() { Card { title: \"Notes\",")
+                .count(),
+            2,
+            "each card is gated on having something to show"
+        );
+    }
+
+    /// The write path uses the clearing helper on both forms, and neither one
+    /// reaches for the general optional helper for this field.
+    #[test]
+    fn neither_form_sends_the_note_as_a_null() {
+        let code = code_only();
+        assert_eq!(
+            code.matches("\"notes\": clearable_string(&notes.read()),")
+                .count(),
+            2,
+            "the company body and the contact body"
+        );
+        assert!(
+            !code.contains("\"notes\": optional_string("),
+            "optional_string would send null for an emptied field"
+        );
+    }
+}
