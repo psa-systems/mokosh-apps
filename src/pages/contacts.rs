@@ -4618,6 +4618,7 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
                         payload.mobile.as_deref(),
                     ),
                     companies,
+                    notes: payload.notes.clone().unwrap_or_default(),
                 };
                 let id = id_for_form.clone();
                 rsx! {
@@ -4649,6 +4650,9 @@ struct ContactEditPayload {
     department: Option<String>,
     #[serde(default)]
     contact_type: String,
+    // MAPPS-614 / PMS-952: the free-text note, held and rendered as Markdown.
+    #[serde(default)]
+    notes: Option<String>,
     // MAPPS-251: optional so a freeform-company contact (company_name only,
     // no FK) deserializes without a null/absent company_id panicking.
     #[serde(default)]
@@ -4700,6 +4704,7 @@ struct ContactFormValues {
     company_name: String,
     phones: Vec<PhoneRow>,
     companies: Vec<CompanyRow>,
+    notes: String,
 }
 
 /// MAPPS-481: seed the form's phone rows from a loaded contact. The PMS-806
@@ -4906,6 +4911,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
     // stores (it derives `sort_order` from the array index).
     let mut phones = use_signal(|| initial.phones.clone());
     let mut companies = use_signal(|| initial.companies.clone());
+    let mut notes = use_signal(|| initial.notes.clone());
     // MAPPS-481: the "+ Add another company" picker, shown only while the user
     // is adding one, and the inline note for picking one already in the list.
     let mut adding_company = use_signal(|| false);
@@ -5042,6 +5048,9 @@ fn ContactForm(props: ContactFormProps) -> Element {
             // Sent as `""` whenever a company is linked, which clears any name
             // stored by an earlier save (a link plus a name is a 422).
             "company_name": if has_links { "" } else { freeform_name.as_str() },
+            // MAPPS-614: always a string, never null, for the same reason
+            // `company_name` above is. See `clearable_string`.
+            "notes": clearable_string(&notes.read()),
         });
         let mode = mode.clone();
         let mode_for_toast = mode.clone();
@@ -5445,6 +5454,21 @@ fn ContactForm(props: ContactFormProps) -> Element {
                     }
                 }
 
+                // MAPPS-614: the same field and the same editor as the company
+                // form, because David asked for description-type fields across
+                // the system rather than for one record.
+                crate::components::MarkdownEditor {
+                    name: "contact_notes".to_string(),
+                    label: "Notes".to_string(),
+                    placeholder: "Anything worth knowing about this person.".to_string(),
+                    rows: 8,
+                    views: true,
+                    view_pref_key: "contact_notes_view_mode".to_string(),
+                    disabled: !can_mutate,
+                    value: notes.read().clone(),
+                    oninput: move |next: String| notes.set(next),
+                }
+
                 div { class: "flex justify-end space-x-3",
                     Link {
                         to: cancel_route.clone(),
@@ -5665,6 +5689,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                 let title = c.title.clone();
                 let department = c.department.clone();
                 let contact_type = c.contact_type.clone();
+                let notes = c.notes.clone().unwrap_or_default();
                 let is_portal_user = c.is_portal_user;
                 let portal_id = id_for_portal.clone();
                 // MAPPS-481: every phone and every company link, each as its
@@ -5752,6 +5777,14 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                     div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
                         div { class: "lg:col-span-2 space-y-6",
                             ContactTicketsCard { tickets_resource: tickets }
+                            // MAPPS-614: near the bottom of the record, the
+                            // Google Contacts placement David described.
+                            // Hidden when empty, like the company card.
+                            if !notes.trim().is_empty() {
+                                Card { title: "Notes",
+                                    crate::components::Markdown { content: notes.clone() }
+                                }
+                            }
                         }
                         div { class: "space-y-6",
                             Card { title: "Contact Information",
@@ -5948,6 +5981,9 @@ struct ContactDetail {
     department: Option<String>,
     #[serde(default)]
     contact_type: String,
+    // MAPPS-614 / PMS-952: rendered as Markdown in the Notes card.
+    #[serde(default)]
+    notes: Option<String>,
     #[serde(default)]
     is_portal_user: bool,
     // MAPPS-251: optional FK; `None` for a freeform-company contact.
