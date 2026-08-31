@@ -32,6 +32,12 @@ const JOURNAL_LIMIT: usize = 50;
 /// through the notification dispatcher, so the preview comes back empty and
 /// would otherwise read as "nothing will be sent". Same shape as
 /// `QUOTE_PREVIEW_NOTE` in `quotes.rs` (docs/email-actions.md).
+/// MAPPS-613: shown under the email checkbox, which is now only rendered on a
+/// public note. It no longer has to explain why the control is greyed out,
+/// because there is no greyed-out control; it states the one thing that can
+/// still surprise the author.
+const NOTE_EMAIL_HELP: &str = "Sent to the ticket's contact. Nothing is sent when the ticket has no contact with an email address.";
+
 const NOTE_PREVIEW_NOTE: &str = "The ticket-note email is built into the server rather than by a notification rule, so there is nothing to render yet. The ticket's contact is still emailed the note.";
 use crate::Route;
 
@@ -2403,12 +2409,6 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     // Composer state the markup reads more than once.
     let note_is_public = note_type.read().as_str() == "public";
     let note_will_email = note_is_public && note_send_email();
-    let note_email_help = if note_is_public {
-        "Sent to the ticket's contact. Nothing is sent when the ticket has no contact with an email address."
-    } else {
-        "Internal notes are never emailed. Switch the note to public to email it."
-    }
-    .to_string();
 
     // PMS-362: carry the ticket into the Log Time flow so the work-item picker
     // opens preselected. A plain <a href> (not a routed Link) because the
@@ -2792,25 +2792,33 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                 options: note_type_options(),
                                 value: note_type.read().clone(),
                                 onchange: move |e: FormEvent| {
-                                    // An internal note never leaves the building,
+                                    // Only a public note ever leaves the building,
                                     // whatever the flag says (mokosh-server
-                                    // `add_note`), so switching back to internal
-                                    // clears the toggle rather than leaving a
-                                    // checked box that does nothing.
-                                    if e.value() == "internal" {
+                                    // `add_note`). MAPPS-613: the checkbox is now
+                                    // absent on every other type, so this clear is
+                                    // what stops a flag set while public from
+                                    // surviving into a note nobody can see it on.
+                                    if e.value() != "public" {
                                         note_send_email.set(false);
                                     }
                                     note_type.set(e.value());
                                 },
                             }
-                            div { class: "flex items-end",
-                                Checkbox {
-                                    name: "note_send_email",
-                                    label: "Email this note to the client",
-                                    checked: note_send_email(),
-                                    disabled: !note_is_public,
-                                    help: note_email_help,
-                                    onchange: move |e: FormEvent| note_send_email.set(e.checked()),
+                            // MAPPS-613: absent, not greyed, on a note that
+                            // cannot be emailed. The server has always refused
+                            // to send one, but that refusal is invisible: a
+                            // disabled control on an internal note still tells
+                            // the reader that internal commentary is the sort
+                            // of thing this app can mail to a customer.
+                            if note_is_public {
+                                div { class: "flex items-end",
+                                    Checkbox {
+                                        name: "note_send_email",
+                                        label: "Email this note to the client",
+                                        checked: note_send_email(),
+                                        help: NOTE_EMAIL_HELP.to_string(),
+                                        onchange: move |e: FormEvent| note_send_email.set(e.checked()),
+                                    }
                                 }
                             }
                         }
