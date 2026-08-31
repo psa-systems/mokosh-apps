@@ -4646,3 +4646,148 @@ mod mapps594_in_page_edit_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod mapps613_note_type_and_email_affordance_tests {
+    use super::*;
+
+    const SRC: &str = include_str!("tickets.rs");
+
+    /// The shipping code with runs of whitespace collapsed, excluding this
+    /// module: every assertion quotes the pattern it looks for, so a scan
+    /// including its own source would match itself and pass regardless.
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod mapps613_note_type_and_email_affordance_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    fn note(json: &str) -> RemoteNote {
+        serde_json::from_str(json).expect("deserialise note")
+    }
+
+    /// Three of the four, and the omission is the deliberate half.
+    ///
+    /// `resolution` was storable, editable and renderable all along and could
+    /// not be composed. `time_entry` must stay out: nothing writes one, and
+    /// the server refuses to edit one because "a time-entry note is edited
+    /// through its time entry", so a hand-written one belongs to an entry that
+    /// does not exist and nobody can then correct it.
+    #[test]
+    fn only_a_type_an_agent_may_write_is_offered() {
+        let offered: Vec<(String, String)> = note_type_options()
+            .into_iter()
+            .map(|o| (o.value, o.label))
+            .collect();
+        assert_eq!(
+            offered,
+            vec![
+                ("internal".to_string(), "Internal Note".to_string()),
+                (
+                    "public".to_string(),
+                    "Public Note (visible to customer)".to_string()
+                ),
+                (
+                    "resolution".to_string(),
+                    "Resolution Note (internal)".to_string()
+                ),
+            ]
+        );
+        assert!(
+            composer_label(NoteType::TimeEntry).is_none(),
+            "an agent cannot author a note about a time entry that does not exist"
+        );
+    }
+
+    /// David's actual objection. The server has always refused to mail an
+    /// internal note, but that refusal happens where nobody can see it: a
+    /// greyed-out `Email this note to the client` on an internal note still
+    /// says this app will send internal commentary to a customer if you ask
+    /// the right way.
+    #[test]
+    fn the_email_control_is_absent_rather_than_disabled() {
+        let code = code_only();
+        assert!(
+            code.contains("if note_is_public { div { class: \"flex items-end\", Checkbox {"),
+            "the checkbox is rendered only on a public note"
+        );
+        assert!(
+            !code.contains("disabled: !note_is_public"),
+            "and never as a greyed-out control on a note that cannot be emailed"
+        );
+    }
+
+    /// The flag has to be cleared on the way out of public, because the box
+    /// that would otherwise show it checked is no longer on screen. Before
+    /// this branch a stale flag was merely invisible-but-disabled; now it
+    /// would be invisible outright, so the clear carries more weight than it
+    /// did, and the submit's own `type == "public"` guard is the second line.
+    #[test]
+    fn leaving_public_clears_the_email_flag() {
+        let code = code_only();
+        assert!(
+            code.contains("if e.value() != \"public\" { note_send_email.set(false); }"),
+            "any type but public clears the flag, not just internal"
+        );
+        assert!(
+            code.contains("let email_v = type_v == \"public\" && note_send_email();"),
+            "and the submit re-checks it"
+        );
+    }
+
+    /// The journal sentence is the only place a note's type reaches a reader.
+    /// It read "internal, else public", which was true while those were the
+    /// only two composable types and becomes a false claim about customer
+    /// visibility the moment `resolution` joins them: the portal serves
+    /// `note_type='public'` and nothing else.
+    #[test]
+    fn the_journal_never_calls_an_invisible_note_public() {
+        let resolution = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000021","note_type":"resolution","content":"Replaced the PSU","created_by_name":"Dana Reeve","created_at":"2026-08-20T09:00:00Z"}"#,
+        );
+        let unknown = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000022","note_type":"something_new","content":"x","created_by_name":"Dana Reeve","created_at":"2026-08-20T08:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[resolution, unknown], &[], &[], &[], None, false);
+        let actions: Vec<String> = journal.iter().map(|e| e.action.clone()).collect();
+
+        assert_eq!(
+            actions,
+            vec![
+                "added a resolution note (internal)".to_string(),
+                "added a note".to_string(),
+            ]
+        );
+        for action in &actions {
+            assert!(
+                !action.contains("public"),
+                "neither note is visible to the customer, so neither line may say public: {action}"
+            );
+        }
+    }
+
+    /// The two lines that were already right stay right: this change must not
+    /// move what a public note reads as.
+    #[test]
+    fn a_public_note_still_reads_exactly_as_it_did() {
+        let emailed = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000023","note_type":"public","content":"x","created_by_name":"Dana Reeve","is_email_sent":true,"created_at":"2026-08-20T09:00:00Z"}"#,
+        );
+        let unsent = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000024","note_type":"public","content":"x","created_by_name":"Dana Reeve","created_at":"2026-08-20T08:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[emailed, unsent], &[], &[], &[], None, false);
+        let actions: Vec<String> = journal.iter().map(|e| e.action.clone()).collect();
+
+        assert_eq!(
+            actions,
+            vec![
+                "added a public note and emailed the client".to_string(),
+                "added a public note (not emailed)".to_string(),
+            ]
+        );
+    }
+}
