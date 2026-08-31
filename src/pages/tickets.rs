@@ -16,6 +16,7 @@ use crate::components::{ChangeDetails, ChangeLine};
 // MAPPS-596: shared with the project, task and asset change-history panes.
 use crate::modules::audit::{action_label, fields_label, title_field};
 use crate::utils::{FormGuard, Paginated, Rule};
+use mokosh_types::tickets::NoteType;
 
 /// MAPPS-546: rows per page on the ticket list, sent to the server rather than
 /// written into the table as a constant.
@@ -31,6 +32,12 @@ const JOURNAL_LIMIT: usize = 50;
 /// through the notification dispatcher, so the preview comes back empty and
 /// would otherwise read as "nothing will be sent". Same shape as
 /// `QUOTE_PREVIEW_NOTE` in `quotes.rs` (docs/email-actions.md).
+/// MAPPS-613: shown under the email checkbox, which is now only rendered on a
+/// public note. It no longer has to explain why the control is greyed out,
+/// because there is no greyed-out control; it states the one thing that can
+/// still surprise the author.
+const NOTE_EMAIL_HELP: &str = "Sent to the ticket's contact. Nothing is sent when the ticket has no contact with an email address.";
+
 const NOTE_PREVIEW_NOTE: &str = "The ticket-note email is built into the server rather than by a notification rule, so there is nothing to render yet. The ticket's contact is still emailed the note.";
 use crate::Route;
 
@@ -235,6 +242,53 @@ fn note_is_editable(note: &RemoteNote, viewer: Option<uuid::Uuid>, viewer_is_adm
         return false;
     }
     viewer_is_admin || (viewer.is_some() && viewer == note.created_by_id)
+}
+
+/// MAPPS-613: every `NoteType`, in the order the composer considers them.
+///
+/// Written out rather than iterated, because the shared enum offers no such
+/// list; `composer_label` below is what keeps it honest. A new variant fails
+/// to compile there, three lines from here.
+const ALL_NOTE_TYPES: [NoteType; 4] = [
+    NoteType::Internal,
+    NoteType::Public,
+    NoteType::Resolution,
+    NoteType::TimeEntry,
+];
+
+/// MAPPS-613: how the composer labels a note type, or `None` for one an agent
+/// must not author.
+///
+/// An exhaustive match rather than a list, because two of the four are not the
+/// same kind of thing. `time_entry` mirrors a time entry and nothing writes
+/// one: the server refuses to edit it on the grounds that "a time-entry note
+/// is edited through its time entry", so composing one by hand makes a note
+/// belonging to an entry that does not exist and that nobody can then correct.
+///
+/// The shape matters as much as the answer. A hand-written `vec!` is what let
+/// `resolution` go missing; iterating every variant would put `time_entry`
+/// back. Only a match fails the build on a fifth variant until somebody
+/// decides whether an agent may write it.
+fn composer_label(kind: NoteType) -> Option<&'static str> {
+    match kind {
+        NoteType::Internal => Some("Internal Note"),
+        NoteType::Public => Some("Public Note (visible to customer)"),
+        // Internal, like `internal`: the portal serves `note_type='public'`
+        // and nothing else, so a customer never sees one. The label says so,
+        // because the type name alone reads like a status the client is told.
+        NoteType::Resolution => Some("Resolution Note (internal)"),
+        NoteType::TimeEntry => None,
+    }
+}
+
+/// The composer's Note Type options.
+fn note_type_options() -> Vec<SelectOption> {
+    ALL_NOTE_TYPES
+        .iter()
+        .filter_map(|kind| {
+            composer_label(*kind).map(|label| SelectOption::new(kind.as_str(), label))
+        })
+        .collect()
 }
 
 /// One change-history entry (`GET /audit-log/entity/tickets/:id`, PMS-182).
@@ -544,12 +598,21 @@ fn build_journal(
         // composer's toggle was on AND the ticket's contact has an address
         // (mokosh-server `send_note_email`). `is_email_sent` is the outcome,
         // so the line states what happened, not what was requested.
-        let action = if n.note_type == "internal" {
-            "added an internal note".to_string()
-        } else if n.is_email_sent {
-            "added a public note and emailed the client".to_string()
-        } else {
-            "added a public note (not emailed)".to_string()
+        // MAPPS-613: this sentence is the only place a note's type is visible
+        // to a reader; there is no badge on the note itself. It used to read
+        // "internal, else public", so once `resolution` became composable
+        // every resolution note would have been announced as one a customer
+        // can see. The portal serves `note_type='public'` and nothing else, so
+        // a resolution note is as invisible to them as an internal one.
+        let action = match n.note_type.as_str() {
+            "internal" => "added an internal note".to_string(),
+            "resolution" => "added a resolution note (internal)".to_string(),
+            "public" if n.is_email_sent => "added a public note and emailed the client".to_string(),
+            "public" => "added a public note (not emailed)".to_string(),
+            // A type this build does not know. Say the least that is certainly
+            // true rather than assert it is public, which is the claim that
+            // costs something if it is wrong.
+            _ => "added a note".to_string(),
         };
         entries.push(JournalEntry {
             at: n.created_at,
@@ -2355,12 +2418,6 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     // Composer state the markup reads more than once.
     let note_is_public = note_type.read().as_str() == "public";
     let note_will_email = note_is_public && note_send_email();
-    let note_email_help = if note_is_public {
-        "Sent to the ticket's contact. Nothing is sent when the ticket has no contact with an email address."
-    } else {
-        "Internal notes are never emailed. Switch the note to public to email it."
-    }
-    .to_string();
 
     // PMS-362: carry the ticket into the Log Time flow so the work-item picker
     // opens preselected. A plain <a href> (not a routed Link) because the
@@ -2741,31 +2798,36 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             Select {
                                 name: "note_type",
                                 label: "Note Type",
-                                options: vec![
-                                    SelectOption::new("internal", "Internal Note"),
-                                    SelectOption::new("public", "Public Note (visible to customer)"),
-                                ],
+                                options: note_type_options(),
                                 value: note_type.read().clone(),
                                 onchange: move |e: FormEvent| {
-                                    // An internal note never leaves the building,
+                                    // Only a public note ever leaves the building,
                                     // whatever the flag says (mokosh-server
-                                    // `add_note`), so switching back to internal
-                                    // clears the toggle rather than leaving a
-                                    // checked box that does nothing.
-                                    if e.value() == "internal" {
+                                    // `add_note`). MAPPS-613: the checkbox is now
+                                    // absent on every other type, so this clear is
+                                    // what stops a flag set while public from
+                                    // surviving into a note nobody can see it on.
+                                    if e.value() != "public" {
                                         note_send_email.set(false);
                                     }
                                     note_type.set(e.value());
                                 },
                             }
-                            div { class: "flex items-end",
-                                Checkbox {
-                                    name: "note_send_email",
-                                    label: "Email this note to the client",
-                                    checked: note_send_email(),
-                                    disabled: !note_is_public,
-                                    help: note_email_help,
-                                    onchange: move |e: FormEvent| note_send_email.set(e.checked()),
+                            // MAPPS-613: absent, not greyed, on a note that
+                            // cannot be emailed. The server has always refused
+                            // to send one, but that refusal is invisible: a
+                            // disabled control on an internal note still tells
+                            // the reader that internal commentary is the sort
+                            // of thing this app can mail to a customer.
+                            if note_is_public {
+                                div { class: "flex items-end",
+                                    Checkbox {
+                                        name: "note_send_email",
+                                        label: "Email this note to the client",
+                                        checked: note_send_email(),
+                                        help: NOTE_EMAIL_HELP.to_string(),
+                                        onchange: move |e: FormEvent| note_send_email.set(e.checked()),
+                                    }
                                 }
                             }
                         }
@@ -4581,6 +4643,151 @@ mod mapps594_in_page_edit_tests {
         assert!(
             code.contains(r#"guard.field( "edit-description","#),
             "and so does the description"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mapps613_note_type_and_email_affordance_tests {
+    use super::*;
+
+    const SRC: &str = include_str!("tickets.rs");
+
+    /// The shipping code with runs of whitespace collapsed, excluding this
+    /// module: every assertion quotes the pattern it looks for, so a scan
+    /// including its own source would match itself and pass regardless.
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod mapps613_note_type_and_email_affordance_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    fn note(json: &str) -> RemoteNote {
+        serde_json::from_str(json).expect("deserialise note")
+    }
+
+    /// Three of the four, and the omission is the deliberate half.
+    ///
+    /// `resolution` was storable, editable and renderable all along and could
+    /// not be composed. `time_entry` must stay out: nothing writes one, and
+    /// the server refuses to edit one because "a time-entry note is edited
+    /// through its time entry", so a hand-written one belongs to an entry that
+    /// does not exist and nobody can then correct it.
+    #[test]
+    fn only_a_type_an_agent_may_write_is_offered() {
+        let offered: Vec<(String, String)> = note_type_options()
+            .into_iter()
+            .map(|o| (o.value, o.label))
+            .collect();
+        assert_eq!(
+            offered,
+            vec![
+                ("internal".to_string(), "Internal Note".to_string()),
+                (
+                    "public".to_string(),
+                    "Public Note (visible to customer)".to_string()
+                ),
+                (
+                    "resolution".to_string(),
+                    "Resolution Note (internal)".to_string()
+                ),
+            ]
+        );
+        assert!(
+            composer_label(NoteType::TimeEntry).is_none(),
+            "an agent cannot author a note about a time entry that does not exist"
+        );
+    }
+
+    /// David's actual objection. The server has always refused to mail an
+    /// internal note, but that refusal happens where nobody can see it: a
+    /// greyed-out `Email this note to the client` on an internal note still
+    /// says this app will send internal commentary to a customer if you ask
+    /// the right way.
+    #[test]
+    fn the_email_control_is_absent_rather_than_disabled() {
+        let code = code_only();
+        assert!(
+            code.contains("if note_is_public { div { class: \"flex items-end\", Checkbox {"),
+            "the checkbox is rendered only on a public note"
+        );
+        assert!(
+            !code.contains("disabled: !note_is_public"),
+            "and never as a greyed-out control on a note that cannot be emailed"
+        );
+    }
+
+    /// The flag has to be cleared on the way out of public, because the box
+    /// that would otherwise show it checked is no longer on screen. Before
+    /// this branch a stale flag was merely invisible-but-disabled; now it
+    /// would be invisible outright, so the clear carries more weight than it
+    /// did, and the submit's own `type == "public"` guard is the second line.
+    #[test]
+    fn leaving_public_clears_the_email_flag() {
+        let code = code_only();
+        assert!(
+            code.contains("if e.value() != \"public\" { note_send_email.set(false); }"),
+            "any type but public clears the flag, not just internal"
+        );
+        assert!(
+            code.contains("let email_v = type_v == \"public\" && note_send_email();"),
+            "and the submit re-checks it"
+        );
+    }
+
+    /// The journal sentence is the only place a note's type reaches a reader.
+    /// It read "internal, else public", which was true while those were the
+    /// only two composable types and becomes a false claim about customer
+    /// visibility the moment `resolution` joins them: the portal serves
+    /// `note_type='public'` and nothing else.
+    #[test]
+    fn the_journal_never_calls_an_invisible_note_public() {
+        let resolution = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000021","note_type":"resolution","content":"Replaced the PSU","created_by_name":"Dana Reeve","created_at":"2026-08-20T09:00:00Z"}"#,
+        );
+        let unknown = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000022","note_type":"something_new","content":"x","created_by_name":"Dana Reeve","created_at":"2026-08-20T08:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[resolution, unknown], &[], &[], &[], None, false);
+        let actions: Vec<String> = journal.iter().map(|e| e.action.clone()).collect();
+
+        assert_eq!(
+            actions,
+            vec![
+                "added a resolution note (internal)".to_string(),
+                "added a note".to_string(),
+            ]
+        );
+        for action in &actions {
+            assert!(
+                !action.contains("public"),
+                "neither note is visible to the customer, so neither line may say public: {action}"
+            );
+        }
+    }
+
+    /// The two lines that were already right stay right: this change must not
+    /// move what a public note reads as.
+    #[test]
+    fn a_public_note_still_reads_exactly_as_it_did() {
+        let emailed = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000023","note_type":"public","content":"x","created_by_name":"Dana Reeve","is_email_sent":true,"created_at":"2026-08-20T09:00:00Z"}"#,
+        );
+        let unsent = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000024","note_type":"public","content":"x","created_by_name":"Dana Reeve","created_at":"2026-08-20T08:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[emailed, unsent], &[], &[], &[], None, false);
+        let actions: Vec<String> = journal.iter().map(|e| e.action.clone()).collect();
+
+        assert_eq!(
+            actions,
+            vec![
+                "added a public note and emailed the client".to_string(),
+                "added a public note (not emailed)".to_string(),
+            ]
         );
     }
 }
