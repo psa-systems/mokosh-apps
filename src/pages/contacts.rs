@@ -728,6 +728,7 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
                     address_state: payload.address.state.clone().unwrap_or_default(),
                     address_postal_code: payload.address.postal_code.clone().unwrap_or_default(),
                     address_country: payload.address.country.clone().unwrap_or_default(),
+                    notes: payload.notes.clone().unwrap_or_default(),
                 };
                 let id = id_for_form.clone();
                 rsx! {
@@ -756,6 +757,9 @@ struct CompanyEditPayload {
     phone: Option<String>,
     #[serde(default)]
     address: Address,
+    // MAPPS-614 / PMS-952: the free-text note, held and rendered as Markdown.
+    #[serde(default)]
+    notes: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -772,6 +776,7 @@ struct CompanyFormValues {
     address_state: String,
     address_postal_code: String,
     address_country: String,
+    notes: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -839,6 +844,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let mut state = use_signal(|| initial.address_state.clone());
     let postal = use_signal(|| initial.address_postal_code.clone());
     let mut country = use_signal(|| initial.address_country.clone());
+    let mut notes = use_signal(|| initial.notes.clone());
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
     // Per-field inline validation errors (MAPPS-177, MAPPS-213, MAPPS-265).
@@ -1115,6 +1121,8 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                 "postal_code": postal_value,
                 "country": country_value,
             },
+            // MAPPS-614: always a string, never null. See `clearable_string`.
+            "notes": clearable_string(&notes.read()),
         });
         let mode = mode.clone();
         // MAPPS-293: clone the mode again for the post-success toast so the
@@ -1343,6 +1351,23 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                     }
                 }
 
+                // MAPPS-614: David's ask, and the reason it is the shared
+                // editor rather than a textarea: every other Markdown surface
+                // in the app went through MAPPS-610 to get here, and a second
+                // implementation would be the one thing that ticket exists to
+                // prevent.
+                crate::components::MarkdownEditor {
+                    name: "company_notes".to_string(),
+                    label: "Notes".to_string(),
+                    placeholder: "Anything worth knowing about this company.".to_string(),
+                    rows: 8,
+                    views: true,
+                    view_pref_key: "company_notes_view_mode".to_string(),
+                    disabled: !can_mutate,
+                    value: notes.read().clone(),
+                    oninput: move |next: String| notes.set(next),
+                }
+
                 div { class: "flex justify-end space-x-3",
                     Link {
                         to: cancel_route.clone(),
@@ -1361,6 +1386,20 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             }
         }
     }
+}
+
+/// MAPPS-614: a field the user must be able to empty again.
+///
+/// `optional_string` below sends JSON null for a blank field, and the server's
+/// company and contact updates add `notes = $n` to the UPDATE only when the
+/// key carries a value (PMS-952 pins this). A null therefore means "leave it
+/// alone", not "erase it": a user who deletes their notes and saves would get
+/// a 200 and find the old text still there. An empty string is what clears it.
+///
+/// The same reasoning already governs `company_name`, which this form sends as
+/// `""` when a company is linked.
+fn clearable_string(value: &str) -> serde_json::Value {
+    serde_json::Value::String(value.trim().to_string())
 }
 
 fn optional_string(value: &str) -> serde_json::Value {
@@ -2299,6 +2338,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 let phone = company.phone.clone();
                 let industry = company.industry.clone();
                 let am_name = company.account_manager_name.clone();
+                let notes = company.notes.clone().unwrap_or_default();
                 let open_tickets = company.open_ticket_count.unwrap_or(0).max(0);
                 let contact_count = company.contact_count.unwrap_or(0).max(0);
                 let site_count = company.site_count.unwrap_or(0).max(0);
@@ -2350,6 +2390,18 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                 company_id: company_id_str.clone(),
                                 assets_resource,
                                 asset_types_resource,
+                            }
+                            // MAPPS-614: near the bottom of the record, which
+                            // is where David asked for it. Rendered through
+                            // the shared component, so it is sanitised by the
+                            // same path as every other Markdown surface.
+                            // Hidden when empty, following the ticket
+                            // description's own rule, so a record nobody has
+                            // written on does not grow a blank card.
+                            if !notes.trim().is_empty() {
+                                Card { title: "Notes",
+                                    crate::components::Markdown { content: notes.clone() }
+                                }
                             }
                         }
                         // Sidebar
@@ -2494,6 +2546,9 @@ struct CompanyDetail {
     address: Address,
     #[serde(default)]
     account_manager_name: Option<String>,
+    // MAPPS-614 / PMS-952: rendered as Markdown in the Notes card.
+    #[serde(default)]
+    notes: Option<String>,
     #[serde(default)]
     contact_count: Option<i64>,
     #[serde(default)]
