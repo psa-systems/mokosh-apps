@@ -598,12 +598,21 @@ fn build_journal(
         // composer's toggle was on AND the ticket's contact has an address
         // (mokosh-server `send_note_email`). `is_email_sent` is the outcome,
         // so the line states what happened, not what was requested.
-        let action = if n.note_type == "internal" {
-            "added an internal note".to_string()
-        } else if n.is_email_sent {
-            "added a public note and emailed the client".to_string()
-        } else {
-            "added a public note (not emailed)".to_string()
+        // MAPPS-613: this sentence is the only place a note's type is visible
+        // to a reader; there is no badge on the note itself. It used to read
+        // "internal, else public", so once `resolution` became composable
+        // every resolution note would have been announced as one a customer
+        // can see. The portal serves `note_type='public'` and nothing else, so
+        // a resolution note is as invisible to them as an internal one.
+        let action = match n.note_type.as_str() {
+            "internal" => "added an internal note".to_string(),
+            "resolution" => "added a resolution note (internal)".to_string(),
+            "public" if n.is_email_sent => "added a public note and emailed the client".to_string(),
+            "public" => "added a public note (not emailed)".to_string(),
+            // A type this build does not know. Say the least that is certainly
+            // true rather than assert it is public, which is the claim that
+            // costs something if it is wrong.
+            _ => "added a note".to_string(),
         };
         entries.push(JournalEntry {
             at: n.created_at,
