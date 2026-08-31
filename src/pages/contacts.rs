@@ -728,6 +728,7 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
                     address_state: payload.address.state.clone().unwrap_or_default(),
                     address_postal_code: payload.address.postal_code.clone().unwrap_or_default(),
                     address_country: payload.address.country.clone().unwrap_or_default(),
+                    notes: payload.notes.clone().unwrap_or_default(),
                 };
                 let id = id_for_form.clone();
                 rsx! {
@@ -756,6 +757,9 @@ struct CompanyEditPayload {
     phone: Option<String>,
     #[serde(default)]
     address: Address,
+    // MAPPS-614 / PMS-952: the free-text note, held and rendered as Markdown.
+    #[serde(default)]
+    notes: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -772,6 +776,7 @@ struct CompanyFormValues {
     address_state: String,
     address_postal_code: String,
     address_country: String,
+    notes: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -839,6 +844,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let mut state = use_signal(|| initial.address_state.clone());
     let postal = use_signal(|| initial.address_postal_code.clone());
     let mut country = use_signal(|| initial.address_country.clone());
+    let mut notes = use_signal(|| initial.notes.clone());
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
     // Per-field inline validation errors (MAPPS-177, MAPPS-213, MAPPS-265).
@@ -1115,6 +1121,8 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                 "postal_code": postal_value,
                 "country": country_value,
             },
+            // MAPPS-614: always a string, never null. See `clearable_string`.
+            "notes": clearable_string(&notes.read()),
         });
         let mode = mode.clone();
         // MAPPS-293: clone the mode again for the post-success toast so the
@@ -1343,6 +1351,23 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                     }
                 }
 
+                // MAPPS-614: David's ask, and the reason it is the shared
+                // editor rather than a textarea: every other Markdown surface
+                // in the app went through MAPPS-610 to get here, and a second
+                // implementation would be the one thing that ticket exists to
+                // prevent.
+                crate::components::MarkdownEditor {
+                    name: "company_notes".to_string(),
+                    label: "Notes".to_string(),
+                    placeholder: "Anything worth knowing about this company.".to_string(),
+                    rows: 8,
+                    views: true,
+                    view_pref_key: "company_notes_view_mode".to_string(),
+                    disabled: !can_mutate,
+                    value: notes.read().clone(),
+                    oninput: move |next: String| notes.set(next),
+                }
+
                 div { class: "flex justify-end space-x-3",
                     Link {
                         to: cancel_route.clone(),
@@ -1361,6 +1386,20 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             }
         }
     }
+}
+
+/// MAPPS-614: a field the user must be able to empty again.
+///
+/// `optional_string` below sends JSON null for a blank field, and the server's
+/// company and contact updates add `notes = $n` to the UPDATE only when the
+/// key carries a value (PMS-952 pins this). A null therefore means "leave it
+/// alone", not "erase it": a user who deletes their notes and saves would get
+/// a 200 and find the old text still there. An empty string is what clears it.
+///
+/// The same reasoning already governs `company_name`, which this form sends as
+/// `""` when a company is linked.
+fn clearable_string(value: &str) -> serde_json::Value {
+    serde_json::Value::String(value.trim().to_string())
 }
 
 fn optional_string(value: &str) -> serde_json::Value {
@@ -2299,6 +2338,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 let phone = company.phone.clone();
                 let industry = company.industry.clone();
                 let am_name = company.account_manager_name.clone();
+                let notes = company.notes.clone().unwrap_or_default();
                 let open_tickets = company.open_ticket_count.unwrap_or(0).max(0);
                 let contact_count = company.contact_count.unwrap_or(0).max(0);
                 let site_count = company.site_count.unwrap_or(0).max(0);
@@ -2350,6 +2390,18 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                 company_id: company_id_str.clone(),
                                 assets_resource,
                                 asset_types_resource,
+                            }
+                            // MAPPS-614: near the bottom of the record, which
+                            // is where David asked for it. Rendered through
+                            // the shared component, so it is sanitised by the
+                            // same path as every other Markdown surface.
+                            // Hidden when empty, following the ticket
+                            // description's own rule, so a record nobody has
+                            // written on does not grow a blank card.
+                            if !notes.trim().is_empty() {
+                                Card { title: "Notes",
+                                    crate::components::Markdown { content: notes.clone() }
+                                }
                             }
                         }
                         // Sidebar
@@ -2494,6 +2546,9 @@ struct CompanyDetail {
     address: Address,
     #[serde(default)]
     account_manager_name: Option<String>,
+    // MAPPS-614 / PMS-952: rendered as Markdown in the Notes card.
+    #[serde(default)]
+    notes: Option<String>,
     #[serde(default)]
     contact_count: Option<i64>,
     #[serde(default)]
@@ -4563,6 +4618,7 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
                         payload.mobile.as_deref(),
                     ),
                     companies,
+                    notes: payload.notes.clone().unwrap_or_default(),
                 };
                 let id = id_for_form.clone();
                 rsx! {
@@ -4594,6 +4650,9 @@ struct ContactEditPayload {
     department: Option<String>,
     #[serde(default)]
     contact_type: String,
+    // MAPPS-614 / PMS-952: the free-text note, held and rendered as Markdown.
+    #[serde(default)]
+    notes: Option<String>,
     // MAPPS-251: optional so a freeform-company contact (company_name only,
     // no FK) deserializes without a null/absent company_id panicking.
     #[serde(default)]
@@ -4645,6 +4704,7 @@ struct ContactFormValues {
     company_name: String,
     phones: Vec<PhoneRow>,
     companies: Vec<CompanyRow>,
+    notes: String,
 }
 
 /// MAPPS-481: seed the form's phone rows from a loaded contact. The PMS-806
@@ -4851,6 +4911,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
     // stores (it derives `sort_order` from the array index).
     let mut phones = use_signal(|| initial.phones.clone());
     let mut companies = use_signal(|| initial.companies.clone());
+    let mut notes = use_signal(|| initial.notes.clone());
     // MAPPS-481: the "+ Add another company" picker, shown only while the user
     // is adding one, and the inline note for picking one already in the list.
     let mut adding_company = use_signal(|| false);
@@ -4987,6 +5048,9 @@ fn ContactForm(props: ContactFormProps) -> Element {
             // Sent as `""` whenever a company is linked, which clears any name
             // stored by an earlier save (a link plus a name is a 422).
             "company_name": if has_links { "" } else { freeform_name.as_str() },
+            // MAPPS-614: always a string, never null, for the same reason
+            // `company_name` above is. See `clearable_string`.
+            "notes": clearable_string(&notes.read()),
         });
         let mode = mode.clone();
         let mode_for_toast = mode.clone();
@@ -5390,6 +5454,21 @@ fn ContactForm(props: ContactFormProps) -> Element {
                     }
                 }
 
+                // MAPPS-614: the same field and the same editor as the company
+                // form, because David asked for description-type fields across
+                // the system rather than for one record.
+                crate::components::MarkdownEditor {
+                    name: "contact_notes".to_string(),
+                    label: "Notes".to_string(),
+                    placeholder: "Anything worth knowing about this person.".to_string(),
+                    rows: 8,
+                    views: true,
+                    view_pref_key: "contact_notes_view_mode".to_string(),
+                    disabled: !can_mutate,
+                    value: notes.read().clone(),
+                    oninput: move |next: String| notes.set(next),
+                }
+
                 div { class: "flex justify-end space-x-3",
                     Link {
                         to: cancel_route.clone(),
@@ -5610,6 +5689,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                 let title = c.title.clone();
                 let department = c.department.clone();
                 let contact_type = c.contact_type.clone();
+                let notes = c.notes.clone().unwrap_or_default();
                 let is_portal_user = c.is_portal_user;
                 let portal_id = id_for_portal.clone();
                 // MAPPS-481: every phone and every company link, each as its
@@ -5697,6 +5777,14 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                     div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
                         div { class: "lg:col-span-2 space-y-6",
                             ContactTicketsCard { tickets_resource: tickets }
+                            // MAPPS-614: near the bottom of the record, the
+                            // Google Contacts placement David described.
+                            // Hidden when empty, like the company card.
+                            if !notes.trim().is_empty() {
+                                Card { title: "Notes",
+                                    crate::components::Markdown { content: notes.clone() }
+                                }
+                            }
                         }
                         div { class: "space-y-6",
                             Card { title: "Contact Information",
@@ -5893,6 +5981,9 @@ struct ContactDetail {
     department: Option<String>,
     #[serde(default)]
     contact_type: String,
+    // MAPPS-614 / PMS-952: rendered as Markdown in the Notes card.
+    #[serde(default)]
+    notes: Option<String>,
     #[serde(default)]
     is_portal_user: bool,
     // MAPPS-251: optional FK; `None` for a freeform-company contact.
@@ -7252,6 +7343,113 @@ mod mapps597_site_wording_tests {
                  \"A site is an office, warehouse or other address where this company operates.\" } }"
             ),
             "the create path carries the sentence and the edit path does not"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mapps614_notes_as_markdown_tests {
+    use super::*;
+
+    const SRC: &str = include_str!("contacts.rs");
+
+    /// The shipping code with runs of whitespace collapsed, excluding this
+    /// module: every assertion quotes the pattern it looks for, so a scan
+    /// including its own source would match itself and pass regardless.
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod mapps614_notes_as_markdown_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// The trap this whole field walks into, and the reason `clearable_string`
+    /// exists beside `optional_string` instead of reusing it.
+    ///
+    /// The server adds `notes = $n` to its UPDATE only when the request
+    /// carries a value (PMS-952 pins that from the other side), so a null is
+    /// "leave it alone" and not "erase it". Sent through `optional_string`, a
+    /// user who selects their notes, deletes them and saves would get a
+    /// success toast and find the old text still on the record.
+    #[test]
+    fn an_emptied_note_clears_the_record_rather_than_being_ignored() {
+        assert_eq!(clearable_string(""), serde_json::json!(""));
+        assert_eq!(clearable_string("   "), serde_json::json!(""));
+        assert!(
+            optional_string("").is_null(),
+            "the contrast is the point: the general helper sends null, which \
+             the server reads as no change"
+        );
+        // A real value is trimmed and sent as itself, so nothing else changes.
+        assert_eq!(
+            clearable_string("  Renews in March.  "),
+            serde_json::json!("Renews in March.")
+        );
+    }
+
+    /// Both records edit the note in the shared editor, so the toolbar, the
+    /// shortcuts and the Write/Preview/Split switcher come with it. A bare
+    /// textarea would be the same syntax with none of the help, which is the
+    /// state MAPPS-610 moved every other Markdown surface out of.
+    #[test]
+    fn both_records_edit_their_note_in_the_shared_editor() {
+        let code = code_only();
+        assert_eq!(
+            code.matches("crate::components::MarkdownEditor {").count(),
+            2,
+            "one on the company form, one on the contact form"
+        );
+        for name in ["\"company_notes\"", "\"contact_notes\""] {
+            assert!(
+                code.contains(&format!(
+                    "name: {name}.to_string(), label: \"Notes\".to_string(),"
+                )),
+                "{name} is the shared editor's field, labelled Notes"
+            );
+        }
+        assert!(
+            !code.contains("Textarea { name: \"notes\","),
+            "neither note is a bare textarea"
+        );
+    }
+
+    /// Both detail pages render through the shared component, which is the
+    /// only path in this app from Markdown source to HTML and is already
+    /// scrubbed with ammonia. Rendering here instead would mean a second
+    /// sanitiser to keep in step with the first.
+    #[test]
+    fn both_records_render_their_note_through_the_shared_renderer() {
+        let code = code_only();
+        assert_eq!(
+            code.matches("crate::components::Markdown { content: notes.clone() }")
+                .count(),
+            2,
+            "one on the company detail page, one on the contact detail page"
+        );
+        // Hidden when there is nothing in it, so a record nobody has written
+        // on does not grow a blank card.
+        assert_eq!(
+            code.matches("if !notes.trim().is_empty() { Card { title: \"Notes\",")
+                .count(),
+            2,
+            "each card is gated on having something to show"
+        );
+    }
+
+    /// The write path uses the clearing helper on both forms, and neither one
+    /// reaches for the general optional helper for this field.
+    #[test]
+    fn neither_form_sends_the_note_as_a_null() {
+        let code = code_only();
+        assert_eq!(
+            code.matches("\"notes\": clearable_string(&notes.read()),")
+                .count(),
+            2,
+            "the company body and the contact body"
+        );
+        assert!(
+            !code.contains("\"notes\": optional_string("),
+            "optional_string would send null for an emptied field"
         );
     }
 }
