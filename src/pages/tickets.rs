@@ -16,6 +16,7 @@ use crate::components::{ChangeDetails, ChangeLine};
 // MAPPS-596: shared with the project, task and asset change-history panes.
 use crate::modules::audit::{action_label, fields_label, title_field};
 use crate::utils::{FormGuard, Paginated, Rule};
+use mokosh_types::tickets::NoteType;
 
 /// MAPPS-546: rows per page on the ticket list, sent to the server rather than
 /// written into the table as a constant.
@@ -235,6 +236,53 @@ fn note_is_editable(note: &RemoteNote, viewer: Option<uuid::Uuid>, viewer_is_adm
         return false;
     }
     viewer_is_admin || (viewer.is_some() && viewer == note.created_by_id)
+}
+
+/// MAPPS-613: every `NoteType`, in the order the composer considers them.
+///
+/// Written out rather than iterated, because the shared enum offers no such
+/// list; `composer_label` below is what keeps it honest. A new variant fails
+/// to compile there, three lines from here.
+const ALL_NOTE_TYPES: [NoteType; 4] = [
+    NoteType::Internal,
+    NoteType::Public,
+    NoteType::Resolution,
+    NoteType::TimeEntry,
+];
+
+/// MAPPS-613: how the composer labels a note type, or `None` for one an agent
+/// must not author.
+///
+/// An exhaustive match rather than a list, because two of the four are not the
+/// same kind of thing. `time_entry` mirrors a time entry and nothing writes
+/// one: the server refuses to edit it on the grounds that "a time-entry note
+/// is edited through its time entry", so composing one by hand makes a note
+/// belonging to an entry that does not exist and that nobody can then correct.
+///
+/// The shape matters as much as the answer. A hand-written `vec!` is what let
+/// `resolution` go missing; iterating every variant would put `time_entry`
+/// back. Only a match fails the build on a fifth variant until somebody
+/// decides whether an agent may write it.
+fn composer_label(kind: NoteType) -> Option<&'static str> {
+    match kind {
+        NoteType::Internal => Some("Internal Note"),
+        NoteType::Public => Some("Public Note (visible to customer)"),
+        // Internal, like `internal`: the portal serves `note_type='public'`
+        // and nothing else, so a customer never sees one. The label says so,
+        // because the type name alone reads like a status the client is told.
+        NoteType::Resolution => Some("Resolution Note (internal)"),
+        NoteType::TimeEntry => None,
+    }
+}
+
+/// The composer's Note Type options.
+fn note_type_options() -> Vec<SelectOption> {
+    ALL_NOTE_TYPES
+        .iter()
+        .filter_map(|kind| {
+            composer_label(*kind).map(|label| SelectOption::new(kind.as_str(), label))
+        })
+        .collect()
 }
 
 /// One change-history entry (`GET /audit-log/entity/tickets/:id`, PMS-182).
@@ -2741,10 +2789,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             Select {
                                 name: "note_type",
                                 label: "Note Type",
-                                options: vec![
-                                    SelectOption::new("internal", "Internal Note"),
-                                    SelectOption::new("public", "Public Note (visible to customer)"),
-                                ],
+                                options: note_type_options(),
                                 value: note_type.read().clone(),
                                 onchange: move |e: FormEvent| {
                                     // An internal note never leaves the building,
