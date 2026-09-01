@@ -30,3 +30,4 @@ pub mod scroll_sync;
 pub mod store;
 pub mod timer;
 pub mod tz;
+pub mod window_close;
