@@ -58,10 +58,21 @@ ammonia = "4"
 # pinned in Cargo.lock.
 [dependencies.mokosh-types]
 git = "https://dev.a8n.run/psa-systems/mokosh-server.git"
-# MAPPS-396: track the server's `mokosh-client-login` branch while
-# `tenant_slug` on LoginRequest waits to reach main. Drop `branch = ...`
-# once the branch merges so the pin follows main again.
-branch = "mokosh-client-login"
+# MAPPS-617: follow `mokosh-contact-login` (the long-lived contact-
+# portal + branding integration branch on the server), a superset of
+# the retired `mokosh-client-login` pin. Once this whole track merges
+# to main, drop `branch = ...` and let the pin follow main again.
+#
+# Bumping the pin requires the server branch to actually contain the
+# branding types (`CompanyBranding`, `EffectiveBranding`, and the
+# `background_*` / `display_name` fields on `TenantBranding`). Until
+# MAPPS-617 lands on this branch, the client uses local shadow types
+# in `hooks/branding.rs` that mirror the wire shape byte-for-byte via
+# `serde(default)`; runtime interop works regardless of which commit
+# `Cargo.lock` resolves to. After the server merge + a
+# `cargo update -p mokosh-types` here, the shadow types can be
+# deleted in favour of `pub use mokosh_types::...`.
+branch = "mokosh-contact-login"
 
 [dependencies.dioxus]
 version = "0.7.7"
