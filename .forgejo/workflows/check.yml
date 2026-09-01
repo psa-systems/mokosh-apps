@@ -2,6 +2,13 @@
 
 # Validate code on every push and pull request by running 'just check'
 # Mirrors the local `just check` + `just test` recipes (which use ./dev/cargo).
+#
+# MAPPS-452: this stays a private workflow rather than calling
+# psa-systems/common's reusable check.yml, because the reusable one runs a
+# single host-target compile and cannot express this repo's target matrix (the
+# wasm32 SPA build plus the no-default-features desktop feature set) or the
+# guard scripts the CI-parity guard pins to it. The two justfile guards the
+# reusable workflow would have contributed run below instead.
 name: Check
 
 on:
@@ -21,7 +28,21 @@ jobs:
 
     steps:
       - name: Clone the repository
+        # `submodules: true` for the justfile guards below: cargo does not need
+        # common/, but `import 'common/common.just'` does.
         uses: https://code.forgejo.org/actions/checkout@v5
+        with:
+          submodules: true
+
+      # MAPPS-452: a justfile that does not parse takes every recipe and the
+      # git hook down with it, and the hook is bypassable with --no-verify, so
+      # both guards run here too. `--summary` parses the file and its imports
+      # without executing a recipe body.
+      - name: Validate the justfile
+        run: just --summary
+
+      - name: Check for shadowed common recipes
+        run: just check-justfile
 
       - name: Cap build parallelism
         # nproc/2 cap: never claim more than half the host (see CI.md "Concurrency cap").

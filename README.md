@@ -24,6 +24,16 @@ Install on the host:
 
 The dev server itself runs inside Docker, so the host does not need `dioxus-cli` installed. The desktop build does need it, along with a system webview; see [docs/desktop.md](docs/desktop.md).
 
+### Shared task runner
+
+The hook, release and cleanup recipes come from <https://dev.a8n.run/psa-systems/common>, vendored as the `common` git submodule and imported by the root `justfile`. Run this once in a fresh clone, or every `just` invocation fails on the unresolved import:
+
+```nu
+git submodule update --init
+```
+
+Configure those recipes through the variables at the top of the `justfile`; never redefine one, which `just check-justfile` rejects. `just install-hooks` writes the `.git/hooks/pre-commit` stub, and `just pre-commit` runs fmt, clippy, the wasm check and the library tests in the builder image.
+
 ## Quick start
 
 ```nu
@@ -68,7 +78,9 @@ just desktop-build    # build the desktop binary
 just desktop-bundle   # build an installable desktop bundle
 just check-docker     # build the production OCI image as :check
 just build-docker     # build the production OCI image as :local
-just create-release   # cut a release branch and bump versions (see below)
+just install-hooks    # install the git pre-commit hook (from common)
+just pre-commit       # run the containerized pre-commit checks (from common)
+just create-release   # cut a release branch and bump versions (from common, see below)
 ```
 
 ## Project layout
@@ -92,6 +104,7 @@ Cargo.toml          # Rust workspace + crate config
 Dioxus.toml         # dx serve / dx build config (port 4300, name, bundle)
 package.json        # Bun deps (Tailwind v4)
 justfile            # task runner
+common/             # psa-systems/common submodule (shared hook/release recipes)
 compose.yml         # dev server stack
 Dockerfile          # dev image (dx serve with hot reload)
 oci-build/          # production image (Caddy serving the built bundle)
@@ -178,7 +191,7 @@ To apply an available update, bump the tag in `compose.yml` and run `docker comp
 
 ## Releases
 
-`create-release` bumps the version in both `Cargo.toml` and `package.json`, commits to a `release/vX.Y.Z` branch, pushes, and prints the PR URL:
+`create-release` comes from `common`. It bumps the version in `Cargo.toml`, writes the same version into `package.json`, syncs `Cargo.lock`, commits to a `release/vX.Y.Z` branch, pushes, and prints the PR URL:
 
 ```nu
 just create-release major     # X.0.0
@@ -186,7 +199,7 @@ just create-release minor     # 0.X.0
 just create-release hotfix    # 0.0.X
 ```
 
-The recipe refuses to run on a dirty tree, switches to `main`, rebases against `origin/main`, and aborts if the two version fields disagree. After the PR is merged, the `create-release` workflow tags and releases the version automatically.
+The recipe refuses to run on a dirty tree, switches to `main`, and rebases against `origin/main`. The version in `Cargo.toml` is the one it reads, so `package.json` tracks it rather than being compared against it. After the PR is merged, `.forgejo/workflows/create-release.yml` calls the reusable workflow in `common`, which tags the release and publishes it with one changelog line per merged pull request.
 
 ## Troubleshooting
 
