@@ -1,11 +1,14 @@
 //! `start_login` and `complete_login`: the two halves of the OIDC code
-//! flow as seen from a browser SPA.
+//! flow.
 //!
-//! MAPPS-504: the desktop build compiles this but cannot run it - there
-//! is no origin for a `redirect_uri` and no document to redirect. It
-//! signs in through the standalone username/password path instead, and
-//! `start_login` reports that rather than failing quietly. MAPPS-505
-//! adds the RFC 8252 loopback flow that makes this work there too.
+//! Only the hand-off differs per target. The browser is navigated to the
+//! authorize URL and comes back on `/auth/callback` with the response in
+//! its query string; the desktop opens the authorize URL in the user's
+//! own browser and reads the response off an RFC 8252 loopback listener
+//! (MAPPS-505, `super::native_flow`). Everything else - PKCE, the
+//! `state` and `nonce` checks, the exchange, `classify_flow_error` - is
+//! shared, and `complete_login` runs on the same `/auth/callback` route
+//! either way.
 
 use crate::platform::http::Request;
 use chrono::{Duration, Utc};
@@ -40,16 +43,43 @@ pub enum FlowError {
     Redirect(String),
 }
 
-/// Begin the login flow. Generates PKCE + state + nonce, persists them
-/// in `sessionStorage`, then navigates the browser to the authorize
-/// endpoint. This function does not return on success: the page is
-/// replaced.
+/// Begin the login flow: mint a `PendingFlow` and navigate the document
+/// to the authorize endpoint. Does not return on success, because the
+/// page is replaced.
+#[cfg(target_arch = "wasm32")]
 pub fn start_login(cfg: &OidcConfig, return_to: impl Into<String>) -> Result<(), FlowError> {
+    let url = authorize_url(cfg, return_to.into())?;
+    crate::platform::location::set_href(&url).map_err(|e| {
+        FlowError::Redirect(format!("could not hand off to the identity provider: {e}"))
+    })
+}
+
+/// Begin the login flow: mint a `PendingFlow`, bind the RFC 8252
+/// loopback listener, and open the authorize endpoint in the user's own
+/// browser (MAPPS-505).
+///
+/// Returns as soon as that browser has been opened. The authorization
+/// response arrives later, on the listener, and the flow finishes on
+/// `/auth/callback` exactly as it does in a browser. See
+/// [`super::native_flow`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn start_login(cfg: &OidcConfig, return_to: impl Into<String>) -> Result<(), FlowError> {
+    super::native_flow::start_login(cfg, return_to.into())
+}
+
+/// Mint a flow (PKCE verifier, `state`, `nonce`), persist it as the
+/// `PendingFlow` the callback will be checked against, and build the
+/// authorize URL to send the user to.
+///
+/// Shared by both targets, and called AFTER the desktop has bound its
+/// loopback listener: `cfg.resolve_redirect_uri()` reads that listener's
+/// port there, and the OP has to be given the same URI the token
+/// exchange will later present.
+pub(super) fn authorize_url(cfg: &OidcConfig, return_to: String) -> Result<String, FlowError> {
     let verifier = generate_code_verifier();
     let challenge = s256_challenge(&verifier);
     let state = random_opaque();
     let nonce = random_opaque();
-    let return_to = return_to.into();
     let redirect_uri = cfg
         .resolve_redirect_uri()
         .map_err(|e| FlowError::Config(e.to_string()))?;
@@ -87,13 +117,7 @@ pub fn start_login(cfg: &OidcConfig, return_to: impl Into<String>) -> Result<(),
         url.push_str(&urlencode(v));
     }
 
-    // MAPPS-504/505: the desktop build has nowhere to be redirected TO,
-    // so this reports why instead of appearing to do nothing. The
-    // standalone username/password path (MAPPS-368) is what a desktop
-    // sign-in uses until the loopback flow lands.
-    crate::platform::location::set_href(&url).map_err(|e| {
-        FlowError::Redirect(format!("could not hand off to the identity provider: {e}"))
-    })
+    Ok(url)
 }
 
 // Snapshot of `?code=...&state=...` taken before the Dioxus router
@@ -118,7 +142,18 @@ pub fn snapshot_initial_search() {
     INITIAL_SEARCH.with(|cell| *cell.borrow_mut() = Some(s));
 }
 
+/// The authorization response to complete, as a URL query string.
+///
+/// MAPPS-505: on the desktop it never was in a URL bar - it arrived on
+/// the loopback listener, and `native_flow` holds it. Reading it here
+/// keeps `complete_login` and everything downstream of it (the `state`
+/// check, the exchange, `classify_flow_error`) identical on both
+/// targets.
 fn current_search() -> String {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(captured) = super::native_flow::captured_query() {
+        return captured;
+    }
     INITIAL_SEARCH
         .with(|cell| cell.borrow().clone())
         .filter(|s| !s.is_empty())

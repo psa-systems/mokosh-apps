@@ -79,14 +79,39 @@ webview does not send a same-origin `Origin` header.
 
 ## Signing in
 
-The desktop build signs in with the standalone username/password path
-(MAPPS-368, `POST /api/v1/auth/login`), which is what a deployment with no OIDC
-issuer configured already uses.
+With no OIDC issuer configured, the desktop build signs in with the standalone
+username/password path (MAPPS-368, `POST /api/v1/auth/login`), the same as any
+other deployment that has no OP.
 
-Browser-redirect OIDC does not work here yet: `start_login` has no origin to
-build a `redirect_uri` from and no document to be redirected. It reports that
-rather than failing quietly. The RFC 8252 loopback flow that fixes it is
-MAPPS-505.
+With an issuer configured (`oidc_issuer`, see above), it signs in against that
+OP using the RFC 8252 native-app flow (MAPPS-505). A desktop window has no
+origin, so there is no `redirect_uri` to hand the OP and no document to
+redirect. Instead:
+
+1. The app binds an ephemeral port on `127.0.0.1` and uses
+   `http://127.0.0.1:<port>/auth/callback` as the `redirect_uri`
+   (`src/platform/loopback.rs`).
+2. `<issuer>/oauth2/authorize` opens in the user's own browser, not the app's
+   webview. RFC 8252 section 8.12 rules out an embedded user-agent: the app
+   could read the credentials typed into it, and the user cannot check the URL
+   bar to see who is asking. The real browser also means an existing OP session
+   applies.
+3. The listener serves exactly one request, the OP's redirect, answers it with
+   a "you can close this window" page, and releases the port. An abandoned
+   sign-in times it out after five minutes rather than holding the socket.
+4. `code` and `state` go to the same `/auth/callback` route the browser build
+   uses, which runs the same exchange. PKCE, the `state` check, the pending-flow
+   expiry, the `nonce` binding and the error classification are shared code, not
+   a second implementation.
+
+The OP has to allow a loopback redirect URI for this client. RFC 8252 section
+7.3 requires it to accept any port on `127.0.0.1` for the registered URI,
+because the port is chosen per flow at run time.
+
+One behaviour differs from the browser. A callback failure that only means "no
+live authorization flow here" is recovered in a browser by re-navigating to
+`/login`; there is no URL to re-navigate here, so those cases render the error
+screen instead of retrying silently.
 
 ## Closing the window
 
@@ -120,6 +145,7 @@ Everything the app needs from its host lives in `src/platform/`, split on
 | `prefs` | `localStorage` | JSON file in the config directory |
 | `config` | `window.__MOKOSH_CONFIG__` | `config.json` + `MOKOSH_*` env |
 | `location` | `window.location` | no URL; readers answer `None` |
+| `loopback` | not used (the document redirects) | RFC 8252 listener for OIDC sign-in |
 | `dom` | `web-sys` on the document | JavaScript evaluated in the webview |
 | `log` | `console.error` | `tracing` |
 | `download` | Blob + synthesized anchor | writes to the downloads directory |
@@ -153,4 +179,3 @@ These behave differently on the desktop on purpose, not by omission:
 
 - Sidebar scroll memory, modal focus return, markdown task-list toggling, and
   live OS theme switching are inert: MAPPS-511.
-- OIDC sign-in: MAPPS-505.

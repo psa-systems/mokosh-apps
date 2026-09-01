@@ -207,9 +207,17 @@ features = [
     "multipart",
 ]
 
+# MAPPS-505 adds `net` + `io-util` on top of `time`: the RFC 8252 loopback
+# redirect listener accepts one connection on 127.0.0.1 and reads the
+# request line off it. The runtime itself comes from dioxus-desktop, which
+# builds a multi-threaded one with every driver enabled.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.tokio]
 version = "1"
-features = ["time"]
+features = [
+    "time",
+    "net",
+    "io-util",
+]
 
 [dev-dependencies]
 # MAPPS-388: render components to an HTML string in unit tests so layout
@@ -217,6 +225,14 @@ features = ["time"]
 # on the host `cargo test`. Host-only: dev-deps are not built for the
 # `wasm32-unknown-unknown` check.
 dioxus-ssr = "0.7.7"
+
+# MAPPS-505: the loopback listener tests drive `serve_one` to completion, so
+# they need a runtime to drive it ON. The app never builds one - dioxus-desktop
+# owns that - which is why this is a dev-dependency and not a feature of the
+# runtime dependency above.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies.tokio]
+version = "1"
+features = ["rt-multi-thread"]
 
 [profile.release]
 lto = true

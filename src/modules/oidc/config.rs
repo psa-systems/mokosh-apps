@@ -185,19 +185,31 @@ impl OidcConfig {
         !self.docs_base_url.trim().is_empty()
     }
 
-    /// Resolve the redirect_uri. Falls back to `<origin>/auth/callback`
-    /// at runtime when not pinned at compile time.
+    /// Resolve the redirect_uri, when it is not pinned at compile time.
+    ///
+    /// Browser: `<origin>/auth/callback`.
+    ///
+    /// Desktop (MAPPS-505): the RFC 8252 loopback URI of the listener the
+    /// current flow bound, `http://127.0.0.1:<port>/auth/callback`. The
+    /// port is ephemeral and chosen per flow, so this answers only from
+    /// `start_login` binding it onwards; before that there is nothing to
+    /// redirect to, and saying so is what makes the caller fail loudly
+    /// instead of handing the OP a `redirect_uri` it cannot honour.
     pub fn resolve_redirect_uri(&self) -> Result<String, &'static str> {
         if let Some(s) = self.redirect_uri {
             return Ok(s.to_string());
         }
-        // MAPPS-505 will give the desktop build a loopback redirect URI.
-        // Until then there is no origin to derive one from, and saying so
-        // is what makes `start_login` fail loudly instead of sending the
-        // OP a redirect_uri it cannot honour.
-        let origin = crate::platform::location::origin()
-            .ok_or("this build has no origin to derive a redirect URI from")?;
-        Ok(format!("{origin}/auth/callback"))
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            crate::platform::loopback::redirect_uri()
+                .ok_or("no loopback listener is bound; the sign-in flow has not started")
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let origin = crate::platform::location::origin()
+                .ok_or("this build has no origin to derive a redirect URI from")?;
+            Ok(format!("{origin}/auth/callback"))
+        }
     }
 }
 
@@ -232,5 +244,38 @@ mod tests {
         assert!(with_docs("https://docs.example.test").has_docs());
         assert!(!with_docs("").has_docs());
         assert!(!with_docs("   ").has_docs());
+    }
+
+    /// A `redirect_uri` pinned at build time is the answer on every
+    /// target; neither the origin nor the loopback listener is consulted.
+    #[test]
+    fn a_pinned_redirect_uri_wins() {
+        let mut cfg = OidcConfig::from_env();
+        cfg.redirect_uri = Some("https://pinned.example.test/auth/callback");
+        assert_eq!(
+            cfg.resolve_redirect_uri().unwrap(),
+            "https://pinned.example.test/auth/callback"
+        );
+    }
+
+    /// MAPPS-505: unpinned, the desktop answers with the loopback URI of
+    /// the listener the flow bound, port included. The wasm branch is the
+    /// unchanged `<origin>/auth/callback` and is covered by the browser
+    /// build; there is no origin to read here.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_unpinned_redirect_uri_is_the_bound_loopback_listener() {
+        let _guard = crate::platform::loopback::test_bind_lock();
+        let listener = crate::platform::loopback::bind().expect("bind a loopback listener");
+        let mut cfg = OidcConfig::from_env();
+        cfg.redirect_uri = None;
+        let resolved = cfg
+            .resolve_redirect_uri()
+            .expect("a bound listener resolves");
+        assert_eq!(resolved, listener.redirect_uri());
+        assert_eq!(
+            resolved,
+            format!("http://127.0.0.1:{}/auth/callback", listener.port())
+        );
     }
 }
