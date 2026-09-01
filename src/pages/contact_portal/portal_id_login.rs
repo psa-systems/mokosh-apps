@@ -162,14 +162,25 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
     // {tenant_display_name}" suffix from prompt 011. Every mokosh
     // instance ships with a seeded tenant literally named "Default";
     // contacts of that instance saw "Sign in to Test at Default"
-    // which reads as broken. Contacts already know their MSP (they
-    // got the invite email from them); the tenant name is either
-    // "Default" (worthless) or their MSP's name (redundant with the
-    // branding logo painted elsewhere on the page). Fall back to a
-    // neutral heading when the host fetch has not resolved yet or
-    // returned no Company name.
-    let heading = match company_name.as_deref() {
-        Some(cn) if !cn.is_empty() => format!("Sign in to {cn}"),
+    // which reads as broken.
+    //
+    // MAPPS-635 D2: prefer the brand's `display_name` over the raw
+    // CRM `company_name`. The wordmark above the card already reads
+    // the brand display name; painting a different label into the
+    // heading (the CRM record's internal name, often the shorthand
+    // "Test" or an unbranded value) made the two disagree on the
+    // same page. Falls through to the CRM name, then to a neutral
+    // "your portal" string, so a load-in-progress or brand-not-set
+    // instance still renders a coherent card.
+    let brand = crate::hooks::branding::EFFECTIVE_BRANDING.read();
+    let heading_label = brand
+        .display_name
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| company_name.clone())
+        .filter(|s| !s.is_empty());
+    let heading = match heading_label {
+        Some(cn) => format!("Sign in to {cn}"),
         _ => "Sign in to your portal".to_string(),
     };
 

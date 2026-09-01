@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 /// new `GET /contact/companies/self/branding`. Every field is
 /// `Option<String>`; both sides of the merge falling through leaves
 /// `None` and the SPA supplies the coded fallback.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
 pub struct EffectiveBranding {
     // MAPPS-618 phase B: skip_serializing_if=Option::is_none on every
     // field. The BrandingEditor submits its FULL local state on
@@ -101,6 +101,35 @@ pub fn set_effective_branding(next: EffectiveBranding) {
     *EFFECTIVE_BRANDING.write() = next;
 }
 
+/// MAPPS-635 A: append a version query param to a brand-asset URL so
+/// the browser cache misses whenever the underlying brand changes.
+/// The server serves brand assets with `Cache-Control: public,
+/// max-age=3600` + no ETag; without a version param an upload would
+/// not repaint until the hour expires. Version is a stable
+/// content-derived hash of the whole `EffectiveBranding` block, so
+/// same block → same URL → cache hit, any field change → new URL →
+/// cache miss.
+///
+/// URL is passed through unchanged when empty or already carrying a
+/// query string with a `v=` param (defensive: never double-tag). A
+/// bare url `/api/v1/public/tenants/{id}/logo` becomes
+/// `/api/v1/public/tenants/{id}/logo?v=<hash>`.
+pub fn versioned_asset_url(url: &str, brand: &EffectiveBranding) -> String {
+    if url.is_empty() {
+        return String::new();
+    }
+    if url.contains("v=") {
+        return url.to_string();
+    }
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    brand.hash(&mut hasher);
+    let version = hasher.finish();
+    let sep = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{sep}v={version:x}")
+}
+
 /// Reset to the coded fallback. Called on sign-out so the next
 /// unauthenticated `AuthLayout` render paints the neutral default.
 pub fn clear_effective_branding() {
@@ -175,7 +204,8 @@ pub fn apply_brand_css_vars(brand: &EffectiveBranding) {
     if let Some(body) = doc.body() {
         let body_style = body.style();
         if let Some(url) = brand.background_url.as_deref().filter(|s| !s.is_empty()) {
-            let escaped = url.replace('"', "%22");
+            let versioned = versioned_asset_url(url, brand);
+            let escaped = versioned.replace('"', "%22");
             let _ = body_style.set_property("background-image", &format!("url(\"{escaped}\")"));
             let _ = body_style.set_property("background-size", "cover");
             let _ = body_style.set_property("background-position", "center");
@@ -235,10 +265,12 @@ pub fn clear_brand_css_vars() {
 pub fn clear_brand_css_vars() {}
 
 /// Root-mounted hook that repaints the brand's CSS custom
-/// properties whenever the effective-branding signal changes AND
-/// updates the browser-tab favicon to point at `branding.favicon_url`.
-/// Mount once at the App root next to `use_apply_theme`; each render
-/// reads the signal and applies both.
+/// properties whenever the effective-branding signal changes,
+/// updates the browser-tab favicon to point at
+/// `branding.favicon_url`, AND sets `document.title` to the brand's
+/// display name so the tab reads as the client-facing wordmark
+/// instead of "Mokosh Platform". Mount once at the App root next to
+/// `use_apply_theme`.
 #[cfg(feature = "web")]
 pub fn use_apply_brand() {
     use dioxus::prelude::*;
@@ -246,8 +278,36 @@ pub fn use_apply_brand() {
         let brand = EFFECTIVE_BRANDING.read().clone();
         apply_brand_css_vars(&brand);
         apply_favicon(&brand);
+        apply_document_title(&brand);
     });
 }
+
+/// MAPPS-635 D1: point the browser tab title at the brand's
+/// `display_name` (or `company_name` as a fallback) whenever the
+/// signal changes. On clear, restore the coded default "Mokosh
+/// Platform" so a returning visitor on a signed-out page reads the
+/// vendor default, not the last brand they saw.
+///
+/// Individual pages that already call `use_page_title(...)` still
+/// override the title AFTER this hook runs on the same render tick;
+/// this hook is the neutral shell fallback for pages that do not
+/// set their own title (login shell, dashboards where the tab title
+/// is not carrying page-specific context).
+#[cfg(feature = "web")]
+pub fn apply_document_title(brand: &EffectiveBranding) {
+    let Some(win) = web_sys::window() else { return };
+    let Some(doc) = win.document() else { return };
+    let title = brand
+        .display_name
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .or(brand.company_name.as_deref().filter(|s| !s.is_empty()))
+        .unwrap_or("Mokosh Platform");
+    doc.set_title(title);
+}
+
+#[cfg(not(feature = "web"))]
+pub fn apply_document_title(_brand: &EffectiveBranding) {}
 
 #[cfg(not(feature = "web"))]
 pub fn use_apply_brand() {}
@@ -283,7 +343,8 @@ pub fn apply_favicon(brand: &EffectiveBranding) {
             continue;
         };
         if let Some(url) = target {
-            let _ = el.set_attribute("href", url);
+            let versioned = versioned_asset_url(url, brand);
+            let _ = el.set_attribute("href", &versioned);
             // Clear the type hint; whatever mime the server serves
             // wins. Chrome + Firefox recompute from the response.
             let _ = el.remove_attribute("type");

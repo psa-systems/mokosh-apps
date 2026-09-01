@@ -191,10 +191,19 @@ pub fn ContactLoginPage(slug: String) -> Element {
     let tenant_inactive = host_loaded && tenant_status != "active";
 
     // MAPPS-616: drop the "at {tenant_display_name}" suffix here too
-    // for parity with the Portal-ID-scoped page. See the same-numbered
-    // note in `portal_id_login.rs` for the rationale.
-    let heading = match company_name.as_deref() {
-        Some(cn) if !cn.is_empty() => format!("Sign in to {cn}"),
+    // for parity with the Portal-ID-scoped page.
+    // MAPPS-635 D2: prefer brand display_name over CRM company_name
+    // so the heading matches the wordmark above the card. See the
+    // same-numbered note in `portal_id_login.rs` for the rationale.
+    let brand = crate::hooks::branding::EFFECTIVE_BRANDING.read();
+    let heading_label = brand
+        .display_name
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| company_name.clone())
+        .filter(|s| !s.is_empty());
+    let heading = match heading_label {
+        Some(cn) => format!("Sign in to {cn}"),
         _ => "Sign in to your portal".to_string(),
     };
 
@@ -285,9 +294,31 @@ pub fn ContactLoginPage(slug: String) -> Element {
     };
 
     let slug_for_forgot = slug.clone();
+    // MAPPS-635 D5: `/portal/<bad-slug>/login` resolved as an
+    // unbranded generic sign-in form + a submit that would always
+    // 401. Detect the "host fetch resolved, no such portal" case
+    // (Some(None) — distinct from None which is still-loading) and
+    // render a proper "Portal not found" card that steers the visitor
+    // to `/portal/login` (step 1 by Portal ID). tenant_inactive still
+    // wins if the host DID resolve but the tenant is suspended.
+    let host_not_found = matches!(&*host_snap, Some(None));
     rsx! {
         AuthLayout {
-            if tenant_inactive {
+            if host_not_found {
+                div { class: "text-center mb-6",
+                    h1 { class: "text-2xl font-semibold text-content", "Portal not found" }
+                    p { class: "mt-2 text-sm text-content",
+                        "This portal link isn't valid. Check the URL your MSP sent you, or use your Portal ID instead."
+                    }
+                    div { class: "mt-4",
+                        Link {
+                            to: Route::ContactGenericLogin {},
+                            class: "text-accent hover:underline text-sm",
+                            "Sign in with your Portal ID"
+                        }
+                    }
+                }
+            } else if tenant_inactive {
                 div { class: "text-center mb-6",
                     h1 { class: "text-2xl font-semibold text-content", "This portal is not available" }
                     p { class: "mt-2 text-sm text-content",

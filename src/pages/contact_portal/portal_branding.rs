@@ -187,7 +187,14 @@ fn NoAccessPanel() -> Element {
                                 }
                             }
                             if let Some(phone) = support_phone {
-                                div { class: "text-muted", "{phone}" }
+                                // MAPPS-635 D3: tel: link.
+                                div {
+                                    a {
+                                        href: "tel:{phone}",
+                                        class: "text-accent hover:underline",
+                                        "{phone}"
+                                    }
+                                }
                             }
                         }
                     }

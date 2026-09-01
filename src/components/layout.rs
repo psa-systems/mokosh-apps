@@ -1468,7 +1468,13 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
         .filter(|s| !s.is_empty())
         .or_else(|| brand.company_name.clone().filter(|s| !s.is_empty()))
         .unwrap_or_else(|| "Mokosh Platform".to_string());
-    let logo_url = brand.logo_url.clone().filter(|s| !s.is_empty());
+    let logo_url = brand
+        .logo_url
+        .clone()
+        .filter(|s| !s.is_empty())
+        // MAPPS-635 A: version the URL so a fresh upload evicts the
+        // 1h-cached bytes on the very next render, not an hour later.
+        .map(|u| crate::hooks::branding::versioned_asset_url(&u, &brand));
     let support_email = brand.support_email.clone().filter(|s| !s.is_empty());
     let support_phone = brand.support_phone.clone().filter(|s| !s.is_empty());
     let support_contact = brand.support_contact_name.clone().filter(|s| !s.is_empty());
@@ -1517,7 +1523,17 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
                         a { href: "mailto:{email}", class: "text-accent hover:underline", "{email}" }
                     }
                     if let Some(phone) = support_phone {
-                        div { "{phone}" }
+                        // MAPPS-635 D3: tel: link so the phone is
+                        // tappable on mobile. `tel:` accepts most
+                        // free-form phone strings and strips the
+                        // formatting characters itself.
+                        div {
+                            a {
+                                href: "tel:{phone}",
+                                class: "text-accent hover:underline",
+                                "{phone}"
+                            }
+                        }
                     }
                 }
             }

@@ -319,7 +319,13 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                     AssetUploadRow {
                         label: "Logo".to_string(),
                         asset: "logo".to_string(),
-                        current_url: props.current.logo_url.clone(),
+                        // MAPPS-635 A: version the preview URL from
+                        // the current branding block so a fresh
+                        // upload evicts the cached bytes on the very
+                        // next parent restart.
+                        current_url: props.current.logo_url.clone().map(|u|
+                            crate::hooks::branding::versioned_asset_url(&u, &props.current)
+                        ),
                         plane: props.plane.clone(),
                         disabled,
                         on_saved: move |_| {
@@ -331,7 +337,9 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                     AssetUploadRow {
                         label: "Favicon".to_string(),
                         asset: "favicon".to_string(),
-                        current_url: props.current.favicon_url.clone(),
+                        current_url: props.current.favicon_url.clone().map(|u|
+                            crate::hooks::branding::versioned_asset_url(&u, &props.current)
+                        ),
                         plane: props.plane.clone(),
                         disabled,
                         on_saved: move |_| {
@@ -343,7 +351,9 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                     AssetUploadRow {
                         label: "Background image".to_string(),
                         asset: "background".to_string(),
-                        current_url: props.current.background_url.clone(),
+                        current_url: props.current.background_url.clone().map(|u|
+                            crate::hooks::branding::versioned_asset_url(&u, &props.current)
+                        ),
                         plane: props.plane.clone(),
                         disabled,
                         on_saved: move |_| {

@@ -131,6 +131,9 @@ features = [
     "DomTokenList",
     "Storage",
     "Navigator",
+    # MAPPS-635 B: navigator.clipboard for the Portal Access "Copy
+    # link" button on the Company detail page.
+    "Clipboard",
     "Location",
     "UrlSearchParams",
     "MessageEvent",
