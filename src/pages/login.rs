@@ -209,6 +209,9 @@ pub fn StandaloneLogin() -> Element {
                                     refresh_token: Option<String>,
                                     expires_at: chrono::DateTime<chrono::Utc>,
                                     user: CurrentUser| {
+        // MAPPS-630: cross-plane isolation. See auth_callback.rs
+        // for the OIDC-flow twin of this call.
+        crate::hooks::fetch::api::on_staff_signin_clear_contact_side();
         crate::hooks::fetch::api::set_access_token(Some(access_token.clone()));
         save_standalone(&StandaloneSession {
             access_token,

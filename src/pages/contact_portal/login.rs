@@ -247,6 +247,12 @@ pub fn ContactLoginPage(slug: String) -> Element {
                             .unwrap_or_default();
                         let company_id = resp.contact.as_ref().and_then(|c| c.company_id);
                         let contact_id = resp.contact.as_ref().and_then(|c| c.contact_id);
+                        // MAPPS-630: the two planes are mutually exclusive
+                        // within one browser origin. Clear any staff bearer
+                        // + its sessionStorage bundle BEFORE we write the
+                        // fresh contact session so the tab reads as a
+                        // contact from this point on.
+                        crate::hooks::fetch::api::on_contact_signin_clear_staff_side();
                         crate::hooks::fetch::api::set_contact_access_token(Some(resp.access_token));
                         crate::hooks::fetch::api::set_contact_refresh_token(Some(
                             resp.refresh_token,

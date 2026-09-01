@@ -687,6 +687,46 @@ pub mod api {
         }
     }
 
+    /// MAPPS-630: clear every remnant of the STAFF session. Called on
+    /// contact sign-in so the two planes stay mutually exclusive
+    /// within one browser origin. Mirrors what a full staff logout
+    /// clears: the in-memory access token, both OIDC + standalone
+    /// stored bundles in sessionStorage, and the platform-admin
+    /// bearer that sits alongside them.
+    #[cfg(feature = "web")]
+    pub fn clear_staff_session_for_plane_switch() {
+        set_access_token(None);
+        crate::modules::oidc::storage::clear_auth();
+        if let Some(win) = web_sys::window() {
+            if let Ok(Some(session)) = win.session_storage() {
+                // Kept in sync with the `PLATFORM_TOKEN_KEY` const in
+                // hooks/capabilities.rs + pages/platform_login.rs.
+                let _ = session.remove_item("mokosh:platform_token");
+            }
+        }
+    }
+
+    /// MAPPS-630: cross-plane isolation on sign-in. Call at every
+    /// path that lands a fresh STAFF access token (standalone login
+    /// success, OIDC callback exchange, platform-login success). No
+    /// return value; the effect is entirely in the token holders.
+    #[cfg(feature = "web")]
+    pub fn on_staff_signin_clear_contact_side() {
+        clear_contact_session();
+        crate::hooks::capabilities::clear_contact_capabilities();
+        crate::hooks::branding::clear_effective_branding();
+    }
+
+    /// MAPPS-630: cross-plane isolation on sign-in. Call at every
+    /// path that lands a fresh CONTACT access token (portal password
+    /// login success, magic-link redeem success, contact set-password
+    /// -then-auto-login).
+    #[cfg(feature = "web")]
+    pub fn on_contact_signin_clear_staff_side() {
+        clear_staff_session_for_plane_switch();
+        crate::hooks::branding::clear_effective_branding();
+    }
+
     // The web-only API helpers below are grouped under this `api`
     // module; the non-`web` build compiles the module with no items.
 
