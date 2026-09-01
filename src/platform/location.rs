@@ -113,11 +113,28 @@ pub fn replace(url: &str) {
 }
 
 /// A desktop window cannot be navigated to a URL and brought back, so
-/// this always fails. MAPPS-505 replaces the one flow that needs it
-/// (the OIDC authorize redirect) with an RFC 8252 loopback exchange.
+/// this always fails. The one flow that needed it, the OIDC authorize
+/// redirect, is an RFC 8252 loopback exchange here instead (MAPPS-505,
+/// `crate::platform::loopback`).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn set_href(_url: &str) -> Result<(), String> {
     Err("this build cannot follow a browser redirect".to_string())
+}
+
+/// Open `url` in the user's real browser, reporting whether it could
+/// (MAPPS-505).
+///
+/// Distinct from [`replace`], which logs its failure because every caller
+/// has already done what the user asked by the time it runs. This one
+/// starts the RFC 8252 sign-in: a browser that never opened leaves the
+/// user waiting for a window that is not coming, so the caller has to
+/// hear about it.
+///
+/// Native only. The browser build hands the OP the document itself, via
+/// [`set_href`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn open_external(url: &str) -> Result<(), String> {
+    open::that_detached(url).map_err(|e| format!("could not open {url} in a browser: {e}"))
 }
 
 /// There is no document to reload; the caller substitutes its own

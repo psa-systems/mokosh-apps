@@ -25,6 +25,11 @@ pub mod download;
 pub mod http;
 pub mod location;
 pub mod log;
+// MAPPS-505: the RFC 8252 loopback redirect listener. Native only: it
+// exists because a desktop window has no origin for the OP to redirect
+// to, which is not a problem a browser has.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod loopback;
 pub mod prefs;
 pub mod scroll_sync;
 pub mod store;
