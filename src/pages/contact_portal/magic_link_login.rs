@@ -29,9 +29,16 @@ use crate::Route;
 #[derive(Serialize)]
 struct LoginLinkBody {
     email: String,
-    /// Optional: lets the server disambiguate the tenant when
-    /// localStorage carries the last slug this browser used. Omitted
-    /// (via `skip_serializing_if`) when we have nothing to offer.
+    /// MAPPS-637: Portal ID is now required by the server. Sent as
+    /// `Option<i64>` on the wire so an old client without the field
+    /// still deserialises, but the SPA form validates presence
+    /// client-side before submit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    portal_id: Option<i64>,
+    /// Legacy slug hint - kept as a fallback in case a browser has
+    /// no Portal ID but still holds a slug in localStorage. Server
+    /// treats slug as equivalent scope to portal_id (see
+    /// `request_login_link` in mokosh-server).
     #[serde(skip_serializing_if = "Option::is_none")]
     slug: Option<String>,
 }
@@ -43,6 +50,12 @@ pub fn ContactMagicLinkLoginPage(email: String) -> Element {
     // sign-in link" button on the picker's invalid-link branch can hand
     // the visitor's typed email back without a re-type.
     let mut email_sig = use_signal(|| email.clone());
+    // MAPPS-637: Portal ID is now required so the magic link is
+    // scoped to a specific portal end-to-end. The bare-email
+    // finder used to fan out one email per matched tenant + let
+    // the redeem step aggregate contacts across Companies; the
+    // Portal ID upfront collapses that to a single scoped intent.
+    let mut portal_id_sig = use_signal(String::new);
     let mut error = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut done = use_signal(|| false);
@@ -52,21 +65,36 @@ pub fn ContactMagicLinkLoginPage(email: String) -> Element {
             return;
         }
         let em = email_sig.read().trim().to_string();
+        let pid_raw = portal_id_sig.read().trim().to_string();
         if em.is_empty() {
             error.set("Enter your email.".to_string());
             return;
         }
+        if pid_raw.is_empty() {
+            error.set("Enter your Portal ID.".to_string());
+            return;
+        }
+        let pid = match pid_raw.parse::<i64>() {
+            Ok(n) => Some(n),
+            Err(_) => {
+                error.set("Portal ID must be a 9-digit number.".to_string());
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
         spawn(async move {
             #[cfg(feature = "web")]
             {
                 let slug = crate::hooks::fetch::api::current_contact_last_slug();
-                let body = LoginLinkBody { email: em, slug };
+                let body = LoginLinkBody {
+                    email: em,
+                    portal_id: pid,
+                    slug,
+                };
                 // Fail-quiet: even a 4xx / 5xx is treated as sent-anyway
                 // so the response shape does not leak account existence.
-                // This mirrors the forgot-password posture from prompt
-                // 005 and satisfies the PMS-918 enum-resistance rule.
+                // Mirrors the forgot-password posture from prompt 005.
                 let _ = crate::hooks::fetch::api::post_typed_no_content(
                     "/contact/auth/login-link",
                     &body,
@@ -76,7 +104,7 @@ pub fn ContactMagicLinkLoginPage(email: String) -> Element {
             }
             #[cfg(not(feature = "web"))]
             {
-                let _ = em;
+                let _ = (em, pid);
                 done.set(true);
             }
             saving.set(false);
@@ -107,7 +135,7 @@ pub fn ContactMagicLinkLoginPage(email: String) -> Element {
                 div { class: "text-center mb-6",
                     h1 { class: "text-2xl font-semibold text-content", "Sign in to your portal" }
                     p { class: "mt-2 text-sm text-content",
-                        "Enter your email and we'll send a one-click sign-in link."
+                        "Enter your Portal ID and email; we'll send a one-click sign-in link for that specific portal."
                     }
                 }
                 form {
@@ -116,6 +144,20 @@ pub fn ContactMagicLinkLoginPage(email: String) -> Element {
                         evt.prevent_default();
                         submit(());
                     },
+                    // MAPPS-637: Portal ID is required so the magic
+                    // link is scoped to one portal end-to-end.
+                    Input {
+                        name: "portal_id",
+                        label: "Portal ID",
+                        r#type: "text".to_string(),
+                        value: portal_id_sig(),
+                        required: true,
+                        disabled: saving(),
+                        oninput: move |e: FormEvent| {
+                            error.set(String::new());
+                            portal_id_sig.set(e.value());
+                        },
+                    }
                     Input {
                         name: "email",
                         label: "Email",
