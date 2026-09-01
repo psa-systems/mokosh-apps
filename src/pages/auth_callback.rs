@@ -67,6 +67,13 @@ pub fn AuthCallbackPage() -> Element {
                 // Technician default and let the post-login /me fetch reconcile
                 // it within a tick.
                 let role = UserRole::default();
+                // MAPPS-630: cross-plane isolation. Clear any
+                // contact session (in-memory + localStorage refresh
+                // + caps + brand) BEFORE we write the fresh staff
+                // bearer, so the tab reads as staff from this point
+                // on and the AuthGuard cold-load bootstrap can not
+                // resurrect a stale portal session.
+                crate::hooks::fetch::api::on_staff_signin_clear_contact_side();
                 // Make the access token available to api::*_authed
                 // helpers across the app. Stored in the same in-memory
                 // holder used by every authed fetch call; no localStorage.

@@ -393,6 +393,9 @@ fn install_session(nav: &dioxus::router::Navigator, resp: LoginResp, portal_id_s
     let response_portal_id = resp.contact.as_ref().and_then(|c| c.portal_id);
     let response_company_id = resp.contact.as_ref().and_then(|c| c.company_id);
     let response_contact_id = resp.contact.as_ref().and_then(|c| c.contact_id);
+    // MAPPS-630: cross-plane isolation. Clear any staff bearer +
+    // storage before writing the contact session.
+    crate::hooks::fetch::api::on_contact_signin_clear_staff_side();
     crate::hooks::fetch::api::set_contact_access_token(Some(resp.access_token));
     crate::hooks::fetch::api::set_contact_refresh_token(Some(resp.refresh_token));
     // MAPPS-604: stash the session's Company UUID for scoped-URL builders.

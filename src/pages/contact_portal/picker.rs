@@ -758,6 +758,9 @@ fn install_session_and_go(nav: &Navigator, resp: &ContactLoginResponseWire) {
         .unwrap_or_default();
     let company_id = resp.contact.as_ref().and_then(|c| c.company_id);
     let contact_id = resp.contact.as_ref().and_then(|c| c.contact_id);
+    // MAPPS-630: cross-plane isolation. Clear any staff bearer +
+    // storage before writing the contact session.
+    crate::hooks::fetch::api::on_contact_signin_clear_staff_side();
     crate::hooks::fetch::api::set_contact_access_token(Some(resp.access_token.clone()));
     crate::hooks::fetch::api::set_contact_refresh_token(Some(resp.refresh_token.clone()));
     // MAPPS-604: stash the session's Company UUID for scoped-URL builders.

@@ -128,6 +128,16 @@ pub fn AuthGuard() -> Element {
     // refresh lands.
     #[cfg(feature = "web")]
     use_effect(|| {
+        // MAPPS-630: skip the contact rehydrate when a staff bearer
+        // is present. The two planes are mutually exclusive within
+        // one browser origin, and blindly rehydrating a stale
+        // contact refresh token here (localStorage IS cross-tab)
+        // would resurrect a portal session inside a freshly-opened
+        // staff tab, shadowing the staff sidebar via the MAPPS-625
+        // "contact wins" precedence.
+        if crate::hooks::fetch::api::current_access_token().is_some() {
+            return;
+        }
         if !crate::hooks::fetch::api::has_contact_session()
             && crate::hooks::fetch::api::current_contact_refresh_token().is_some()
         {
