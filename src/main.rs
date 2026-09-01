@@ -1,7 +1,7 @@
 //! Mokosh Platform - Cross-platform Dioxus client
 
 use dioxus::prelude::*;
-use mokosh_apps::components::use_page_title_provider;
+use mokosh_apps::components::{use_page_title_provider, CloseConfirmModal};
 use mokosh_apps::hooks::{
     use_active_org_loader, use_apply_theme, use_auth_heartbeat, use_auth_provider,
     use_bfcache_invalidator, use_current_user_loader, use_server_status_monitor,
@@ -61,7 +61,7 @@ fn launch() {
 /// table columns start colliding.
 #[cfg(feature = "desktop")]
 fn launch() {
-    use dioxus::desktop::{Config, LogicalSize, WindowBuilder};
+    use dioxus::desktop::{Config, LogicalSize, WindowBuilder, WindowCloseBehaviour};
 
     let mut window = WindowBuilder::new()
         .with_title("Mokosh Platform")
@@ -76,8 +76,17 @@ fn launch() {
         Err(e) => tracing::error!("could not load the window icon: {e}"),
     }
 
+    // MAPPS-506: a close request must never be the thing that destroys the
+    // webview, or unsaved edits are gone before anything can ask about them.
+    // `WindowHides` is dioxus-desktop's only non-destructive answer;
+    // `platform::window_close` runs ahead of it on every close request and
+    // decides between closing for real and asking first.
     dioxus::LaunchBuilder::desktop()
-        .with_cfg(Config::new().with_window(window))
+        .with_cfg(
+            Config::new()
+                .with_window(window)
+                .with_close_behaviour(WindowCloseBehaviour::WindowHides),
+        )
         .launch(App);
 }
 
@@ -145,6 +154,11 @@ fn App() -> Element {
     // that with a full reload; a desktop window has none, so it watches
     // the signal and clears the auth context instead. No-op on wasm.
     use_session_end_watch();
+    // MAPPS-506: gate the desktop window's close request on the unsaved-changes
+    // flag `use_unsaved_guard` publishes, so closing the window with a dirty
+    // form asks first instead of discarding it. The browser does that from
+    // `beforeunload`; no-op on wasm.
+    mokosh_apps::platform::window_close::use_close_guard();
     // Apply the persisted theme preference on boot and follow system
     // dark-mode changes for `Theme::System` users.
     use_apply_theme();
@@ -166,5 +180,8 @@ fn App() -> Element {
     rsx! {
         document::Stylesheet { href: asset!("/assets/styles.css") }
         Router::<Route> {}
+        // MAPPS-506: the answer to a refused window close. Renders nothing
+        // until one is refused, and nothing at all on the web.
+        CloseConfirmModal {}
     }
 }

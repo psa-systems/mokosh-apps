@@ -88,6 +88,26 @@ build a `redirect_uri` from and no document to be redirected. It reports that
 rather than failing quietly. The RFC 8252 loopback flow that fixes it is
 MAPPS-505.
 
+## Closing the window
+
+Closing the window with a dirty form asks first (MAPPS-506), the way a browser
+tab does. The prompt is the app's own `ConfirmDialog`, not an OS message box,
+so the wording matches every other discard-your-work confirmation.
+
+The dirty flag is `hooks::unsaved_guard::UNSAVED_CHANGES`, published by
+`use_unsaved_guard` and read by both hosts: `beforeunload` in the browser, and
+`platform::window_close` here. There is one flag, so the two prompt on the same
+condition.
+
+The window is launched as `WindowCloseBehaviour::WindowHides`, because that is
+the only answer `dioxus-desktop` has to a close request that does not destroy
+the webview, and a destroyed webview has already lost the edits. The close
+guard runs ahead of `dioxus-desktop` on each close request and picks: nothing
+unsaved switches the window to `WindowCloses` and lets the request through (one
+click, no prompt); unsaved changes leave it hidden-not-destroyed, raise the
+modal, and re-show the window. Whether that re-show is visible as a blink has
+not been checked on a real display: MAPPS-631.
+
 ## The host boundary
 
 Everything the app needs from its host lives in `src/platform/`, split on
@@ -131,7 +151,6 @@ These behave differently on the desktop on purpose, not by omission:
 
 ## Known gaps
 
-- Closing the window with unsaved changes does not prompt: MAPPS-506.
 - Sidebar scroll memory, modal focus return, markdown task-list toggling, and
   live OS theme switching are inert: MAPPS-511.
 - OIDC sign-in: MAPPS-505.
