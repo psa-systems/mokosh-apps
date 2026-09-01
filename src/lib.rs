@@ -229,19 +229,45 @@ pub fn AuthGuard() -> Element {
             };
         }
 
-        // MAPPS-615 (prompt 014): origin cue. A stranded visitor on a
-        // `/portal/*` URL with no session and no last_portal_id hint
-        // gets bounced to the contact login (step 1), not the staff
-        // /login. Preserves "I was on a portal URL, keep me on the
-        // portal plane" without needing localStorage to carry the id.
-        // Runs BEFORE the standalone-mode staff bounce below.
+        // MAPPS-615 (prompt 014): origin cue - a stranded visitor on
+        // a `/portal/*` URL with no session gets bounced to the
+        // contact login instead of the staff `/login`.
+        //
+        // MAPPS-634: also bounce a stranded visitor with NO active
+        // session but a `contact_last_portal_id` or
+        // `contact_last_slug` hint in localStorage (they were signed
+        // in as a contact previously; their session expired while
+        // they were on `/dashboard` or another shared route). Preserve
+        // "the last plane I signed into" without needing them to be
+        // physically on a `/portal/*` URL when the session died. Prefer
+        // the Portal-ID URL shape (prompt 011 primary); fall back to
+        // the legacy slug URL; last resort is the generic step-1 page
+        // so the visitor can retype their Portal ID.
+        //
+        // Both branches run BEFORE the standalone-mode staff bounce
+        // below so a contact never falls through to the staff login.
         #[cfg(feature = "web")]
         {
             let on_portal_url = web_sys::window()
                 .and_then(|w| w.location().pathname().ok())
                 .is_some_and(|p| p.starts_with("/portal/") || p == "/portal");
-            if on_portal_url {
-                nav.replace(Route::ContactGenericLogin {});
+            let last_portal_id = crate::hooks::fetch::api::current_contact_last_portal_id();
+            let last_slug = crate::hooks::fetch::api::current_contact_last_slug();
+            let contact_hint_present = last_portal_id.is_some() || last_slug.is_some();
+            if on_portal_url || contact_hint_present {
+                if let Some(pid) = last_portal_id {
+                    let dest = format!("/portal/{pid}/login");
+                    if let Some(win) = web_sys::window() {
+                        let _ = win.location().replace(&dest);
+                    }
+                } else if let Some(slug) = last_slug {
+                    let dest = format!("/portal/{slug}/login");
+                    if let Some(win) = web_sys::window() {
+                        let _ = win.location().replace(&dest);
+                    }
+                } else {
+                    nav.replace(Route::ContactGenericLogin {});
+                }
                 return rsx! {
                     div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
                         "Redirecting to sign in…"

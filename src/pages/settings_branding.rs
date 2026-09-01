@@ -49,7 +49,6 @@ pub fn SettingsBrandingPage() -> Element {
             .ok()
     });
     let mut error: Signal<String> = use_signal(String::new);
-    let mut toast: Signal<String> = use_signal(String::new);
     let mut saving = use_signal(|| false);
 
     let snap = resource.read_unchecked();
@@ -65,7 +64,6 @@ pub fn SettingsBrandingPage() -> Element {
         }
         saving.set(true);
         error.set(String::new());
-        toast.set(String::new());
         spawn(async move {
             // `PUT /tenants/current` shape mirrors `UpdateTenantRequest`
             // (subset via `serde(default)`). Wire body just needs
@@ -80,7 +78,14 @@ pub fn SettingsBrandingPage() -> Element {
             .await
             {
                 Ok(_) => {
-                    toast.set("Tenant branding saved.".to_string());
+                    // MAPPS-635 G: use the shared toast infra so the
+                    // "saved" confirmation lands above the fold, not
+                    // as inline text below the card that could scroll
+                    // off screen.
+                    crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Success,
+                        "Tenant branding saved.".to_string(),
+                    );
                     resource.restart();
                 }
                 Err(e) => {
@@ -110,14 +115,14 @@ pub fn SettingsBrandingPage() -> Element {
                     on_save,
                     on_asset_saved: move |_| {
                         resource.restart();
-                        toast.set("Asset saved.".to_string());
+                        crate::hooks::toast::push_toast(
+                            crate::components::AlertType::Success,
+                            "Asset saved.".to_string(),
+                        );
                     },
                 }
                 if !error().is_empty() {
                     p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
-                }
-                if !toast().is_empty() {
-                    p { class: "text-sm text-green-700 dark:text-green-400", "{toast}" }
                 }
             }
         }

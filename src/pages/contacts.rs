@@ -2374,6 +2374,12 @@ fn CompanyPortalAccessCard(
                                                                                 crate::components::AlertType::Success,
                                                                                 "Portal access revoked.",
                                                                             );
+                                                                            // MAPPS-635 F: repaint every
+                                                                            // ContactRoleBadges row so
+                                                                            // this revoke's effect is
+                                                                            // visible on the same page
+                                                                            // without a manual reload.
+                                                                            crate::hooks::fetch::bump_portal_roles_generation();
                                                                             roster.restart();
                                                                         }
                                                                         Err(err) => crate::hooks::toast::push_toast(
@@ -2451,6 +2457,11 @@ fn ContactRoleBadges(contact_id: String, all_roles: Vec<PortalRoleSummaryWire>) 
         let id = contact_id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-635 F: subscribe to the per-role-write generation
+            // so a successful "Update roles" / "Grant + send email"
+            // / "Revoke" forces this badge row to refetch. Without
+            // it, the resource ran once on mount and never repainted.
+            let _roles_gen = crate::hooks::fetch::active_portal_roles_generation();
             crate::hooks::fetch::api::get_authed::<Vec<uuid::Uuid>>(&format!(
                 "/contacts/contacts/{id}/portal-roles"
             ))
@@ -4010,7 +4021,6 @@ fn CompanyBrandingCard(
     let can_mutate = crate::hooks::use_can_mutate();
     let mut saving = use_signal(|| false);
     let mut error: Signal<String> = use_signal(String::new);
-    let mut toast: Signal<String> = use_signal(String::new);
     let tenant_snap = tenant_defaults_resource.read_unchecked();
     let tenant_defaults = tenant_snap.clone().flatten().unwrap_or_default();
     let id = company_id.clone();
@@ -4020,7 +4030,6 @@ fn CompanyBrandingCard(
         }
         saving.set(true);
         error.set(String::new());
-        toast.set(String::new());
         let id = id.clone();
         spawn(async move {
             let patch = serde_json::json!({ "branding": block });
@@ -4031,7 +4040,11 @@ fn CompanyBrandingCard(
             .await
             {
                 Ok(_) => {
-                    toast.set("Branding saved.".to_string());
+                    // MAPPS-635 G: shared toast infra.
+                    crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Success,
+                        "Branding saved.".to_string(),
+                    );
                     company_resource.restart();
                 }
                 Err(e) => {
@@ -4052,14 +4065,14 @@ fn CompanyBrandingCard(
                 on_save,
                 on_asset_saved: move |_| {
                     company_resource.restart();
-                    toast.set("Asset saved.".to_string());
+                    crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Success,
+                        "Asset saved.".to_string(),
+                    );
                 },
             }
             if !error().is_empty() {
                 p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
-            }
-            if !toast().is_empty() {
-                p { class: "text-sm text-green-700 dark:text-green-400", "{toast}" }
             }
         }
     }
@@ -5564,12 +5577,31 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
             .await
             {
                 Ok(outcome) => {
+                    // MAPPS-635 C: the server now short-circuits the
+                    // token + setup-email work when the contact is
+                    // already credentialled (already granted, has a
+                    // password). It signals that state by returning
+                    // an empty `setup_link` string. Distinguish the
+                    // two paths in the toast so a role edit never
+                    // reads as "we just sent them a new setup email".
+                    let is_role_only_edit = outcome.setup_link.trim().is_empty();
                     last_setup_link.set(outcome.setup_link.clone());
                     last_portal_id.set(outcome.portal_id);
+                    let toast_msg = if is_role_only_edit {
+                        "Portal roles updated.".to_string()
+                    } else {
+                        "Portal access granted. Setup email queued.".to_string()
+                    };
                     crate::hooks::toast::push_toast(
                         crate::components::AlertType::Success,
-                        "Portal access granted. Setup email queued.".to_string(),
+                        toast_msg,
                     );
+                    // MAPPS-635 F: bump the roles generation so the
+                    // Portal Access card's ContactRoleBadges rows
+                    // (each fetching per-contact role assignments)
+                    // refresh with the new set on the very next
+                    // render.
+                    crate::hooks::fetch::bump_portal_roles_generation();
                     modal_open.set(false);
                     on_change.call(());
                 }
@@ -5632,6 +5664,9 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                         crate::components::AlertType::Success,
                         "Portal access revoked.".to_string(),
                     );
+                    // MAPPS-635 F: repaint role badges on the same
+                    // render as the toast.
+                    crate::hooks::fetch::bump_portal_roles_generation();
                     on_change.call(());
                 }
                 Err(err) => crate::hooks::toast::push_toast(

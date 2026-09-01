@@ -36,6 +36,40 @@ pub fn active_tenant_generation() -> u64 {
     0
 }
 
+/// MAPPS-635 F: per-contact portal-role assignment generation. Bumped
+/// on every successful "Update roles" / "Grant + send email" write so
+/// every `use_resource` that reads it re-fetches, matching the
+/// [`TENANT_GENERATION`] pattern. Fixes the report that the Portal
+/// Access card's role badges kept showing the old set after a
+/// successful role edit - `ContactRoleBadges` fetched its own list
+/// via `use_resource` with no dep on the write path, so nothing
+/// forced a refetch.
+#[cfg(feature = "web")]
+pub static PORTAL_ROLES_GENERATION: GlobalSignal<u64> = Signal::global(|| 0);
+
+/// Read the portal-roles generation counter. Same shape as
+/// [`active_tenant_generation`]: call INSIDE a `use_resource` closure
+/// so Dioxus subscribes the resource to it.
+#[cfg(feature = "web")]
+pub fn active_portal_roles_generation() -> u64 {
+    *PORTAL_ROLES_GENERATION.read()
+}
+
+/// Bump the portal-roles generation counter. Call from every
+/// successful role-write handler (grant + role-edit + revoke).
+#[cfg(feature = "web")]
+pub fn bump_portal_roles_generation() {
+    *PORTAL_ROLES_GENERATION.write() += 1;
+}
+
+#[cfg(not(feature = "web"))]
+pub fn active_portal_roles_generation() -> u64 {
+    0
+}
+
+#[cfg(not(feature = "web"))]
+pub fn bump_portal_roles_generation() {}
+
 /// App-wide "is mokosh-server reachable" flag (MAPPS-333). `true`
 /// (reachable) on boot; flipped to `false` by the classification helpers
 /// below when a request fails with a "down" condition, and back to

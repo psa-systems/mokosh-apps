@@ -72,7 +72,6 @@ pub fn ContactPortalBrandingPage() -> Element {
         }
         saving.set(true);
         error.set(String::new());
-        toast.set(String::new());
         spawn(async move {
             match crate::hooks::fetch::api::patch_contact_authed_typed::<
                 ContactOwnCompanyBranding,
@@ -86,7 +85,11 @@ pub fn ContactPortalBrandingPage() -> Element {
                     // brand immediately, before the next `/refresh`
                     // tick would land it.
                     crate::hooks::branding::set_effective_branding(fresh.effective.clone());
-                    toast.set("Branding saved.".to_string());
+                    // MAPPS-635 G: shared toast infra.
+                    crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Success,
+                        "Branding saved.".to_string(),
+                    );
                     resource.restart();
                 }
                 Err(_) => {
@@ -125,14 +128,14 @@ pub fn ContactPortalBrandingPage() -> Element {
                     on_save,
                     on_asset_saved: move |_| {
                         resource.restart();
-                        toast.set("Asset saved.".to_string());
+                        crate::hooks::toast::push_toast(
+                            crate::components::AlertType::Success,
+                            "Asset saved.".to_string(),
+                        );
                     },
                 }
                 if !error().is_empty() {
                     p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
-                }
-                if !toast().is_empty() {
-                    p { class: "text-sm text-green-700 dark:text-green-400", "{toast}" }
                 }
             }
         }
