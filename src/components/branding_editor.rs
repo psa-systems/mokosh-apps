@@ -52,6 +52,84 @@ impl BrandingPlane {
     }
 }
 
+/// MAPPS-635 D4: compute the WCAG contrast ratio (1.0..21.0) between
+/// a hex color string like `"#ff8800"` and pure black + pure white,
+/// return the higher of the two. Poor readability against BOTH
+/// black and white text (below the AA threshold of 4.5) is a strong
+/// signal the chosen brand color needs adjustment. Returns `None`
+/// for a bogus hex string so the caller can silently skip the
+/// warning rather than block save on a parse error.
+fn best_contrast_against_bw(hex: &str) -> Option<f32> {
+    fn parse(hex: &str) -> Option<(u8, u8, u8)> {
+        let s = hex.trim().trim_start_matches('#');
+        if s.len() != 6 {
+            return None;
+        }
+        let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+        Some((r, g, b))
+    }
+    fn linearize(c: u8) -> f32 {
+        let c = c as f32 / 255.0;
+        if c <= 0.03928 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    let (r, g, b) = parse(hex)?;
+    let l = 0.2126 * linearize(r) + 0.7152 * linearize(g) + 0.0722 * linearize(b);
+    let vs_black = (l + 0.05) / 0.05;
+    let vs_white = (1.05) / (l + 0.05);
+    Some(vs_black.max(vs_white))
+}
+
+/// MAPPS-635 D4: WCAG AA passing threshold for normal-size text.
+const WCAG_AA_NORMAL: f32 = 4.5;
+
+/// MAPPS-635 D6: PATCH `{field: null}` to the branding endpoint for
+/// the current plane, so a Company override falls back to the tenant
+/// default (or, on the tenant page, to the coded default). Called
+/// from the "Reset" text button under each color picker; native
+/// `<input type="color">` has no empty state, so an explicit reset
+/// affordance is the only way to unwind an override without a full
+/// re-save.
+async fn reset_field(plane: BrandingPlane, field: &str) -> Result<(), String> {
+    let patch = serde_json::json!({ field: serde_json::Value::Null });
+    match plane {
+        BrandingPlane::StaffTenant => {
+            let body = serde_json::json!({ "branding": patch });
+            crate::hooks::fetch::api::put_authed_typed::<serde_json::Value, _>(
+                "/tenants/current",
+                &body,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        }
+        BrandingPlane::Staff { company_id } => {
+            let body = serde_json::json!({ "branding": patch });
+            crate::hooks::fetch::api::put_authed_typed::<serde_json::Value, _>(
+                &format!("/contacts/companies/{company_id}"),
+                &body,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        }
+        BrandingPlane::ContactSelf => {
+            crate::hooks::fetch::api::patch_contact_authed_typed::<serde_json::Value, _>(
+                "/contact/companies/self/branding",
+                &patch,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        }
+    }
+}
+
 #[derive(Props, Clone, PartialEq)]
 pub struct BrandingEditorProps {
     /// The Company override values currently in force (may be all
@@ -131,6 +209,83 @@ async fn delete_asset(plane: BrandingPlane, asset: &str) -> Result<(), String> {
             crate::hooks::fetch::api::delete_contact_authed_no_content(&url)
                 .await
                 .map_err(|e| e.to_string())
+        }
+    }
+}
+
+/// MAPPS-635 D6: color picker row with a "Reset" link that PATCHes
+/// `{field: null}` on the current plane so the value falls back to
+/// the tenant default (or, on the tenant plane, the coded default).
+/// Only renders the Reset link when the current props say an
+/// override is present, so a Company that has no override in force
+/// doesn't offer a no-op click.
+#[component]
+fn ColorField(
+    id: String,
+    label: String,
+    field: String,
+    value: Signal<String>,
+    hint: String,
+    plane: BrandingPlane,
+    disabled: bool,
+    override_present: bool,
+    on_reset_saved: EventHandler<()>,
+) -> Element {
+    let mut saving = use_signal(|| false);
+    let mut error: Signal<String> = use_signal(String::new);
+    let field_for_reset = field.clone();
+    let plane_for_reset = plane.clone();
+    let on_reset = move |_| {
+        if saving() {
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let field = field_for_reset.clone();
+        let plane = plane_for_reset.clone();
+        let mut value = value;
+        spawn(async move {
+            match reset_field(plane, &field).await {
+                Ok(_) => {
+                    value.set(String::new());
+                    on_reset_saved.call(());
+                }
+                Err(_) => error.set("Reset failed. Try again in a moment.".to_string()),
+            }
+            saving.set(false);
+        });
+    };
+    rsx! {
+        div { class: "space-y-1",
+            label {
+                r#for: "{id}",
+                class: "block text-sm font-medium text-content",
+                "{label}"
+            }
+            input {
+                id: "{id}",
+                r#type: "color",
+                class: "block h-10 w-full rounded-md border-line",
+                value: "{value}",
+                disabled: disabled || saving(),
+                oninput: {
+                    let mut value = value;
+                    move |e: FormEvent| value.set(e.value())
+                },
+            }
+            p { class: "text-xs text-muted", "{hint}" }
+            if override_present {
+                button {
+                    r#type: "button",
+                    class: "text-xs text-accent hover:underline disabled:opacity-50",
+                    disabled: disabled || saving(),
+                    onclick: on_reset,
+                    "Reset to inherit"
+                }
+            }
+            if !error().is_empty() {
+                p { role: "alert", class: "text-xs text-red-600 dark:text-red-400", "{error}" }
+            }
         }
     }
 }
@@ -381,55 +536,90 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                     }
                     p { class: "text-xs text-muted", "{hint(&props.plane, defaults.display_name.as_deref())}" }
                 }
-                // Colors
+                // Colors + a per-field "Reset" affordance
+                // (MAPPS-635 D6). Native `<input type="color">` has no
+                // empty state so a Company override cannot be cleared
+                // by editing the picker alone; each Reset button
+                // fires a PATCH that nulls that specific color key,
+                // and the parent's `on_asset_saved` refetches +
+                // toasts.
                 div { class: "grid grid-cols-1 sm:grid-cols-3 gap-4",
-                    div { class: "space-y-1",
-                        label {
-                            r#for: "brand_primary",
-                            class: "block text-sm font-medium text-content",
-                            "Primary color"
-                        }
-                        input {
-                            id: "brand_primary",
-                            r#type: "color",
-                            class: "block h-10 w-full rounded-md border-line",
-                            value: "{primary_color}",
-                            disabled,
-                            oninput: move |e: FormEvent| primary_color.set(e.value()),
-                        }
-                        p { class: "text-xs text-muted", "{hint(&props.plane, defaults.primary_color.as_deref())}" }
+                    ColorField {
+                        id: "brand_primary".to_string(),
+                        label: "Primary color".to_string(),
+                        field: "primary_color".to_string(),
+                        value: primary_color,
+                        hint: hint(&props.plane, defaults.primary_color.as_deref()),
+                        plane: props.plane.clone(),
+                        disabled,
+                        override_present: props.current.primary_color.as_deref().map(|s| !s.is_empty()).unwrap_or(false),
+                        on_reset_saved: move |_| {
+                            if let Some(cb) = props.on_asset_saved.as_ref() {
+                                cb.call(());
+                            }
+                        },
                     }
-                    div { class: "space-y-1",
-                        label {
-                            r#for: "brand_secondary",
-                            class: "block text-sm font-medium text-content",
-                            "Secondary color"
-                        }
-                        input {
-                            id: "brand_secondary",
-                            r#type: "color",
-                            class: "block h-10 w-full rounded-md border-line",
-                            value: "{secondary_color}",
-                            disabled,
-                            oninput: move |e: FormEvent| secondary_color.set(e.value()),
-                        }
-                        p { class: "text-xs text-muted", "{hint(&props.plane, defaults.secondary_color.as_deref())}" }
+                    ColorField {
+                        id: "brand_secondary".to_string(),
+                        label: "Secondary color".to_string(),
+                        field: "secondary_color".to_string(),
+                        value: secondary_color,
+                        hint: hint(&props.plane, defaults.secondary_color.as_deref()),
+                        plane: props.plane.clone(),
+                        disabled,
+                        override_present: props.current.secondary_color.as_deref().map(|s| !s.is_empty()).unwrap_or(false),
+                        on_reset_saved: move |_| {
+                            if let Some(cb) = props.on_asset_saved.as_ref() {
+                                cb.call(());
+                            }
+                        },
                     }
-                    div { class: "space-y-1",
-                        label {
-                            r#for: "brand_background",
-                            class: "block text-sm font-medium text-content",
-                            "Background color"
+                    ColorField {
+                        id: "brand_background".to_string(),
+                        label: "Background color".to_string(),
+                        field: "background_color".to_string(),
+                        value: background_color,
+                        hint: hint(&props.plane, defaults.background_color.as_deref()),
+                        plane: props.plane.clone(),
+                        disabled,
+                        override_present: props.current.background_color.as_deref().map(|s| !s.is_empty()).unwrap_or(false),
+                        on_reset_saved: move |_| {
+                            if let Some(cb) = props.on_asset_saved.as_ref() {
+                                cb.call(());
+                            }
+                        },
+                    }
+                }
+                // MAPPS-635 D4: soft WCAG AA contrast warning. Every
+                // chosen color that reads at less than 4.5:1 against
+                // both black + white text (the two colors the SPA
+                // draws over the brand primary / background) is
+                // flagged. Advisory only - not a save blocker; the
+                // MSP might have their reasons.
+                {
+                    let mut low = Vec::new();
+                    for (label, sig) in [
+                        ("Primary", primary_color.read().clone()),
+                        ("Secondary", secondary_color.read().clone()),
+                        ("Background", background_color.read().clone()),
+                    ] {
+                        if let Some(ratio) = best_contrast_against_bw(&sig) {
+                            if ratio < WCAG_AA_NORMAL {
+                                low.push(format!("{label} ({ratio:.1}:1)"));
+                            }
                         }
-                        input {
-                            id: "brand_background",
-                            r#type: "color",
-                            class: "block h-10 w-full rounded-md border-line",
-                            value: "{background_color}",
-                            disabled,
-                            oninput: move |e: FormEvent| background_color.set(e.value()),
+                    }
+                    if !low.is_empty() {
+                        let joined = low.join(", ");
+                        rsx! {
+                            p {
+                                role: "note",
+                                class: "text-xs text-amber-600 dark:text-amber-400",
+                                "Contrast note: {joined} may not be readable against dark/light text (WCAG AA needs 4.5:1). Consider a bolder color."
+                            }
                         }
-                        p { class: "text-xs text-muted", "{hint(&props.plane, defaults.background_color.as_deref())}" }
+                    } else {
+                        rsx! {}
                     }
                 }
                 // Support contact block

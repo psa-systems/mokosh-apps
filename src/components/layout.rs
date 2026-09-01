@@ -92,6 +92,49 @@ pub fn use_page_title(title: impl Into<String>) {
 pub fn AppShell() -> Element {
     let mut sidebar_open = use_signal(|| false);
 
+    // MAPPS-635 D8: staff users signed into their own MSP tenant get
+    // the tenant's brand favicon + wordmark on the admin console
+    // too, matching contact-plane painting. Fetch `/tenants/current`
+    // ONCE per staff session mount and stuff the branding block
+    // into `EFFECTIVE_BRANDING`; `use_apply_brand` then paints the
+    // favicon + tab title + CSS custom properties from it.
+    //
+    // Runs only when a staff bearer is held AND no brand has been
+    // populated yet (contact-plane paths seed the signal from
+    // /contact/auth/me + refresh; the two never race in a real
+    // browser session because MAPPS-630 makes the planes mutually
+    // exclusive per origin).
+    #[cfg(feature = "web")]
+    use_effect(|| {
+        if !crate::hooks::fetch::api::current_access_token().is_some() {
+            return;
+        }
+        // If the signal is already populated (e.g. by a prior tenant
+        // switch), skip; the switch handler is responsible for
+        // repainting.
+        if crate::hooks::branding::EFFECTIVE_BRANDING
+            .read()
+            .display_name
+            .is_some()
+        {
+            return;
+        }
+        spawn(async move {
+            #[derive(serde::Deserialize)]
+            struct TenantSnippet {
+                #[serde(default)]
+                branding: crate::hooks::branding::EffectiveBranding,
+            }
+            if let Ok(t) = crate::hooks::fetch::api::get_authed::<TenantSnippet>(
+                "/tenants/current",
+            )
+            .await
+            {
+                crate::hooks::branding::set_effective_branding(t.branding);
+            }
+        });
+    });
+
     rsx! {
         div { class: "h-screen flex flex-col bg-app overflow-hidden",
             super::ServerStatusBanner {}
