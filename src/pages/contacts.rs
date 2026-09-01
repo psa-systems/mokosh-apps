@@ -1642,6 +1642,8 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                             // Contacts card shows.
                             CompanyPortalAccessCard {
                                 company_id: company_id_str.clone(),
+                                portal_id: company.portal_id,
+                                portal_slug: company.portal_slug.clone(),
                             }
                             // MAPPS-590 (prompt 012): Company-scoped
                             // portal roles. Sits right after the
@@ -1843,6 +1845,13 @@ struct CompanyDetail {
     /// `CompanyBranding` type.
     #[serde(default)]
     branding: crate::hooks::branding::CompanyBranding,
+    /// MAPPS-635 B: portal identifiers exposed on the wire since the
+    /// same-numbered server change. `None` until the Company has
+    /// been through at least one grant.
+    #[serde(default)]
+    portal_id: Option<i64>,
+    #[serde(default)]
+    portal_slug: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2186,7 +2195,11 @@ fn CompanyContactsCard(
 /// Companies with more than ~20 contacts are rare; the ceiling is a soft cap
 /// to keep the roster inline.
 #[component]
-fn CompanyPortalAccessCard(company_id: String) -> Element {
+fn CompanyPortalAccessCard(
+    company_id: String,
+    #[props(default)] portal_id: Option<i64>,
+    #[props(default)] portal_slug: Option<String>,
+) -> Element {
     let id_for_resource = company_id.clone();
     let mut roster = use_resource(move || {
         let id = id_for_resource.clone();
@@ -2226,11 +2239,63 @@ fn CompanyPortalAccessCard(company_id: String) -> Element {
         Some(Some(page)) => Some(page.meta.total),
         _ => None,
     };
+    // MAPPS-635 B: Portal ID + copy-link affordance rendered whenever
+    // the Company has been through at least one grant. Before this
+    // fix, staff could only see the Portal ID + setup URL on the
+    // response to a fresh grant/roles-edit mutation - a routine
+    // "what's their portal URL?" question required re-issuing the
+    // setup email. Sourced from the CompanyResponse (server-side
+    // MAPPS-635) so it stays visible after any page reload.
+    let portal_login_path = portal_id
+        .map(|pid| format!("/portal/{pid}/login"))
+        .or_else(|| portal_slug.clone().map(|slug| format!("/portal/{slug}/login")));
+    let portal_login_absolute = portal_login_path.as_ref().and_then(|p| {
+        web_sys::window()
+            .and_then(|w| w.location().origin().ok())
+            .map(|origin| format!("{}{}", origin.trim_end_matches('/'), p))
+    });
+    let portal_login_for_copy = portal_login_absolute.clone();
     rsx! {
         CollapsibleCard {
             title: "Portal Access",
             count,
             padding: false,
+            if let Some(pid) = portal_id {
+                div { class: "px-6 py-3 border-b border-line flex items-center justify-between gap-4 text-sm",
+                    div {
+                        span { class: "text-muted", "Portal ID: " }
+                        span { class: "font-mono font-medium text-content", "{pid}" }
+                    }
+                    if let Some(url) = portal_login_absolute {
+                        div { class: "flex items-center gap-3",
+                            a {
+                                href: "{url}",
+                                target: "_blank",
+                                rel: "noopener",
+                                class: "text-accent hover:underline",
+                                "Open portal login"
+                            }
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                onclick: move |_| {
+                                    let u = portal_login_for_copy.clone().unwrap_or_default();
+                                    if let Some(win) = web_sys::window() {
+                                        let _ = win
+                                            .navigator()
+                                            .clipboard()
+                                            .write_text(&u);
+                                        crate::hooks::toast::push_toast(
+                                            crate::components::AlertType::Success,
+                                            "Portal login URL copied to clipboard.".to_string(),
+                                        );
+                                    }
+                                },
+                                "Copy link"
+                            }
+                        }
+                    }
+                }
+            }
             Table {
                 TableHead {
                     TableRow {
