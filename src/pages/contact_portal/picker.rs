@@ -568,46 +568,30 @@ pub fn ContactPickerPage(token: String) -> Element {
                         }
                     }
                 },
-                PickerState::Picker(cands) => {
-                    let sel_tok = cands.selection_token.clone();
+                PickerState::Picker(_cands) => {
+                    // MAPPS-636: the multi-Company picker retires.
+                    // The product intent is one account per portal
+                    // (per-Company passwords), so a picker that lets
+                    // one email pick a Company to sign in as reads
+                    // as "same account, many portals" — the opposite
+                    // of the desired isolation. When the magic-link
+                    // redeem returns candidates, we now refuse the
+                    // aggregate flow and steer the visitor at their
+                    // Portal-ID login instead: the primary flow is
+                    // Portal-ID-scoped end-to-end and each Portal ID
+                    // resolves to exactly one contact + one password.
                     rsx! {
                         div { class: "text-center mb-6",
-                            h1 { class: "text-2xl font-semibold text-content", "Choose a Company" }
+                            h1 { class: "text-2xl font-semibold text-content", "Sign in with your Portal ID" }
                             p { class: "mt-2 text-sm text-content",
-                                "This email has portal access to more than one Company."
+                                "Each of your portals has its own sign-in. Enter the Portal ID your MSP sent you to sign in to that specific portal."
                             }
                         }
-                        div { class: "space-y-2",
-                            for cand in cands.companies.iter().cloned() {
-                                {
-                                    let sel_tok = sel_tok.clone();
-                                    let cid = cand.contact_id;
-                                    let name = if cand.company_name.trim().is_empty() {
-                                        cand.portal_slug.clone()
-                                    } else {
-                                        cand.company_name.clone()
-                                    };
-                                    let slug = cand.portal_slug.clone();
-                                    rsx! {
-                                        button {
-                                            key: "{cid}",
-                                            r#type: "button",
-                                            class: "w-full text-left rounded-md border border-line bg-surface hover:bg-surface-2 px-4 py-3 transition-colors disabled:opacity-60",
-                                            disabled: submitting(),
-                                            onclick: move |_| {
-                                                pick_candidate(sel_tok.clone(), cid);
-                                            },
-                                            div { class: "text-sm font-medium text-content",
-                                                "{name}"
-                                            }
-                                            if !slug.is_empty() {
-                                                div { class: "text-xs text-muted mt-0.5",
-                                                    "/portal/{slug}"
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                        div { class: "pt-2",
+                            Link {
+                                to: Route::ContactGenericLogin {},
+                                class: "block w-full text-center rounded-md bg-accent text-on-accent px-4 py-2 text-sm font-medium hover:opacity-90",
+                                "Enter my Portal ID"
                             }
                         }
                         if !error().is_empty() {
