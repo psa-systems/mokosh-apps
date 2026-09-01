@@ -134,19 +134,60 @@ pub fn apply_brand_css_vars(brand: &EffectiveBranding) {
         return;
     };
     let style = html.style();
+    // PRIMARY: hijack `--accent` so every `text-accent` / `bg-accent`
+    // / `border-accent` / `ring-accent` utility across the stylesheet
+    // repaints. `--brand-primary` is a stable alias for consumers
+    // that want the brand color independent of the theme picker.
     if let Some(primary) = brand.primary_color.as_deref().filter(|s| !s.is_empty()) {
         let _ = style.set_property("--accent", primary);
-        // A brand-only alias for downstream consumers that don't want
-        // to override the theme-picker's `--accent`. Reserved for the
-        // future per-brand accent that opts out of the picker
-        // override; today the two are the same value.
         let _ = style.set_property("--brand-primary", primary);
+    } else {
+        let _ = style.remove_property("--brand-primary");
     }
+    // SECONDARY: paint as the `--secondary` design-token consumer
+    // pattern. Also expose `--brand-secondary` for future utilities.
     if let Some(secondary) = brand.secondary_color.as_deref().filter(|s| !s.is_empty()) {
+        let _ = style.set_property("--secondary", secondary);
         let _ = style.set_property("--brand-secondary", secondary);
+    } else {
+        let _ = style.remove_property("--secondary");
+        let _ = style.remove_property("--brand-secondary");
     }
+    // BACKGROUND COLOR: hijack `--bg` so every `bg-app` element
+    // (the outer container of AuthLayout + the AppShell body) picks
+    // up the brand background. Reverts to the theme value on
+    // sign-out via `clear_brand_css_vars` -> `theme::apply_now`.
     if let Some(bg) = brand.background_color.as_deref().filter(|s| !s.is_empty()) {
+        let _ = style.set_property("--bg", bg);
         let _ = style.set_property("--brand-bg", bg);
+    } else {
+        let _ = style.remove_property("--brand-bg");
+        // Do NOT clear `--bg` here: the theme (`hooks::theme::apply_now`)
+        // owns the base value and re-applying it here would race the
+        // theme hook. Falling back to whatever the theme wrote last
+        // is correct.
+    }
+    // BACKGROUND IMAGE: paint on <body> via inline style so the
+    // uploaded image tiles the whole app. Bare data / http(s) urls
+    // are wrapped in url(). Cleared when the brand has no
+    // `background_url` so a subsequent brand save that omits the
+    // image reverts to the flat background color / theme.
+    if let Some(body) = doc.body() {
+        let body_style = body.style();
+        if let Some(url) = brand.background_url.as_deref().filter(|s| !s.is_empty()) {
+            let escaped = url.replace('"', "%22");
+            let _ = body_style.set_property("background-image", &format!("url(\"{escaped}\")"));
+            let _ = body_style.set_property("background-size", "cover");
+            let _ = body_style.set_property("background-position", "center");
+            let _ = body_style.set_property("background-attachment", "fixed");
+            let _ = body_style.set_property("background-repeat", "no-repeat");
+        } else {
+            let _ = body_style.remove_property("background-image");
+            let _ = body_style.remove_property("background-size");
+            let _ = body_style.remove_property("background-position");
+            let _ = body_style.remove_property("background-attachment");
+            let _ = body_style.remove_property("background-repeat");
+        }
     }
 }
 
@@ -171,7 +212,20 @@ pub fn clear_brand_css_vars() {
     let style = html.style();
     let _ = style.remove_property("--brand-primary");
     let _ = style.remove_property("--brand-secondary");
+    let _ = style.remove_property("--secondary");
     let _ = style.remove_property("--brand-bg");
+    let _ = style.remove_property("--bg");
+    // Also drop the body background-image so a returning visitor
+    // does not see the brand background flash on the pre-auth
+    // page.
+    if let Some(body) = doc.body() {
+        let body_style = body.style();
+        let _ = body_style.remove_property("background-image");
+        let _ = body_style.remove_property("background-size");
+        let _ = body_style.remove_property("background-position");
+        let _ = body_style.remove_property("background-attachment");
+        let _ = body_style.remove_property("background-repeat");
+    }
     // Re-apply the theme picker so `--accent` returns to the
     // user-chosen accent rather than sticking on the brand color.
     crate::hooks::theme::apply_now();
@@ -181,17 +235,70 @@ pub fn clear_brand_css_vars() {
 pub fn clear_brand_css_vars() {}
 
 /// Root-mounted hook that repaints the brand's CSS custom
-/// properties whenever the effective-branding signal changes. Mount
-/// once at the App root next to `use_apply_theme`; each render reads
-/// the signal and calls `apply_brand_css_vars`.
+/// properties whenever the effective-branding signal changes AND
+/// updates the browser-tab favicon to point at `branding.favicon_url`.
+/// Mount once at the App root next to `use_apply_theme`; each render
+/// reads the signal and applies both.
 #[cfg(feature = "web")]
 pub fn use_apply_brand() {
     use dioxus::prelude::*;
     use_effect(move || {
         let brand = EFFECTIVE_BRANDING.read().clone();
         apply_brand_css_vars(&brand);
+        apply_favicon(&brand);
     });
 }
 
 #[cfg(not(feature = "web"))]
 pub fn use_apply_brand() {}
+
+/// MAPPS-621: point every `<link rel="icon">` at
+/// `branding.favicon_url` so the browser tab icon reflects the
+/// current brand. Falls back to the SPA's coded default (a
+/// `/favicon.svg` + `/favicon.ico` pair from `index.html`) by
+/// re-applying those hrefs when the brand has no favicon set,
+/// so a sign-out returns the tab icon to the Mokosh default.
+///
+/// Selects every existing `link[rel~=icon]` (there are two in
+/// index.html: an SVG primary + an ICO fallback), sets both to the
+/// same brand URL, and clears the `type` attribute since the served
+/// image will be whatever mime the upload stored (typically PNG or
+/// WebP). Most browsers still recompute the icon from the first
+/// success.
+#[cfg(feature = "web")]
+pub fn apply_favicon(brand: &EffectiveBranding) {
+    use wasm_bindgen::JsCast;
+    let Some(win) = web_sys::window() else { return };
+    let Some(doc) = win.document() else { return };
+    let Ok(nodes) = doc.query_selector_all("link[rel~=\"icon\"]") else {
+        return;
+    };
+    let target = brand.favicon_url.as_deref().filter(|s| !s.is_empty());
+    // Default hrefs restored on clear. Kept in sync with index.html.
+    const DEFAULT_ICONS: &[(&str, &str)] =
+        &[("/favicon.svg", "image/svg+xml"), ("/favicon.ico", "image/x-icon")];
+    for i in 0..nodes.length() {
+        let Some(node) = nodes.item(i) else { continue };
+        let Ok(el) = node.dyn_into::<web_sys::Element>() else {
+            continue;
+        };
+        if let Some(url) = target {
+            let _ = el.set_attribute("href", url);
+            // Clear the type hint; whatever mime the server serves
+            // wins. Chrome + Firefox recompute from the response.
+            let _ = el.remove_attribute("type");
+        } else {
+            // Restore the coded default matching this <link>'s slot
+            // by index; safe because the SPA ships exactly two icon
+            // links in a fixed order.
+            let idx = i as usize;
+            if let Some((href, ty)) = DEFAULT_ICONS.get(idx) {
+                let _ = el.set_attribute("href", href);
+                let _ = el.set_attribute("type", ty);
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "web"))]
+pub fn apply_favicon(_brand: &EffectiveBranding) {}
