@@ -93,7 +93,7 @@ pub fn RequestFormPage(token: String) -> Element {
         move || {
             let tok = token.read().clone();
             spawn(async move {
-                #[cfg(feature = "web")]
+                #[cfg(feature = "app")]
                 {
                     use crate::hooks::fetch::api::ApiError;
                     match crate::hooks::fetch::api::get_typed::<PublicForm>(&format!(
@@ -114,7 +114,7 @@ pub fn RequestFormPage(token: String) -> Element {
                         Err(_) => terminal.set(None),
                     }
                 }
-                #[cfg(not(feature = "web"))]
+                #[cfg(not(feature = "app"))]
                 {
                     let _ = tok;
                 }
@@ -167,7 +167,7 @@ pub fn RequestFormPage(token: String) -> Element {
             let payload = build_payload(&def, &current);
 
             spawn(async move {
-                #[cfg(feature = "web")]
+                #[cfg(feature = "app")]
                 {
                     use crate::hooks::fetch::api::ApiError;
                     let body = SubmitBody { payload };
@@ -209,7 +209,7 @@ pub fn RequestFormPage(token: String) -> Element {
                         Err(e) => form_error.set(e.user_message()),
                     }
                 }
-                #[cfg(not(feature = "web"))]
+                #[cfg(not(feature = "app"))]
                 {
                     let _ = (tok, payload);
                 }

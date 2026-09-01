@@ -146,7 +146,7 @@ pub fn ApprovalsPage() -> Element {
 
     let decide = move |id: Uuid, decision: &'static str| {
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let body = serde_json::json!({ "decision": decision });
                 match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(

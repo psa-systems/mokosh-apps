@@ -58,7 +58,7 @@ pub fn set(theme: Theme) {
 }
 
 /// Read the current accent preference. Falls back to the default accent
-/// when unset, on a non-web build, or when the stored id is unknown.
+/// when unset, on a non-`app` build, or when the stored id is unknown.
 pub fn current_accent() -> &'static accents::Accent {
     accents::resolve(&prefs::get_str(ACCENT_KEY, accents::DEFAULT_ACCENT_ID))
 }

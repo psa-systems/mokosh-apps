@@ -455,12 +455,12 @@ pub fn DashboardTvPage() -> Element {
     let mut tick = use_signal(|| 0u32);
     use_future(move || async move {
         loop {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 crate::platform::timer::sleep_ms(30_000).await;
                 tick += 1;
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 break;
             }
@@ -518,7 +518,7 @@ pub fn DashboardTvPage() -> Element {
     let dispatch_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _tick = tick();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             let from = Utc::now()
                 .date_naive()
@@ -536,7 +536,7 @@ pub fn DashboardTvPage() -> Element {
                 .ok()
                 .unwrap_or_else(empty_dispatch)
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             empty_dispatch()
         }
@@ -547,7 +547,7 @@ pub fn DashboardTvPage() -> Element {
     let users_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _tick = tick();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             crate::hooks::fetch::api::get_all_authed::<TvUser>("/auth/users")
                 .await
@@ -557,7 +557,7 @@ pub fn DashboardTvPage() -> Element {
                     Vec::new()
                 })
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             Vec::<TvUser>::new()
         }

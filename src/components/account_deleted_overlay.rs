@@ -28,19 +28,19 @@
 
 use dioxus::prelude::*;
 
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 const COUNTDOWN_SECS: u32 = 5;
 
 /// Read the sticky "account was deleted" flag. Reactive: the wrapping
 /// AppLayout re-renders when the flag transitions from false to true.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub fn use_account_deleted() -> bool {
     *crate::hooks::fetch::ACCOUNT_DELETED.read()
 }
 
 /// Non-web stub so components that consume the flag still compile under
-/// `cargo check` without the `web` feature.
-#[cfg(not(feature = "web"))]
+/// `cargo check` without the `app` feature.
+#[cfg(not(feature = "app"))]
 pub fn use_account_deleted() -> bool {
     false
 }
@@ -50,7 +50,7 @@ pub fn use_account_deleted() -> bool {
 /// so the overlay adds zero DOM to a healthy session.
 #[component]
 pub fn AccountDeletedOverlay() -> Element {
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     {
         if !use_account_deleted() {
             return rsx! {};
@@ -61,7 +61,7 @@ pub fn AccountDeletedOverlay() -> Element {
         // and clear the OIDC tokens on every healthy render.
         return rsx! { AccountDeletedTerminal {} };
     }
-    #[cfg(not(feature = "web"))]
+    #[cfg(not(feature = "app"))]
     {
         rsx! {}
     }
@@ -71,7 +71,7 @@ pub fn AccountDeletedOverlay() -> Element {
 /// `ACCOUNT_DELETED` signal has flipped (MAPPS-377). Split out of
 /// `AccountDeletedOverlay` so its countdown / redirect hooks run
 /// unconditionally within it rather than after the parent's early return.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 #[component]
 fn AccountDeletedTerminal() -> Element {
     // Countdown state: decrements once a second while the overlay is

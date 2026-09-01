@@ -876,7 +876,7 @@ pub fn ProjectNewPage() -> Element {
                     let start_v = start_date.read().trim().to_string();
                     let end_v = target_end_date.read().trim().to_string();
                     spawn(async move {
-                        #[cfg(feature = "web")]
+                        #[cfg(feature = "app")]
                         {
                             let mut body = serde_json::json!({
                                 "name": project_name,
@@ -1260,7 +1260,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         deleting.set(true);
         delete_error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/projects/{id}");
                 // MAPPS-574: report the refusal instead of discarding it. The
@@ -1738,7 +1738,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         t_submitting.set(true);
                         let mut tr = tasks_resource;
                         spawn(async move {
-                            #[cfg(feature = "web")]
+                            #[cfg(feature = "app")]
                             {
                                 let mut body = serde_json::json!({
                                     "title": title,

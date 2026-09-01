@@ -16,7 +16,7 @@ use dioxus::prelude::*;
 /// records it as a dependency and re-fetches whenever the active tenant
 /// changes. WASM is single-threaded, so a `GlobalSignal` is the right
 /// primitive here (same rationale as the toast surface).
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub static TENANT_GENERATION: GlobalSignal<u64> = Signal::global(|| 0);
 
 /// Read the active-tenant generation counter. Call this INSIDE a
@@ -24,14 +24,14 @@ pub static TENANT_GENERATION: GlobalSignal<u64> = Signal::global(|| 0);
 /// the resource to it and re-fetches on the next org switch / token swap.
 /// The returned value is otherwise unused; it exists purely to register
 /// the reactive dependency.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub fn active_tenant_generation() -> u64 {
     *TENANT_GENERATION.read()
 }
 
 /// Non-web stub so the same call site compiles under `cargo check`
-/// without the `web` feature.
-#[cfg(not(feature = "web"))]
+/// without the `app` feature.
+#[cfg(not(feature = "app"))]
 pub fn active_tenant_generation() -> u64 {
     0
 }
@@ -48,7 +48,7 @@ pub fn active_tenant_generation() -> u64 {
 /// (same rationale as the toast surface). The banner reads it via
 /// [`crate::hooks::use_server_reachable`] and the recovery poll lives in
 /// [`crate::hooks::server_status`].
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub static SERVER_REACHABLE: GlobalSignal<bool> = Signal::global(|| true);
 
 /// MAPPS-348: sticky "the current user's bunyip account was deleted" flag.
@@ -67,14 +67,14 @@ pub static SERVER_REACHABLE: GlobalSignal<bool> = Signal::global(|| true);
 /// GlobalSignal (not context) for the same reason [`SERVER_REACHABLE`]
 /// is: the `api` helpers are plain async fns and can't reach a
 /// context-provided signal.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub static ACCOUNT_DELETED: GlobalSignal<bool> = Signal::global(|| false);
 
 /// Flip [`ACCOUNT_DELETED`] to `true`. Idempotent (called from every
 /// fetch on the error path once the account is tombstoned, but only
 /// writes to the signal on the first observation) so a burst of
 /// concurrent 410s does not wake readers repeatedly.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub(crate) fn note_account_deleted() {
     if !*ACCOUNT_DELETED.peek() {
         *ACCOUNT_DELETED.write() = true;
@@ -88,7 +88,7 @@ pub(crate) fn note_account_deleted() {
 /// desktop build has no reload, so the one caller that told the user to
 /// reload after replacing all their data (the import panel in
 /// `pages::settings`) drives the refetch directly.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub fn bump_tenant_generation() {
     *TENANT_GENERATION.write() += 1;
 }
@@ -105,12 +105,12 @@ pub fn bump_tenant_generation() {
 /// A `GlobalSignal` for the same reason [`ACCOUNT_DELETED`] is one: the
 /// `api` helpers are plain async fns and cannot reach a
 /// context-provided signal.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub static SESSION_ENDED: GlobalSignal<bool> = Signal::global(|| false);
 
 /// Raise [`SESSION_ENDED`]. Idempotent, so a burst of 401s on the way
 /// out does not wake the watcher repeatedly.
-#[cfg(all(feature = "web", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "app", not(target_arch = "wasm32")))]
 pub(crate) fn note_session_ended() {
     if !*SESSION_ENDED.peek() {
         *SESSION_ENDED.write() = true;
@@ -122,7 +122,7 @@ pub(crate) fn note_session_ended() {
 /// is treated as "down" per MAPPS-333: the server is up but failing, and
 /// we surface that the same way as an outage. A `4xx` (auth, validation)
 /// is NOT "down" and keeps surfacing through the normal per-call paths.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub(crate) fn note_response_status(status: u16) {
     set_server_reachable(!(500..600).contains(&status));
     // MAPPS-428: a status that could mean "this tab is running a bundle
@@ -144,14 +144,14 @@ pub(crate) fn note_response_status(status: u16) {
 /// server-down and never passed through to the user as a CORS / "Failed
 /// to fetch" message. (Mokosh App sets no CSP of its own, so there is no
 /// CSP-block case to distinguish from a genuine outage here.)
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub(crate) fn note_transport_error() {
     set_server_reachable(false);
 }
 
 /// Write the reachability flag, but only on an actual transition so a
 /// successful request does not wake every reader on each call.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 fn set_server_reachable(reachable: bool) {
     if *SERVER_REACHABLE.peek() != reachable {
         *SERVER_REACHABLE.write() = reachable;
@@ -162,9 +162,9 @@ fn set_server_reachable(reachable: bool) {
 pub mod api {
     // MAPPS-504: `gloo-net` in the browser, `reqwest` on the desktop,
     // same builder either way (see `crate::platform::http`).
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     use crate::platform::http::{MultipartExt, Request};
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     use serde::{de::DeserializeOwned, Serialize};
 
     /// Derive the Mokosh API base URL.
@@ -179,7 +179,7 @@ pub mod api {
     ///   3. Same-origin `/api/v1` for dev (localhost, IP address, or
     ///      any host that doesn't start with `msp.`) so the Dioxus dev
     ///      server can proxy to a local backend.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn api_base() -> String {
         if let Some(injected) = crate::modules::runtime_config::get("api_base") {
             return normalize_api_base(&injected);
@@ -196,7 +196,7 @@ pub mod api {
     ///
     /// In a browser that is the same-origin `/api/v1`, which the `dx`
     /// dev-server proxy and Caddy both serve.
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    #[cfg(all(feature = "app", target_arch = "wasm32"))]
     fn default_api_base() -> String {
         "/api/v1".to_string()
     }
@@ -207,7 +207,7 @@ pub mod api {
     /// the local machine, which is right for development and wrong
     /// everywhere else, so a desktop install is expected to set
     /// `api_base` in its `config.json` (see `crate::platform::config`).
-    #[cfg(all(feature = "web", not(target_arch = "wasm32")))]
+    #[cfg(all(feature = "app", not(target_arch = "wasm32")))]
     fn default_api_base() -> String {
         match option_env!("MOKOSH_API_BASE") {
             Some(base) if !base.is_empty() => normalize_api_base(base),
@@ -226,7 +226,7 @@ pub mod api {
     ///
     /// Empty in dev, where `api_base()` is the same-origin `/api/v1`: an
     /// origin-relative path is already correct there.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn api_origin() -> String {
         strip_api_version(&api_base())
     }
@@ -258,7 +258,7 @@ pub mod api {
     // single-threaded so a `RefCell` is safe; we don't need a mutex.
     // The token lives only in memory: it is wiped on logout and never
     // written to localStorage.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     thread_local! {
         static ACCESS_TOKEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
     }
@@ -277,7 +277,7 @@ pub mod api {
     /// rehydration / `complete_login`); the previous unconditional bump made
     /// every `active_tenant_generation`-subscribed resource fetch twice on
     /// mount (MAPPS-187).
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn set_access_token(token: Option<String>) {
         let changed = ACCESS_TOKEN.with(|t| {
             let mut slot = t.borrow_mut();
@@ -298,7 +298,7 @@ pub mod api {
     /// This is the AGENT token (`typ: "access"`). It is never the portal
     /// session token: `/portal/*` runs on a separate identity (a `contacts`
     /// row) and its own holder, [`current_portal_access_token`].
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn current_access_token() -> Option<String> {
         ACCESS_TOKEN.with(|t| t.borrow().clone())
     }
@@ -314,22 +314,22 @@ pub mod api {
 
     /// Seconds before expiry at which the held access token is treated as
     /// spent. Same window the auth loops use.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     const REFRESH_WINDOW_SECS: i64 = 60;
 
     /// How long a completed renewal answers for the 401s that were already in
     /// flight when it landed. Without it, a 401 no renewal can fix (revoked
     /// grant, rejected audience) would spend a refresh token per request and
     /// re-drive every mounted resource on each one, forever.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     const RENEWAL_DEBOUNCE_SECS: i64 = 30;
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     type Renewal = futures_util::future::Shared<
         std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>>>>,
     >;
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     thread_local! {
         /// The renewal in flight, tagged with the id of its flight. Concurrent
         /// callers join it instead of each spending the refresh token, which
@@ -349,7 +349,7 @@ pub mod api {
     /// Expiry of the persisted session the held bearer came from. `None` when
     /// nothing is persisted (dev bypass, sessionStorage disabled), which is
     /// also "nothing to renew from".
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     fn persisted_expiry() -> Option<chrono::DateTime<chrono::Utc>> {
         if let Some(t) = crate::modules::oidc::storage::load_auth() {
             return Some(t.expires_at);
@@ -359,7 +359,7 @@ pub mod api {
 
     /// Whether the held bearer is inside its refresh window or already past
     /// expiry.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     fn access_token_is_stale() -> bool {
         if current_access_token().is_none() {
             return false;
@@ -376,7 +376,7 @@ pub mod api {
     /// holder and never matches (MAPPS-395), and a request that carries no
     /// bearer at all (`POST /auth/login`) matches nothing, so neither can
     /// reach the agent renewal or sign-out paths.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     fn is_agent_bearer(token: &str) -> bool {
         current_access_token().as_deref() == Some(token)
     }
@@ -385,7 +385,7 @@ pub mod api {
     /// request is agent-lane. Agent-lane means the caller handed us the bearer
     /// this SPA holds, so it is renewed when spent and its 401 is a session
     /// event; anything else is passed through untouched.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     async fn agent_lane_bearer(token: &str) -> (bool, String) {
         if !is_agent_bearer(token) {
             return (false, token.to_string());
@@ -406,7 +406,7 @@ pub mod api {
     /// Single-flight, see [`renew_access_token`]. A failure here is logged but
     /// does not sign the user out: the request still goes out, and the 401 it
     /// earns runs [`note_agent_unauthorized`], which owns that decision.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn ensure_fresh_access_token() {
         if !access_token_is_stale() {
             return;
@@ -422,7 +422,7 @@ pub mod api {
     /// Also the auth loops' renewal (`crate::hooks::auth`), so a loop tick and
     /// a request-time renewal that coincide spend one refresh token between
     /// them instead of racing each other into a reuse detection.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn renew_access_token() -> Result<(), String> {
         let (flight, shared) = RENEWAL.with(|slot| {
             if let Some((flight, existing)) = slot.borrow().as_ref() {
@@ -464,7 +464,7 @@ pub mod api {
 
     /// The renewal implementation. OIDC first, because that is the bundle
     /// `rehydrate_from_storage` prefers when both are somehow present.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     async fn renew_persisted_session() -> Result<(), String> {
         use crate::modules::oidc::storage;
 
@@ -541,7 +541,7 @@ pub mod api {
     /// Only reached from the agent lane ([`is_agent_bearer`]). A `/portal/*`
     /// 401 belongs to a separate identity and a `POST /auth/login` 401 means
     /// wrong password; neither may sign an agent out.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     async fn note_agent_unauthorized() {
         match recent_renewal() {
             // A renewal landed moments ago, so this 401 was answered against
@@ -565,7 +565,7 @@ pub mod api {
 
     /// Outcome of the last renewal while it is still recent enough to answer
     /// for a 401 that was already in flight. `None` once it has aged out.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     fn recent_renewal() -> Option<Result<(), String>> {
         LAST_RENEWAL.with(|slot| {
             slot.borrow().as_ref().and_then(|(at, outcome)| {
@@ -579,7 +579,7 @@ pub mod api {
     /// below the Router and cannot reach `AuthContext`, so the full reload is
     /// what drops the cleared state onto the login screen - the same reason
     /// `use_token_refresh` redirects this way.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     fn end_agent_session() {
         set_access_token(None);
         // Clears the standalone session too (see `storage::clear_auth`).
@@ -608,7 +608,7 @@ pub mod api {
     //
     // Memory-only like its sibling, so a reload returns the visitor to
     // `/portal/login` rather than leaving a bearer in storage.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     thread_local! {
         static PORTAL_ACCESS_TOKEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
     }
@@ -620,7 +620,7 @@ pub mod api {
     /// Deliberately does NOT bump [`super::TENANT_GENERATION`]: that counter is
     /// the agent-side "active tenant changed" signal, and the portal pages
     /// mount fresh after the post-login navigation anyway.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn set_portal_access_token(token: Option<String>) {
         PORTAL_ACCESS_TOKEN.with(|t| *t.borrow_mut() = token);
     }
@@ -631,26 +631,26 @@ pub mod api {
     /// needs to know whether a session exists (the route guard) asks
     /// [`has_portal_session`] instead, so the token itself stays inside this
     /// module.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn current_portal_access_token() -> Option<String> {
         PORTAL_ACCESS_TOKEN.with(|t| t.borrow().clone())
     }
 
     /// Whether a portal session is held. The predicate `PortalGuard` gates
     /// `/portal/*` on, without handing the token out.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn has_portal_session() -> bool {
         PORTAL_ACCESS_TOKEN.with(|t| t.borrow().is_some())
     }
 
-    // The web-only API helpers below are grouped under this `api`
-    // module; the non-`web` build compiles the module with no items.
+    // The app-only API helpers below are grouped under this `api`
+    // module; the non-`app` build compiles the module with no items.
 
     /// Map a transport-level send failure to a `String` error, classifying
     /// it as a server-unreachable condition (MAPPS-333) on the way out.
     /// Used only at `.send()` sites - serialization (`.json()`) failures
     /// keep the plain mapping since they are not connectivity problems.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     fn transport_err(e: impl std::fmt::Display) -> String {
         super::note_transport_error();
         e.to_string()
@@ -659,14 +659,14 @@ pub mod api {
     /// Transport-error sibling of [`transport_err`] for the typed helpers,
     /// classifying the failure as server-unreachable before wrapping it as
     /// [`ApiError::Network`].
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     fn network_err(e: impl std::fmt::Display) -> ApiError {
         super::note_transport_error();
         ApiError::Network(e.to_string())
     }
 
     /// Get request
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn get<T: DeserializeOwned>(path: &str) -> Result<T, String> {
         let url = format!("{}{}", api_base(), path);
 
@@ -689,7 +689,7 @@ pub mod api {
     /// `/ready`, which deliberately answers `503` with a JSON breakdown
     /// when a dependency is down. A transport-level failure (server
     /// unreachable, DNS, CORS) is still an `Err`.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn probe(path: &str) -> Result<(u16, String), String> {
         let url = format!("{}{}", api_base(), path);
 
@@ -711,7 +711,7 @@ pub mod api {
     /// carry the field-level envelope separately via `handle_response`; this
     /// is the flat-string sibling for the many existing callers. Falls back
     /// to the status line when the body is not a recognised envelope.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     async fn status_error(response: crate::platform::http::Response) -> String {
         let status = response.status();
         // A real HTTP response (even an error one) proves reachability; a
@@ -755,7 +755,7 @@ pub mod api {
     /// migrated to the `_typed` variants already get the field-level
     /// `ApiError::user_message` treatment; this brings the legacy callers
     /// to at least non-developer-facing parity.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     fn user_friendly_status(status: u16) -> String {
         match status {
             400 => "The request was rejected. Please check the form and try again.".into(),
@@ -771,7 +771,7 @@ pub mod api {
     }
 
     /// Get request with auth token
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn get_with_auth<T: DeserializeOwned>(path: &str, token: &str) -> Result<T, String> {
         let url = format!("{}{}", api_base(), path);
         let (agent_lane, token) = agent_lane_bearer(token).await;
@@ -811,12 +811,12 @@ pub mod api {
     /// 10,000 rows. Reaching it means either a list no screen can use or an
     /// endpoint that ignores `page`, so the helper fails loudly rather than
     /// handing back a list that is short for a reason nobody can see.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     const MAX_PAGES: u32 = 100;
 
     /// Append the paging query the `get_all_*` helpers drive, preserving any
     /// filters the caller already put on `path`.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub(crate) fn paged_path(path: &str, page: u32) -> String {
         let sep = if path.contains('?') { '&' } else { '?' };
         format!("{path}{sep}page={page}&per_page={MAX_PER_PAGE}")
@@ -826,7 +826,7 @@ pub mod api {
     ///
     /// `path` carries the endpoint's own filters and must NOT spell `page`
     /// or `per_page`; both are appended per request.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn get_all_with_auth<T: DeserializeOwned>(
         path: &str,
         token: &str,
@@ -848,7 +848,7 @@ pub mod api {
     }
 
     /// Post request
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn post<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -871,7 +871,7 @@ pub mod api {
     }
 
     /// Post request with auth token
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn post_with_auth<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -900,7 +900,7 @@ pub mod api {
     }
 
     /// Put request with auth token
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn put_with_auth<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -934,7 +934,7 @@ pub mod api {
     /// helper would have invited callers to send the whole row and
     /// blow away unset fields, which is the wrong shape for that
     /// surface.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn patch_with_auth<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -963,7 +963,7 @@ pub mod api {
     }
 
     /// Delete request with auth token
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn delete_with_auth(path: &str, token: &str) -> Result<(), String> {
         let url = format!("{}{}", api_base(), path);
         let (agent_lane, token) = agent_lane_bearer(token).await;
@@ -990,7 +990,7 @@ pub mod api {
     /// with no JSON). The body-parsing `post_with_auth` would fail on
     /// the empty payload, so this variant only checks the status, like
     /// `delete_with_auth`. No request body is sent.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn post_no_content_with_auth(path: &str, token: &str) -> Result<(), String> {
         let url = format!("{}{}", api_base(), path);
         let (agent_lane, token) = agent_lane_bearer(token).await;
@@ -1023,7 +1023,7 @@ pub mod api {
     /// `Content-Type: application/json`, and here the header must be left
     /// ALONE. Setting it manually omits the boundary parameter, and the server
     /// then rejects a body it cannot split.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn put_file_authed<T: DeserializeOwned>(
         path: &str,
         file_name: &str,
@@ -1057,7 +1057,7 @@ pub mod api {
     /// comment there says about leaving `Content-Type` alone applies here for
     /// the same reason - setting it by hand omits the boundary parameter and
     /// the server cannot split the body.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn post_file_authed<T: DeserializeOwned>(
         path: &str,
         file_name: &str,
@@ -1095,7 +1095,7 @@ pub mod api {
     // one level down, in the `_with_auth` helpers, which is also where the
     // page code that resolves its own bearer arrives.
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn get_authed<T: DeserializeOwned>(path: &str) -> Result<T, String> {
         ensure_fresh_access_token().await;
         match current_access_token() {
@@ -1106,14 +1106,14 @@ pub mod api {
 
     /// Auto-authed sibling of [`get_all_with_auth`]: reads a whole list,
     /// paging until a short page (MAPPS-528).
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn get_all_authed<T: DeserializeOwned>(path: &str) -> Result<Vec<T>, String> {
         ensure_fresh_access_token().await;
         let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
         get_all_with_auth(path, &t).await
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn post_authed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -1125,7 +1125,7 @@ pub mod api {
         }
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn put_authed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -1135,14 +1135,14 @@ pub mod api {
         put_with_auth(path, body, &t).await
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn delete_authed(path: &str) -> Result<(), String> {
         ensure_fresh_access_token().await;
         let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
         delete_with_auth(path, &t).await
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn patch_authed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -1154,7 +1154,7 @@ pub mod api {
 
     /// Auto-authed POST for empty-body endpoints (see
     /// `post_no_content_with_auth`).
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn post_authed_no_content(path: &str) -> Result<(), String> {
         ensure_fresh_access_token().await;
         let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
@@ -1174,12 +1174,12 @@ pub mod api {
 
     /// Error for a `/portal/*` call made with no portal session. Surfaced
     /// through the same `Result<_, String>` channel the pages already render.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     fn portal_not_signed_in() -> String {
         "not signed in to the portal".to_string()
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn get_portal_authed<T: DeserializeOwned>(path: &str) -> Result<T, String> {
         let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
         get_with_auth(path, &t).await
@@ -1187,13 +1187,13 @@ pub mod api {
 
     /// Portal sibling of [`get_all_authed`]: reads a whole `/portal/*` list
     /// on the portal bearer, paging until a short page (MAPPS-528).
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn get_all_portal_authed<T: DeserializeOwned>(path: &str) -> Result<Vec<T>, String> {
         let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
         get_all_with_auth(path, &t).await
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn post_portal_authed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -1210,7 +1210,7 @@ pub mod api {
     /// is nothing to renew. `post_no_content_with_auth` sees a bearer that is
     /// not the agent holder's and passes it straight through, which is what
     /// keeps a portal 401 out of the agent sign-out path.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn post_portal_authed_no_content(path: &str) -> Result<(), String> {
         let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
         post_no_content_with_auth(path, &t).await
@@ -1218,7 +1218,7 @@ pub mod api {
 
     /// Typed sibling of [`post_portal_authed`], for the portal call sites that
     /// need the status code (the ticket reply form).
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn post_portal_authed_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -1253,7 +1253,7 @@ pub mod api {
     /// Variants are deliberately coarse - the goal is to give callers
     /// enough signal to render an actionable toast without forcing them
     /// to match on every possible status code.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     #[derive(Debug, Clone)]
     pub enum ApiError {
         /// Transport failed before a response was received.
@@ -1274,7 +1274,7 @@ pub mod api {
         Decode(String),
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     impl ApiError {
         /// User-facing message suitable for a toast.
         pub fn user_message(&self) -> String {
@@ -1339,7 +1339,7 @@ pub mod api {
         }
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     impl std::fmt::Display for ApiError {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
@@ -1356,7 +1356,7 @@ pub mod api {
         }
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     async fn handle_response<T: DeserializeOwned>(
         response: crate::platform::http::Response,
     ) -> Result<T, ApiError> {
@@ -1392,7 +1392,7 @@ pub mod api {
         })
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn get_authed_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
         ensure_fresh_access_token().await;
         let url = format!("{}{}", api_base(), path);
@@ -1414,7 +1414,7 @@ pub mod api {
     /// `Content-Disposition` filename. Used for attachment downloads the SPA
     /// cannot fetch through a plain `<a href>` because the bearer lives in WASM
     /// memory rather than a cookie (the data export, MAPPS-364).
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn get_authed_bytes(path: &str) -> Result<(Vec<u8>, Option<String>), String> {
         ensure_fresh_access_token().await;
         let url = format!("{}{}", api_base(), path);
@@ -1449,7 +1449,7 @@ pub mod api {
     /// Extract the `filename="..."` value from a `Content-Disposition` header.
     /// Only the simple quoted or unquoted `filename=` form is handled (no
     /// RFC 5987 `filename*=`), which is all the export endpoint emits.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     fn content_disposition_filename(header: &str) -> Option<String> {
         let idx = header.to_ascii_lowercase().find("filename=")?;
         let raw = header[idx + "filename=".len()..].trim();
@@ -1466,7 +1466,7 @@ pub mod api {
         }
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn post_authed_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -1494,7 +1494,7 @@ pub mod api {
     /// [`post_authed_typed`] but sends no bearer (the user is not signed in
     /// yet), so the caller can inspect `ApiError::Status { code, .. }` and map
     /// 401 -> "invalid credentials" / 429 -> "too many attempts".
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn post_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -1515,7 +1515,7 @@ pub mod api {
     /// memory, and the plain [`get`] collapses every failure to a `String`, so
     /// the caller could not tell 410 (link already submitted) from 400
     /// (expired or unknown). This keeps the typed error.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn get_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
         let url = format!("{}{}", api_base(), path);
         let resp = Request::get(&url)
@@ -1531,7 +1531,7 @@ pub mod api {
     /// decode the empty payload, so this variant only inspects the status and
     /// keeps the typed error so the caller can tell 410 (replayed link) from
     /// 400 (expired / unknown link).
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn post_typed_no_content<B: Serialize>(path: &str, body: &B) -> Result<(), ApiError> {
         let url = format!("{}{}", api_base(), path);
         let resp = Request::post(&url)
@@ -1559,7 +1559,7 @@ pub mod api {
         })
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn put_authed_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -1589,7 +1589,7 @@ pub mod api {
     /// partial-update routes) is PATCH rather than PUT, and only the
     /// `String`-error `patch_authed` existed, which loses the per-field 422
     /// envelope the editor needs to report a bad field set.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn patch_authed_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -1615,7 +1615,7 @@ pub mod api {
         handle_response(resp).await
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn delete_authed_typed(path: &str) -> Result<(), ApiError> {
         ensure_fresh_access_token().await;
         let t = current_access_token().ok_or_else(|| ApiError::Status {
@@ -1871,7 +1871,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     #[test]
     fn the_token_holders_are_independent() {
         use super::api::{
@@ -1951,7 +1951,7 @@ mod tests {
     /// a number typed twice. If mokosh-server moves `MAX_PER_PAGE`, the
     /// mirror in `src/utils/pagination.rs` moves with it and the `get_all_*`
     /// helpers follow, instead of silently asking over the new cap.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     #[test]
     fn the_paging_cap_is_the_servers_cap() {
         assert_eq!(
@@ -1964,7 +1964,7 @@ mod tests {
     /// filters must survive and the cap must be what goes on the wire. An
     /// endpoint with no filters must not gain a `?&`, which is not a query
     /// string the server's `Query<PaginationParams>` extractor accepts.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     #[test]
     fn the_paging_helpers_append_the_cap_to_any_path() {
         use super::api::{paged_path, MAX_PER_PAGE};
@@ -1985,7 +1985,7 @@ mod tests {
     /// the "is this page full?" test and the page size that was requested
     /// from drifting apart, which would either truncate the list (stopping on
     /// a full page) or spin to `MAX_PAGES` on every read.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     #[test]
     fn the_page_loop_measures_a_short_page_against_the_requested_size() {
         let body = production_src()

@@ -29,7 +29,7 @@ const DEFAULT_REFRESH_SECS: u32 = 30;
 /// default 30s keeps the screen in step with the server without
 /// hammering it; operators tune via the query param.
 fn read_refresh_seconds() -> u32 {
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     {
         if let Some(raw) = crate::utils::url::current_query_param("refresh") {
             if let Ok(n) = raw.parse::<u32>() {
@@ -46,7 +46,7 @@ fn read_refresh_seconds() -> u32 {
 fn use_periodic_tick(seconds: u32) -> Signal<u64> {
     let mut tick = use_signal(|| 0u64);
     use_effect(move || {
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             // MAPPS-504: a spawned sleep loop rather than `setInterval`
             // plus a leaked wasm closure. Same cadence, no browser
@@ -59,7 +59,7 @@ fn use_periodic_tick(seconds: u32) -> Signal<u64> {
                 }
             });
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             let _ = seconds;
         }

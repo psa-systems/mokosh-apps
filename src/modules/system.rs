@@ -100,7 +100,7 @@ pub struct SystemVersion {
 
 /// Fetch the server's running version and pair it with the SPA's own
 /// compile-time version to detect a stale client bundle.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub async fn get_version() -> Result<SystemVersion, String> {
     let response =
         crate::hooks::fetch::api::get_authed::<ServerVersionResponse>(VERSION_PATH).await?;

@@ -51,14 +51,14 @@
 //! a shared flag: a scroll caused by us is swallowed instead of answered, so the
 //! pane the author is dragging keeps the position they chose.
 
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 use std::cell::Cell;
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 use std::rc::Rc;
 
 /// Mark this pair of ids as synced. Idempotent: a second call for the same
 /// pair does nothing, so it is safe to run from an effect that re-runs.
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 pub fn link(source_id: &str, preview_id: &str) {
     use wasm_bindgen::closure::Closure;
     use wasm_bindgen::JsCast;
@@ -130,7 +130,7 @@ pub fn link(source_id: &str, preview_id: &str) {
 
 /// How far down its own scrollable extent this element is, `0.0` to `1.0`.
 /// `None` when it does not scroll at all.
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 fn scrolled_fraction(el: &web_sys::Element) -> Option<f64> {
     let extent = scrollable_extent(el)?;
     Some((f64::from(el.scroll_top()) / f64::from(extent)).clamp(0.0, 1.0))
@@ -138,7 +138,7 @@ fn scrolled_fraction(el: &web_sys::Element) -> Option<f64> {
 
 /// Pixels this element can actually scroll through, or `None` when that is
 /// zero: dividing by it is how a short pane would drag the other to the top.
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 fn scrollable_extent(el: &web_sys::Element) -> Option<i32> {
     let extent = el.scroll_height() - el.client_height();
     (extent > 0).then_some(extent)
@@ -152,12 +152,12 @@ fn scrollable_extent(el: &web_sys::Element) -> Option<i32> {
 // the pair's own `echo` flag is owned by the closures `link` builds. It is only
 // ever raised when the write actually changes the value, so it cannot be left
 // set by a scroll that fired no event.
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 thread_local! {
     static PROGRAMMATIC: Cell<bool> = const { Cell::new(false) };
 }
 
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 fn take_programmatic() -> bool {
     PROGRAMMATIC.with(|f| f.replace(false))
 }
@@ -174,7 +174,7 @@ fn take_programmatic() -> bool {
 /// different number of children the correspondence has broken (ammonia can drop
 /// a raw HTML block), and this does nothing rather than scrolling somewhere
 /// confidently wrong. Returns whether it moved anything.
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 pub fn scroll_to_block(preview_id: &str, index: usize, expected: usize) -> bool {
     let Some(document) = web_sys::window().and_then(|w| w.document()) else {
         return false;
@@ -217,18 +217,18 @@ pub fn scroll_to_block(preview_id: &str, index: usize, expected: usize) -> bool 
 
 /// MAPPS-504 / MAPPS-511: no in-process DOM on the desktop build, as with
 /// [`link`].
-#[cfg(not(all(feature = "web", target_arch = "wasm32")))]
+#[cfg(not(all(feature = "app", target_arch = "wasm32")))]
 pub fn scroll_to_block(_preview_id: &str, _index: usize, _expected: usize) -> bool {
     false
 }
 
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 const INSTALLED_ATTR: &str = "data-scroll-synced";
 
 /// MAPPS-504 / MAPPS-511: the desktop build has no in-process DOM, so the two
 /// panes stay independent there. The editor is usable either way; this is
 /// polish, not function.
-#[cfg(not(all(feature = "web", target_arch = "wasm32")))]
+#[cfg(not(all(feature = "app", target_arch = "wasm32")))]
 pub fn link(_source_id: &str, _preview_id: &str) {}
 
 #[cfg(test)]

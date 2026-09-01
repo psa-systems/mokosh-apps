@@ -101,7 +101,7 @@ pub fn Markdown(props: MarkdownProps) -> Element {
     // the router call from a raw DOM listener that killed the page when it
     // panicked (MAPPS-586), and the role read that made an article render
     // differently for two people reading the same words.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     {
         let dom_id = dom_id.clone();
         let on_toggle = props.on_toggle;
@@ -150,7 +150,7 @@ pub fn Markdown(props: MarkdownProps) -> Element {
 /// MAPPS-603 removed the other caller, a mention chip that routed to the team
 /// page. The rule outlives it: whatever this listener calls next has to carry
 /// its own scope.
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 fn install_click_listener(dom_id: String, on_toggle: Option<EventHandler<usize>>) {
     use wasm_bindgen::closure::Closure;
     use wasm_bindgen::JsCast;
@@ -193,7 +193,7 @@ fn install_click_listener(dom_id: String, on_toggle: Option<EventHandler<usize>>
 /// rendered snapshot shows.
 ///
 /// Source scans, deliberately: the directory fetch and the click listener only
-/// run under `web` with a real DOM, so no host test can drive them. What is
+/// run in the browser with a real DOM, so no host test can drive them. What is
 /// pinned is the decision, and the decision lives in the source. The module is
 /// excluded from its own scan because every assertion quotes the pattern it
 /// looks for, which would otherwise match itself and pass regardless.

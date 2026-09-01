@@ -63,7 +63,7 @@ pub fn push_toast_with_title(
 /// Convenience wrapper for the common "an API call failed" case. Maps
 /// any [`crate::hooks::fetch::api::ApiError`] to a user-facing message
 /// via [`ApiError::user_message`].
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub fn push_api_error(err: &crate::hooks::fetch::api::ApiError) {
     push_toast(AlertType::Error, err.user_message());
 }

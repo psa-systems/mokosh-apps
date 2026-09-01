@@ -671,7 +671,7 @@ pub fn KBHomePage() -> Element {
                 delete_busy.set(true);
                 delete_error.set(String::new());
                 spawn(async move {
-                    #[cfg(feature = "web")]
+                    #[cfg(feature = "app")]
                     {
                         let path = format!("/kb/categories/{}", target.id);
                         match crate::hooks::fetch::api::delete_authed(&path).await {
@@ -684,7 +684,7 @@ pub fn KBHomePage() -> Element {
                             }
                         }
                     }
-                    #[cfg(not(feature = "web"))]
+                    #[cfg(not(feature = "app"))]
                     let _ = &target;
                     delete_busy.set(false);
                 });
@@ -1350,7 +1350,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     // the article id is available. Declared unconditionally for rules-of-hooks.
     let id_for_vote = props.id.clone();
     use_resource(use_reactive!(|id_for_vote| async move {
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             let path = format!("/kb/articles/{id_for_vote}/vote");
             if let Ok(fb) = crate::hooks::fetch::api::get_authed::<KbArticleFeedback>(&path).await {
@@ -1358,7 +1358,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                 my_vote.set(fb.my_vote);
             }
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         let _ = &id_for_vote;
     }));
 
@@ -1428,7 +1428,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                 delete_error.set(String::new());
                 let id = id_for_delete.clone();
                 spawn(async move {
-                    #[cfg(feature = "web")]
+                    #[cfg(feature = "app")]
                     {
                         let path = format!("/kb/articles/{id}");
                         match crate::hooks::fetch::api::delete_authed(&path).await {
@@ -1445,7 +1445,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                             }
                         }
                     }
-                    #[cfg(not(feature = "web"))]
+                    #[cfg(not(feature = "app"))]
                     let _ = &id;
                     delete_busy.set(false);
                 });
@@ -1575,7 +1575,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                             let aid = aid.clone();
                                             let mut ar = article_resource;
                                             spawn(async move {
-                                                #[cfg(feature = "web")]
+                                                #[cfg(feature = "app")]
                                                 {
                                                     let body = serde_json::json!({ "content": next });
                                                     let path = format!("/kb/articles/{aid}");
@@ -1602,7 +1602,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                                         }
                                                     }
                                                 }
-                                                #[cfg(not(feature = "web"))]
+                                                #[cfg(not(feature = "app"))]
                                                 let _ = (&aid, &mut ar);
                                             });
                                         },
@@ -1784,14 +1784,14 @@ fn VersionHistoryCard(
                                                         restoring.set(Some(n));
                                                         let id = id_for_restore.clone();
                                                         spawn(async move {
-                                                            #[cfg(feature = "web")]
+                                                            #[cfg(feature = "app")]
                                                             {
                                                                 let path = format!("/kb/articles/{id}/versions/{n}/restore");
                                                                 if crate::hooks::fetch::api::post_authed::<KbArticle, _>(&path, &serde_json::json!({})).await.is_ok() {
                                                                     on_restored.call(());
                                                                 }
                                                             }
-                                                            #[cfg(not(feature = "web"))]
+                                                            #[cfg(not(feature = "app"))]
                                                             let _ = &id;
                                                             restoring.set(None);
                                                         });
@@ -2158,7 +2158,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
             return;
         }
         uploading.set(true);
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         spawn(async move {
             let existing = article_id.read().clone();
             let id = match existing {
@@ -2261,7 +2261,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
             }
             uploading.set(false);
         });
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             let _ = (file_name, mime, bytes);
             uploading.set(false);
@@ -2378,7 +2378,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         };
 
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 // MAPPS-587: keyed on `article_id()`, not on the mode. A new
                 // article whose first image upload created it already has a row,
@@ -2850,7 +2850,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             // anywhere: a failure leaves an article in the KB
                             // that the author never meant to create, so they
                             // are told it is there and what it is called.
-                            #[cfg(feature = "web")]
+                            #[cfg(feature = "app")]
                             if auto_created() {
                                 if let Some(id) = article_id.read().clone() {
                                     let name = title.read().trim().to_string();
@@ -3062,7 +3062,7 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
         let sort_val = sort_order.read().trim().parse::<i32>().unwrap_or(0);
 
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result = match edit_id {
                     None => {
@@ -3105,7 +3105,7 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
                     }
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = (
                     &name_val,
@@ -3460,7 +3460,7 @@ fn RatingBar(
                     busy.set(true);
                     let id = id_h.clone();
                     spawn(async move {
-                        #[cfg(feature = "web")]
+                        #[cfg(feature = "app")]
                         {
                             let path = format!("/kb/articles/{id}/helpful");
                             if let Ok(fb) =
@@ -3474,7 +3474,7 @@ fn RatingBar(
                                 my_vote.set(fb.my_vote);
                             }
                         }
-                        #[cfg(not(feature = "web"))]
+                        #[cfg(not(feature = "app"))]
                         let _ = &id;
                         busy.set(false);
                     });
@@ -3491,7 +3491,7 @@ fn RatingBar(
                     busy.set(true);
                     let id = id_n.clone();
                     spawn(async move {
-                        #[cfg(feature = "web")]
+                        #[cfg(feature = "app")]
                         {
                             let path = format!("/kb/articles/{id}/not_helpful");
                             if let Ok(fb) =
@@ -3505,7 +3505,7 @@ fn RatingBar(
                                 my_vote.set(fb.my_vote);
                             }
                         }
-                        #[cfg(not(feature = "web"))]
+                        #[cfg(not(feature = "app"))]
                         let _ = &id;
                         busy.set(false);
                     });
@@ -3812,7 +3812,7 @@ mod tests {
 /// lifecycle or a route decision, none of which a rendered snapshot shows.
 ///
 /// Source scans, deliberately. Each of these lives inside a `use_resource` or
-/// an event handler that only runs under the `web` feature and needs a real
+/// an event handler that only runs under the `app` feature and needs a real
 /// DOM, so no host test can drive them. What is being pinned is the decision,
 /// and the decision is visible in the source.
 #[cfg(test)]

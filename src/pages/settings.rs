@@ -948,7 +948,7 @@ fn OrganizationSettingsBody() -> Element {
 
         saving.set(true);
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 // The logo is not in this body: it is uploaded on its own,
                 // immediately, because a file input that only takes effect on a
@@ -1114,7 +1114,7 @@ fn OrganizationSettingsBody() -> Element {
                                 logo_busy.set(true);
                                 logo_error.set(String::new());
                                 spawn(async move {
-                                    #[cfg(feature = "web")]
+                                    #[cfg(feature = "app")]
                                     {
                                         match crate::hooks::fetch::api::delete_authed(TENANT_LOGO_PATH).await {
                                             Ok(()) => {
@@ -1142,7 +1142,7 @@ fn OrganizationSettingsBody() -> Element {
                             };
                             logo_busy.set(true);
                             spawn(async move {
-                                #[cfg(feature = "web")]
+                                #[cfg(feature = "app")]
                                 {
                                     let file_name = file.name();
                                     let mime = file
@@ -1288,7 +1288,7 @@ fn ExportPanel() -> Element {
         saved_to.set(String::new());
         downloading.set(true);
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::get_authed_bytes("/data/export").await {
                     Ok((bytes, filename)) => {
@@ -1376,7 +1376,7 @@ fn ImportPanel(tenant_name: String) -> Element {
         importing.set(true);
         let body = serde_json::json!({ "confirm": confirm_val, "export": export_json });
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::post_authed_typed::<ImportSummary, _>(
                     "/data/import",
@@ -1517,7 +1517,7 @@ fn SeedDemoPanel() -> Element {
         result.set(None);
         loading.set(true);
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::post_authed_typed::<SeedDemoResult, _>(
                     "/data/seed-demo",
@@ -1656,7 +1656,7 @@ fn SchedulingSettingsBody() -> Element {
         // MAPPS-357: subscribe to reachability so the setting auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             // A missing setting (404) is the unconfigured state, not an
             // error: treat it as `0` (no default due date). Any other
@@ -1676,7 +1676,7 @@ fn SchedulingSettingsBody() -> Element {
                 Err(_) => None,
             }
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             None::<u32>
         }
@@ -1756,7 +1756,7 @@ fn StandardDueDateForm(initial: u32) -> Element {
         saved.set(false);
         let body = serde_json::json!({ "value": parsed });
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::put_authed_typed::<SettingValueRow, _>(
                     DEFAULT_DUE_SETTING_PATH,
@@ -1771,7 +1771,7 @@ fn StandardDueDateForm(initial: u32) -> Element {
                     )),
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = &body;
             }
@@ -1852,7 +1852,7 @@ fn MaxHoursPerDaySettingsBody() -> Element {
         // MAPPS-357: subscribe to reachability so the setting auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             // A missing setting (404) is the unconfigured state, not an
             // error: treat it as the full 24-hour default. Any other failure
@@ -1872,7 +1872,7 @@ fn MaxHoursPerDaySettingsBody() -> Element {
                 Err(_) => None,
             }
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             None::<u32>
         }
@@ -1951,7 +1951,7 @@ fn MaxHoursPerDayForm(initial: u32) -> Element {
         saved.set(false);
         let body = serde_json::json!({ "value": parsed });
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::put_authed_typed::<SettingValueRow, _>(
                     MAX_HOURS_PER_DAY_SETTING_PATH,
@@ -1966,7 +1966,7 @@ fn MaxHoursPerDayForm(initial: u32) -> Element {
                     )),
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = &body;
             }
@@ -2287,7 +2287,7 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/work-types", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -2307,7 +2307,7 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/work-types").await {
                     Ok(true) => onsaved.call(()),
@@ -2641,7 +2641,7 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/task-statuses", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -2661,7 +2661,7 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/task-statuses").await {
                     Ok(true) => onsaved.call(()),
@@ -2980,7 +2980,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/asset-types", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -3000,7 +3000,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/asset-types").await {
                     Ok(true) => onsaved.call(()),
@@ -3290,7 +3290,7 @@ fn CompanyIndustryFormModal(props: CompanyIndustryFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/contacts/company-industries", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -3312,7 +3312,7 @@ fn CompanyIndustryFormModal(props: CompanyIndustryFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/contacts/company-industries").await {
                     Ok(true) => onsaved.call(()),
@@ -3618,7 +3618,7 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/project-types", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -3638,7 +3638,7 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/project-types").await {
                     Ok(true) => onsaved.call(()),
@@ -3955,7 +3955,7 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/payment-terms", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -3975,7 +3975,7 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/payment-terms").await {
                     Ok(true) => onsaved.call(()),
@@ -4298,7 +4298,7 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result = save_lookup(id, "/tickets/statuses", &body).await;
                 match result {
@@ -4319,7 +4319,7 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/tickets/statuses").await {
                     Ok(true) => onsaved.call(()),
@@ -4662,7 +4662,7 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/tickets/priorities", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -4682,7 +4682,7 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/tickets/priorities").await {
                     Ok(true) => onsaved.call(()),
@@ -5012,7 +5012,7 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/tickets/types", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -5032,7 +5032,7 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/tickets/types").await {
                     Ok(true) => onsaved.call(()),
@@ -5365,7 +5365,7 @@ fn TicketQueueFormModal(props: TicketQueueFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/tickets/queues", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -5385,7 +5385,7 @@ fn TicketQueueFormModal(props: TicketQueueFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/tickets/queues").await {
                     Ok(true) => onsaved.call(()),
@@ -5770,7 +5770,7 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/tickets/categories", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -5790,7 +5790,7 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/tickets/categories").await {
                     Ok(true) => onsaved.call(()),
@@ -6205,7 +6205,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
         let url_v = api_url.read().trim().to_string();
         let active_v = *is_active.read();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result = match id {
                     None => {
@@ -6266,7 +6266,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/rmm/connections").await {
                     Ok(true) => onsaved.call(()),
@@ -6287,7 +6287,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
         testing.set(true);
         test_result.set(None);
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/rmm/connections/{id}/test");
                 match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
@@ -6706,7 +6706,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                     deleting_id.set(Some(pid));
                     row_error.set(String::new());
                     spawn(async move {
-                        #[cfg(feature = "web")]
+                        #[cfg(feature = "app")]
                         {
                             match delete_lookup(&pid.to_string(), "/rmm/device-mappings").await {
                                 Ok(true) => resource.restart(),
@@ -6790,7 +6790,7 @@ fn RmmDeviceMappingFormModal(props: RmmDeviceMappingFormModalProps) -> Element {
         let asset = asset_id.read().trim().to_string();
         let company = company_id.read().trim().to_string();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let body = serde_json::json!({
                     "rmm_connection_id": conn,
@@ -7169,7 +7169,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
                     deleting_id.set(Some(pid));
                     row_error.set(String::new());
                     spawn(async move {
-                        #[cfg(feature = "web")]
+                        #[cfg(feature = "app")]
                         {
                             match delete_lookup(&pid.to_string(), "/rmm/alert-rules").await {
                                 Ok(true) => resource.restart(),
@@ -7250,7 +7250,7 @@ fn RmmAlertRuleFormModal(props: RmmAlertRuleFormModalProps) -> Element {
         let auto = *auto_create_ticket.read();
         let active = *is_active.read();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let body = serde_json::json!({
                     "rmm_connection_id": conn,
@@ -7392,7 +7392,7 @@ fn non_empty_color(c: &str) -> String {
 
 /// POST (create) or PUT (update) a lookup row. `base` is the collection
 /// path (e.g. `/tickets/statuses`); update targets `{base}/{id}`.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 async fn save_lookup(
     id: Option<String>,
     base: &str,
@@ -7414,7 +7414,7 @@ async fn save_lookup(
 /// DELETE a lookup row at `{base}/{id}`. Returns `Ok(true)` when deleted,
 /// `Err` on failure. Confirmation is handled up-front by the styled
 /// `SettingFormModal` ConfirmDialog (MAPPS-189), so this no longer prompts.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 async fn delete_lookup(id: &str, base: &str) -> Result<bool, String> {
     crate::hooks::fetch::api::delete_authed(&format!("{base}/{id}"))
         .await

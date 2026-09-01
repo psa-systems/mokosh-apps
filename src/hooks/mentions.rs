@@ -32,7 +32,7 @@ pub fn use_mention_directory(enabled: bool) -> Resource<Option<Vec<Mention>>> {
         if !enabled {
             return None;
         }
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             #[derive(serde::Deserialize)]
@@ -65,7 +65,7 @@ pub fn use_mention_directory(enabled: bool) -> Resource<Option<Vec<Mention>>> {
                     .collect(),
             )
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         None
     })
 }

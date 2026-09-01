@@ -598,14 +598,14 @@ fn ToastRow(props: ToastRowProps) -> Element {
     use_effect(move || {
         let id = id.clone();
         if let Some(ms) = auto_dismiss_ms {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 dioxus::prelude::spawn(async move {
                     crate::platform::timer::sleep_ms(ms).await;
                     dismiss.call(id);
                 });
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             let _ = (ms, id, dismiss);
         }
     });

@@ -211,7 +211,7 @@ pub fn Onboarding() -> Element {
         error.set(String::new());
 
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 // The order is the plan's order: the organisation first, then
                 // the logo, then the stamp.
@@ -323,7 +323,7 @@ pub fn Onboarding() -> Element {
                     }
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = (name, contact, phone, email, is_admin);
             }

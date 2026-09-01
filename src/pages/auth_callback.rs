@@ -64,7 +64,7 @@ pub fn AuthCallbackPage() -> Element {
         // MAPPS-504: browser-only, and it has nothing to strip anywhere
         // else - the desktop build never reaches this route, because it
         // has no redirect to come back from (MAPPS-505).
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        #[cfg(all(feature = "app", target_arch = "wasm32"))]
         if let Some(win) = web_sys::window() {
             if let Ok(history) = win.history() {
                 let _ = history.replace_state_with_url(

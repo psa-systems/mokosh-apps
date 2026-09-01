@@ -411,7 +411,7 @@ fn PolicyFormModal(props: PolicyFormModalProps) -> Element {
         };
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result = match id {
                     None => crate::hooks::fetch::api::post_authed_typed::<SlaPolicy, _>(
@@ -546,14 +546,14 @@ fn TargetsModal(props: TargetsModalProps) -> Element {
         let pid = pid_for_targets.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/sla/policies/{pid}/targets");
                 crate::hooks::fetch::api::get_all_authed::<SlaTarget>(&path)
                     .await
                     .ok()
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = pid;
                 None::<Vec<SlaTarget>>
@@ -564,13 +564,13 @@ fn TargetsModal(props: TargetsModalProps) -> Element {
     // The tenant's priority list - one editor row per priority.
     let priorities = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             crate::hooks::fetch::api::get_all_authed::<TicketPriorityOption>("/tickets/priorities")
                 .await
                 .ok()
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             None::<Vec<TicketPriorityOption>>
         }
@@ -754,7 +754,7 @@ fn TargetRow(props: TargetRowProps) -> Element {
         };
         let pid = save_policy_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 // Upsert: the server keys on (policy, priority) so POST
                 // both creates and updates a target for this priority.
@@ -799,7 +799,7 @@ fn TargetRow(props: TargetRowProps) -> Element {
             }
             deleting.set(true);
             spawn(async move {
-                #[cfg(feature = "web")]
+                #[cfg(feature = "app")]
                 {
                     let path = format!("/sla/targets/{id}");
                     match crate::hooks::fetch::api::delete_authed_typed(&path).await {
@@ -926,14 +926,14 @@ fn BusinessHoursTab(tab: Signal<SlaTab>) -> Element {
     let mut hours = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             let _token = crate::hooks::fetch::api::current_access_token()?;
             crate::hooks::fetch::api::get_all_authed::<BusinessHours>("/sla/business-hours")
                 .await
                 .ok()
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             None::<Vec<BusinessHours>>
         }
@@ -1171,7 +1171,7 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
         };
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result = match id {
                     None => crate::hooks::fetch::api::post_authed_typed::<BusinessHours, _>(
@@ -1296,14 +1296,14 @@ fn HolidayCalendarsTab(tab: Signal<SlaTab>) -> Element {
     let mut calendars = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             let _token = crate::hooks::fetch::api::current_access_token()?;
             crate::hooks::fetch::api::get_all_authed::<HolidayCalendar>("/sla/holiday-calendars")
                 .await
                 .ok()
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             None::<Vec<HolidayCalendar>>
         }
@@ -1501,7 +1501,7 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
         };
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result = match id {
                     None => crate::hooks::fetch::api::post_authed_typed::<HolidayCalendar, _>(

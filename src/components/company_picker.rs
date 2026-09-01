@@ -413,7 +413,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                         creating.set(true);
                         create_error.set(String::new());
                         spawn(async move {
-                            #[cfg(feature = "web")]
+                            #[cfg(feature = "app")]
                             {
                                 let body = serde_json::json!({ "name": name_v });
                                 match crate::hooks::fetch::api::post_authed::<CreatedCompany, _>(

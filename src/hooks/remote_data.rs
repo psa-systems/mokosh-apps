@@ -28,7 +28,7 @@
 //!
 //! [`SERVER_REACHABLE`]: crate::hooks::fetch::SERVER_REACHABLE
 
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 use dioxus::prelude::*;
 
 /// The loading state of a single remote resource.
@@ -139,7 +139,7 @@ pub fn classify_remote<T: Default>(
 /// refetches the instant the server returns) or the active tenant changes
 /// (org switch / token refresh, Phase-4 F1), mirroring the subscription
 /// the hand-rolled resources used.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub fn use_remote_resource<T, F, Fut>(mut fetcher: F) -> RemoteData<T>
 where
     T: Default + Clone + 'static,
@@ -165,8 +165,8 @@ where
 
 /// Non-web stub: native / SSR builds have no fetch layer, so a resource is
 /// always considered `Ready` with the type default (there is no outage to
-/// surface). Keeps `cargo check` green without the `web` feature.
-#[cfg(not(feature = "web"))]
+/// surface). Keeps `cargo check` green without the `app` feature.
+#[cfg(not(feature = "app"))]
 pub fn use_remote_resource<T, F, Fut>(_fetcher: F) -> RemoteData<T>
 where
     T: Default + Clone + 'static,

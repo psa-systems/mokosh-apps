@@ -22,17 +22,17 @@
 //! We track the registered closure handle via a per-call thread-local
 //! so a remount swaps the listener instead of stacking duplicates.
 
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 use dioxus::prelude::*;
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 use wasm_bindgen::prelude::*;
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 use wasm_bindgen::JsCast;
 
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 type BeforeUnloadClosure = Closure<dyn FnMut(web_sys::BeforeUnloadEvent)>;
 
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 thread_local! {
     /// Currently-installed `beforeunload` handler, if any. Replacing the
     /// hook on a remount drops the prior closure, which detaches its
@@ -44,7 +44,7 @@ thread_local! {
 /// Install a `beforeunload` prompt that triggers while `dirty()` is true.
 /// Calling the hook with a new signal on a remount swaps the listener
 /// (the previous closure is dropped, detaching its handler).
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 pub fn use_unsaved_guard(dirty: ReadSignal<bool>) {
     use_effect(move || {
         let dirty = dirty;
@@ -88,5 +88,5 @@ pub fn use_unsaved_guard(dirty: ReadSignal<bool>) {
 /// without asking; the window-close interception that fixes it is
 /// MAPPS-506. The dirty tracking itself is target-agnostic and every
 /// call site is unchanged.
-#[cfg(any(not(feature = "web"), not(target_arch = "wasm32")))]
+#[cfg(any(not(feature = "app"), not(target_arch = "wasm32")))]
 pub fn use_unsaved_guard(_dirty: dioxus::prelude::ReadSignal<bool>) {}
