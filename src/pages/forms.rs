@@ -1388,7 +1388,7 @@ fn FormEditorModal(
             let snapshot = snapshot.clone();
             let definition_id = definition_id.clone();
             spawn(async move {
-                #[cfg(feature = "web")]
+                #[cfg(feature = "app")]
                 {
                     // The debounce. Every change spawns one of these; the ones
                     // whose snapshot has been superseded by the time they wake
@@ -1416,7 +1416,7 @@ fn FormEditorModal(
                         Err(e) => tracing::debug!("form draft autosave failed: {e:?}"),
                     }
                 }
-                #[cfg(not(feature = "web"))]
+                #[cfg(not(feature = "app"))]
                 {
                     let _ = (&snapshot, &definition_id);
                 }
@@ -1664,7 +1664,7 @@ fn FormEditorModal(
         let id = save_id.clone();
 
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result = match id {
                     None => {

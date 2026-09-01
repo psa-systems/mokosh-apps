@@ -429,7 +429,7 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
         error.set(String::new());
         let id = id_for_post.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let body = serde_json::json!({ "content": content_v });
                 match crate::hooks::fetch::api::post_portal_authed_typed::<PortalNote, _>(
@@ -672,7 +672,7 @@ fn has_outstanding_balance(invoice_id: &str, balance_due: &str) -> bool {
 /// for this account"), so they are shown verbatim. `user_message()` would
 /// replace a 404 with "The requested resource was not found." and the caller
 /// would learn nothing (MAPPS-523).
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 fn pay_refusal_message(e: &crate::hooks::fetch::api::ApiError) -> String {
     use crate::hooks::fetch::api::ApiError;
     match e {
@@ -755,7 +755,7 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
         pay_error.set(String::new());
         let id = id_for_pay.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::post_portal_authed_typed::<PortalPayResponse, _>(
                     &format!("/portal/invoices/{id}/pay"),

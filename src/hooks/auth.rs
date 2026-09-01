@@ -404,7 +404,7 @@ pub fn use_token_refresh() {
             // browser had discarded and re-created ran on whatever
             // sessionStorage held for the first 30 seconds, however dead, and
             // every page that mounted in that window 401'd.
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             crate::platform::timer::sleep_ms(30_000).await;
         }
     });
@@ -494,7 +494,7 @@ pub fn use_standalone_token_refresh() {
         loop {
             standalone_refresh_tick(&mut auth).await;
             // MAPPS-435: sleep LAST, for the reason given on the OIDC loop.
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             crate::platform::timer::sleep_ms(30_000).await;
         }
     });
@@ -567,7 +567,7 @@ pub fn use_auth_heartbeat() {
         loop {
             heartbeat_tick().await;
             // MAPPS-435: sleep LAST, for the reason given on the OIDC loop.
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             crate::platform::timer::sleep_ms(30_000).await;
         }
     });
@@ -576,7 +576,7 @@ pub fn use_auth_heartbeat() {
 /// One heartbeat evaluation. Returns without firing when the overlay is
 /// already up, nobody is signed in, or the tab is in the background.
 async fn heartbeat_tick() {
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     {
         if *crate::hooks::fetch::ACCOUNT_DELETED.peek() {
             return;
@@ -598,15 +598,15 @@ async fn heartbeat_tick() {
 /// True when the app is out of sight, so the heartbeat above skips its
 /// request. In the browser that is `document.visibilityState`; a desktop
 /// window always reports itself visible (see
-/// [`crate::platform::dom::window_hidden`]). Non-`web` builds report
+/// [`crate::platform::dom::window_hidden`]). Non-`app` builds report
 /// visible too, so the call site type-checks under `cargo check` without
-/// the `web` feature.
-#[cfg(feature = "web")]
+/// the `app` feature.
+#[cfg(feature = "app")]
 fn tab_is_hidden() -> bool {
     crate::platform::dom::window_hidden()
 }
 
-#[cfg(not(feature = "web"))]
+#[cfg(not(feature = "app"))]
 #[allow(dead_code)]
 fn tab_is_hidden() -> bool {
     false
@@ -761,7 +761,7 @@ pub fn use_current_user_loader() {
 /// MAPPS-504: browser-only by nature. There is no back-forward cache on
 /// the desktop because there is no navigation away from the document to
 /// be restored from.
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 pub fn use_bfcache_invalidator() {
     use wasm_bindgen::JsCast;
 
@@ -790,7 +790,7 @@ pub fn use_bfcache_invalidator() {
     });
 }
 
-#[cfg(any(not(feature = "web"), not(target_arch = "wasm32")))]
+#[cfg(any(not(feature = "app"), not(target_arch = "wasm32")))]
 pub fn use_bfcache_invalidator() {}
 
 /// MAPPS-504: watch [`crate::hooks::fetch::SESSION_ENDED`] and clear the
@@ -804,7 +804,7 @@ pub fn use_bfcache_invalidator() {}
 /// the route guard reads it and moves them to the login screen.
 ///
 /// Mounted once at the app root, alongside the refresh loops.
-#[cfg(all(feature = "web", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "app", not(target_arch = "wasm32")))]
 pub fn use_session_end_watch() {
     let mut auth = use_auth();
     use_effect(move || {
@@ -823,7 +823,7 @@ pub fn use_session_end_watch() {
 }
 
 /// The browser reloads instead, which is what clears the context there.
-#[cfg(any(not(feature = "web"), target_arch = "wasm32"))]
+#[cfg(any(not(feature = "app"), target_arch = "wasm32"))]
 pub fn use_session_end_watch() {}
 
 #[cfg(test)]

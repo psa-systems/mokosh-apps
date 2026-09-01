@@ -474,7 +474,7 @@ fn short_id(id: uuid::Uuid) -> String {
 /// instead of dropping the user into an empty form they have to re-search.
 /// Returns the `work_item` select value (`ticket:<uuid>`) or empty.
 fn read_ticket_prefill_from_url() -> String {
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     {
         if let Some(search) = crate::platform::location::search() {
             {
@@ -574,7 +574,7 @@ pub fn TimeEntryNewPage() -> Element {
     // outage never blocks logging; the server still enforces the real cap.
     let cap_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             match crate::hooks::fetch::api::get_authed_typed::<SettingValueRow>(
                 "/settings/time_tracking/max_hours_per_day",
@@ -590,7 +590,7 @@ pub fn TimeEntryNewPage() -> Element {
                 Err(_) => DEFAULT_MAX_MINUTES_PER_DAY,
             }
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             DEFAULT_MAX_MINUTES_PER_DAY
         }
@@ -846,7 +846,7 @@ pub fn TimeEntryNewPage() -> Element {
 
                     is_submitting.set(true);
                     spawn(async move {
-                        #[cfg(feature = "web")]
+                        #[cfg(feature = "app")]
                         {
                             let mut body = serde_json::json!({
                                 "user_id": user_id,
@@ -1245,7 +1245,7 @@ pub fn TimesheetsPage() -> Element {
                                 let mut sr = summary_resource;
                                 let mut er = entries_resource;
                                 spawn(async move {
-                                    #[cfg(feature = "web")]
+                                    #[cfg(feature = "app")]
                                     {
                                         let path = format!("/timesheets/{user_id}/{start}/withdraw");
                                         match crate::hooks::fetch::api::post_authed::<
@@ -1487,7 +1487,7 @@ pub fn TimesheetsPage() -> Element {
                 let mut sr = summary_resource;
                 let mut er = entries_resource;
                 spawn(async move {
-                    #[cfg(feature = "web")]
+                    #[cfg(feature = "app")]
                     {
                         let path = format!("/timesheets/{user_id}/{start}/submit");
                         match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
@@ -2245,7 +2245,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                                                             approving.set(Some(uid));
                                                             let mut sr = summaries_resource;
                                                             spawn(async move {
-                                                                #[cfg(feature = "web")]
+                                                                #[cfg(feature = "app")]
                                                                 {
                                                                     let path = format!("/timesheets/{uid}/{row_week}/approve");
                                                                     match crate::hooks::fetch::api::post_authed::<
@@ -2302,7 +2302,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                 is_rejecting.set(true);
                 let mut sr = summaries_resource;
                 spawn(async move {
-                    #[cfg(feature = "web")]
+                    #[cfg(feature = "app")]
                     {
                         let path = format!("/timesheets/{uid}/{week}/reject");
                         match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
@@ -2737,7 +2737,7 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
         let desc = description.read().clone();
         let billable = *is_billable.read();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 // Re-send ticket/project so the direct-set update keeps them.
                 // `task_id` is intentionally omitted: the response does not
@@ -2783,7 +2783,7 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::delete_authed(&format!("/time-entries/{eid}")).await
                 {

@@ -91,7 +91,7 @@ pub fn PortalResetPasswordPage() -> Element {
         error.set(String::new());
 
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 use crate::hooks::fetch::api::ApiError;
                 let body = ResetPasswordBody {
@@ -142,7 +142,7 @@ pub fn PortalResetPasswordPage() -> Element {
                     Err(e) => error.set(e.user_message()),
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = (tok, pw);
             }

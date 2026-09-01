@@ -428,7 +428,7 @@ pub(crate) fn SendRequestLinkModal(
         };
 
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::post_authed_typed::<RequestLink, _>(
                     "/form-request-links",

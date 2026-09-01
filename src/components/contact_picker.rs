@@ -425,7 +425,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                         let email_v = new_email.read().trim().to_string();
                         let cid = company_filter_for_create.clone();
                         spawn(async move {
-                            #[cfg(feature = "web")]
+                            #[cfg(feature = "app")]
                             {
                                 let mut body = serde_json::Map::new();
                                 body.insert("first_name".into(), serde_json::json!(first));

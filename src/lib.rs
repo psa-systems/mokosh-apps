@@ -168,11 +168,11 @@ pub fn AuthGuard() -> Element {
 #[component]
 pub fn PortalGuard() -> Element {
     let nav = use_navigator();
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     let signed_in = hooks::fetch::api::has_portal_session();
-    // The portal fetch helpers only exist in the `web` build, so a non-web
+    // The portal fetch helpers only exist in the `app` build, so a non-`app`
     // build has no portal session to hold.
-    #[cfg(not(feature = "web"))]
+    #[cfg(not(feature = "app"))]
     let signed_in = false;
     if !signed_in {
         nav.replace(Route::PortalLogin {});

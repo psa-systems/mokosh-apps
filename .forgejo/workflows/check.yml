@@ -279,7 +279,7 @@ jobs:
       # feature set does not satisfy - merged green and surfaced to whoever
       # next built the desktop app.
       - name: Check desktop build
-        run: cargo check --no-default-features --features web,multi-tenant,desktop
+        run: cargo check --no-default-features --features desktop,multi-tenant
 
       - name: Unit tests
         run: cargo test --lib

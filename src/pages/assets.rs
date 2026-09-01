@@ -565,7 +565,7 @@ pub fn AssetListPage() -> Element {
                         if ids.is_empty() || bulk_delete_running() { return; }
                         bulk_delete_running.set(true);
                         spawn(async move {
-                            #[cfg(feature = "web")]
+                            #[cfg(feature = "app")]
                             {
                                 use futures_util::future::join_all;
                                 let futs = ids.iter().map(|id| {
@@ -764,7 +764,7 @@ pub fn AssetListPage() -> Element {
                                     bulk_submitting.set(true);
                                     bulk_error.set(String::new());
                                     spawn(async move {
-                                        #[cfg(feature = "web")]
+                                        #[cfg(feature = "app")]
                                         {
                                             use futures_util::future::join_all;
                                             let futs = ids.iter().map(|id| {
@@ -1085,7 +1085,7 @@ pub fn AssetNewPage() -> Element {
 
                     is_submitting.set(true);
                     spawn(async move {
-                        #[cfg(feature = "web")]
+                        #[cfg(feature = "app")]
                         {
                             let mut body = serde_json::json!({
                                 "name": asset_name,
@@ -1490,7 +1490,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         deleting.set(true);
         delete_error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/assets/{id}");
                 // MAPPS-574: report the refusal instead of discarding it. The
@@ -1970,7 +1970,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                             onclick: move |_| {
                                                                 let path = path.clone();
                                                                 spawn(async move {
-                                                                    #[cfg(feature = "web")]
+                                                                    #[cfg(feature = "app")]
                                                                     if let Ok(c) = crate::hooks::fetch::api::get_authed::<RevealedConfig>(&path).await {
                                                                         store.write().insert(cid, c.value);
                                                                     }
@@ -2037,7 +2037,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                                     onclick: move |_| {
                                                                         let path = path.clone();
                                                                         spawn(async move {
-                                                                            #[cfg(feature = "web")]
+                                                                            #[cfg(feature = "app")]
                                                                             if let Ok(c) = crate::hooks::fetch::api::get_authed::<RevealedCred>(&path).await {
                                                                                 store.write().insert(crid, c);
                                                                             }
@@ -2572,7 +2572,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                         cred_deleting.set(true);
                         cred_delete_error.set(String::new());
                         spawn(async move {
-                            #[cfg(feature = "web")]
+                            #[cfg(feature = "app")]
                             {
                                 let path = format!("/credentials/{crid}");
                                 // MAPPS-574: report the refusal rather than
@@ -2658,7 +2658,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                 let add_id = add_id.clone();
                 nc_submitting.set(true);
                 spawn(async move {
-                    #[cfg(feature = "web")]
+                    #[cfg(feature = "app")]
                     {
                         let mut body = serde_json::json!({
                             "name": name,
@@ -2824,7 +2824,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                         rel_deleting.set(true);
                         rel_delete_error.set(String::new());
                         spawn(async move {
-                            #[cfg(feature = "web")]
+                            #[cfg(feature = "app")]
                             {
                                 let path = format!("/asset-relationships/{rid}");
                                 // MAPPS-574: report the refusal rather than
@@ -2892,7 +2892,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                 let add_id = add_id.clone();
                 nr_submitting.set(true);
                 spawn(async move {
-                    #[cfg(feature = "web")]
+                    #[cfg(feature = "app")]
                     {
                         let body = serde_json::json!({
                             "child_asset_id": child,

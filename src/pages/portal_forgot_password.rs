@@ -77,7 +77,7 @@ pub fn PortalForgotPasswordPage() -> Element {
         error.set(String::new());
 
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 use crate::hooks::fetch::api::ApiError;
                 let body = ForgotPasswordBody {
@@ -110,7 +110,7 @@ pub fn PortalForgotPasswordPage() -> Element {
                     Err(e) => error.set(e.user_message()),
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = (slug, em);
             }

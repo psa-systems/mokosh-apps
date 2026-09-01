@@ -37,11 +37,10 @@ just check-desktop     # type-check the desktop build (part of `just check`)
 `just desktop-bundle` reads the `[bundle]` block in `Dioxus.toml` (identifier,
 publisher, and the icons under `assets/icons/`).
 
-The recipes pass `--no-default-features --features web,multi-tenant,desktop`.
-The `web` feature is the app-runtime gate, not a browser gate, so it stays on;
-dropping the default features is what turns the *web renderer* off so a native
-binary does not link `dioxus-web` for nothing. Renaming `web` to `app` and
-removing that wart is tracked in MAPPS-507.
+The recipes pass `--no-default-features --features desktop,multi-tenant`.
+`desktop` pulls in the `app` feature, which is the app-runtime gate rather than
+a platform gate; dropping the default features is what turns the *web renderer*
+off so a native binary does not link `dioxus-web` for nothing.
 
 ## Pointing it at a server
 

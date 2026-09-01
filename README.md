@@ -133,7 +133,9 @@ Leave both vars unset to use the normal login screen.
 
 ## Cargo features
 
-- `web` (default) - WASM/web build.
+- `app` - the application runtime (the API module, the app-wide signals, the page logic). Not a platform gate; every build that produces the app turns it on, and both renderer features below pull it in.
+- `web` (default) - the browser renderer (`dioxus/web`), plus `app`.
+- `desktop` - the native renderer (`dioxus/desktop`), plus `app`. See [docs/desktop.md](docs/desktop.md).
 - `multi-tenant` (default) - multi-tenant build.
 - `single-tenant` - single-tenant build (mutually exclusive with `multi-tenant`).
 

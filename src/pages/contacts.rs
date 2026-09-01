@@ -1003,7 +1003,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         website_probed.set(typed);
         website_note.set(format!("Checking {}…", website_host(&normalized)));
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 // `/contacts` is where the server nests the contacts router
                 // (`api/router.rs`), so the probe sits beside the company
@@ -1129,7 +1129,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         // outer `mode` is still available in case of an Err branch.
         let mode_for_toast = mode.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 #[derive(serde::Deserialize)]
                 struct CompanyId {
@@ -2043,7 +2043,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         deleting.set(true);
         delete_error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/contacts/companies/{id}");
                 // MAPPS-574: a refusal is a normal outcome here, not an edge
@@ -2201,7 +2201,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                 delete_error.set(String::new());
                                 let id = archive_id.clone();
                                 spawn(async move {
-                                    #[cfg(feature = "web")]
+                                    #[cfg(feature = "app")]
                                     {
                                         let path = format!("/contacts/companies/{id}");
                                         let body = serde_json::json!({ "status": "inactive" });
@@ -2224,7 +2224,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                                 .set(format!("Could not archive: {}", e.user_message())),
                                         }
                                     }
-                                    #[cfg(not(feature = "web"))]
+                                    #[cfg(not(feature = "app"))]
                                     let _ = &id;
                                     archiving.set(false);
                                 });
@@ -2649,7 +2649,7 @@ fn RowActions(
         delete_error.set(String::new());
         let path = path.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 // MAPPS-574: this row menu deletes whatever `delete_path`
                 // points at, so it inherits every refusal the detail pages get.
@@ -2906,7 +2906,7 @@ fn AddContactModal(
         saving.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 // The server's `UpdateContactRequest` accepts a bare
                 // `company_id`; every other field is optional, so a
@@ -3308,7 +3308,7 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
         });
         let site_id = save_state.site_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result: Result<(), String> = match site_id {
                     None => crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
@@ -3352,7 +3352,7 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/contacts/sites/{id}");
                 match crate::hooks::fetch::api::delete_authed(&path).await {
@@ -4515,7 +4515,7 @@ struct CompanyPrefill {
 }
 
 fn read_company_prefill_from_url() -> CompanyPrefill {
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     {
         if let Some(search) = crate::platform::location::search() {
             {
@@ -5055,7 +5055,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
         let mode = mode.clone();
         let mode_for_toast = mode.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 #[derive(serde::Deserialize)]
                 struct ContactId {
@@ -5583,7 +5583,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
         deleting.set(true);
         delete_error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/contacts/contacts/{id}");
                 match crate::hooks::fetch::api::delete_authed(&path).await {
@@ -5714,7 +5714,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                     creating_company.set(true);
                     create_company_error.set(String::new());
                     spawn(async move {
-                        #[cfg(feature = "web")]
+                        #[cfg(feature = "app")]
                         {
                             // A retry after a failed link must link the company
                             // the first attempt created, not create a second one
@@ -7052,7 +7052,7 @@ mod sort_key_tests {
 /// feature rests on, and it is invisible in a rendered page.
 ///
 /// A source scan rather than SSR: each of these is a URL built inside a
-/// `use_resource` closure that only runs under the `web` feature, so no host
+/// `use_resource` closure that only runs under the `app` feature, so no host
 /// test can observe the request. What is being pinned is the classification.
 #[cfg(test)]
 mod archive_scope_tests {
@@ -7146,7 +7146,7 @@ mod archive_scope_tests {
 
 /// MAPPS-577: the delete dialog's decisions, none of which a rendered snapshot
 /// shows. Source scans for the same reason the other page suites use them: the
-/// preview fetch and the archive PUT only run under the `web` feature.
+/// preview fetch and the archive PUT only run under the `app` feature.
 #[cfg(test)]
 mod delete_dialog_tests {
     const SRC: &str = include_str!("contacts.rs");

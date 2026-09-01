@@ -50,7 +50,7 @@ pub fn logout_redirect_url() -> String {
 /// rather than an error. A portal contact holds a different token entirely and
 /// ends their session through [`sign_out_portal`].
 async fn revoke_mokosh_session() {
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     {
         use crate::hooks::fetch::api;
 
@@ -122,7 +122,7 @@ pub fn portal_login_url() -> String {
 /// Runs before the holder is cleared, because it needs the token it is
 /// revoking.
 async fn revoke_portal_session() {
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     {
         use crate::hooks::fetch::api;
 
@@ -150,7 +150,7 @@ async fn revoke_portal_session() {
 /// not block the exit.
 pub async fn sign_out_portal() {
     revoke_portal_session().await;
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     crate::hooks::fetch::api::set_portal_access_token(None);
     crate::platform::location::replace(&portal_login_url());
 }

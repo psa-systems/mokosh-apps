@@ -1008,7 +1008,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
         let items_snapshot = items.read().clone();
 
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result = match &mode {
                     ContractFormMode::Create => {
@@ -1409,7 +1409,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
 
 /// POST each entered line item to `/contracts/{id}/items`. Blank rows
 /// (no name) are skipped. Returns the first error encountered.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 async fn create_items(contract_id: &str, items: &[ItemFormValues]) -> Result<(), String> {
     use crate::modules::contracts::UpsertContractItemRequest;
     for (idx, item) in items.iter().enumerate() {
@@ -1560,7 +1560,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
         deleting.set(true);
         delete_error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/contracts/{id}");
                 // MAPPS-574: report the refusal instead of discarding it. This
@@ -2031,7 +2031,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
         let orig = original_for_save.clone();
         let contract = contract_for_save.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 use crate::modules::contracts::UpsertContractItemRequest;
                 // Preserve the fields the form does not expose so an edit
@@ -2102,7 +2102,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::delete_authed_typed(&format!(
                     "/contract-items/{iid}"
@@ -2389,7 +2389,7 @@ fn AllotmentFormModal(props: AllotmentFormModalProps) -> Element {
         error.set(String::new());
         let item = item_for_save.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 use crate::modules::contracts::UpsertContractItemRequest;
                 // Full-replace PUT: carry over every field except the
@@ -3153,7 +3153,7 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
         };
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match id {
                     None => match crate::hooks::fetch::api::post_authed::<RateCardResponse, _>(
@@ -3191,7 +3191,7 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
         spawn(async move {
             // MAPPS-189: confirmation is handled by the SettingFormModal
             // ConfirmDialog before this fires, so just perform the delete.
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::delete_authed(&format!("/rate-cards/{id}")).await {
                     Ok(()) => ondeleted.call(()),
@@ -3444,7 +3444,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
         };
         let card = card_for_save.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::post_authed::<RateCardItemResponse, _>(
                     &format!("/rate-cards/{card}/items"),
@@ -3473,7 +3473,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
         spawn(async move {
             // MAPPS-189: confirmation is handled by the SettingFormModal
             // ConfirmDialog before this fires, so just perform the delete.
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::delete_authed(&format!("/rate-card-items/{iid}"))
                     .await

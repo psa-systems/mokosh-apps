@@ -1099,7 +1099,7 @@ pub fn TicketListPage() -> Element {
                         if ids.is_empty() || bulk_delete_running() { return; }
                         bulk_delete_running.set(true);
                         spawn(async move {
-                            #[cfg(feature = "web")]
+                            #[cfg(feature = "app")]
                             {
                                 use futures_util::future::join_all;
                                 let futs = ids.iter().map(|id| {
@@ -1359,7 +1359,7 @@ struct CompanyPrefill {
 }
 
 fn read_company_prefill_from_url() -> CompanyPrefill {
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     {
         if let Some(search) = crate::platform::location::search() {
             {
@@ -1389,7 +1389,7 @@ struct KbArticlePrefill {
 }
 
 fn read_kb_prefill_from_url() -> KbArticlePrefill {
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     {
         if let Some(search) = crate::platform::location::search() {
             {
@@ -1689,7 +1689,7 @@ pub fn TicketNewPage() -> Element {
         let kb_article_id = kb_article_id_for_body.clone();
 
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 // PMS-482: stamp `source_kb_article_id` when the
                 // page was reached from a KB article. Parsed
@@ -2552,7 +2552,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         delete_ticket_error.set(String::new());
                         let id = id_for_confirm.clone();
                         spawn(async move {
-                            #[cfg(feature = "web")]
+                            #[cfg(feature = "app")]
                             {
                                 let path = format!("/tickets/{id}");
                                 match crate::hooks::fetch::api::delete_authed(&path).await {
@@ -2569,7 +2569,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                     }
                                 }
                             }
-                            #[cfg(not(feature = "web"))]
+                            #[cfg(not(feature = "app"))]
                             let _ = &id;
                             deleting_ticket.set(false);
                         });
@@ -2879,7 +2879,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                     let type_v = note_type.read().clone();
                                     let email_v = type_v == "public" && note_send_email();
                                     spawn(async move {
-                                        #[cfg(feature = "web")]
+                                        #[cfg(feature = "app")]
                                         {
                                             let body = serde_json::json!({
                                                 "note_type": type_v,

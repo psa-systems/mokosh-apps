@@ -699,7 +699,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         action_error.set(String::new());
         let path = format!("/invoices/{id_for_void}");
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let body = serde_json::json!({ "status": "void" });
                 match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
@@ -780,7 +780,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                             action_error.set(String::new());
                             let path = invoice_send_path(&id_for_send);
                             spawn(async move {
-                                #[cfg(feature = "web")]
+                                #[cfg(feature = "app")]
                                 {
                                     let body = serde_json::json!({ "status": "sent" });
                                     match crate::hooks::fetch::api::put_authed::<
@@ -1299,7 +1299,7 @@ pub fn InvoiceNewPage() -> Element {
             }],
         });
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 #[derive(serde::Deserialize)]
                 struct InvoiceId {
@@ -1348,7 +1348,7 @@ pub fn InvoiceNewPage() -> Element {
             "notes": optional_string(&notes.read()),
         });
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 #[derive(serde::Deserialize)]
                 struct InvoiceId {
@@ -1840,7 +1840,7 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/payments/{id}");
                 match crate::hooks::fetch::api::delete_authed(&path).await {
@@ -2167,7 +2167,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
         // captured id into the spawned future.
         let payment_id = payment_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 // For an applied payment, confirm the invoice exists (and is
                 // visible to this tenant) before recording, so a well-formed
@@ -2592,7 +2592,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             "lines": lines_json,
         });
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
                     .await
@@ -3131,7 +3131,7 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result: Result<(), String> = match id {
                     None => crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
@@ -3175,7 +3175,7 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/tax-rates/{id}");
                 match crate::hooks::fetch::api::delete_authed(&path).await {
@@ -3624,7 +3624,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
             body["config"] = serde_json::json!({ "api_key": key });
         }
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::put_authed_typed::<serde_json::Value, _>(
                     "/payment-gateways",
@@ -3660,7 +3660,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
         error.set(String::new());
         let provider = delete_provider.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/payment-gateways/{provider}");
                 match crate::hooks::fetch::api::delete_authed(&path).await {

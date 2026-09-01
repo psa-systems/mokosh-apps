@@ -5,7 +5,7 @@
 //! declared here once and implemented twice: against the browser on
 //! `wasm32`, against the OS everywhere else.
 //!
-//! The split is on `target_arch`, NOT on a cargo feature. The `web`
+//! The split is on `target_arch`, NOT on a cargo feature. The `app`
 //! feature is the app-runtime gate and is on for the desktop build too
 //! (see `Cargo.toml`); what changes between a browser and a desktop
 //! window is the architecture the same code is compiled for.

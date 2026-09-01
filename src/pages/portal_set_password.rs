@@ -67,7 +67,7 @@ pub fn PortalSetPasswordPage() -> Element {
         error.set(String::new());
 
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 use crate::hooks::fetch::api::ApiError;
                 let body = SetupPasswordBody {
@@ -106,7 +106,7 @@ pub fn PortalSetPasswordPage() -> Element {
                     Err(e) => error.set(e.user_message()),
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = (tok, pw);
             }

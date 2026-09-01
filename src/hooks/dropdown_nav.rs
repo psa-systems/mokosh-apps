@@ -262,15 +262,15 @@ impl DropdownNav {
 
     /// Follow the highlight past the edge of the panel's `max-h-*` scroll box.
     fn scroll_row_into_view(&self, index: usize, align_top: bool) {
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             // MAPPS-504: through the platform boundary, not `web_sys`
-            // directly. `feature = "web"` is the app-runtime gate and is
+            // directly. `feature = "app"` is the app-runtime gate and is
             // on for the desktop build too, so a direct browser call here
             // would not compile against the wasm-only bindings.
             crate::platform::dom::scroll_into_view(&self.row_id(index), align_top);
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             let _ = (index, align_top);
         }

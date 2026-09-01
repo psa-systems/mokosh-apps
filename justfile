@@ -59,12 +59,12 @@ check: check-ci-parity check-doc-links check-web check-desktop check-clippy chec
 check-web:
     cargo check --target wasm32-unknown-unknown
 
-# MAPPS-504: check the native desktop build. `--no-default-features` drops
-# `web-renderer` so dioxus links the desktop renderer alone; `web` stays on
-# because it is the app-runtime gate, not a browser gate (see Cargo.toml).
+# MAPPS-504: check the native desktop build. `--no-default-features` drops the
+# `web` renderer so dioxus links the desktop renderer alone; `desktop` pulls in
+# the `app` runtime gate itself (see Cargo.toml).
 [group: 'check']
 check-desktop:
-    cargo check --no-default-features --features web,multi-tenant,desktop
+    cargo check --no-default-features --features desktop,multi-tenant
 
 # MAPPS-259: fail on hardcoded neutral/brand color classes (use tokens). MAPPS-444: and on a red/green text class with no dark: pair. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']
@@ -337,28 +337,27 @@ fmt:
 test:
     cargo test
 
-# Build release WASM bundle. PMS-884: `--features web-renderer` because dx
-# substitutes its own feature list for this crate's defaults and the feature it
-# picks (`web`) enables no renderer; without it the bundle builds and then
-# panics on launch.
+# Build release WASM bundle. PMS-884: `--features web` because dx substitutes
+# its own feature list for this crate's defaults; without a renderer feature
+# the bundle builds and then panics on launch.
 [group: 'build']
 build: css-build
-    dx build --release --features web-renderer
+    dx build --release --features web
 
 # MAPPS-504: run the desktop app against a local build.
 [group: 'dev']
 desktop-run: css-build
-    dx serve --platform desktop --no-default-features --features web,multi-tenant,desktop
+    dx serve --platform desktop --no-default-features --features desktop,multi-tenant
 
 # MAPPS-504: build the desktop binary without launching it.
 [group: 'build']
 desktop-build: css-build
-    dx build --platform desktop --no-default-features --features web,multi-tenant,desktop
+    dx build --platform desktop --no-default-features --features desktop,multi-tenant
 
 # MAPPS-504: produce an installable desktop bundle for this platform.
 [group: 'build']
 desktop-bundle: css-build
-    dx bundle --release --platform desktop --no-default-features --features web,multi-tenant,desktop
+    dx bundle --release --platform desktop --no-default-features --features desktop,multi-tenant
 
 # MAPPS-477: prove a no-JS link-preview crawler receives the og:/twitter: tags. Runs the real entrypoint + Caddyfile in a container and fetches it with curl, so it needs docker and is not part of `just check` (which compiles on a runner with no docker), like check-docker below.
 [group: 'check']

@@ -187,14 +187,14 @@ pub fn ProfilePage() -> Element {
         // MAPPS-357: subscribe to reachability so the profile auto-refetches
         // the instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             crate::hooks::fetch::api::get_authed_typed::<MeResponse>("/auth/me").await
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             Err::<MeResponse, crate::hooks::fetch::api::ApiError>(
-                crate::hooks::fetch::api::ApiError::Network("non-web build".into()),
+                crate::hooks::fetch::api::ApiError::Network("non-app build".into()),
             )
         }
     });
@@ -394,7 +394,7 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
             date_format_string: optional_field(&date_format()),
         };
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::put_authed_typed::<MeResponse, _>("/auth/me", &body)
                     .await
@@ -403,7 +403,7 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
                     Err(e) => error.set(format!("Could not save profile: {}", e.user_message())),
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = body;
             }

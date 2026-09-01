@@ -251,7 +251,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
     // MAPPS-358: reading the reachability flag subscribes this sidebar, so it
     // collapses to Dashboard-only the instant the server goes down and
     // restores every section the instant the MAPPS-333 recovery poll flips the
-    // flag back. `use_server_reachable` is `true` on non-web builds.
+    // flag back. `use_server_reachable` is `true` on non-`app` builds.
     let show_full_nav = full_nav_visible(crate::hooks::use_server_reachable());
 
     // Admin-only nav (audit log, SLA management): rendered only for
@@ -688,7 +688,7 @@ pub fn TopBar(props: TopBarProps) -> Element {
     // ("Loading…", U+2026) reads as "no title yet" so the tab shows a clean
     // brand name until the real title arrives. MAPPS-445 dropped the
     // ASCII spelling; scripts/check-ellipsis-glyph.sh keeps it gone.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     {
         let t = title.trim();
         let next = if t.is_empty() || t == "Loading…" {

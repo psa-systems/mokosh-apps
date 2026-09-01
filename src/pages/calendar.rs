@@ -86,7 +86,7 @@ fn hour_shade_class(hour: u32) -> &'static str {
 /// window is in view rather than midnight. `vertical` selects scrollTop
 /// (day/week grids) vs scrollLeft (the horizontal dispatch timeline).
 /// No-op when the element is not (yet) in the DOM.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 fn scroll_grid_to_work_hours(id: &str, vertical: bool) {
     let frac = f64::from(WORK_START_HOUR) / GRID_TOTAL_HOURS;
     crate::platform::dom::scroll_to_fraction(id, vertical, frac);
@@ -636,7 +636,7 @@ fn travel_buffer_help(t: &SchedulingTemplateResponse) -> Option<String> {
 fn use_templates_resource(kind: Option<&'static str>) -> Resource<Vec<SchedulingTemplateResponse>> {
     use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             let path = match kind {
                 Some(k) => format!("/scheduling-templates?kind={k}"),
@@ -650,7 +650,7 @@ fn use_templates_resource(kind: Option<&'static str>) -> Resource<Vec<Scheduling
                     Vec::new()
                 })
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             let _ = kind;
             Vec::<SchedulingTemplateResponse>::new()
@@ -679,7 +679,7 @@ fn use_users_resource() -> Resource<Vec<RemoteUser>> {
         if !can_manage {
             return Vec::<RemoteUser>::new();
         }
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users")
                 .await
@@ -689,7 +689,7 @@ fn use_users_resource() -> Resource<Vec<RemoteUser>> {
                     Vec::new()
                 })
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             Vec::<RemoteUser>::new()
         }
@@ -726,7 +726,7 @@ pub fn CalendarPage() -> Element {
         // MAPPS-357: subscribe to reachability so the calendar auto-refetches
         // the instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             // Emit the UTC offset as `Z`, not `+00:00`. A literal `+`
             // in a query string URL-decodes to a space on the server
@@ -743,7 +743,7 @@ pub fn CalendarPage() -> Element {
                 .await
                 .map(|p| p.data)
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             let _ = (from_utc, to_utc);
             Ok::<Vec<AppointmentResponse>, String>(Vec::new())
@@ -1179,7 +1179,7 @@ struct WeekGridProps {
 fn WeekGrid(props: WeekGridProps) -> Element {
     let dates = week_dates(props.active_date);
     // MAPPS-387: default the scroll to the working-hours window on mount.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     use_effect(|| scroll_grid_to_work_hours("calendar-grid-scroll-week", true));
     rsx! {
         div { class: "overflow-x-auto",
@@ -1502,7 +1502,7 @@ fn DayGrid(props: DayGridProps) -> Element {
         .collect();
     let rows = (GRID_END_HOUR - GRID_START_HOUR) as usize;
     // MAPPS-387: default the scroll to the working-hours window on mount.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     use_effect(|| scroll_grid_to_work_hours("calendar-grid-scroll-day", true));
 
     rsx! {
@@ -1974,7 +1974,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
         error.set(String::new());
 
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result: Result<(), crate::hooks::fetch::api::ApiError> = match edit_id {
                     None => {
@@ -2032,7 +2032,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                     }
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = (
                     edit_id,
@@ -2070,7 +2070,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/appointments/{id}");
                 match crate::hooks::fetch::api::delete_authed_typed(&path).await {
@@ -2081,7 +2081,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                     )),
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = id;
             }
@@ -2482,7 +2482,7 @@ pub fn DispatchBoardPage() -> Element {
         };
         let from_utc = local_date_start_utc(from_date);
         let to_utc = local_date_start_utc(to_date);
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             // Emit the UTC offset as `Z`, not `+00:00`. A literal `+` in
             // a query string URL-decodes to a space server-side, so
@@ -2496,7 +2496,7 @@ pub fn DispatchBoardPage() -> Element {
             );
             crate::hooks::fetch::api::get_authed::<DispatchResponse>(&path).await
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             let _ = (from_utc, to_utc);
             Ok::<DispatchResponse, String>(DispatchResponse {
@@ -2777,7 +2777,7 @@ fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
 
     // MAPPS-387: the 24-hour timeline scrolls horizontally inside its box,
     // opening on the working-hours window rather than at midnight.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     use_effect(|| scroll_grid_to_work_hours("calendar-dispatch-scroll", false));
 
     if user_ids.is_empty() {
@@ -2988,7 +2988,7 @@ pub fn SchedulingTemplatesPage() -> Element {
     let mut templates_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             crate::hooks::fetch::api::get_all_authed::<SchedulingTemplateResponse>(
                 "/scheduling-templates",
@@ -2996,7 +2996,7 @@ pub fn SchedulingTemplatesPage() -> Element {
             .await
             .ok()
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             Some(Vec::<SchedulingTemplateResponse>::new())
         }
@@ -3234,7 +3234,7 @@ fn TemplateFormModal(props: TemplateFormModalProps) -> Element {
         error.set(String::new());
 
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result: Result<(), crate::hooks::fetch::api::ApiError> = match edit_id {
                     None => {
@@ -3287,7 +3287,7 @@ fn TemplateFormModal(props: TemplateFormModalProps) -> Element {
                     Err(e) => error.set(format!("Could not save template: {}", e.user_message())),
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = (
                     edit_id, name_val, kind_val, type_val, duration, before, after, title,
@@ -3312,7 +3312,7 @@ fn TemplateFormModal(props: TemplateFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/scheduling-templates/{id}");
                 match crate::hooks::fetch::api::delete_authed_typed(&path).await {
@@ -3320,7 +3320,7 @@ fn TemplateFormModal(props: TemplateFormModalProps) -> Element {
                     Err(e) => error.set(format!("Could not delete template: {}", e.user_message())),
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = id;
             }

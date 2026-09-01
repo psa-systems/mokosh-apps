@@ -62,7 +62,7 @@ pub fn PortalLoginPage() -> Element {
         error.set(String::new());
 
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 use crate::hooks::fetch::api::ApiError;
                 let body = PortalLoginBody {
@@ -97,7 +97,7 @@ pub fn PortalLoginPage() -> Element {
                     Err(e) => error.set(e.user_message()),
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = (slug, em, pw);
             }

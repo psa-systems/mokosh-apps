@@ -35,7 +35,7 @@ RUN mkdir src \
 
 EXPOSE 4301
 
-# PMS-884: `--features web-renderer` for the same reason the release image
-# passes it - dx substitutes its own feature list for this crate's defaults,
-# and the crate feature it picks (`web`) enables no renderer.
-CMD ["sh", "-c", "bun x @tailwindcss/cli --input input.css --output assets/styles.css && dx serve --features web-renderer --port 4301 --addr 0.0.0.0"]
+# PMS-884: `--features web` for the same reason the release image passes it -
+# dx substitutes its own feature list for this crate's defaults, so the
+# renderer is named here rather than left to dx's platform-name heuristic.
+CMD ["sh", "-c", "bun x @tailwindcss/cli --input input.css --output assets/styles.css && dx serve --features web --port 4301 --addr 0.0.0.0"]

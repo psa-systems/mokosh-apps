@@ -76,14 +76,14 @@ pub fn TeamPage() -> Element {
     let mut invites = use_resource(|| async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             crate::hooks::fetch::api::get_authed::<PaginatedInvitations>("/invitations")
                 .await
                 .map(|p| p.data)
                 .ok()
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             Some(Vec::<RemoteInvitation>::new())
         }
@@ -120,7 +120,7 @@ pub fn TeamPage() -> Element {
         is_submitting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let body = serde_json::json!({ "email": email_v, "role": role_v });
                 #[derive(serde::Deserialize)]
@@ -284,7 +284,7 @@ pub fn TeamPage() -> Element {
                 }
                 revoking.set(true);
                 spawn(async move {
-                    #[cfg(feature = "web")]
+                    #[cfg(feature = "app")]
                     {
                         match crate::hooks::fetch::api::delete_authed(&format!(
                             "/invitations/{id}"
@@ -297,7 +297,7 @@ pub fn TeamPage() -> Element {
                             }
                         }
                     }
-                    #[cfg(not(feature = "web"))]
+                    #[cfg(not(feature = "app"))]
                     {
                         let _ = id;
                     }

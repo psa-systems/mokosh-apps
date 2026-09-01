@@ -63,9 +63,9 @@ const POLL_INTERVAL_SECS: u64 = 5 * 60;
 /// who never leave the tab still eventually pick up the new build.
 const MAX_DEFERRED_SECS: u64 = 30 * 60;
 
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 const BUILD_SHA_FIELD: &str = "build_sha";
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 const CONFIG_JS_PATH: &str = "/_mokosh_config.js";
 
 /// MAPPS-428: app-wide "the bundle this tab is running is out of date"
@@ -77,7 +77,7 @@ const CONFIG_JS_PATH: &str = "/_mokosh_config.js";
 /// plain async fns that cannot reach a context-provided signal, and read
 /// by [`crate::components::UpdateAvailableBanner`] mounted in `AppShell`,
 /// so no props are threaded through the layout.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub static UPDATE_PENDING: GlobalSignal<bool> = Signal::global(|| false);
 
 /// MAPPS-428: "the fetch layer just saw a failure that looks like a
@@ -89,14 +89,14 @@ pub static UPDATE_PENDING: GlobalSignal<bool> = Signal::global(|| false);
 /// one check is in flight the flag is already `true`, so a burst of
 /// failing requests writes nothing and fans out into exactly one
 /// `_mokosh_config.js` fetch.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 static SKEW_PROBE_REQUESTED: GlobalSignal<bool> = Signal::global(|| false);
 
 // When the current `UPDATE_PENDING` was first observed, as a
 // `performance.now()` second count. Drives the `MAX_DEFERRED_SECS` cap.
 // A `thread_local` rather than a signal because nothing re-renders on
 // it; WASM is single-threaded so a `Cell` is sufficient.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 thread_local! {
     static DETECTED_AT_SECS: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
 }
@@ -124,7 +124,7 @@ fn is_dev_sha(sha: &str) -> bool {
 
 /// Compile-time build hash. When empty or `"unknown"` we treat the
 /// build as a dev build and disable the auto-reload behaviour.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 fn baseline_sha() -> Option<String> {
     let sha = crate::utils::version::GIT_HASH.trim();
     if is_dev_sha(sha) {
@@ -145,7 +145,7 @@ fn baseline_sha() -> Option<String> {
 /// own that contract. Sticking to the existing format (a single
 /// `window.__MOKOSH_CONFIG__ = { ... }` assignment) means we do not
 /// add a second source of truth for the build hash.
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 async fn fetch_live_build_sha() -> Option<String> {
     use crate::platform::http::Request;
     use wasm_bindgen::JsValue;
@@ -172,7 +172,7 @@ async fn fetch_live_build_sha() -> Option<String> {
 /// mechanism exists because an open browser tab is pinned to the bundle
 /// it loaded; a desktop binary is not a bundle a server can replace
 /// underneath it, and it updates through its installer.
-#[cfg(any(not(feature = "web"), not(target_arch = "wasm32")))]
+#[cfg(any(not(feature = "app"), not(target_arch = "wasm32")))]
 async fn fetch_live_build_sha() -> Option<String> {
     None
 }
@@ -180,7 +180,7 @@ async fn fetch_live_build_sha() -> Option<String> {
 /// Reload the tab now. `pub(crate)` since MAPPS-428 so the
 /// [`crate::components::UpdateAvailableBanner`] "Reload page" button
 /// performs exactly the same reload the automatic path does.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub(crate) fn reload_now() {
     // `location.reload()` issues a normal reload (re-validates
     // index.html against the no-cache directive, picks up the new
@@ -195,13 +195,13 @@ pub(crate) fn reload_now() {
     }
 }
 
-#[cfg(not(feature = "web"))]
+#[cfg(not(feature = "app"))]
 pub(crate) fn reload_now() {}
 
 /// Record a confirmed `build_sha` mismatch. Idempotent: the flag is
 /// one-way, so a second detection (poll and skew probe racing) neither
 /// re-logs nor moves the deferred-reload deadline.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 fn note_new_build_detected(baseline: &str, live: &str) {
     if *UPDATE_PENDING.peek() {
         return;
@@ -216,7 +216,7 @@ fn note_new_build_detected(baseline: &str, live: &str) {
 }
 
 /// Whether a pending reload has been deferred past `MAX_DEFERRED_SECS`.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 fn deferred_cap_elapsed() -> bool {
     let Some(detected_at) = DETECTED_AT_SECS.with(|cell| cell.get()) else {
         return false;
@@ -232,7 +232,7 @@ fn deferred_cap_elapsed() -> bool {
 ///
 /// No-op on a dev build, once the update is already known, and while a
 /// probe is in flight.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub(crate) fn note_possible_version_skew() {
     if *UPDATE_PENDING.peek() || *SKEW_PROBE_REQUESTED.peek() || baseline_sha().is_none() {
         return;
@@ -240,12 +240,12 @@ pub(crate) fn note_possible_version_skew() {
     *SKEW_PROBE_REQUESTED.write() = true;
 }
 
-#[cfg(not(feature = "web"))]
+#[cfg(not(feature = "app"))]
 pub(crate) fn note_possible_version_skew() {}
 
 /// Root-level update-check hook. Mount once at `App`. No-op when the
 /// build hash is unknown (dev builds) or `web_sys` is unavailable.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub fn use_update_check() {
     // MAPPS-377: `baseline_sha()` is a compile-time constant (None only on dev
     // builds), so its value never varies across renders; still, call every hook
@@ -340,7 +340,7 @@ pub fn use_update_check() {
 ///
 /// MAPPS-504: browser-only, and not because of the bindings - a desktop
 /// window has no tab to background and no bundle to swap.
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 fn subscribe_to_visibility_change() {
     use wasm_bindgen::closure::Closure;
     use wasm_bindgen::JsCast;
@@ -381,7 +381,7 @@ fn subscribe_to_visibility_change() {
     cb.forget();
 }
 
-#[cfg(not(feature = "web"))]
+#[cfg(not(feature = "app"))]
 pub fn use_update_check() {}
 
 /// Seconds on a clock that only has to be consistent with itself: the
@@ -390,7 +390,7 @@ pub fn use_update_check() {}
 /// MAPPS-504: was `performance.now()`; now the shared wall clock, which
 /// both targets have. `Option` is kept because the callers already
 /// branch on it.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 fn performance_now_secs() -> Option<f64> {
     Some(crate::platform::clock::now_ms() as f64 / 1000.0)
 }

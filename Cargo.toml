@@ -16,21 +16,21 @@ path = "src/main.rs"
 [features]
 default = [
     "web",
-    "web-renderer",
     "multi-tenant",
 ]
-# MAPPS-504: `web` is the APP-RUNTIME gate, not a browser gate. It turns on
+# MAPPS-507: `app` is the APP-RUNTIME gate, not a platform gate. It turns on
 # the `api` module, the app-wide GlobalSignals, and page logic, none of which
-# is browser-specific, and it stays on for the desktop build too. Browser-only
-# code lives behind `src/platform/`, split on `target_arch`. Renaming this to
-# `app` is MAPPS-507.
-web = []
-# The renderer is selected separately from the runtime so a desktop build can
-# turn the web renderer OFF. Enabling both `dioxus/web` and `dioxus/desktop`
-# does pick desktop (dioxus documents that priority), but it also links
-# dioxus-web and its wasm-bindgen stubs into a native binary for nothing.
-web-renderer = ["dioxus/web"]
-desktop = ["dioxus/desktop"]
+# is browser-specific, and it is on for every build that produces the actual
+# application. Browser-only code lives behind `src/platform/`, split on
+# `target_arch`, not behind a feature.
+app = []
+# The two renderers. Each pulls in the runtime plus exactly one dioxus
+# renderer, so no build enables a feature named for a platform it is not
+# running on. Enabling both `dioxus/web` and `dioxus/desktop` does pick
+# desktop (dioxus documents that priority), but it also links dioxus-web and
+# its wasm-bindgen stubs into a native binary for nothing.
+web = ["app", "dioxus/web"]
+desktop = ["app", "dioxus/desktop"]
 multi-tenant = []
 single-tenant = []
 server = []

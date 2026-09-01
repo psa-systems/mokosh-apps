@@ -12,7 +12,7 @@
 //! and the dropdown render. See `mokosh-server/src/modules/search/`
 //! for the SQL.
 
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 use crate::components::{ErrorBanner, Input};
 use crate::hooks::{use_dropdown_nav, NavAction};
 use crate::utils::url::urlencoding_minimal;
@@ -75,7 +75,7 @@ pub fn GlobalSearch() -> Element {
     // ordering) and gating the focus call on `expanded()` keeps this local to
     // the search component. The effect fires after commit, so the input is
     // mounted by the time we `getElementById` it.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     use_effect(move || {
         if expanded() {
             // MAPPS-503 made this failure loud; MAPPS-504 moved the call
