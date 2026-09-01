@@ -153,9 +153,11 @@ exact build.
 
 ## Releasing (for reference)
 
-`just create-release <major|minor|hotfix>` (see
-[`justfile`](../justfile)) bumps `Cargo.toml` + `package.json`, opens a
-release PR, and after merge `.forgejo/workflows/create-release.yml`
-tags `vX.Y.Z` and publishes the image. Because the displayed `VERSION`
-follows the bump (not the tag), the footer is correct from the release
-commit onward.
+`just create-release <major|minor|hotfix>` (the shared recipe from the
+`common` submodule, configured by the variables at the top of the
+[`justfile`](../justfile)) bumps `Cargo.toml`, writes the same version
+into `package.json`, and opens a release PR. After merge
+`.forgejo/workflows/create-release.yml` calls common's reusable
+workflow, which tags `vX.Y.Z` and publishes the release. Because the
+displayed `VERSION` follows the bump (not the tag), the footer is
+correct from the release commit onward.
