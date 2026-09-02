@@ -41,13 +41,15 @@ services:
       # to fall through to compile-time defaults.
       MOKOSH_HUB_BASE_URL: https://example.com
 
-      # Suffix each tenant's client portal is served under. Every
-      # tenant provisioned on the paired mokosh-server gets a portal
-      # at `{tenant.slug}<suffix>` (e.g. acme.client.example.com).
-      # MUST match the paired mokosh-server's `PORTAL_HOST_SUFFIX`
-      # env var byte-for-byte. Requires a DNS wildcard record + a
-      # TLS certificate whose SAN covers the same wildcard.
-      # MOKOSH_PORTAL_HOST_SUFFIX: .client.example.com
+      # MAPPS-649: the single host the client portal is served from
+      # (typically `portal.<apex>`). The visitor addresses their
+      # Company from the URL path (`/portal/{portal_id}/*`), so a
+      # DNS wildcard is no longer required - one A/AAAA record for
+      # the bare host is enough, and the TLS cert covers just that
+      # single host. Retires the pre-649 `MOKOSH_PORTAL_HOST_SUFFIX`
+      # (per-MSP subdomain) shape; see mokosh-server's
+      # docs/dev-docs/portal-single-host-cutover.md.
+      # MOKOSH_PORTAL_HOST: portal.example.com
     ports:
       # Loopback bind by default. Front the container with your own
       # TLS reverse proxy (Caddy / Traefik / nginx) so cookies set by

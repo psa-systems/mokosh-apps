@@ -68,13 +68,15 @@ if ! {
     emit_field oidc_issuer "${MOKOSH_OIDC_ISSUER:-}"
     emit_field oidc_client_id "${MOKOSH_OIDC_CLIENT_ID:-}"
     emit_field hub_base_url "${MOKOSH_HUB_BASE_URL:-}"
-    # PMS-729: the trailing-dot suffix under which per-tenant client-portal
-    # hosts live (e.g. `.client.a8n.systems`). The SPA reads this to (a)
-    # decide whether the current host is a portal host (`on_portal_host()`
-    # in `src/hooks/fetch.rs`) and (b) derive the API base for portal
-    # hosts (same fn's `api_base()`). Empty (default) turns both off and
-    # the SPA falls back to its `msp.<tld>` agent-only derivation.
-    emit_field portal_host_suffix "${MOKOSH_PORTAL_HOST_SUFFIX:-}"
+    # MAPPS-649: the single host the portal is served from (e.g.
+    # `portal.psa.systems`). The SPA reads this to (a) decide whether
+    # the current host is the portal host (`on_portal_host()` in
+    # `src/hooks/fetch.rs`) and (b) derive the API base when the SPA
+    # is running there (same fn's `api_base()`). Empty (default) turns
+    # both off and the SPA falls back to its `msp.<tld>` agent-only
+    # derivation. Retires the per-MSP `MOKOSH_PORTAL_HOST_SUFFIX` env;
+    # see docs/dev-docs/portal-single-host-cutover.md in mokosh-server.
+    emit_field portal_host "${MOKOSH_PORTAL_HOST:-}"
     # BUNYIP-142: requested scope string for /oauth2/authorize. Default
     # compile-time value is "openid email offline_access"; operators
     # opting in to bunyip's profile/phone claim emission set this to

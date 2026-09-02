@@ -210,12 +210,15 @@ pub fn SetPasswordPage(token: String) -> Element {
                             // is missing.
                             #[cfg(feature = "web")]
                             {
-                                let slug_opt = tenant_slug_state.peek().clone();
-                                let target = slug_opt.as_deref().and_then(|slug| {
-                                    crate::modules::runtime_config::portal_url_for_slug(slug)
-                                        .map(|origin| format!("{origin}/login"))
-                                });
-                                if let Some(url) = target {
+                                // MAPPS-649: the portal is one host now,
+                                // so bounce to the portal root; the
+                                // visitor enters their Company ID at
+                                // step 1. Fall back to same-origin
+                                // /login when no portal host is
+                                // configured (dev without env).
+                                let _ = tenant_slug_state.peek().clone();
+                                if let Some(root) = crate::modules::runtime_config::portal_root_url() {
+                                    let url = format!("{root}/portal/login");
                                     if let Some(win) = web_sys::window() {
                                         let _ = win.location().set_href(&url);
                                         return;
