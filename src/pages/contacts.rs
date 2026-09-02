@@ -5,10 +5,10 @@ use serde::Deserialize;
 
 use crate::components::{
     asset_status_badge, contract_status_badge, invoice_status_badge, project_status_badge,
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, CollapsibleCard, DataTable,
-    ErrorBanner, IconSize, Modal, PageHeader, PlusIcon, SearchInput, Select, SelectOption,
-    SortDirection, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
-    TableRow,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, Checkbox, CollapsibleCard,
+    DataTable, ErrorBanner, IconSize, Modal, PageHeader, PlusIcon, SearchInput, Select,
+    SelectOption, SortDirection, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
+    TableLoading, TableRow,
 };
 use crate::modules::contacts::Address;
 use crate::utils::money::format_money_str;
@@ -1644,6 +1644,8 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                 company_id: company_id_str.clone(),
                                 portal_id: company.portal_id,
                                 portal_slug: company.portal_slug.clone(),
+                                portal_enabled: company.portal_enabled,
+                                company_resource,
                             }
                             // MAPPS-590 (prompt 012): Company-scoped
                             // portal roles. Sits right after the
@@ -1852,6 +1854,13 @@ struct CompanyDetail {
     portal_id: Option<i64>,
     #[serde(default)]
     portal_slug: Option<String>,
+    /// MAPPS-651 / MAPPS-648 (PMS-915): tier-2 of the portal
+    /// enablement chain. `false` here means grants on this Company
+    /// will be refused by the server; the toggle in
+    /// `CompanyPortalAccessCard` mutates this via
+    /// `PUT /contacts/companies/{id}`.
+    #[serde(default)]
+    portal_enabled: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2199,6 +2208,8 @@ fn CompanyPortalAccessCard(
     company_id: String,
     #[props(default)] portal_id: Option<i64>,
     #[props(default)] portal_slug: Option<String>,
+    #[props(default)] portal_enabled: bool,
+    company_resource: Resource<Option<CompanyDetail>>,
 ) -> Element {
     let id_for_resource = company_id.clone();
     let mut roster = use_resource(move || {
@@ -2255,11 +2266,73 @@ fn CompanyPortalAccessCard(
             .map(|origin| format!("{}{}", origin.trim_end_matches('/'), p))
     });
     let portal_login_for_copy = portal_login_absolute.clone();
+
+    // MAPPS-651 / MAPPS-648 (PMS-915): tier-2 toggle. PATCHes
+    // `portal_enabled` on this Company and refetches so the toggle
+    // reflects server truth. The server refuses tier-2 = TRUE while
+    // tier-1 is FALSE (400 with an actionable message); we surface
+    // that message inline so an operator hitting the button from a
+    // stale UI state understands the ordering constraint.
+    let company_id_for_toggle = company_id.clone();
+    let mut tier2_saving = use_signal(|| false);
+    let mut tier2_error: Signal<String> = use_signal(String::new);
+    let mut on_toggle_tier2 = move |next: bool| {
+        if tier2_saving() {
+            return;
+        }
+        tier2_saving.set(true);
+        tier2_error.set(String::new());
+        let id = company_id_for_toggle.clone();
+        spawn(async move {
+            let path = format!("/contacts/companies/{id}");
+            let body = serde_json::json!({ "portal_enabled": next });
+            match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await
+            {
+                Ok(_) => {
+                    crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Success,
+                        if next {
+                            "Portal enabled for this Company.".to_string()
+                        } else {
+                            "Portal disabled for this Company. Live sessions end on next request."
+                                .to_string()
+                        },
+                    );
+                    company_resource.restart();
+                }
+                Err(e) => {
+                    tier2_error.set(format!("{e}"));
+                }
+            }
+            tier2_saving.set(false);
+        });
+    };
+
     rsx! {
         CollapsibleCard {
             title: "Portal Access",
             count,
             padding: false,
+            // MAPPS-651: tier-2 toggle sits above the Company ID +
+            // grant-per-contact rows since it gates whether any of
+            // those affordances mean anything at all.
+            div { class: "px-6 py-3 border-b border-line",
+                Checkbox {
+                    name: format!("portal_enabled_{company_id}"),
+                    label: "Portal enabled for this Company",
+                    checked: portal_enabled,
+                    help: if portal_enabled {
+                        "Turning this off signs out every portal user for this Company on their next request."
+                    } else {
+                        "Turn this on so contacts under this Company can be granted portal access. Enable the portal module for this tenant first if the toggle refuses."
+                    },
+                    disabled: !can_mutate || tier2_saving(),
+                    onchange: move |e: FormEvent| on_toggle_tier2(e.checked()),
+                }
+                if !tier2_error().is_empty() {
+                    p { role: "alert", class: "mt-2 text-sm text-red-600 dark:text-red-400", "{tier2_error}" }
+                }
+            }
             if let Some(pid) = portal_id {
                 div { class: "px-6 py-3 border-b border-line flex items-center justify-between gap-4 text-sm",
                     div {
