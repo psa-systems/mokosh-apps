@@ -1446,6 +1446,50 @@ pub mod api {
         Ok((bytes, filename))
     }
 
+    /// MAPPS-641: `get_authed_bytes` with the failure kept as an [`ApiError`],
+    /// so a caller can say whether a download failed on the role (403), on a
+    /// document that is gone (404), on the network or on the server, rather
+    /// than showing the transport's string.
+    #[cfg(feature = "app")]
+    pub async fn get_authed_bytes_typed(path: &str) -> Result<(Vec<u8>, Option<String>), ApiError> {
+        ensure_fresh_access_token().await;
+        let url = format!("{}{}", api_base(), path);
+        let mut req = Request::get(&url);
+        let bearer = current_access_token();
+        if let Some(t) = &bearer {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let resp = req.send().await.map_err(network_err)?;
+        let status = resp.status();
+        super::note_response_status(status);
+        if bearer.is_some() && status == 401 {
+            note_agent_unauthorized().await;
+        }
+        if !(200..300).contains(&status) {
+            let body = resp.text().await.unwrap_or_default();
+            let (message, fields) =
+                match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
+                    Ok(env) => (env.error.message, env.error.errors.unwrap_or_default()),
+                    Err(_) => (body.chars().take(200).collect(), Vec::new()),
+                };
+            return Err(ApiError::Status {
+                code: status,
+                message,
+                fields,
+            });
+        }
+        let filename = resp
+            .headers()
+            .get("content-disposition")
+            .as_deref()
+            .and_then(content_disposition_filename);
+        let bytes = resp
+            .binary()
+            .await
+            .map_err(|e| ApiError::Decode(e.to_string()))?;
+        Ok((bytes, filename))
+    }
+
     /// Extract the `filename="..."` value from a `Content-Disposition` header.
     /// Only the simple quoted or unquoted `filename=` form is handled (no
     /// RFC 5987 `filename*=`), which is all the export endpoint emits.

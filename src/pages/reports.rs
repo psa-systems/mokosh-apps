@@ -184,6 +184,21 @@ fn report_kind(report_type: &str) -> ReportKind {
     }
 }
 
+/// MAPPS-641: the server report an export downloads, by kind. The sixteen
+/// report pages here read five server reports between them, so an export is
+/// the server's report rather than the page's slice of it; the button says
+/// which. `None` for a kind the server does not serve.
+fn export_key(kind: ReportKind) -> Option<&'static str> {
+    match kind {
+        ReportKind::Tickets => Some("tickets"),
+        ReportKind::Time => Some("time"),
+        ReportKind::Billing => Some("billing"),
+        ReportKind::Projects => Some("projects"),
+        ReportKind::Clients => Some("clients"),
+        ReportKind::Unsupported => None,
+    }
+}
+
 /// Normalised view the detail page renders, built from whichever backend
 /// report the `report_type` maps to.
 #[derive(Clone, Debug, Default)]
@@ -371,7 +386,34 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
     let view = view_data.value_or_default();
 
     rsx! {
-        PageHeader { title: report_title, subtitle: "Live figures from the reports service" }
+        PageHeader {
+            title: report_title,
+            subtitle: "Live figures from the reports service",
+            actions: rsx! {
+                // MAPPS-641: CSV and PDF of the server report this page reads
+                // (PMS-876). Both carry the report's own gate server-side, so
+                // a finance-only report answers a technician's click with the
+                // role message rather than a file.
+                if view.supported {
+                    if let Some(key) = export_key(report_kind(&props.report_type)) {
+                        crate::components::DownloadButton {
+                            path: format!("/reports/{key}/export?format=csv"),
+                            fallback_name: format!("{key}.csv"),
+                            what: format!("the {key} report as CSV"),
+                            label: "Download CSV".to_string(),
+                            title: format!("The {key} report, every row, as CSV."),
+                        }
+                        crate::components::DownloadButton {
+                            path: format!("/reports/{key}/export?format=pdf"),
+                            fallback_name: format!("{key}.pdf"),
+                            what: format!("the {key} report as PDF"),
+                            label: "Download PDF".to_string(),
+                            title: format!("The {key} report as a PDF, rendered now."),
+                        }
+                    }
+                }
+            },
+        }
 
         if is_loading {
             crate::components::DetailSkeleton {} // PMS-353
@@ -907,5 +949,22 @@ fn CustomReportBuilder() -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod export_tests {
+    use super::{export_key, report_kind};
+
+    /// Every page that renders a server report can export that same report,
+    /// and the one placeholder page cannot.
+    #[test]
+    fn every_supported_report_page_exports_the_server_report_it_reads() {
+        assert_eq!(export_key(report_kind("ticket-volume")), Some("tickets"));
+        assert_eq!(export_key(report_kind("billable-hours")), Some("time"));
+        assert_eq!(export_key(report_kind("ar-aging")), Some("billing"));
+        assert_eq!(export_key(report_kind("budget-tracking")), Some("projects"));
+        assert_eq!(export_key(report_kind("client-summary")), Some("clients"));
+        assert_eq!(export_key(report_kind("report-builder")), None);
     }
 }

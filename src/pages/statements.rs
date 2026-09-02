@@ -227,8 +227,7 @@ fn StatementBody() -> Element {
     let mut preset = use_signal(|| period::DEFAULT.to_string());
     let mut period_start = use_signal(|| period::iso(default_start));
     let mut period_end = use_signal(|| period::iso(default_end));
-    let mut action_error = use_signal(String::new);
-    let mut downloading = use_signal(|| false);
+    let action_error = use_signal(String::new);
 
     // The seeded company's name, once, so the picker shows what was chosen.
     let seeded_id = company_id.read().clone();
@@ -321,33 +320,6 @@ fn StatementBody() -> Element {
 
     let query_for_pdf = period::query(&company_text, &start_text, &end_text);
     let pdf_name = format!("statement-{start_text}-{end_text}.pdf");
-    let on_download = move |_| {
-        if *downloading.read() {
-            return;
-        }
-        downloading.set(true);
-        action_error.set(String::new());
-        let path = format!("/statements/pdf?{query_for_pdf}");
-        let fallback = pdf_name.clone();
-        spawn(async move {
-            #[cfg(feature = "app")]
-            {
-                match crate::hooks::fetch::api::get_authed_bytes(&path).await {
-                    Ok((bytes, name)) => {
-                        let filename = name.unwrap_or(fallback);
-                        if let Err(err) =
-                            crate::utils::download::save_bytes_as_file(&bytes, &filename)
-                        {
-                            action_error.set(format!("Could not save the PDF: {err}"));
-                        }
-                    }
-                    Err(err) => action_error.set(format!("Could not download the PDF: {err}")),
-                }
-            }
-            downloading.set(false);
-        });
-    };
-
     let act_err = action_error.read().clone();
 
     rsx! {
@@ -359,12 +331,16 @@ fn StatementBody() -> Element {
                     to: Route::InvoiceList {},
                     Button { variant: ButtonVariant::Secondary, "Invoices" }
                 }
+                // MAPPS-641: rendered now from current branding, because a
+                // statement is computed and stored nowhere (PMS-954). The
+                // artefact a client received is whatever PDF somebody sent.
                 if statement.is_some() {
-                    Button {
+                    crate::components::DownloadButton {
+                        path: format!("/statements/pdf?{query_for_pdf}"),
+                        fallback_name: pdf_name.clone(),
+                        what: "the statement PDF".to_string(),
                         variant: ButtonVariant::Primary,
-                        loading: *downloading.read(),
-                        onclick: on_download,
-                        "Download PDF"
+                        title: "Rendered now, from the current branding: a statement is computed, not stored. This is the document to send.".to_string(),
                     }
                 }
             },
