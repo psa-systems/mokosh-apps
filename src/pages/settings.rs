@@ -3734,6 +3734,10 @@ struct PaymentTermRow {
     is_active: bool,
     #[serde(default)]
     sort_order: i64,
+    /// MAPPS-662: what the term means in days (PMS-990). `None` for a term
+    /// that names no count.
+    #[serde(default)]
+    net_days: Option<i64>,
 }
 
 #[component]
@@ -3812,21 +3816,22 @@ fn PaymentTermsSettingsBody() -> Element {
             total_items: total as usize,
             current_page,
             per_page: PER_PAGE,
-            columns: 3,
+            columns: 4,
             onpagechange: move |p| page.set(p),
             Table {
                 TableHead {
                     TableRow {
                         TableHeader { "Name" }
+                        TableHeader { class: "text-right", "Net days" }
                         TableHeader { "Default" }
                         TableHeader { "Active" }
                     }
                 }
                 if is_loading {
-                    TableLoading { columns: 3, rows: 4 }
+                    TableLoading { columns: 4, rows: 4 }
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
-                        columns: 3,
+                        columns: 4,
                         title: "No payment terms yet".to_string(),
                         description: "Payment terms fill the terms dropdown when you build an invoice.".to_string(),
                         actions: rsx! {
@@ -3850,6 +3855,7 @@ fn PaymentTermsSettingsBody() -> Element {
                                 let name = row.name.clone();
                                 let default = row.is_default;
                                 let active = row.is_active;
+                                let net_days = row.net_days;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
                                         onclick: {
@@ -3861,6 +3867,13 @@ fn PaymentTermsSettingsBody() -> Element {
                                             // route to link to; this cell is the keyboard path instead.
                                             onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
+                                        }
+                                        TableCell { class: "text-right",
+                                            if let Some(days) = net_days {
+                                                "{days}"
+                                            } else {
+                                                span { class: "text-subtle", title: "No fixed count", "-" }
+                                            }
                                         }
                                         TableCell {
                                             if default {
@@ -3897,6 +3910,8 @@ struct PaymentTermFormState {
     is_default: bool,
     is_active: bool,
     sort_order: String,
+    /// MAPPS-662: blank means the term names no count.
+    net_days: String,
 }
 
 impl PaymentTermFormState {
@@ -3907,6 +3922,7 @@ impl PaymentTermFormState {
             is_default: false,
             is_active: true,
             sort_order: "0".to_string(),
+            net_days: String::new(),
         }
     }
 
@@ -3917,7 +3933,22 @@ impl PaymentTermFormState {
             is_default: r.is_default,
             is_active: r.is_active,
             sort_order: r.sort_order.to_string(),
+            net_days: r.net_days.map(|d| d.to_string()).unwrap_or_default(),
         }
+    }
+}
+
+/// MAPPS-662: the `net_days` value a term form sends. Blank is `null`, which
+/// the server keeps as "no fixed count"; anything else must be a whole
+/// number of days from 0 to 3650, the server's own cap.
+fn net_days_json(raw: &str) -> Result<serde_json::Value, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    match trimmed.parse::<i64>() {
+        Ok(days) if (0..=3650).contains(&days) => Ok(serde_json::Value::from(days)),
+        _ => Err("Net days must be a whole number from 0 to 3650, or blank.".to_string()),
     }
 }
 
@@ -3937,6 +3968,8 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
     let mut is_default = use_signal(|| initial.is_default);
     let mut is_active = use_signal(|| initial.is_active);
     let mut sort_order = use_signal(|| initial.sort_order.clone());
+    let mut net_days = use_signal(|| initial.net_days.clone());
+    let mut net_days_err = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -3953,6 +3986,13 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
             error.set("Name is required.".to_string());
             return;
         }
+        let net_days_value = match net_days_json(&net_days.read()) {
+            Ok(v) => v,
+            Err(msg) => {
+                net_days_err.set(msg);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
         let body = serde_json::json!({
@@ -3960,6 +4000,7 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
             "is_default": *is_default.read(),
             "is_active": *is_active.read(),
             "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
+            "net_days": net_days_value,
         });
         let id = save_id.clone();
         spawn(async move {
@@ -4013,6 +4054,22 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
                 required: true,
                 value: name.read().clone(),
                 oninput: move |e: FormEvent| name.set(e.value()),
+            }
+            crate::components::Input {
+                name: "payment_term_net_days",
+                label: "Net days",
+                r#type: "number",
+                min: "0".to_string(),
+                max: "3650".to_string(),
+                step: "1".to_string(),
+                placeholder: "e.g. 30",
+                help: "Days from the invoice date to the due date. An invoice created without a due date takes the invoice date plus this. Leave blank for a term with no fixed count, such as On approval; the server then uses thirty days.",
+                error: net_days_err(),
+                value: net_days.read().clone(),
+                oninput: move |e: FormEvent| {
+                    net_days_err.set(String::new());
+                    net_days.set(e.value());
+                },
             }
             crate::components::Input {
                 name: "payment_term_sort_order",
@@ -7432,3 +7489,23 @@ async fn delete_lookup(id: &str, base: &str) -> Result<bool, String> {
 // `SettingFormModal` (the shared create/edit modal chrome) now lives in
 // `crate::components` so both these editors and the rate-card editor can
 // reuse it (MAPPS-160).
+
+#[cfg(test)]
+mod net_days_tests {
+    use super::net_days_json;
+
+    /// Blank is null (no fixed count), a whole number within the server's
+    /// cap is sent as a number, and anything else is refused on the field.
+    #[test]
+    fn blank_is_null_and_the_cap_is_the_servers() {
+        assert!(net_days_json("").unwrap().is_null());
+        assert!(net_days_json("   ").unwrap().is_null());
+        assert_eq!(net_days_json(" 30 ").unwrap(), serde_json::json!(30));
+        assert_eq!(net_days_json("0").unwrap(), serde_json::json!(0));
+        assert_eq!(net_days_json("3650").unwrap(), serde_json::json!(3650));
+        assert!(net_days_json("3651").is_err());
+        assert!(net_days_json("-1").is_err());
+        assert!(net_days_json("30.5").is_err());
+        assert!(net_days_json("thirty").is_err());
+    }
+}

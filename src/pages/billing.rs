@@ -1409,6 +1409,37 @@ pub fn InvoiceNewPage() -> Element {
     let mut company_name = use_signal(String::new);
     let mut invoice_date = use_signal(String::new);
     let mut due_date = use_signal(String::new);
+    // MAPPS-662: the payment term, seeded with the tenant's default once the
+    // lookup loads. The due date may be left blank; the server derives it
+    // from the invoice date plus the term's days (PMS-990).
+    let mut payment_term_id = use_signal(String::new);
+    let mut term_seeded = use_signal(|| false);
+    let terms_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_all_authed::<PaymentTermOpt>("/payment-terms")
+            .await
+            .unwrap_or_else(|e| {
+                // Best-effort: with no lookup the server still applies its
+                // default term.
+                tracing::warn!("payment-term load failed: {e}");
+                Vec::new()
+            })
+    });
+    let terms: Vec<PaymentTermOpt> = terms_resource.read_unchecked().clone().unwrap_or_default();
+    if !*term_seeded.read() && !terms.is_empty() {
+        if let Some(default) = terms.iter().find(|t| t.is_default && t.is_active) {
+            payment_term_id.set(default.id.to_string());
+        }
+        term_seeded.set(true);
+    }
+    let term_options: Vec<SelectOption> = std::iter::once(SelectOption::new("", "Default term"))
+        .chain(
+            terms
+                .iter()
+                .filter(|t| t.is_active)
+                .map(|t| SelectOption::new(t.id.to_string(), t.name.clone())),
+        )
+        .collect();
     let mut po_number = use_signal(String::new);
     let mut notes = use_signal(String::new);
     let mut line_description = use_signal(String::new);
@@ -1502,7 +1533,8 @@ pub fn InvoiceNewPage() -> Element {
             "Invoice date",
             &[Rule::Required],
         ));
-        due_date_error.set(guard.field("due_date", &due, "Due date", &[Rule::Required]));
+        // MAPPS-662: the due date is optional; blank is derived server-side.
+        due_date_error.set(String::new());
         // Cross-field order check, only meaningful once both dates are present.
         // Dates come from the native picker as ISO `YYYY-MM-DD`, so a lexicographic
         // compare is a correct order check. Overrides the per-field slot set above.
@@ -1559,7 +1591,9 @@ pub fn InvoiceNewPage() -> Element {
         let body = serde_json::json!({
             "company_id": company_uuid,
             "invoice_date": inv_date,
-            "due_date": due,
+            // MAPPS-662: blank is null, and the server derives it from the term.
+            "due_date": optional_string(&due),
+            "payment_term_id": optional_string(&payment_term_id.read()),
             "po_number": optional_string(&po_number.read()),
             "notes": optional_string(&notes.read()),
             "tax_amount": optional_string(&tax_str),
@@ -1717,8 +1751,19 @@ pub fn InvoiceNewPage() -> Element {
                     crate::components::DateField {
                         name: "due_date",
                         label: "Due Date",
-                        required: true,
-                        rules: vec![Rule::Required],
+                        help: {
+                            // MAPPS-662: say what blank will become, so the
+                            // derived date is seen before Create, not after.
+                            let selected = payment_term_id.read().clone();
+                            let term = terms.iter().find(|t| t.id.to_string() == selected)
+                                .or_else(|| terms.iter().find(|t| t.is_default && t.is_active));
+                            match (term, derived_due_date(&invoice_date.read(), term.and_then(|t| t.net_days))) {
+                                (Some(t), Some(date)) => format!("Leave blank to use {} from the invoice date: {date}.", t.name),
+                                (None, Some(date)) => format!("Leave blank for thirty days from the invoice date: {date}."),
+                                (Some(t), None) => format!("Leave blank to derive it from {} once the invoice date is set.", t.name),
+                                (None, None) => "Leave blank to derive it from the payment term.".to_string(),
+                            }
+                        },
                         value: due_date.read().clone(),
                         error: due_date_error.read().clone(),
                         oninput: move |e: FormEvent| {
@@ -1726,6 +1771,14 @@ pub fn InvoiceNewPage() -> Element {
                             due_date.set(e.value());
                         },
                     }
+                }
+
+                Select {
+                    name: "payment_term_id",
+                    label: "Payment Terms",
+                    options: term_options,
+                    value: payment_term_id.read().clone(),
+                    onchange: move |e: FormEvent| payment_term_id.set(e.value()),
                 }
 
                 crate::components::Input {
@@ -2673,6 +2726,24 @@ struct PaymentTermOpt {
     name: String,
     #[serde(default)]
     is_active: bool,
+    /// MAPPS-662: seeds the create form's select.
+    #[serde(default)]
+    is_default: bool,
+    /// MAPPS-662: what the term means in days (PMS-990), for the derived
+    /// due date hint. `None` for a term with no fixed count.
+    #[serde(default)]
+    net_days: Option<i64>,
+}
+
+/// MAPPS-662: the due date the server will derive when the field is left
+/// blank: the invoice date plus the term's days, or plus thirty when the
+/// term names no count, which is the server's own fallback (PMS-990).
+/// `None` until there is an invoice date to add to.
+fn derived_due_date(invoice_date: &str, net_days: Option<i64>) -> Option<String> {
+    let date = chrono::NaiveDate::parse_from_str(invoice_date.trim(), "%Y-%m-%d").ok()?;
+    let days = net_days.unwrap_or(30);
+    let due = date.checked_add_signed(chrono::Duration::days(days))?;
+    Some(due.format("%Y-%m-%d").to_string())
 }
 
 /// MAPPS-158: edit a draft/pending invoice's header fields. Wired to
@@ -2685,6 +2756,10 @@ struct PaymentTermOpt {
 fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
     let mut invoice_date = use_signal(|| props.invoice_date.clone());
     let mut due_date = use_signal(|| props.due_date.clone());
+    // MAPPS-662: whether the operator edited the due date in this session.
+    // Untouched, it is not sent, so a term change re-derives it server-side
+    // (PMS-990) and an unchanged term keeps it as it was.
+    let mut due_touched = use_signal(|| false);
     let mut payment_term_id = use_signal(|| props.payment_term_id.clone());
     let mut po_number = use_signal(|| props.po_number.clone());
     let mut notes = use_signal(|| props.notes.clone());
@@ -2809,7 +2884,8 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             "Invoice date",
             &[Rule::Required],
         ));
-        due_date_err.set(guard.field("due_date", &due, "Due date", &[Rule::Required]));
+        // MAPPS-662: optional; an untouched date is left to the server.
+        due_date_err.set(String::new());
 
         // Validate the line items and build the request set (MAPPS-234). An
         // invoice must keep at least one line; each line needs a description and
@@ -2892,7 +2968,9 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             .unwrap_or_else(|| computed_tax.read().clone());
         let body = serde_json::json!({
             "invoice_date": inv_date,
-            "due_date": due,
+            // MAPPS-662: only what the operator typed. Null leaves the date to
+            // the server, which keeps it unless the term changed.
+            "due_date": if *due_touched.read() { optional_string(&due) } else { serde_json::Value::Null },
             "payment_term_id": optional_string(&payment_term_id.read()),
             "po_number": optional_string(&po_number.read()),
             "notes": optional_string(&notes.read()),
@@ -2966,12 +3044,12 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                     crate::components::DateField {
                         name: "due_date",
                         label: "Due Date",
-                        required: true,
-                        rules: vec![Rule::Required],
+                        help: "Change the payment term and leave this as it is to have the due date re-derived from the term.",
                         error: due_date_err(),
                         value: due_date.read().clone(),
                         oninput: move |e: FormEvent| {
                             due_date_err.set(String::new());
+                            due_touched.set(true);
                             due_date.set(e.value());
                         },
                     }
@@ -4177,5 +4255,30 @@ mod invoice_preview_tests {
         assert!(unknown
             .subject
             .starts_with("Invoice INV-1 from Your organisation"));
+    }
+}
+
+#[cfg(test)]
+mod derived_due_date_tests {
+    use super::derived_due_date;
+
+    /// The hint mirrors the server's rule: invoice date plus the term's days,
+    /// thirty when the term names no count, nothing until there is a date.
+    #[test]
+    fn the_hint_follows_the_servers_rule() {
+        assert_eq!(
+            derived_due_date("2026-03-01", Some(15)),
+            Some("2026-03-16".to_string())
+        );
+        assert_eq!(
+            derived_due_date("2026-03-01", Some(0)),
+            Some("2026-03-01".to_string())
+        );
+        assert_eq!(
+            derived_due_date("2026-03-01", None),
+            Some("2026-03-31".to_string())
+        );
+        assert_eq!(derived_due_date("", Some(30)), None);
+        assert_eq!(derived_due_date("not a date", Some(30)), None);
     }
 }
