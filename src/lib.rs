@@ -497,6 +497,13 @@ pub enum Route {
     #[route("/payment-gateways")]
     PaymentGatewayConfig {},
 
+    // MAPPS-638: credit notes, the correction path for a sent invoice.
+    #[route("/credit-notes")]
+    CreditNoteList {},
+
+    #[route("/credit-notes/:id")]
+    CreditNoteDetail { id: String },
+
     // Assets
     #[route("/assets")]
     AssetList {},
@@ -1260,6 +1267,24 @@ fn PaymentGatewayConfig() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             billing::PaymentGatewayConfigPage {}
+        }
+    }
+}
+
+#[component]
+fn CreditNoteList() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            credit_notes::CreditNoteListPage {}
+        }
+    }
+}
+
+#[component]
+fn CreditNoteDetail(id: String) -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            credit_notes::CreditNoteDetailPage { id }
         }
     }
 }
