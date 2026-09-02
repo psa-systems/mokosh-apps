@@ -20,15 +20,17 @@
 //! host-side `cargo test --lib` has no browser to drive the form with.
 
 use dioxus::prelude::*;
+use rust_decimal::Decimal;
 use serde::Deserialize;
+use std::str::FromStr;
 
 use crate::components::{
-    credit_note_status_badge, use_page_title, Badge, Button, ButtonVariant, Card, DataTable,
-    ErrorBanner, PageHeader, Select, SelectOption, Table, TableBody, TableCell, TableEmpty,
-    TableHead, TableHeader, TableLoading, TableRow,
+    credit_note_status_badge, use_page_title, Badge, Button, ButtonSize, ButtonVariant, Card,
+    DataTable, ErrorBanner, Modal, ModalSize, PageHeader, Select, SelectOption, Table, TableBody,
+    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::utils::money::format_money_str;
-use crate::utils::Paginated;
+use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
 /// Rows per page for the list.
@@ -100,6 +102,18 @@ struct RemoteInvoiceBalance {
     amount_credited: String,
     #[serde(default)]
     balance_due: String,
+}
+
+/// Fetch the credit notes raised against one invoice. Best-effort: an empty
+/// list on error, so the invoice page still renders without them.
+pub(crate) async fn load_invoice_credit_notes(invoice_id: &str) -> Vec<RemoteCreditNote> {
+    let path = format!("/credit-notes?invoice_id={invoice_id}");
+    crate::hooks::fetch::api::get_all_authed::<RemoteCreditNote>(&path)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("credit note load failed for invoice {invoice_id}: {e}");
+            Vec::new()
+        })
 }
 
 // ============================================================================
@@ -873,6 +887,425 @@ fn CreditNoteDetailBody(id: String) -> Element {
                     }
                 }
             },
+        }
+    }
+}
+
+// ============================================================================
+// Create
+// ============================================================================
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct CreditLine {
+    description: String,
+    quantity: String,
+    unit_price: String,
+    description_err: String,
+    quantity_err: String,
+    unit_price_err: String,
+}
+
+#[derive(Props, Clone, PartialEq)]
+pub struct CreditNoteFormModalProps {
+    /// The invoice being corrected.
+    pub invoice_id: String,
+    pub invoice_number: String,
+    /// The invoice's decimal strings, as the server sent them.
+    pub invoice_total: String,
+    pub amount_credited: String,
+    pub onclose: EventHandler<()>,
+    /// Fires with the new credit note's id.
+    pub oncreated: EventHandler<String>,
+}
+
+/// The create form. POST `/credit-notes`, issued the moment it is created:
+/// there is no draft state, which is why the button says Issue rather than
+/// Save.
+#[component]
+pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
+    let mut reason = use_signal(String::new);
+    let mut issue_date = use_signal(String::new);
+    let mut tax_amount = use_signal(String::new);
+    let mut notes = use_signal(String::new);
+    let mut lines = use_signal(|| vec![CreditLine::default()]);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+    let mut reason_err = use_signal(String::new);
+    let mut tax_err = use_signal(String::new);
+    let can_mutate = crate::hooks::use_can_mutate();
+
+    let onclose = props.onclose;
+    let oncreated = props.oncreated;
+
+    // Everything below re-derives from the signals on each render, so the
+    // remaining amount and the live total track the fields as they are typed.
+    let remaining =
+        credit_note_math::remaining_to_credit(&props.invoice_total, &props.amount_credited);
+    let line_pairs: Vec<(String, String)> = lines
+        .read()
+        .iter()
+        .map(|l| (l.quantity.clone(), l.unit_price.clone()))
+        .collect();
+    let live_subtotal = credit_note_math::subtotal(&line_pairs);
+    let live_tax = credit_note_math::tax(&tax_amount.read()).unwrap_or(Decimal::ZERO);
+    let live_total = live_subtotal + live_tax;
+    let remaining_label = remaining
+        .map(crate::utils::money::format_money)
+        .unwrap_or_else(|| "unknown".to_string());
+    let over_cap = remaining.map(|r| live_total > r).unwrap_or(false);
+
+    let invoice_id = props.invoice_id.clone();
+    let handle_save = move |_| {
+        if *saving.read() {
+            return;
+        }
+        error.set(String::new());
+
+        let mut guard = FormGuard::new();
+        let reason_v = reason.read().trim().to_string();
+        reason_err.set(guard.field(
+            "credit_note_reason",
+            &reason_v,
+            "Reason",
+            &[Rule::Required, Rule::MaxLen(2000)],
+        ));
+
+        let tax_v = tax_amount.read().trim().to_string();
+        let tax = match credit_note_math::tax(&tax_v) {
+            Ok(t) => {
+                tax_err.set(String::new());
+                t
+            }
+            Err(msg) => {
+                tax_err.set(msg);
+                guard.note_invalid(Some("credit_note_tax"));
+                Decimal::ZERO
+            }
+        };
+
+        // Per-line rules, each reported on its own field. Strictly positive
+        // on quantity and unit price, which is the server's rule and tighter
+        // than the invoice editor's.
+        let snapshot = lines.read().clone();
+        let mut lines_json = Vec::with_capacity(snapshot.len());
+        let mut subtotal = Decimal::ZERO;
+        for (idx, line) in snapshot.iter().enumerate() {
+            let description = line.description.trim().to_string();
+            let quantity = line.quantity.trim().to_string();
+            let unit_price = line.unit_price.trim().to_string();
+            let description_err = guard.field(
+                &format!("credit_line_description_{idx}"),
+                &description,
+                "Description",
+                &[Rule::Required, Rule::MaxLen(1000)],
+            );
+            let quantity_err = positive_field(
+                &mut guard,
+                &format!("credit_line_quantity_{idx}"),
+                &quantity,
+                "Quantity",
+            );
+            let unit_price_err = positive_field(
+                &mut guard,
+                &format!("credit_line_unit_price_{idx}"),
+                &unit_price,
+                "Unit price",
+            );
+            {
+                let mut w = lines.write();
+                w[idx].description_err = description_err;
+                w[idx].quantity_err = quantity_err;
+                w[idx].unit_price_err = unit_price_err;
+            }
+            if let Some(amount) = credit_note_math::line_amount(&quantity, &unit_price) {
+                subtotal += amount;
+            }
+            lines_json.push(serde_json::json!({
+                "line_type": "service",
+                "description": description,
+                "quantity": quantity,
+                "unit_price": unit_price,
+                "sort_order": idx as i32,
+            }));
+        }
+        if snapshot.is_empty() {
+            error.set("Add at least one line: a credit note must credit something.".to_string());
+            return;
+        }
+        if guard.blocked() {
+            return;
+        }
+        if let Some(remaining) = remaining {
+            if let Some(msg) = credit_note_math::document_error(subtotal + tax, remaining) {
+                error.set(msg);
+                return;
+            }
+        }
+
+        let issue_date_v = issue_date.read().trim().to_string();
+        let notes_v = notes.read().trim().to_string();
+        let mut body = serde_json::json!({
+            "invoice_id": invoice_id,
+            "reason": reason_v,
+            "lines": lines_json,
+        });
+        if !issue_date_v.is_empty() {
+            body["issue_date"] = serde_json::Value::String(issue_date_v);
+        }
+        if !tax_v.is_empty() {
+            body["tax_amount"] = serde_json::Value::String(tax_v);
+        }
+        if !notes_v.is_empty() {
+            body["notes"] = serde_json::Value::String(notes_v);
+        }
+
+        saving.set(true);
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                match crate::hooks::fetch::api::post_authed::<RemoteCreditNote, _>(
+                    "/credit-notes",
+                    &body,
+                )
+                .await
+                {
+                    Ok(created) => {
+                        crate::hooks::toast::push_toast(
+                            crate::components::AlertType::Success,
+                            format!("Credit note {} issued", created.credit_note_number),
+                        );
+                        oncreated.call(created.id.to_string());
+                    }
+                    Err(err) => error.set(format!("Could not issue credit note: {err}")),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    let footer = rsx! {
+        div { class: "flex-1" }
+        Button {
+            variant: ButtonVariant::Secondary,
+            onclick: move |_| onclose.call(()),
+            "Cancel"
+        }
+        Button {
+            variant: ButtonVariant::Primary,
+            loading: *saving.read(),
+            // MAPPS-357: block the save while the server is unreachable.
+            disabled: !can_mutate,
+            title: (!can_mutate).then(|| "Can't issue a credit note while the server is unreachable".to_string()),
+            onclick: handle_save,
+            "Issue Credit Note"
+        }
+    };
+
+    rsx! {
+        Modal {
+            open: true,
+            title: format!("Credit Note for Invoice {}", props.invoice_number),
+            size: ModalSize::Large,
+            onclose: move |_| onclose.call(()),
+            footer,
+            div { class: "space-y-4",
+                if !error.read().is_empty() {
+                    ErrorBanner { "{error.read()}" }
+                }
+                p { class: "text-sm text-muted",
+                    "A credit note is issued the moment it is created and cannot be edited afterwards. It reduces what is owed on this invoice; crediting the whole remaining amount voids the invoice."
+                }
+                crate::components::Textarea {
+                    name: "credit_note_reason",
+                    label: "Reason",
+                    placeholder: "Why this invoice is being corrected, as the customer and an auditor will read it",
+                    required: true,
+                    rows: 3,
+                    rules: vec![Rule::Required, Rule::MaxLen(2000)],
+                    error: reason_err(),
+                    value: reason.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        reason_err.set(String::new());
+                        reason.set(e.value());
+                    },
+                }
+                div {
+                    div { class: "flex items-center justify-between mb-3",
+                        h3 { class: "text-sm font-medium text-content", "Lines to credit" }
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            size: ButtonSize::Small,
+                            onclick: move |_| {
+                                lines.write().push(CreditLine::default());
+                            },
+                            "Add line"
+                        }
+                    }
+                    p { class: "mb-3 text-xs text-subtle",
+                        "Every line is an amount given back, so quantity and unit price are both positive. Enter what is being credited, not a negative charge."
+                    }
+                    if lines.read().is_empty() {
+                        p { class: "text-sm text-muted",
+                            "No lines. Add at least one before issuing."
+                        }
+                    }
+                    div { class: "space-y-3",
+                        for (idx , line) in lines.read().clone().into_iter().enumerate() {
+                            div {
+                                key: "{idx}",
+                                class: "grid grid-cols-1 gap-3 sm:grid-cols-[1fr_90px_120px_auto] sm:items-end",
+                                crate::components::Input {
+                                    name: "credit_line_description_{idx}",
+                                    label: "Description",
+                                    required: true,
+                                    maxlength: 1000,
+                                    placeholder: "What is being credited",
+                                    rules: vec![Rule::Required],
+                                    error: line.description_err.clone(),
+                                    value: line.description.clone(),
+                                    oninput: move |e: FormEvent| {
+                                        let mut w = lines.write();
+                                        w[idx].description = e.value();
+                                        w[idx].description_err = String::new();
+                                    },
+                                }
+                                crate::components::Input {
+                                    name: "credit_line_quantity_{idx}",
+                                    label: "Qty",
+                                    r#type: "number",
+                                    required: true,
+                                    step: "0.01".to_string(),
+                                    min: "0.01".to_string(),
+                                    placeholder: "Qty",
+                                    error: line.quantity_err.clone(),
+                                    value: line.quantity.clone(),
+                                    oninput: move |e: FormEvent| {
+                                        let mut w = lines.write();
+                                        w[idx].quantity = e.value();
+                                        w[idx].quantity_err = String::new();
+                                    },
+                                }
+                                crate::components::Input {
+                                    name: "credit_line_unit_price_{idx}",
+                                    label: "Unit Price",
+                                    r#type: "number",
+                                    required: true,
+                                    step: "0.01".to_string(),
+                                    min: "0.01".to_string(),
+                                    placeholder: "0.00",
+                                    error: line.unit_price_err.clone(),
+                                    value: line.unit_price.clone(),
+                                    oninput: move |e: FormEvent| {
+                                        let mut w = lines.write();
+                                        w[idx].unit_price = e.value();
+                                        w[idx].unit_price_err = String::new();
+                                    },
+                                }
+                                Button {
+                                    variant: ButtonVariant::Ghost,
+                                    onclick: move |_| {
+                                        lines.write().remove(idx);
+                                    },
+                                    "Remove"
+                                }
+                            }
+                        }
+                    }
+                }
+                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                    crate::components::Input {
+                        name: "credit_note_tax",
+                        label: "Tax",
+                        r#type: "number",
+                        step: "0.01".to_string(),
+                        min: "0".to_string(),
+                        placeholder: "0.00",
+                        help: "Optional. The tax portion of the amount credited; leave blank for none.",
+                        error: tax_err(),
+                        value: tax_amount.read().clone(),
+                        oninput: move |e: FormEvent| {
+                            tax_err.set(String::new());
+                            tax_amount.set(e.value());
+                        },
+                    }
+                    crate::components::DateField {
+                        name: "credit_note_issue_date",
+                        label: "Issue Date",
+                        help: "Defaults to today.",
+                        value: issue_date.read().clone(),
+                        oninput: move |e: FormEvent| issue_date.set(e.value()),
+                    }
+                }
+                crate::components::Textarea {
+                    name: "credit_note_notes",
+                    label: "Notes",
+                    placeholder: "Optional: anything the customer should see on the document",
+                    rows: 2,
+                    value: notes.read().clone(),
+                    oninput: move |e: FormEvent| notes.set(e.value()),
+                }
+
+                // The cap, beside the live total, so the operator sees the
+                // ceiling before pressing Issue rather than in a 400.
+                div { class: "border-t border-line pt-4",
+                    div { class: "flex justify-end",
+                        div { class: "w-72 space-y-2 text-sm",
+                            div { class: "flex justify-between",
+                                span { class: "text-muted", "Subtotal" }
+                                span { "{crate::utils::money::format_money(live_subtotal)}" }
+                            }
+                            div { class: "flex justify-between",
+                                span { class: "text-muted", "Tax" }
+                                span { "{crate::utils::money::format_money(live_tax)}" }
+                            }
+                            div { class: "flex justify-between font-bold pt-2 border-t border-line",
+                                span { "Total to credit" }
+                                span { class: if over_cap { "text-red-600 dark:text-red-300" } else { "" },
+                                    "{crate::utils::money::format_money(live_total)}"
+                                }
+                            }
+                            div { class: "flex justify-between",
+                                span { class: "text-muted", "Left to credit on this invoice" }
+                                span { "{remaining_label}" }
+                            }
+                            if over_cap {
+                                p { class: "text-xs text-red-600 dark:text-red-300",
+                                    "The total is more than what is left to credit."
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A line's quantity or unit price: required, a number, and strictly
+/// positive. Reported on the field and blocking the submit, through the same
+/// guard as the other fields so the first invalid one is focused.
+fn positive_field(guard: &mut FormGuard, id: &str, value: &str, label: &str) -> String {
+    let base = guard.field(
+        id,
+        value,
+        label,
+        &[
+            Rule::Required,
+            Rule::Number {
+                min: None,
+                max: None,
+                max_decimals: None,
+            },
+        ],
+    );
+    if !base.is_empty() {
+        return base;
+    }
+    match Decimal::from_str(value) {
+        Ok(v) if v > Decimal::ZERO => String::new(),
+        _ => {
+            guard.note_invalid(Some(id));
+            format!("{label} must be greater than zero")
         }
     }
 }

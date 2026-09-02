@@ -559,6 +559,10 @@ struct InvoiceDetail {
     total: String,
     #[serde(default)]
     amount_paid: String,
+    /// MAPPS-638: what has been credited back, so the page can say what is
+    /// left to credit and offer a credit note only while something is.
+    #[serde(default)]
+    amount_credited: String,
     #[serde(default)]
     balance_due: String,
     #[serde(default)]
@@ -634,16 +638,28 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         }
     });
 
+    // MAPPS-638: the credit notes raised against this invoice. Restarted with
+    // the invoice after one is issued, so the card and the balance agree.
+    let id_for_notes = props.id.clone();
+    let mut credit_notes_resource = use_resource(move || {
+        let id = id_for_notes.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::pages::credit_notes::load_invoice_credit_notes(&id).await
+        }
+    });
+
     // MAPPS-158: detail-page lifecycle actions. `PUT /invoices/{id}`
     // freezes header/line/status edits once an invoice leaves
     // draft/pending (`InvoiceStatus::is_frozen`), so Edit, Send and Void are
     // surfaced only while the invoice is editable. Record Payment
     // (`POST /payments`) is offered whenever a balance can still be
     // collected. The backend exposes no route to delete, un-send, or email an
-    // invoice, and editing line items requires a credit note (out of scope),
+    // invoice, and editing line items requires a credit note (MAPPS-638, below),
     // so those actions are intentionally not surfaced here.
     let mut show_edit = use_signal(|| false);
     let mut show_payment = use_signal(|| false);
+    let mut show_credit_note = use_signal(|| false);
     let mut busy = use_signal(|| false);
     let mut action_error = use_signal(String::new);
 
@@ -663,17 +679,38 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         .unwrap_or_default();
     let editable = matches!(status.as_str(), "draft" | "pending");
     let collectible = matches!(status.as_str(), "pending" | "sent" | "partially_paid");
+    // MAPPS-638: a credit note corrects a frozen invoice, and only while
+    // something is left to credit: the total less what is already credited,
+    // and NOT less what was paid, because a paid invoice can be credited in
+    // full (that is the case where the customer is owed money back). Absent
+    // rather than disabled on a draft: the server refuses to credit a
+    // document that can still be edited, and a control that can never work
+    // should not be on the page.
+    let frozen = matches!(
+        status.as_str(),
+        "sent" | "partially_paid" | "paid" | "void" | "written_off"
+    );
+    let remaining_to_credit = invoice
+        .as_ref()
+        .and_then(|i| {
+            crate::pages::credit_notes::credit_note_math::remaining_to_credit(
+                &i.total,
+                &i.amount_credited,
+            )
+        })
+        .unwrap_or(Decimal::ZERO);
+    let creditable = frozen && remaining_to_credit > Decimal::ZERO;
     // PMS-580: a frozen invoice (sent and beyond) is a finalized financial
     // record. There is no edit / cancel / void once sent; correction goes
-    // through a credit note (not yet built). Spell that out inline so the
+    // through a credit note (MAPPS-638, the Credit Notes card). Say so inline so the
     // missing actions read as intentional rather than broken. Draft / pending
     // show nothing here (their actions, including Void, are available above).
     let frozen_note = match status.as_str() {
         "sent" | "partially_paid" => Some(
-            "This invoice has been sent and is now a finalized record. It can't be edited, cancelled, or voided. Record a payment to collect the balance; corrections are made with a credit note.",
+            "This invoice has been sent and is now a finalized record. It can't be edited, cancelled, or voided. Record a payment to collect the balance; corrections are made with a credit note, from the Credit Notes card.",
         ),
         "paid" => Some(
-            "This invoice is paid and finalized. It can't be edited or voided; corrections are made with a credit note.",
+            "This invoice is paid and finalized. It can't be edited or voided; corrections are made with a credit note, from the Credit Notes card.",
         ),
         "void" => Some("This invoice has been voided and is kept on record. It can't be edited or reinstated."),
         "written_off" => Some("This invoice has been written off and is kept on record. It can't be edited or reinstated."),
@@ -839,6 +876,19 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         "Record Payment"
                     }
                 }
+                if creditable {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        // MAPPS-357: block raising a credit note while down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't raise a credit note while the server is unreachable".to_string()),
+                        onclick: move |_| {
+                            action_error.set(String::new());
+                            show_credit_note.set(true);
+                        },
+                        "Create Credit Note"
+                    }
+                }
                 if editable {
                     Button {
                         variant: ButtonVariant::Danger,
@@ -921,6 +971,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                 let discount_amount = format_money_str(&inv.discount_amount);
                 let total = format_money_str(&inv.total);
                 let amount_paid = format_money_str(&inv.amount_paid);
+                let amount_credited = format_money_str(&inv.amount_credited);
                 let balance_due = format_money_str(&inv.balance_due);
                 rsx! {
                     div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
@@ -1034,8 +1085,65 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                         span { class: "font-medium text-green-600 dark:text-green-400", "{amount_paid}" }
                                     }
                                     div { class: "flex justify-between",
+                                        span { class: "text-muted", "Credited" }
+                                        span { class: "font-medium", "{amount_credited}" }
+                                    }
+                                    div { class: "flex justify-between",
                                         span { class: "text-muted", "Balance Due" }
                                         span { class: "text-lg font-bold", "{balance_due}" }
+                                    }
+                                }
+                            }
+
+                            // MAPPS-638: the corrections raised against this
+                            // invoice, and the place to raise one.
+                            Card { title: "Credit Notes",
+                                {
+                                    let notes = credit_notes_resource.read_unchecked().clone().unwrap_or_default();
+                                    rsx! {
+                                        if notes.is_empty() {
+                                            p { class: "text-sm text-muted",
+                                                if creditable {
+                                                    "No credit notes. Use Create Credit Note to correct this invoice."
+                                                } else if frozen {
+                                                    "No credit notes, and nothing is left to credit."
+                                                } else {
+                                                    "A credit note can be raised once this invoice has been sent."
+                                                }
+                                            }
+                                        } else {
+                                            ul { class: "space-y-2 text-sm",
+                                                for note in notes.iter() {
+                                                    li { key: "{note.id}", class: "flex justify-between items-center gap-2",
+                                                        Link {
+                                                            to: Route::CreditNoteDetail { id: note.id.to_string() },
+                                                            class: "font-medium text-accent hover:opacity-90",
+                                                            "{note.credit_note_number}"
+                                                        }
+                                                        span { class: "text-muted", "{format_money_str(&note.total)}" }
+                                                        {
+                                                            let (variant, label) = crate::components::credit_note_status_badge(&note.status);
+                                                            rsx! { Badge { variant, "{label}" } }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if creditable {
+                                            div { class: "mt-3",
+                                                Button {
+                                                    variant: ButtonVariant::Secondary,
+                                                    size: ButtonSize::Small,
+                                                    disabled: !can_mutate,
+                                                    title: (!can_mutate).then(|| "Can't raise a credit note while the server is unreachable".to_string()),
+                                                    onclick: move |_| {
+                                                        action_error.set(String::new());
+                                                        show_credit_note.set(true);
+                                                    },
+                                                    "Create Credit Note"
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1118,6 +1226,25 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                     show_payment.set(false);
                     invoice_resource.restart();
                 },
+            }
+        }
+
+        // MAPPS-638: the create form. Mounted here and nowhere else, because a
+        // credit note is always about one invoice.
+        if *show_credit_note.read() {
+            if let Some(inv) = invoice.clone() {
+                crate::pages::credit_notes::CreditNoteFormModal {
+                    invoice_id: props.id.clone(),
+                    invoice_number: inv.invoice_number.clone(),
+                    invoice_total: inv.total.clone(),
+                    amount_credited: inv.amount_credited.clone(),
+                    onclose: move |_| show_credit_note.set(false),
+                    oncreated: move |_id: String| {
+                        show_credit_note.set(false);
+                        invoice_resource.restart();
+                        credit_notes_resource.restart();
+                    },
+                }
             }
         }
     }
