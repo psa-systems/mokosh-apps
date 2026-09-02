@@ -18,28 +18,16 @@ use crate::modules::system::{get_version, SystemVersion};
 
 const DISMISS_KEY_PREFIX: &str = "mokosh-update-dismissed-";
 
-/// True when localStorage holds a dismissal record for this exact
+/// True when the durable store holds a dismissal record for this exact
 /// pair of latest versions. Failing closed (returning false) on any
 /// access error means the banner still shows; an admin who can't
 /// dismiss is better than an admin who never sees the notification.
 fn is_dismissed(key: &str) -> bool {
-    let Some(win) = web_sys::window() else {
-        return false;
-    };
-    let Ok(Some(storage)) = win.local_storage() else {
-        return false;
-    };
-    matches!(storage.get_item(key), Ok(Some(_)))
+    crate::platform::prefs::get(key).is_some()
 }
 
 fn mark_dismissed(key: &str) {
-    let Some(win) = web_sys::window() else {
-        return;
-    };
-    let Ok(Some(storage)) = win.local_storage() else {
-        return;
-    };
-    let _ = storage.set_item(key, "1");
+    crate::platform::prefs::set(key, "1");
 }
 
 /// Build the dismissal key from both the server and client latest

@@ -6,12 +6,39 @@ use serde::Deserialize;
 
 use crate::components::{
     clear_selection, ticket_status_badge, use_bulk_selection, use_page_title, AlertType, Badge,
-    BadgeVariant, BulkActionsBar, BulkSelection, Button, ButtonVariant, Card, ClockIcon, DataTable,
-    ErrorBanner, IconSize, Input, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select,
-    SelectAllHeader, SelectOption, SelectRowCell, SortDirection, Table, TableBody, TableCell,
-    TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, UserCircleIcon,
+    BadgeVariant, BulkActionsBar, BulkSelection, Button, ButtonVariant, Card, Checkbox, ClockIcon,
+    DataTable, ErrorBanner, IconSize, Input, MailIcon, Modal, PageHeader, PencilIcon, PlusIcon,
+    SearchInput, Select, SelectAllHeader, SelectOption, SelectRowCell, SortDirection, Table,
+    TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea,
+    UserCircleIcon,
 };
+use crate::components::{ChangeDetails, ChangeLine};
+// MAPPS-596: shared with the project, task and asset change-history panes.
+use crate::modules::audit::{action_label, fields_label, title_field};
 use crate::utils::{FormGuard, Paginated, Rule};
+use mokosh_types::tickets::NoteType;
+
+/// MAPPS-546: rows per page on the ticket list, sent to the server rather than
+/// written into the table as a constant.
+const PER_PAGE: usize = 25;
+
+/// MAPPS-517: entries rendered in the ticket journal. The stream merges three
+/// sources, each read in full, so a long-running ticket would otherwise render
+/// hundreds of list items; the count of the rest is stated under the stream.
+const JOURNAL_LIMIT: usize = 50;
+
+/// What the email preview says for a public note. mokosh-server builds the
+/// note mail in `tickets/service.rs` with a built-in template rather than
+/// through the notification dispatcher, so the preview comes back empty and
+/// would otherwise read as "nothing will be sent". Same shape as
+/// `QUOTE_PREVIEW_NOTE` in `quotes.rs` (docs/email-actions.md).
+/// MAPPS-613: shown under the email checkbox, which is now only rendered on a
+/// public note. It no longer has to explain why the control is greyed out,
+/// because there is no greyed-out control; it states the one thing that can
+/// still surprise the author.
+const NOTE_EMAIL_HELP: &str = "Sent to the ticket's contact. Nothing is sent when the ticket has no contact with an email address.";
+
+const NOTE_PREVIEW_NOTE: &str = "The ticket-note email is built into the server rather than by a notification rule, so there is nothing to render yet. The ticket's contact is still emailed the note.";
 use crate::Route;
 
 /// MAPPS-607: cap on a client-side attachment upload before base64
@@ -96,9 +123,8 @@ struct RemoteTicket {
 struct RemoteSummary {
     /// Server-side `TicketStatusSummary` / `TicketPrioritySummary` always
     /// carry an `id`; the field is optional here only because legacy code
-    /// paths and the demo-data fallback may omit it. PMS-359 reads it as
-    /// the canonical "currently saved" selection for the inline editors
-    /// on the ticket detail page.
+    /// paths may omit it. PMS-359 reads it as the canonical "currently
+    /// saved" selection for the inline editors on the ticket detail page.
     #[serde(default)]
     id: Option<uuid::Uuid>,
     #[serde(default)]
@@ -154,6 +180,15 @@ struct RemoteTicketDetail {
     asset_id: Option<uuid::Uuid>,
     #[serde(default)]
     asset_name: Option<String>,
+    /// PMS-730: the KB article describing HOW to perform this ticket's
+    /// work, stamped by the request-form flow. The server joins the
+    /// title on every read so the sidebar links it without a second
+    /// fetch. Not `source_kb_article_id`, which is the article the
+    /// ticket was opened FROM (server migration 099 keeps them apart).
+    #[serde(default)]
+    procedure_kb_article_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    procedure_kb_article_title: Option<String>,
     #[serde(default)]
     created_by_name: String,
     created_at: DateTime<Utc>,
@@ -215,16 +250,114 @@ struct RemoteUserLookup {
     email: String,
 }
 
-/// A ticket note (`GET /tickets/:id/notes`), rendered as an Activity item.
+/// A ticket note (`GET /tickets/:id/notes`), rendered as a journal entry.
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteNote {
+    /// MAPPS-593: needed to address the note for an edit. The server has always
+    /// sent it (`TicketNoteResponse.id`); this DTO simply never read it.
+    id: uuid::Uuid,
     #[serde(default)]
     note_type: String,
     #[serde(default)]
     content: String,
     #[serde(default)]
     created_by_name: String,
+    /// MAPPS-517: the server records on the note row whether the public-note
+    /// email actually went out (`TicketNoteResponse.is_email_sent`), so the
+    /// journal states what happened rather than what was asked for.
+    #[serde(default)]
+    is_email_sent: bool,
+    /// MAPPS-593: who wrote it, so the viewer can be told apart from everyone
+    /// else without comparing display names.
+    #[serde(default)]
+    created_by_id: Option<uuid::Uuid>,
+    /// PMS-449: set when a portal contact wrote the note. An agent never edits
+    /// the customer's own words, so this is one of the reasons a note carries
+    /// no Edit control.
+    #[serde(default)]
+    created_by_contact_id: Option<uuid::Uuid>,
     created_at: DateTime<Utc>,
+    /// PMS-931: when it was last written. Equal to `created_at` for a note
+    /// nobody has edited, because both come from the same transaction's `NOW()`,
+    /// so "edited" is a strict `>`. Optional so a client running against a
+    /// server that predates PMS-931 decodes rather than failing the whole list.
+    #[serde(default)]
+    updated_at: Option<DateTime<Utc>>,
+}
+
+/// MAPPS-593: whether this viewer may edit this note.
+///
+/// Mirrors `TicketService::update_note`'s two gates so the affordance and the
+/// answer agree; a control that 403s or 409s is worse than no control. The
+/// server is the authority and its refusal is still handled, because these
+/// rules can only be enforced there.
+///
+/// The state half: a note the customer wrote through the portal is never an
+/// agent's to edit, an emailed public note is frozen because the customer holds
+/// the original in their inbox, and a `time_entry` note is edited through its
+/// time entry. The permission half: the author, or an admin.
+fn note_is_editable(note: &RemoteNote, viewer: Option<uuid::Uuid>, viewer_is_admin: bool) -> bool {
+    if note.created_by_contact_id.is_some() {
+        return false;
+    }
+    let kind_allows = match note.note_type.as_str() {
+        "internal" | "resolution" => true,
+        "public" => !note.is_email_sent,
+        // `time_entry`, and anything a future server adds. Unknown means no:
+        // guessing wrong here offers a control that cannot work.
+        _ => false,
+    };
+    if !kind_allows {
+        return false;
+    }
+    viewer_is_admin || (viewer.is_some() && viewer == note.created_by_id)
+}
+
+/// MAPPS-613: every `NoteType`, in the order the composer considers them.
+///
+/// Written out rather than iterated, because the shared enum offers no such
+/// list; `composer_label` below is what keeps it honest. A new variant fails
+/// to compile there, three lines from here.
+const ALL_NOTE_TYPES: [NoteType; 4] = [
+    NoteType::Internal,
+    NoteType::Public,
+    NoteType::Resolution,
+    NoteType::TimeEntry,
+];
+
+/// MAPPS-613: how the composer labels a note type, or `None` for one an agent
+/// must not author.
+///
+/// An exhaustive match rather than a list, because two of the four are not the
+/// same kind of thing. `time_entry` mirrors a time entry and nothing writes
+/// one: the server refuses to edit it on the grounds that "a time-entry note
+/// is edited through its time entry", so composing one by hand makes a note
+/// belonging to an entry that does not exist and that nobody can then correct.
+///
+/// The shape matters as much as the answer. A hand-written `vec!` is what let
+/// `resolution` go missing; iterating every variant would put `time_entry`
+/// back. Only a match fails the build on a fifth variant until somebody
+/// decides whether an agent may write it.
+fn composer_label(kind: NoteType) -> Option<&'static str> {
+    match kind {
+        NoteType::Internal => Some("Internal Note"),
+        NoteType::Public => Some("Public Note (visible to customer)"),
+        // Internal, like `internal`: the portal serves `note_type='public'`
+        // and nothing else, so a customer never sees one. The label says so,
+        // because the type name alone reads like a status the client is told.
+        NoteType::Resolution => Some("Resolution Note (internal)"),
+        NoteType::TimeEntry => None,
+    }
+}
+
+/// The composer's Note Type options.
+fn note_type_options() -> Vec<SelectOption> {
+    ALL_NOTE_TYPES
+        .iter()
+        .filter_map(|kind| {
+            composer_label(*kind).map(|label| SelectOption::new(kind.as_str(), label))
+        })
+        .collect()
 }
 
 /// One change-history entry (`GET /audit-log/entity/tickets/:id`, PMS-182).
@@ -275,6 +408,14 @@ struct RemoteTimeEntry {
     notes: Option<String>,
     #[serde(default)]
     is_billable: bool,
+    // MAPPS-517: the journal orders every source on one clock, so it needs the
+    // entry's creation instant rather than the work date, and the author to
+    // attribute the line. Both are on `TimeEntryResponse`; `Option` because the
+    // page decoded neither before and a missing field must not blank the list.
+    #[serde(default)]
+    created_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    user_id: Option<uuid::Uuid>,
 }
 
 /// Mirror of the server `SlaStatus` enum (snake_case wire form). Defaults
@@ -331,14 +472,6 @@ fn format_sla_due(due: DateTime<Utc>) -> String {
         format!("{} days left", secs / 86_400)
     };
     format!("{absolute} ({hint})")
-}
-
-/// Source of the rows currently on screen. Mirrors the companies-page
-/// pattern: backend if the fetch returned rows, demo otherwise.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum TicketSource {
-    Backend,
-    Demo,
 }
 
 /// Render a `DateTime<Utc>` as a coarse "X ago" string. Good enough
@@ -430,75 +563,182 @@ fn actor_name(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
     }
 }
 
-/// Humanize an audit action code for the change-history feed.
-fn action_label(action: &str) -> &'static str {
-    match action {
-        "create" => "Created",
-        "update" => "Updated",
-        "delete" => "Deleted",
-        _ => "Changed",
-    }
-}
-
-/// "description, status" to "Description, Status" for the change summary.
-fn fields_label(fields: &[String]) -> String {
-    fields
-        .iter()
-        .map(|f| title_field(f))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// "due_date" to "Due date" for a single field name.
+/// MAPPS-517: one line of the ticket journal, whatever source it came from.
 ///
-/// PMS-370: column names for foreign-key fields end in `_id`
-/// (`status_id`, `priority_id`, `assigned_to_id`). The audit log records
-/// the raw column name, so without trimming the suffix the change-history
-/// feed reads "Status id" / "Priority id" / "Assigned to id". Strip the
-/// trailing `_id` first so future FK fields render cleanly without a
-/// per-column allow-list.
-fn title_field(f: &str) -> String {
-    let trimmed = f.strip_suffix("_id").unwrap_or(f);
-    let mut s = trimmed.replace('_', " ");
-    if let Some(first) = s.get_mut(0..1) {
-        first.make_ascii_uppercase();
-    }
-    s
+/// The journal replaced an Activity card that rendered notes alone, so a
+/// reader could not tell from the record that a ticket had been reassigned,
+/// changed state or had time logged against it.
+#[derive(Clone, Debug, PartialEq)]
+struct JournalEntry {
+    at: DateTime<Utc>,
+    /// Display name of whoever did it, or "Someone" when unresolvable.
+    who: String,
+    /// Predicate, rendered after the name: "added an internal note".
+    action: String,
+    /// Body block under the headline: the note text or a time entry's notes.
+    /// `None` renders the headline alone.
+    ///
+    /// MAPPS-596: an edit's before/after is NOT here. It used to be, flattened
+    /// into this string, which is how a description edit came to print two
+    /// 160-character values into the middle of the journal. It carries its own
+    /// field below instead, so it can collapse when it is large while a note
+    /// stays visible: a note's text is the entry, not metadata about it.
+    body: Option<String>,
+    /// The before/after lines when this entry came from the audit log. Empty
+    /// for a note or a time entry.
+    changes: Vec<ChangeLine>,
+    /// MAPPS-593: the note this entry came from, when it is one THIS viewer may
+    /// edit. `None` on a change-history line, a time entry, or a note the
+    /// viewer may not edit, and that is what decides whether the Edit control
+    /// is rendered at all.
+    editable_note: Option<uuid::Uuid>,
+    /// MAPPS-593: the note has been edited since it was written. Marked on
+    /// screen, because an unmarked edit means the reader cannot tell that the
+    /// text in front of them is not what was written.
+    edited: bool,
 }
 
-/// A 36-char hyphenated UUID, which is not worth showing as before/after text.
-fn looks_like_uuid(s: &str) -> bool {
-    s.len() == 36
-        && s.as_bytes().iter().enumerate().all(|(i, b)| {
-            if matches!(i, 8 | 13 | 18 | 23) {
-                *b == b'-'
-            } else {
-                b.is_ascii_hexdigit()
-            }
-        })
+/// The name to attribute a journal line to. `actor_name` yields "-" for an
+/// id no `/auth/users` row matches, which reads as a broken row in a sentence.
+fn journal_actor(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
+    let name = actor_name(users, id);
+    if name == "-" {
+        "Someone".to_string()
+    } else {
+        name
+    }
 }
 
-/// Render an audit value for display: "(empty)" for null/blank, the trimmed
-/// text (truncated) for strings, a coarse marker for references/objects.
-fn fmt_change_value(v: &Option<serde_json::Value>) -> String {
-    match v {
-        None | Some(serde_json::Value::Null) => "(empty)".to_string(),
-        Some(serde_json::Value::String(s)) => {
-            let t = s.trim();
-            if t.is_empty() {
-                "(empty)".to_string()
-            } else if looks_like_uuid(t) {
-                "(reference)".to_string()
-            } else if t.chars().count() > 160 {
-                format!("{}…", t.chars().take(160).collect::<String>())
-            } else {
-                t.to_string()
-            }
-        }
-        Some(serde_json::Value::Bool(b)) => b.to_string(),
-        Some(serde_json::Value::Number(n)) => n.to_string(),
-        Some(_) => "(updated)".to_string(),
+/// Headline for an audit-log entry. A single-column edit gets the phrasing a
+/// reader expects for that column ("changed the status"); anything wider falls
+/// back to naming the columns, as the change-history pane always did.
+fn history_action(entry: &HistoryEntry) -> String {
+    match entry.action.as_str() {
+        "create" => return "created the ticket".to_string(),
+        "delete" => return "deleted the ticket".to_string(),
+        _ => {}
     }
+    match entry.changed_fields.as_slice() {
+        [] => format!("{} the ticket", action_label(&entry.action).to_lowercase()),
+        [one] => match one.as_str() {
+            "status_id" => "changed the status".to_string(),
+            "assigned_to_id" => "changed the assignee".to_string(),
+            other => format!("updated {}", title_field(other)),
+        },
+        many => format!("updated {}", fields_label(many)),
+    }
+}
+
+/// The before/after lines for an audit entry. Empty when every change on it is
+/// a bare reference (a FK swap the audit log records as two UUIDs), which
+/// `ChangeLine::build` drops because it reads as "(reference) → (reference)".
+fn history_changes(entry: &HistoryEntry) -> Vec<ChangeLine> {
+    entry
+        .changes
+        .iter()
+        .filter_map(|c| ChangeLine::build(&c.field, &c.old, &c.new))
+        .collect()
+}
+
+/// MAPPS-517: merge every source this page already fetches into one
+/// newest-first stream: notes, the ticket's audit log (state and assignment
+/// changes among them) and its time entries.
+///
+/// There is no single server activity feed for a ticket, so this is assembled
+/// here. It degrades rather than empties: a source that returns nothing (the
+/// audit log 404s, no time is logged) simply contributes no lines, leaving the
+/// notes-only stream the Activity card used to show. What it cannot include is
+/// anything no source records - attachments and approvals write no audit row
+/// against the ticket - which is why the journal says so on screen instead of
+/// reading as complete.
+fn build_journal(
+    notes: &[RemoteNote],
+    history: &[HistoryEntry],
+    time_entries: &[RemoteTimeEntry],
+    users: &[UserOpt],
+    viewer: Option<uuid::Uuid>,
+    viewer_is_admin: bool,
+) -> Vec<JournalEntry> {
+    let mut entries: Vec<JournalEntry> =
+        Vec::with_capacity(notes.len() + history.len() + time_entries.len());
+
+    for n in notes {
+        // The email only ever goes out for a public note, and only when the
+        // composer's toggle was on AND the ticket's contact has an address
+        // (mokosh-server `send_note_email`). `is_email_sent` is the outcome,
+        // so the line states what happened, not what was requested.
+        // MAPPS-613: this sentence is the only place a note's type is visible
+        // to a reader; there is no badge on the note itself. It used to read
+        // "internal, else public", so once `resolution` became composable
+        // every resolution note would have been announced as one a customer
+        // can see. The portal serves `note_type='public'` and nothing else, so
+        // a resolution note is as invisible to them as an internal one.
+        let action = match n.note_type.as_str() {
+            "internal" => "added an internal note".to_string(),
+            "resolution" => "added a resolution note (internal)".to_string(),
+            "public" if n.is_email_sent => "added a public note and emailed the client".to_string(),
+            "public" => "added a public note (not emailed)".to_string(),
+            // A type this build does not know. Say the least that is certainly
+            // true rather than assert it is public, which is the claim that
+            // costs something if it is wrong.
+            _ => "added a note".to_string(),
+        };
+        entries.push(JournalEntry {
+            at: n.created_at,
+            who: if n.created_by_name.trim().is_empty() {
+                "Someone".to_string()
+            } else {
+                n.created_by_name.clone()
+            },
+            action,
+            body: (!n.content.trim().is_empty()).then(|| n.content.clone()),
+            changes: Vec::new(),
+            editable_note: note_is_editable(n, viewer, viewer_is_admin).then_some(n.id),
+            // Strictly greater: both timestamps come from the same
+            // transaction's `NOW()` on insert, so an unedited note has them
+            // exactly equal.
+            edited: n.updated_at.is_some_and(|u| u > n.created_at),
+        });
+    }
+
+    for h in history {
+        entries.push(JournalEntry {
+            at: h.timestamp,
+            who: journal_actor(users, &h.user_id),
+            action: history_action(h),
+            body: None,
+            changes: history_changes(h),
+            editable_note: None,
+            edited: false,
+        });
+    }
+
+    for e in time_entries {
+        // `created_at` is when the entry was written, which is the journal's
+        // clock; the work date is in the headline. Older rows decoded without
+        // it fall back to midnight on the work date rather than dropping out.
+        let at = e.created_at.unwrap_or_else(|| {
+            DateTime::<Utc>::from_naive_utc_and_offset(e.date.and_time(chrono::NaiveTime::MIN), Utc)
+        });
+        let billable = if e.is_billable { " (billable)" } else { "" };
+        entries.push(JournalEntry {
+            at,
+            who: journal_actor(users, &e.user_id),
+            action: format!("logged {} min on {}{billable}", e.duration_minutes, e.date),
+            body: e.notes.clone().filter(|s| !s.trim().is_empty()),
+            changes: Vec::new(),
+            editable_note: None,
+            edited: false,
+        });
+    }
+
+    // Newest first, matching the ordering the Activity card had. `Reverse` on a
+    // key rather than a flipped comparator: `DateTime<Utc>` is `Copy`, so the
+    // key costs nothing, and `clippy::unnecessary_sort_by` rejects the
+    // comparator form. Both are stable sorts, so entries sharing a timestamp
+    // keep the order they were pushed in.
+    entries.sort_by_key(|e| std::cmp::Reverse(e.at));
+    entries
 }
 
 /// MAPPS-289: sortable columns on the ticket list. Mirrors the
@@ -515,6 +755,92 @@ enum TicketSortKey {
     Updated,
 }
 
+/// MAPPS-546: the server's name for each sortable column.
+///
+/// These are the keys PMS-894 put on `list_ticket_responses`' allow-list. They
+/// are deliberately not SQL: the server maps them to expressions, so this
+/// client cannot name a column even by accident.
+///
+/// PMS-897: every value here is asserted against `mokosh_types::sort::TICKETS`
+/// by the test below. `scripts/check-sort-keys.sh` cannot see this function -
+/// it forbids a hardcoded `sort=` LITERAL, and these reach the query string
+/// through interpolation - so until that test existed, six sort keys went to
+/// the server unchecked against any allow-list. Since MAPPS-533 an unlisted one
+/// is a 422, so a drift here breaks the ticket list rather than reordering it
+/// quietly.
+fn ticket_sort_param(key: TicketSortKey) -> &'static str {
+    match key {
+        TicketSortKey::Ticket => "ticket_number",
+        TicketSortKey::Company => "company_name",
+        TicketSortKey::Status => "status",
+        TicketSortKey::Priority => "priority",
+        TicketSortKey::Assigned => "assigned_to_name",
+        TicketSortKey::Updated => "updated_at",
+    }
+}
+
+#[cfg(test)]
+mod pms897_sort_tests {
+    use super::{ticket_sort_param, TicketSortKey};
+
+    /// Every key this page can send is one the server accepts.
+    ///
+    /// The enum is matched exhaustively rather than iterated, so adding a
+    /// variant fails to compile here until someone decides what the server
+    /// calls it - which is the check `check-sort-keys.sh` structurally cannot
+    /// make, since these values never appear as literals in a query string.
+    #[test]
+    fn every_sort_key_this_page_sends_is_one_the_server_accepts() {
+        let all = [
+            TicketSortKey::Ticket,
+            TicketSortKey::Company,
+            TicketSortKey::Status,
+            TicketSortKey::Priority,
+            TicketSortKey::Assigned,
+            TicketSortKey::Updated,
+        ];
+        for key in all {
+            let param = ticket_sort_param(key);
+            assert!(
+                mokosh_types::sort::TICKETS.contains(&param),
+                "`{param}` is not in the server's ticket sort allow-list; it would 422"
+            );
+        }
+    }
+
+    /// The other direction: a key the server offers that no control sends is a
+    /// sort the user cannot reach. Not a failure, but worth knowing about, so
+    /// the assertion is on the count and the message names what is unused.
+    #[test]
+    fn the_page_offers_every_column_the_server_can_sort_by() {
+        let sent: Vec<&str> = [
+            TicketSortKey::Ticket,
+            TicketSortKey::Company,
+            TicketSortKey::Status,
+            TicketSortKey::Priority,
+            TicketSortKey::Assigned,
+            TicketSortKey::Updated,
+        ]
+        .into_iter()
+        .map(ticket_sort_param)
+        .collect();
+
+        let unreachable: Vec<&&str> = mokosh_types::sort::TICKETS
+            .iter()
+            .filter(|k| !sent.contains(k))
+            .collect();
+
+        // `created_at` and `sla_due_date` are accepted by the server and have
+        // no column header on this page. That is a deliberate gap, not drift:
+        // the table shows neither.
+        assert_eq!(
+            unreachable,
+            vec![&"created_at", &"sla_due_date"],
+            "the set of server sort keys with no control on this page changed"
+        );
+    }
+}
+
 fn ticket_sort_dir_for(
     current: &Option<(TicketSortKey, SortDirection)>,
     key: TicketSortKey,
@@ -522,9 +848,15 @@ fn ticket_sort_dir_for(
     current.and_then(|(k, dir)| if k == key { Some(dir) } else { None })
 }
 
+/// MAPPS-546: takes the page signal too, and resets it. The sort is applied by
+/// the server now, so re-sorting while on page 3 would otherwise hand back
+/// page 3 of a different ordering - a jump to unrelated rows that reads as a
+/// bug. `contacts.rs::toggle_sort` has taken the page for the same reason since
+/// it was paged.
 fn toggle_ticket_sort(
     current: &mut Signal<Option<(TicketSortKey, SortDirection)>>,
     key: TicketSortKey,
+    page: &mut Signal<usize>,
 ) {
     let next = match *current.read() {
         Some((k, SortDirection::Ascending)) if k == key => Some((key, SortDirection::Descending)),
@@ -532,6 +864,7 @@ fn toggle_ticket_sort(
         _ => Some((key, SortDirection::Ascending)),
     };
     current.set(next);
+    page.set(1);
 }
 
 /// Ticket list page
@@ -544,10 +877,11 @@ pub fn TicketListPage() -> Element {
     // only when their role carries the cap.
     let can_create_ticket = crate::hooks::capabilities::use_capability("tickets:write");
     let mut search = use_signal(String::new);
+    let mut page = use_signal(|| 1usize);
     let mut status_filter = use_signal(String::new);
     let mut priority_filter = use_signal(String::new);
-    // MAPPS-289: sortable-column state. Default sort matches the existing
-    // list query (`?sort=-updated_at`) so the first paint is unchanged.
+    // MAPPS-289: sortable-column state. Sorting here is entirely client-side
+    // over the fetched page; the list query sends no `?sort=` at all.
     let mut sort = use_signal(|| Some((TicketSortKey::Updated, SortDirection::Descending)));
     // MAPPS-290: page-scoped bulk selection. The header `SelectAllHeader`
     // toggles every visible row in/out; per-row `SelectRowCell` toggles
@@ -578,60 +912,110 @@ pub fn TicketListPage() -> Element {
     // strictly better than fabricating slugs.
     let status_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketStatus>>("/tickets/statuses")
+        crate::hooks::fetch::api::get_all_authed::<RemoteTicketStatus>("/tickets/statuses")
             .await
             .ok()
-            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+    // MAPPS-546: the tenant's own priorities, for the same reason as the
+    // statuses above - the filter sends an id, and the previous hardcoded
+    // critical/high/medium/low list offered values a renamed priority would
+    // never match.
+    let priority_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_all_authed::<RemoteTicketPriority>("/tickets/priorities")
+            .await
+            .ok()
             .unwrap_or_default()
     });
 
-    // Same progressive-enablement pattern as the companies page: try
-    // the live backend first, fall back to the seeded demo rows so the
-    // page stays demoable when the route isn't deployed yet or the
-    // user is signed out.
+    // MAPPS-438: `None` is a failed load, exactly like the other list pages.
+    // The page renders only what the backend returned.
     // MAPPS-249: a company context card's "View All" lands here with
     // `?company_id=<uuid>`. When present, scope the fetch to that company so the
     // list shows only its tickets and every row stays inside the same company.
-    let mut tickets_resource = use_resource(|| async {
-        // MAPPS-357: subscribe to reachability so the list auto-refetches the
-        // instant the server returns, and so a failed load stays distinguishable
-        // from an empty one (the third tuple element records the failure).
-        let _reachable = crate::hooks::use_server_reachable();
-        // MAPPS-604: prefer the contact bearer when the caller holds
-        // one, so a signed-in contact sees only their Company's
-        // tickets (server scopes on `typ: "contact"`). Staff sessions
-        // fall through to the workspace bearer, unchanged.
-        let has_staff = crate::hooks::fetch::api::current_access_token().is_some();
-        let has_contact = crate::hooks::fetch::api::has_contact_session();
-        if !has_staff && !has_contact {
-            return (Vec::<RemoteTicket>::new(), TicketSource::Demo, false);
-        }
-        let mut path = String::from("/tickets");
-        if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
-            path.push_str(&format!("?company_id={company_id}"));
-        }
-        match crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteTicket>>(&path).await {
-            Ok(page) => (page.data, TicketSource::Backend, false),
-            // MAPPS-357: keep the demo fallback for a 4xx while reachable, but
-            // flag the failure so an outage (failed while unreachable) can render
-            // ContentUnavailable below instead of a misleading demo list.
-            Err(_) => (Vec::new(), TicketSource::Demo, true),
+    // MAPPS-546: one page at a time, with every filter and the sort sent to the
+    // server. MAPPS-543 had this fetching every ticket in the tenant so the
+    // browser could filter and sort them, which was correct and unbounded on
+    // the busiest page in the product.
+    //
+    // The search reaches company and assignee because PMS-894 widened `q` to
+    // match them; before that, moving this filter server-side would have
+    // stopped finding tickets by client name, which is how most people look for
+    // one. The sort keys are the ones PMS-894 added to the allow-list - and
+    // note what `order_by` does with a key that is NOT on it: it drops it and
+    // sorts by the default, returning a 200. A page that looks sorted and is
+    // not is why those had to land first.
+    //
+    // Every reactive input is read INSIDE the closure so the resource
+    // subscribes to it (MAPPS-148).
+    //
+    // mokosh-contact-login (MAPPS-604): allow either a staff bearer OR a
+    // contact bearer to drive this fetch, using `get_authed_any` so a
+    // signed-in contact sees only their Company's tickets (server scopes on
+    // `typ: "contact"`). Staff sessions still use the workspace bearer.
+    let mut tickets_resource = use_resource(move || {
+        let q = search.read().trim().to_string();
+        let status_id = status_filter.read().clone();
+        let priority_id = priority_filter.read().clone();
+        let sort_snapshot = *sort.read();
+        let current_page = (*page.read()).max(1);
+        async move {
+            // MAPPS-357: subscribe to reachability so the list auto-refetches the
+            // instant the server returns, and so a failed load stays distinguishable
+            // from an empty one.
+            let _reachable = crate::hooks::use_server_reachable();
+            let has_staff = crate::hooks::fetch::api::current_access_token().is_some();
+            let has_contact = crate::hooks::fetch::api::has_contact_session();
+            if !has_staff && !has_contact {
+                return None;
+            }
+            let mut path = format!("/tickets?page={current_page}&per_page={PER_PAGE}");
+            if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
+                path.push_str(&format!("&company_id={company_id}"));
+            }
+            if !q.is_empty() {
+                path.push_str(&format!(
+                    "&q={}",
+                    crate::utils::url::encode_uri_component(&q)
+                ));
+            }
+            if !status_id.is_empty() {
+                path.push_str(&format!("&status_id={status_id}"));
+            }
+            if !priority_id.is_empty() {
+                path.push_str(&format!("&priority_id={priority_id}"));
+            }
+            if let Some((key, dir)) = sort_snapshot {
+                path.push_str(&format!(
+                    "&sort={}&sort_dir={}",
+                    ticket_sort_param(key),
+                    match dir {
+                        SortDirection::Ascending => "asc",
+                        SortDirection::Descending => "desc",
+                    }
+                ));
+            }
+            crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteTicket>>(&path)
+                .await
+                .ok()
         }
     });
 
     let resource_snapshot = tickets_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
-    let (remote_tickets, source, fetch_failed) = match &*resource_snapshot {
-        Some((rows, source, failed)) => (rows.clone(), *source, *failed),
-        None => (Vec::new(), TicketSource::Demo, false),
+    let fetch_failed = matches!(*resource_snapshot, Some(None));
+    let (remote_tickets, total_matches): (Vec<RemoteTicket>, usize) = match &*resource_snapshot {
+        Some(Some(envelope)) => (envelope.data.clone(), envelope.meta.total as usize),
+        _ => (Vec::new(), 0),
     };
 
     // MAPPS-357: the ticket list is this page's PRIMARY resource. A failed load
-    // while the server is flagged down is an outage, not an empty/demo list, so
+    // while the server is flagged down is an outage, not an empty list, so
     // render the honest unavailable state (which keeps the nav + banner) instead
-    // of demo rows. A fetch that fails while the server is still reachable (a
-    // 4xx) keeps the demo-rows fallback below. Writes are blocked while down;
-    // `can_mutate` disables the bulk-delete control.
+    // of an empty table. A fetch that fails while the server is still reachable
+    // (a 4xx) keeps the inline error banner below. Writes are blocked while
+    // down; `can_mutate` disables the bulk-delete control.
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
@@ -640,90 +1024,47 @@ pub fn TicketListPage() -> Element {
         };
     }
 
-    // Apply search + status/priority filters to the loaded set client-side.
-    // The controls previously only updated signals and never narrowed the
-    // list (MAPPS-154); filtering here makes them functional. Status uses
-    // the tenant's server-side name verbatim (MAPPS-295); priority still
-    // routes through the humanize helper because its options remain the
-    // hardcoded four-level slug set.
-    let search_term = search.read().trim().to_lowercase();
-    let status_name_sel = status_filter.read().clone();
-    let priority_label_sel = match priority_filter.read().as_str() {
-        "" => String::new(),
-        raw => humanize_priority(raw),
-    };
-    let mut filtered_tickets: Vec<RemoteTicket> = remote_tickets
-        .iter()
-        .filter(|t| {
-            if !search_term.is_empty() {
-                let assigned = t.assigned_to_name.as_deref().unwrap_or("");
-                let haystack = format!(
-                    "{} {} {} {}",
-                    t.ticket_number, t.title, t.company_name, assigned
-                )
-                .to_lowercase();
-                if !haystack.contains(&search_term) {
-                    return false;
-                }
-            }
-            if !status_name_sel.is_empty() && !t.status.name.eq_ignore_ascii_case(&status_name_sel)
-            {
-                return false;
-            }
-            if !priority_label_sel.is_empty()
-                && humanize_priority(&t.priority.name) != priority_label_sel
-            {
-                return false;
-            }
-            true
-        })
-        .cloned()
-        .collect();
-
-    // MAPPS-289: client-side sort over the filtered set. The list query
-    // already asks the server for `?sort=-updated_at`, so the default
-    // sort signal matches that and the first paint is unchanged; a
-    // header click re-orders without an extra round trip.
-    {
-        let snap = *sort.read();
-        if let Some((key, dir)) = snap {
-            filtered_tickets.sort_by(|a, b| {
-                let ord = match key {
-                    TicketSortKey::Ticket => a.ticket_number.cmp(&b.ticket_number),
-                    TicketSortKey::Company => a.company_name.cmp(&b.company_name),
-                    TicketSortKey::Status => a.status.name.cmp(&b.status.name),
-                    TicketSortKey::Priority => a.priority.name.cmp(&b.priority.name),
-                    TicketSortKey::Assigned => a
-                        .assigned_to_name
-                        .as_deref()
-                        .unwrap_or("")
-                        .cmp(b.assigned_to_name.as_deref().unwrap_or("")),
-                    TicketSortKey::Updated => a.updated_at.cmp(&b.updated_at),
-                };
-                match dir {
-                    SortDirection::Ascending => ord,
-                    SortDirection::Descending => ord.reverse(),
-                }
-            });
-        }
-    }
+    // MAPPS-546: the search, the status and priority filters and the sort are
+    // all the server's now, so these rows ARE the matches for this page, in
+    // order. `total_matches` is the server's count of every match, not of the
+    // rows on screen.
+    let filtered_tickets: Vec<RemoteTicket> = remote_tickets;
+    // MAPPS-546: which empty state to show used to be decided by comparing the
+    // filtered rows with the unfiltered ones. Server-side, those are the same
+    // list, so the question "is this empty because the tenant has no tickets,
+    // or because the filters exclude them?" is answered by whether any filter
+    // is set.
+    let filters_active = !search.read().trim().is_empty()
+        || !status_filter.read().is_empty()
+        || !priority_filter.read().is_empty();
 
     // MAPPS-295: build the Status filter options from the tenant's actual
     // status set. A still-loading or empty resource just shows the "All
     // Statuses" placeholder option.
     let tenant_statuses = status_resource.read_unchecked().clone().unwrap_or_default();
+    // MAPPS-546: the option VALUE is the id, because the server filters on
+    // `status_id`. The label stays the tenant's own name.
     let mut status_options = vec![SelectOption::new("", "All Statuses")];
     for s in tenant_statuses.iter() {
-        status_options.push(SelectOption::new(s.name.clone(), s.name.clone()));
+        status_options.push(SelectOption::new(s.id.to_string(), s.name.clone()));
     }
 
-    let priority_options = vec![
-        SelectOption::new("", "All Priorities"),
-        SelectOption::new("critical", "Critical"),
-        SelectOption::new("high", "High"),
-        SelectOption::new("medium", "Medium"),
-        SelectOption::new("low", "Low"),
-    ];
+    // MAPPS-546: built from the tenant's own priorities, not from a hardcoded
+    // four-level slug list. The server filters on `priority_id`, so an id is
+    // needed anyway - and the hardcoded set was wrong for any tenant that had
+    // renamed or added a priority, silently offering filters that matched
+    // nothing.
+    let tenant_priorities = priority_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let mut priority_options = vec![SelectOption::new("", "All Priorities")];
+    for p in tenant_priorities.iter() {
+        priority_options.push(SelectOption::new(
+            p.id.to_string(),
+            humanize_priority(&p.name),
+        ));
+    }
 
     rsx! {
         PageHeader {
@@ -768,27 +1109,27 @@ pub fn TicketListPage() -> Element {
                         options: status_options,
                         value: status_filter.read().clone(),
                         placeholder: "Status",
-                        onchange: move |e: FormEvent| status_filter.set(e.value()),
+                        onchange: move |e: FormEvent| {
+                            status_filter.set(e.value());
+                            page.set(1);
+                        },
                     }
                     Select {
                         name: "priority",
                         options: priority_options,
                         value: priority_filter.read().clone(),
                         placeholder: "Priority",
-                        onchange: move |e: FormEvent| priority_filter.set(e.value()),
+                        onchange: move |e: FormEvent| {
+                            priority_filter.set(e.value());
+                            page.set(1);
+                        },
                     }
                 }
             }
         }
 
-        // MAPPS-604: staff-only demo-rows banner. Contact-plane visitors
-        // never see the "demo rows" affordance; they see the honest empty
-        // state below instead.
-        if source == TicketSource::Demo && !is_loading && !crate::hooks::fetch::api::has_contact_session() {
-            div {
-                class: "mb-3 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
-                "Backend tickets API not reachable - showing demo rows."
-            }
+        if fetch_failed {
+            ErrorBanner { class: "mb-3", "Could not load tickets. Refresh the page to retry." }
         }
 
         // MAPPS-290: bulk actions bar. Renders only when at least one
@@ -843,7 +1184,7 @@ pub fn TicketListPage() -> Element {
                         if ids.is_empty() || bulk_delete_running() { return; }
                         bulk_delete_running.set(true);
                         spawn(async move {
-                            #[cfg(feature = "web")]
+                            #[cfg(feature = "app")]
                             {
                                 use futures_util::future::join_all;
                                 let futs = ids.iter().map(|id| {
@@ -884,9 +1225,10 @@ pub fn TicketListPage() -> Element {
         // Ticket table
         DataTable {
             loading: is_loading,
-            total_items: if source == TicketSource::Backend { filtered_tickets.len() } else { 5 },
-            current_page: 1,
-            per_page: 25,
+            total_items: total_matches,
+            current_page: (*page.read()).max(1),
+            per_page: PER_PAGE,
+            onpagechange: move |p| page.set(p),
             columns: 6,
             Table {
                 striped: true,
@@ -903,37 +1245,37 @@ pub fn TicketListPage() -> Element {
                                 TableHeader {
                                     sortable: true,
                                     sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Ticket),
-                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Ticket),
+                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Ticket, &mut page),
                                     "Ticket"
                                 }
                                 TableHeader {
                                     sortable: true,
                                     sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Company),
-                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Company),
+                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Company, &mut page),
                                     "Company"
                                 }
                                 TableHeader {
                                     sortable: true,
                                     sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Status),
-                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Status),
+                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Status, &mut page),
                                     "Status"
                                 }
                                 TableHeader {
                                     sortable: true,
                                     sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Priority),
-                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Priority),
+                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Priority, &mut page),
                                     "Priority"
                                 }
                                 TableHeader {
                                     sortable: true,
                                     sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Assigned),
-                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Assigned),
+                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Assigned, &mut page),
                                     "Assigned To"
                                 }
                                 TableHeader {
                                     sortable: true,
                                     sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Updated),
-                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Updated),
+                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Updated, &mut page),
                                     "Updated"
                                 }
                             }
@@ -942,8 +1284,8 @@ pub fn TicketListPage() -> Element {
                 }
                 if is_loading {
                     TableLoading { columns: 6, rows: 5 }
-                } else if (source == TicketSource::Backend || crate::hooks::fetch::api::has_contact_session()) && filtered_tickets.is_empty() {
-                    if remote_tickets.is_empty() {
+                } else if filtered_tickets.is_empty() {
+                    if !filters_active {
                         // PMS-354: helpful empty state with a primary CTA,
                         // matching the Contracts reference pattern.
                         TableEmpty {
@@ -989,77 +1331,24 @@ pub fn TicketListPage() -> Element {
                     }
                 } else {
                     TableBody {
-                        if source == TicketSource::Backend || crate::hooks::fetch::api::has_contact_session() {
-                            for ticket in filtered_tickets.iter().cloned() {
-                                TicketRow {
-                                    key: "{ticket.id}",
-                                    id: ticket.id.to_string(),
-                                    number: ticket.ticket_number,
-                                    title: ticket.title,
-                                    company: ticket.company_name,
-                                    status: humanize_ticket_status(&ticket.status.name),
-                                    priority: humanize_priority(&ticket.priority.name),
-                                    assigned_to: ticket.assigned_to_name.unwrap_or_else(|| "Unassigned".to_string()),
-                                    updated: relative_time(ticket.updated_at),
-                                    updated_iso: Some(ticket.updated_at.to_rfc3339()),
-                                    updated_title: Some(fmt_datetime(ticket.updated_at)),
-                                    // MAPPS-290: hand the page-scoped
-                                    // selection signal down so each
-                                    // row's first cell renders a
-                                    // checkbox bound to it.
-                                    selection: Some(selection),
-                                }
-                            }
-                        } else {
+                        for ticket in filtered_tickets.iter().cloned() {
                             TicketRow {
-                                id: "1",
-                                number: "TKT-1234",
-                                title: "Email server not responding",
-                                company: "Acme Corp",
-                                status: "Open",
-                                priority: "High",
-                                assigned_to: "John Smith",
-                                updated: "5 min ago",
-                            }
-                            TicketRow {
-                                id: "2",
-                                number: "TKT-1233",
-                                title: "New user setup request",
-                                company: "TechStart Inc",
-                                status: "In Progress",
-                                priority: "Medium",
-                                assigned_to: "Jane Doe",
-                                updated: "1 hour ago",
-                            }
-                            TicketRow {
-                                id: "3",
-                                number: "TKT-1232",
-                                title: "Printer configuration for new office",
-                                company: "Global Widgets",
-                                status: "Pending",
-                                priority: "Low",
-                                assigned_to: "Unassigned",
-                                updated: "2 hours ago",
-                            }
-                            TicketRow {
-                                id: "4",
-                                number: "TKT-1231",
-                                title: "VPN connection issues for remote workers",
-                                company: "Acme Corp",
-                                status: "Open",
-                                priority: "Critical",
-                                assigned_to: "John Smith",
-                                updated: "3 hours ago",
-                            }
-                            TicketRow {
-                                id: "5",
-                                number: "TKT-1230",
-                                title: "Software license renewal required",
-                                company: "TechStart Inc",
-                                status: "Resolved",
-                                priority: "Medium",
-                                assigned_to: "Jane Doe",
-                                updated: "1 day ago",
+                                key: "{ticket.id}",
+                                id: ticket.id.to_string(),
+                                number: ticket.ticket_number,
+                                title: ticket.title,
+                                company: ticket.company_name,
+                                status: humanize_ticket_status(&ticket.status.name),
+                                priority: humanize_priority(&ticket.priority.name),
+                                assigned_to: ticket.assigned_to_name.unwrap_or_else(|| "Unassigned".to_string()),
+                                updated: relative_time(ticket.updated_at),
+                                updated_iso: ticket.updated_at.to_rfc3339(),
+                                updated_title: fmt_datetime(ticket.updated_at),
+                                // MAPPS-290: hand the page-scoped
+                                // selection signal down so each
+                                // row's first cell renders a
+                                // checkbox bound to it.
+                                selection,
                             }
                         }
                     }
@@ -1080,18 +1369,12 @@ struct TicketRowProps {
     assigned_to: String,
     updated: String,
     /// MAPPS-409: RFC3339 form of `updated_at` for the `<time datetime>`
-    /// wrapper, plus the absolute-time string for its hover title. `None`
-    /// on demo/fallback rows (no source instant to wrap; not fabricated).
-    #[props(default)]
-    updated_iso: Option<String>,
-    #[props(default)]
-    updated_title: Option<String>,
-    /// MAPPS-290: optional bulk-selection signal. When `Some`, the row
-    /// renders a `SelectRowCell` as its first cell wired to this signal;
-    /// the demo rows pass `None` so the no-backend fallback table still
-    /// fits the same column shape via a hidden first cell.
-    #[props(default)]
-    selection: Option<BulkSelection>,
+    /// wrapper, plus the absolute-time string for its hover title.
+    updated_iso: String,
+    updated_title: String,
+    /// MAPPS-290: the page-scoped bulk-selection signal the row's first
+    /// cell binds its checkbox to.
+    selection: BulkSelection,
 }
 
 #[component]
@@ -1109,11 +1392,6 @@ fn TicketRow(props: TicketRowProps) -> Element {
     let navigator = use_navigator();
     let id = props.id.clone();
 
-    // MAPPS-409: machine-readable "updated" timestamp. Present only on
-    // backend rows; demo rows fall back to bare relative text.
-    let updated_iso = props.updated_iso.clone();
-    let updated_title = props.updated_title.clone().unwrap_or_default();
-
     rsx! {
         TableRow {
             clickable: true,
@@ -1121,13 +1399,7 @@ fn TicketRow(props: TicketRowProps) -> Element {
             // MAPPS-290: per-row checkbox in the first column. The cell
             // stops propagation so toggling the checkbox doesn't also
             // navigate to the detail page.
-            if let Some(selection) = props.selection {
-                SelectRowCell { selection, id: props.id.clone() }
-            } else {
-                // Demo rows: keep the column shape consistent with the
-                // header by rendering an inert cell.
-                TableCell { class: "w-10", "" }
-            }
+            SelectRowCell { selection: props.selection, id: props.id.clone() }
             TableCell {
                 div {
                     Link {
@@ -1153,9 +1425,9 @@ fn TicketRow(props: TicketRowProps) -> Element {
                 }
             }
             TableCell { class: "text-muted",
-                if let Some(iso) = updated_iso {
-                    time { datetime: "{iso}", title: "{updated_title}", "{props.updated}" }
-                } else {
+                time {
+                    datetime: "{props.updated_iso}",
+                    title: "{props.updated_title}",
                     "{props.updated}"
                 }
             }
@@ -1174,10 +1446,11 @@ struct CompanyPrefill {
 }
 
 fn read_company_prefill_from_url() -> CompanyPrefill {
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     {
-        if let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) {
-            if let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) {
+        if let Some(search) = crate::platform::location::search() {
+            {
+                let params = crate::utils::url::QueryString::parse(&search);
                 let id = params.get("company_id").unwrap_or_default();
                 let name = params.get("company_name").unwrap_or_default();
                 if uuid::Uuid::parse_str(&id).is_ok() {
@@ -1203,10 +1476,11 @@ struct KbArticlePrefill {
 }
 
 fn read_kb_prefill_from_url() -> KbArticlePrefill {
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     {
-        if let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) {
-            if let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) {
+        if let Some(search) = crate::platform::location::search() {
+            {
+                let params = crate::utils::url::QueryString::parse(&search);
                 let id = params.get("from_kb_article").unwrap_or_default();
                 let title = params.get("from_kb_title").unwrap_or_default();
                 let url = params.get("from_kb_url").unwrap_or_default();
@@ -1298,6 +1572,8 @@ pub fn TicketNewPage() -> Element {
     let mut title_error = use_signal(String::new);
     // PMS-518: per-field error for the now-enforced required Description.
     let mut description_error = use_signal(String::new);
+    // MAPPS-592: who `@handle` completes against while the ticket is written.
+    let mention_directory = crate::hooks::use_mention_directory(true);
     // MAPPS-322: per-field error for the required Company, routed into the
     // CompanyPicker's own inline slot instead of the form-level banner.
     let mut company_error = use_signal(String::new);
@@ -1308,31 +1584,31 @@ pub fn TicketNewPage() -> Element {
     // unavailable; the matching signal stays empty and the server
     // applies its defaults.
     let types_resource = use_resource(|| async move {
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketLookup>>(
-            "/tickets/types?per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<RemoteTicketLookup>("/tickets/types")
+            .await
+            .unwrap_or_else(|e| {
+                // Best-effort: the server applies its default type.
+                tracing::warn!("ticket-type lookup failed: {e}");
+                Vec::new()
+            })
     });
     let categories_resource = use_resource(|| async move {
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketLookup>>(
-            "/tickets/categories?per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<RemoteTicketLookup>("/tickets/categories")
+            .await
+            .unwrap_or_else(|e| {
+                // Best-effort: the server applies its default category.
+                tracing::warn!("ticket-category lookup failed: {e}");
+                Vec::new()
+            })
     });
     let users_resource = use_resource(|| async move {
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteUserLookup>>(
-            "/auth/users?per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<RemoteUserLookup>("/auth/users")
+            .await
+            .unwrap_or_else(|e| {
+                // Best-effort: the assignee picker stays empty.
+                tracing::warn!("assignee lookup failed: {e}");
+                Vec::new()
+            })
     });
 
     let type_options: Vec<SelectOption> = {
@@ -1372,12 +1648,9 @@ pub fn TicketNewPage() -> Element {
     // matches the server's PaginatedResponse wire shape; meta is ignored
     // here (lookup tables are short enough to fit one page).
     let priorities_resource = use_resource(|| async move {
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketPriority>>(
-            "/tickets/priorities",
-        )
-        .await
-        .map(|p| p.data)
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<RemoteTicketPriority>("/tickets/priorities")
+            .await
+            .unwrap_or_default()
     });
 
     // Once priorities load, seed the signal with the tenant's default row
@@ -1510,7 +1783,7 @@ pub fn TicketNewPage() -> Element {
         let kb_article_id = kb_article_id_for_body.clone();
 
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 // PMS-482: stamp `source_kb_article_id` when the
                 // page was reached from a KB article. Parsed
@@ -1742,18 +2015,27 @@ pub fn TicketNewPage() -> Element {
                     }
                 }
 
-                Textarea {
-                    name: "description",
-                    label: "Description",
-                    placeholder: "Provide detailed information about the issue…",
-                    rows: 6,
+                // MAPPS-592: the same field as the edit modal's, so it gets the
+                // same editor. A description written here is rendered as
+                // Markdown from the moment the ticket exists.
+                crate::components::MarkdownEditor {
+                    name: "description".to_string(),
+                    label: "Description".to_string(),
+                    placeholder: "Provide detailed information about the issue…".to_string(),
+                    rows: 8,
+                    // MAPPS-610: the same switcher the KB body has. One key for
+                    // both description editors, so a reporter who writes in
+                    // split view keeps it when they come back to edit.
+                    views: true,
+                    view_pref_key: "ticket_desc_view_mode".to_string(),
                     required: true,
                     rules: vec![Rule::Required],
                     error: description_error.read().clone(),
                     value: description.read().clone(),
-                    oninput: move |e: FormEvent| {
+                    people: crate::hooks::mention_people(&mention_directory),
+                    oninput: move |next: String| {
                         description_error.set(String::new());
-                        description.set(e.value());
+                        description.set(next);
                     },
                 }
 
@@ -1929,9 +2211,13 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let mut show_note_modal = use_signal(|| false);
     let mut note_type = use_signal(|| "internal".to_string());
     let mut note_content = use_signal(String::new);
+    // MAPPS-517: the per-note send-email flag the server has carried since
+    // PMS-15, surfaced on the composer. Off by default: most notes are
+    // internal working discussion and defaulting to on leaks it to the client.
+    let mut note_send_email = use_signal(|| false);
     // PMS-518: inline error for the now-enforced required note Content,
-    // surfaced in the textarea's own slot by the FormGuard in the Add Note
-    // modal's submit handler.
+    // surfaced in the textarea's own slot by the FormGuard in the composer's
+    // submit handler.
     let mut note_content_error = use_signal(String::new);
     let mut note_submitting = use_signal(|| false);
     let mut note_error = use_signal(String::new);
@@ -1970,12 +2256,15 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             // MAPPS-605: contact-plane GET is dual-planed on the server
             // (redacts internal notes for contacts, keeps them for
-            // staff). Pick the caller's bearer via get_authed_any.
+            // staff). Pick the caller's bearer via get_authed_any so a
+            // contact hitting the ticket detail page from the Dashboard
+            // gets the redacted view instead of a client-side auth error.
             crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteNote>>(&format!(
                 "/tickets/{id}/notes"
             ))
             .await
             .ok()
+            .map(|p| p.data)
         }
     });
     let id_for_time = props.id.clone();
@@ -1983,18 +2272,15 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         let id = id_for_time.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            // MAPPS-605: time entries are staff-only per prompt 008
-            // scope enforcement. Skip the fetch entirely on a contact
-            // session so the SPA doesn't chase a guaranteed 403 (or
-            // client-side "not authenticated" when no staff bearer).
+            // MAPPS-605: time entries are staff-only per prompt 008 scope
+            // enforcement. Skip the fetch entirely on a contact session so
+            // the SPA doesn't chase a guaranteed 403 (or client-side "not
+            // authenticated" when no staff bearer).
             #[cfg(feature = "web")]
             if crate::hooks::fetch::api::has_contact_session() {
-                return Some(crate::utils::envelope::Paginated::<RemoteTimeEntry> {
-                    data: Vec::new(),
-                    meta: crate::utils::envelope::PaginatedMeta::default(),
-                });
+                return Some(Vec::<RemoteTimeEntry>::new());
             }
-            crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimeEntry>>(&format!(
+            crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>(&format!(
                 "/time-entries?ticket_id={id}"
             ))
             .await
@@ -2006,21 +2292,22 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         let id = id_for_history.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<HistoryEntry>>(&format!(
+            // MAPPS-517: keep the `Option` rather than collapsing a failed
+            // fetch to an empty Vec here. The journal is now the ticket's
+            // record, so "the history did not load" has to stay
+            // distinguishable from "nothing has been edited".
+            crate::hooks::fetch::api::get_all_authed::<HistoryEntry>(&format!(
                 "/audit-log/entity/tickets/{id}"
             ))
             .await
             .ok()
-            .map(|p| p.data)
-            .unwrap_or_default()
         }
     });
     let users_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<UserOpt>>("/auth/users")
+        crate::hooks::fetch::api::get_all_authed::<UserOpt>("/auth/users")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
     // PMS-359: the tenant's ticket statuses + priorities, fetched once
@@ -2064,13 +2351,23 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let mut editing_desc = use_signal(|| false);
     let mut e_title = use_signal(String::new);
     let mut e_desc = use_signal(String::new);
-    // PMS-518: per-field inline errors for the Edit Ticket modal's required
+    // PMS-518: per-field inline errors for the in-page ticket editor's required
     // Title + Description, surfaced in each field's own slot by the FormGuard
     // in `on_save`.
     let mut e_title_error = use_signal(String::new);
     let mut e_desc_error = use_signal(String::new);
     let mut e_submitting = use_signal(|| false);
     let mut e_error = use_signal(String::new);
+    // MAPPS-594: Cancel asks first, but only when there is something to lose.
+    let mut confirming_cancel = use_signal(|| false);
+    // What the editor opened with, so "dirty" survives a refetch of the ticket
+    // and so retyping a value back to what it was stops being dirty.
+    let mut e_baseline_title = use_signal(String::new);
+    let mut e_baseline_desc = use_signal(String::new);
+    // MAPPS-592: who `@handle` completes against in the description editor.
+    // Same list the renderer already resolves a chip from, so a mention typed
+    // here is one the reader will see resolved.
+    let mention_directory = crate::hooks::use_mention_directory(true);
     let id_for_save = props.id.clone();
 
     // MAPPS-313: delete-ticket affordance on the detail page. The
@@ -2091,6 +2388,25 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     // forever. Capture the failure before flattening and short-circuit to a
     // "Ticket not found" state, mirroring the explicit `Some(None)` arm on the
     // invoice/contract/company detail pages.
+    // MAPPS-594: `read_unchecked`, deliberately, and NOT because it is best.
+    //
+    // It skips the reactive subscription, so `restart()` refetches the ticket
+    // and this component does not re-render from the result: after a save the
+    // page shows the OLD description until a reload. That is a real defect and
+    // it is not fixed here, because both obvious fixes are worse and were
+    // measured to be, in a browser against a real server:
+    //
+    //   * `read()` suspends while the fetch is in flight, which aborts this
+    //     render part-way through its hook list. The next render then panics in
+    //     dioxus-core with "Unable to retrieve the hook that was initialized at
+    //     this index" and the page renders nothing at all.
+    //   * `value().read()` neither suspends nor re-renders, and additionally
+    //     stopped the Edit button opening the editor.
+    //
+    // `read_unchecked` on a resource is the pattern this whole codebase uses
+    // (13 reads in contracts.rs, 13 in assets.rs, and so on), so the staleness
+    // is app-wide rather than this page's, and picking at it inside a UX ticket
+    // is how a layout change takes a detail page down. Filed separately.
     let ticket_snapshot = ticket_resource.read_unchecked().clone();
     let ticket_fetch_failed = matches!(ticket_snapshot, Some(None));
     let ticket = ticket_snapshot.flatten();
@@ -2101,6 +2417,27 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     // reachable is a real 404 (deleted / cross-tenant / bad link) and keeps the
     // existing not-found body below. Writes are blocked while down; `can_mutate`
     // disables every mutating control on the page.
+    // MAPPS-593: who is looking, so the journal knows which notes carry an Edit
+    // control. Read once here rather than per entry.
+    //
+    // MAPPS-602: this HAS to sit above the two early returns below. `use_auth`
+    // is `use_context`, which is a hook, and a hook after a `return` runs on
+    // some renders and not others. The render where `ticket_fetch_failed` is
+    // true then leaves the component one hook short, and the next render panics
+    // in dioxus-core with "Unable to retrieve the hook that was initialized at
+    // this index". WASM does not unwind, so that panic poisons the runtime: the
+    // page stops responding entirely, and a save that reaches the database goes
+    // on rendering the old value, which reads as a stale-data bug and is not
+    // one.
+    let (viewer_id, viewer_is_admin) = {
+        let auth = crate::hooks::use_auth();
+        let a = auth.read();
+        (
+            a.user.as_ref().map(|u| u.id),
+            a.has_role(crate::modules::auth::UserRole::Admin)
+                || a.has_role(crate::modules::auth::UserRole::SuperAdmin),
+        )
+    };
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
     // MAPPS-366: set the tab title once, before the early returns (use_page_title
@@ -2124,6 +2461,25 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         header_title.clone()
     };
     use_page_title(&title);
+
+    // MAPPS-594: is there unsaved work in the in-page editor?
+    //
+    // A `use_memo` whose body reads only a plain local computes once and never
+    // again, because it has no reactive dependency to re-run on; the guard would
+    // then be stuck on whatever the first render decided. Every input here is a
+    // signal, so the memo actually tracks.
+    let editor_dirty = use_memo(move || {
+        editing_desc()
+            && (*e_title.read() != *e_baseline_title.read()
+                || *e_desc.read() != *e_baseline_desc.read())
+    });
+    // Covers the browser-level exits: reload, tab close. It does NOT cover an
+    // in-app route change, because `beforeunload` never fires on one; that gap
+    // belongs to the router and is why Cancel asks separately below. The modal
+    // this replaced could not be navigated away from at all, so the risk is
+    // created by editing in the page and is answered here rather than inherited.
+    crate::hooks::use_unsaved_guard(editor_dirty.into());
+
     if ticket_fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Ticket".to_string() }
@@ -2147,10 +2503,12 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             }
         };
     }
-    let history = history_resource
-        .read_unchecked()
-        .clone()
-        .unwrap_or_default();
+    // MAPPS-517: each journal source is read as a snapshot first, so a failed
+    // fetch (`Some(None)`) stays separable from an empty one and can be named
+    // under the stream instead of reading as "nothing happened".
+    let history_snap = history_resource.read_unchecked().clone();
+    let history_failed = matches!(history_snap, Some(None));
+    let history = history_snap.flatten().unwrap_or_default();
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
     // PMS-359: lookups for the inline editors. Empty until the fetches
     // land; the renderer falls back to a "Loading…" badge in that window.
@@ -2176,21 +2534,127 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                 format!("Edited {when} by {who}")
             }
         });
-    let notes: Vec<RemoteNote> = notes_resource
-        .read_unchecked()
-        .clone()
-        .flatten()
-        .map(|p| p.data)
-        .unwrap_or_default();
-    let note_count = notes.len();
-    let time_entries: Vec<RemoteTimeEntry> = time_resource
-        .read_unchecked()
-        .clone()
-        .flatten()
-        .map(|p| p.data)
-        .unwrap_or_default();
+    let notes_snap = notes_resource.read_unchecked().clone();
+    let notes_failed = matches!(notes_snap, Some(None));
+    let notes: Vec<RemoteNote> = notes_snap.flatten().unwrap_or_default();
+    let time_snap = time_resource.read_unchecked().clone();
+    let time_failed = matches!(time_snap, Some(None));
+    let time_entries: Vec<RemoteTimeEntry> = time_snap.flatten().unwrap_or_default();
     let total_minutes: i32 = time_entries.iter().map(|e| e.duration_minutes).sum();
     let total_hours_label = format!("{:.1} hours", total_minutes as f64 / 60.0);
+
+    // MAPPS-594: the save path is unchanged from the modal it replaced;
+    // only where the fields live changed. Hoisted out of the modal block so
+    // the Description card can drive it.
+    let mut ticket_res = ticket_resource;
+    let mut history_res = history_resource;
+    let save_id = id_for_save.clone();
+    let on_save = move |_: MouseEvent| {
+        if e_submitting() {
+            return;
+        }
+        e_error.set(String::new());
+        // PMS-518: validate the required Title + Description through
+        // the shared FormGuard so both failures surface inline at
+        // once and the first invalid field is focused. The ids match
+        // each field component's `name` prop. MAPPS-188: Title is
+        // still trimmed (the server validates length >= 1) so a
+        // whitespace-only value never reaches the PUT.
+        let mut guard = FormGuard::new();
+        let title_v = e_title().trim().to_string();
+        e_title_error.set(guard.field("edit-title", &title_v, "Title", &[Rule::Required]));
+        let desc_v = e_desc().trim().to_string();
+        e_desc_error.set(guard.field(
+            "edit-description",
+            &desc_v,
+            "Description",
+            &[Rule::Required],
+        ));
+        if guard.blocked() {
+            return;
+        }
+        let save_id = save_id.clone();
+        spawn(async move {
+            e_submitting.set(true);
+            e_error.set(String::new());
+            // MAPPS-322: send the trimmed, guard-validated values.
+            // `desc_v` is already non-empty (the FormGuard above
+            // blocks a blank edit), so an edit can no longer blank
+            // an existing description.
+            let body = serde_json::json!({
+                "title": title_v,
+                "description": desc_v,
+            });
+            let path = format!("/tickets/{save_id}");
+            // MAPPS-609 (mokosh-contact-login): contact sessions hit
+            // `PATCH /tickets/{id}` (server accepts only title + description
+            // on that verb and verifies the caller is the reporter); staff
+            // sessions keep the existing PUT so priority/status/etc callers
+            // that share this endpoint shape aren't affected.
+            #[cfg(feature = "web")]
+            let is_contact = crate::hooks::fetch::api::has_contact_session();
+            #[cfg(not(feature = "web"))]
+            let is_contact = false;
+            let result: Result<(), String> = if is_contact {
+                #[cfg(feature = "web")]
+                {
+                    crate::hooks::fetch::api::patch_authed_any_typed::<
+                        serde_json::Value,
+                        _,
+                    >(&path, &body)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.user_message())
+                }
+                #[cfg(not(feature = "web"))]
+                {
+                    Err("Editing tickets is only available in the browser.".to_string())
+                }
+            } else {
+                crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                    .await
+                    .map(|_| ())
+            };
+            match result {
+                Ok(_) => {
+                    e_submitting.set(false);
+                    editing_desc.set(false);
+                    ticket_res.restart();
+                    history_res.restart();
+                }
+                Err(err) => {
+                    e_submitting.set(false);
+                    e_error.set(err);
+                }
+            }
+        });
+    };
+
+    // MAPPS-517: one stream out of the three sources the page already holds.
+    let journal = build_journal(
+        &notes,
+        &history,
+        &time_entries,
+        &users,
+        viewer_id,
+        viewer_is_admin,
+    );
+    let shown_journal_count = journal.len().min(JOURNAL_LIMIT);
+    // Whichever of the three did not load, named. An unreadable source has to
+    // be visible here: the journal is the record, and a silently short stream
+    // reads as a quiet ticket.
+    let journal_gaps: Vec<&str> = [
+        (notes_failed, "notes"),
+        (history_failed, "change history"),
+        (time_failed, "time entries"),
+    ]
+    .iter()
+    .filter_map(|(failed, label)| failed.then_some(*label))
+    .collect();
+    let journal_gaps_label = journal_gaps.join(", ");
+    // Composer state the markup reads more than once.
+    let note_is_public = note_type.read().as_str() == "public";
+    let note_will_email = note_is_public && note_send_email();
 
     // PMS-362: carry the ticket into the Log Time flow so the work-item picker
     // opens preselected. A plain <a href> (not a routed Link) because the
@@ -2212,6 +2676,35 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     rsx! {
         PageHeader {
             title: "{header_title}",
+            // MAPPS-594: while editing, the title is edited where the title is.
+            // The reference in the report does exactly this, and it is what
+            // makes an in-page edit read as editing the ticket rather than
+            // editing a copy of it behind a scrim.
+            title_slot: editing_desc().then(|| rsx! {
+                crate::components::Input {
+                    name: "edit-title",
+                    label: "Title",
+                    required: true,
+                    rules: vec![Rule::Required],
+                    error: e_title_error.read().clone(),
+                    value: "{e_title}",
+                    oninput: move |e: FormEvent| {
+                        e_title_error.set(String::new());
+                        e_title.set(e.value());
+                    },
+                }
+            }),
+            // PMS-746: a route back to the list, matching ContractDetailPage.
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs {
+                    items: crate::components::detail_breadcrumbs("Tickets", Route::TicketList {}, &header_title),
+                }
+            },
+            // MAPPS-517: no "Add Note" button here any more. The composer is
+            // open in the journal below, so a note takes typing, not a click
+            // that opens a modal first.
+            // MAPPS-607: Reopen renders only when the ticket is in a closed
+            // state AND the caller holds `tickets:reopen`; staff always pass.
             actions: rsx! {
                 if show_reopen {
                     Button {
@@ -2432,6 +2925,35 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                 },
             }
         }
+        // MAPPS-594: Cancel used to be a modal's footer button, and a modal
+        // cannot be navigated away from, so discarding was always deliberate.
+        // Editing in the page removes that guarantee: a sidebar link, a
+        // breadcrumb or a journal link would drop a reworked description with no
+        // confirmation and no way back. `use_unsaved_guard` above does not cover
+        // it, because `beforeunload` never fires on an in-app route change.
+        //
+        // Only when there is something to lose. Cancelling an untouched editor
+        // still leaves immediately, because a confirmation there is a dialog
+        // whose answer is always the same.
+        crate::components::ConfirmDialog {
+            open: confirming_cancel(),
+            title: "Discard your changes?".to_string(),
+            message: "The edits to this ticket have not been saved. Discarding them cannot be undone."
+                .to_string(),
+            confirm_text: "Discard".to_string(),
+            cancel_text: "Keep editing".to_string(),
+            destructive: true,
+            oncancel: move |_| confirming_cancel.set(false),
+            onconfirm: move |_| {
+                confirming_cancel.set(false);
+                e_error.set(String::new());
+                e_title_error.set(String::new());
+                e_desc_error.set(String::new());
+                editing_desc.set(false);
+            },
+        }
+
+
         // MAPPS-313: confirm-before-delete for the ticket. Success
         // toasts, navigates back to the list. Failure surfaces the
         // server message inline in the dialog so the user can
@@ -2477,7 +2999,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         delete_ticket_error.set(String::new());
                         let id = id_for_confirm.clone();
                         spawn(async move {
-                            #[cfg(feature = "web")]
+                            #[cfg(feature = "app")]
                             {
                                 let path = format!("/tickets/{id}");
                                 match crate::hooks::fetch::api::delete_authed(&path).await {
@@ -2494,7 +3016,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                     }
                                 }
                             }
-                            #[cfg(not(feature = "web"))]
+                            #[cfg(not(feature = "app"))]
                             let _ = &id;
                             deleting_ticket.set(false);
                         });
@@ -2552,6 +3074,10 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     let open_edit = move |_| {
                         e_title.set(cur_title.clone());
                         e_desc.set(cur_desc.clone());
+                        // The baseline is what the editor opened with, which is
+                        // what "unchanged" means for the rest of this edit.
+                        e_baseline_title.set(cur_title.clone());
+                        e_baseline_desc.set(cur_desc.clone());
                         e_error.set(String::new());
                         editing_desc.set(true);
                     };
@@ -2559,11 +3085,19 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     rsx! {
                         Card {
                             title: "Description",
-                            actions: if ticket_loaded && show_edit {
+                            // MAPPS-594: no Edit button while editing. The Save
+                            // and Cancel pair at the foot of the editor is the
+                            // whole control surface for the edit, and a second
+                            // way in from the header would be a no-op the reader
+                            // has to reason about.
+                            // MAPPS-609: on a contact session, the Edit button
+                            // is ownership-scoped via `show_edit`; staff always
+                            // pass through.
+                            actions: if ticket_loaded && show_edit && !editing_desc() {
                                 Some(rsx! {
                                     Button {
                                         variant: ButtonVariant::Secondary,
-                                        // MAPPS-357: block the edit modal while the server is down.
+                                        // MAPPS-357: block editing while the server is down.
                                         disabled: !can_mutate,
                                         title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
                                         onclick: open_edit,
@@ -2574,7 +3108,74 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             } else {
                                 None
                             },
-                            if let Some(t) = ticket.as_ref() {
+                            if editing_desc() {
+                                // MAPPS-594: the editor is here, in the page,
+                                // where the description it replaces was. The
+                                // sidebar, the journal and the change history
+                                // stay readable beside it, which is the point:
+                                // the author is reworking a long document
+                                // against material a modal used to cover.
+                                div { class: "space-y-3",
+                                    if !e_error().is_empty() {
+                                        p { class: "text-sm text-red-600 dark:text-red-400", "{e_error}" }
+                                    }
+                                    crate::components::MarkdownEditor {
+                                        name: "edit-description".to_string(),
+                                        label: "Description".to_string(),
+                                        // The card is already titled
+                                        // "Description"; a second copy of the
+                                        // word between the two is noise. The
+                                        // label still names the field in a
+                                        // validation message and to a screen
+                                        // reader.
+                                        label_hidden: true,
+                                        // Sized for a page rather than for a
+                                        // 672px dialog, which is what the report
+                                        // was about.
+                                        rows: 24,
+                                        views: true,
+                                        view_pref_key: "ticket_desc_view_mode".to_string(),
+                                        required: true,
+                                        disabled: !can_mutate,
+                                        rules: vec![Rule::Required],
+                                        error: e_desc_error.read().clone(),
+                                        value: e_desc.read().clone(),
+                                        people: crate::hooks::mention_people(&mention_directory),
+                                        oninput: move |next: String| {
+                                            e_desc_error.set(String::new());
+                                            e_desc.set(next);
+                                        },
+                                    }
+                                    div { class: "flex justify-end gap-2",
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            onclick: move |_| {
+                                                // Only asks when there is
+                                                // something to lose; a
+                                                // confirmation whose answer is
+                                                // always the same is a dialog
+                                                // nobody reads.
+                                                if editor_dirty() {
+                                                    confirming_cancel.set(true);
+                                                } else {
+                                                    e_error.set(String::new());
+                                                    editing_desc.set(false);
+                                                }
+                                            },
+                                            "Cancel"
+                                        }
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            loading: e_submitting(),
+                                            // MAPPS-357: block the save PUT while the server is down.
+                                            disabled: !can_mutate,
+                                            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
+                                            onclick: on_save,
+                                            "Save Changes"
+                                        }
+                                    }
+                                }
+                            } else if let Some(t) = ticket.as_ref() {
                                 if let Some(desc) = t.description.as_ref().filter(|d| !d.trim().is_empty()) {
                                     // PMS-309: render Markdown (sanitized). PMS-348:
                                     // task-list checkboxes are clickable - toggling
@@ -2640,8 +3241,8 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
 
                 // PMS-486: ticket-detail Approvals section. Self-contained
                 // component owns its own fetch, modal state, and refresh
-                // cycle; rendered above the activity timeline so the
-                // open approval requests are immediately visible.
+                // cycle; rendered above the journal so the open approval
+                // requests are immediately visible.
                 //
                 // MAPPS-606: hide the Approvals section entirely on a
                 // contact session. The staff /approvals fetch + the
@@ -2654,26 +3255,228 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     ApprovalsSection { entity_id: props.id.clone() }
                 }
 
-                // Activity timeline (real ticket notes; there is no audit
-                // feed yet, so status / assignment events do not appear).
-                Card { title: "Activity",
-                    if note_count == 0 {
-                        p { class: "text-sm text-subtle italic",
-                            "No activity yet. Notes added to this ticket will appear here."
+                // MAPPS-517: the journal. The composer sits at the top of it,
+                // open, and the stream below carries every source this page
+                // fetches rather than notes alone.
+                Card { title: "Journal",
+                    div { class: "space-y-4",
+                        if !note_error.read().is_empty() {
+                            ErrorBanner { "{note_error}" }
                         }
-                    } else {
-                        div { class: "flow-root",
-                            ul { class: "-mb-8",
-                                for (i , n) in notes.iter().enumerate() {
-                                    TimelineItem {
-                                        user: if n.created_by_name.is_empty() { "Someone".to_string() } else { n.created_by_name.clone() },
-                                        action: if n.note_type == "internal" { "added an internal note".to_string() } else { "added a note".to_string() },
-                                        time: fmt_datetime(n.created_at),
-                                        content: Some(n.content.clone()),
-                                        is_last: i + 1 == note_count,
+                        // MAPPS-610: the same editor as the description, so a
+                        // note can carry a list, a table or an `@handle`
+                        // instead of being the one Markdown field on this page
+                        // with no help writing it.
+                        crate::components::MarkdownEditor {
+                            name: "content".to_string(),
+                            label: "Add a note".to_string(),
+                            placeholder: "Enter your note…".to_string(),
+                            rows: 4,
+                            views: true,
+                            view_pref_key: "ticket_note_view_mode".to_string(),
+                            required: true,
+                            rules: vec![Rule::Required],
+                            error: note_content_error.read().clone(),
+                            value: note_content.read().clone(),
+                            people: crate::hooks::mention_people(&mention_directory),
+                            oninput: move |next: String| {
+                                note_content_error.set(String::new());
+                                note_content.set(next);
+                            },
+                        }
+                        div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                            Select {
+                                name: "note_type",
+                                label: "Note Type",
+                                options: note_type_options(),
+                                value: note_type.read().clone(),
+                                onchange: move |e: FormEvent| {
+                                    // Only a public note ever leaves the building,
+                                    // whatever the flag says (mokosh-server
+                                    // `add_note`). MAPPS-613: the checkbox is now
+                                    // absent on every other type, so this clear is
+                                    // what stops a flag set while public from
+                                    // surviving into a note nobody can see it on.
+                                    if e.value() != "public" {
+                                        note_send_email.set(false);
+                                    }
+                                    note_type.set(e.value());
+                                },
+                            }
+                            // MAPPS-613: absent, not greyed, on a note that
+                            // cannot be emailed. The server has always refused
+                            // to send one, but that refusal is invisible: a
+                            // disabled control on an internal note still tells
+                            // the reader that internal commentary is the sort
+                            // of thing this app can mail to a customer.
+                            if note_is_public {
+                                div { class: "flex items-end",
+                                    Checkbox {
+                                        name: "note_send_email",
+                                        label: "Email this note to the client",
+                                        checked: note_send_email(),
+                                        help: NOTE_EMAIL_HELP.to_string(),
+                                        onchange: move |e: FormEvent| note_send_email.set(e.checked()),
                                     }
                                 }
                             }
+                        }
+                        div { class: "flex items-center justify-end gap-3",
+                            // MAPPS-482 / docs/email-actions.md: this submit
+                            // mails a client whenever the toggle is on, so it
+                            // carries the mail affordances exactly then.
+                            if note_will_email {
+                                crate::components::EmailPreview {
+                                    event_type: "ticket.note".to_string(),
+                                    context: serde_json::json!({
+                                        "ticket_number": ticket
+                                            .as_ref()
+                                            .map(|t| t.ticket_number.clone())
+                                            .unwrap_or_default(),
+                                        "title": header_title.clone(),
+                                        "content": note_content.read().clone(),
+                                    }),
+                                    empty_note: NOTE_PREVIEW_NOTE.to_string(),
+                                }
+                            }
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                loading: *note_submitting.read(),
+                                // MAPPS-357: block the add-note POST while the server is down.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't add a note while the server is unreachable".to_string()),
+                                onclick: {
+                                    let ticket_id_for_note = ticket_id_for_note.clone();
+                                    move |_| {
+                                    note_error.set(String::new());
+                                    // PMS-518: validate the required Content through
+                                    // the shared FormGuard before submitting so the
+                                    // failure lands in the textarea's own inline slot
+                                    // and the field is focused. Runs before
+                                    // `note_submitting` is set, so the bail path
+                                    // leaves it untouched.
+                                    let mut guard = FormGuard::new();
+                                    let content_v = note_content.read().clone();
+                                    note_content_error.set(guard.field(
+                                        "content",
+                                        content_v.trim(),
+                                        "Content",
+                                        &[Rule::Required],
+                                    ));
+                                    if guard.blocked() {
+                                        return;
+                                    }
+                                    note_submitting.set(true);
+                                    let id = ticket_id_for_note.clone();
+                                    let type_v = note_type.read().clone();
+                                    let email_v = type_v == "public" && note_send_email();
+                                    spawn(async move {
+                                        #[cfg(feature = "app")]
+                                        {
+                                            let body = serde_json::json!({
+                                                "note_type": type_v,
+                                                "content": content_v,
+                                                "send_email": email_v,
+                                            });
+                                            let path = format!("/tickets/{id}/notes");
+                                            match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(&path, &body).await {
+                                                Ok(_) => {
+                                                    note_content.set(String::new());
+                                                    note_error.set(String::new());
+                                                    // Back to the default for the next
+                                                    // note rather than staying armed.
+                                                    note_send_email.set(false);
+                                                    // Refresh the journal so the new note shows.
+                                                    let mut nr = notes_resource;
+                                                    nr.restart();
+                                                }
+                                                Err(err) => {
+                                                    note_error.set(format!("Could not add note: {err}"));
+                                                }
+                                            }
+                                        }
+                                        note_submitting.set(false);
+                                    });
+                                }
+                                },
+                                if note_will_email {
+                                    MailIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                } else {
+                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                }
+                                "Add note"
+                            }
+                        }
+                    }
+
+                    div { class: "mt-6 border-t border-line pt-6",
+                        if journal.is_empty() {
+                            // MAPPS-517: an untouched ticket has no notes and no
+                            // events, and that is an empty journal, not an error.
+                            // A source that failed to load is a different thing
+                            // and says so below instead of claiming this.
+                            if journal_gaps.is_empty() {
+                                p { class: "text-sm text-subtle italic",
+                                    "Nothing has happened on this ticket yet. Notes, state and assignment changes and logged time land here."
+                                }
+                            }
+                        } else {
+                            div { class: "flow-root",
+                                ul { class: "-mb-8",
+                                    for (i , entry) in journal.iter().take(JOURNAL_LIMIT).enumerate() {
+                                        // MAPPS-593: keyed, and load-bearing now
+                                        // that an entry owns edit state. Without
+                                        // a key Dioxus reuses component state
+                                        // positionally, so a note arriving at the
+                                        // top after a refetch would inherit the
+                                        // draft of whatever used to be first. A
+                                        // note has an id; the other sources are
+                                        // identified by when they happened.
+                                        {
+                                            let entry_key = match entry.editable_note {
+                                                Some(id) => id.to_string(),
+                                                None => format!("{}-{i}", entry.at),
+                                            };
+                                            rsx! {
+                                        TimelineItem {
+                                            key: "{entry_key}",
+                                            user: entry.who.clone(),
+                                            action: entry.action.clone(),
+                                            time: fmt_datetime(entry.at),
+                                            content: entry.body.clone(),
+                                            changes: entry.changes.clone(),
+                                            editable_note: entry.editable_note,
+                                            edited: entry.edited,
+                                            ticket_id: props.id.clone(),
+                                            can_edit: can_mutate,
+                                            on_saved: move |()| {
+                                                let mut nr = notes_resource;
+                                                nr.restart();
+                                            },
+                                            is_last: i + 1 == shown_journal_count,
+                                        }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if journal.len() > JOURNAL_LIMIT {
+                                p { class: "text-xs text-subtle",
+                                    "Showing the {JOURNAL_LIMIT} most recent of {journal.len()} entries."
+                                }
+                            }
+                        }
+                        if !journal_gaps.is_empty() {
+                            p { class: "mt-4 text-xs text-red-600 dark:text-red-300",
+                                "This ticket's {journal_gaps_label} could not be loaded, so the journal is missing entries. Reload the page to try again."
+                            }
+                        }
+                        // MAPPS-517: the journal is assembled here from three
+                        // endpoints because the server exposes no single feed
+                        // for a ticket. Say what is missing rather than let the
+                        // stream read as the whole record.
+                        p { class: "mt-4 text-xs text-subtle",
+                            "Built from this ticket's notes, its change history and its time entries. Attachments and approvals are not in the stream yet: they record no ticket history entry, so they arrive when the server exposes one activity feed."
                         }
                     }
                 }
@@ -3011,6 +3814,31 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                     }
                                 }
                             }
+                            // PMS-730 / MAPPS-529: the procedure article the
+                            // request form attached, read-only because the
+                            // server has no update path for the column outside
+                            // that flow. Absent on every other ticket, so the
+                            // row is omitted rather than left blank.
+                            if let Some(pid) = t.procedure_kb_article_id {
+                                DetailItem {
+                                    label: "Procedure",
+                                    value: rsx! {
+                                        Link {
+                                            to: Route::KBArticleDetail { id: pid.to_string() },
+                                            class: "text-accent hover:opacity-90",
+                                            // The title comes joined off the same read; fall
+                                            // back to a label rather than an empty link if the
+                                            // article is gone.
+                                            {
+                                                t.procedure_kb_article_title
+                                                    .clone()
+                                                    .filter(|s| !s.trim().is_empty())
+                                                    .unwrap_or_else(|| "View procedure".to_string())
+                                            }
+                                        }
+                                    },
+                                }
+                            }
                             if !t.company_name.is_empty() {
                                 DetailItem {
                                     label: "Company",
@@ -3053,247 +3881,36 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     } else {
                         p { class: "text-sm text-subtle", "Loading…" }
                     }
-                }
 
-                // Time entries (real, summed from /time-entries?ticket_id=)
-                Card { title: "Time Logged",
-                    div { class: "space-y-3",
+                    // MAPPS-517: the Time Logged card folded in here as a total.
+                    // Its per-entry list moved into the journal, where each
+                    // logged entry sits in order beside the notes and the state
+                    // changes instead of in a box of its own.
+                    div { class: "mt-6 border-t border-line pt-4",
                         div { class: "flex justify-between items-center",
-                            span { class: "text-sm text-muted", "Total Time" }
+                            span { class: "text-sm text-muted", "Time Logged" }
                             span { class: "text-lg font-semibold", "{total_hours_label}" }
                         }
                         if time_entries.is_empty() {
-                            // MAPPS-388: centered empty state.
-                            p { class: "text-sm text-subtle italic text-center", "No time logged yet." }
+                            p { class: "mt-1 text-sm text-subtle italic", "No time logged yet." }
                         } else {
-                            div { class: "space-y-2 text-sm text-muted",
-                                for e in time_entries.iter() {
-                                    div {
-                                        div { class: "flex justify-between gap-2",
-                                            span { "{e.date} · {e.duration_minutes} min" }
-                                            if e.is_billable {
-                                                span { class: "text-green-600 dark:text-green-400", "billable" }
-                                            }
-                                        }
-                                        if let Some(note) = e.notes.as_ref().filter(|s| !s.is_empty()) {
-                                            p { class: "text-xs text-subtle truncate", "{note}" }
-                                        }
-                                    }
-                                }
+                            p { class: "mt-1 text-xs text-subtle",
+                                "Every entry is in the journal."
                             }
                         }
                     }
                 }
 
-                // Change history (PMS-182) - field-level edits to the ticket.
-                Card { title: "Change History",
-                    if history.is_empty() {
-                        p { class: "text-sm text-subtle italic", "No edits yet." }
-                    } else {
-                        div { class: "space-y-3 text-sm",
-                            for e in history.iter().take(20) {
-                                {
-                                    let label = action_label(&e.action);
-                                    let fields = fields_label(&e.changed_fields);
-                                    let who = actor_name(&users, &e.user_id);
-                                    let when = fmt_datetime(e.timestamp);
-                                    rsx! {
-                                        div { class: "flex justify-between gap-2",
-                                            div { class: "min-w-0",
-                                                p { class: "text-content",
-                                                    if fields.is_empty() {
-                                                        "{label}"
-                                                    } else {
-                                                        "{label}: {fields}"
-                                                    }
-                                                }
-                                                if who != "-" {
-                                                    p { class: "text-xs text-subtle", "by {who}" }
-                                                }
-                                                // PMS-204: actual before/after content.
-                                                for c in e.changes.iter() {
-                                                    {
-                                                        let old = fmt_change_value(&c.old);
-                                                        let new = fmt_change_value(&c.new);
-                                                        let fname = title_field(&c.field);
-                                                        if old == "(reference)" && new == "(reference)" {
-                                                            rsx! {}
-                                                        } else {
-                                                            rsx! {
-                                                                p { class: "text-xs text-muted mt-1",
-                                                                    span { class: "font-medium", "{fname}: " }
-                                                                    span { class: "line-through text-subtle", "{old}" }
-                                                                    " → "
-                                                                    span { "{new}" }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            span { class: "text-subtle whitespace-nowrap", "{when}" }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                // MAPPS-517: the Change History card (PMS-182) is gone. Its
+                // entries are journal lines now, in one stream with the notes
+                // and the logged time rather than in a second box that a reader
+                // had to cross-reference by timestamp.
             }
         }
 
-        // PMS-182 description edit modal.
-        {
-            let mut ticket_res = ticket_resource;
-            let mut history_res = history_resource;
-            let save_id = id_for_save.clone();
-            let on_save = move |_| {
-                if e_submitting() {
-                    return;
-                }
-                e_error.set(String::new());
-                // PMS-518: validate the required Title + Description through
-                // the shared FormGuard so both failures surface inline at
-                // once and the first invalid field is focused. The ids match
-                // each field component's `name` prop. MAPPS-188: Title is
-                // still trimmed (the server validates length >= 1) so a
-                // whitespace-only value never reaches the PUT.
-                let mut guard = FormGuard::new();
-                let title_v = e_title().trim().to_string();
-                e_title_error
-                    .set(guard.field("edit-title", &title_v, "Title", &[Rule::Required]));
-                let desc_v = e_desc().trim().to_string();
-                e_desc_error.set(guard.field(
-                    "edit-description",
-                    &desc_v,
-                    "Description",
-                    &[Rule::Required],
-                ));
-                if guard.blocked() {
-                    return;
-                }
-                let save_id = save_id.clone();
-                spawn(async move {
-                    e_submitting.set(true);
-                    e_error.set(String::new());
-                    // MAPPS-322: send the trimmed, guard-validated values.
-                    // `desc_v` is already non-empty (the FormGuard above
-                    // blocks a blank edit), so an edit can no longer blank
-                    // an existing description.
-                    let body = serde_json::json!({
-                        "title": title_v,
-                        "description": desc_v,
-                    });
-                    let path = format!("/tickets/{save_id}");
-                    // MAPPS-609: contact sessions hit
-                    // `PATCH /tickets/{id}` (server accepts only title +
-                    // description on that verb and verifies the caller
-                    // is the reporter); staff sessions keep the existing
-                    // PUT so priority/status/etc callers that share this
-                    // endpoint shape aren't affected. `patch_authed_any_typed`
-                    // picks the contact bearer first, staff second, so
-                    // routing off `has_contact_session` avoids ambiguous
-                    // dual-plane cases where both bearers are held.
-                    #[cfg(feature = "web")]
-                    let is_contact = crate::hooks::fetch::api::has_contact_session();
-                    #[cfg(not(feature = "web"))]
-                    let is_contact = false;
-                    let result: Result<(), String> = if is_contact {
-                        #[cfg(feature = "web")]
-                        {
-                            crate::hooks::fetch::api::patch_authed_any_typed::<
-                                serde_json::Value,
-                                _,
-                            >(&path, &body)
-                            .await
-                            .map(|_| ())
-                            .map_err(|e| e.user_message())
-                        }
-                        #[cfg(not(feature = "web"))]
-                        {
-                            Err("Editing tickets is only available in the browser."
-                                .to_string())
-                        }
-                    } else {
-                        crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
-                            &path, &body,
-                        )
-                        .await
-                        .map(|_| ())
-                    };
-                    match result {
-                        Ok(_) => {
-                            e_submitting.set(false);
-                            editing_desc.set(false);
-                            ticket_res.restart();
-                            history_res.restart();
-                        }
-                        Err(err) => {
-                            e_submitting.set(false);
-                            e_error.set(err);
-                        }
-                    }
-                });
-            };
-            rsx! {
-                Modal {
-                    open: editing_desc(),
-                    title: "Edit Ticket",
-                    size: crate::components::ModalSize::Large,
-                    onclose: move |_| editing_desc.set(false),
-                    footer: rsx! {
-                        Button {
-                            variant: ButtonVariant::Secondary,
-                            onclick: move |_| editing_desc.set(false),
-                            "Cancel"
-                        }
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            loading: e_submitting(),
-                            // MAPPS-357: block the save PUT while the server is down.
-                            disabled: !can_mutate,
-                            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
-                            onclick: on_save,
-                            "Save Changes"
-                        }
-                    },
-                    div { class: "space-y-3",
-                        if !e_error().is_empty() {
-                            p { class: "text-sm text-red-600 dark:text-red-400", "{e_error}" }
-                        }
-                        // MAPPS-188: title is now editable alongside the
-                        // description (previously description-only).
-                        crate::components::Input {
-                            name: "edit-title",
-                            label: "Title",
-                            required: true,
-                            rules: vec![Rule::Required],
-                            error: e_title_error.read().clone(),
-                            value: "{e_title}",
-                            oninput: move |e: FormEvent| {
-                                e_title_error.set(String::new());
-                                e_title.set(e.value());
-                            },
-                        }
-                        Textarea {
-                            name: "edit-description",
-                            label: "Description",
-                            rows: 8,
-                            required: true,
-                            rules: vec![Rule::Required],
-                            error: e_desc_error.read().clone(),
-                            value: "{e_desc}",
-                            oninput: move |e: FormEvent| {
-                                e_desc_error.set(String::new());
-                                e_desc.set(e.value());
-                            },
-                        }
-                    }
-                }
-            }
-        }
-
-        // Add note modal
+        // Add note modal (mokosh-contact-login: opened from the header
+        // "Add Note" button gated on `tickets:comment`; the inline
+        // Journal composer below covers the staff path).
         Modal {
             open: *show_note_modal.read(),
             title: "Add Note",
@@ -3311,7 +3928,9 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     // MAPPS-357: block the add-note POST while the server is down.
                     disabled: !can_mutate,
                     title: (!can_mutate).then(|| "Can't add a note while the server is unreachable".to_string()),
-                    onclick: move |_| {
+                    onclick: {
+                        let ticket_id_for_note = ticket_id_for_note.clone();
+                        move |_| {
                         note_error.set(String::new());
                         // PMS-518: validate the required Content through the
                         // shared FormGuard before submitting so the failure
@@ -3356,6 +3975,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             }
                             note_submitting.set(false);
                         });
+                    }
                     },
                     "Add Note"
                 }
@@ -3540,11 +4160,94 @@ struct TimelineItemProps {
     action: String,
     time: String,
     content: Option<String>,
+    /// MAPPS-596: an edit's before/after, which collapses behind a `Details`
+    /// toggle when it is large. Empty for a note or a time entry, whose text
+    /// is the entry itself and always shows.
+    #[props(default)]
+    changes: Vec<ChangeLine>,
+    /// MAPPS-593: the note behind this entry, when THIS viewer may edit it.
+    /// `None` renders no control, which covers a change-history line, a time
+    /// entry, and every note the viewer may not edit.
+    #[props(default)]
+    editable_note: Option<uuid::Uuid>,
+    /// MAPPS-593: the note has been edited since it was written.
+    #[props(default = false)]
+    edited: bool,
+    /// Ticket the note belongs to, for the PUT path.
+    #[props(default)]
+    ticket_id: String,
+    /// Whether an edit may be attempted at all (MAPPS-357's write gate).
+    #[props(default = true)]
+    can_edit: bool,
+    /// Fires after a successful save, so the host can refetch the journal.
+    #[props(default)]
+    on_saved: EventHandler<()>,
     is_last: bool,
 }
 
 #[component]
 fn TimelineItem(props: TimelineItemProps) -> Element {
+    // MAPPS-593: the edit state belongs to this entry, so two open notes on one
+    // ticket do not share a draft. Component-per-entry is what makes that free.
+    let mut editing = use_signal(|| false);
+    let mut draft = use_signal(String::new);
+    let mut edit_error = use_signal(String::new);
+    let mut saving = use_signal(|| false);
+    // MAPPS-610: the directory the inline editor completes `@` against. The
+    // hook shares one fetch across the page, so a journal of thirty entries
+    // still makes one request. MAPPS-602: it is a hook, so it sits with the
+    // others at the top, above anything that can return early.
+    let mention_directory = crate::hooks::use_mention_directory(true);
+
+    let original = props.content.clone().unwrap_or_default();
+    let original_for_open = original.clone();
+    let note_dom_id = props
+        .editable_note
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+
+    let save_note = {
+        let ticket_id = props.ticket_id.clone();
+        let note_id = props.editable_note;
+        let on_saved = props.on_saved;
+        move |_| {
+            if saving() {
+                return;
+            }
+            let Some(note_id) = note_id else { return };
+            let next = draft.read().trim().to_string();
+            if next.is_empty() {
+                // The same rule the server applies. An edit that blanks a note
+                // is a delete wearing an edit's clothes.
+                edit_error.set("A note cannot be empty.".to_string());
+                return;
+            }
+            let path = format!("/tickets/{ticket_id}/notes/{note_id}");
+            spawn(async move {
+                saving.set(true);
+                let body = serde_json::json!({ "content": next });
+                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                    .await
+                {
+                    Ok(_) => {
+                        saving.set(false);
+                        editing.set(false);
+                        on_saved.call(());
+                    }
+                    Err(e) => {
+                        saving.set(false);
+                        // Next to the note, not as a toast: the refusal is
+                        // about THIS note and a toast outlives the context it
+                        // belongs to. The server owns the rules that can
+                        // refuse (a 409 on an emailed or portal-authored note),
+                        // and its sentence is what the author needs to read.
+                        edit_error.set(e);
+                    }
+                }
+            });
+        }
+    };
+
     rsx! {
         li {
             div { class: "relative pb-8",
@@ -3565,12 +4268,96 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                             p { class: "text-sm text-muted",
                                 span { class: "font-medium text-content", "{props.user}" }
                                 " {props.action}"
-                            }
-                            if let Some(content) = &props.content {
-                                div { class: "mt-2 text-sm text-content bg-surface-2 rounded-md p-3",
-                                    "{content}"
+                                if props.edited {
+                                    // MAPPS-593: an unmarked edit means the
+                                    // reader cannot tell that the text in front
+                                    // of them is not what was written.
+                                    span { class: "ml-1 text-xs text-subtle italic", "(edited)" }
+                                }
+                                if props.editable_note.is_some() && !editing() {
+                                    button {
+                                        r#type: "button",
+                                        class: "ml-2 text-xs text-accent hover:underline disabled:opacity-40 disabled:cursor-not-allowed disabled:no-underline",
+                                        disabled: !props.can_edit,
+                                        title: if props.can_edit { None } else { Some("Can't edit while the server is unreachable".to_string()) },
+                                        onclick: move |_| {
+                                            draft.set(original_for_open.clone());
+                                            edit_error.set(String::new());
+                                            editing.set(true);
+                                        },
+                                        "Edit"
+                                    }
                                 }
                             }
+                            if editing() {
+                                // MAPPS-593: inline, not a modal. A note is
+                                // short and the thread around it is the context
+                                // for the edit; a modal would hide exactly what
+                                // the author is correcting against.
+                                div { class: "mt-2 space-y-2",
+                                    // MAPPS-610: the same editor the composer
+                                    // has. A correction is written the same way
+                                    // the note was.
+                                    crate::components::MarkdownEditor {
+                                        // `format!`, not a literal with braces
+                                        // in it: the id has to be unique per
+                                        // entry or every inline editor in the
+                                        // journal answers to the same one, and
+                                        // the toolbar addresses the field by it.
+                                        name: format!("edit-note-{note_dom_id}"),
+                                        label: "Edit note".to_string(),
+                                        rows: 4,
+                                        views: true,
+                                        view_pref_key: "ticket_note_view_mode".to_string(),
+                                        required: true,
+                                        rules: vec![Rule::Required],
+                                        error: edit_error.read().clone(),
+                                        value: draft.read().clone(),
+                                        people: crate::hooks::mention_people(&mention_directory),
+                                        oninput: move |next: String| {
+                                            edit_error.set(String::new());
+                                            draft.set(next);
+                                        },
+                                    }
+                                    div { class: "flex gap-2",
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            loading: saving(),
+                                            onclick: save_note,
+                                            "Save"
+                                        }
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            onclick: move |_| {
+                                                // Cancel restores what was
+                                                // written; nothing is sent.
+                                                draft.set(original.clone());
+                                                edit_error.set(String::new());
+                                                editing.set(false);
+                                            },
+                                            "Cancel"
+                                        }
+                                    }
+                                }
+                            } else if let Some(content) = &props.content {
+                                // MAPPS-610: Markdown, not raw text in a
+                                // `whitespace-pre-wrap` box. The composer now
+                                // has a formatting toolbar, and a toolbar over
+                                // a plain-text renderer posts `**bold**` and
+                                // shows `**bold**`. The description has
+                                // rendered this way since PMS-309.
+                                //
+                                // Consequence, taken deliberately: notes
+                                // written before this are now parsed as
+                                // Markdown, so a line that happens to start
+                                // with `#` reads as a heading. The output is
+                                // sanitized either way, and `@handle` now
+                                // resolves (MAPPS-578), which is the upside.
+                                div { class: "mt-2 bg-surface-2 rounded-md p-3",
+                                    crate::components::Markdown { content: content.clone() }
+                                }
+                            }
+                            ChangeDetails { changes: props.changes.clone() }
                         }
                         div { class: "whitespace-nowrap text-right text-sm text-muted",
                             "{props.time}"
@@ -3661,10 +4448,9 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
     });
     let users_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<UserPickerRow>>("/auth/users")
+        crate::hooks::fetch::api::get_all_authed::<UserPickerRow>("/auth/users")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
 
@@ -3784,7 +4570,14 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
             } else if fetch_failed {
                 p { class: "text-sm text-red-600 dark:text-red-300", "Could not load approvals for this {props.entity_noun}." }
             } else if rows.is_empty() {
-                p { class: "text-sm text-subtle italic", "No approvals requested on this {props.entity_noun} yet." }
+                // PMS-747: "No approvals requested yet" read as an obligation
+                // not yet met, which is how a ticket raised from a client's own
+                // request form looked like it was being held for sign-off.
+                // Nothing gates a ticket on an approval; one exists only if
+                // somebody here asks for it.
+                p { class: "text-sm text-subtle italic",
+                    "No approvals on this {props.entity_noun}. Approval is optional: this {props.entity_noun} is not waiting on one unless you request it."
+                }
             } else {
                 ul { class: "space-y-3",
                     for row in rows.iter().cloned() {
@@ -3993,5 +4786,835 @@ mod mapps_607_tests {
             Route::TicketDetail { id } => assert_eq!(id, uuid),
             other => panic!("expected TicketDetail, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod procedure_kb_tests {
+    use super::RemoteTicketDetail;
+
+    /// A minimal `TicketResponse` body plus whatever extra fields the
+    /// case under test needs.
+    fn detail(extra: &str) -> RemoteTicketDetail {
+        let body = format!(
+            r#"{{"ticket_number":"T-1","title":"t","company_name":"c","queue_name":"q","created_at":"2026-08-14T00:00:00Z"{extra}}}"#
+        );
+        serde_json::from_str(&body).expect("deserialise ticket detail")
+    }
+
+    #[test]
+    fn reads_the_procedure_pair() {
+        let t = detail(
+            r#","procedure_kb_article_id":"11111111-1111-4111-8111-111111111111","procedure_kb_article_title":"How to add a mailbox""#,
+        );
+        assert_eq!(
+            t.procedure_kb_article_id.map(|u| u.to_string()).as_deref(),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+        assert_eq!(
+            t.procedure_kb_article_title.as_deref(),
+            Some("How to add a mailbox")
+        );
+    }
+
+    #[test]
+    fn absent_procedure_stays_none() {
+        let t = detail("");
+        assert!(t.procedure_kb_article_id.is_none());
+        assert!(t.procedure_kb_article_title.is_none());
+    }
+
+    #[test]
+    fn source_article_is_not_the_procedure() {
+        // PMS-452's `source_kb_article_id` is the article the ticket was
+        // opened FROM; it must never feed the Procedure row.
+        let t = detail(r#","source_kb_article_id":"22222222-2222-4222-8222-222222222222""#);
+        assert!(t.procedure_kb_article_id.is_none());
+    }
+}
+
+#[cfg(test)]
+mod mapps517_journal_tests {
+    use super::{
+        build_journal, ChangeLine, HistoryEntry, JournalEntry, RemoteNote, RemoteTimeEntry, UserOpt,
+    };
+
+    fn note(json: &str) -> RemoteNote {
+        serde_json::from_str(json).expect("deserialise note")
+    }
+
+    fn history(json: &str) -> HistoryEntry {
+        serde_json::from_str(json).expect("deserialise history entry")
+    }
+
+    fn time_entry(json: &str) -> RemoteTimeEntry {
+        serde_json::from_str(json).expect("deserialise time entry")
+    }
+
+    fn users() -> Vec<UserOpt> {
+        vec![serde_json::from_str(
+            r#"{"id":"11111111-1111-4111-8111-111111111111","full_name":"Dana Reeve"}"#,
+        )
+        .expect("deserialise user")]
+    }
+
+    fn actions(entries: &[JournalEntry]) -> Vec<String> {
+        entries
+            .iter()
+            .map(|e| format!("{} {}", e.who, e.action))
+            .collect()
+    }
+
+    /// The whole point of the journal: four kinds of thing on one clock,
+    /// newest first, rather than notes in one box and edits in another.
+    #[test]
+    fn merges_every_source_newest_first() {
+        let notes = vec![note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000001","note_type":"internal","content":"Rebooted the switch","created_by_name":"Dana Reeve","created_at":"2026-08-20T09:00:00Z"}"#,
+        )];
+        let history = vec![
+            history(
+                r#"{"action":"update","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":["status_id"],"changes":[{"field":"status_id","old":"33333333-3333-4333-8333-333333333333","new":"44444444-4444-4444-8444-444444444444"}],"timestamp":"2026-08-20T11:00:00Z"}"#,
+            ),
+            history(
+                r#"{"action":"update","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":["assigned_to_id"],"changes":[],"timestamp":"2026-08-20T10:00:00Z"}"#,
+            ),
+        ];
+        let time = vec![time_entry(
+            r#"{"date":"2026-08-20","duration_minutes":45,"is_billable":true,"user_id":"11111111-1111-4111-8111-111111111111","created_at":"2026-08-20T12:00:00Z"}"#,
+        )];
+
+        let journal = build_journal(&notes, &history, &time, &users(), None, false);
+
+        assert_eq!(
+            actions(&journal),
+            vec![
+                "Dana Reeve logged 45 min on 2026-08-20 (billable)".to_string(),
+                "Dana Reeve changed the status".to_string(),
+                "Dana Reeve changed the assignee".to_string(),
+                "Dana Reeve added an internal note".to_string(),
+            ]
+        );
+    }
+
+    /// A source that yields nothing contributes nothing: the stream degrades
+    /// to the notes-only shape the Activity card had, never to an error.
+    #[test]
+    fn falls_back_to_notes_when_the_other_sources_are_empty() {
+        let notes = vec![note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000002","note_type":"public","content":"Emailed the client","created_by_name":"Dana Reeve","is_email_sent":true,"created_at":"2026-08-20T09:00:00Z"}"#,
+        )];
+
+        let journal = build_journal(&notes, &[], &[], &users(), None, false);
+
+        assert_eq!(
+            actions(&journal),
+            vec!["Dana Reeve added a public note and emailed the client".to_string()]
+        );
+    }
+
+    /// An untouched ticket is an empty journal, not a failure.
+    #[test]
+    fn an_empty_ticket_yields_an_empty_journal() {
+        assert!(build_journal(&[], &[], &[], &users(), None, false).is_empty());
+    }
+
+    /// Whether the email went out is the note's own outcome, so the line says
+    /// which of the three cases it was.
+    #[test]
+    fn a_note_line_records_whether_the_email_was_sent() {
+        let public_unsent = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000003","note_type":"public","content":"c","created_by_name":"Dana Reeve","created_at":"2026-08-20T09:00:00Z"}"#,
+        );
+        let internal = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000004","note_type":"internal","content":"c","created_by_name":"Dana Reeve","created_at":"2026-08-20T08:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[public_unsent, internal], &[], &[], &users(), None, false);
+
+        assert_eq!(
+            actions(&journal),
+            vec![
+                "Dana Reeve added a public note (not emailed)".to_string(),
+                "Dana Reeve added an internal note".to_string(),
+            ]
+        );
+    }
+
+    /// A FK swap the audit log records as two UUIDs carries no readable
+    /// before/after, and "(reference) → (reference)" is noise. MAPPS-596 moved
+    /// the before/after off `body` and into `changes`, so it can collapse when
+    /// it is large; the drop rule is unchanged and now lives in
+    /// `ChangeLine::build`.
+    #[test]
+    fn a_reference_only_change_renders_no_body() {
+        let h = history(
+            r#"{"action":"update","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":["status_id"],"changes":[{"field":"status_id","old":"33333333-3333-4333-8333-333333333333","new":"44444444-4444-4444-8444-444444444444"}],"timestamp":"2026-08-20T11:00:00Z"}"#,
+        );
+        let readable = history(
+            r#"{"action":"update","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":["priority_id"],"changes":[{"field":"priority","old":"Low","new":"High"}],"timestamp":"2026-08-20T10:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[], &[h, readable], &[], &users(), None, false);
+
+        assert!(journal[0].changes.is_empty(), "{:?}", journal[0].changes);
+        assert_eq!(
+            journal[1].changes,
+            vec![ChangeLine {
+                field: "Priority".to_string(),
+                old: "Low".to_string(),
+                new: "High".to_string(),
+            }]
+        );
+        // An edit's before/after never rides on `body` any more; that is what
+        // put two 160-character values into the middle of the journal.
+        assert!(journal.iter().all(|e| e.body.is_none()));
+    }
+
+    /// An actor no `/auth/users` row matches reads as "Someone", never as the
+    /// bare "-" the change-history pane used in a column of its own.
+    #[test]
+    fn an_unresolvable_actor_reads_as_someone() {
+        let h = history(
+            r#"{"action":"create","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[], &[h], &[], &users(), None, false);
+
+        assert_eq!(
+            actions(&journal),
+            vec!["Someone created the ticket".to_string()]
+        );
+    }
+}
+
+#[cfg(test)]
+mod mapps592_description_editor_tests {
+    const SRC: &str = include_str!("tickets.rs");
+
+    /// The shipping code with runs of whitespace collapsed, excluding this
+    /// module: every assertion quotes the pattern it looks for, so a scan
+    /// including its own source matches itself and passes regardless.
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod mapps592_description_editor_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// MAPPS-592: both description fields are the KB write pane. MAPPS-610:
+    /// so are both note fields.
+    ///
+    /// A ticket description is Markdown, is rendered as Markdown by the same
+    /// component a KB article is, and was written in a bare textarea: the same
+    /// syntax with none of the help. A note was further behind still - no
+    /// toolbar at all - and it is the field on this page people actually spend
+    /// the day in.
+    #[test]
+    fn every_markdown_field_on_this_page_gets_the_editor() {
+        let code = code_only();
+        assert_eq!(
+            code.matches("crate::components::MarkdownEditor {").count(),
+            4,
+            "the create form, the in-page description edit, the note composer \
+             and the inline note edit"
+        );
+        for bare in [
+            "Textarea { name: \"description\",",
+            "Textarea { name: \"edit-description\",",
+            "Textarea { name: \"content\",",
+        ] {
+            assert!(
+                !code.contains(bare),
+                "{bare} is not a bare textarea any more"
+            );
+        }
+    }
+
+    /// MAPPS-610: a toolbar over a plain-text renderer posts `**bold**` and
+    /// shows `**bold**`. The note renderer changes with the note editor.
+    #[test]
+    fn a_note_is_rendered_as_markdown_not_as_raw_text() {
+        let code = code_only();
+        assert!(
+            code.contains("crate::components::Markdown { content: content.clone() }"),
+            "the journal renders a note through the shared renderer"
+        );
+        assert!(
+            !code.contains(r#"rounded-md p-3 whitespace-pre-wrap", "{content}""#),
+            "and not as the raw string in a pre-wrap box"
+        );
+        const PORTAL: &str = include_str!("portal.rs");
+        assert!(
+            PORTAL.contains("content: note.content.clone(),"),
+            "the portal too: a public note reaches the customer as Markdown, so \
+             rendering it plain would show them the asterisks"
+        );
+        assert!(
+            PORTAL.contains("mentions: false,"),
+            "with staff handles left unresolved there - a contact has no business \
+             reading the directory, and /auth/users is manager-gated anyway"
+        );
+    }
+
+    /// A mention typed in the description has to be one the READER will see
+    /// resolved, so the completion list and the renderer's list are the same
+    /// list. They are, because both come from `use_mention_directory`.
+    #[test]
+    fn the_completion_list_is_the_one_the_renderer_resolves_against() {
+        let code = code_only();
+        assert_eq!(
+            code.matches("crate::hooks::use_mention_directory(true)")
+                .count(),
+            3,
+            "one per component that hosts an editor: the list page's create form, \
+             the detail page, and the journal entry with the inline note editor"
+        );
+        assert!(
+            code.contains("people: crate::hooks::mention_people(&mention_directory)"),
+            "and it is what the editor completes against"
+        );
+    }
+
+    /// The description editor follows the same write gate as its Save button.
+    /// MAPPS-357's rule: while the server is unreachable, a control that leads
+    /// to a PUT should not invite the click. MAPPS-594 moved it out of the modal
+    /// and into the page; the gate came with it.
+    #[test]
+    fn the_description_editor_is_disabled_with_the_rest_of_the_form() {
+        let code = code_only();
+        let modal = code
+            .find("name: \"edit-description\".to_string()")
+            .expect("the description editor");
+        // Wide enough to clear the comments between the props: the assertion is
+        // about the prop being present on this editor, not about its position.
+        let window = &code[modal..code.len().min(modal + 900)];
+        assert!(
+            window.contains("disabled: !can_mutate"),
+            "the editor is gated with the form it sits in: {window}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mapps593_note_edit_tests {
+    use super::{build_journal, note_is_editable, RemoteNote, UserOpt};
+
+    const VIEWER: &str = "11111111-1111-4111-8111-111111111111";
+    const SOMEONE_ELSE: &str = "22222222-2222-4222-8222-222222222222";
+    const CONTACT: &str = "33333333-3333-4333-8333-333333333333";
+
+    fn viewer() -> uuid::Uuid {
+        VIEWER.parse().expect("viewer uuid")
+    }
+
+    fn note(json: &str) -> RemoteNote {
+        serde_json::from_str(json).expect("deserialise note")
+    }
+
+    /// A note of `kind` authored by `author`, with the two frozen-state flags.
+    fn make(kind: &str, author: &str, emailed: bool, contact: Option<&str>) -> RemoteNote {
+        let contact = match contact {
+            Some(c) => format!(r#","created_by_contact_id":"{c}""#),
+            None => String::new(),
+        };
+        note(&format!(
+            r#"{{"id":"aaaaaaaa-0000-4000-8000-00000000000f","note_type":"{kind}",
+                "content":"c","created_by_name":"Dana Reeve","is_email_sent":{emailed},
+                "created_by_id":"{author}","created_at":"2026-08-20T09:00:00Z"{contact}}}"#
+        ))
+    }
+
+    /// The reported case: the author corrects their own internal note.
+    #[test]
+    fn the_author_may_edit_their_own_internal_note() {
+        assert!(note_is_editable(
+            &make("internal", VIEWER, false, None),
+            Some(viewer()),
+            false
+        ));
+    }
+
+    /// And the title's case: the MSP owner corrects anyone's.
+    #[test]
+    fn an_admin_may_edit_somebody_elses() {
+        let n = make("internal", SOMEONE_ELSE, false, None);
+        assert!(!note_is_editable(&n, Some(viewer()), false), "not as staff");
+        assert!(note_is_editable(&n, Some(viewer()), true), "yes as admin");
+    }
+
+    /// The state rules, mirrored from `TicketService::update_note` so the
+    /// affordance and the answer agree. A control that 409s is worse than no
+    /// control, and the server is still the authority.
+    #[test]
+    fn a_frozen_note_offers_no_control_even_to_an_admin() {
+        // Emailed to the customer: they hold the original in their inbox.
+        assert!(!note_is_editable(
+            &make("public", VIEWER, true, None),
+            Some(viewer()),
+            true
+        ));
+        // The customer's own words, through the portal.
+        assert!(!note_is_editable(
+            &make("internal", VIEWER, false, Some(CONTACT)),
+            Some(viewer()),
+            true
+        ));
+        // Edited through its time entry, not here.
+        assert!(!note_is_editable(
+            &make("time_entry", VIEWER, false, None),
+            Some(viewer()),
+            true
+        ));
+    }
+
+    /// A public note nobody emailed is still editable: the customer may have
+    /// read it in the portal, but no copy exists outside the system.
+    #[test]
+    fn a_public_note_that_was_never_emailed_is_editable() {
+        assert!(note_is_editable(
+            &make("public", VIEWER, false, None),
+            Some(viewer()),
+            false
+        ));
+    }
+
+    /// An unfamiliar note type offers nothing. Guessing yes would put a control
+    /// on a row the server refuses, which is the failure this mirror exists to
+    /// avoid.
+    #[test]
+    fn an_unknown_note_type_offers_no_control() {
+        assert!(!note_is_editable(
+            &make("something_new", VIEWER, false, None),
+            Some(viewer()),
+            true
+        ));
+    }
+
+    /// A signed-out or unresolved viewer is nobody's author, and `None == None`
+    /// must not read as a match against a note with no recorded author.
+    #[test]
+    fn an_unknown_viewer_is_not_the_author_of_an_unattributed_note() {
+        let orphan = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-00000000000e","note_type":"internal",
+                "content":"c","created_by_name":"","created_at":"2026-08-20T09:00:00Z"}"#,
+        );
+        assert!(!note_is_editable(&orphan, None, false));
+        assert!(
+            note_is_editable(&orphan, None, true),
+            "an admin still may, because the permission does not rest on authorship"
+        );
+    }
+
+    /// The journal carries the decision per entry, and only a note carries one.
+    /// A change-history line or a time entry growing an Edit control would send
+    /// a PUT to a note endpoint with no note.
+    #[test]
+    fn only_a_note_line_carries_an_edit_handle() {
+        let users: Vec<UserOpt> = Vec::new();
+        let mine = make("internal", VIEWER, false, None);
+        let theirs = make("internal", SOMEONE_ELSE, false, None);
+        let history = vec![serde_json::from_str(
+            r#"{"action":"update","user_id":"11111111-1111-4111-8111-111111111111",
+                "changed_fields":["status_id"],"changes":[],
+                "timestamp":"2026-08-20T11:00:00Z"}"#,
+        )
+        .expect("history entry")];
+
+        let journal = build_journal(
+            &[mine, theirs],
+            &history,
+            &[],
+            &users,
+            Some(viewer()),
+            false,
+        );
+
+        let with_handles = journal.iter().filter(|e| e.editable_note.is_some()).count();
+        assert_eq!(
+            with_handles, 1,
+            "the viewer's own note, and neither the other author's nor the history line"
+        );
+    }
+
+    /// An edit has to be visible as one. Both timestamps come from the same
+    /// transaction's `NOW()` on insert, so an untouched note has them exactly
+    /// equal and the marker is a strict `>`.
+    #[test]
+    fn a_note_is_marked_edited_only_after_it_was() {
+        let users: Vec<UserOpt> = Vec::new();
+        let untouched = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-00000000000a","note_type":"internal","content":"c",
+                "created_by_name":"D","created_at":"2026-08-20T09:00:00Z",
+                "updated_at":"2026-08-20T09:00:00Z"}"#,
+        );
+        let edited = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-00000000000b","note_type":"internal","content":"c",
+                "created_by_name":"D","created_at":"2026-08-20T08:00:00Z",
+                "updated_at":"2026-08-20T10:00:00Z"}"#,
+        );
+        let journal = build_journal(&[untouched, edited], &[], &[], &users, None, false);
+        // Newest first: the untouched note (09:00) sorts above the edited one
+        // (created 08:00), because the journal is ordered on when it happened.
+        assert!(!journal[0].edited, "{:?}", journal[0]);
+        assert!(journal[1].edited, "{:?}", journal[1]);
+    }
+
+    /// A server that predates PMS-931 sends no `updated_at`. That has to decode
+    /// as "never edited" rather than failing the whole notes list, which would
+    /// empty the journal on a version skew.
+    #[test]
+    fn a_note_without_updated_at_still_decodes() {
+        let users: Vec<UserOpt> = Vec::new();
+        let old = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-00000000000c","note_type":"internal","content":"c",
+                "created_by_name":"D","created_at":"2026-08-20T09:00:00Z"}"#,
+        );
+        let journal = build_journal(&[old], &[], &[], &users, None, false);
+        assert_eq!(journal.len(), 1);
+        assert!(!journal[0].edited);
+    }
+
+    /// MAPPS-593: the journal loop is keyed, and that became load-bearing the
+    /// moment an entry started owning edit state. Dioxus reuses component state
+    /// positionally, so an unkeyed loop hands a newly-prepended note the draft
+    /// of whatever used to be first. This is the same trap MAPPS-596 hit with
+    /// the change-history panes.
+    #[test]
+    fn the_journal_is_keyed_so_a_draft_cannot_follow_the_wrong_note() {
+        const SRC: &str = include_str!("tickets.rs");
+        let end = SRC
+            .find("mod mapps593_note_edit_tests")
+            .expect("this module is part of this file");
+        let code = SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ");
+        let loop_at = code
+            .find("for (i , entry) in journal.iter()")
+            .expect("the journal loop");
+        let window = &code[loop_at..code.len().min(loop_at + 700)];
+        assert!(
+            window.contains("key: \"{entry_key}\""),
+            "the journal loop is keyed: {window}"
+        );
+        assert!(
+            window.contains("Some(id) => id.to_string()"),
+            "and a note is keyed on its own id, not its position: {window}"
+        );
+    }
+
+    /// The refusal belongs next to the note. A toast outlives the context it is
+    /// about, and the server's 409 sentence is the thing the author has to read
+    /// to know which of four rules they hit.
+    #[test]
+    fn a_refusal_lands_next_to_the_note_it_is_about() {
+        const SRC: &str = include_str!("tickets.rs");
+        let end = SRC
+            .find("mod mapps593_note_edit_tests")
+            .expect("this module is part of this file");
+        let code = SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            code.contains("edit_error.set(e);"),
+            "the server's message becomes the field's error"
+        );
+        let save = code.find("let path = format!(\"/tickets/{ticket_id}/notes/{note_id}\");");
+        let save = save.expect("the save handler");
+        let window = &code[save..code.len().min(save + 900)];
+        assert!(!window.contains("push_toast"), "and not a toast: {window}");
+    }
+}
+
+#[cfg(test)]
+mod mapps594_in_page_edit_tests {
+    const SRC: &str = include_str!("tickets.rs");
+
+    /// The shipping code with runs of whitespace collapsed, excluding this
+    /// module: every assertion quotes the pattern it looks for.
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod mapps594_in_page_edit_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// MAPPS-594: the edit modal is gone, not resized.
+    ///
+    /// `ModalSize::Full` exists and would have taken the panel to `max-w-7xl`
+    /// in one enum value. That is the cheap answer and the wrong one: a wider
+    /// cover is still a cover, and what the author is editing against is the
+    /// page underneath. Pinned because "make the modal bigger" is the obvious
+    /// thing for a later change to reach for.
+    #[test]
+    fn the_edit_modal_is_gone_rather_than_bigger() {
+        let code = code_only();
+        assert!(
+            !code.contains(r#"title: "Edit Ticket""#),
+            "no Edit Ticket modal"
+        );
+        assert!(
+            !code.contains("ModalSize::Full"),
+            "and it was not simply widened"
+        );
+        // The one Modal left on this page is the approvals request, which is a
+        // short self-contained task and is what a modal is for.
+        assert_eq!(
+            code.matches("Modal { open:").count(),
+            1,
+            "only the approvals modal remains: {code:?}"
+        );
+    }
+
+    /// The editor renders in the Description card, where the description it
+    /// replaces was, and the title in the header where the title was.
+    #[test]
+    fn the_editor_renders_in_the_page() {
+        let code = code_only();
+        let card = code
+            .find(r#"Card { title: "Description""#)
+            .expect("the Description card");
+        let window = &code[card..code.len().min(card + 4000)];
+        assert!(
+            window.contains("if editing_desc() {"),
+            "the card switches into edit mode"
+        );
+        assert!(
+            window.contains("crate::components::MarkdownEditor {"),
+            "and the editor is what it switches to"
+        );
+        assert!(
+            code.contains("title_slot: editing_desc().then("),
+            "the title is edited where the title is"
+        );
+    }
+
+    /// A second way into an edit that is already open is a no-op the reader has
+    /// to reason about.
+    #[test]
+    fn the_edit_button_hides_while_editing() {
+        let code = code_only();
+        assert!(
+            code.contains("actions: if ticket_loaded && !editing_desc() {"),
+            "the header Edit button is not offered during an edit"
+        );
+    }
+
+    /// A modal cannot be navigated away from; a page can. That risk is created
+    /// by this change rather than inherited, so both halves of the answer are
+    /// pinned: the browser-level exits and the in-app one.
+    #[test]
+    fn unsaved_work_is_guarded_both_ways() {
+        let code = code_only();
+        assert!(
+            code.contains("crate::hooks::use_unsaved_guard(editor_dirty.into())"),
+            "reload and tab close warn"
+        );
+        assert!(
+            code.contains("confirming_cancel.set(true)"),
+            "and Cancel asks before discarding"
+        );
+        assert!(
+            code.contains("ConfirmDialog { open: confirming_cancel()"),
+            "through a real confirmation rather than a native confirm()"
+        );
+    }
+
+    /// Only when there is something to lose. A confirmation whose answer is
+    /// always the same is a dialog nobody reads, so an untouched editor closes
+    /// immediately.
+    #[test]
+    fn cancelling_an_untouched_editor_does_not_ask() {
+        let code = code_only();
+        let cancel = code
+            .find("if editor_dirty() { confirming_cancel.set(true); } else {")
+            .expect("Cancel is conditional on there being changes");
+        let window = &code[cancel..code.len().min(cancel + 200)];
+        assert!(
+            window.contains("editing_desc.set(false)"),
+            "an untouched editor closes straight away: {window}"
+        );
+    }
+
+    /// The dirty flag has to TRACK. A `use_memo` whose body reads only a plain
+    /// local computes once and never again, because it has no reactive
+    /// dependency to re-run on, and the guard would then be stuck on whatever
+    /// the first render decided. Every input is a signal read.
+    #[test]
+    fn the_dirty_flag_is_computed_from_signals() {
+        let code = code_only();
+        let memo = code
+            .find("let editor_dirty = use_memo(move || {")
+            .expect("the dirty memo");
+        let window = &code[memo..code.len().min(memo + 300)];
+        for read in [
+            "editing_desc()",
+            "*e_title.read()",
+            "*e_baseline_title.read()",
+            "*e_desc.read()",
+            "*e_baseline_desc.read()",
+        ] {
+            assert!(window.contains(read), "the memo must read {read}: {window}");
+        }
+    }
+
+    /// Nothing about what is saved changed: the same PUT, the same guard, the
+    /// same write gate. Only where the fields live did.
+    #[test]
+    fn the_save_path_is_the_one_the_modal_used() {
+        let code = code_only();
+        assert!(
+            code.contains(r#"&format!("/tickets/{save_id}")"#),
+            "the same PUT the modal made"
+        );
+        assert!(
+            code.contains(r#"guard.field("edit-title","#),
+            "the title still validates through the shared FormGuard"
+        );
+        assert!(
+            code.contains(r#"guard.field( "edit-description","#),
+            "and so does the description"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mapps613_note_type_and_email_affordance_tests {
+    use super::*;
+
+    const SRC: &str = include_str!("tickets.rs");
+
+    /// The shipping code with runs of whitespace collapsed, excluding this
+    /// module: every assertion quotes the pattern it looks for, so a scan
+    /// including its own source would match itself and pass regardless.
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod mapps613_note_type_and_email_affordance_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    fn note(json: &str) -> RemoteNote {
+        serde_json::from_str(json).expect("deserialise note")
+    }
+
+    /// Three of the four, and the omission is the deliberate half.
+    ///
+    /// `resolution` was storable, editable and renderable all along and could
+    /// not be composed. `time_entry` must stay out: nothing writes one, and
+    /// the server refuses to edit one because "a time-entry note is edited
+    /// through its time entry", so a hand-written one belongs to an entry that
+    /// does not exist and nobody can then correct it.
+    #[test]
+    fn only_a_type_an_agent_may_write_is_offered() {
+        let offered: Vec<(String, String)> = note_type_options()
+            .into_iter()
+            .map(|o| (o.value, o.label))
+            .collect();
+        assert_eq!(
+            offered,
+            vec![
+                ("internal".to_string(), "Internal Note".to_string()),
+                (
+                    "public".to_string(),
+                    "Public Note (visible to customer)".to_string()
+                ),
+                (
+                    "resolution".to_string(),
+                    "Resolution Note (internal)".to_string()
+                ),
+            ]
+        );
+        assert!(
+            composer_label(NoteType::TimeEntry).is_none(),
+            "an agent cannot author a note about a time entry that does not exist"
+        );
+    }
+
+    /// David's actual objection. The server has always refused to mail an
+    /// internal note, but that refusal happens where nobody can see it: a
+    /// greyed-out `Email this note to the client` on an internal note still
+    /// says this app will send internal commentary to a customer if you ask
+    /// the right way.
+    #[test]
+    fn the_email_control_is_absent_rather_than_disabled() {
+        let code = code_only();
+        assert!(
+            code.contains("if note_is_public { div { class: \"flex items-end\", Checkbox {"),
+            "the checkbox is rendered only on a public note"
+        );
+        assert!(
+            !code.contains("disabled: !note_is_public"),
+            "and never as a greyed-out control on a note that cannot be emailed"
+        );
+    }
+
+    /// The flag has to be cleared on the way out of public, because the box
+    /// that would otherwise show it checked is no longer on screen. Before
+    /// this branch a stale flag was merely invisible-but-disabled; now it
+    /// would be invisible outright, so the clear carries more weight than it
+    /// did, and the submit's own `type == "public"` guard is the second line.
+    #[test]
+    fn leaving_public_clears_the_email_flag() {
+        let code = code_only();
+        assert!(
+            code.contains("if e.value() != \"public\" { note_send_email.set(false); }"),
+            "any type but public clears the flag, not just internal"
+        );
+        assert!(
+            code.contains("let email_v = type_v == \"public\" && note_send_email();"),
+            "and the submit re-checks it"
+        );
+    }
+
+    /// The journal sentence is the only place a note's type reaches a reader.
+    /// It read "internal, else public", which was true while those were the
+    /// only two composable types and becomes a false claim about customer
+    /// visibility the moment `resolution` joins them: the portal serves
+    /// `note_type='public'` and nothing else.
+    #[test]
+    fn the_journal_never_calls_an_invisible_note_public() {
+        let resolution = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000021","note_type":"resolution","content":"Replaced the PSU","created_by_name":"Dana Reeve","created_at":"2026-08-20T09:00:00Z"}"#,
+        );
+        let unknown = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000022","note_type":"something_new","content":"x","created_by_name":"Dana Reeve","created_at":"2026-08-20T08:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[resolution, unknown], &[], &[], &[], None, false);
+        let actions: Vec<String> = journal.iter().map(|e| e.action.clone()).collect();
+
+        assert_eq!(
+            actions,
+            vec![
+                "added a resolution note (internal)".to_string(),
+                "added a note".to_string(),
+            ]
+        );
+        for action in &actions {
+            assert!(
+                !action.contains("public"),
+                "neither note is visible to the customer, so neither line may say public: {action}"
+            );
+        }
+    }
+
+    /// The two lines that were already right stay right: this change must not
+    /// move what a public note reads as.
+    #[test]
+    fn a_public_note_still_reads_exactly_as_it_did() {
+        let emailed = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000023","note_type":"public","content":"x","created_by_name":"Dana Reeve","is_email_sent":true,"created_at":"2026-08-20T09:00:00Z"}"#,
+        );
+        let unsent = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000024","note_type":"public","content":"x","created_by_name":"Dana Reeve","created_at":"2026-08-20T08:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[emailed, unsent], &[], &[], &[], None, false);
+        let actions: Vec<String> = journal.iter().map(|e| e.action.clone()).collect();
+
+        assert_eq!(
+            actions,
+            vec![
+                "added a public note and emailed the client".to_string(),
+                "added a public note (not emailed)".to_string(),
+            ]
+        );
     }
 }

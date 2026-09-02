@@ -21,10 +21,10 @@ use serde::Deserialize;
 use std::str::FromStr;
 
 use crate::components::{
-    invoice_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant,
-    Card, DataTable, ErrorBanner, IconSize, InformationIcon, Modal, ModalSize, PageHeader,
-    PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
-    TableHeader, TableLoading, TableRow,
+    clear_on_edit, invoice_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonSize,
+    ButtonVariant, Card, DataTable, ErrorBanner, IconSize, InformationIcon, MailIcon, Modal,
+    ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty,
+    TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
@@ -80,9 +80,8 @@ struct CompanyOption {
 /// Load the tenant's companies for the billing pickers (PMS-186).
 /// Best-effort: an empty list on error so a form still renders.
 async fn load_companies() -> Vec<CompanyOption> {
-    crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>("/contacts/companies")
+    crate::hooks::fetch::api::get_all_authed::<CompanyOption>("/contacts/companies")
         .await
-        .map(|p| p.data)
         .unwrap_or_default()
 }
 
@@ -90,10 +89,14 @@ async fn load_companies() -> Vec<CompanyOption> {
 /// `RemoteTaxRate` model from the Tax Rates settings view. Best-effort: an
 /// empty list on error so a form still renders.
 async fn load_tax_rates() -> Vec<RemoteTaxRate> {
-    crate::hooks::fetch::api::get_authed::<Paginated<RemoteTaxRate>>("/tax-rates?per_page=100")
+    crate::hooks::fetch::api::get_all_authed::<RemoteTaxRate>("/tax-rates")
         .await
-        .map(|p| p.data)
-        .unwrap_or_default()
+        .unwrap_or_else(|e| {
+            // Best-effort: the form still renders without the picker, but the
+            // failure is logged rather than read as "this tenant has no rates".
+            tracing::warn!("tax-rate load failed: {e}");
+            Vec::new()
+        })
 }
 
 /// Build `[("", "No tax"), (id, "name (rate%)"), ...]` select options from a
@@ -165,11 +168,14 @@ struct RemoteInvoice {
 /// filter). Best-effort: an empty list on error so the picker still renders
 /// the "(Unapplied payment)" choice.
 async fn load_company_invoices(company_id: uuid::Uuid) -> Vec<RemoteInvoice> {
-    let path = format!("/invoices?company_id={company_id}&per_page=200");
-    crate::hooks::fetch::api::get_authed::<Paginated<RemoteInvoice>>(&path)
+    let path = format!("/invoices?company_id={company_id}");
+    crate::hooks::fetch::api::get_all_authed::<RemoteInvoice>(&path)
         .await
-        .map(|p| p.data)
-        .unwrap_or_default()
+        .unwrap_or_else(|e| {
+            // Best-effort: the picker still offers "(Unapplied payment)".
+            tracing::warn!("invoice load failed for company {company_id}: {e}");
+            Vec::new()
+        })
 }
 
 /// Build the Record Payment invoice options (MAPPS-191): a leading explicit
@@ -607,6 +613,29 @@ struct InvoiceLine {
     total: String,
 }
 
+/// MAPPS-539: the invoice "Pay Now" mail is built in mokosh-server's billing
+/// service, not by a notification rule, so `POST /notifications/preview`
+/// renders nothing for it. Same position as the quote and invite sends; the
+/// modal says so rather than leaving the operator to read "nothing will be
+/// sent" and believe it. MAPPS-489 moves those onto the dispatcher.
+const INVOICE_SEND_PREVIEW_NOTE: &str = "The invoice email is built into the server rather than by a notification rule, so there is nothing to render yet. The billing contact is still emailed a link to view and pay the invoice.";
+
+/// The path the invoice **send** transition writes to (MAPPS-539).
+///
+/// A named helper rather than an inline `format!`, because it is what
+/// `scripts/check-email-affordance.sh` keys on. The URL shape cannot be the
+/// key: `PUT /invoices/{id}` is the general invoice update, shared here with
+/// Edit and Void and again with the invoice delete in `src/pages/contacts.rs`,
+/// none of which send anything. This symbol exists because the call sends
+/// email, so it matches the send and nothing else, and goes on matching if the
+/// button moves to another file.
+///
+/// The email is `notify_invoice_pay_now` on the server, fired on the first
+/// transition into `sent`.
+fn invoice_send_path(id: &str) -> String {
+    format!("/invoices/{id}")
+}
+
 /// Invoice detail page. GET `/invoices/{id}` with `lines` populated.
 #[derive(Props, Clone, PartialEq)]
 pub struct InvoiceDetailPageProps {
@@ -707,7 +736,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         action_error.set(String::new());
         let path = format!("/invoices/{id_for_void}");
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let body = serde_json::json!({ "status": "void" });
                 match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
@@ -755,6 +784,12 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         }
         PageHeader {
             title: "{header_title}",
+            // PMS-746: a route back to the list, matching ContractDetailPage.
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs {
+                    items: crate::components::detail_breadcrumbs("Invoices", Route::InvoiceList {}, &header_title),
+                }
+            },
             actions: rsx! {
                 if can_download_pdf {
                     Button {
@@ -838,9 +873,9 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                             }
                             busy.set(true);
                             action_error.set(String::new());
-                            let path = format!("/invoices/{id_for_send}");
+                            let path = invoice_send_path(&id_for_send);
                             spawn(async move {
-                                #[cfg(feature = "web")]
+                                #[cfg(feature = "app")]
                                 {
                                     let body = serde_json::json!({ "status": "sent" });
                                     match crate::hooks::fetch::api::put_authed::<
@@ -857,7 +892,33 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                 busy.set(false);
                             });
                         },
+                        MailIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "Send"
+                    }
+                    // MAPPS-539: Send emails the client, so it carries the two
+                    // affordances every other send trigger does. The preview
+                    // never gates the send; it sits beside it.
+                    crate::components::EmailPreview {
+                        event_type: "billing.invoice_pay_now".to_string(),
+                        context: serde_json::json!({
+                            "invoice_number": invoice
+                                .as_ref()
+                                .map(|i| i.invoice_number.clone())
+                                .unwrap_or_default(),
+                            "company_name": invoice
+                                .as_ref()
+                                .and_then(|i| i.company_name.clone())
+                                .unwrap_or_default(),
+                            "total": invoice
+                                .as_ref()
+                                .map(|i| i.total.clone())
+                                .unwrap_or_default(),
+                            "due_date": invoice
+                                .as_ref()
+                                .and_then(|i| i.due_date.clone())
+                                .unwrap_or_default(),
+                        }),
+                        empty_note: INVOICE_SEND_PREVIEW_NOTE.to_string(),
                     }
                 }
                 if collectible && staff_only {
@@ -898,6 +959,17 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
             div {
                 class: "mb-3 text-xs text-muted bg-surface-2 border border-line rounded-md px-3 py-2",
                 "{note}"
+            }
+        }
+
+        // MAPPS-539: Send is a one-way door that emails the client, and the
+        // button alone cannot say so. The conditions are the server's: it
+        // skips the mail when no payment gateway is connected, when the
+        // invoice has no billing contact, or when that contact has no address
+        // on file, so promise it only where it holds.
+        if editable {
+            p { class: "mb-3 text-xs text-subtle",
+                "Sending emails the billing contact a link to view and pay this invoice, if a payment gateway is connected and the contact has an email address. Use Preview email to read it first."
             }
         }
 
@@ -1061,7 +1133,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                     }
                                     div { class: "flex justify-between",
                                         span { class: "text-muted", "Paid" }
-                                        span { class: "font-medium text-green-600", "{amount_paid}" }
+                                        span { class: "font-medium text-green-600 dark:text-green-400", "{amount_paid}" }
                                     }
                                     div { class: "flex justify-between",
                                         span { class: "text-muted", "Balance Due" }
@@ -1329,7 +1401,7 @@ pub fn InvoiceNewPage() -> Element {
             }],
         });
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 #[derive(serde::Deserialize)]
                 struct InvoiceId {
@@ -1378,7 +1450,7 @@ pub fn InvoiceNewPage() -> Element {
             "notes": optional_string(&notes.read()),
         });
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 #[derive(serde::Deserialize)]
                 struct InvoiceId {
@@ -1870,7 +1942,7 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/payments/{id}");
                 match crate::hooks::fetch::api::delete_authed(&path).await {
@@ -1924,7 +1996,7 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
                     "{props.reference}"
                 }
             }
-            TableCell { class: "text-right font-medium text-green-600", "{props.amount}" }
+            TableCell { class: "text-right font-medium text-green-600 dark:text-green-400", "{props.amount}" }
             TableCell { class: "text-right",
                 div { class: "inline-flex gap-2",
                     Button {
@@ -1948,7 +2020,7 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
                     }
                 }
                 if !error.read().is_empty() {
-                    p { class: "mt-1 text-xs text-red-600", "{error.read()}" }
+                    p { class: "mt-1 text-xs text-red-600 dark:text-red-400", "{error.read()}" }
                 }
             }
             crate::components::ConfirmDialog {
@@ -2035,7 +2107,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
             .unwrap_or_default(),
     );
     let mut payment_date = use_signal(|| props.payment_date.clone());
-    let mut amount = use_signal(|| props.amount.clone());
+    let amount = use_signal(|| props.amount.clone());
     // Seed the method from the edited payment, falling back to the create
     // default when this is a fresh record (MAPPS-235).
     let seed_method = props.payment_method.clone();
@@ -2197,7 +2269,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
         // captured id into the spawned future.
         let payment_id = payment_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 // For an applied payment, confirm the invoice exists (and is
                 // visible to this tenant) before recording, so a well-formed
@@ -2294,7 +2366,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                     options: invoice_options,
                     value: invoice_id.read().clone(),
                     error: invoice_err(),
-                    onchange: move |e: FormEvent| invoice_id.set(e.value()),
+                    onchange: clear_on_edit(invoice_id, invoice_err),
                 }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
                     crate::components::DateField {
@@ -2320,7 +2392,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                         required: true,
                         value: amount.read().clone(),
                         error: amount_err(),
-                        oninput: move |e: FormEvent| amount.set(e.value()),
+                        oninput: clear_on_edit(amount, amount_err),
                     }
                 }
                 Select {
@@ -2481,13 +2553,13 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
     // term was later deactivated (it stays selected because we seed by id).
     let terms_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<PaymentTermOpt>>(
-            "/payment-terms?per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<PaymentTermOpt>("/payment-terms")
+            .await
+            .unwrap_or_else(|e| {
+                // Best-effort: the entry keeps its current term either way.
+                tracing::warn!("payment-term load failed: {e}");
+                Vec::new()
+            })
     });
     let current_term = payment_term_id.read().clone();
     // The server PUT does `payment_term_id = COALESCE($x, payment_term_id)`, so
@@ -2622,7 +2694,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             "lines": lines_json,
         });
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
                     .await
@@ -3005,8 +3077,14 @@ fn TaxRateListBody() -> Element {
                                 let name = rate.name.clone();
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell { class: "text-right", "{rate_label}%" }
@@ -3155,7 +3233,7 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result: Result<(), String> = match id {
                     None => crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
@@ -3199,7 +3277,7 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/tax-rates/{id}");
                 match crate::hooks::fetch::api::delete_authed(&path).await {
@@ -3386,21 +3464,16 @@ fn PaymentGatewayConfigBody() -> Element {
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        // One row per provider; a single page covers every configured
-        // gateway.
-        crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteGateway>>(
-            "/payment-gateways?page=1&per_page=100",
-            &token,
-        )
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_with_auth::<RemoteGateway>("/payment-gateways", &token)
+            .await
+            .ok()
     });
 
     let snap = gateways_resource.read_unchecked();
     let is_loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
     let rows: Vec<RemoteGateway> = match &*snap {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
 
@@ -3484,8 +3557,14 @@ fn PaymentGatewayConfigBody() -> Element {
                                 let configured = gateway.configured;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{provider_label}" }
                                         }
                                         TableCell {
@@ -3647,7 +3726,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
             body["config"] = serde_json::json!({ "api_key": key });
         }
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::put_authed_typed::<serde_json::Value, _>(
                     "/payment-gateways",
@@ -3683,7 +3762,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
         error.set(String::new());
         let provider = delete_provider.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/payment-gateways/{provider}");
                 match crate::hooks::fetch::api::delete_authed(&path).await {

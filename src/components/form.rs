@@ -1,6 +1,91 @@
 //! Form input components
 
+use dioxus::html::{FileData, HasFileData};
 use dioxus::prelude::*;
+use std::rc::Rc;
+
+/// A [`FormEvent`]'s payload with its `value()` replaced by the sanitized one
+/// (MAPPS-582). Everything else (`valid`, `values`, `files`) delegates to the
+/// event the browser raised, so the wrapper is invisible to a call site that
+/// reads anything other than the value.
+struct SanitizedFormData {
+    value: String,
+    inner: Rc<FormData>,
+}
+
+impl HasFormData for SanitizedFormData {
+    fn value(&self) -> String {
+        self.value.clone()
+    }
+
+    fn valid(&self) -> bool {
+        self.inner.valid()
+    }
+
+    fn values(&self) -> Vec<(String, FormValue)> {
+        self.inner.values()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl HasFileData for SanitizedFormData {
+    fn files(&self) -> Vec<FileData> {
+        self.inner.files()
+    }
+}
+
+/// Strip invisible characters from a text event's value before it reaches the
+/// call site (MAPPS-582). This is the single choke point: every text-entry
+/// surface in the app routes through the components in this file, so a value
+/// that renders as nothing can never be read out of `e.value()` and stored.
+///
+/// Returns the original event untouched when there is nothing to strip, which
+/// is every keystroke of ordinary text, so the common path allocates nothing
+/// and behaves bit-identically to before. `Event::map` is what rebuilds the
+/// event, so the new one shares the original's propagation and
+/// `prevent_default` state rather than resetting it.
+fn sanitized(e: FormEvent) -> FormEvent {
+    let raw = e.value();
+    if !crate::utils::text::has_invisible(&raw) {
+        return e;
+    }
+    let data = SanitizedFormData {
+        value: crate::utils::text::strip_invisible(&raw),
+        inner: e.data(),
+    };
+    e.map(move |_| FormData::new(data))
+}
+
+/// Whether an `<input>` of this type gets its value sanitized (MAPPS-582).
+///
+/// Everything does except a password. A password may legitimately contain any
+/// character, and silently rewriting one turns a correct credential into a
+/// failed login with no diagnosis anywhere. Every password, secret and API-key
+/// field in the app sets `type="password"`, so this one check exempts them all.
+fn sanitizes(field_type: &str) -> bool {
+    field_type != "password"
+}
+
+/// Bind a text field so editing it clears its inline error slot (MAPPS-581).
+/// An inline error describes the value that was submitted, so the next
+/// keystroke invalidates it; leaving it on screen reads as the app rejecting
+/// what the user just typed.
+///
+/// The clear lives at the call site, not inside [`Input`], because only the
+/// parent knows a submit happened and can re-raise the same message when the
+/// corrected value still fails.
+pub fn clear_on_edit(
+    mut value: Signal<String>,
+    mut error: Signal<String>,
+) -> impl FnMut(FormEvent) + Copy {
+    move |e: FormEvent| {
+        error.set(String::new());
+        value.set(e.value());
+    }
+}
 
 /// Text input component props
 #[derive(Props, Clone, PartialEq)]
@@ -65,6 +150,13 @@ pub struct InputProps {
     /// Change handler
     #[props(default)]
     oninput: EventHandler<FormEvent>,
+    /// Blur passthrough (MAPPS-480). Called after the component's own
+    /// `touched` bookkeeping, so a call site can act on "the user finished
+    /// with this field" (the Website field probes the value it was given)
+    /// without taking over the validation state. Defaults to a no-op, so a
+    /// call site that does not need it is unaffected.
+    #[props(default)]
+    onblur: EventHandler<FocusEvent>,
     /// Stable selector for browser-automation tests (PMC-111).
     #[props(default)]
     data_testid: Option<String>,
@@ -101,6 +193,10 @@ pub fn Input(props: InputProps) -> Element {
 
     let class = format!("{} {}", input_class, props.class);
 
+    // MAPPS-582: read the field type once, out here, so the `oninput` closure
+    // captures a bool rather than the prop.
+    let sanitize = sanitizes(&props.r#type);
+
     rsx! {
         div { class: "space-y-1",
             if !props.label.is_empty() {
@@ -109,7 +205,7 @@ pub fn Input(props: InputProps) -> Element {
                     class: "block text-sm font-medium text-content",
                     "{props.label}"
                     if props.required {
-                        span { class: "text-red-500 ml-1", aria_label: "required", role: "img", "*" }
+                        span { class: "text-red-500 dark:text-red-400 ml-1", aria_label: "required", role: "img", "*" }
                     }
                 }
             }
@@ -137,8 +233,13 @@ pub fn Input(props: InputProps) -> Element {
                 aria_label: if props.aria_label.is_empty() { None } else { Some(props.aria_label.clone()) },
                 disabled: props.disabled,
                 "data-testid": props.data_testid.as_deref(),
-                oninput: move |e| props.oninput.call(e),
-                onblur: move |_| touched.set(true),
+                oninput: move |e: FormEvent| {
+                    props.oninput.call(if sanitize { sanitized(e) } else { e })
+                },
+                onblur: move |e| {
+                    touched.set(true);
+                    props.onblur.call(e);
+                },
             }
             if !shown_error.is_empty() {
                 p { class: "text-sm leading-5 text-red-600 dark:text-red-400",
@@ -244,6 +345,16 @@ pub struct TextareaProps {
     rules: Vec<crate::utils::validation::Rule>,
     #[props(default)]
     help: String,
+    /// MAPPS-592: keep the label out of the flow while still using it.
+    ///
+    /// A Markdown field is a toolbar sitting directly on top of the box, and
+    /// the label belongs above BOTH. Rendering it here puts it between the two,
+    /// which reads as a caption on the toolbar rather than a label on the
+    /// field. The host renders it instead; the value is still what names the
+    /// field in a validation message and to a screen reader, so this hides it
+    /// rather than dropping it.
+    #[props(default = false)]
+    label_hidden: bool,
     /// `maxlength` attribute. Caps how many characters the textarea accepts so
     /// over-long text is blocked at the input rather than failing server-side.
     /// `i64` to match [`Input::maxlength`] so both take a bare integer cap.
@@ -251,8 +362,20 @@ pub struct TextareaProps {
     maxlength: Option<i64>,
     #[props(default)]
     class: String,
+    /// PMS-939: classes on the wrapper `div` around label, field and error.
+    ///
+    /// A field that has to fill a flex column cannot do it from the `<textarea>`
+    /// alone: the wrapper is the flex item, so a `flex-1` on the field inside it
+    /// stretches nothing. Empty for every host that just wants `rows`.
+    #[props(default)]
+    wrapper_class: String,
     #[props(default)]
     oninput: EventHandler<FormEvent>,
+    /// MAPPS-579: keyboard shortcuts. The editor toolbar needs Cmd/Ctrl+B, I
+    /// and K on the body field, and the handler has to sit on the textarea
+    /// itself so a shortcut only fires while the author is typing in it.
+    #[props(default)]
+    onkeydown: EventHandler<KeyboardEvent>,
 }
 
 #[component]
@@ -275,16 +398,17 @@ pub fn Textarea(props: TextareaProps) -> Element {
     };
 
     let class = format!("{} {}", input_class, props.class);
+    let wrapper = format!("space-y-1 {}", props.wrapper_class);
 
     rsx! {
-        div { class: "space-y-1",
-            if !props.label.is_empty() {
+        div { class: "{wrapper}",
+            if !props.label.is_empty() && !props.label_hidden {
                 label {
                     r#for: "{props.name}",
                     class: "block text-sm font-medium text-content",
                     "{props.label}"
                     if props.required {
-                        span { class: "text-red-500 ml-1", aria_label: "required", role: "img", "*" }
+                        span { class: "text-red-500 dark:text-red-400 ml-1", aria_label: "required", role: "img", "*" }
                     }
                 }
             }
@@ -302,9 +426,26 @@ pub fn Textarea(props: TextareaProps) -> Element {
                 maxlength: props.maxlength,
                 aria_required: if props.required { "true" } else { "false" },
                 disabled: props.disabled,
-                oninput: move |e| props.oninput.call(e),
+                // MAPPS-582: same choke point as `Input`. A textarea has no
+                // password variant, so there is nothing to exempt.
+                // MAPPS-585: the value is an ATTRIBUTE, never a child.
+                //
+                // A `<textarea>`'s text child is its DEFAULT value: the browser
+                // copies it into `.value` only while the element is still
+                // "clean". The first keystroke dirties it, and from then on
+                // writing the child changes `textContent` and nothing the
+                // author can see. That is why every toolbar action stopped
+                // working the moment anyone typed - the source signal and the
+                // preview updated, the field did not, and the next keystroke
+                // sent the stale DOM text back up and overwrote the transform.
+                //
+                // `Input` has always passed `value:` here. This is the same
+                // choke point, and dioxus maps the `value` attribute onto the
+                // `.value` PROPERTY, which is what a dirty element reads.
+                value: "{props.value}",
+                oninput: move |e: FormEvent| props.oninput.call(sanitized(e)),
+                onkeydown: move |e| props.onkeydown.call(e),
                 onblur: move |_| touched.set(true),
-                "{props.value}"
             }
             if !shown_error.is_empty() {
                 p { class: "text-sm leading-5 text-red-600 dark:text-red-400",
@@ -395,7 +536,7 @@ pub fn Select(props: SelectProps) -> Element {
                     class: "block text-sm font-medium text-content",
                     "{props.label}"
                     if props.required {
-                        span { class: "text-red-500 ml-1", aria_label: "required", role: "img", "*" }
+                        span { class: "text-red-500 dark:text-red-400 ml-1", aria_label: "required", role: "img", "*" }
                     }
                 }
             }
@@ -518,6 +659,74 @@ pub fn Checkbox(props: CheckboxProps) -> Element {
     }
 }
 
+/// File input props (MAPPS-440). The one input type `form.rs` had no component
+/// for, so its 130-character `file:` class recipe sat copied verbatim across the
+/// onboarding logo field, the settings logo field and the JSON import picker,
+/// with nothing keeping the three in step.
+#[derive(Props, Clone, PartialEq)]
+pub struct FileFieldProps {
+    /// Used for both `id` and `name`, so the label's `for` associates.
+    name: String,
+    #[props(default)]
+    label: String,
+    /// `accept` attribute (e.g. `image/png,image/jpeg`). Omitted when empty.
+    #[props(default)]
+    accept: String,
+    #[props(default = false)]
+    disabled: bool,
+    /// Help text, shown when `error` is empty.
+    #[props(default)]
+    help: String,
+    /// Error message. Wins over `help` and carries `role="alert"`.
+    #[props(default)]
+    error: String,
+    /// Rendered in the help slot ahead of `error` and `help`, for the state an
+    /// upload-on-selection field is in while the request is in flight.
+    #[props(default)]
+    status: String,
+    /// Optional content between the label and the input (e.g. the current
+    /// logo and its Remove button).
+    preview: Option<Element>,
+    #[props(default)]
+    onchange: EventHandler<FormEvent>,
+}
+
+/// The single file input used across the app (MAPPS-440). Mirrors [`Input`]'s
+/// label + help + error structure and owns the `file:` class recipe.
+#[component]
+pub fn FileField(props: FileFieldProps) -> Element {
+    rsx! {
+        div { class: "space-y-1",
+            if !props.label.is_empty() {
+                label {
+                    r#for: "{props.name}",
+                    class: "block text-sm font-medium text-content",
+                    "{props.label}"
+                }
+            }
+            if let Some(preview) = props.preview {
+                {preview}
+            }
+            input {
+                id: "{props.name}",
+                name: "{props.name}",
+                r#type: "file",
+                accept: if props.accept.is_empty() { None } else { Some(props.accept.clone()) },
+                disabled: props.disabled,
+                class: "block w-full text-sm text-content file:mr-3 file:rounded-md file:border-0 file:bg-surface-2 file:px-3 file:py-1.5 file:text-sm file:font-medium",
+                onchange: move |e| props.onchange.call(e),
+            }
+            if !props.status.is_empty() {
+                p { class: "text-xs text-muted", "{props.status}" }
+            } else if !props.error.is_empty() {
+                p { class: "text-xs text-red-600 dark:text-red-400", role: "alert", "{props.error}" }
+            } else if !props.help.is_empty() {
+                p { class: "text-xs text-muted", "{props.help}" }
+            }
+        }
+    }
+}
+
 /// Search input with icon
 #[derive(Props, Clone, PartialEq)]
 pub struct SearchInputProps {
@@ -558,8 +767,166 @@ pub fn SearchInput(props: SearchInputProps) -> Element {
                 class: "{class}",
                 placeholder: "{props.placeholder}",
                 value: "{props.value}",
-                oninput: move |e| props.oninput.call(e),
+                // MAPPS-582: a query carrying an invisible character matches
+                // nothing and reads as "the record is gone".
+                oninput: move |e: FormEvent| props.oninput.call(sanitized(e)),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shape a browser hands `oninput`: a value plus the form's named
+    /// values. Enough to drive [`sanitized`] end to end.
+    struct StubFormData {
+        value: String,
+    }
+
+    impl HasFormData for StubFormData {
+        fn value(&self) -> String {
+            self.value.clone()
+        }
+
+        fn valid(&self) -> bool {
+            true
+        }
+
+        fn values(&self) -> Vec<(String, FormValue)> {
+            vec![("name".to_string(), FormValue::Text(self.value.clone()))]
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    impl HasFileData for StubFormData {
+        fn files(&self) -> Vec<FileData> {
+            Vec::new()
+        }
+    }
+
+    /// This file up to the first test module, so a needle below cannot match
+    /// itself.
+    fn component_source() -> &'static str {
+        include_str!("form.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap()
+    }
+
+    fn event(value: &str) -> FormEvent {
+        FormEvent::new(
+            Rc::new(FormData::new(StubFormData {
+                value: value.to_string(),
+            })),
+            true,
+        )
+    }
+
+    #[test]
+    fn sanitized_strips_the_invisible_characters() {
+        assert_eq!(
+            sanitized(event("919-397-4144\u{200B}")).value(),
+            "919-397-4144"
+        );
+        assert_eq!(sanitized(event("Acme\u{FEFF}")).value(), "Acme");
+        assert_eq!(sanitized(event("John\u{00A0}Smith")).value(), "John Smith");
+    }
+
+    /// The common path: nothing to strip, so the original event is handed on
+    /// untouched rather than rebuilt.
+    #[test]
+    fn a_clean_value_takes_the_unchanged_path() {
+        let e = event("John Smith");
+        let original = e.data();
+        let out = sanitized(e);
+        assert_eq!(out.value(), "John Smith");
+        assert!(
+            Rc::ptr_eq(&original, &out.data()),
+            "a clean value must not be rebuilt"
+        );
+    }
+
+    /// Typing is unaffected: a mid-value space is kept where it was typed and
+    /// a trailing space while typing is not eaten.
+    #[test]
+    fn typing_is_unaffected() {
+        for value in ["John ", " John", "John  Smith", "line one\nline two"] {
+            let e = event(value);
+            let original = e.data();
+            let out = sanitized(e);
+            assert_eq!(out.value(), value);
+            assert!(Rc::ptr_eq(&original, &out.data()), "{value:?} was rebuilt");
+        }
+    }
+
+    /// The wrapper only replaces `value`; everything else still comes from the
+    /// event the browser raised.
+    #[test]
+    fn the_wrapper_delegates_everything_but_the_value() {
+        let out = sanitized(event("Acme\u{200B}"));
+        assert!(out.valid());
+        assert_eq!(
+            out.values(),
+            vec![(
+                "name".to_string(),
+                FormValue::Text("Acme\u{200B}".to_string())
+            )]
+        );
+        assert!(out.files().is_empty());
+    }
+
+    /// MAPPS-582: a password may legitimately contain any character, and
+    /// silently rewriting one turns a correct credential into a failed login
+    /// with no diagnosis. `Input` gates the sanitizing on the field type, which
+    /// is what exempts every password / secret / API-key field at once.
+    #[test]
+    fn password_inputs_are_exempt() {
+        assert!(!sanitizes("password"), "a password is never rewritten");
+        for kind in ["text", "email", "tel", "url", "search", "number", "date"] {
+            assert!(sanitizes(kind), "{kind} must be sanitized");
+        }
+
+        // What `Input` does with that answer, applied to a password whose value
+        // is nothing but characters this would otherwise strip.
+        let raw = "hunter2\u{200B}\u{00A0}\u{200D}\u{FEFF}";
+        let e = event(raw);
+        let out = if sanitizes("password") {
+            sanitized(e)
+        } else {
+            e
+        };
+        assert_eq!(
+            out.value(),
+            raw,
+            "a password must pass through byte-identical"
+        );
+
+        let src = component_source();
+        assert!(
+            src.contains("let sanitize = sanitizes(&props.r#type);"),
+            "Input must gate its sanitizing on the field type"
+        );
+        assert!(
+            src.contains("props.oninput.call(if sanitize { sanitized(e) } else { e })"),
+            "and must pass a password value through untouched"
+        );
+    }
+
+    /// The choke point only works if every text-entry element in this file
+    /// goes through it. `Textarea` and `SearchInput` have no password variant,
+    /// so they sanitize unconditionally.
+    #[test]
+    fn every_text_element_routes_through_the_choke_point() {
+        let src = component_source();
+        assert_eq!(
+            src.matches("props.oninput.call(sanitized(e))").count(),
+            2,
+            "Textarea and SearchInput must both sanitize"
+        );
     }
 }

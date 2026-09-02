@@ -34,8 +34,8 @@ services:
       # `dev-mokosh-private-${USER}` via that file's `networks:` block).
       - private
       - traefik-public
-    # Drop both host port bindings from compose.yml (LAN-IP + 127.0.0.1
-    # for Google OAuth); Traefik is sole ingress for this profile.
+    # Drop both host port bindings from compose.yml (the LAN-IP publish
+    # and the loopback one); Traefik is sole ingress for this profile.
     ports: !reset []
     # List (sequence) syntax is REQUIRED here, not the usual map syntax.
     # Docker Compose interpolates ${USER} inside string VALUES but NOT inside
@@ -74,7 +74,13 @@ services:
       # /login, /forgot-password, /reset-password/:token, /invite/:token,
       # /signup pages now redirect to the hub; the avatar dropdown links
       # cross-origin too.
-      MOKOSH_HUB_BASE_URL: http://${USER}-bunyip.a8n.run
+      #
+      # MAPPS-530: https, matching the SPA's own origin at the router above.
+      # The SPA page is served over TLS, so a plain-http hub URL is a
+      # mixed-content request the browser blocks or silently upgrades. Same
+      # shared Traefik as the issuer on the line above, which already routes
+      # ${USER}-bunyip.a8n.run over TLS (:80 answers 301 to the https origin).
+      MOKOSH_HUB_BASE_URL: https://${USER}-bunyip.a8n.run
 
 networks:
   traefik-public:

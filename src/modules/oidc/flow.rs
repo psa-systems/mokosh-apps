@@ -1,8 +1,17 @@
 //! `start_login` and `complete_login`: the two halves of the OIDC code
-//! flow as seen from a browser SPA.
+//! flow.
+//!
+//! Only the hand-off differs per target. The browser is navigated to the
+//! authorize URL and comes back on `/auth/callback` with the response in
+//! its query string; the desktop opens the authorize URL in the user's
+//! own browser and reads the response off an RFC 8252 loopback listener
+//! (MAPPS-505, `super::native_flow`). Everything else - PKCE, the
+//! `state` and `nonce` checks, the exchange, `classify_flow_error` - is
+//! shared, and `complete_login` runs on the same `/auth/callback` route
+//! either way.
 
+use crate::platform::http::Request;
 use chrono::{Duration, Utc};
-use gloo_net::http::Request;
 use serde::Deserialize;
 
 use super::config::OidcConfig;
@@ -20,6 +29,12 @@ pub enum FlowError {
     Network(String),
     #[error("token endpoint: {error} ({description})")]
     TokenEndpoint { error: String, description: String },
+    /// MAPPS-432: `code` or `state` absent from the callback URL. A variant of
+    /// its own (not a `TokenEndpoint { error: "invalid_request" }`) so
+    /// [`classify_flow_error`] can recognise "no live flow on this URL"
+    /// without matching `Display` prose.
+    #[error("missing callback parameter: {0}")]
+    MissingCallbackParam(&'static str),
     #[error("state mismatch (possible CSRF)")]
     StateMismatch,
     #[error("nonce mismatch (possible token replay)")]
@@ -28,16 +43,43 @@ pub enum FlowError {
     Redirect(String),
 }
 
-/// Begin the login flow. Generates PKCE + state + nonce, persists them
-/// in `sessionStorage`, then navigates the browser to the authorize
-/// endpoint. This function does not return on success: the page is
-/// replaced.
+/// Begin the login flow: mint a `PendingFlow` and navigate the document
+/// to the authorize endpoint. Does not return on success, because the
+/// page is replaced.
+#[cfg(target_arch = "wasm32")]
 pub fn start_login(cfg: &OidcConfig, return_to: impl Into<String>) -> Result<(), FlowError> {
+    let url = authorize_url(cfg, return_to.into())?;
+    crate::platform::location::set_href(&url).map_err(|e| {
+        FlowError::Redirect(format!("could not hand off to the identity provider: {e}"))
+    })
+}
+
+/// Begin the login flow: mint a `PendingFlow`, bind the RFC 8252
+/// loopback listener, and open the authorize endpoint in the user's own
+/// browser (MAPPS-505).
+///
+/// Returns as soon as that browser has been opened. The authorization
+/// response arrives later, on the listener, and the flow finishes on
+/// `/auth/callback` exactly as it does in a browser. See
+/// [`super::native_flow`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn start_login(cfg: &OidcConfig, return_to: impl Into<String>) -> Result<(), FlowError> {
+    super::native_flow::start_login(cfg, return_to.into())
+}
+
+/// Mint a flow (PKCE verifier, `state`, `nonce`), persist it as the
+/// `PendingFlow` the callback will be checked against, and build the
+/// authorize URL to send the user to.
+///
+/// Shared by both targets, and called AFTER the desktop has bound its
+/// loopback listener: `cfg.resolve_redirect_uri()` reads that listener's
+/// port there, and the OP has to be given the same URI the token
+/// exchange will later present.
+pub(super) fn authorize_url(cfg: &OidcConfig, return_to: String) -> Result<String, FlowError> {
     let verifier = generate_code_verifier();
     let challenge = s256_challenge(&verifier);
     let state = random_opaque();
     let nonce = random_opaque();
-    let return_to = return_to.into();
     let redirect_uri = cfg
         .resolve_redirect_uri()
         .map_err(|e| FlowError::Config(e.to_string()))?;
@@ -75,10 +117,7 @@ pub fn start_login(cfg: &OidcConfig, return_to: impl Into<String>) -> Result<(),
         url.push_str(&urlencode(v));
     }
 
-    let win = web_sys::window().ok_or_else(|| FlowError::Redirect("no window".into()))?;
-    win.location()
-        .set_href(&url)
-        .map_err(|_| FlowError::Redirect("set_href failed".into()))
+    Ok(url)
 }
 
 // Snapshot of `?code=...&state=...` taken before the Dioxus router
@@ -99,17 +138,26 @@ thread_local! {
 /// `dioxus::launch(App)` so the snapshot is taken before the Router
 /// has a chance to rewrite the URL.
 pub fn snapshot_initial_search() {
-    let s = web_sys::window()
-        .and_then(|w| w.location().search().ok())
-        .unwrap_or_default();
+    let s = crate::platform::location::search().unwrap_or_default();
     INITIAL_SEARCH.with(|cell| *cell.borrow_mut() = Some(s));
 }
 
+/// The authorization response to complete, as a URL query string.
+///
+/// MAPPS-505: on the desktop it never was in a URL bar - it arrived on
+/// the loopback listener, and `native_flow` holds it. Reading it here
+/// keeps `complete_login` and everything downstream of it (the `state`
+/// check, the exchange, `classify_flow_error`) identical on both
+/// targets.
 fn current_search() -> String {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(captured) = super::native_flow::captured_query() {
+        return captured;
+    }
     INITIAL_SEARCH
         .with(|cell| cell.borrow().clone())
         .filter(|s| !s.is_empty())
-        .or_else(|| web_sys::window().and_then(|w| w.location().search().ok()))
+        .or_else(crate::platform::location::search)
         .unwrap_or_default()
 }
 
@@ -152,10 +200,9 @@ fn sanitize_return_to(path: &str, search: &str) -> String {
 /// routes that must never be a return target, and off-wasm where there is
 /// no window.
 pub fn current_return_to() -> String {
-    let Some(win) = web_sys::window() else {
+    let Some(path) = crate::platform::location::pathname() else {
         return String::new();
     };
-    let path = win.location().pathname().unwrap_or_default();
     sanitize_return_to(&path, &current_search())
 }
 
@@ -190,6 +237,53 @@ pub fn classify_return_to(return_to: &str) -> ReturnTarget {
     }
 }
 
+/// MAPPS-432: what `/auth/callback` should do with a failed exchange.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallbackRecovery {
+    /// "There is no live authorization flow on this URL": restart the login
+    /// flow silently instead of showing the user a failure they cannot act on.
+    Restart,
+    /// A genuine protocol / security / configuration fault: render it.
+    Show,
+}
+
+/// OP `?error=` codes that mean "send the user back to the OP to
+/// re-authenticate" (OIDC Core 3.1.2.6). A restart does exactly that.
+const REAUTH_ERROR_CODES: [&str; 4] = [
+    "login_required",
+    "interaction_required",
+    "consent_required",
+    "account_selection_required",
+];
+
+/// Decide whether a callback failure is recoverable by restarting the login
+/// flow. Matches on the `FlowError` variant, never on its `Display` output, so
+/// rewording an `#[error(...)]` attribute cannot change auth behaviour; the
+/// match is exhaustive, so a new variant is a compile error rather than a
+/// silent [`CallbackRecovery::Show`].
+///
+/// Restart covers only "no live flow here": a missing / expired `PendingFlow`
+/// (`Storage`), a callback URL with no `code` or `state`
+/// (`MissingCallbackParam`), and the OP's re-authentication signals. Everything
+/// else shows, including `StateMismatch` / `NonceMismatch` (CSRF and replay
+/// indicators a silent retry would hide) and every other token-endpoint code
+/// (`invalid_grant`, `invalid_client`, `server_error`, …), which a retry would
+/// only loop on.
+pub fn classify_flow_error(e: &FlowError) -> CallbackRecovery {
+    match e {
+        FlowError::Storage(_) | FlowError::MissingCallbackParam(_) => CallbackRecovery::Restart,
+        FlowError::TokenEndpoint { error, .. } if REAUTH_ERROR_CODES.contains(&error.as_str()) => {
+            CallbackRecovery::Restart
+        }
+        FlowError::TokenEndpoint { .. }
+        | FlowError::Config(_)
+        | FlowError::Network(_)
+        | FlowError::StateMismatch
+        | FlowError::NonceMismatch
+        | FlowError::Redirect(_) => CallbackRecovery::Show,
+    }
+}
+
 /// Handle the callback URL. Reads `code` + `state` from the snapshot
 /// taken at startup (see [`snapshot_initial_search`]), verifies state
 /// against the pending flow, exchanges the code at the token endpoint,
@@ -197,8 +291,7 @@ pub fn classify_return_to(return_to: &str) -> ReturnTarget {
 /// to return to.
 pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowError> {
     let search = current_search();
-    let params = web_sys::UrlSearchParams::new_with_str(&search)
-        .map_err(|_| FlowError::Redirect("UrlSearchParams".into()))?;
+    let params = crate::utils::url::QueryString::parse(&search);
     // Surface an OP error response before extracting code/state. An error
     // redirect carries no `code`, so checking code first masks the real
     // error as a generic "missing code".
@@ -209,16 +302,15 @@ pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowEr
         });
     }
 
-    let code = params.get("code").ok_or_else(|| FlowError::TokenEndpoint {
-        error: "invalid_request".into(),
-        description: "missing code".into(),
-    })?;
+    // MAPPS-432: a bare `/auth/callback` (reload, restored tab, bookmark) is
+    // the normal post-MAPPS-336 state, not a protocol fault. Typed so the
+    // callback page restarts the login flow instead of showing an error.
+    let code = params
+        .get("code")
+        .ok_or(FlowError::MissingCallbackParam("code"))?;
     let state = params
         .get("state")
-        .ok_or_else(|| FlowError::TokenEndpoint {
-            error: "invalid_request".into(),
-            description: "missing state".into(),
-        })?;
+        .ok_or(FlowError::MissingCallbackParam("state"))?;
 
     let pending = take_pending().map_err(FlowError::Storage)?;
     if pending.state != state {
@@ -358,6 +450,13 @@ pub async fn refresh_tokens(
     })
 }
 
+/// MAPPS-427 WARNING: bunyip's `/v1/*` family is a Resource Server whose at+jwt
+/// verifier enforces `aud == OIDC_RS_AUDIENCE` (BUNYIP-252), and the access
+/// token this SPA holds is minted for MOKOSH's audience. Any call made through
+/// the two helpers below is therefore answered 401, by design, and cannot be
+/// fixed on bunyip's side without letting another RP's token through. They have
+/// no call sites today for that reason. Reaching for one means first arranging
+/// a token bunyip will accept.
 /// Issuer-authed GET. Hits `{issuer}{path}` with the in-memory access
 /// token in `Authorization: Bearer`. Used for self-service auth APIs
 /// that live on the issuer host (e.g. `/v1/auth/sessions`) and are
@@ -479,15 +578,25 @@ fn form_encode(pairs: &[(&str, &str)]) -> String {
 
 fn urlencode(s: &str) -> String {
     // application/x-www-form-urlencoded percent-encoding. Spaces become
-    // `+`. We use js_sys's encodeURIComponent and then patch spaces.
-    let encoded = js_sys::encode_uri_component(s);
-    let s: String = encoded.into();
-    s.replace("%20", "+")
+    // `+`. MAPPS-504: `encode_uri_component` is now ours (it was
+    // `js_sys`'s), so this rule holds on both targets; the `%20` patch
+    // is unchanged.
+    crate::utils::url::encode_uri_component(s).replace("%20", "+")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_return_to, sanitize_return_to, ReturnTarget};
+    use super::{
+        classify_flow_error, classify_return_to, sanitize_return_to, CallbackRecovery, FlowError,
+        ReturnTarget,
+    };
+
+    fn token_endpoint(error: &str) -> FlowError {
+        FlowError::TokenEndpoint {
+            error: error.to_string(),
+            description: String::new(),
+        }
+    }
 
     #[test]
     fn sanitize_keeps_concrete_paths_with_query() {
@@ -548,6 +657,62 @@ mod tests {
             "/auth/callback?code=x",  // would loop
         ] {
             assert_eq!(classify_return_to(p), ReturnTarget::Dashboard, "path {p:?}");
+        }
+    }
+
+    // MAPPS-432: one case per FlowError variant. The classifier's match is
+    // exhaustive, so a new variant breaks the build; these pin the mapping.
+    #[test]
+    fn classify_restarts_when_no_live_flow_exists() {
+        for e in [
+            FlowError::Storage("no pending OIDC flow".into()),
+            FlowError::Storage("pending OIDC flow expired (age 1 ms > 0 ms)".into()),
+            FlowError::MissingCallbackParam("code"),
+            FlowError::MissingCallbackParam("state"),
+        ] {
+            assert_eq!(classify_flow_error(&e), CallbackRecovery::Restart, "{e}");
+        }
+    }
+
+    #[test]
+    fn classify_restarts_on_op_reauth_signals() {
+        for code in [
+            "login_required",
+            "interaction_required",
+            "consent_required",
+            "account_selection_required",
+        ] {
+            let e = token_endpoint(code);
+            assert_eq!(classify_flow_error(&e), CallbackRecovery::Restart, "{code}");
+        }
+    }
+
+    #[test]
+    fn classify_shows_real_faults() {
+        for e in [
+            FlowError::StateMismatch,
+            FlowError::NonceMismatch,
+            FlowError::Config("no redirect_uri".into()),
+            FlowError::Network("failed to fetch".into()),
+            FlowError::Redirect("set_href failed".into()),
+        ] {
+            assert_eq!(classify_flow_error(&e), CallbackRecovery::Show, "{e}");
+        }
+    }
+
+    #[test]
+    fn classify_shows_non_recoverable_token_endpoint_codes() {
+        for code in [
+            "invalid_request",
+            "invalid_grant",
+            "invalid_client",
+            "invalid_response",
+            "server_error",
+            "access_denied",
+            "token_endpoint_failed",
+        ] {
+            let e = token_endpoint(code);
+            assert_eq!(classify_flow_error(&e), CallbackRecovery::Show, "{code}");
         }
     }
 }

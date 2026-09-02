@@ -16,53 +16,33 @@
 //! - `use_effect` on mount clears the local OIDC token holder (via
 //!   `oidc::storage::clear_auth`) so the SPA cannot re-authenticate with
 //!   the tombstoned bearer. Belt-and-braces even if the redirect below
-//!   fails or is intercepted by a network hiccup.
-//! - A 5s countdown, then `window.location.replace(hub_logout)` sends
-//!   the browser to bunyip's `/v1/auth/logout?url=<msp origin root>`.
-//!   That URL is the same pattern the existing `UserMenu` uses for a
-//!   user-initiated logout - bunyip clears the shared `.a8n.systems`
-//!   cookies via Set-Cookie, then 302s straight back to the SPA origin
-//!   root, signed out. See `layout.rs::UserMenu::hub_logout` for the
-//!   original.
-//! - A "Sign out now" button jumps to the same target immediately, for
+//!   fails or is intercepted by a network hiccup. It clears
+//!   `sessionStorage` only; the in-memory bearer survives, so the revoke
+//!   below still has a credential to present.
+//! - A 5s countdown, then `modules::auth::sign_out::sign_out()`, the
+//!   shared sequence the `UserMenu` entries run (MAPPS-522): revoke the
+//!   mokosh session, revoke the OP refresh-token family, clear local
+//!   storage, then redirect off this origin, signed out.
+//! - A "Sign out now" button runs the same sequence immediately, for
 //!   users who don't want to wait out the countdown.
 
 use dioxus::prelude::*;
 
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 const COUNTDOWN_SECS: u32 = 5;
 
 /// Read the sticky "account was deleted" flag. Reactive: the wrapping
 /// AppLayout re-renders when the flag transitions from false to true.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub fn use_account_deleted() -> bool {
     *crate::hooks::fetch::ACCOUNT_DELETED.read()
 }
 
 /// Non-web stub so components that consume the flag still compile under
-/// `cargo check` without the `web` feature.
-#[cfg(not(feature = "web"))]
+/// `cargo check` without the `app` feature.
+#[cfg(not(feature = "app"))]
 pub fn use_account_deleted() -> bool {
     false
-}
-
-/// Build the hub logout URL, mirroring `UserMenu::hub_logout` in
-/// `layout.rs`. Extracted here so the overlay does not depend on the
-/// menu component (they are peers under `AppLayout`).
-#[cfg(feature = "web")]
-fn build_hub_logout_url() -> String {
-    let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
-    let issuer = cfg.issuer.trim_end_matches('/');
-    let post_logout_target = web_sys::window()
-        .and_then(|w| w.location().origin().ok())
-        .map(|origin| format!("{}/", origin.trim_end_matches('/')))
-        .unwrap_or_else(|| cfg.hub_url("/"));
-    format!(
-        "{issuer}/v1/auth/logout?url={}",
-        js_sys::encode_uri_component(&post_logout_target)
-            .as_string()
-            .unwrap_or(post_logout_target)
-    )
 }
 
 /// Renders the terminal "your account has been deleted" overlay when
@@ -70,7 +50,7 @@ fn build_hub_logout_url() -> String {
 /// so the overlay adds zero DOM to a healthy session.
 #[component]
 pub fn AccountDeletedOverlay() -> Element {
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     {
         if !use_account_deleted() {
             return rsx! {};
@@ -81,7 +61,7 @@ pub fn AccountDeletedOverlay() -> Element {
         // and clear the OIDC tokens on every healthy render.
         return rsx! { AccountDeletedTerminal {} };
     }
-    #[cfg(not(feature = "web"))]
+    #[cfg(not(feature = "app"))]
     {
         rsx! {}
     }
@@ -91,7 +71,7 @@ pub fn AccountDeletedOverlay() -> Element {
 /// `ACCOUNT_DELETED` signal has flipped (MAPPS-377). Split out of
 /// `AccountDeletedOverlay` so its countdown / redirect hooks run
 /// unconditionally within it rather than after the parent's early return.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 #[component]
 fn AccountDeletedTerminal() -> Element {
     // Countdown state: decrements once a second while the overlay is
@@ -107,17 +87,17 @@ fn AccountDeletedTerminal() -> Element {
 
     // Countdown driver: schedule the next tick via a spawned task
     // with a 1-second timeout. When the remaining seconds reach 0,
-    // hard-navigate to bunyip's logout endpoint.
+    // run the shared sign-out sequence.
     use_effect(move || {
         let secs = *remaining.read();
         if secs == 0 {
-            if let Some(win) = web_sys::window() {
-                let _ = win.location().replace(&build_hub_logout_url());
-            }
+            spawn(async move {
+                crate::modules::auth::sign_out::sign_out().await;
+            });
             return;
         }
         spawn(async move {
-            gloo_timers::future::TimeoutFuture::new(1000).await;
+            crate::platform::timer::sleep_ms(1000).await;
             let now = *remaining.peek();
             if now > 0 {
                 remaining.set(now - 1);
@@ -126,9 +106,9 @@ fn AccountDeletedTerminal() -> Element {
     });
 
     let sign_out_now = move |_| {
-        if let Some(win) = web_sys::window() {
-            let _ = win.location().replace(&build_hub_logout_url());
-        }
+        spawn(async move {
+            crate::modules::auth::sign_out::sign_out().await;
+        });
     };
 
     let secs = *remaining.read();

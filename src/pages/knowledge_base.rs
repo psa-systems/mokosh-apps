@@ -10,6 +10,11 @@
 //!   - `POST /api/v1/kb/articles/{id}/versions/{n}/restore`
 //!   - `POST /api/v1/kb/articles/{id}/helpful` and `/not_helpful`
 //!
+//! A `client_specific` article carries a company scope (`company_ids`,
+//! PMS-341): the article form submits it, the edit form reads it back and
+//! resolves each id to a name through `GET /contacts/companies/{id}`, and the
+//! detail page and list badge show what an article is scoped to (MAPPS-515).
+//!
 //! Structure and conventions mirror `crate::pages::contacts`: every
 //! list/detail view reads `active_tenant_generation()` inside its
 //! `use_resource` closure so an org switch / token swap re-fetches, the
@@ -21,14 +26,14 @@ use dioxus::prelude::*;
 
 use crate::components::{
     kb_article_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonSize,
-    ButtonVariant, Card, ChevronRightIcon, CollapsibleRail, ConfirmDialog, DataTable, ErrorBanner,
-    IconSize, Modal, ModalSize, OverflowActions, PageHeader, PencilIcon, PlusIcon, RailSide,
+    ButtonVariant, Card, ChevronRightIcon, CollapsibleRail, ConfirmDialog, ContextualHelpLink,
+    DataTable, ErrorBanner, IconSize, Modal, ModalSize, PageHeader, PencilIcon, PlusIcon, RailSide,
     SearchInput, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
     TableHeader, TableLoading, TableRow, TrashIcon,
 };
 use crate::modules::kb::{
     ArticleMeasuredDuration, CreateKbArticleRequest, CreateKbCategoryRequest, KbArticle,
-    KbArticleFeedback, KbArticleVersion, KbCategory, TopTicketDrivingArticle,
+    KbArticleFeedback, KbArticleVersion, KbAttachmentResponse, KbCategory, TopTicketDrivingArticle,
     UpdateKbArticleRequest, UpdateKbCategoryRequest,
 };
 use crate::utils::url::urlencoding_minimal;
@@ -38,11 +43,10 @@ use crate::Route;
 /// Rows per page for the article list (mirrors contacts `PER_PAGE`).
 const PER_PAGE: usize = 25;
 
-/// How many articles to pull when a tag filter is active. The server
-/// cannot narrow on tags (its `q` filter ignores them), so the list fetches
-/// a broad page and filters by tag client-side. Matches the tree rail's
-/// broad fetch cap.
-const TAG_FETCH_LIMIT: usize = 200;
+/// The id of the body's source field. `MarkdownEditor` renders it as the
+/// `Textarea`'s `id` and derives the preview box's id from it (MAPPS-610), so
+/// this is the one identity the page has to name.
+const KB_SOURCE_ID: &str = "content";
 
 /// How many recent articles the home page surfaces.
 const RECENT_LIMIT: usize = 5;
@@ -68,8 +72,13 @@ const TAG_MAX: usize = 50;
 /// drop empties. Mirrors the issue's "tags are length-capped and stripped of
 /// markup/control characters" requirement so junk like `<script>` or an
 /// unbounded blob never reaches the tag taxonomy (MAPPS-218).
+///
+/// MAPPS-582: `is_control` is true only for `Cc`, so an invisible `Cf`
+/// character used to survive and split one tag into two that render
+/// identically. `clean_strict` removes those before this filter runs.
 fn sanitize_tags(raw: &str) -> Vec<String> {
-    raw.split(',')
+    crate::utils::text::clean_strict(raw)
+        .split(',')
         .filter_map(|t| {
             let cleaned: String = t
                 .chars()
@@ -90,7 +99,12 @@ fn sanitize_tags(raw: &str) -> Vec<String> {
 /// to single hyphens, trimmed. Mirrors the obvious server expectation
 /// (`slug` is required, `length(min = 1, max = 255)`). Empty input yields
 /// `"article"` so we never POST an empty slug.
+///
+/// MAPPS-582: strip the invisibles first. Every non-alphanumeric collapses to a
+/// hyphen here, so an invisible character in the title would otherwise put a
+/// hyphen in the URL with nothing on screen to account for it.
 fn slugify(input: &str) -> String {
+    let input = crate::utils::text::clean_strict(input);
     let mut out = String::with_capacity(input.len());
     let mut prev_dash = false;
     for c in input.chars() {
@@ -121,19 +135,15 @@ fn next_slug(new_title: &str, touched: bool) -> Option<String> {
     }
 }
 
-/// Tab state for the article body editor.
-#[derive(Clone, Copy, PartialEq)]
-enum BodyTab {
-    Write,
-    Preview,
-}
-
-fn body_tab_class(active: bool) -> &'static str {
-    if active {
-        "px-3 py-1 text-sm border-b-2 border-accent text-accent font-medium"
-    } else {
-        "px-3 py-1 text-sm border-b-2 border-transparent text-muted hover:text-content"
-    }
+/// MAPPS-612: does the metadata panel have to be open?
+///
+/// True while the article is missing a required field, which is what an
+/// untouched new article looks like. It is the ONE direction the form decides
+/// for itself: an unfinished form forces the panel open, and only the author's
+/// own click closes it. Deriving both directions is what collapsed the panel
+/// around the focused input on the first character typed.
+fn meta_must_be_open(title: &str, slug: &str) -> bool {
+    title.trim().is_empty() || slug.trim().is_empty()
 }
 
 /// Resolve the chain of categories from root down to the article's own
@@ -221,6 +231,29 @@ fn build_kb_tree(
     (roots, uncategorized)
 }
 
+/// MAPPS-423: drop nav-tree categories that hold no articles anywhere in
+/// their subtree. Computed bottom-up, so a parent that only holds non-empty
+/// descendants survives while a leaf with no articles disappears. Categories
+/// stay fully visible on the KB home grid, which is where create / edit /
+/// delete live, so nothing becomes unreachable.
+fn prune_empty_categories(nodes: &[TreeNode]) -> Vec<TreeNode> {
+    nodes
+        .iter()
+        .filter_map(|node| {
+            let children = prune_empty_categories(&node.children);
+            if node.articles.is_empty() && children.is_empty() {
+                None
+            } else {
+                Some(TreeNode {
+                    category: node.category.clone(),
+                    children,
+                    articles: node.articles.clone(),
+                })
+            }
+        })
+        .collect()
+}
+
 /// Title-case the server's lowercase visibility tag for display, and pick
 /// a badge color. Unknown values fall through unchanged / gray.
 fn visibility_label(raw: &str) -> (String, BadgeVariant) {
@@ -231,6 +264,109 @@ fn visibility_label(raw: &str) -> (String, BadgeVariant) {
         "" => ("Internal".to_string(), BadgeVariant::Blue),
         other => (other.to_string(), BadgeVariant::Gray),
     }
+}
+
+/// MAPPS-515: the visibility badge for an article, with the scoped-company
+/// count appended for a `client_specific` one ("Client-specific (2)"), so a
+/// scoped article is distinguishable from a broken one without a second fetch.
+/// [`visibility_label`] stays the shared label source; only the count is added
+/// here.
+fn client_specific_badge_label(visibility: &str, count: usize) -> String {
+    let (label, _) = visibility_label(visibility);
+    if visibility == "client_specific" {
+        format!("{label} ({count})")
+    } else {
+        label
+    }
+}
+
+/// MAPPS-515: label on the control that opens the company picker on the
+/// article form, by count. Same rule as the contact form's
+/// `add_company_label`: "add" here means add another company to the scope, and
+/// never create a company record.
+fn add_scope_company_label(selected: usize) -> &'static str {
+    if selected == 0 {
+        "Add a company"
+    } else {
+        "Add another company"
+    }
+}
+
+/// MAPPS-515: display label for one scoped company. The resolved name, or the
+/// raw id when the name lookup failed, so a failed lookup is still a visible,
+/// removable row instead of a blank line.
+fn company_label(id: &str, name: &str) -> String {
+    if name.trim().is_empty() {
+        id.to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// MAPPS-515: the article form's submit guard for the company scope. The
+/// server 422s a `client_specific` article with an empty `company_ids`
+/// (`KbService::create_article`), so the form blocks it rather than sending a
+/// request it knows will be rejected.
+fn company_scope_error(visibility: &str, companies: &[(String, String)]) -> Option<&'static str> {
+    if visibility == "client_specific" && companies.is_empty() {
+        Some("Select at least one company for a client-specific article.")
+    } else {
+        None
+    }
+}
+
+/// MAPPS-515: what saving under a non-client-specific visibility does to the
+/// selected companies, stated in the user's own values. The server clears the
+/// stored scope for any other visibility, so this note is what keeps that
+/// clear from being silent. Empty when there is nothing to lose.
+fn company_scope_clear_note(visibility: &str, companies: &[(String, String)]) -> String {
+    if companies.is_empty() || visibility == "client_specific" {
+        return String::new();
+    }
+    let (label, _) = visibility_label(visibility);
+    let names: Vec<String> = companies
+        .iter()
+        .map(|(id, name)| company_label(id, name))
+        .collect();
+    format!(
+        "Saving as {label} removes the company scope ({}).",
+        names.join(", ")
+    )
+}
+
+/// One company name, the subset of the server's `CompanyResponse` the KB
+/// pages read when resolving a `client_specific` article's scope (MAPPS-515).
+#[derive(Clone, Debug, serde::Deserialize)]
+struct CompanyNameRow {
+    #[serde(default)]
+    name: String,
+}
+
+/// MAPPS-515: resolve `company_ids` to `(id, name)` pairs, in the order the
+/// server returned them, through the same `GET /contacts/companies/{id}` call
+/// `ContextFilterBanner` makes.
+///
+/// A lookup that fails keeps the id with an empty name (logged at `warn`, and
+/// the caller labels the row with the id and says the name is unavailable).
+/// Dropping the id instead would silently revoke that client's access to the
+/// article on the next save.
+async fn resolve_company_names(ids: &[uuid::Uuid]) -> Vec<(String, String)> {
+    let mut rows = Vec::with_capacity(ids.len());
+    for id in ids {
+        let name = match crate::hooks::fetch::api::get_authed::<CompanyNameRow>(&format!(
+            "/contacts/companies/{id}"
+        ))
+        .await
+        {
+            Ok(row) => row.name,
+            Err(err) => {
+                tracing::warn!("company name lookup failed for {id}: {err}");
+                String::new()
+            }
+        };
+        rows.push((id.to_string(), name));
+    }
+    rows
 }
 
 /// Truncate an ISO timestamp to its date portion for compact display.
@@ -260,12 +396,9 @@ pub fn KBHomePage() -> Element {
         // landing page's primary content) auto-refetches on reconnect.
         let _reachable = crate::hooks::use_server_reachable();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_with_auth::<Paginated<KbCategory>>(
-            "/kb/categories?page=1&per_page=100",
-            &token,
-        )
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
+            .await
+            .ok()
     });
 
     // Category CRUD UI state (MAPPS-230). `category_form` drives the
@@ -306,7 +439,7 @@ pub fn KBHomePage() -> Element {
     let categories_snapshot = categories_resource.read_unchecked();
     let categories_loading = categories_snapshot.is_none();
     let categories: Vec<KbCategory> = match &*categories_snapshot {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
 
@@ -360,6 +493,9 @@ pub fn KBHomePage() -> Element {
             title: "Knowledge Base",
             subtitle: "Documentation and troubleshooting guides",
             actions: rsx! {
+                // MAPPS-453: example contextual help link. Renders nothing until
+                // a docs subdomain is configured (MOKOSH_DOCS_URL).
+                ContextualHelpLink { article: "/knowledge-base".to_string() }
                 Button {
                     variant: ButtonVariant::Secondary,
                     // MAPPS-357: block category creation while the server is down.
@@ -441,7 +577,7 @@ pub fn KBHomePage() -> Element {
                     "No ticket-driving articles yet. Use 'Open ticket about this article' on a KB page to start tracking."
                 }
             } else {
-                ul { class: "divide-y divide-border",
+                ul { class: "divide-y divide-line",
                     for row in top_driving.iter().cloned() {
                         li { class: "py-2 flex items-center justify-between gap-3",
                             Link {
@@ -535,7 +671,7 @@ pub fn KBHomePage() -> Element {
                 delete_busy.set(true);
                 delete_error.set(String::new());
                 spawn(async move {
-                    #[cfg(feature = "web")]
+                    #[cfg(feature = "app")]
                     {
                         let path = format!("/kb/categories/{}", target.id);
                         match crate::hooks::fetch::api::delete_authed(&path).await {
@@ -548,7 +684,7 @@ pub fn KBHomePage() -> Element {
                             }
                         }
                     }
-                    #[cfg(not(feature = "web"))]
+                    #[cfg(not(feature = "app"))]
                     let _ = &target;
                     delete_busy.set(false);
                 });
@@ -606,7 +742,7 @@ fn CategoryCard(props: CategoryCardProps) -> Element {
                 }
                 button {
                     r#type: "button",
-                    class: "p-1 rounded text-subtle hover:text-red-600 hover:bg-surface-2",
+                    class: "p-1 rounded text-subtle hover:text-red-600 dark:hover:text-red-400 hover:bg-surface-2",
                     title: "Delete category",
                     "aria-label": "Delete category",
                     // MAPPS-357: block delete while the server is unreachable.
@@ -725,15 +861,12 @@ pub fn KBArticleListPage(
     let categories_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_with_auth::<Paginated<KbCategory>>(
-            "/kb/categories?page=1&per_page=100",
-            &token,
-        )
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
+            .await
+            .ok()
     });
     let categories: Vec<KbCategory> = match &*categories_resource.read_unchecked() {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
     let mut category_options = vec![SelectOption::new("", "All Categories")];
@@ -745,15 +878,12 @@ pub fn KBArticleListPage(
     let tree_articles_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(
-            "/kb/articles?page=1&per_page=200",
-            &token,
-        )
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_with_auth::<KbArticle>("/kb/articles", &token)
+            .await
+            .ok()
     });
     let tree_articles: Vec<KbArticle> = match &*tree_articles_resource.read_unchecked() {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
 
@@ -762,7 +892,7 @@ pub fn KBArticleListPage(
     // `use_resource` only subscribes to signals read within the closure;
     // values captured by value never subscribe (mirrors the contacts list,
     // MAPPS-148). When a tag filter is active the server cannot narrow on
-    // tags, so we pull a broad page and filter client-side below.
+    // tags, so we read every page and filter client-side below.
     let articles_resource = use_resource(move || {
         let q = search.read().trim().to_string();
         let category_id = category_filter.read().clone();
@@ -774,24 +904,40 @@ pub fn KBArticleListPage(
             // page's primary resource) auto-refetches on reconnect.
             let _reachable = crate::hooks::use_server_reachable();
             let token = crate::hooks::fetch::api::current_access_token()?;
-            let (page_param, per_page) = if tag.is_empty() {
-                (current_page, PER_PAGE)
-            } else {
-                (1, TAG_FETCH_LIMIT)
-            };
-            let mut path = format!("/kb/articles?page={page_param}&per_page={per_page}");
+            let mut filters = String::new();
             if !q.is_empty() {
-                path.push_str(&format!("&q={}", urlencoding_minimal(&q)));
+                filters.push_str(&format!("&q={}", urlencoding_minimal(&q)));
             }
             if !category_id.is_empty() {
-                path.push_str(&format!(
+                filters.push_str(&format!(
                     "&category_id={}",
                     urlencoding_minimal(&category_id)
                 ));
             }
-            crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(&path, &token)
-                .await
-                .ok()
+            if tag.is_empty() {
+                let path = format!("/kb/articles?page={current_page}&per_page={PER_PAGE}{filters}");
+                crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(&path, &token)
+                    .await
+                    .ok()
+                    .map(|resp| (resp.data, resp.meta.total))
+            } else {
+                // MAPPS-528: the server cannot narrow on tags, so the tag view
+                // reads the WHOLE list and filters below. The old broad
+                // `per_page=200` was clamped to 100 by the server, which
+                // dropped matching articles from the view with nothing to show
+                // for it.
+                let path = match filters.strip_prefix('&') {
+                    Some(rest) => format!("/kb/articles?{rest}"),
+                    None => "/kb/articles".to_string(),
+                };
+                crate::hooks::fetch::api::get_all_with_auth::<KbArticle>(&path, &token)
+                    .await
+                    .ok()
+                    .map(|rows| {
+                        let total = rows.len() as u64;
+                        (rows, total)
+                    })
+            }
         }
     });
 
@@ -819,12 +965,12 @@ pub fn KBArticleListPage(
         };
     }
     let (fetched_rows, fetched_total): (Vec<KbArticle>, u64) = match &*resource_snapshot {
-        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        Some(Some((rows, total))) => (rows.clone(), *total),
         _ => (Vec::new(), 0),
     };
 
-    // With a tag filter active the fetch is broad and unpaginated by the
-    // server, so filter by tag and paginate client-side here.
+    // With a tag filter active the fetch covers every page, so filter by tag
+    // and paginate client-side here.
     let (page_rows, total, current_page): (Vec<KbArticle>, u64, usize) = if tag_active {
         let matching: Vec<KbArticle> = fetched_rows
             .into_iter()
@@ -983,6 +1129,7 @@ pub fn KBArticleListPage(
                                         title: article.title,
                                         status: article.status,
                                         visibility: article.visibility,
+                                        company_count: article.company_ids.len(),
                                         updated: date_only(&article.updated_at),
                                         tags: article.tags,
                                     }
@@ -1002,6 +1149,9 @@ struct ArticleRowProps {
     title: String,
     status: String,
     visibility: String,
+    /// MAPPS-515: how many companies a `client_specific` article is scoped to.
+    #[props(default)]
+    company_count: usize,
     updated: String,
     #[props(default)]
     tags: Vec<String>,
@@ -1011,7 +1161,8 @@ struct ArticleRowProps {
 fn ArticleRow(props: ArticleRowProps) -> Element {
     let navigator = use_navigator();
     let id = props.id.clone();
-    let (vis_label, vis_variant) = visibility_label(&props.visibility);
+    let (_, vis_variant) = visibility_label(&props.visibility);
+    let vis_label = client_specific_badge_label(&props.visibility, props.company_count);
     let raw_status = if props.status.is_empty() {
         "draft"
     } else {
@@ -1093,8 +1244,10 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
 
     let mut versions_resource = use_resource(use_reactive!(|id_for_versions| async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<KbArticleVersion>>(&format!(
-            "/kb/articles/{id_for_versions}/versions?page=1&per_page=50"
+        // MAPPS-528: every version, not the first page of them; a history
+        // that stops at an arbitrary row reads as the whole history.
+        crate::hooks::fetch::api::get_all_authed::<KbArticleVersion>(&format!(
+            "/kb/articles/{id_for_versions}/versions"
         ))
         .await
         .ok()
@@ -1104,32 +1257,26 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     let categories_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_with_auth::<Paginated<KbCategory>>(
-            "/kb/categories?page=1&per_page=100",
-            &token,
-        )
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
+            .await
+            .ok()
     });
 
     // Article list feeding the left tree rail.
     let tree_articles_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(
-            "/kb/articles?page=1&per_page=200",
-            &token,
-        )
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_with_auth::<KbArticle>("/kb/articles", &token)
+            .await
+            .ok()
     });
 
     let categories: Vec<KbCategory> = match &*categories_resource.read_unchecked() {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
     let tree_articles: Vec<KbArticle> = match &*tree_articles_resource.read_unchecked() {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
 
@@ -1150,10 +1297,26 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     use_effect(move || crate::utils::prefs::set_bool("kb_left_rail", left_collapsed()));
     use_effect(move || crate::utils::prefs::set_bool("kb_right_rail", right_collapsed()));
 
+    // MAPPS-423: voting only means something once a second person can read the
+    // article, so gate it on the tenant user count. One lookup per article
+    // view, secondary to the article fetch: a failure leaves `total` unknown
+    // and simply hides the rating UI rather than rendering a broken control.
+    let user_count = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let token = crate::hooks::fetch::api::current_access_token()?;
+        crate::hooks::fetch::api::get_with_auth::<Paginated<serde_json::Value>>(
+            "/auth/users?page=1&per_page=1",
+            &token,
+        )
+        .await
+        .ok()
+        .map(|resp| resp.meta.total)
+    });
+    let show_rating = matches!(&*user_count.read_unchecked(), Some(Some(total)) if *total >= 2);
+
     // Shared rating counts + my_vote: declared unconditionally (rules-of-hooks),
     // seeded from the article payload first, then refined by GET /vote which
-    // also returns the caller's current vote. Both OverflowActions copies of
-    // RatingBar share the same two signals.
+    // also returns the caller's current vote.
     let mut rating = use_signal(|| (0i32, 0i32));
     let mut my_vote = use_signal(|| None::<String>);
     use_effect(move || {
@@ -1162,11 +1325,32 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         }
     });
 
+    // MAPPS-515: the article's company scope, resolved to names. The ids
+    // arrive with the article, so an effect copies them into a signal the
+    // lookup resource keys on (the same shape the rating effect above uses).
+    // A failed name lookup keeps the id as the chip label rather than
+    // dropping the company from the list.
+    let mut scope_ids = use_signal(Vec::<uuid::Uuid>::new);
+    use_effect(move || {
+        if let Some(Some(a)) = &*article_resource.read_unchecked() {
+            scope_ids.set(a.company_ids.clone());
+        }
+    });
+    let scoped_companies_resource = use_resource(move || {
+        let ids = scope_ids();
+        async move { resolve_company_names(&ids).await }
+    });
+    let scoped_companies: Vec<(String, String)> = match &*scoped_companies_resource.read_unchecked()
+    {
+        Some(rows) => rows.clone(),
+        None => Vec::new(),
+    };
+
     // Seed my_vote (and refine counts) from GET /kb/articles/{id}/vote once
     // the article id is available. Declared unconditionally for rules-of-hooks.
     let id_for_vote = props.id.clone();
     use_resource(use_reactive!(|id_for_vote| async move {
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             let path = format!("/kb/articles/{id_for_vote}/vote");
             if let Ok(fb) = crate::hooks::fetch::api::get_authed::<KbArticleFeedback>(&path).await {
@@ -1174,7 +1358,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                 my_vote.set(fb.my_vote);
             }
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         let _ = &id_for_vote;
     }));
 
@@ -1191,8 +1375,11 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     // nav + banner). A 4xx/404 while still reachable keeps the "Could not load
     // article" arm below. Categories + tree rail + versions are SECONDARY and
     // degrade to their own inline messages. Writes are blocked while down;
-    // `can_mutate` disables the delete / rating / restore controls.
+    // each control reads `can_mutate` itself (ArticleActions, RatingBar,
+    // VersionHistoryCard) to disable delete / rating / restore.
     let reachable = crate::hooks::use_server_reachable();
+    // MAPPS-573: a task-list toggle in the body PUTs the whole article, so the
+    // body needs the same reachability gate the other controls read.
     let can_mutate = crate::hooks::use_can_mutate();
     let article_fetch_failed = matches!(*article_snapshot, Some(None));
     if article_fetch_failed && !reachable {
@@ -1241,7 +1428,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                 delete_error.set(String::new());
                 let id = id_for_delete.clone();
                 spawn(async move {
-                    #[cfg(feature = "web")]
+                    #[cfg(feature = "app")]
                     {
                         let path = format!("/kb/articles/{id}");
                         match crate::hooks::fetch::api::delete_authed(&path).await {
@@ -1258,7 +1445,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                             }
                         }
                     }
-                    #[cfg(not(feature = "web"))]
+                    #[cfg(not(feature = "app"))]
                     let _ = &id;
                     delete_busy.set(false);
                 });
@@ -1313,75 +1500,143 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                         div { class: "flex-1 min-w-0",
                             div { class: "flex items-center justify-between gap-2",
                                 KbBreadcrumb { path: path.clone(), title: article.title.clone() }
-                                ReadModeButton { left_collapsed, right_collapsed }
+                                // MAPPS-423: the actions themselves live in the
+                                // right rail; this overflow copy keeps them
+                                // reachable when that rail is gone (read mode,
+                                // or below the `sm` breakpoint).
+                                div { class: "flex items-center gap-1",
+                                    ArticleActionsMenu {
+                                        article_id: props.id.clone(),
+                                        article_title: article.title.clone(),
+                                        comfortable,
+                                        confirming_delete,
+                                        delete_error,
+                                        delete_busy,
+                                        right_collapsed,
+                                    }
+                                    ReadModeButton { left_collapsed, right_collapsed }
+                                }
                             }
                             div { class: "mt-2 flex items-center justify-between gap-3 flex-wrap",
                                 h1 { class: "text-2xl sm:text-3xl font-bold text-content truncate", "{article.title}" }
-                                OverflowActions {
-                                    RatingBar {
-                                        article_id: props.id.clone(),
-                                        counts: rating,
-                                        my_vote,
-                                    }
+                                div { class: "flex items-center gap-2 flex-wrap",
                                     Badge { variant: status_variant, "{status_label}" }
                                     Badge { variant: vis_variant, "{vis_label}" }
-                                    // PMS-482: "Open ticket about this
-                                    // article". Navigates to the ticket-
-                                    // new form with the article id +
-                                    // title + URL on the query string;
-                                    // the form pre-fills its title /
-                                    // description and stamps
-                                    // `source_kb_article_id` on the
-                                    // create body. Plain `<a>` so the
-                                    // query string survives intact and
-                                    // the user can right-click to open
-                                    // in a new tab.
-                                    {
-                                        let qs = format!(
-                                            "from_kb_article={}&from_kb_title={}&from_kb_url={}",
-                                            props.id,
-                                            crate::utils::url::urlencoding_minimal(&article.title),
-                                            crate::utils::url::urlencoding_minimal(&format!("/kb/articles/{}", props.id)),
-                                        );
-                                        rsx! {
-                                            a {
-                                                href: "/tickets/new?{qs}",
-                                                class: "inline-flex items-center px-3 py-2 text-sm font-medium rounded-md border border-line hover:bg-surface-2 text-content",
-                                                "Open ticket about this article"
+                                    // MAPPS-515: who a client-specific article is
+                                    // for. An empty scope is only reachable for
+                                    // data written before PMS-341 and makes the
+                                    // article invisible to every portal user, so
+                                    // it is called out instead of left as a gap.
+                                    if article.visibility == "client_specific" {
+                                        if article.company_ids.is_empty() {
+                                            Badge { variant: BadgeVariant::Red, "No companies scoped" }
+                                        } else {
+                                            for (company_id , company_name) in scoped_companies.iter().cloned() {
+                                                Link {
+                                                    key: "{company_id}",
+                                                    to: Route::CompanyDetail { id: company_id.clone() },
+                                                    class: "inline-flex items-center rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium text-accent hover:opacity-90",
+                                                    {company_label(&company_id, &company_name)}
+                                                }
                                             }
                                         }
                                     }
-                                    Link { to: Route::KBArticleEdit { id: props.id.clone() },
-                                        Button { variant: ButtonVariant::Secondary, "Edit" }
-                                    }
-                                    // MAPPS-309: delete affordance. Gated by
-                                    // `ConfirmDialog` rendered at the page
-                                    // root; success navigates back to the KB
-                                    // landing.
-                                    Button {
-                                        variant: ButtonVariant::Danger,
-                                        // MAPPS-357: block delete while the server is unreachable.
-                                        disabled: delete_busy() || !can_mutate,
-                                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                                        onclick: move |_| {
-                                            delete_error.set(String::new());
-                                            confirming_delete.set(true);
-                                        },
-                                        "Delete"
-                                    }
-                                    DensityToggle { comfortable }
                                 }
                             }
                             p { class: "mt-1 text-xs text-subtle", "Updated {updated}" }
                             if !article.tags.is_empty() {
                                 TagChips { tags: article.tags.clone(), class: "mt-3".to_string() }
                             }
-                            article {
-                                class: "mt-4 prose dark:prose-invert max-w-none {prose_density}",
-                                dangerous_inner_html: crate::utils::markdown::render_markdown(&content),
+                            // MAPPS-573: through `components::Markdown`, not
+                            // `render_markdown` + `dangerous_inner_html`.
+                            // PMS-348 built interactive task-list checkboxes
+                            // into that component (data-ti indices plus one
+                            // delegated click listener) and tickets and projects
+                            // adopted it; the KB, which is where the long
+                            // checklists actually live, kept its own direct
+                            // call and so rendered them permanently disabled.
+                            {
+                                let src = content.clone();
+                                let aid = props.id.clone();
+                                rsx! {
+                                    crate::components::Markdown {
+                                        class: "mt-4 {prose_density}",
+                                        content: content.clone(),
+                                        // A toggle PUTs the whole body, so drop
+                                        // interactivity while the server is
+                                        // unreachable rather than letting the
+                                        // write fail silently (MAPPS-357's rule,
+                                        // matching the ticket page).
+                                        interactive: can_mutate,
+                                        on_toggle: move |i: usize| {
+                                            let Some(next) = crate::utils::markdown::toggle_task(&src, i) else {
+                                                return;
+                                            };
+                                            let aid = aid.clone();
+                                            let mut ar = article_resource;
+                                            spawn(async move {
+                                                #[cfg(feature = "app")]
+                                                {
+                                                    let body = serde_json::json!({ "content": next });
+                                                    let path = format!("/kb/articles/{aid}");
+                                                    match crate::hooks::fetch::api::put_authed_typed::<
+                                                        serde_json::Value,
+                                                        _,
+                                                    >(&path, &body)
+                                                        .await
+                                                    {
+                                                        Ok(_) => ar.restart(),
+                                                        Err(e) => {
+                                                            // The box has already flipped in the
+                                                            // DOM, so a silent failure leaves the
+                                                            // reader believing it saved. Say so,
+                                                            // then re-fetch to put it back.
+                                                            crate::hooks::toast::push_toast(
+                                                                crate::components::AlertType::Error,
+                                                                format!(
+                                                                    "Could not save that change: {}",
+                                                                    e.user_message()
+                                                                ),
+                                                            );
+                                                            ar.restart();
+                                                        }
+                                                    }
+                                                }
+                                                #[cfg(not(feature = "app"))]
+                                                let _ = (&aid, &mut ar);
+                                            });
+                                        },
+                                    }
+                                }
+                            }
+                            // MAPPS-423: the reader forms the opinion at the end
+                            // of the article, so the vote asks for it there.
+                            // Absent entirely on a single-user tenant, where a
+                            // helpful score is just self-voting.
+                            if show_rating {
+                                div { class: "mt-8 pt-4 border-t border-line flex items-center gap-4 flex-wrap",
+                                    p { class: "text-sm font-medium text-content", "Was this helpful?" }
+                                    RatingBar {
+                                        article_id: props.id.clone(),
+                                        counts: rating,
+                                        my_vote,
+                                    }
+                                }
                             }
                         }
                         CollapsibleRail { side: RailSide::Right, collapsed: right_collapsed, open_overlay,
+                            // MAPPS-423: one column of actions that act on this
+                            // article, above the read-only cards below.
+                            Card { title: "Actions",
+                                ArticleActions {
+                                    article_id: props.id.clone(),
+                                    article_title: article.title.clone(),
+                                    comfortable,
+                                    confirming_delete,
+                                    delete_error,
+                                    delete_busy,
+                                }
+                            }
                             // PMS-732: what the tracked time says this
                             // procedure actually takes. Sits above the version
                             // history because it is the number the person
@@ -1436,7 +1691,7 @@ fn MeasuredDurationCard(article_id: String) -> Element {
         Card { title: "Measured duration",
             match &*snap {
                 None => rsx! {
-                    p { class: "text-sm text-muted", "Loading..." }
+                    p { class: "text-sm text-muted", "Loading…" }
                 },
                 // A failed fetch is not "no data": saying "no time measured
                 // yet" when the request simply failed would be a confident
@@ -1479,7 +1734,7 @@ fn MeasuredDurationCard(article_id: String) -> Element {
 #[component]
 fn VersionHistoryCard(
     article_id: String,
-    versions_resource: Resource<Option<Paginated<KbArticleVersion>>>,
+    versions_resource: Resource<Option<Vec<KbArticleVersion>>>,
     on_restored: EventHandler<()>,
 ) -> Element {
     let snap = versions_resource.read_unchecked();
@@ -1499,11 +1754,11 @@ fn VersionHistoryCard(
                 Some(None) => rsx! {
                     p { class: "px-3 py-3 text-xs text-red-600 dark:text-red-300", "Could not load version history." }
                 },
-                Some(Some(page)) if page.data.is_empty() => rsx! {
+                Some(Some(page)) if page.is_empty() => rsx! {
                     p { class: "px-3 py-3 text-xs text-subtle", "No prior versions." }
                 },
                 Some(Some(page)) => {
-                    let rows = page.data.clone();
+                    let rows = page.clone();
                     let article_id = article_id.clone();
                     rsx! {
                         ul { class: "divide-y divide-line",
@@ -1529,14 +1784,14 @@ fn VersionHistoryCard(
                                                         restoring.set(Some(n));
                                                         let id = id_for_restore.clone();
                                                         spawn(async move {
-                                                            #[cfg(feature = "web")]
+                                                            #[cfg(feature = "app")]
                                                             {
                                                                 let path = format!("/kb/articles/{id}/versions/{n}/restore");
                                                                 if crate::hooks::fetch::api::post_authed::<KbArticle, _>(&path, &serde_json::json!({})).await.is_ok() {
                                                                     on_restored.call(());
                                                                 }
                                                             }
-                                                            #[cfg(not(feature = "web"))]
+                                                            #[cfg(not(feature = "app"))]
                                                             let _ = &id;
                                                             restoring.set(None);
                                                         });
@@ -1573,6 +1828,10 @@ struct ArticleFormValues {
     status: String,
     content: String,
     tags: String,
+    /// MAPPS-515: the company scope for a `client_specific` article, as
+    /// `(id, name)` pairs in selection order. A pair with an empty name is an
+    /// id whose lookup failed; the id is kept so saving cannot drop it.
+    companies: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1621,9 +1880,21 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
             // MAPPS-357: subscribe to reachability so the article (this edit
             // page's primary resource) auto-refetches on reconnect.
             let _reachable = crate::hooks::use_server_reachable();
-            crate::hooks::fetch::api::get_authed::<KbArticle>(&format!("/kb/articles/{id}"))
+            match crate::hooks::fetch::api::get_authed::<KbArticle>(&format!("/kb/articles/{id}"))
                 .await
-                .ok()
+            {
+                // MAPPS-515: resolve the company scope in the same pass, so
+                // the form mounts with its company rows already seeded (its
+                // signals seed once, from `initial`).
+                Ok(article) => {
+                    let companies = resolve_company_names(&article.company_ids).await;
+                    Some((article, companies))
+                }
+                Err(err) => {
+                    tracing::warn!("edit article load failed for {id}: {err}");
+                    None
+                }
+            }
         }
     });
     let snap = article_resource.read_unchecked();
@@ -1661,7 +1932,7 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
                     }
                 }
             },
-            Some(Some(article)) => {
+            Some(Some((article, companies))) => {
                 let initial = ArticleFormValues {
                     title: article.title.clone(),
                     slug: article.slug.clone(),
@@ -1679,6 +1950,7 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
                     },
                     content: article.content.clone(),
                     tags: article.tags.join(", "),
+                    companies: companies.clone(),
                 };
                 let id = id_for_form.clone();
                 rsx! {
@@ -1728,20 +2000,26 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     // PMS-518: per-field inline error slots, fed by the FormGuard on submit.
     let mut title_error = use_signal(String::new);
     let mut content_error = use_signal(String::new);
+    // MAPPS-515: the company scope of a `client_specific` article. `companies`
+    // is the selection (kept across a visibility change, so switching back
+    // restores it), `adding_company` opens the picker, `company_add_note`
+    // carries the "already selected" reply, and `company_error` is the
+    // picker's inline slot (MAPPS-322).
+    let mut companies = use_signal(|| initial.companies.clone());
+    let mut adding_company = use_signal(|| false);
+    let mut company_add_note = use_signal(String::new);
+    let mut company_error = use_signal(String::new);
 
     // Category dropdown options, fetched live.
     let categories_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_with_auth::<Paginated<KbCategory>>(
-            "/kb/categories?page=1&per_page=100",
-            &token,
-        )
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
+            .await
+            .ok()
     });
     let categories: Vec<KbCategory> = match &*categories_resource.read_unchecked() {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
     let mut category_options = vec![SelectOption::new("", "Uncategorized")];
@@ -1760,7 +2038,84 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         SelectOption::new("archived", "Archived"),
     ];
 
-    let mut tab = use_signal(|| BodyTab::Write);
+    // MAPPS-587: the article's id, which is NOT the same thing as the form's
+    // mode. An image upload needs an id (`POST /kb/articles/{id}/attachments`,
+    // and `article_id` is NOT NULL), and a new article has none until it is
+    // saved, so the first upload on a new article creates it as a draft and
+    // records the id here. From that moment the form is editing a real row
+    // while still saying Create in its mode, so everything that decides
+    // between POST and DELETE reads THIS rather than the mode.
+    let mut article_id = use_signal(|| match &props.mode {
+        ArticleFormMode::Edit { id } => Some(id.clone()),
+        ArticleFormMode::Create => None,
+    });
+    // Whether that row exists only because an upload needed somewhere to put a
+    // file. If the author then discards, the row is litter and gets deleted;
+    // an article they opened for editing obviously does not.
+    let mut auto_created = use_signal(|| false);
+    // Surfaced under the body field. Uploads are not silent: a failure has to
+    // say so, because the author is watching for an image to appear.
+    let mut upload_error = use_signal(String::new);
+    let mut uploading = use_signal(|| false);
+
+    // MAPPS-579: whether the metadata block is expanded.
+    //
+    // MAPPS-612: this is a REAL state, seeded once from the article the form
+    // opened with, not a value derived per render from whether the form is
+    // finished. It used to be `incomplete || meta_open()`, and the Title field
+    // auto-fills the Slug, so the first character typed into a new article made
+    // Title AND Slug non-empty in one event, flipped the panel to `hidden`, and
+    // took the focused input with it. One keystroke, because the slug is
+    // derived rather than typed.
+    //
+    // A new article starts open (there is nothing yet to summarise); an
+    // existing one starts collapsed.
+    let mut meta_open = use_signal(|| meta_must_be_open(&initial.title, &initial.slug));
+    // MAPPS-612: an unfinished form OPENS the panel and never closes it.
+    // Closing is the button's job alone: anything else can close the panel
+    // around the field the author is typing in, which is the bug above.
+    // Opening is safe because it never moves focus.
+    use_effect(move || {
+        if meta_must_be_open(&title.read(), &slug.read()) {
+            meta_open.set(true);
+        }
+    });
+    // MAPPS-580: who can be mentioned. MAPPS-592: through the shared hook, so
+    // the editor, the renderer and the ticket description all read one list
+    // from one endpoint. An empty list disables the autocomplete entirely,
+    // which is the right degrade because a handle typed by hand still resolves
+    // at render time.
+    let mention_people = crate::hooks::use_mention_directory(true);
+
+    // MAPPS-573: Cancel with unsaved work asks first.
+    let mut confirming_cancel = use_signal(|| false);
+
+    // MAPPS-573: is anything unsaved? Compares every field to what the form
+    // opened with, the same shape the company form uses, with the two
+    // blank-reads-as-default cases (visibility, status) handled so opening a
+    // fresh form and leaving is not "unsaved changes".
+    let initial_for_dirty = initial.clone();
+    let dirty = use_memo(move || {
+        if is_submitting() {
+            return false;
+        }
+        let default_visibility =
+            initial_for_dirty.visibility.is_empty() && *visibility.read() == "internal";
+        let default_status = initial_for_dirty.status.is_empty() && *status.read() == "draft";
+        *title.read() != initial_for_dirty.title
+            || *slug.read() != initial_for_dirty.slug
+            || *summary.read() != initial_for_dirty.summary
+            || *category_id.read() != initial_for_dirty.category_id
+            || (*visibility.read() != initial_for_dirty.visibility && !default_visibility)
+            || (*status.read() != initial_for_dirty.status && !default_status)
+            || *content.read() != initial_for_dirty.content
+            || *tags.read() != initial_for_dirty.tags
+            || *companies.read() != initial_for_dirty.companies
+    });
+    // The browser-level half: a tab close or reload still prompts. It does NOT
+    // cover Cancel, because `beforeunload` never fires on an in-app route
+    // change, which is why Cancel gets its own dialog below.
+    crate::hooks::use_unsaved_guard(dirty.into());
 
     let navigator = use_navigator();
     let is_edit = matches!(mode, ArticleFormMode::Edit { .. });
@@ -1768,8 +2123,167 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     // typing a new title never clobbers an existing URL slug.
     let mut slug_touched = use_signal(|| is_edit);
     let submit_label = if is_edit { "Save Changes" } else { "Publish" };
+    // MAPPS-423: Cancel returns to what the user was editing. Not browser
+    // history: a deep link or a reload leaves no meaningful previous entry.
+    let cancel_route = match &mode {
+        ArticleFormMode::Edit { id } => Route::KBArticleDetail { id: id.clone() },
+        ArticleFormMode::Create => Route::KBHome {},
+    };
     // MAPPS-357: block create / update while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
+
+    // MAPPS-587: take a file from the author's machine and put it in the body.
+    //
+    // The awkward part is not the upload, it is that the upload route is
+    // `POST /kb/articles/{id}/attachments` and a new article has no id. So the
+    // first upload on a new article CREATES it, as a draft, and the form
+    // carries on editing that row. Two consequences worth stating because
+    // neither is invisible to the author: their work is saved from that moment,
+    // and if they then discard, the row has to be cleaned up (see the Cancel
+    // handler below).
+    //
+    // The alternative was holding bytes in memory and uploading on save, which
+    // means the preview shows a `blob:` URL that dies on reload and markdown
+    // that has to be rewritten underneath the author. This way the URL in the
+    // body is the real, permanent one from the moment it is inserted.
+    let mut upload_image = move |(file_name, mime, bytes): (String, String, Vec<u8>)| {
+        upload_error.set(String::new());
+        // Checked here as a courtesy so the author is not told after sending
+        // five megabytes. The server re-checks and is the authority.
+        if let Err(msg) = crate::utils::image_upload::check(&mime, bytes.len()) {
+            upload_error.set(msg);
+            return;
+        }
+        if *uploading.read() {
+            return;
+        }
+        uploading.set(true);
+        #[cfg(feature = "app")]
+        spawn(async move {
+            let existing = article_id.read().clone();
+            let id = match existing {
+                Some(id) => Some(id),
+                None => {
+                    let title_val = title.read().trim().to_string();
+                    let slug_val = slug.read().trim().to_string();
+                    // The metadata block stays open until both are filled
+                    // (MAPPS-579), so an author who has reached the body has
+                    // normally filled them. Saying which one is missing beats
+                    // a 422 from a request they did not know was being made.
+                    if title_val.is_empty() || slug_val.is_empty() {
+                        upload_error.set(
+                            "Give the article a title and a slug first: an uploaded image is \
+                             stored against the article, so there has to be one."
+                                .to_string(),
+                        );
+                        uploading.set(false);
+                        return;
+                    }
+                    let body = CreateKbArticleRequest {
+                        title: title_val,
+                        slug: slug_val,
+                        content: content.read().clone(),
+                        summary: {
+                            let v = summary.read().trim().to_string();
+                            (!v.is_empty()).then_some(v)
+                        },
+                        category_id: {
+                            let v = category_id.read().clone();
+                            v.parse::<uuid::Uuid>().ok()
+                        },
+                        visibility: visibility.read().clone(),
+                        // Never published behind the author's back. They have
+                        // not pressed anything that means "publish" yet.
+                        status: "draft".to_string(),
+                        tags: sanitize_tags(&tags.read()),
+                        company_ids: {
+                            let ids: Vec<uuid::Uuid> = companies
+                                .read()
+                                .iter()
+                                .filter_map(|(id, _)| id.parse().ok())
+                                .collect();
+                            (!ids.is_empty()).then_some(ids)
+                        },
+                    };
+                    match crate::hooks::fetch::api::post_authed::<KbArticle, _>(
+                        "/kb/articles",
+                        &body,
+                    )
+                    .await
+                    {
+                        Ok(a) => {
+                            let id = a.id.to_string();
+                            article_id.set(Some(id.clone()));
+                            auto_created.set(true);
+                            Some(id)
+                        }
+                        Err(e) => {
+                            upload_error.set(format!(
+                                "Could not start the article to attach the image to: {e}"
+                            ));
+                            None
+                        }
+                    }
+                }
+            };
+            let Some(id) = id else {
+                uploading.set(false);
+                return;
+            };
+            let path = format!("/kb/articles/{id}/attachments");
+            match crate::hooks::fetch::api::post_file_authed::<KbAttachmentResponse>(
+                &path, &file_name, &mime, &bytes,
+            )
+            .await
+            {
+                Ok(att) => {
+                    let alt = crate::utils::image_upload::alt_from_file_name(&file_name);
+                    let body_now = content.read().clone();
+                    // The same path the toolbar's URL field takes, so an
+                    // uploaded image and a linked one land identically and the
+                    // caret ends up in the same place.
+                    crate::components::run_action(
+                        "content",
+                        &body_now,
+                        &crate::utils::md_edit::Action::Image {
+                            alt,
+                            url: att.url.clone(),
+                        },
+                        &EventHandler::new(move |next: String| {
+                            content_error.set(String::new());
+                            content.set(next);
+                        }),
+                    );
+                }
+                Err(e) => {
+                    upload_error.set(format!("Could not upload that image: {}", e.user_message()));
+                }
+            }
+            uploading.set(false);
+        });
+        #[cfg(not(feature = "app"))]
+        {
+            let _ = (file_name, mime, bytes);
+            uploading.set(false);
+        }
+    };
+
+    // MAPPS-588: paste a screenshot straight into the body.
+    //
+    // Installed from an effect because the textarea has to exist first, and
+    // through an `EventHandler` because the listener behind this runs with no
+    // dioxus scope on the stack (MAPPS-586: a bare closure there killed the
+    // page). Installing is idempotent, so a re-render cannot stack up
+    // listeners and upload the same paste twice.
+    use_effect(move || {
+        crate::platform::clipboard::on_paste_image(
+            "content",
+            EventHandler::new(move |f: (String, String, Vec<u8>)| {
+                let mut upload = upload_image;
+                upload(f);
+            }),
+        );
+    });
 
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
@@ -1783,6 +2297,45 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         title_error.set(guard.field("title", &title_val, "Title", &[Rule::Required]));
         let content_val = content.read().to_string();
         content_error.set(guard.field("content", content_val.trim(), "Body", &[Rule::Required]));
+
+        // MAPPS-515: the company scope. A `client_specific` article with no
+        // company is a guaranteed server 422, so it is blocked here with the
+        // message on the picker; evaluated alongside the fields above so one
+        // failure never masks another (PMS-518).
+        let visibility_val = visibility.read().clone();
+        match company_scope_error(&visibility_val, &companies.read()) {
+            Some(message) => {
+                company_error.set(message.to_string());
+                // Open the picker so the message has its slot to render in.
+                adding_company.set(true);
+                guard.note_invalid(Some("company_search"));
+            }
+            None => company_error.set(String::new()),
+        }
+
+        // The ids are server-issued UUIDs (picked, or read back from the
+        // article), so a value that will not parse means the round-trip is
+        // corrupt. Block rather than send the set without it: a dropped id
+        // silently revokes that client's access to the article.
+        let mut company_ids: Vec<uuid::Uuid> = Vec::new();
+        let mut unparsable: Vec<String> = Vec::new();
+        for (id, _) in companies.read().iter() {
+            match id.parse::<uuid::Uuid>() {
+                Ok(parsed) => company_ids.push(parsed),
+                Err(err) => {
+                    tracing::warn!("scoped company id `{id}` is not a UUID: {err}");
+                    unparsable.push(id.clone());
+                }
+            }
+        }
+        if !unparsable.is_empty() {
+            error.set(format!(
+                "Could not save article: {} of the selected companies could not be identified. Remove and re-add them, then save again.",
+                unparsable.len()
+            ));
+            guard.note_invalid(Some("company_search"));
+        }
+
         if guard.blocked() {
             return;
         }
@@ -1814,31 +2367,25 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                 raw.parse::<uuid::Uuid>().ok()
             }
         };
-        let visibility_val = visibility.read().clone();
         let status_val = status.read().clone();
         let tags_vec: Vec<String> = sanitize_tags(&tags.read());
+        // MAPPS-515: the server ignores and clears the scope for any other
+        // visibility, so `None` is the honest payload there.
+        let company_ids_opt = if visibility_val == "client_specific" {
+            Some(company_ids)
+        } else {
+            None
+        };
 
-        let mode = mode.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
-                let result = match &mode {
-                    ArticleFormMode::Create => {
-                        let body = CreateKbArticleRequest {
-                            title: title_val.clone(),
-                            slug: slug_val.clone(),
-                            content: content_val.clone(),
-                            summary: summary_opt.clone(),
-                            category_id: category_opt,
-                            visibility: visibility_val.clone(),
-                            status: status_val.clone(),
-                            tags: tags_vec.clone(),
-                        };
-                        crate::hooks::fetch::api::post_authed::<KbArticle, _>("/kb/articles", &body)
-                            .await
-                            .map(|a| a.id.to_string())
-                    }
-                    ArticleFormMode::Edit { id } => {
+                // MAPPS-587: keyed on `article_id()`, not on the mode. A new
+                // article whose first image upload created it already has a row,
+                // and POSTing again would leave a second, image-less copy behind.
+                let existing = article_id.read().clone();
+                let result = match existing {
+                    Some(id) => {
                         let body = UpdateKbArticleRequest {
                             title: Some(title_val.clone()),
                             slug: Some(slug_val.clone()),
@@ -1848,11 +2395,28 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             visibility: Some(visibility_val.clone()),
                             status: Some(status_val.clone()),
                             tags: Some(tags_vec.clone()),
+                            company_ids: company_ids_opt.clone(),
                         };
                         let path = format!("/kb/articles/{id}");
                         crate::hooks::fetch::api::put_authed::<KbArticle, _>(&path, &body)
                             .await
                             .map(|_| id.clone())
+                    }
+                    None => {
+                        let body = CreateKbArticleRequest {
+                            title: title_val.clone(),
+                            slug: slug_val.clone(),
+                            content: content_val.clone(),
+                            summary: summary_opt.clone(),
+                            category_id: category_opt,
+                            visibility: visibility_val.clone(),
+                            status: status_val.clone(),
+                            tags: tags_vec.clone(),
+                            company_ids: company_ids_opt.clone(),
+                        };
+                        crate::hooks::fetch::api::post_authed::<KbArticle, _>("/kb/articles", &body)
+                            .await
+                            .map(|a| a.id.to_string())
                     }
                 };
                 match result {
@@ -1868,6 +2432,33 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         });
     };
 
+    // MAPPS-515: company-scope view state. The selection survives a visibility
+    // change (so switching back inside one edit restores it); the block itself
+    // only renders for `client_specific`, and the note below the Visibility
+    // select states what saving under another visibility drops.
+    let company_rows: Vec<(String, String)> = companies.read().clone();
+    let visibility_now = visibility.read().clone();
+    let show_company_block = visibility_now == "client_specific";
+    let scope_clear_note = company_scope_clear_note(&visibility_now, &company_rows);
+    let unresolved_names = company_rows
+        .iter()
+        .filter(|(_, name)| name.trim().is_empty())
+        .count();
+    // A name lookup that failed is reported, not hidden. The ids stay in the
+    // list and still save, so the scope cannot silently shrink because a name
+    // was missing.
+    let unresolved_note = if unresolved_names == 0 {
+        String::new()
+    } else {
+        let noun = if unresolved_names == 1 {
+            "company name"
+        } else {
+            "company names"
+        };
+        format!("Could not load {unresolved_names} {noun} for this article's scope. Those companies are listed by id below and stay scoped when you save.")
+    };
+    let picker_open = *adding_company.read();
+
     rsx! {
         Card {
             form {
@@ -1878,114 +2469,439 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     ErrorBanner { "{error.read()}" }
                 }
 
-                crate::components::Input {
-                    name: "title",
-                    label: "Title",
-                    placeholder: "How to …",
-                    required: true,
-                    maxlength: TITLE_MAX as i64,
-                    rules: vec![Rule::Required],
-                    error: title_error.read().clone(),
-                    value: title.read().clone(),
-                    oninput: move |e: FormEvent| {
-                        title_error.set(String::new());
-                        title.set(e.value());
-                        if let Some(s) = next_slug(&e.value(), slug_touched()) {
-                            slug.set(s);
+                // MAPPS-515: the failed name lookups, at form level.
+                if !unresolved_note.is_empty() {
+                    ErrorBanner { "{unresolved_note}" }
+                }
+
+                // MAPPS-579: the eight metadata controls collapse to a summary
+                // row once the required ones are filled, so the body gets the
+                // screen instead of starting below the fold. Always expanded
+                // while Title or Slug is still empty, because collapsing a form
+                // the author has not finished hides the work they still owe.
+                //
+                // Not sticky across articles: the state is per-mount, so opening
+                // a different article starts from the same place rather than
+                // from whatever the last one was left in.
+                {
+                    let title_v = title.read().clone();
+                    let slug_v = slug.read().clone();
+                    // Still gates the Hide button: an unfinished form is not
+                    // collapsible by hand. It no longer decides `open`, which
+                    // is what MAPPS-612 was.
+                    let incomplete = meta_must_be_open(&title_v, &slug_v);
+                    let open = meta_open();
+                    // Named apart from the form's own `summary` field, which
+                    // is one of the controls being collapsed.
+                    let meta_summary = {
+                        let cat = category_options
+                            .iter()
+                            .find(|o| o.value == *category_id.read())
+                            .map(|o| o.label.clone())
+                            .unwrap_or_else(|| "Uncategorized".to_string());
+                        let (vis, _) = visibility_label(&visibility.read());
+                        let (_, st) = kb_article_status_badge(&status.read());
+                        format!("{vis} · {st} · {cat}")
+                    };
+                    rsx! {
+                        div { class: "rounded border border-line",
+                            div { class: "flex items-center justify-between gap-3 px-3 py-2",
+                                div { class: "min-w-0",
+                                    p { class: "truncate text-sm font-medium text-content",
+                                        if title_v.trim().is_empty() { "Untitled article" } else { "{title_v}" }
+                                    }
+                                    if !open {
+                                        p { class: "truncate text-xs text-muted", "{meta_summary}" }
+                                    }
+                                }
+                                if !incomplete {
+                                    button {
+                                        r#type: "button",
+                                        class: "shrink-0 rounded px-2 py-1 text-xs font-medium text-accent hover:bg-surface-2 focus:outline-none focus:ring-2 focus:ring-accent",
+                                        // The control is a disclosure, so its
+                                        // state is exposed rather than implied
+                                        // by the caret's direction alone.
+                                        aria_expanded: if open { "true" } else { "false" },
+                                        aria_controls: "kb-article-meta",
+                                        onclick: move |e: MouseEvent| {
+                                            e.prevent_default();
+                                            meta_open.toggle();
+                                        },
+                                        if open { "Hide details" } else { "Edit details" }
+                                    }
+                                }
+                            }
+                            div {
+                                id: "kb-article-meta",
+                                class: if open { "space-y-4 border-t border-line p-3" } else { "hidden" },
+                    crate::components::Input {
+                        name: "title",
+                        label: "Title",
+                        placeholder: "How to …",
+                        required: true,
+                        maxlength: TITLE_MAX as i64,
+                        rules: vec![Rule::Required],
+                        error: title_error.read().clone(),
+                        value: title.read().clone(),
+                        oninput: move |e: FormEvent| {
+                            title_error.set(String::new());
+                            title.set(e.value());
+                            if let Some(s) = next_slug(&e.value(), slug_touched()) {
+                                slug.set(s);
+                            }
+                        },
+                    }
+
+                    crate::components::Input {
+                        name: "slug",
+                        label: "Slug",
+                        placeholder: "Leave blank to derive from the title",
+                        help: "URL-safe identifier; normalized to lowercase hyphenated form on save, and auto-generated from the title when blank.",
+                        maxlength: SLUG_MAX as i64,
+                        value: slug.read().clone(),
+                        oninput: move |e: FormEvent| {
+                            slug_touched.set(true);
+                            slug.set(e.value());
+                        },
+                    }
+
+                    crate::components::Input {
+                        name: "summary",
+                        label: "Summary",
+                        placeholder: "Short one-line description (optional)",
+                        maxlength: SUMMARY_MAX as i64,
+                        value: summary.read().clone(),
+                        oninput: move |e: FormEvent| summary.set(e.value()),
+                    }
+
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-3",
+                        Select {
+                            name: "category",
+                            label: "Category",
+                            options: category_options,
+                            value: category_id.read().clone(),
+                            onchange: move |e: FormEvent| category_id.set(e.value()),
                         }
-                    },
-                }
-
-                crate::components::Input {
-                    name: "slug",
-                    label: "Slug",
-                    placeholder: "Leave blank to derive from the title",
-                    help: "URL-safe identifier; normalized to lowercase hyphenated form on save, and auto-generated from the title when blank.",
-                    maxlength: SLUG_MAX as i64,
-                    value: slug.read().clone(),
-                    oninput: move |e: FormEvent| {
-                        slug_touched.set(true);
-                        slug.set(e.value());
-                    },
-                }
-
-                crate::components::Input {
-                    name: "summary",
-                    label: "Summary",
-                    placeholder: "Short one-line description (optional)",
-                    maxlength: SUMMARY_MAX as i64,
-                    value: summary.read().clone(),
-                    oninput: move |e: FormEvent| summary.set(e.value()),
-                }
-
-                div { class: "grid grid-cols-1 gap-6 sm:grid-cols-3",
-                    Select {
-                        name: "category",
-                        label: "Category",
-                        options: category_options,
-                        value: category_id.read().clone(),
-                        onchange: move |e: FormEvent| category_id.set(e.value()),
-                    }
-                    Select {
-                        name: "visibility",
-                        label: "Visibility",
-                        options: visibility_options,
-                        value: visibility.read().clone(),
-                        onchange: move |e: FormEvent| visibility.set(e.value()),
-                    }
-                    Select {
-                        name: "status",
-                        label: "Status",
-                        options: status_options,
-                        value: status.read().clone(),
-                        onchange: move |e: FormEvent| status.set(e.value()),
-                    }
-                }
-
-                crate::components::Input {
-                    name: "tags",
-                    label: "Tags",
-                    placeholder: "Comma-separated, e.g. vpn, network",
-                    value: tags.read().clone(),
-                    oninput: move |e: FormEvent| tags.set(e.value()),
-                }
-
-                div {
-                    div { class: "flex gap-2 border-b border-line mb-2",
-                        button { r#type: "button", class: body_tab_class(tab() == BodyTab::Write), onclick: move |_| tab.set(BodyTab::Write), "Write" }
-                        button { r#type: "button", class: body_tab_class(tab() == BodyTab::Preview), onclick: move |_| tab.set(BodyTab::Preview), "Preview" }
-                    }
-                    match tab() {
-                        BodyTab::Write => rsx! {
-                            crate::components::Textarea {
-                                name: "content",
-                                label: "Body (Markdown)",
-                                placeholder: "## Overview\n\nWrite the article in Markdown…",
-                                rows: 16,
-                                required: true,
-                                maxlength: BODY_MAX as i64,
-                                rules: vec![Rule::Required],
-                                error: content_error.read().clone(),
-                                value: content.read().clone(),
-                                oninput: move |e: FormEvent| {
-                                    content_error.set(String::new());
-                                    content.set(e.value());
+                        div { class: "space-y-1",
+                            Select {
+                                name: "visibility",
+                                label: "Visibility",
+                                options: visibility_options,
+                                value: visibility.read().clone(),
+                                onchange: move |e: FormEvent| {
+                                    company_error.set(String::new());
+                                    visibility.set(e.value());
                                 },
                             }
-                        },
-                        BodyTab::Preview => rsx! {
-                            article {
-                                class: "prose dark:prose-invert max-w-none p-2 min-h-40 border border-line rounded",
-                                dangerous_inner_html: crate::utils::markdown::render_markdown(&content.read()),
+                            // MAPPS-515: the server clears the stored scope under
+                            // any other visibility. Say so, in the author's own
+                            // values, instead of letting the save do it silently.
+                            if !scope_clear_note.is_empty() {
+                                p { class: "text-xs text-muted", role: "status", "{scope_clear_note}" }
                             }
-                        },
+                        }
+                        Select {
+                            name: "status",
+                            label: "Status",
+                            options: status_options,
+                            value: status.read().clone(),
+                            onchange: move |e: FormEvent| status.set(e.value()),
+                        }
                     }
+
+                    // MAPPS-515: the company scope. Only a `client_specific`
+                    // article has one, and the server requires it to be non-empty.
+                    if show_company_block {
+                        fieldset { class: "space-y-2",
+                            legend { class: "block text-sm font-medium text-content", "Companies" }
+                            p { class: "text-xs text-muted",
+                                "Only these companies see this article in the client portal."
+                            }
+                            for (index , (company_id , company_name)) in company_rows.iter().cloned().enumerate() {
+                                div {
+                                    key: "{company_id}",
+                                    class: "flex items-center justify-between gap-3 rounded-md border border-line p-3",
+                                    div { class: "min-w-0",
+                                        p { class: "text-sm font-medium text-content truncate",
+                                            {company_label(&company_id, &company_name)}
+                                        }
+                                        if company_name.trim().is_empty() {
+                                            p { class: "text-xs text-muted",
+                                                "Name unavailable. This company stays scoped to the article."
+                                            }
+                                        }
+                                    }
+                                    crate::components::IconButton {
+                                        label: "Remove company".to_string(),
+                                        class: "p-1 text-subtle hover:text-red-600 dark:hover:text-red-400".to_string(),
+                                        onclick: move |_| {
+                                            companies.write().remove(index);
+                                            company_add_note.set(String::new());
+                                        },
+                                        TrashIcon { size: IconSize::Small }
+                                    }
+                                }
+                            }
+                            if picker_open {
+                                crate::components::CompanyPicker {
+                                    value: String::new(),
+                                    selected_id: None,
+                                    label: String::new(),
+                                    required: false,
+                                    // Scoping an article is not the place to create a
+                                    // CRM company record; the contact and project
+                                    // forms remain the paths that do.
+                                    allow_inline_create: false,
+                                    // MAPPS-322: the submit guard's message lands
+                                    // here, beside the control that fixes it.
+                                    error: company_error.read().clone(),
+                                    onselect: move |(id, name): (String, String)| {
+                                        if companies.read().iter().any(|(existing, _)| existing == &id) {
+                                            company_add_note
+                                                .set(format!("{name} is already scoped to this article."));
+                                            return;
+                                        }
+                                        companies.write().push((id, name));
+                                        company_error.set(String::new());
+                                        company_add_note.set(String::new());
+                                        adding_company.set(false);
+                                    },
+                                    onclear: move |_| { company_add_note.set(String::new()); },
+                                }
+                            }
+                            if !company_add_note.read().is_empty() {
+                                p { class: "text-xs text-muted", role: "status", "{company_add_note}" }
+                            }
+                            div { class: "flex flex-wrap items-center gap-3",
+                                if picker_open {
+                                    button {
+                                        r#type: "button",
+                                        class: "inline-flex items-center text-xs text-accent hover:opacity-90",
+                                        onclick: move |_| {
+                                            company_add_note.set(String::new());
+                                            adding_company.set(false);
+                                        },
+                                        "Don't add a company"
+                                    }
+                                } else {
+                                    Button {
+                                        variant: ButtonVariant::Secondary,
+                                        size: ButtonSize::Small,
+                                        onclick: move |_| {
+                                            company_add_note.set(String::new());
+                                            adding_company.set(true);
+                                        },
+                                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                        {add_scope_company_label(company_rows.len())}
+                                    }
+                                }
+                            }
+                            // The picker owns the inline message while it is open;
+                            // with it closed the guard's message would have nowhere
+                            // to render, so the block carries it here.
+                            if !picker_open && !company_error.read().is_empty() {
+                                p { class: "text-xs text-red-600 dark:text-red-400", role: "alert",
+                                    "{company_error}"
+                                }
+                            }
+                        }
+                    }
+
+                    crate::components::Input {
+                        name: "tags",
+                        label: "Tags",
+                        placeholder: "Comma-separated, e.g. vpn, network",
+                        value: tags.read().clone(),
+                        oninput: move |e: FormEvent| tags.set(e.value()),
+                    }
+                            }
+                        }
+                    }
+                }
+
+                // MAPPS-573: both panes stay mounted and the panel carries a
+                // floor height. Two separate bugs shared one cause: the page
+                // jumped because swapping the panes changed the document's
+                // height and the browser clamped `scrollTop`, and unmounting
+                // the textarea threw away the caret and its scroll offset.
+                //
+                // MAPPS-610: all of that, the Write/Preview/Split switcher and
+                // the scroll link now live in `MarkdownEditor`, so the ticket
+                // description and the note editors get the same control instead
+                // of a copy each. What stays here is what belongs to an article:
+                // how tall this screen's editor is, where an uploaded file goes,
+                // and the counts underneath.
+                crate::components::MarkdownEditor {
+                    name: KB_SOURCE_ID.to_string(),
+                    label: "Body (Markdown)".to_string(),
+                    placeholder: "## Overview\n\nWrite the article in Markdown…".to_string(),
+                    views: true,
+                    view_pref_key: "kb_view_mode".to_string(),
+                    // PMS-939: the panel takes its height from the window
+                    // instead of from 18 rows of text. On a tall screen the old
+                    // fixed field left most of the page empty while the author
+                    // read a long article through a small window.
+                    //
+                    // PMS-949: 22rem was the chrome above AND below the panel
+                    // with nothing scrolled away, page header and expanded
+                    // details card included, and it cost the editor 96px on a
+                    // 726px window - roughly a fifth of the writing area, to
+                    // hold space for two things the author has already scrolled
+                    // past by the time they are writing.
+                    //
+                    // The subtrahend is now what has to stay on screen BESIDE
+                    // the panel and cannot scroll away from it, because it is
+                    // inside the same card: the card's own padding, the label
+                    // and the switcher above (~5.25rem), the word count, the
+                    // Save row and the card's bottom padding below (~6.25rem),
+                    // and the page's own `py-6` (3rem). The page header and the
+                    // details block are deliberately not counted - scrolling
+                    // them off is what MAPPS-612's collapsible summary row is
+                    // for. The floor keeps it honest on a short window.
+                    panel_class: "h-[calc(100vh-16rem)] min-h-[26rem]".to_string(),
+                    // The floor, for the case where the panel is at its `min-h`.
+                    // `field_class` is what makes it grow past this on a taller
+                    // window, so the two are a floor and a stretch rather than
+                    // two competing heights.
+                    rows: 18,
+                    field_class: "flex-1 min-h-0".to_string(),
+                    required: true,
+                    disabled: !can_mutate,
+                    maxlength: BODY_MAX as i64,
+                    rules: vec![Rule::Required],
+                    error: content_error.read().clone(),
+                    value: content.read().clone(),
+                    people: crate::hooks::mention_people(&mention_people),
+                    // MAPPS-587: the KB editor is the one surface with somewhere
+                    // to put a file, until PMS-941 gives tickets one too.
+                    on_file: EventHandler::new(move |f: (String, String, Vec<u8>)| upload_image(f)),
+                    oninput: move |next: String| {
+                        content_error.set(String::new());
+                        content.set(next);
+                    },
+                }
+                // MAPPS-579: what the author is up against. The body has a
+                // server-side cap, so the character count is the one that can
+                // actually block a save.
+                // MAPPS-587: an upload is the one action here that takes long
+                // enough to doubt and can fail on the server after passing every
+                // check this client can make. Both states are said out loud,
+                // under the field the image is going into.
+                if uploading() {
+                    p { class: "mt-1 text-xs text-muted", role: "status", "Uploading the image…" }
+                }
+                if !upload_error().is_empty() {
+                    p {
+                        class: "mt-1 text-sm leading-5 text-red-600 dark:text-red-400",
+                        role: "alert",
+                        "{upload_error}"
+                    }
+                }
+                {
+                    let body = content.read();
+                    let words = body.split_whitespace().count();
+                    let chars = body.chars().count();
+                    rsx! {
+                        p { class: "mt-1 text-xs text-subtle", role: "status",
+                            "{words} words · {chars} of {BODY_MAX} characters"
+                        }
+                    }
+                }
+
+                // MAPPS-573: Cancel used to be a plain `Link`, so a click
+                // discarded a half-written article with no confirmation and no
+                // way back. `use_unsaved_guard` above does not cover it:
+                // `beforeunload` never fires on an in-app route change.
+                //
+                // Only when there is something to lose. Cancelling an untouched
+                // form still leaves immediately, because a confirmation there
+                // is a dialog whose answer is always the same.
+                crate::components::ConfirmDialog {
+                    open: confirming_cancel(),
+                    title: "Discard your changes?".to_string(),
+                    // MAPPS-587: an upload on a new article creates the article,
+                    // so from that point discarding deletes something rather
+                    // than merely abandoning it. Saying "unsaved" there would be
+                    // false, and the author would have no way to know a row and
+                    // its images were about to go.
+                    message: if auto_created() {
+                        "This article was started when you added an image, and discarding \
+                         deletes it along with anything uploaded to it. This cannot be undone."
+                            .to_string()
+                    } else {
+                        "This article has unsaved changes. Discarding them cannot be undone."
+                            .to_string()
+                    },
+                    confirm_text: "Discard changes".to_string(),
+                    cancel_text: "Keep editing".to_string(),
+                    destructive: true,
+                    onconfirm: {
+                        let to = cancel_route.clone();
+                        move |_| {
+                            confirming_cancel.set(false);
+                            // MAPPS-587: clean up the row the upload created.
+                            // Its attachments go with it (ON DELETE CASCADE).
+                            //
+                            // It does NOT hold up leaving: the author asked to
+                            // discard, and trapping them on the form because a
+                            // cleanup DELETE failed would be worse than a stray
+                            // draft. But it is not silent either, which is the
+                            // MAPPS-574 rule and it applies here as much as
+                            // anywhere: a failure leaves an article in the KB
+                            // that the author never meant to create, so they
+                            // are told it is there and what it is called.
+                            #[cfg(feature = "app")]
+                            if auto_created() {
+                                if let Some(id) = article_id.read().clone() {
+                                    let name = title.read().trim().to_string();
+                                    spawn(async move {
+                                        let path = format!("/kb/articles/{id}");
+                                        match crate::hooks::fetch::api::delete_authed(&path).await {
+                                            Ok(()) => {}
+                                            Err(err) => {
+                                                let named = if name.is_empty() {
+                                                    "the draft article".to_string()
+                                                } else {
+                                                    format!("\"{name}\"")
+                                                };
+                                                crate::hooks::push_toast(
+                                                    crate::components::AlertType::Warning,
+                                                    format!(
+                                                        "Your changes were discarded, but {named} \
+                                                         could not be removed and is still in the \
+                                                         knowledge base as a draft: {err}"
+                                                    ),
+                                                );
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                            navigator.push(to.clone());
+                        }
+                    },
+                    oncancel: move |_| confirming_cancel.set(false),
                 }
 
                 div { class: "flex justify-end space-x-3",
-                    Link {
-                        to: Route::KBHome {},
-                        Button { variant: ButtonVariant::Secondary, "Cancel" }
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: {
+                            let to = cancel_route.clone();
+                            move |_| {
+                                // MAPPS-587: `auto_created()` as well as
+                                // `dirty()`. An upload creates a real article,
+                                // and an author who then edited their way back
+                                // to the starting text is not dirty but does
+                                // have a row and an image to answer for.
+                                if dirty() || auto_created() {
+                                    confirming_cancel.set(true);
+                                } else {
+                                    navigator.push(to.clone());
+                                }
+                            }
+                        },
+                        "Cancel"
                     }
                     Button {
                         r#type: "submit",
@@ -2146,7 +3062,7 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
         let sort_val = sort_order.read().trim().parse::<i32>().unwrap_or(0);
 
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result = match edit_id {
                     None => {
@@ -2189,7 +3105,7 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
                     }
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = (
                     &name_val,
@@ -2329,6 +3245,9 @@ fn KbBreadcrumb(path: Vec<KbCategory>, title: String) -> Element {
 #[component]
 fn KbTreeNav(categories: Vec<KbCategory>, articles: Vec<KbArticle>, current_id: String) -> Element {
     let (roots, uncategorized) = build_kb_tree(&categories, &articles);
+    // MAPPS-423: the nav lists what you can navigate to. An empty category is
+    // an expanded, empty row; hide it here (the KB home grid still shows all).
+    let roots = prune_empty_categories(&roots);
     rsx! {
         nav { class: "text-sm space-y-1",
             for node in roots.iter() {
@@ -2391,8 +3310,114 @@ fn KbTreeArticle(article: KbArticle, current_id: String) -> Element {
 }
 
 // ============================================================================
-// Rating bar, density toggle, read-mode button
+// Article actions, rating bar, density toggle, read-mode button
 // ============================================================================
+
+/// MAPPS-423: the controls that act on the article, as one full-width column.
+/// Rendered in the right rail (inside an "Actions" card) and again inside the
+/// header overflow menu, so the same set is reachable when the rail is not.
+#[component]
+fn ArticleActions(
+    article_id: String,
+    article_title: String,
+    comfortable: Signal<bool>,
+    confirming_delete: Signal<bool>,
+    delete_error: Signal<String>,
+    delete_busy: Signal<bool>,
+) -> Element {
+    let mut confirming_delete = confirming_delete;
+    let mut delete_error = delete_error;
+    // MAPPS-357: block delete while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
+    // PMS-482: "Open ticket about this article" carries the article id + title
+    // + URL on the query string; the ticket-new form pre-fills its title /
+    // description and stamps `source_kb_article_id` on the create body. Plain
+    // `<a>` so the query string survives intact and the user can right-click
+    // to open it in a new tab.
+    let qs = format!(
+        "from_kb_article={}&from_kb_title={}&from_kb_url={}",
+        article_id,
+        urlencoding_minimal(&article_title),
+        urlencoding_minimal(&format!("/kb/articles/{article_id}")),
+    );
+    rsx! {
+        div { class: "flex flex-col gap-2",
+            Link { to: Route::KBArticleEdit { id: article_id.clone() }, class: "block",
+                Button { variant: ButtonVariant::Secondary, class: "w-full".to_string(), "Edit" }
+            }
+            // MAPPS-309: delete affordance. Gated by the `ConfirmDialog`
+            // rendered at the page root; success navigates back to the KB
+            // landing.
+            Button {
+                variant: ButtonVariant::Danger,
+                class: "w-full".to_string(),
+                disabled: delete_busy() || !can_mutate,
+                title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
+                onclick: move |_| {
+                    delete_error.set(String::new());
+                    confirming_delete.set(true);
+                },
+                "Delete"
+            }
+            a {
+                href: "/tickets/new?{qs}",
+                class: "w-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium rounded-md border border-line hover:bg-surface-2 text-content",
+                "Open ticket about this article"
+            }
+            DensityToggle { comfortable, class: "w-full".to_string() }
+        }
+    }
+}
+
+/// MAPPS-423: header `...` menu exposing [`ArticleActions`] when the right
+/// rail that normally carries them is not on screen: always while the rail is
+/// collapsed (read mode), and below the `sm` breakpoint regardless.
+#[component]
+fn ArticleActionsMenu(
+    article_id: String,
+    article_title: String,
+    comfortable: Signal<bool>,
+    confirming_delete: Signal<bool>,
+    delete_error: Signal<String>,
+    delete_busy: Signal<bool>,
+    right_collapsed: Signal<bool>,
+) -> Element {
+    let mut open = use_signal(|| false);
+    // Hidden at >= sm only while the rail is showing the same actions.
+    let wrapper_class = if right_collapsed() {
+        "relative"
+    } else {
+        "relative sm:hidden"
+    };
+    rsx! {
+        div { class: "{wrapper_class}",
+            button {
+                class: "px-2 py-1 text-muted hover:text-content",
+                title: "More",
+                aria_label: "More actions",
+                aria_expanded: if open() { "true" } else { "false" },
+                onclick: move |_| open.toggle(),
+                "\u{22EF}"
+            }
+            if open() {
+                div {
+                    class: "fixed inset-0 z-40",
+                    onclick: move |_| open.set(false),
+                }
+                div { class: "dropdown-panel absolute right-0 z-50 mt-1 w-56 p-2",
+                    ArticleActions {
+                        article_id,
+                        article_title,
+                        comfortable,
+                        confirming_delete,
+                        delete_error,
+                        delete_busy,
+                    }
+                }
+            }
+        }
+    }
+}
 
 #[component]
 fn RatingBar(
@@ -2412,15 +3437,15 @@ fn RatingBar(
 
     // Active state classes: green for helpful, red for not_helpful, neutral otherwise.
     let helpful_class = if active_vote.as_deref() == Some("helpful") {
-        "flex items-center gap-1 text-green-600 font-semibold disabled:opacity-50"
+        "flex items-center gap-1 text-green-600 dark:text-green-400 font-semibold disabled:opacity-50"
     } else {
-        "flex items-center gap-1 text-content hover:text-green-600 \
+        "flex items-center gap-1 text-content hover:text-green-600 dark:hover:text-green-400 \
          disabled:opacity-50"
     };
     let not_helpful_class = if active_vote.as_deref() == Some("not_helpful") {
-        "flex items-center gap-1 text-red-600 font-semibold disabled:opacity-50"
+        "flex items-center gap-1 text-red-600 dark:text-red-400 font-semibold disabled:opacity-50"
     } else {
-        "flex items-center gap-1 text-content hover:text-red-600 \
+        "flex items-center gap-1 text-content hover:text-red-600 dark:hover:text-red-400 \
          disabled:opacity-50"
     };
 
@@ -2435,7 +3460,7 @@ fn RatingBar(
                     busy.set(true);
                     let id = id_h.clone();
                     spawn(async move {
-                        #[cfg(feature = "web")]
+                        #[cfg(feature = "app")]
                         {
                             let path = format!("/kb/articles/{id}/helpful");
                             if let Ok(fb) =
@@ -2449,7 +3474,7 @@ fn RatingBar(
                                 my_vote.set(fb.my_vote);
                             }
                         }
-                        #[cfg(not(feature = "web"))]
+                        #[cfg(not(feature = "app"))]
                         let _ = &id;
                         busy.set(false);
                     });
@@ -2466,7 +3491,7 @@ fn RatingBar(
                     busy.set(true);
                     let id = id_n.clone();
                     spawn(async move {
-                        #[cfg(feature = "web")]
+                        #[cfg(feature = "app")]
                         {
                             let path = format!("/kb/articles/{id}/not_helpful");
                             if let Ok(fb) =
@@ -2480,7 +3505,7 @@ fn RatingBar(
                                 my_vote.set(fb.my_vote);
                             }
                         }
-                        #[cfg(not(feature = "web"))]
+                        #[cfg(not(feature = "app"))]
                         let _ = &id;
                         busy.set(false);
                     });
@@ -2493,11 +3518,11 @@ fn RatingBar(
 }
 
 #[component]
-fn DensityToggle(comfortable: Signal<bool>) -> Element {
+fn DensityToggle(comfortable: Signal<bool>, #[props(default)] class: String) -> Element {
     let mut comfortable = comfortable;
     rsx! {
         button {
-            class: "text-xs px-2 py-1 rounded border border-line text-content",
+            class: "text-xs px-2 py-1 rounded border border-line text-content {class}",
             title: "Toggle reading density",
             onclick: move |_| {
                 let next = !comfortable();
@@ -2598,6 +3623,7 @@ mod tests {
             not_helpful_count: 0,
             published_at: None,
             tags: vec![],
+            company_ids: vec![],
             created_at: None,
             updated_at: None,
         }
@@ -2614,6 +3640,46 @@ mod tests {
         assert_eq!(roots[0].children.len(), 1);
         assert_eq!(roots[0].children[0].articles[0].title, "Setup");
         assert!(uncat.is_empty());
+    }
+
+    #[test]
+    fn prunes_categories_with_no_articles_anywhere() {
+        // Empty root drops; root that only holds a non-empty child survives,
+        // and its own empty sibling child drops with it.
+        let empty = Uuid::new_v4();
+        let root = Uuid::new_v4();
+        let child = Uuid::new_v4();
+        let bare_child = Uuid::new_v4();
+        let cats = vec![
+            cat(empty, None, "Empty"),
+            cat(root, None, "Net"),
+            cat(child, Some(root), "VPN"),
+            cat(bare_child, Some(root), "Unused"),
+        ];
+        let arts = vec![art(Uuid::new_v4(), Some(child), "Setup")];
+        let (roots, _) = build_kb_tree(&cats, &arts);
+        assert_eq!(roots.len(), 2);
+        let pruned = prune_empty_categories(&roots);
+        let names: Vec<_> = pruned.iter().map(|n| n.category.name.as_str()).collect();
+        assert_eq!(names, vec!["Net"]);
+        let kids: Vec<_> = pruned[0]
+            .children
+            .iter()
+            .map(|n| n.category.name.as_str())
+            .collect();
+        assert_eq!(kids, vec!["VPN"]);
+    }
+
+    #[test]
+    fn category_holding_its_own_article_survives_pruning() {
+        let root = Uuid::new_v4();
+        let cats = vec![cat(root, None, "Net")];
+        let arts = vec![art(Uuid::new_v4(), Some(root), "Setup")];
+        let (roots, _) = build_kb_tree(&cats, &arts);
+        assert_eq!(prune_empty_categories(&roots).len(), 1);
+        // The same category with its last article removed disappears.
+        let (roots, _) = build_kb_tree(&cats, &[]);
+        assert!(prune_empty_categories(&roots).is_empty());
     }
 
     #[test]
@@ -2660,5 +3726,455 @@ mod tests {
         // Whitespace-only, comma-only, and control-character-only entries drop out.
         assert_eq!(sanitize_tags("  , \t , a , "), vec!["a".to_string()]);
         assert!(sanitize_tags("").is_empty());
+    }
+
+    // MAPPS-515: the company-scope rules.
+
+    fn scope(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(id, name)| (id.to_string(), name.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn company_scope_error_only_for_empty_client_specific() {
+        // The one case the server 422s.
+        assert_eq!(
+            company_scope_error("client_specific", &[]),
+            Some("Select at least one company for a client-specific article.")
+        );
+        // One company is enough.
+        assert_eq!(
+            company_scope_error("client_specific", &scope(&[("id-1", "Acme Corp")])),
+            None
+        );
+        // Every other visibility saves with no company at all.
+        assert_eq!(company_scope_error("internal", &[]), None);
+        assert_eq!(company_scope_error("public", &[]), None);
+        assert_eq!(company_scope_error("", &[]), None);
+    }
+
+    #[test]
+    fn company_scope_clear_note_names_what_is_lost() {
+        let selected = scope(&[("id-1", "Acme Corp"), ("id-2", "Globex")]);
+        assert_eq!(
+            company_scope_clear_note("internal", &selected),
+            "Saving as Internal removes the company scope (Acme Corp, Globex)."
+        );
+        assert_eq!(
+            company_scope_clear_note("public", &selected),
+            "Saving as Public removes the company scope (Acme Corp, Globex)."
+        );
+        // Nothing to lose: no selection, or the visibility that keeps it.
+        assert!(company_scope_clear_note("internal", &[]).is_empty());
+        assert!(company_scope_clear_note("client_specific", &selected).is_empty());
+        // A company whose name did not resolve is still named, by its id, so
+        // the note never understates what the save drops.
+        assert_eq!(
+            company_scope_clear_note("internal", &scope(&[("id-1", "")])),
+            "Saving as Internal removes the company scope (id-1)."
+        );
+    }
+
+    #[test]
+    fn client_specific_badge_label_carries_the_count() {
+        assert_eq!(
+            client_specific_badge_label("client_specific", 2),
+            "Client-specific (2)"
+        );
+        // A scoped-to-nothing article reads as (0) rather than as a plain
+        // Client-specific badge, since no portal user can see it.
+        assert_eq!(
+            client_specific_badge_label("client_specific", 0),
+            "Client-specific (0)"
+        );
+        // Every other visibility keeps the shared label untouched.
+        assert_eq!(client_specific_badge_label("internal", 0), "Internal");
+        assert_eq!(client_specific_badge_label("public", 3), "Public");
+        assert_eq!(client_specific_badge_label("", 0), "Internal");
+    }
+
+    #[test]
+    fn company_label_falls_back_to_the_id() {
+        assert_eq!(company_label("id-1", "Acme Corp"), "Acme Corp");
+        assert_eq!(company_label("id-1", "   "), "id-1");
+    }
+
+    #[test]
+    fn add_scope_company_label_reads_by_count() {
+        assert_eq!(add_scope_company_label(0), "Add a company");
+        assert_eq!(add_scope_company_label(1), "Add another company");
+    }
+}
+
+/// MAPPS-573: the three editor and viewer fixes whose whole point is a
+/// lifecycle or a route decision, none of which a rendered snapshot shows.
+///
+/// Source scans, deliberately. Each of these lives inside a `use_resource` or
+/// an event handler that only runs under the `app` feature and needs a real
+/// DOM, so no host test can drive them. What is being pinned is the decision,
+/// and the decision is visible in the source.
+#[cfg(test)]
+mod editor_ux_tests {
+    const SRC: &str = include_str!("knowledge_base.rs");
+
+    /// The page's code, with two things removed.
+    ///
+    /// Comment bodies, so a test cannot pass on a phrase that appears only in
+    /// the comment explaining it. And this module itself, because every
+    /// assertion below quotes the pattern it is looking for, so a scan that
+    /// included its own source would match itself and pass no matter what the
+    /// page does. That is not hypothetical: it is what the first run of these
+    /// tests did.
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod editor_ux_tests")
+            .expect("this module is part of this file");
+        SRC[..end]
+            .lines()
+            .map(|l| match l.find("//") {
+                Some(i) => &l[..i],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// AC1, the jump. The panes were swapped by a `match` on the tab, so the
+    /// panel's height was whichever pane was mounted: a 16-row textarea, or a
+    /// preview with `min-h-40`. On a short article the document shrank by two
+    /// thirds and the browser clamped `scrollTop`, which is the jump. A floor
+    /// on the panel is what makes the swap height-neutral.
+    ///
+    /// MAPPS-610 moved the panes and the switcher into `MarkdownEditor`, so
+    /// what this page still owns is the height it asks that panel for. The
+    /// pane behaviour is pinned in `components::markdown_editor`.
+    #[test]
+    fn the_body_panel_states_its_own_height() {
+        let code = code_only();
+        assert!(
+            code.contains(r#"panel_class: "h-[calc(100vh-16rem)] min-h-[26rem]".to_string()"#),
+            "a viewport height so the editor is not 18 rows on a screen with room \
+             for forty, and a floor so it does not collapse on a short one"
+        );
+        assert!(
+            code.contains("views: true"),
+            "and the body is the editor that gets the switcher"
+        );
+        assert!(
+            code.contains(r#"view_pref_key: "kb_view_mode".to_string()"#),
+            "under this page's own key, so an author's choice here does not follow \
+             them into a ticket"
+        );
+        assert!(
+            !code.contains("min-h-40") && !code.contains("max-h-[34rem]"),
+            "no second height on this page to disagree with the panel's"
+        );
+        assert!(
+            !code.contains("kb_split_preview"),
+            "the old split-only preference is gone, not left writing a key nothing \
+             reads"
+        );
+    }
+
+    /// AC5. Cancel was a plain `Link`, so it discarded a half-written article
+    /// silently. It has to be a button that consults the dirty state.
+    #[test]
+    fn cancel_asks_before_discarding_unsaved_work() {
+        let code = code_only();
+        assert!(
+            code.contains("confirming_cancel.set(true)"),
+            "Cancel must open a confirmation when the form is dirty"
+        );
+        assert!(
+            code.contains("\"Keep editing\".to_string()"),
+            "and the dialog must offer a way back to editing, not just a way out"
+        );
+        // The clean-form path still leaves at once: a confirmation whose answer
+        // is always the same is a click tax, not a safeguard.
+        // MAPPS-587 widened the gate: an upload creates a real article, so a
+        // form that is no longer dirty can still have a row to answer for. What
+        // has to survive is that a form with NEITHER leaves at once, because a
+        // confirmation whose answer is always the same is a click tax.
+        assert!(
+            code.contains("if dirty() || auto_created() {"),
+            "an untouched form with nothing created must still cancel immediately"
+        );
+    }
+
+    /// MAPPS-587. The save path keys on the article's id, never on the form's
+    /// mode.
+    ///
+    /// An image upload on a NEW article creates the article, so from then on
+    /// the form is editing a real row while its mode still says Create. A save
+    /// that branched on the mode would POST a second article: the author would
+    /// end up with an empty draft holding their image and a published copy
+    /// holding a link to it.
+    #[test]
+    fn saving_after_an_upload_updates_the_article_the_upload_created() {
+        let code = code_only();
+        assert!(
+            code.contains("let existing = article_id.read().clone();"),
+            "the save has to ask which article exists, not which mode it started in"
+        );
+        assert!(
+            !code.contains("let result = match &mode {"),
+            "branching the save on the form mode is what creates the duplicate"
+        );
+    }
+
+    /// MAPPS-587. An article that exists only because an upload needed
+    /// somewhere to put a file is litter if the author then discards, so it is
+    /// deleted - and a failure to delete it is said out loud rather than
+    /// swallowed, which is the MAPPS-574 rule.
+    #[test]
+    fn discarding_removes_an_article_the_upload_created() {
+        let code = code_only();
+        assert!(
+            code.contains("auto_created.set(true)"),
+            "the form has to know the row was its own doing"
+        );
+        assert!(
+            code.contains("if auto_created() {") && code.contains("delete_authed(&path)"),
+            "and discard has to remove it"
+        );
+        assert!(
+            code.contains("push_toast"),
+            "a cleanup that failed leaves an article the author never meant to \
+             create; they have to be told"
+        );
+        // The author is told what they are agreeing to. "Unsaved changes" would
+        // be false once a row exists.
+        assert!(
+            code.contains("message: if auto_created() {"),
+            "the confirmation has to say that discarding deletes the article"
+        );
+    }
+
+    /// MAPPS-587. The upload never publishes anything.
+    ///
+    /// The author has pressed a file picker, not Publish. Creating the article
+    /// at whatever status the form currently shows would put an unfinished
+    /// article in front of readers because someone added a screenshot.
+    #[test]
+    fn an_upload_creates_a_draft_and_nothing_else() {
+        let code = code_only();
+        // The upload's create request is the first one in the file; the
+        // submit handler's is the second. Sliced to the call that sends it
+        // rather than to a brace, because the request body has nested ones.
+        let create = code
+            .split("let body = CreateKbArticleRequest {")
+            .nth(1)
+            .expect("the upload builds a create request");
+        let create = &create[..create
+            .find("post_authed::<KbArticle")
+            .unwrap_or(create.len())];
+        assert!(
+            create.contains(r#"status: "draft".to_string()"#),
+            "the auto-created article must be a draft, found: {create}"
+        );
+    }
+
+    /// MAPPS-588. Paste goes through the platform listener and an
+    /// `EventHandler`, and reuses the same uploader the picker and the drop
+    /// use.
+    ///
+    /// The `EventHandler` is the load-bearing half: that listener runs with no
+    /// dioxus scope, and a bare closure there is the MAPPS-586 crash. Reusing
+    /// `upload_image` is the other half, because it carries the type and size
+    /// checks, the create-the-article-if-needed step and the error reporting;
+    /// a second path would have to grow all of it again.
+    #[test]
+    fn a_pasted_image_takes_the_same_route_as_a_picked_one() {
+        let code = code_only();
+        assert!(
+            code.contains("crate::platform::clipboard::on_paste_image("),
+            "the paste listener lives in the platform layer (MAPPS-504)"
+        );
+        assert!(
+            code.contains("EventHandler::new(move |f: (String, String, Vec<u8>)| {"),
+            "and reports through an EventHandler, which pushes its own scope"
+        );
+        // One uploader, two ways in from this page: declared once, then
+        // reached by the toolbar's picker (through `on_file`) and the paste
+        // handler. MAPPS-610 moved the drop zone into `MarkdownEditor`, where
+        // it arrives through that same `on_file`, so a third path that built
+        // its own would have to grow the size checks, the create-the-article
+        // step and the error reporting all over again.
+        assert_eq!(
+            code.matches("upload_image").count(),
+            3,
+            "one declaration and two entry points: the picker and the paste"
+        );
+    }
+
+    /// MAPPS-579 AC1 and AC3. The toolbar wraps at narrow widths rather than
+    /// scrolling actions off the edge, which is the collapse strategy the issue
+    /// asked to be chosen and stated rather than left to overflow.
+    #[test]
+    fn the_body_has_a_toolbar_that_wraps_rather_than_scrolling() {
+        let code = code_only();
+        // MAPPS-592: the toolbar reaches the body through `MarkdownEditor`,
+        // which is what the ticket description mounts too.
+        assert!(
+            code.contains("crate::components::MarkdownEditor {"),
+            "the body field needs a formatting toolbar"
+        );
+        const EDITOR: &str = include_str!("../components/markdown_editor.rs");
+        assert!(
+            EDITOR.contains("MarkdownToolbar {"),
+            "and the editor is what mounts it"
+        );
+        const TOOLBAR: &str = include_str!("../components/markdown_toolbar.rs");
+        assert!(
+            TOOLBAR.contains("flex flex-wrap items-center"),
+            "the toolbar wraps at narrow widths; without `flex-wrap` the later \
+             groups scroll off the edge and become unreachable"
+        );
+        assert!(
+            TOOLBAR.contains(r#"role: "toolbar""#)
+                && TOOLBAR.contains(r#"aria_label: "Formatting""#),
+            "and is announced as one thing rather than a run of loose buttons"
+        );
+    }
+
+    /// AC2. The shortcut has to reach both audiences: a `title` is invisible to
+    /// a screen reader and an `aria-label` is invisible to a mouse user.
+    #[test]
+    fn every_toolbar_button_names_its_action_and_shortcut_to_both_audiences() {
+        const TOOLBAR: &str = include_str!("../components/markdown_toolbar.rs");
+        assert!(
+            TOOLBAR.contains(r#"title: "{described}""#)
+                && TOOLBAR.contains(r#"aria_label: "{described}""#),
+            "the same description feeds the tooltip and the accessible name"
+        );
+        assert!(
+            TOOLBAR.contains(r#"format!("{label} ({k})")"#),
+            "and it carries the shortcut, not just the action name"
+        );
+    }
+
+    /// AC5. The marks have shortcuts, and the link shortcut opens the dialog
+    /// rather than wrapping bare syntax, because a link needs a URL.
+    #[test]
+    fn the_body_field_takes_the_formatting_shortcuts() {
+        // MAPPS-592: the handler moved into `MarkdownEditor` with the toolbar,
+        // so the ticket description gets the same chords rather than a second
+        // copy of them.
+        const EDITOR: &str = include_str!("../components/markdown_editor.rs");
+        assert!(
+            EDITOR.contains("shortcut_action(chord, &key)"),
+            "the body field routes Ctrl/Cmd chords to the shared mapping"
+        );
+        assert!(
+            EDITOR.contains("mods.ctrl() || mods.meta()"),
+            "both modifiers, so the same shortcut works on macOS and elsewhere \
+             without the component asking which platform it is on"
+        );
+        assert!(
+            EDITOR.contains(r#"key.eq_ignore_ascii_case("k")"#)
+                && EDITOR.contains("link_shortcut.set(true)"),
+            "Ctrl+K opens the link dialog, since a link needs a URL rather than a wrap"
+        );
+        assert!(
+            code_only().contains("crate::components::MarkdownEditor {"),
+            "and this page mounts the editor that carries them"
+        );
+    }
+
+    /// AC10. The metadata block collapses, but never while the author still
+    /// owes a required field: hiding an unfinished form hides the work.
+    #[test]
+    fn the_metadata_block_collapses_but_not_while_it_is_incomplete() {
+        let code = code_only();
+        assert!(
+            code.contains("let incomplete = meta_must_be_open(&title_v, &slug_v);"),
+            "an unfinished form is not collapsible"
+        );
+        assert!(
+            code.contains("let open = meta_open();"),
+            "MAPPS-612: the panel's open state is real, not derived from whether \
+             the form is finished - a derived one collapsed around the focused \
+             field on the first character typed"
+        );
+        assert!(
+            code.contains("meta_open.set(true);"),
+            "an unfinished form still forces the panel open; it is only the \
+             closing direction that the author owns"
+        );
+        assert!(
+            code.contains(r#"aria_expanded: if open { "true" } else { "false" }"#),
+            "the disclosure state is exposed, not implied by a caret"
+        );
+    }
+
+    /// AC7. The KB body renders through `components::Markdown`, which is where
+    /// PMS-348's interactive checkbox path lives. Calling `render_markdown`
+    /// with `dangerous_inner_html` directly, which is what it did, means the
+    /// `data-ti` indices and the delegated click listener never run and the
+    /// checkboxes render permanently disabled.
+    #[test]
+    fn the_article_body_uses_the_shared_markdown_component() {
+        let code = code_only();
+        assert!(
+            code.contains("crate::components::Markdown {"),
+            "the article body must go through the shared component"
+        );
+        assert!(
+            code.contains("interactive: can_mutate"),
+            "and opt into the interactive checkbox path, gated on reachability because \
+             a toggle PUTs the whole article"
+        );
+        // MAPPS-579 closed the last one. The editor preview used to call
+        // `render_markdown` directly, which is how it came to differ from the
+        // published article in three ways at once: no resolved @mentions,
+        // checkboxes rendered disabled, and a fixed prose density instead of
+        // the reader's. A preview that is not the article is the defect the
+        // preview exists to prevent.
+        assert_eq!(
+            code.matches("dangerous_inner_html: crate::utils::markdown::render_markdown")
+                .count(),
+            0,
+            "no surface may render markdown directly any more; the editor preview and \
+             the published article must go through the same component or they drift"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mapps612_details_panel_tests {
+    use super::meta_must_be_open;
+
+    #[test]
+    fn an_untouched_new_article_forces_the_panel_open() {
+        assert!(meta_must_be_open("", ""));
+        assert!(meta_must_be_open("   ", "  "));
+    }
+
+    #[test]
+    fn one_character_is_enough_to_stop_forcing_it() {
+        // The Title auto-fills the Slug, so both arrive non-empty in the same
+        // event. This returning false is correct - what was wrong was letting
+        // it CLOSE the panel, which pulled the focused input off the page.
+        assert!(!meta_must_be_open("H", "h"));
+    }
+
+    #[test]
+    fn a_missing_slug_forces_it_open_on_its_own() {
+        // The author can clear the slug by hand once they have touched it, and
+        // an article cannot be saved without one.
+        assert!(meta_must_be_open("How to reset a password", ""));
+    }
+
+    #[test]
+    fn a_complete_article_does_not_force_it() {
+        assert!(!meta_must_be_open(
+            "How to reset a password",
+            "how-to-reset-a-password"
+        ));
     }
 }

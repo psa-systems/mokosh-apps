@@ -251,7 +251,7 @@ pub fn StandaloneLogin() -> Element {
         error.set(String::new());
 
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 use crate::hooks::fetch::api::ApiError;
 
@@ -585,7 +585,7 @@ pub fn StandaloneLogin() -> Element {
                     Err(e) => error.set(e.user_message()),
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = (em, pw, mfa, approval);
             }
@@ -601,10 +601,11 @@ pub fn StandaloneLogin() -> Element {
 
     // mokosh-contact-login: portal-footer link retired with the
     // /portal/* route family (prompt 001).
+    let brand = crate::branding::product_name();
     rsx! {
         AuthLayout {
             div { class: "text-center mb-6",
-                h1 { class: "text-2xl font-semibold text-content", "Sign in to Mokosh" }
+                h1 { class: "text-2xl font-semibold text-content", "Sign in to {brand}" }
                 p { class: "mt-2 text-sm text-content",
                     "Enter your account email and password."
                 }

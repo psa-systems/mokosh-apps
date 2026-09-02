@@ -4,10 +4,14 @@
 
 use dioxus::prelude::*;
 
+pub mod branding;
 pub mod components;
 pub mod hooks;
 pub mod modules;
 pub mod pages;
+// MAPPS-504: everything the app needs from its host, declared once and
+// implemented per target. Browser bindings are reachable only from here.
+pub mod platform;
 pub mod utils;
 
 pub use modules::auth::CurrentUser;
@@ -313,7 +317,11 @@ pub fn AuthGuard() -> Element {
         // component passes its own `/dashboard` default; this guard is the
         // path that fires for protected deep links.
         let return_to = crate::modules::oidc::current_return_to();
-        let _ = crate::modules::oidc::start_login(&cfg, return_to);
+        // MAPPS-432: a kickoff that fails leaves the user on the placeholder
+        // below with no other trace, so log the cause rather than dropping it.
+        if let Err(e) = crate::modules::oidc::start_login(&cfg, return_to) {
+            crate::modules::oidc::log_auth_error(&format!("auth guard: login kickoff failed: {e}"));
+        }
         return rsx! {
             div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
                 "Signing you in…"
@@ -326,9 +334,9 @@ pub fn AuthGuard() -> Element {
     // placeholders). Bypass when the user is already on the
     // onboarding route itself, otherwise the AuthGuard would re-fire
     // its own redirect every render and loop. Reads the pathname out
-    // of `window.location` rather than the router's current Route
+    // of the current location rather than the router's current Route
     // because we need to make the comparison synchronously inside
-    // render; pulling from web_sys avoids a re-entrant signal read.
+    // render; reading the location avoids a re-entrant signal read.
     //
     // MAPPS-317: gate the redirect on `server_loaded` so the optimistic
     // rehydrate window (which sets profile_completed=true before /me
@@ -346,12 +354,8 @@ pub fn AuthGuard() -> Element {
             .as_ref()
             .is_some_and(|u| !u.profile_completed);
     if needs_onboarding {
-        #[cfg(target_arch = "wasm32")]
-        let on_onboarding_route = web_sys::window()
-            .and_then(|w| w.location().pathname().ok())
-            .is_some_and(|p| p == "/onboarding/profile");
-        #[cfg(not(target_arch = "wasm32"))]
-        let on_onboarding_route = false;
+        let on_onboarding_route =
+            crate::platform::location::pathname().is_some_and(|p| p == "/onboarding/profile");
         if !on_onboarding_route {
             tracing::info!(
                 target: "auth_guard",
@@ -413,10 +417,16 @@ fn RouteErrorFallback(errors: ErrorContext) -> Element {
             nav.replace(Route::Dashboard {});
         }
     };
-    let reload = move |_| {
-        #[cfg(target_arch = "wasm32")]
-        if let Some(win) = web_sys::window() {
-            let _ = win.location().reload();
+    let reload = {
+        let errors = errors.clone();
+        move |_| {
+            // MAPPS-504: a desktop window cannot reload a document, so it
+            // takes the same recovery the sibling "back to the dashboard"
+            // control does rather than doing nothing when clicked.
+            if !crate::platform::location::reload() {
+                errors.clear_errors();
+                nav.replace(Route::Dashboard {});
+            }
         }
     };
     let detail = format!("{errors:?}");
@@ -940,6 +950,11 @@ pub enum Route {
     ContactRolesList {},
     #[route("/settings/contact-roles/:id")]
     ContactRoleEdit { id: String },
+    // MAPPS-426: admin-only rename of this tenant. The name is not an
+    // internal label - it goes out in the request-form email subject and the
+    // invitation email, and a fresh tenant is seeded "My workspace".
+    #[route("/settings/organization")]
+    SettingsOrganization {},
 
     // Mokosh-side profile. Edits the tenant-scoped fields on the
     // user row (name, title, phone, mobile, timezone). Cross-app
@@ -961,10 +976,13 @@ pub enum Route {
     // Admin surfaces under /admin/*, gated at runtime by the user's role
     // inside each page (matching the server's RequireAdmin), available in
     // every build since the server endpoints exist regardless of tenancy.
+    // MAPPS-526: that gate is enforced by the `admin_route_role_gates` tests
+    // at the bottom of this file, not by this comment - /admin/forms went a
+    // release without one while the comment claimed otherwise.
     #[route("/admin/audit")]
     AuditLog {},
     // PMS-731: request-form builder. Admin config, so it lives with the
-    // other /admin/* surfaces and is role-gated the same way.
+    // other /admin/* surfaces.
     #[route("/admin/forms")]
     FormsBuilder {},
     #[route("/admin/sla")]
@@ -1005,6 +1023,13 @@ pub enum Route {
 }
 
 // Route component wrappers - these import the actual page components
+//
+// MAPPS-624: every wrapper under `#[layout(AppShell)]` carries its own
+// `div { class: "max-w-7xl mx-auto" }`. That cap used to sit in `AppShell`
+// around the `Outlet`, which fixed every page at 1280px; it is inlined per
+// route now so widening one page is a one-line change here and touches no
+// other page. `KBArticleDetail` is the one route that omits it and fills the
+// window (`scripts/check-page-width.sh` holds the rest of them to it).
 use pages::*;
 
 /// Top-level navigate to the Bunyip hub. Used by the legacy
@@ -1013,11 +1038,8 @@ use pages::*;
 /// rather than `assign()` so the hub's URL takes over the history
 /// entry; the back button skips the dead mokosh-clients URL.
 fn redirect_to_hub(path: &str) {
-    if let Some(win) = web_sys::window() {
-        let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
-        let url = cfg.hub_url(path);
-        let _ = win.location().replace(&url);
-    }
+    let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
+    crate::platform::location::replace(&cfg.hub_url(path));
 }
 
 #[component]
@@ -1048,7 +1070,7 @@ fn Home() -> Element {
 /// `/login` is the explicit sign-in entry point. Bookmarks, the homepage CTA,
 /// and the navbar "Sign in" link all land here. Kick off the OIDC code+PKCE
 /// flow against the configured issuer (bunyip-api post-cutover) and show a
-/// "Signing in..." placeholder while the browser navigates to
+/// "Signing you in…" placeholder while the browser navigates to
 /// `/oauth2/authorize`.
 ///
 /// This is the same kickoff `AuthGuard` does when an unauthenticated user
@@ -1106,7 +1128,12 @@ fn Login() -> Element {
     use_effect(move || {
         if !standalone {
             let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
-            let _ = crate::modules::oidc::start_login(&cfg, "/dashboard");
+            // MAPPS-432: this is where a recoverable callback error restarts to,
+            // so a swallowed failure here would strand the user on the
+            // placeholder below with nothing in the console to explain it.
+            if let Err(e) = crate::modules::oidc::start_login(&cfg, "/dashboard") {
+                crate::modules::oidc::log_auth_error(&format!("login page: kickoff failed: {e}"));
+            }
         }
     });
     if standalone {
@@ -1195,17 +1222,29 @@ fn SignupComplete(token: String) -> Element {
 
 #[component]
 fn Dashboard() -> Element {
-    rsx! { dashboards_view::DefaultDashboardPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            dashboards_view::DefaultDashboardPage {}
+        }
+    }
 }
 
 #[component]
 fn SavedDashboards() -> Element {
-    rsx! { dashboards::SavedDashboardsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            dashboards::SavedDashboardsPage {}
+        }
+    }
 }
 
 #[component]
 fn SavedDashboardView(id: String) -> Element {
-    rsx! { dashboards_view::SavedDashboardViewPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            dashboards_view::SavedDashboardViewPage { id }
+        }
+    }
 }
 
 #[component]
@@ -1220,82 +1259,146 @@ fn Onboarding() -> Element {
 
 #[component]
 fn TicketList() -> Element {
-    rsx! { tickets::TicketListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            tickets::TicketListPage {}
+        }
+    }
 }
 
 #[component]
 fn TicketNew() -> Element {
-    rsx! { tickets::TicketNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            tickets::TicketNewPage {}
+        }
+    }
 }
 
 #[component]
 fn TicketDetail(id: String) -> Element {
-    rsx! { tickets::TicketDetailPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            tickets::TicketDetailPage { id }
+        }
+    }
 }
 
 #[component]
 fn TimeEntryList() -> Element {
-    rsx! { time::TimeEntryListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            time::TimeEntryListPage {}
+        }
+    }
 }
 
 #[component]
 fn TimeEntryNew() -> Element {
-    rsx! { time::TimeEntryNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            time::TimeEntryNewPage {}
+        }
+    }
 }
 
 #[component]
 fn Timesheets() -> Element {
-    rsx! { time::TimesheetsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            time::TimesheetsPage {}
+        }
+    }
 }
 
 #[component]
 fn TimesheetApprovals() -> Element {
-    rsx! { time::TimesheetApprovalsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            time::TimesheetApprovalsPage {}
+        }
+    }
 }
 
 #[component]
 fn Approvals() -> Element {
-    rsx! { approvals::ApprovalsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            approvals::ApprovalsPage {}
+        }
+    }
 }
 
 #[component]
 fn ProjectList() -> Element {
-    rsx! { projects::ProjectListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            projects::ProjectListPage {}
+        }
+    }
 }
 
 #[component]
 fn ProjectNew() -> Element {
-    rsx! { projects::ProjectNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            projects::ProjectNewPage {}
+        }
+    }
 }
 
 #[component]
 fn ProjectDetail(id: String) -> Element {
-    rsx! { projects::ProjectDetailPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            projects::ProjectDetailPage { id }
+        }
+    }
 }
 
 #[component]
 fn ProjectTasks(id: String) -> Element {
-    rsx! { projects::ProjectTasksPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            projects::ProjectTasksPage { id }
+        }
+    }
 }
 
 #[component]
 fn CompanyList() -> Element {
-    rsx! { contacts::CompanyListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contacts::CompanyListPage {}
+        }
+    }
 }
 
 #[component]
 fn CompanyNew() -> Element {
-    rsx! { contacts::CompanyNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contacts::CompanyNewPage {}
+        }
+    }
 }
 
 #[component]
 fn CompanyDetail(id: String) -> Element {
-    rsx! { contacts::CompanyDetailPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contacts::CompanyDetailPage { id }
+        }
+    }
 }
 
 #[component]
 fn CompanyEdit(id: String) -> Element {
-    rsx! { contacts::CompanyEditPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contacts::CompanyEditPage { id }
+        }
+    }
 }
 
 // MAPPS-590 (mokosh-contact-login prompt 012): thin wrapper so the
@@ -1309,37 +1412,65 @@ fn CompanyRoleEdit(company_id: String, id: String) -> Element {
 
 #[component]
 fn ContactList() -> Element {
-    rsx! { contacts::ContactListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contacts::ContactListPage {}
+        }
+    }
 }
 
 #[component]
 fn ContactNew() -> Element {
-    rsx! { contacts::ContactNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contacts::ContactNewPage {}
+        }
+    }
 }
 
 #[component]
 fn ContactDetail(id: String) -> Element {
-    rsx! { contacts::ContactDetailPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contacts::ContactDetailPage { id }
+        }
+    }
 }
 
 #[component]
 fn ContactEdit(id: String) -> Element {
-    rsx! { contacts::ContactEditPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contacts::ContactEditPage { id }
+        }
+    }
 }
 
 #[component]
 fn Calendar() -> Element {
-    rsx! { calendar::CalendarPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            calendar::CalendarPage {}
+        }
+    }
 }
 
 #[component]
 fn DispatchBoard() -> Element {
-    rsx! { calendar::DispatchBoardPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            calendar::DispatchBoardPage {}
+        }
+    }
 }
 
 #[component]
 fn SchedulingTemplates() -> Element {
-    rsx! { calendar::SchedulingTemplatesPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            calendar::SchedulingTemplatesPage {}
+        }
+    }
 }
 
 // MAPPS-302: NOC "Big View" route handlers.
@@ -1360,119 +1491,215 @@ fn BigCalendar() -> Element {
 
 #[component]
 fn QuoteList() -> Element {
-    rsx! { quotes::QuoteListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            quotes::QuoteListPage {}
+        }
+    }
 }
 
 #[component]
 fn QuoteNew() -> Element {
-    rsx! { quotes::QuoteNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            quotes::QuoteNewPage {}
+        }
+    }
 }
 
 #[component]
 fn QuoteDetail(id: String) -> Element {
-    rsx! { quotes::QuoteDetailPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            quotes::QuoteDetailPage { id }
+        }
+    }
 }
 
 #[component]
 fn QuoteEdit(id: String) -> Element {
-    rsx! { quotes::QuoteEditPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            quotes::QuoteEditPage { id }
+        }
+    }
 }
 
 #[component]
 fn ContractList() -> Element {
-    rsx! { contracts::ContractListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contracts::ContractListPage {}
+        }
+    }
 }
 
 #[component]
 fn ContractNew() -> Element {
-    rsx! { contracts::ContractNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contracts::ContractNewPage {}
+        }
+    }
 }
 
 #[component]
 fn ContractDetail(id: String) -> Element {
-    rsx! { contracts::ContractDetailPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contracts::ContractDetailPage { id }
+        }
+    }
 }
 
 #[component]
 fn ContractEdit(id: String) -> Element {
-    rsx! { contracts::ContractEditPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contracts::ContractEditPage { id }
+        }
+    }
 }
 
 #[component]
 fn RateCardList() -> Element {
-    rsx! { contracts::RateCardListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contracts::RateCardListPage {}
+        }
+    }
 }
 
 #[component]
 fn RateCardNew() -> Element {
-    rsx! { contracts::RateCardListPage { open_create: true } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contracts::RateCardListPage { open_create: true }
+        }
+    }
 }
 
 #[component]
 fn RateCardDetail(id: String) -> Element {
-    rsx! { contracts::RateCardDetailPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contracts::RateCardDetailPage { id }
+        }
+    }
 }
 
 #[component]
 fn InvoiceList() -> Element {
-    rsx! { billing::InvoiceListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            billing::InvoiceListPage {}
+        }
+    }
 }
 
 #[component]
 fn InvoiceNew() -> Element {
-    rsx! { billing::InvoiceNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            billing::InvoiceNewPage {}
+        }
+    }
 }
 
 #[component]
 fn InvoiceDetail(id: String) -> Element {
-    rsx! { billing::InvoiceDetailPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            billing::InvoiceDetailPage { id }
+        }
+    }
 }
 
 #[component]
 fn PaymentList() -> Element {
-    rsx! { billing::PaymentListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            billing::PaymentListPage {}
+        }
+    }
 }
 
 #[component]
 fn TaxRateList() -> Element {
-    rsx! { billing::TaxRateListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            billing::TaxRateListPage {}
+        }
+    }
 }
 
 #[component]
 fn PaymentGatewayConfig() -> Element {
-    rsx! { billing::PaymentGatewayConfigPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            billing::PaymentGatewayConfigPage {}
+        }
+    }
 }
 
 #[component]
 fn AssetList() -> Element {
-    rsx! { assets::AssetListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            assets::AssetListPage {}
+        }
+    }
 }
 
 #[component]
 fn AssetNew() -> Element {
-    rsx! { assets::AssetNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            assets::AssetNewPage {}
+        }
+    }
 }
 
 #[component]
 fn AssetDetail(id: String) -> Element {
-    rsx! { assets::AssetDetailPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            assets::AssetDetailPage { id }
+        }
+    }
 }
 
 #[component]
 fn KBHome() -> Element {
-    rsx! { knowledge_base::KBHomePage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            knowledge_base::KBHomePage {}
+        }
+    }
 }
 
 #[component]
 fn KBArticleList(q: String, tag: String, category: String) -> Element {
-    rsx! { knowledge_base::KBArticleListPage { initial_q: q, initial_tag: tag, initial_category: category } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            knowledge_base::KBArticleListPage { initial_q: q, initial_tag: tag, initial_category: category }
+        }
+    }
 }
 
 #[component]
 fn KBArticleNew() -> Element {
-    rsx! { knowledge_base::KBArticleNewPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            knowledge_base::KBArticleNewPage {}
+        }
+    }
 }
 
+// MAPPS-624: no `max-w-7xl mx-auto` wrapper, deliberately. The reading view
+// has a left tree rail, the article body and a right rail, and at 1280px the
+// body column was the one that lost the space. It fills whatever width `main`
+// gives it.
 #[component]
 fn KBArticleDetail(id: String) -> Element {
     rsx! { knowledge_base::KBArticleDetailPage { id } }
@@ -1480,17 +1707,29 @@ fn KBArticleDetail(id: String) -> Element {
 
 #[component]
 fn KBArticleEdit(id: String) -> Element {
-    rsx! { knowledge_base::KBArticleEditPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            knowledge_base::KBArticleEditPage { id }
+        }
+    }
 }
 
 #[component]
 fn Reports() -> Element {
-    rsx! { reports::ReportsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            reports::ReportsPage {}
+        }
+    }
 }
 
 #[component]
 fn ReportDetail(report_type: String) -> Element {
-    rsx! { reports::ReportDetailPage { report_type } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            reports::ReportDetailPage { report_type }
+        }
+    }
 }
 
 #[component]
@@ -1498,12 +1737,20 @@ fn ActiveTenant() -> Element {
     // Tenant switching moved to the bunyip hub per
     // docs/migration/settings-split.md. Bookmarks at the legacy URL
     // bounce there instead of 404ing.
-    rsx! { HubRedirect { target: "/settings/active-tenant".to_string(), label: "tenant switcher" } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            HubRedirect { target: "/settings/active-tenant".to_string(), label: "tenant switcher" }
+        }
+    }
 }
 
 #[component]
 fn Profile() -> Element {
-    rsx! { profile::ProfilePage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            profile::ProfilePage {}
+        }
+    }
 }
 
 // MAPPS-169 Settings hub + sub-routes. The type editors are net-new
@@ -1511,7 +1758,11 @@ fn Profile() -> Element {
 // components so there is one source of truth per surface.
 #[component]
 fn SettingsHome() -> Element {
-    rsx! { settings::SettingsHomePage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::SettingsHomePage {}
+        }
+    }
 }
 
 /// MAPPS-620 (mokosh-branding prompt 004): wire the contact-plane
@@ -1531,102 +1782,191 @@ fn SettingsBranding() -> Element {
 // MAPPS-258 per-group landing pages.
 #[component]
 fn SettingsGroupServiceTypes() -> Element {
-    rsx! { settings::ServiceTypesGroupPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::ServiceTypesGroupPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsGroupBilling() -> Element {
-    rsx! { settings::BillingGroupPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::BillingGroupPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsGroupTickets() -> Element {
-    rsx! { settings::TicketsGroupPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::TicketsGroupPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsGroupIntegrations() -> Element {
-    rsx! { settings::IntegrationsGroupPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::IntegrationsGroupPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsGroupData() -> Element {
-    rsx! { settings::DataGroupPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::DataGroupPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsWorkTypes() -> Element {
-    rsx! { settings::WorkTypesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::WorkTypesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsTaskStatuses() -> Element {
-    rsx! { settings::TaskStatusesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::TaskStatusesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsAssetTypes() -> Element {
-    rsx! { settings::AssetTypesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::AssetTypesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsCompanyIndustries() -> Element {
-    rsx! { settings::CompanyIndustriesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::CompanyIndustriesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsProjectTypes() -> Element {
-    rsx! { settings::ProjectTypesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::ProjectTypesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsPaymentTerms() -> Element {
-    rsx! { settings::PaymentTermsSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::PaymentTermsSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsSla() -> Element {
-    rsx! { sla::SlaManagementPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            sla::SlaManagementPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsScheduling() -> Element {
-    rsx! { settings::SchedulingSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::SchedulingSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsAppearance() -> Element {
-    rsx! { settings::AppearanceSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::AppearanceSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsTvView() -> Element {
-    rsx! { settings::TvViewSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::TvViewSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsTimeTracking() -> Element {
-    rsx! { settings::MaxHoursPerDaySettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::MaxHoursPerDaySettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsRateCards() -> Element {
-    rsx! { contracts::RateCardListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            contracts::RateCardListPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsTaxRates() -> Element {
-    rsx! { billing::TaxRateListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            billing::TaxRateListPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsGateways() -> Element {
-    rsx! { billing::PaymentGatewayConfigPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            billing::PaymentGatewayConfigPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsImportExport() -> Element {
-    rsx! { settings::ImportExportSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::ImportExportSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsOrganization() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::OrganizationSettingsPage {}
+        }
+    }
 }
 
 // mokosh-contact-login prompt 007: Settings > Contact Roles list +
@@ -1645,68 +1985,120 @@ fn ContactRoleEdit(id: String) -> Element {
 // MAPPS-172 ticket lookup editors.
 #[component]
 fn SettingsTicketStatuses() -> Element {
-    rsx! { settings::TicketStatusesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::TicketStatusesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsTicketPriorities() -> Element {
-    rsx! { settings::TicketPrioritiesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::TicketPrioritiesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsTicketTypes() -> Element {
-    rsx! { settings::TicketTypesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::TicketTypesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsTicketQueues() -> Element {
-    rsx! { settings::TicketQueuesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::TicketQueuesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsTicketCategories() -> Element {
-    rsx! { settings::TicketCategoriesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::TicketCategoriesSettingsPage {}
+        }
+    }
 }
 
 // MAPPS-199 RMM integration admin UI.
 #[component]
 fn SettingsRmmConnections() -> Element {
-    rsx! { settings::RmmConnectionsSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::RmmConnectionsSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsRmmDeviceMappings() -> Element {
-    rsx! { settings::RmmDeviceMappingsSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::RmmDeviceMappingsSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SettingsRmmAlertRules() -> Element {
-    rsx! { settings::RmmAlertRulesSettingsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::RmmAlertRulesSettingsPage {}
+        }
+    }
 }
 
 #[component]
 fn SystemStatus() -> Element {
-    rsx! { system_status::SystemStatusPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            system_status::SystemStatusPage {}
+        }
+    }
 }
 
 #[component]
 fn ButtonShowcase() -> Element {
-    rsx! { button_showcase::ButtonShowcasePage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            button_showcase::ButtonShowcasePage {}
+        }
+    }
 }
 
 #[component]
 fn AuditLog() -> Element {
-    rsx! { audit_log::AuditLogPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            audit_log::AuditLogPage {}
+        }
+    }
 }
 
 #[component]
 fn FormsBuilder() -> Element {
-    rsx! { forms::FormsBuilderPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            forms::FormsBuilderPage {}
+        }
+    }
 }
 
 #[component]
 fn SlaManagement() -> Element {
-    rsx! { sla::SlaManagementPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            sla::SlaManagementPage {}
+        }
+    }
 }
 
 #[component]
@@ -1806,6 +2198,11 @@ fn ContactPicker(token: String) -> Element {
     rsx! { contact_portal::picker::ContactPickerPage { token } }
 }
 
+// mokosh-contact-login: PortalForgotPassword / PortalResetPassword
+// wrappers retired with the customer-portal route family (prompt 001).
+// Contact-plane replacements live under ContactForgotPassword /
+// ContactResetPassword above.
+
 #[component]
 fn RequestForm(token: String) -> Element {
     rsx! { request_form::RequestFormPage { token } }
@@ -1823,7 +2220,7 @@ fn NotFound(route: Vec<String>) -> Element {
 /// since PMS-136 with no page behind it.
 ///
 /// The list is the full set of emitters on mokosh-server `main`, verified at
-/// 38c8945. Adding an emailed link server-side without adding its route here
+/// ff429b3c. Adding an emailed link server-side without adding its route here
 /// fails this test.
 #[cfg(test)]
 mod emailed_link_routes {
@@ -2114,6 +2511,146 @@ mod contact_portal_routes {
         match route {
             Route::ContactPicker { token } => assert_eq!(token, "xyz"),
             other => panic!("expected ContactPicker, got {other:?}"),
+        }
+    }
+
+    /// PMS-832 / MAPPS-538: the password-reset pair resolves, and resolves to
+    /// the PORTAL pages.
+    ///
+    /// The emailed link landing on the 404 catch-all is the defect this work
+    /// fixes, and `emailed_link_routes` above now covers that. What it cannot
+    /// see is the other half: `/reset-password/{token}` is the PLATFORM page,
+    /// which posts to `/api/v1/auth/reset-password` and resolves the token
+    /// against `users`. A portal customer reaching that page resets a staff
+    /// login, which is the PMS-820 defect exactly. These paths differ by one
+    /// prefix, so the two are asserted apart rather than assumed.
+    #[test]
+    fn the_portal_reset_pages_resolve_and_are_not_the_platform_one() {
+        let reset =
+            Route::from_str("/portal/reset-password").expect("/portal/reset-password parses");
+        assert!(
+            matches!(reset, Route::PortalResetPassword {}),
+            "the emailed portal link must land on the portal page, got {reset:?}"
+        );
+
+        let forgot =
+            Route::from_str("/portal/forgot-password").expect("/portal/forgot-password parses");
+        assert!(
+            matches!(forgot, Route::PortalForgotPassword {}),
+            "/portal/forgot-password must resolve to PortalForgotPassword, got {forgot:?}"
+        );
+
+        // The platform page is still its own route, one prefix away.
+        let platform = Route::from_str("/reset-password/Zt4kQ1p9Zt4kQ1p9Zt4kQ1p9Zt4kQ1p9")
+            .expect("the platform reset route parses");
+        assert!(
+            !matches!(platform, Route::PortalResetPassword {}),
+            "the platform reset link must not resolve to the portal page: it posts to \
+             /api/v1/auth/reset-password, which resolves the token against `users`"
+        );
+    }
+}
+
+/// MAPPS-526: every `/admin/*` route's page carries the role gate the route
+/// table above claims it does. `/admin/forms` was added by PMS-731 with the
+/// comment and no gate, so a technician reached a full form editor whose every
+/// save 403s server-side. The claim is a test now: a new `/admin/*` route
+/// added without a gate fails here rather than shipping.
+///
+/// The check is a source scan rather than a render, because the pages are
+/// Dioxus components that need a running virtual DOM and an auth context to
+/// render at all, and what is being asserted is structural: the page consults
+/// the role before deciding what to show.
+#[cfg(test)]
+mod admin_route_role_gates {
+    use std::collections::BTreeSet;
+
+    /// (route path, page source path, page source). One entry per `/admin/*`
+    /// route in the `Route` enum, `#[cfg]`-gated ones included.
+    const ADMIN_ROUTE_PAGES: &[(&str, &str, &str)] = &[
+        (
+            "/admin/audit",
+            "src/pages/audit_log.rs",
+            include_str!("pages/audit_log.rs"),
+        ),
+        (
+            "/admin/forms",
+            "src/pages/forms.rs",
+            include_str!("pages/forms.rs"),
+        ),
+        (
+            "/admin/sla",
+            "src/pages/sla.rs",
+            include_str!("pages/sla.rs"),
+        ),
+        (
+            "/admin/team",
+            "src/pages/team.rs",
+            include_str!("pages/team.rs"),
+        ),
+        (
+            "/admin/tenants",
+            "src/pages/admin.rs",
+            include_str!("pages/admin.rs"),
+        ),
+    ];
+
+    /// `/admin/*` paths declared in this file's `Route` enum. Read from the
+    /// source rather than from `Route`, so a `#[cfg]`-gated route counts in
+    /// every build instead of vanishing from the check with its feature.
+    fn declared_admin_routes() -> BTreeSet<String> {
+        include_str!("lib.rs")
+            .lines()
+            .filter_map(|line| {
+                let rest = line.trim().strip_prefix("#[route(\"/admin/")?;
+                let path = rest.split('"').next()?;
+                Some(format!("/admin/{path}"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_admin_route_has_a_table_entry() {
+        let declared = declared_admin_routes();
+        let tabled: BTreeSet<String> = ADMIN_ROUTE_PAGES
+            .iter()
+            .map(|(route, _, _)| (*route).to_string())
+            .collect();
+
+        let missing: Vec<&String> = declared.difference(&tabled).collect();
+        assert!(
+            missing.is_empty(),
+            "these /admin/* routes have no entry in ADMIN_ROUTE_PAGES, so nothing checks their role gate: {missing:?}"
+        );
+
+        let stale: Vec<&String> = tabled.difference(&declared).collect();
+        assert!(
+            stale.is_empty(),
+            "ADMIN_ROUTE_PAGES lists routes the Route enum no longer declares: {stale:?}"
+        );
+    }
+
+    /// How a page reads the caller's role. `/admin/tenants` reads super-admin
+    /// because its server endpoint takes `RequireSuperAdmin`, not `RequireAdmin`.
+    const ROLE_READS: &[&str] = &["is_admin", "is_super_admin"];
+
+    /// How a page refuses on that role. The gate has to be a refusal: reading
+    /// the role and rendering the page anyway is what `/admin/forms` did.
+    const ROLE_REFUSALS: &[&str] = &["if !is_admin", "if !use_is_admin()", "if !is_super_admin"];
+
+    #[test]
+    fn every_admin_page_has_a_role_gate() {
+        for (route, path, source) in ADMIN_ROUTE_PAGES {
+            assert!(
+                ROLE_READS.iter().any(|pat| source.contains(pat)),
+                "{route} renders {path}, which never reads the user's role. \
+                 Gate it like src/pages/audit_log.rs does (`u.role.is_admin()`)."
+            );
+            assert!(
+                ROLE_REFUSALS.iter().any(|pat| source.contains(pat)),
+                "{route} renders {path}, which reads the user's role but never refuses on it. \
+                 Return the access-denied view for a non-admin, as src/pages/audit_log.rs does."
+            );
         }
     }
 }

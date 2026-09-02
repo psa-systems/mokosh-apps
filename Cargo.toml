@@ -2,7 +2,7 @@
 
 [package]
 name = "mokosh-apps"
-version = "0.10.0"
+version = "0.13.0"
 edition = "2021"
 authors = ["Mokosh Platform Team"]
 description = "Mokosh Platform - Cross-platform Dioxus client"
@@ -18,7 +18,19 @@ default = [
     "web",
     "multi-tenant",
 ]
-web = []
+# MAPPS-507: `app` is the APP-RUNTIME gate, not a platform gate. It turns on
+# the `api` module, the app-wide GlobalSignals, and page logic, none of which
+# is browser-specific, and it is on for every build that produces the actual
+# application. Browser-only code lives behind `src/platform/`, split on
+# `target_arch`, not behind a feature.
+app = []
+# The two renderers. Each pulls in the runtime plus exactly one dioxus
+# renderer, so no build enables a feature named for a platform it is not
+# running on. Enabling both `dioxus/web` and `dioxus/desktop` does pick
+# desktop (dioxus documents that priority), but it also links dioxus-web and
+# its wasm-bindgen stubs into a native binary for nothing.
+web = ["app", "dioxus/web"]
+desktop = ["app", "dioxus/desktop"]
 multi-tenant = []
 single-tenant = []
 server = []
@@ -37,15 +49,7 @@ path = "src/lib.rs"
 serde_json = "1.0"
 thiserror = "2"
 tracing = "0.1"
-gloo-net = "0.6"
 futures-util = "0.3"
-wasm-bindgen = "0.2"
-js-sys = "0.3"
-# MAPPS-299: forward Rust panics in the wasm runtime to console.error with
-# a readable message + stack trace. Without this a panic surfaces as an
-# opaque `RuntimeError: unreachable` at a hex offset (e.g. wasm:0x352c4f)
-# the user has no way to act on. The hook is install-once at startup.
-console_error_panic_hook = "0.1"
 sha2 = "0.10"
 base64 = "0.22"
 rand = "0.9"
@@ -54,8 +58,10 @@ ammonia = "4"
 # MAPPS-383: shared wire-format DTOs, the single source of truth for types
 # crossing the mokosh-server / mokosh-apps boundary. The URL is HTTPS, not
 # ssh://, because the pre-commit container and the Forgejo check runner have
-# no SSH credentials; anonymous HTTPS read needs none. The exact commit is
-# pinned in Cargo.lock.
+# no SSH credentials; anonymous HTTPS read needs none. There is deliberately
+# no `rev`/`tag`/`branch`: MAPPS-525 keeps the resolved commit in Cargo.lock at
+# the server's head instead, enforced by scripts/check-types-pin.sh, so a DTO
+# change over there turns this build red rather than drifting unnoticed.
 [dependencies.mokosh-types]
 git = "https://dev.a8n.run/psa-systems/mokosh-server.git"
 # MAPPS-617: follow `mokosh-contact-login` (the long-lived contact-
@@ -72,13 +78,16 @@ git = "https://dev.a8n.run/psa-systems/mokosh-server.git"
 # `Cargo.lock` resolves to. After the server merge + a
 # `cargo update -p mokosh-types` here, the shadow types can be
 # deleted in favour of `pub use mokosh_types::...`.
-branch = "mokosh-contact-login"
+# Pinned to the server's chore/merge-main-into-contact-login scratch
+# branch head so client + server merges land in lockstep. Replace with
+# `branch = "mokosh-contact-login"` when both scratch branches merge
+# to their respective mokosh-contact-login refs.
+rev = "f97e387854404331fcf498269572ac797bf24f3b"
 
 [dependencies.dioxus]
 version = "0.7.7"
 features = [
     "router",
-    "web",
 ]
 
 [dependencies.serde]
@@ -93,10 +102,6 @@ features = [
     "serde",
     "js",
 ]
-
-[dependencies.getrandom]
-version = "0.3"
-features = ["wasm_js"]
 
 [dependencies.chrono]
 version = "0.4"
@@ -116,11 +121,37 @@ features = ["serde"]
 version = "0.19"
 features = ["derive"]
 
-[dependencies.gloo-timers]
+# MAPPS-504: the browser bindings. Reachable ONLY from the wasm half of
+# `src/platform/`; a `web_sys` / `js_sys` / `gloo_*` path anywhere else now
+# fails to resolve on the native build instead of compiling to a binding that
+# panics at run time.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-net = "0.6"
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+# MAPPS-299: forward Rust panics in the wasm runtime to console.error with
+# a readable message + stack trace. Without this a panic surfaces as an
+# opaque `RuntimeError: unreachable` at a hex offset (e.g. wasm:0x352c4f)
+# the user has no way to act on. The hook is install-once at startup. The
+# desktop build has no console to forward to and keeps the default Rust
+# panic handler, which already writes a backtrace to stderr.
+console_error_panic_hook = "0.1"
+# MAPPS-588: awaiting a JS promise from the platform layer. A pasted image
+# arrives as a `File`, and turning one into bytes is `Blob::array_buffer()`,
+# which returns a promise. The alternative is `FileReader` plus a second
+# forgotten `Closure` for its `load` event, and forgotten closures around
+# dioxus state are what MAPPS-586 was.
+wasm-bindgen-futures = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.getrandom]
+version = "0.3"
+features = ["wasm_js"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.gloo-timers]
 version = "0.3"
 features = ["futures"]
 
-[dependencies.web-sys]
+[target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
 version = "0.3"
 features = [
     "Window",
@@ -155,6 +186,59 @@ features = [
     # (append_child / remove_child) so the download fires reliably across
     # browsers, not only where a detached-anchor click is honored.
     "Node",
+    # MAPPS-429: the tenant logo is PUT as multipart/form-data, which the
+    # browser assembles (and boundary-delimits) from a FormData carrying a Blob.
+    # Building that body by hand would mean generating a boundary and hoping it
+    # never appears in the image bytes.
+    "BlobPropertyBag",
+    "FormData",
+    # MAPPS-432: /auth/callback logs one console.error line before it silently
+    # restarts the login flow, so the suppressed error leaves a record.
+    "console",
+    # MAPPS-588: paste an image into the KB body. dioxus-html 0.7's
+    # `ClipboardData` carries no files, only the event, so the paste is read
+    # from a real listener over `clipboardData.items`.
+    "ClipboardEvent",
+    "DataTransfer",
+    "DataTransferItem",
+    "DataTransferItemList",
+    "File",
+]
+
+# MAPPS-504: the native half of `src/platform/`. `reqwest` replaces browser
+# `fetch`, `tokio` replaces `gloo_timers`, `iana-time-zone` replaces
+# `Intl.DateTimeFormat().resolvedOptions().timeZone`, and `dirs` locates the
+# per-user config and download directories.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+dirs = "6"
+iana-time-zone = "0.1"
+# Hands a URL to the OS default browser. The desktop window is the app,
+# not a document to navigate away from, so the destinations that were
+# `location.replace` on the web (the OP logout endpoint, the Bunyip hub)
+# belong in the user's real browser.
+open = "5"
+
+# rustls, not the platform TLS stack: one behaviour on every desktop OS, and
+# no OpenSSL headers needed to build.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.reqwest]
+version = "0.12"
+default-features = false
+features = [
+    "json",
+    "rustls-tls",
+    "multipart",
+]
+
+# MAPPS-505 adds `net` + `io-util` on top of `time`: the RFC 8252 loopback
+# redirect listener accepts one connection on 127.0.0.1 and reads the
+# request line off it. The runtime itself comes from dioxus-desktop, which
+# builds a multi-threaded one with every driver enabled.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.tokio]
+version = "1"
+features = [
+    "time",
+    "net",
+    "io-util",
 ]
 
 [dev-dependencies]
@@ -163,6 +247,14 @@ features = [
 # on the host `cargo test`. Host-only: dev-deps are not built for the
 # `wasm32-unknown-unknown` check.
 dioxus-ssr = "0.7.7"
+
+# MAPPS-505: the loopback listener tests drive `serve_one` to completion, so
+# they need a runtime to drive it ON. The app never builds one - dioxus-desktop
+# owns that - which is why this is a dev-dependency and not a feature of the
+# runtime dependency above.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies.tokio]
+version = "1"
+features = ["rt-multi-thread"]
 
 [profile.release]
 lto = true

@@ -38,7 +38,7 @@ struct ThemePrefs {
 /// failures are logged, never block the UI. No-op off web. Call this
 /// after a local `theme::set` / `theme::set_accent` in the picker.
 pub fn save_to_account() {
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     {
         use dioxus::prelude::spawn;
         let body = ThemeAccountUpdate {
@@ -61,7 +61,7 @@ pub fn save_to_account() {
 /// re-apply. Reconciling via `theme::set` / `theme::set_accent` writes
 /// localStorage and re-applies WITHOUT echoing back to the server, so
 /// there is no save loop. No-op off web.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub fn use_theme_sync() {
     use dioxus::prelude::*;
 
@@ -95,5 +95,5 @@ pub fn use_theme_sync() {
     });
 }
 
-#[cfg(not(feature = "web"))]
+#[cfg(not(feature = "app"))]
 pub fn use_theme_sync() {}

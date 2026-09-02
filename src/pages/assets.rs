@@ -11,6 +11,7 @@ use crate::components::{
     Select, SelectOption, Table, TableBody, TableCell, TableEmptyRow, TableHead, TableHeader,
     TableRow, Textarea, TrashIcon,
 };
+use crate::components::{ChangeHistoryEntry, ChangeLine};
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
@@ -232,6 +233,39 @@ fn fmt_datetime(s: &Option<String>) -> String {
 
 /// Resolve an actor id to a display name via the loaded user list; "-" when
 /// unknown so the audit/edited markers never show a bare UUID.
+/// The headline for one asset audit entry (MAPPS-596).
+///
+/// An asset's `changes` is an object `{event: ...}` for a reveal operation and
+/// an array of `{field, old, new}` for an edit (PMS-204), so the event name is
+/// what this page has in place of the changed-column list the other panes use.
+fn audit_headline(e: &AuditEntry) -> String {
+    let label = crate::modules::audit::action_label(&e.action);
+    let event = e
+        .changes
+        .as_ref()
+        .and_then(|c| c.get("event"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if event.is_empty() {
+        label
+    } else {
+        format!("{label}: {event}")
+    }
+}
+
+/// The renderable before/after lines for one asset audit entry. An entry whose
+/// `changes` is the reveal-operation object rather than an edit array decodes
+/// to nothing, which renders no detail and no toggle.
+fn change_lines(e: &AuditEntry) -> Vec<ChangeLine> {
+    e.changes
+        .as_ref()
+        .and_then(|c| serde_json::from_value::<Vec<FieldChange>>(c.clone()).ok())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|c| ChangeLine::build(&c.field, &c.old, &c.new))
+        .collect()
+}
+
 fn actor_name(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
     match id {
         Some(uid) => users
@@ -241,79 +275,6 @@ fn actor_name(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
             .filter(|n| !n.trim().is_empty())
             .unwrap_or_else(|| "-".to_string()),
         None => "-".to_string(),
-    }
-}
-
-/// Humanize an asset audit `action` code for display.
-fn action_label(action: &str) -> String {
-    match action {
-        "created" => "Created".to_string(),
-        "updated" => "Updated".to_string(),
-        "status_changed" => "Status changed".to_string(),
-        "credential_created" => "Credential added".to_string(),
-        "credential_deleted" => "Credential removed".to_string(),
-        "credential_revealed" => "Credential revealed".to_string(),
-        "configuration_revealed" => "Configuration revealed".to_string(),
-        other => {
-            // snake_case to Sentence case fallback.
-            let mut s = other.replace('_', " ");
-            if let Some(first) = s.get_mut(0..1) {
-                first.make_ascii_uppercase();
-            }
-            s
-        }
-    }
-}
-
-/// "warranty_expiry" to "Warranty expiry" for a single field name.
-///
-/// PMS-370: column names for foreign-key fields end in `_id`
-/// (`asset_type_id`, `company_id`, `account_manager_id`). The audit log
-/// records the raw column name, so without trimming the suffix the
-/// change-history feed reads "Asset type id" / "Company id". Strip the
-/// trailing `_id` first so future FK fields render cleanly without a
-/// per-column allow-list.
-fn title_field(f: &str) -> String {
-    let trimmed = f.strip_suffix("_id").unwrap_or(f);
-    let mut s = trimmed.replace('_', " ");
-    if let Some(first) = s.get_mut(0..1) {
-        first.make_ascii_uppercase();
-    }
-    s
-}
-
-/// A 36-char hyphenated UUID, not worth showing as before/after text.
-fn looks_like_uuid(s: &str) -> bool {
-    s.len() == 36
-        && s.as_bytes().iter().enumerate().all(|(i, b)| {
-            if matches!(i, 8 | 13 | 18 | 23) {
-                *b == b'-'
-            } else {
-                b.is_ascii_hexdigit()
-            }
-        })
-}
-
-/// Render an audit value for display: "(empty)" for null/blank, the trimmed
-/// text (truncated) for strings, a coarse marker for references/objects.
-fn fmt_change_value(v: &Option<serde_json::Value>) -> String {
-    match v {
-        None | Some(serde_json::Value::Null) => "(empty)".to_string(),
-        Some(serde_json::Value::String(s)) => {
-            let t = s.trim();
-            if t.is_empty() {
-                "(empty)".to_string()
-            } else if looks_like_uuid(t) {
-                "(reference)".to_string()
-            } else if t.chars().count() > 160 {
-                format!("{}…", t.chars().take(160).collect::<String>())
-            } else {
-                t.to_string()
-            }
-        }
-        Some(serde_json::Value::Bool(b)) => b.to_string(),
-        Some(serde_json::Value::Number(n)) => n.to_string(),
-        Some(_) => "(updated)".to_string(),
     }
 }
 
@@ -354,6 +315,10 @@ enum WarrantyRefreshStatus {
 
 const WARRANTY_REFRESH_THRESHOLD_DAYS: i64 = 30;
 
+/// MAPPS-546: rows per page on the asset list, sent to the server rather than
+/// applied to what came back.
+const PER_PAGE: usize = 25;
+
 /// Compute the refresh-status bucket from a server-formatted (`YYYY-MM-DD`)
 /// warranty date string compared to today (in the user's timezone, via
 /// `user_today`). Pure read-only - the field's not mutated, the cue is
@@ -379,6 +344,8 @@ fn warranty_refresh_status(s: &Option<String>) -> WarrantyRefreshStatus {
 /// Asset list page
 #[component]
 pub fn AssetListPage() -> Element {
+    // PMS-745: row-level navigation for the list below.
+    let navigator = use_navigator();
     let mut search = use_signal(String::new);
     // MAPPS-303: page-scoped bulk selection (built on MAPPS-290's
     // `use_bulk_selection`). Drives the per-row checkbox, the
@@ -409,42 +376,65 @@ pub fn AssetListPage() -> Element {
     // `.unwrap_or_default()`) so a failed load stays distinguishable from an
     // empty list, letting the outage render ContentUnavailable below, and it
     // subscribes to reachability so the list auto-refetches on reconnect.
-    let mut assets_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        let _reachable = crate::hooks::use_server_reachable();
-        let mut path = String::from("/assets");
-        if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
-            path.push_str(&format!("?company_id={company_id}"));
+    let mut page = use_signal(|| 1usize);
+    // MAPPS-546: one page at a time, with the search sent to the server.
+    // MAPPS-543 had this fetching every asset in the tenant so the browser
+    // could filter them, which was correct and unbounded. The search is `q`,
+    // which PMS-894 taught to match serial numbers as well as names - without
+    // that, moving the filter here would have silently dropped serial search,
+    // and a serial is what an operator pastes in off the hardware.
+    //
+    // Every reactive input is read INSIDE the closure: Dioxus only re-runs a
+    // resource when a signal read within it changes, so a value captured
+    // outside would leave the resource serving page 1 for ever (MAPPS-148).
+    let mut assets_resource = use_resource(move || {
+        let q = search.read().trim().to_string();
+        let current_page = (*page.read()).max(1);
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
+            let mut path = format!("/assets?page={current_page}&per_page={PER_PAGE}");
+            if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
+                path.push_str(&format!("&company_id={company_id}"));
+            }
+            if !q.is_empty() {
+                path.push_str(&format!(
+                    "&q={}",
+                    crate::utils::url::encode_uri_component(&q)
+                ));
+            }
+            // MAPPS-604: contact-first bearer selection so a signed-in
+            // contact sees only their Company's assets. Staff sessions
+            // continue to use the workspace bearer, unchanged.
+            crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteAsset>>(&path)
+                .await
+                .ok()
         }
-        // MAPPS-604: contact-first bearer selection so a signed-in
-        // contact sees only their Company's assets. Staff sessions
-        // continue to use the workspace bearer, unchanged.
-        crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteAsset>>(&path)
-            .await
-            .ok()
-            .map(|p| p.data)
     });
     let types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<AssetTypeOpt>>("/asset-types")
+        crate::hooks::fetch::api::get_all_authed::<AssetTypeOpt>("/asset-types")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
     let companies_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOpt>>("/contacts/companies")
+        crate::hooks::fetch::api::get_all_authed::<CompanyOpt>("/contacts/companies")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
 
     let snapshot = assets_resource.read_unchecked().clone();
     let is_loading = snapshot.is_none();
     let load_failed = matches!(&snapshot, Some(None));
-    let assets: Vec<RemoteAsset> = snapshot.flatten().unwrap_or_default();
+    let page_envelope = snapshot.flatten();
+    let total = page_envelope
+        .as_ref()
+        .map(|p| p.meta.total as usize)
+        .unwrap_or_default();
+    let assets: Vec<RemoteAsset> = page_envelope.map(|p| p.data).unwrap_or_default();
     let types = types_resource.read_unchecked().clone().unwrap_or_default();
     let companies = companies_resource
         .read_unchecked()
@@ -477,19 +467,9 @@ pub fn AssetListPage() -> Element {
             .unwrap_or_else(|| "-".to_string())
     };
 
-    let needle = search.read().to_lowercase();
-    let filtered: Vec<&RemoteAsset> = assets
-        .iter()
-        .filter(|a| {
-            needle.is_empty()
-                || a.name.to_lowercase().contains(&needle)
-                || a.serial_number
-                    .as_deref()
-                    .map(|s| s.to_lowercase().contains(&needle))
-                    .unwrap_or(false)
-        })
-        .collect();
-    let total = filtered.len();
+    // MAPPS-546: no client-side filter. The rows are the page the server
+    // matched, and `total` is its count of every match - not of this page.
+    let filtered: Vec<&RemoteAsset> = assets.iter().collect();
 
     rsx! {
         PageHeader {
@@ -516,7 +496,10 @@ pub fn AssetListPage() -> Element {
             SearchInput {
                 value: search.read().clone(),
                 placeholder: "Search by name or serial…",
-                oninput: move |e: FormEvent| search.set(e.value()),
+                oninput: move |e: FormEvent| {
+                    search.set(e.value());
+                    page.set(1);
+                },
             }
         }
 
@@ -585,7 +568,7 @@ pub fn AssetListPage() -> Element {
                         if ids.is_empty() || bulk_delete_running() { return; }
                         bulk_delete_running.set(true);
                         spawn(async move {
-                            #[cfg(feature = "web")]
+                            #[cfg(feature = "app")]
                             {
                                 use futures_util::future::join_all;
                                 let futs = ids.iter().map(|id| {
@@ -625,9 +608,10 @@ pub fn AssetListPage() -> Element {
 
         DataTable {
             total_items: total,
-            current_page: 1,
-            per_page: if total == 0 { 25 } else { total },
+            current_page: (*page.read()).max(1),
+            per_page: PER_PAGE,
             columns: 5,
+            onpagechange: move |p| page.set(p),
             Table {
                 TableHead {
                     TableRow {
@@ -667,9 +651,21 @@ pub fn AssetListPage() -> Element {
                                     .or_else(|| a.asset_tag.clone())
                                     .unwrap_or_else(|| "-".to_string());
                                 let aid = a.id.to_string();
+                                let row_id = aid.clone();
                                 rsx! {
                                     TableRow { key: "{aid}",
-                                        // MAPPS-303: per-row checkbox.
+                                        // PMS-745: the whole row navigates, matching
+                                        // ContractRow / TicketRow. `clickable` also
+                                        // restores the hover background and pointer
+                                        // cursor, which TableRow scopes to interactive
+                                        // rows (MAPPS-389).
+                                        clickable: true,
+                                        onclick: move |_| {
+                                            navigator.push(Route::AssetDetail { id: row_id.clone() });
+                                        },
+                                        // MAPPS-303: per-row checkbox. Its cell stops
+                                        // propagation, so selecting a row does not also
+                                        // open it.
                                         crate::components::SelectRowCell {
                                             selection,
                                             id: aid.clone(),
@@ -771,7 +767,7 @@ pub fn AssetListPage() -> Element {
                                     bulk_submitting.set(true);
                                     bulk_error.set(String::new());
                                     spawn(async move {
-                                        #[cfg(feature = "web")]
+                                        #[cfg(feature = "app")]
                                         {
                                             use futures_util::future::join_all;
                                             let futs = ids.iter().map(|id| {
@@ -949,10 +945,9 @@ pub fn AssetNewPage() -> Element {
 
     let types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<AssetTypeOpt>>("/asset-types")
+        crate::hooks::fetch::api::get_all_authed::<AssetTypeOpt>("/asset-types")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
     // PMS-352 AC3: company is now chosen via CompanyPicker (which fetches and
@@ -1093,7 +1088,7 @@ pub fn AssetNewPage() -> Element {
 
                     is_submitting.set(true);
                     spawn(async move {
-                        #[cfg(feature = "web")]
+                        #[cfg(feature = "app")]
                         {
                             let mut body = serde_json::json!({
                                 "name": asset_name,
@@ -1307,12 +1302,11 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         let id = id_for_rel.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<RemoteRelationship>>(&format!(
+            crate::hooks::fetch::api::get_all_authed::<RemoteRelationship>(&format!(
                 "/assets/{id}/relationships"
             ))
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
         }
     });
@@ -1321,12 +1315,11 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         let id = id_for_cfg.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<ConfigSummary>>(&format!(
+            crate::hooks::fetch::api::get_all_authed::<ConfigSummary>(&format!(
                 "/assets/{id}/configuration-items"
             ))
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
         }
     });
@@ -1335,12 +1328,11 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         let id = id_for_cred.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<CredSummary>>(&format!(
+            crate::hooks::fetch::api::get_all_authed::<CredSummary>(&format!(
                 "/assets/{id}/credentials"
             ))
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
         }
     });
@@ -1360,11 +1352,10 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         let id = id_for_audit.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<AuditEntry>>(&format!(
+            crate::hooks::fetch::api::get_all_authed::<AuditEntry>(&format!(
                 "/assets/{id}/audit-log"
             ))
             .await
-            .map(|p| p.data)
         }
     });
     // PMS-344: tickets that reference this asset. Server-side filter on
@@ -1403,10 +1394,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     });
     let users_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<UserOpt>>("/auth/users")
+        crate::hooks::fetch::api::get_all_authed::<UserOpt>("/auth/users")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
 
@@ -1459,6 +1449,8 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     // MAPPS-189: the Delete button opens the styled ConfirmDialog; the
     // actual DELETE fires from `on_confirm_delete` when confirmed.
     let mut confirming_delete = use_signal(|| false);
+    // MAPPS-574: the server's reason for refusing this delete.
+    let mut delete_error = use_signal(String::new);
 
     // MAPPS-231: add/remove asset credentials. The vault endpoints support
     // create (`POST /assets/{id}/credentials`) and delete
@@ -1483,6 +1475,8 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
 
     let mut confirming_cred_delete = use_signal(|| Option::<uuid::Uuid>::None);
     let mut cred_deleting = use_signal(|| false);
+    // MAPPS-574: the server's reason for refusing this removal.
+    let mut cred_delete_error = use_signal(String::new);
 
     // MAPPS-233: add/remove asset relationships. The server exposes create
     // (`POST /assets/{id}/relationships`) and delete
@@ -1503,6 +1497,8 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
 
     let mut confirming_rel_delete = use_signal(|| Option::<uuid::Uuid>::None);
     let mut rel_deleting = use_signal(|| false);
+    // MAPPS-574: the server's reason for refusing this removal.
+    let mut rel_delete_error = use_signal(String::new);
 
     let on_confirm_delete = move |_: ()| {
         if *deleting.read() {
@@ -1510,16 +1506,28 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         }
         let id = id_for_delete.clone();
         deleting.set(true);
+        delete_error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/assets/{id}");
-                if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
-                    navigator.push(Route::AssetList {});
+                // MAPPS-574: report the refusal instead of discarding it. The
+                // old `.is_ok()` closed the dialog on failure and said nothing,
+                // so a server that declined and a button that did nothing
+                // looked identical.
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => {
+                        crate::hooks::toast::push_toast(
+                            crate::components::AlertType::Success,
+                            "Asset deleted.",
+                        );
+                        confirming_delete.set(false);
+                        navigator.push(Route::AssetList {});
+                    }
+                    Err(err) => delete_error.set(err),
                 }
             }
             deleting.set(false);
-            confirming_delete.set(false);
         });
     };
 
@@ -1613,17 +1621,27 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             confirm_text: "Delete".to_string(),
             cancel_text: "Cancel".to_string(),
             destructive: true,
+            error: delete_error.read().clone(),
             loading: *deleting.read(),
             onconfirm: on_confirm_delete,
             oncancel: move |_| {
                 if !*deleting.read() {
                     confirming_delete.set(false);
+                    delete_error.set(String::new());
                 }
             },
         }
         PageHeader {
             title: "{header_title}",
             subtitle: "Configuration item",
+            // PMS-745: a route back to the list, matching ContractDetailPage.
+            // AssetNewPage already carried one (MAPPS-294); the detail page was
+            // missed in that pass.
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs {
+                    items: crate::components::detail_breadcrumbs("Assets", Route::AssetList {}, &header_title),
+                }
+            },
             actions: rsx! {
                 if can_report_issue {
                     Button {
@@ -1987,7 +2005,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                             onclick: move |_| {
                                                                 let path = path.clone();
                                                                 spawn(async move {
-                                                                    #[cfg(feature = "web")]
+                                                                    #[cfg(feature = "app")]
                                                                     if let Ok(c) = crate::hooks::fetch::api::get_authed::<RevealedConfig>(&path).await {
                                                                         store.write().insert(cid, c.value);
                                                                     }
@@ -2054,7 +2072,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                                     onclick: move |_| {
                                                                         let path = path.clone();
                                                                         spawn(async move {
-                                                                            #[cfg(feature = "web")]
+                                                                            #[cfg(feature = "app")]
                                                                             if let Ok(c) = crate::hooks::fetch::api::get_authed::<RevealedCred>(&path).await {
                                                                                 store.write().insert(crid, c);
                                                                             }
@@ -2165,59 +2183,21 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     div { class: "space-y-3 text-sm",
                                         for e in audit.iter().take(15) {
                                             {
-                                                // `changes` is an object {event:...} for reveal ops,
-                                                // or an array of {field, old, new} for edits (PMS-204).
-                                                let event = e
-                                                    .changes
-                                                    .as_ref()
-                                                    .and_then(|c| c.get("event"))
-                                                    .and_then(|v| v.as_str())
-                                                    .unwrap_or("")
-                                                    .to_string();
-                                                let field_changes: Vec<FieldChange> = e
-                                                    .changes
-                                                    .as_ref()
-                                                    .and_then(|c| {
-                                                        serde_json::from_value::<Vec<FieldChange>>(c.clone()).ok()
-                                                    })
-                                                    .unwrap_or_default();
-                                                let label = action_label(&e.action);
-                                                let when = fmt_datetime(&e.performed_at);
                                                 let who = actor_name(&users, &e.performed_by_id);
+                                                // The audit row carries no id of its own, so the
+                                                // key is the timestamp it was written at.
+                                                let key = e.performed_at.clone().unwrap_or_default();
                                                 rsx! {
-                                                    div { class: "flex justify-between gap-2",
-                                                        div { class: "min-w-0",
-                                                            p { class: "text-content",
-                                                                if event.is_empty() {
-                                                                    "{label}"
-                                                                } else {
-                                                                    "{label}: {event}"
-                                                                }
-                                                            }
-                                                            if who != "-" {
-                                                                p { class: "text-xs text-subtle", "by {who}" }
-                                                            }
-                                                            for c in field_changes.iter() {
-                                                                {
-                                                                    let old = fmt_change_value(&c.old);
-                                                                    let new = fmt_change_value(&c.new);
-                                                                    let fname = title_field(&c.field);
-                                                                    if old == "(reference)" && new == "(reference)" {
-                                                                        rsx! {}
-                                                                    } else {
-                                                                        rsx! {
-                                                                            p { class: "text-xs text-muted mt-1",
-                                                                                span { class: "font-medium", "{fname}: " }
-                                                                                span { class: "line-through text-subtle", "{old}" }
-                                                                                " → "
-                                                                                span { "{new}" }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                        span { class: "text-subtle whitespace-nowrap", "{when}" }
+                                                    ChangeHistoryEntry {
+                                                        key: "{key}",
+                                                        headline: audit_headline(e),
+                                                        // MAPPS-596: "-" is this page's sentinel for an
+                                                        // actor no `/auth/users` row matches. The shared
+                                                        // entry omits the line for an empty name, so the
+                                                        // sentinel is dropped here rather than printed.
+                                                        who: if who == "-" { String::new() } else { who },
+                                                        when: fmt_datetime(&e.performed_at),
+                                                        changes: change_lines(e),
                                                     }
                                                 }
                                             }
@@ -2615,6 +2595,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     confirm_text: "Remove".to_string(),
                     cancel_text: "Cancel".to_string(),
                     destructive: true,
+                    error: cred_delete_error.read().clone(),
                     loading: *cred_deleting.read(),
                     onconfirm: move |_| {
                         if *cred_deleting.read() {
@@ -2624,25 +2605,30 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                             return;
                         };
                         cred_deleting.set(true);
+                        cred_delete_error.set(String::new());
                         spawn(async move {
-                            #[cfg(feature = "web")]
+                            #[cfg(feature = "app")]
                             {
                                 let path = format!("/credentials/{crid}");
-                                if crate::hooks::fetch::api::delete_authed(&path)
-                                    .await
-                                    .is_ok()
-                                {
-                                    cred_res.restart();
-                                    audit_res.restart();
+                                // MAPPS-574: report the refusal rather than
+                                // closing on it. The old `.is_ok()` left the
+                                // dialog gone and the row still there.
+                                match crate::hooks::fetch::api::delete_authed(&path).await {
+                                    Ok(()) => {
+                                        cred_res.restart();
+                                        audit_res.restart();
+                                        confirming_cred_delete.set(None);
+                                    }
+                                    Err(err) => cred_delete_error.set(err),
                                 }
                             }
                             cred_deleting.set(false);
-                            confirming_cred_delete.set(None);
                         });
                     },
                     oncancel: move |_| {
                         if !*cred_deleting.read() {
                             confirming_cred_delete.set(None);
+                            cred_delete_error.set(String::new());
                         }
                     },
                 }
@@ -2707,7 +2693,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                 let add_id = add_id.clone();
                 nc_submitting.set(true);
                 spawn(async move {
-                    #[cfg(feature = "web")]
+                    #[cfg(feature = "app")]
                     {
                         let mut body = serde_json::json!({
                             "name": name,
@@ -2861,6 +2847,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     confirm_text: "Remove".to_string(),
                     cancel_text: "Cancel".to_string(),
                     destructive: true,
+                    error: rel_delete_error.read().clone(),
                     loading: *rel_deleting.read(),
                     onconfirm: move |_| {
                         if *rel_deleting.read() {
@@ -2870,25 +2857,30 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                             return;
                         };
                         rel_deleting.set(true);
+                        rel_delete_error.set(String::new());
                         spawn(async move {
-                            #[cfg(feature = "web")]
+                            #[cfg(feature = "app")]
                             {
                                 let path = format!("/asset-relationships/{rid}");
-                                if crate::hooks::fetch::api::delete_authed(&path)
-                                    .await
-                                    .is_ok()
-                                {
-                                    rel_res.restart();
-                                    audit_res.restart();
+                                // MAPPS-574: report the refusal rather than
+                                // closing on it. The old `.is_ok()` left the
+                                // dialog gone and the row still there.
+                                match crate::hooks::fetch::api::delete_authed(&path).await {
+                                    Ok(()) => {
+                                        rel_res.restart();
+                                        audit_res.restart();
+                                        confirming_rel_delete.set(None);
+                                    }
+                                    Err(err) => rel_delete_error.set(err),
                                 }
                             }
                             rel_deleting.set(false);
-                            confirming_rel_delete.set(None);
                         });
                     },
                     oncancel: move |_| {
                         if !*rel_deleting.read() {
                             confirming_rel_delete.set(None);
+                            rel_delete_error.set(String::new());
                         }
                     },
                 }
@@ -2935,7 +2927,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                 let add_id = add_id.clone();
                 nr_submitting.set(true);
                 spawn(async move {
-                    #[cfg(feature = "web")]
+                    #[cfg(feature = "app")]
                     {
                         let body = serde_json::json!({
                             "child_asset_id": child,

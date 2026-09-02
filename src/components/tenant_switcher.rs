@@ -320,7 +320,7 @@ pub fn TenantSwitcher() -> Element {
                                     },
                                     div { class: "font-medium truncate", "{m.tenant_name}" }
                                     div { class: "text-xs text-subtle",
-                                        if is_active { "Active" } else { "{m.role}" }
+                                        if is_active { "Active" } else { "Member" }
                                     }
                                 }
                             }

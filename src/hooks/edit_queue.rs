@@ -29,7 +29,7 @@
 
 #![allow(dead_code)]
 
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 use dioxus::prelude::*;
 
 /// HTTP verb of a held mutation. Kept minimal on purpose; expand when the
@@ -61,19 +61,19 @@ pub struct PendingEdit {
 /// yet). A `GlobalSignal` so the (future) enqueue sites in the fetch layer
 /// (plain async fns that cannot reach a context signal) can push to it,
 /// exactly like `SERVER_REACHABLE`.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub static EDIT_QUEUE: GlobalSignal<Vec<PendingEdit>> = Signal::global(Vec::new);
 
 /// Append an edit to the offline queue. The mutation guard would call this
 /// instead of blocking once hold-and-replay lands; today it is unused
 /// (writes are blocked at the button while down).
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub fn enqueue_pending_edit(edit: PendingEdit) {
     EDIT_QUEUE.write().push(edit);
 }
 
 /// Non-web stub.
-#[cfg(not(feature = "web"))]
+#[cfg(not(feature = "app"))]
 pub fn enqueue_pending_edit(_edit: PendingEdit) {}
 
 /// Drain and replay the offline queue after the server comes back.
@@ -84,7 +84,7 @@ pub fn enqueue_pending_edit(_edit: PendingEdit) {}
 /// normal authed fetch helpers, retry transient failures with exponential
 /// backoff, and surface conflicts (e.g. a `409`) to the user rather than
 /// silently dropping their edit.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub async fn replay_pending_edits() {
     // Nothing is ever enqueued in the shipped build, so this just resets
     // the (empty) queue and returns. Keeping the drain here means the
@@ -95,7 +95,7 @@ pub async fn replay_pending_edits() {
 
     // ---- local-first epic: replace the early-return above with this ----
     //
-    // use gloo_timers::future::TimeoutFuture;
+    // use crate::platform::timer::sleep_ms;
     //
     // // Snapshot + clear so new edits made during replay queue behind it.
     // let mut pending: Vec<PendingEdit> = EDIT_QUEUE.write().drain(..).collect();
@@ -147,18 +147,18 @@ pub async fn replay_pending_edits() {
 }
 
 /// Non-web stub.
-#[cfg(not(feature = "web"))]
+#[cfg(not(feature = "app"))]
 pub async fn replay_pending_edits() {}
 
 /// Convenience hook so a component (rather than the monitor) could trigger
 /// a replay; unused today but part of the seam. Spawns the drain without
 /// blocking render.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub fn use_replay_pending_edits() {
     // Placeholder for the local-first epic. Intentionally does not spawn
     // anything yet so the shipped build has no behavior change.
 }
 
 /// Non-web stub.
-#[cfg(not(feature = "web"))]
+#[cfg(not(feature = "app"))]
 pub fn use_replay_pending_edits() {}

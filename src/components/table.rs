@@ -186,14 +186,41 @@ pub fn TableHeader(props: TableHeaderProps) -> Element {
     let class = format!("{} {} {}", base_class, sortable_class, props.class);
     let justify = props.align.justify_class();
 
+    // MAPPS-569: `aria_sort` on the `th` is how a screen reader learns which
+    // column is sorted and which way. Before this the only signal was the arrow
+    // `svg` below, which is invisible to assistive technology, so a sorted table
+    // announced the same as an unsorted one. `"none"` on the other sortable
+    // columns is deliberate and not the same as omitting the attribute: it says
+    // "sortable, not currently sorted", which is what makes the sorted column
+    // stand out from its peers rather than from the non-sortable ones.
+    let aria_sort = props.sortable.then_some(match props.sort_direction {
+        Some(SortDirection::Ascending) => "ascending",
+        Some(SortDirection::Descending) => "descending",
+        None => "none",
+    });
+
     rsx! {
         th {
             scope: "col",
             class: "{class}",
-            onclick: move |_| if props.sortable { props.onsort.call(()) },
-            div { class: "flex items-center space-x-1 {justify}",
-                {props.children}
-                if props.sortable {
+            aria_sort,
+            // MAPPS-569: the trigger is a real `button` and the `th` no longer
+            // has an `onclick`. A `th` is not focusable and gets no implicit key
+            // activation, so sorting was mouse-only on every list in the app -
+            // tickets, companies, contacts, assets, invoices, contracts, time
+            // entries all inherit this one component. A button is reachable and
+            // operable for free, and it announces the column name as its own
+            // label, so the control a user tabs to is the one they hear.
+            //
+            // Non-sortable headers stay plain markup: wrapping them in a button
+            // would put an inert control in the tab order for every column in
+            // the app.
+            if props.sortable {
+                button {
+                    r#type: "button",
+                    class: "flex items-center space-x-1 w-full {justify}",
+                    onclick: move |_| props.onsort.call(()),
+                    {props.children}
                     span { class: "text-subtle",
                         match props.sort_direction {
                             Some(SortDirection::Ascending) => rsx! {
@@ -247,6 +274,10 @@ pub fn TableHeader(props: TableHeaderProps) -> Element {
                         }
                     }
                 }
+            } else {
+                div { class: "flex items-center space-x-1 {justify}",
+                    {props.children}
+                }
             }
         }
     }
@@ -263,6 +294,20 @@ pub struct TableCellProps {
     /// MAPPS-415: tighter padding (px-4 py-3) for narrow fixed-width columns.
     #[props(default = false)]
     compact: bool,
+    /// MAPPS-569: makes this cell's contents the row's keyboard-reachable
+    /// trigger, by wrapping them in a real `button` that calls the handler.
+    ///
+    /// A clickable `TableRow` puts its `onclick` on the `tr`, which is not
+    /// focusable and gets no implicit key activation, so the row's action is
+    /// mouse-only unless something inside it is focusable. Rows that navigate
+    /// solve that with a `Link` in their first cell. Rows whose click opens a
+    /// modal have no route to link to, and this is what they use instead.
+    ///
+    /// Give it to ONE cell per row, normally the first: the name cell is what a
+    /// user is looking for, and a button per cell would make tabbing through a
+    /// list cost a stop per column.
+    #[props(default)]
+    onactivate: Option<EventHandler<MouseEvent>>,
     #[props(default)]
     class: String,
 }
@@ -286,7 +331,28 @@ pub fn TableCell(props: TableCellProps) -> Element {
         td {
             class: "{class}",
             colspan: props.colspan.map(|n| n.to_string()),
-            {props.children}
+            if let Some(activate) = props.onactivate {
+                // `text-left` and `w-full` so the button is the cell rather than
+                // a centred island inside it, and the row still reads as a row.
+                // No visual change: the styling that made this look clickable
+                // already lives on the `tr` (MAPPS-389's hover + pointer).
+                button {
+                    r#type: "button",
+                    class: "w-full text-left",
+                    // The `tr` around this cell carries the same handler as a
+                    // mouse convenience, and a click here would bubble to it and
+                    // run the action twice. Stopping propagation keeps it to one;
+                    // the button's own handler still fires, from mouse and from
+                    // keyboard alike.
+                    onclick: move |e: MouseEvent| {
+                        e.stop_propagation();
+                        activate.call(e);
+                    },
+                    {props.children}
+                }
+            } else {
+                {props.children}
+            }
         }
     }
 }
@@ -536,7 +602,7 @@ pub struct DataTableProps {
 #[component]
 pub fn DataTable(props: DataTableProps) -> Element {
     rsx! {
-        div { class: "overflow-hidden shadow ring-1 ring-black/5 sm:rounded-lg",
+        div { class: "overflow-hidden shadow border border-line sm:rounded-lg",
             Table {
                 {props.children}
             }
@@ -680,6 +746,145 @@ mod tests {
         assert!(
             html.contains("No time logged yet."),
             "empty row must render its message; got: {html}"
+        );
+    }
+
+    /// MAPPS-569 recurrence guard: every clickable row has a keyboard path.
+    ///
+    /// `TableRow { clickable: true }` puts its `onclick` on the `tr`, which is
+    /// not focusable and gets no implicit key activation, so the row's action is
+    /// mouse-only unless something inside the row is focusable. Two shapes
+    /// qualify: a `Link` (for a row that navigates) or a cell carrying
+    /// `onactivate` (for a row whose click opens a modal, where there is no
+    /// route to link to).
+    ///
+    /// A filesystem scan rather than `include_str!`, because the call sites are
+    /// spread across every list page and the point is that NONE of them is
+    /// missed - naming them here would mean this guard could only see the ones
+    /// somebody remembered to add. When it fired for the first time it found 18
+    /// of 27 rows uncovered.
+    ///
+    /// Deliberately not a check on `tabindex`: putting one on a `tr` is the
+    /// MAPPS-443 anti-pattern, and this guard exists so nobody reaches for it.
+    #[test]
+    fn every_clickable_table_row_can_be_reached_from_the_keyboard() {
+        fn rows(src: &str) -> Vec<(usize, String)> {
+            // Production only: the harness below builds clickable rows that have
+            // no keyboard path and do not need one.
+            let production = src.split_once("#[cfg(test)]").map_or(src, |(a, _)| a);
+            let mut out = Vec::new();
+            let bytes = production.as_bytes();
+            let mut from = 0;
+            while let Some(rel) = production[from..].find("TableRow {") {
+                let start = from + rel + "TableRow ".len();
+                let mut depth = 0usize;
+                let mut i = start;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'{' => depth += 1,
+                        b'}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                let line = production[..start].matches('\n').count() + 1;
+                out.push((line, production[start..=i.min(bytes.len() - 1)].to_string()));
+                from = start;
+            }
+            out
+        }
+
+        let mut uncovered = Vec::new();
+        let mut covered = 0usize;
+        let mut stack = vec![std::path::PathBuf::from("src")];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read src") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let src = std::fs::read_to_string(&path).expect("read file");
+                for (line, body) in rows(&src) {
+                    if !body.contains("clickable: true") {
+                        continue;
+                    }
+                    if body.contains("Link {") || body.contains("onactivate") {
+                        covered += 1;
+                    } else {
+                        uncovered.push(format!("{}:{line}", path.display()));
+                    }
+                }
+            }
+        }
+
+        assert!(
+            uncovered.is_empty(),
+            "a clickable row with no Link and no cell carrying `onactivate` is reachable \
+             only with a mouse. Add a Link if the row navigates, or `onactivate` on its \
+             name cell if the click opens a modal. Uncovered: {uncovered:?}"
+        );
+        assert!(
+            covered >= 20,
+            "the scan found only {covered} clickable rows, so it has probably stopped \
+             matching them rather than proving anything"
+        );
+    }
+
+    /// MAPPS-569: a sortable column is operable and reports its state.
+    ///
+    /// The `th` had the `onclick` and no `aria_sort`, so on every sortable list
+    /// in the app - tickets, companies, contacts, assets, invoices, contracts,
+    /// time entries - sorting was mouse-only and the current sort was conveyed
+    /// by an arrow `svg` that assistive technology cannot see.
+    #[test]
+    fn a_sortable_header_is_a_button_and_announces_its_sort_state() {
+        const SRC: &str = include_str!("table.rs");
+        let production = SRC.split_once("#[cfg(test)]").map_or(SRC, |(a, _)| a);
+        let header = production
+            .split_once("pub fn TableHeader")
+            .expect("TableHeader exists")
+            .1
+            .split_once("pub fn TableCell")
+            .expect("TableCell follows it")
+            .0;
+
+        assert!(
+            header.contains("aria_sort"),
+            "without aria_sort a sorted column announces the same as an unsorted one"
+        );
+        assert!(
+            header.contains(r#"r#type: "button""#),
+            "the sort trigger must be a real button, which is focusable and operable for free"
+        );
+        // The `th` itself must not keep a click handler: it is not focusable, so
+        // a handler there is the mouse-only path this replaced.
+        let th_attrs = header
+            .split_once("th {")
+            .expect("renders a th")
+            .1
+            .split_once("if props.sortable")
+            .expect("branches on sortable")
+            .0;
+        // Comment lines are stripped first: the explanation above the branch
+        // says the word "onclick", and matching your own prose is how a guard
+        // starts failing for reasons that have nothing to do with the code.
+        let code_only: String = th_attrs
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code_only.contains("onclick:"),
+            "the th must not carry onclick; the button inside it does. Found: {code_only}"
         );
     }
 }

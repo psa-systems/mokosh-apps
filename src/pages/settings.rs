@@ -27,14 +27,14 @@
 //! single create/edit modal driven by an `Option<FormState>` signal.
 
 use dioxus::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, BreadcrumbItem, Breadcrumbs, Button, ButtonVariant, Card,
-    Checkbox, DataTable, ErrorBanner, IconSize, Input, PageHeader, PlusIcon, SearchInput, Select,
-    SelectOption, SettingFormModal, Table, TableBody, TableCell, TableEmpty, TableHead,
-    TableHeader, TableLoading, TableRow, ThemePicker,
+    use_page_title, Badge, BadgeVariant, BannerTone, BreadcrumbItem, Breadcrumbs, Button,
+    ButtonVariant, Card, Checkbox, DataTable, ErrorBanner, FileField, IconSize, Input, PageHeader,
+    PlusIcon, SearchInput, Select, SelectOption, SettingFormModal, StatusBanner, Table, TableBody,
+    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, ThemePicker,
 };
 use crate::utils::money::format_money_str;
 use crate::utils::Paginated;
@@ -195,7 +195,10 @@ impl SettingsGroupKey {
             SettingsGroupKey::Billing => "Billing & SLA",
             SettingsGroupKey::Tickets => "Tickets",
             SettingsGroupKey::Integrations => "Integrations",
-            SettingsGroupKey::Data => "Data",
+            // MAPPS-426 widened this from "Data": it now also holds the
+            // tenant's own identity. The route (`/settings/group/data`) is
+            // unchanged, so existing deep links keep resolving.
+            SettingsGroupKey::Data => "Organization & Data",
         }
     }
 
@@ -211,7 +214,9 @@ impl SettingsGroupKey {
             }
             SettingsGroupKey::Tickets => "Statuses, priorities, types, queues, and categories.",
             SettingsGroupKey::Integrations => "RMM connections, device mappings, and alert rules.",
-            SettingsGroupKey::Data => "Export and import this tenant's data.",
+            SettingsGroupKey::Data => {
+                "Your organization's name, and exporting or importing this tenant's data."
+            }
         }
     }
 
@@ -527,6 +532,17 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Personalization,
         advanced: false,
         visibility: SurfaceVisibility::RequiresCap("settings:manage_company_branding"),
+    },
+    // MAPPS-426. Filed under the tenant-wide group rather than given a group
+    // of its own: a group card leading to a landing with one card is a click
+    // that buys nothing. Listed first there because it is the one clients see.
+    SettingsSurface {
+        route: Route::SettingsOrganization {},
+        title: "Organization",
+        description: "Your organization's name, as clients see it in email you send them.",
+        group: SettingsGroupKey::Data,
+        advanced: false,
+        visibility: SurfaceVisibility::Always,
     },
 ];
 
@@ -884,6 +900,431 @@ pub fn DataGroupPage() -> Element {
     }
 }
 
+/// The tenant as mokosh-server knows it. Only the fields this page reads;
+/// `#[serde(default)]` on the name so a response shape change cannot break
+/// decoding into a blank screen.
+/// PMS-751: the caller's own tenant, addressed without an id.
+///
+/// The pages here edit and confirm against the tenant the user is signed in to,
+/// and the SPA does not reliably know its id: it reads one from the
+/// `mokosh_tenant_id` id_token claim, which bunyip mints only for a client
+/// configured with `tenant_claim_name`, and falls back to the nil uuid. That is
+/// how `/settings/organization` came to request tenant 00000000-...-000000000000
+/// and fail to load. The server resolves the tenant from the session instead.
+const TENANT_PATH: &str = "/tenants/current";
+
+/// MAPPS-429: the tenant logo endpoint. Its own path because a file is PUT as
+/// multipart and lands immediately, rather than riding the JSON body above.
+const TENANT_LOGO_PATH: &str = "/tenants/current/logo";
+
+/// Trim, and treat blank as absent. A branding field saved as `""` would read
+/// back as "there is a contact, and it is empty".
+fn optional_text(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    (!t.is_empty()).then(|| t.to_string())
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct TenantView {
+    #[serde(default)]
+    name: String,
+    /// MAPPS-429: organisation metadata a client sees. Distinct from the user's
+    /// own name and phone, which bunyip owns.
+    #[serde(default)]
+    branding: BrandingView,
+}
+
+/// The subset of `TenantBranding` these pages read. Everything else it declares
+/// (colours, favicon, portal domain) is unread by any surface today, so it is
+/// deliberately not deserialised here and not shown.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+struct BrandingView {
+    #[serde(default)]
+    support_contact_name: Option<String>,
+    /// PMS-755: the channel most clients reach for first.
+    #[serde(default)]
+    support_email: Option<String>,
+    #[serde(default)]
+    support_phone: Option<String>,
+    /// Read to render the current logo. Never sent: the upload and the delete
+    /// own this key, and PMS-758 is what happens when one writer overwrites
+    /// another's half of the document.
+    #[serde(default, skip_serializing)]
+    logo_url: Option<String>,
+}
+
+/// `/settings/organization` (MAPPS-426). Admin-only rename of this tenant.
+///
+/// The name is customer-facing: it renders in the client request-form email
+/// subject and in invitation emails, and a fresh tenant is seeded
+/// "My workspace", so until someone changes it clients receive mail from
+/// "My workspace". Before this page the only way to change it was a raw
+/// `PUT /api/v1/tenants/{id}`.
+///
+/// Fetches the tenant from mokosh-server rather than reading `active_org_name()`
+/// out of auth context.
+///
+/// MAPPS-541: not because they disagree. They did once, and this comment used to
+/// say so, but since MAPPS-427 `use_active_org_loader` reads the same
+/// `GET /tenants/current` this page does, so `active_org_name()` is the very
+/// `tenants.name` edited here. (That hook carries the history of where it used to
+/// read from and why the call could never have worked.) MAPPS-524's non-admin
+/// onboarding screen shows `active_org_name()` on the strength of it being
+/// mokosh's value.
+///
+/// Two reasons for the fetch survive that correction:
+///
+/// - The page edits the branding document as well as the name (support contact,
+///   email, phone, logo), and `MembershipView` carries only `tenant_id` and
+///   `tenant_name`. Auth context could supply at most one of this form's five
+///   fields, so the round-trip happens either way.
+/// - `active_org_name()` is `None` when the org load failed, deliberately:
+///   MAPPS-427 leaves the list empty rather than inventing a row. Seeding the
+///   form from it would leave an admin unable to see or fix the name on exactly
+///   the load that went wrong, where this page's own fetch renders `LoadError`
+///   and says what happened.
+///
+/// What the fetch does NOT do is refresh auth context after a save. The loader
+/// runs once per session (`memberships_loaded`) and this save does not call
+/// `bump_tenant_generation`, so the top bar and the onboarding screen keep the
+/// pre-save name until the next full page load.
+#[component]
+pub fn OrganizationSettingsPage() -> Element {
+    use_page_title("Organization");
+
+    if !use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: "Organization" } };
+    }
+
+    rsx! { OrganizationSettingsBody {} }
+}
+
+#[component]
+fn OrganizationSettingsBody() -> Element {
+    // MAPPS-571: written on a successful save, so the cached organisation name
+    // every `active_org_name()` reader shows follows the rename.
+    let mut auth = crate::hooks::use_auth();
+    let mut name = use_signal(String::new);
+    // MAPPS-429: the organisation's own contact, shown to clients on the forms
+    // and email this tenant sends.
+    let mut contact_name = use_signal(String::new);
+    let mut contact_phone = use_signal(String::new);
+    let mut contact_email = use_signal(String::new);
+    let mut logo_url = use_signal(|| None::<String>);
+    let mut logo_busy = use_signal(|| false);
+    // PMS-758: reported next to the file input rather than in the form banner
+    // at the top of the page, which is a long way from the control that caused
+    // it.
+    let mut logo_error = use_signal(String::new);
+    // A logo that cannot load has nothing useful to show, so it is hidden
+    // rather than left as the browser's broken-image box, which is how this
+    // page looked while the URL was wrong.
+    let mut logo_broken = use_signal(|| false);
+    // MAPPS-436: Remove opens the dialog; the DELETE fires from `onconfirm`.
+    let mut confirming_logo_remove = use_signal(|| false);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+    let mut name_error = use_signal(String::new);
+    // Set once the fetched name has seeded the input, so a re-render (or a
+    // resource refresh after saving) cannot overwrite what is being typed.
+    let mut seeded = use_signal(|| false);
+
+    let tenant = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _reachable = crate::hooks::use_server_reachable();
+        crate::hooks::fetch::api::get_authed::<TenantView>(TENANT_PATH)
+            .await
+            .ok()
+    });
+
+    let snap = tenant.read_unchecked();
+    let is_loading = snap.is_none();
+    let fetch_failed = matches!(*snap, Some(None));
+    let current_name = match &*snap {
+        Some(Some(t)) => t.name.clone(),
+        _ => String::new(),
+    };
+    if !seeded() && !current_name.is_empty() {
+        name.set(current_name.clone());
+        if let Some(Some(t)) = &*snap {
+            contact_name.set(t.branding.support_contact_name.clone().unwrap_or_default());
+            contact_phone.set(t.branding.support_phone.clone().unwrap_or_default());
+            contact_email.set(t.branding.support_email.clone().unwrap_or_default());
+            logo_url.set(t.branding.logo_url.clone());
+        }
+        seeded.set(true);
+    }
+
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Organization".to_string() }
+        };
+    }
+
+    let handle_save = move |_| {
+        if saving() {
+            return;
+        }
+        error.set(String::new());
+        name_error.set(String::new());
+
+        let trimmed = name.read().trim().to_string();
+        // The server enforces 1..=255; checking here keeps a blank submit from
+        // costing a round-trip, and a blank org name would be worse than a
+        // wrong one - the email subject would simply trail off.
+        if trimmed.is_empty() {
+            name_error.set("Enter the name clients should see.".to_string());
+            return;
+        }
+        if trimmed.chars().count() > 255 {
+            name_error.set("Use 255 characters or fewer.".to_string());
+            return;
+        }
+
+        saving.set(true);
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                // The logo is not in this body: it is uploaded on its own,
+                // immediately, because a file input that only takes effect on a
+                // later Save is a file input people forget to save.
+                match crate::hooks::fetch::api::put_authed_typed::<TenantView, _>(
+                    TENANT_PATH,
+                    &serde_json::json!({
+                        "name": trimmed,
+                        // PMS-758: the server MERGES this into the branding
+                        // document, so an emptied field has to be sent as an
+                        // explicit null to clear, and a key this page does not
+                        // own (the logo) is simply not sent.
+                        "branding": BrandingView {
+                            support_contact_name: optional_text(&contact_name.read()),
+                            support_email: optional_text(&contact_email.read()),
+                            support_phone: optional_text(&contact_phone.read()),
+                            logo_url: None,
+                        },
+                    }),
+                )
+                .await
+                {
+                    Ok(saved) => {
+                        // MAPPS-571: the org loader runs once per session, so
+                        // without this the top bar keeps the pre-save name until
+                        // the next full page load and the toast below reads as
+                        // though the rename only half took. The server's own
+                        // value, not `trimmed`: it is the one that was stored.
+                        auth.write().set_active_org_name(&saved.name);
+                        crate::hooks::push_toast(
+                            crate::components::AlertType::Success,
+                            "Organization name saved. New emails will use it.",
+                        );
+                    }
+                    Err(err) => {
+                        crate::hooks::push_api_error(&err);
+                        match err.field_message("name") {
+                            Some(m) => name_error.set(m),
+                            None => error.set(err.user_message()),
+                        }
+                    }
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        PageHeader {
+            title: "Organization",
+            // PMS-755: the page held one field when this said "the name". It now
+            // carries the contact and logo a client sees too, so it describes
+            // the set rather than its first member.
+            subtitle: "What clients see when you send them a request form: your name, who to ask, and your logo",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsOrganization {} }
+            },
+        }
+
+        if fetch_failed {
+            LoadError { what: "your organization" }
+        }
+
+        Card {
+            div { class: "space-y-4 max-w-xl",
+                if !error().is_empty() {
+                    ErrorBanner { "{error()}" }
+                }
+
+                Input {
+                    name: "name",
+                    label: "Organization name",
+                    value: name(),
+                    required: true,
+                    disabled: is_loading || saving(),
+                    error: name_error(),
+                    help: "Used in email your clients receive: the subject of a request form you send them, and invitations to join. Not an internal label.".to_string(),
+                    oninput: move |e: FormEvent| {
+                        name_error.set(String::new());
+                        name.set(e.value());
+                    },
+                }
+
+                Input {
+                    name: "contact_name",
+                    label: "Contact name",
+                    value: contact_name(),
+                    disabled: is_loading || saving(),
+                    help: "Optional. Who a client should ask for. Shown on the request forms you send and in the email that carries them, unless a form names its own contact.".to_string(),
+                    oninput: move |e: FormEvent| contact_name.set(e.value()),
+                }
+
+                Input {
+                    name: "contact_phone",
+                    label: "Contact phone",
+                    value: contact_phone(),
+                    disabled: is_loading || saving(),
+                    help: "Optional. Shown next to the contact name, so a client can ask before they answer.".to_string(),
+                    oninput: move |e: FormEvent| contact_phone.set(e.value()),
+                }
+
+                Input {
+                    name: "contact_email",
+                    label: "Contact email",
+                    r#type: "email".to_string(),
+                    value: contact_email(),
+                    disabled: is_loading || saving(),
+                    help: "Optional. Offered alongside the phone number, and usually the one a client reaches for first.".to_string(),
+                    oninput: move |e: FormEvent| contact_email.set(e.value()),
+                }
+
+                // MAPPS-429: the logo uploads on selection rather than on Save.
+                // It is a separate request either way (multipart, not JSON), and
+                // a file input whose effect waits for a Save button is one people
+                // forget to press.
+                FileField {
+                    name: "org_logo",
+                    label: "Logo",
+                    accept: "image/png,image/jpeg,image/webp,image/gif",
+                    disabled: logo_busy() || !can_mutate,
+                    // PMS-758: an upload starts on selection and takes as long as
+                    // it takes; without this the page said nothing at all.
+                    status: if logo_busy() { "Uploading…" } else { "" },
+                    error: logo_error(),
+                    help: "Optional. PNG, JPEG, WebP or GIF, up to 1 MB. Shown to clients at the top of the request forms you send and the email that carries them.",
+                    preview: rsx! {
+                        if let Some(src) = logo_url.read().clone() {
+                            div { class: "flex items-center gap-3",
+                                if !logo_broken() {
+                                    img {
+                                        src: "{crate::hooks::fetch::api::api_origin()}{src}",
+                                        alt: "Current organization logo",
+                                        class: "max-h-14 max-w-56 rounded border border-line bg-surface p-1",
+                                        onerror: move |_| logo_broken.set(true),
+                                    }
+                                } else {
+                                    span { class: "text-sm text-muted",
+                                        "A logo is set but could not be loaded."
+                                    }
+                                }
+                                Button {
+                                    // MAPPS-436: Remove is destructive, so it takes the
+                                    // Danger variant per docs/button-variants.md.
+                                    variant: ButtonVariant::Danger,
+                                    disabled: logo_busy() || !can_mutate,
+                                    onclick: move |_| confirming_logo_remove.set(true),
+                                    "Remove"
+                                }
+                            }
+                        }
+                        crate::components::ConfirmDialog {
+                            open: confirming_logo_remove(),
+                            title: "Remove logo".to_string(),
+                            message: "Remove the organization logo?".to_string(),
+                            confirm_text: "Remove".to_string(),
+                            cancel_text: "Cancel".to_string(),
+                            destructive: true,
+                            loading: logo_busy(),
+                            onconfirm: move |_| {
+                                if logo_busy() {
+                                    return;
+                                }
+                                logo_busy.set(true);
+                                logo_error.set(String::new());
+                                spawn(async move {
+                                    #[cfg(feature = "app")]
+                                    {
+                                        match crate::hooks::fetch::api::delete_authed(TENANT_LOGO_PATH).await {
+                                            Ok(()) => {
+                                                logo_url.set(None);
+                                                logo_broken.set(false);
+                                            }
+                                            Err(e) => logo_error.set(format!("Could not remove the logo: {e}")),
+                                        }
+                                    }
+                                    logo_busy.set(false);
+                                    confirming_logo_remove.set(false);
+                                });
+                            },
+                            oncancel: move |_| {
+                                if !logo_busy() {
+                                    confirming_logo_remove.set(false);
+                                }
+                            },
+                        }
+                    },
+                    onchange: move |evt: FormEvent| {
+                            logo_error.set(String::new());
+                            let Some(file) = evt.files().into_iter().next() else {
+                                return;
+                            };
+                            logo_busy.set(true);
+                            spawn(async move {
+                                #[cfg(feature = "app")]
+                                {
+                                    let file_name = file.name();
+                                    let mime = file
+                                        .content_type()
+                                        .unwrap_or_else(|| "application/octet-stream".to_string());
+                                    match file.read_bytes().await {
+                                        Ok(bytes) => {
+                                            match crate::hooks::fetch::api::put_file_authed::<TenantView>(
+                                                TENANT_LOGO_PATH,
+                                                &file_name,
+                                                &mime,
+                                                &bytes,
+                                            )
+                                            .await
+                                            {
+                                                Ok(t) => {
+                                                    logo_broken.set(false);
+                                                    logo_url.set(t.branding.logo_url);
+                                                }
+                                                Err(e) => logo_error.set(e.user_message()),
+                                            }
+                                        }
+                                        Err(_) => logo_error.set("Could not read the selected file.".to_string()),
+                                    }
+                                }
+                                logo_busy.set(false);
+                            });
+                    },
+                }
+
+                div { class: "flex justify-end",
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        loading: saving(),
+                        disabled: is_loading || !can_mutate,
+                        title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
+                        onclick: handle_save,
+                        "Save Changes"
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Per-table row-count summary returned by `POST /api/v1/data/import`
 /// (MAPPS-364). `imported` maps each restored table to the number of rows
 /// written; a `BTreeMap` so the summary renders in a stable, sorted order.
@@ -904,18 +1345,53 @@ pub fn ImportExportSettingsPage() -> Element {
     // across renders; it only reads context and feeds the tenant-name
     // confirmation used past the gate.
     let auth = crate::hooks::use_auth();
+    // MAPPS-602: and the tenant read has to be above the gate for the same
+    // reason MAPPS-377 moved `use_auth` there. It was left below, so a render
+    // that took the early exit ran one hook fewer than a render that did not,
+    // and `use_is_admin` flips from false to true the moment `/me` resolves.
+    // The next render then panics in dioxus-core on the hook index, and because
+    // WASM does not unwind that panic poisons the runtime for the life of the
+    // page.
+    let tenant = use_resource(move || async move {
+        crate::hooks::fetch::api::get_authed::<TenantView>(TENANT_PATH)
+            .await
+            .ok()
+    });
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Import & Export" } };
     }
 
-    // The import confirmation must equal the tenant's name (the backend compares
-    // `confirm` to `tenants.name`); use the active org name the user already
-    // sees in the org switcher.
-    let tenant_name = auth
-        .read()
-        .active_org_name()
-        .map(str::to_string)
-        .unwrap_or_default();
+    // The import confirmation must equal the tenant's name, and the backend
+    // compares `confirm` to mokosh's `tenants.name`
+    // (`src/modules/data_transfer/mod.rs:332`).
+    //
+    // MAPPS-426: ask mokosh for its own name, and fall back to
+    // `active_org_name()` only when that read is unavailable (server down, or a
+    // build without the multi-tenant feature), so the page is never worse off
+    // than before.
+    //
+    // MAPPS-541: what that fallback means has changed, in the page's favour.
+    // This comment used to warn that the switcher name was a DIFFERENT value
+    // (bunyip's org record) which could disagree with `tenants.name`, so falling
+    // back risked instructing the user to type a phrase the server would always
+    // reject. Since MAPPS-427 `active_org_name()` is a cached copy of this same
+    // column, so the fallback now yields the previous read of the right value
+    // rather than a different one.
+    // PMS-751: `current`, not `/tenants/{id}`. The id this used to interpolate
+    // comes from an id_token claim that is nil whenever bunyip's client is not
+    // configured to mint it, and the failure hid behind the switcher-name
+    // fallback below: the page then asked for a confirmation phrase the server
+    // would never accept.
+    let fetched_name = match &*tenant.read_unchecked() {
+        Some(Some(t)) if !t.name.is_empty() => Some(t.name.clone()),
+        _ => None,
+    };
+    let tenant_name = fetched_name.unwrap_or_else(|| {
+        auth.read()
+            .active_org_name()
+            .map(str::to_string)
+            .unwrap_or_default()
+    });
 
     rsx! {
         PageHeader {
@@ -937,21 +1413,34 @@ pub fn ImportExportSettingsPage() -> Element {
 fn ExportPanel() -> Element {
     let mut downloading = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-504: where the export was written, on a host that picks the
+    // destination itself. Empty on the web, where the browser says so.
+    let mut saved_to = use_signal(String::new);
 
     let on_download = move |_| {
         if *downloading.read() {
             return;
         }
         error.set(String::new());
+        saved_to.set(String::new());
         downloading.set(true);
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::get_authed_bytes("/data/export").await {
                     Ok((bytes, filename)) => {
                         let name = filename.unwrap_or_else(|| "mokosh-export.json".to_string());
-                        if let Err(e) = crate::utils::download::save_bytes_as_file(&bytes, &name) {
-                            error.set(format!("Fetched the export but could not save it: {e}"));
+                        match crate::utils::download::save_bytes_as_file(&bytes, &name) {
+                            // MAPPS-504: a browser shows its own download
+                            // shelf, so `None` needs no message from us. The
+                            // desktop build chose the destination itself, and
+                            // a file that lands somewhere the user cannot
+                            // find has not been delivered.
+                            Ok(Some(path)) => saved_to.set(path),
+                            Ok(None) => {}
+                            Err(e) => {
+                                error.set(format!("Fetched the export but could not save it: {e}"))
+                            }
                         }
                     }
                     Err(e) => error.set(format!("Could not export: {e}")),
@@ -970,6 +1459,12 @@ fn ExportPanel() -> Element {
                 }
                 if !error.read().is_empty() {
                     ErrorBanner { "{error.read()}" }
+                }
+                if !saved_to.read().is_empty() {
+                    StatusBanner {
+                        tone: BannerTone::Success,
+                        p { "Saved to {saved_to.read()}" }
+                    }
                 }
                 Button {
                     variant: ButtonVariant::Primary,
@@ -1018,7 +1513,7 @@ fn ImportPanel(tenant_name: String) -> Element {
         importing.set(true);
         let body = serde_json::json!({ "confirm": confirm_val, "export": export_json });
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::post_authed_typed::<ImportSummary, _>(
                     "/data/import",
@@ -1038,43 +1533,36 @@ fn ImportPanel(tenant_name: String) -> Element {
         Card {
             div { class: "space-y-4",
                 h3 { class: "text-base font-semibold text-content", "Import" }
-                div {
-                    class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                ErrorBanner {
                     strong { "This replaces all current data for this tenant." }
                     " Importing wipes every existing record and restores from the uploaded file. This cannot be undone. Export a fresh snapshot first."
                 }
 
-                div { class: "space-y-1",
-                    label {
-                        r#for: "import_file",
-                        class: "block text-sm font-medium text-content",
-                        "Import file"
-                    }
-                    input {
-                        id: "import_file",
-                        r#type: "file",
-                        accept: "application/json,.json",
-                        class: "block w-full text-sm text-content file:mr-3 file:rounded-md file:border-0 file:bg-surface-2 file:px-3 file:py-1.5 file:text-sm file:font-medium",
-                        onchange: move |evt: FormEvent| {
-                            error.set(String::new());
-                            summary.set(None);
-                            let Some(file) = evt.files().into_iter().next() else {
-                                return;
-                            };
-                            file_name.set(file.name());
-                            spawn(async move {
-                                match file.read_string().await {
-                                    Ok(text) => file_text.set(Some(text)),
-                                    Err(_) => {
-                                        error.set("Could not read the selected file.".to_string())
-                                    }
+                FileField {
+                    name: "import_file",
+                    label: "Import file",
+                    accept: "application/json,.json",
+                    help: if file_name.read().is_empty() {
+                        String::new()
+                    } else {
+                        format!("Selected: {}", file_name.read())
+                    },
+                    onchange: move |evt: FormEvent| {
+                        error.set(String::new());
+                        summary.set(None);
+                        let Some(file) = evt.files().into_iter().next() else {
+                            return;
+                        };
+                        file_name.set(file.name());
+                        spawn(async move {
+                            match file.read_string().await {
+                                Ok(text) => file_text.set(Some(text)),
+                                Err(_) => {
+                                    error.set("Could not read the selected file.".to_string())
                                 }
-                            });
-                        },
-                    }
-                    if !file_name.read().is_empty() {
-                        p { class: "text-xs text-muted", "Selected: {file_name.read()}" }
-                    }
+                            }
+                        });
+                    },
                 }
 
                 crate::components::Input {
@@ -1095,8 +1583,9 @@ fn ImportPanel(tenant_name: String) -> Element {
                 }
 
                 if let Some(s) = summary.read().clone() {
-                    div {
-                        class: "text-sm text-green-800 dark:text-green-300 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-900 rounded-md px-3 py-2 space-y-2",
+                    StatusBanner {
+                        tone: BannerTone::Success,
+                        class: "space-y-2",
                         p { class: "font-medium", "Import complete." }
                         ul { class: "list-disc pl-5",
                             for (table , count) in s.imported.iter() {
@@ -1109,9 +1598,14 @@ fn ImportPanel(tenant_name: String) -> Element {
                         Button {
                             variant: ButtonVariant::Secondary,
                             onclick: move |_| {
-                                #[cfg(feature = "web")]
-                                if let Some(w) = web_sys::window() {
-                                    let _ = w.location().reload();
+                                // MAPPS-504: a browser reloads the document. A
+                                // desktop window has none, so it re-drives every
+                                // resource subscribed to the tenant generation
+                                // instead - the same mechanism an org switch
+                                // uses - rather than leaving a dead button after
+                                // a destructive import.
+                                if !crate::platform::location::reload() {
+                                    crate::hooks::fetch::bump_tenant_generation();
                                 }
                             },
                             "Reload the app"
@@ -1160,7 +1654,7 @@ fn SeedDemoPanel() -> Element {
         result.set(None);
         loading.set(true);
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::post_authed_typed::<SeedDemoResult, _>(
                     "/data/seed-demo",
@@ -1175,28 +1669,23 @@ fn SeedDemoPanel() -> Element {
             loading.set(false);
         });
     };
+    let brand = crate::branding::product_name();
 
     rsx! {
         Card {
             div { class: "space-y-3",
                 h3 { class: "text-base font-semibold text-content", "Load demo data" }
                 p { class: "text-sm text-muted",
-                    "Populate this tenant with a small sample dataset (a company, two contacts, and a few tickets) so you can explore Mokosh. This only loads into an empty tenant. It never overwrites existing data."
+                    "Populate this tenant with a small sample dataset (a company, two contacts, and a few tickets) so you can explore {brand}. This only loads into an empty tenant. It never overwrites existing data."
                 }
                 if !error.read().is_empty() {
                     ErrorBanner { "{error.read()}" }
                 }
                 if let Some(r) = result.read().clone() {
                     if r.seeded {
-                        div {
-                            class: "text-sm text-green-800 dark:text-green-300 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-900 rounded-md px-3 py-2",
-                            "{r.message}"
-                        }
+                        StatusBanner { tone: BannerTone::Success, "{r.message}" }
                     } else {
-                        div {
-                            class: "text-sm text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
-                            "{r.message}"
-                        }
+                        StatusBanner { tone: BannerTone::Warning, "{r.message}" }
                     }
                 }
                 Button {
@@ -1304,7 +1793,7 @@ fn SchedulingSettingsBody() -> Element {
         // MAPPS-357: subscribe to reachability so the setting auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             // A missing setting (404) is the unconfigured state, not an
             // error: treat it as `0` (no default due date). Any other
@@ -1324,7 +1813,7 @@ fn SchedulingSettingsBody() -> Element {
                 Err(_) => None,
             }
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             None::<u32>
         }
@@ -1404,7 +1893,7 @@ fn StandardDueDateForm(initial: u32) -> Element {
         saved.set(false);
         let body = serde_json::json!({ "value": parsed });
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::put_authed_typed::<SettingValueRow, _>(
                     DEFAULT_DUE_SETTING_PATH,
@@ -1419,7 +1908,7 @@ fn StandardDueDateForm(initial: u32) -> Element {
                     )),
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = &body;
             }
@@ -1500,7 +1989,7 @@ fn MaxHoursPerDaySettingsBody() -> Element {
         // MAPPS-357: subscribe to reachability so the setting auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             // A missing setting (404) is the unconfigured state, not an
             // error: treat it as the full 24-hour default. Any other failure
@@ -1520,7 +2009,7 @@ fn MaxHoursPerDaySettingsBody() -> Element {
                 Err(_) => None,
             }
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             None::<u32>
         }
@@ -1599,7 +2088,7 @@ fn MaxHoursPerDayForm(initial: u32) -> Element {
         saved.set(false);
         let body = serde_json::json!({ "value": parsed });
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::put_authed_typed::<SettingValueRow, _>(
                     MAX_HOURS_PER_DAY_SETTING_PATH,
@@ -1614,7 +2103,7 @@ fn MaxHoursPerDayForm(initial: u32) -> Element {
                     )),
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = &body;
             }
@@ -1776,7 +2265,19 @@ fn WorkTypesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 4,
-                        message: "No work types yet. Click New Work Type to add one.".to_string(),
+                        title: "No work types yet".to_string(),
+                        description: "Work types are the billable categories you pick when logging a time entry.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(WorkTypeFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Work Type"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -1796,8 +2297,14 @@ fn WorkTypesSettingsBody() -> Element {
                                 };
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell {
@@ -1917,7 +2424,7 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/work-types", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -1937,7 +2444,7 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/work-types").await {
                     Ok(true) => onsaved.call(()),
@@ -2124,7 +2631,19 @@ fn TaskStatusesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
-                        message: "No task statuses yet. Click New Status to add one.".to_string(),
+                        title: "No task statuses yet".to_string(),
+                        description: "Task statuses are the workflow states a project task moves through.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(TaskStatusFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Status"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -2137,8 +2656,14 @@ fn TaskStatusesSettingsBody() -> Element {
                                 let completed = row.is_completed;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell { ColorSwatch { color } }
@@ -2253,7 +2778,7 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/task-statuses", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -2273,7 +2798,7 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/task-statuses").await {
                     Ok(true) => onsaved.call(()),
@@ -2445,7 +2970,19 @@ fn AssetTypesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
-                        message: "No asset types yet. Click New Asset Type to add one.".to_string(),
+                        title: "No asset types yet".to_string(),
+                        description: "Asset types categorize the equipment you track for each company.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(AssetTypeFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Asset Type"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -2458,8 +2995,14 @@ fn AssetTypesSettingsBody() -> Element {
                                 let active = row.is_active;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell {
@@ -2574,7 +3117,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/asset-types", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -2594,7 +3137,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/asset-types").await {
                     Ok(true) => onsaved.call(()),
@@ -2764,7 +3307,19 @@ fn CompanyIndustriesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 2,
-                        message: "No industries yet. Click New Industry to add one.".to_string(),
+                        title: "No industries yet".to_string(),
+                        description: "Industries are the suggestions offered when you categorize a company.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(CompanyIndustryFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Industry"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -2776,8 +3331,14 @@ fn CompanyIndustriesSettingsBody() -> Element {
                                 let active = row.is_active;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell { ActiveBadge { active } }
@@ -2866,7 +3427,7 @@ fn CompanyIndustryFormModal(props: CompanyIndustryFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/contacts/company-industries", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -2888,7 +3449,7 @@ fn CompanyIndustryFormModal(props: CompanyIndustryFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/contacts/company-industries").await {
                     Ok(true) => onsaved.call(()),
@@ -3047,7 +3608,19 @@ fn ProjectTypesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
-                        message: "No project types yet. Click New Project Type to add one.".to_string(),
+                        title: "No project types yet".to_string(),
+                        description: "Project types classify projects, for example client work against internal work.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(ProjectTypeFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Project Type"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -3061,8 +3634,14 @@ fn ProjectTypesSettingsBody() -> Element {
                                 let system = row.is_system;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             div { class: "flex items-center gap-2",
                                                 span { class: "font-medium text-accent", "{name}" }
                                                 if system {
@@ -3176,7 +3755,7 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/project-types", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -3196,7 +3775,7 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/project-types").await {
                     Ok(true) => onsaved.call(()),
@@ -3377,7 +3956,19 @@ fn PaymentTermsSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
-                        message: "No payment terms yet. Click New Payment Term to add one.".to_string(),
+                        title: "No payment terms yet".to_string(),
+                        description: "Payment terms fill the terms dropdown when you build an invoice.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(PaymentTermFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Payment Term"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -3390,8 +3981,14 @@ fn PaymentTermsSettingsBody() -> Element {
                                 let active = row.is_active;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell {
@@ -3495,7 +4092,7 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/payment-terms", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -3515,7 +4112,7 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/payment-terms").await {
                     Ok(true) => onsaved.call(()),
@@ -3689,7 +4286,19 @@ fn TicketStatusesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 4,
-                        message: "No ticket statuses yet. Click New Status to add one.".to_string(),
+                        title: "No ticket statuses yet".to_string(),
+                        description: "Ticket statuses are the workflow states a ticket moves through.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(TicketStatusFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Status"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -3703,8 +4312,14 @@ fn TicketStatusesSettingsBody() -> Element {
                                 let default = row.is_default;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell { ColorSwatch { color } }
@@ -3820,7 +4435,7 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result = save_lookup(id, "/tickets/statuses", &body).await;
                 match result {
@@ -3841,7 +4456,7 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/tickets/statuses").await {
                     Ok(true) => onsaved.call(()),
@@ -4025,7 +4640,19 @@ fn TicketPrioritiesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 4,
-                        message: "No ticket priorities yet. Click New Priority to add one.".to_string(),
+                        title: "No ticket priorities yet".to_string(),
+                        description: "Priorities rank tickets and set the SLA multiplier applied to each one.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(TicketPriorityFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Priority"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -4039,8 +4666,14 @@ fn TicketPrioritiesSettingsBody() -> Element {
                                 let default = row.is_default;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell { ColorSwatch { color } }
@@ -4166,7 +4799,7 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/tickets/priorities", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -4186,7 +4819,7 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/tickets/priorities").await {
                     Ok(true) => onsaved.call(()),
@@ -4375,7 +5008,19 @@ fn TicketTypesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
-                        message: "No ticket types yet. Click New Type to add one.".to_string(),
+                        title: "No ticket types yet".to_string(),
+                        description: "Ticket types describe the kind of work a ticket represents.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(TicketTypeFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Type"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -4388,8 +5033,14 @@ fn TicketTypesSettingsBody() -> Element {
                                 let active = row.is_active;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell {
@@ -4498,7 +5149,7 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/tickets/types", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -4518,7 +5169,7 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/tickets/types").await {
                     Ok(true) => onsaved.call(()),
@@ -4697,7 +5348,19 @@ fn TicketQueuesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
-                        message: "No ticket queues yet. Click New Queue to add one.".to_string(),
+                        title: "No ticket queues yet".to_string(),
+                        description: "Queues are where incoming tickets are routed for a team to pick up.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(TicketQueueFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Queue"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -4710,8 +5373,14 @@ fn TicketQueuesSettingsBody() -> Element {
                                 let default = row.is_default;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell {
@@ -4833,7 +5502,7 @@ fn TicketQueueFormModal(props: TicketQueueFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/tickets/queues", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -4853,7 +5522,7 @@ fn TicketQueueFormModal(props: TicketQueueFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/tickets/queues").await {
                     Ok(true) => onsaved.call(()),
@@ -4976,21 +5645,21 @@ fn TicketCategoriesSettingsBody() -> Element {
 
     // The full category set, independent of the table's current page, so
     // the Parent column and the parent picker can resolve a parent that
-    // lives on another page. Server caps per_page at 100; categories
-    // beyond that are not expected for a single tenant.
+    // lives on another page. MAPPS-528: paged to the end, because the
+    // server caps per_page at 100 and a tenant past that lost parents.
     let mut all_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         // MAPPS-357: secondary lookup (parent-name resolution + parent picker);
         // subscribe so it also repopulates on reconnect. It still degrades to
         // an empty set on failure - the primary resource drives the outage view.
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_authed::<Paginated<TicketCategoryRow>>(
-            "/tickets/categories?per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<TicketCategoryRow>("/tickets/categories")
+            .await
+            .unwrap_or_else(|e| {
+                // Best-effort: the primary resource drives the outage view.
+                tracing::warn!("category parent lookup failed: {e}");
+                Vec::new()
+            })
     });
 
     let snap = resource.read_unchecked();
@@ -5067,7 +5736,19 @@ fn TicketCategoriesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
-                        message: "No ticket categories yet. Click New Category to add one.".to_string(),
+                        title: "No ticket categories yet".to_string(),
+                        description: "Categories classify tickets into a hierarchy for routing and reporting.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(TicketCategoryFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Category"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -5083,8 +5764,14 @@ fn TicketCategoriesSettingsBody() -> Element {
                                 let active = row.is_active;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell {
@@ -5220,7 +5907,7 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
         });
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match save_lookup(id, "/tickets/categories", &body).await {
                     Ok(()) => onsaved.call(()),
@@ -5240,7 +5927,7 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/tickets/categories").await {
                     Ok(true) => onsaved.call(()),
@@ -5484,7 +6171,19 @@ fn RmmConnectionsSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 5,
-                        message: "No RMM connections yet. Click New Connection to add one.".to_string(),
+                        title: "No RMM connections yet".to_string(),
+                        description: "Connect a remote monitoring provider to pull its devices and alerts into the workspace.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(RmmConnectionFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Connection"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -5499,8 +6198,14 @@ fn RmmConnectionsSettingsBody() -> Element {
                                 let active = row.is_active;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell { "{provider}" }
@@ -5637,7 +6342,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
         let url_v = api_url.read().trim().to_string();
         let active_v = *is_active.read();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result = match id {
                     None => {
@@ -5698,7 +6403,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match delete_lookup(&id, "/rmm/connections").await {
                     Ok(true) => onsaved.call(()),
@@ -5719,7 +6424,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
         testing.set(true);
         test_result.set(None);
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/rmm/connections/{id}/test");
                 match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
@@ -5900,6 +6605,9 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut creating = use_signal(|| false);
     let mut deleting_id = use_signal(|| None::<Uuid>);
+    // MAPPS-436: the row Delete only opens the dialog; it holds the id plus the
+    // device label so the message can name the row being destroyed.
+    let mut pending_delete = use_signal(|| None::<(Uuid, String)>);
     let mut row_error = use_signal(String::new);
     let current_page = (*page.read()).max(1);
 
@@ -5911,12 +6619,9 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
         // dropdown; subscribe so it repopulates on reconnect. It degrades to an
         // empty set on failure - the primary resource drives the outage view.
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_authed::<Paginated<RmmConnectionRow>>(
-            "/rmm/connections?page=1&per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
+        crate::hooks::fetch::api::get_all_authed::<RmmConnectionRow>("/rmm/connections")
+            .await
+            .ok()
     });
     let connections: Vec<RmmConnectionRow> = conns_resource
         .read_unchecked()
@@ -5973,6 +6678,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
     };
 
     let no_connections = connections.is_empty();
+    let pending = pending_delete.read().clone();
 
     rsx! {
         PageHeader {
@@ -6034,7 +6740,24 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 5,
-                        message: "No device mappings yet. Click New Mapping to add one.".to_string(),
+                        title: "No device mappings yet".to_string(),
+                        description: "Mappings tie a monitored RMM device to the asset and company it belongs to.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same guards as the header button.
+                                disabled: no_connections || !can_mutate,
+                                title: if !can_mutate {
+                                    Some("Can't do this while the server is unreachable".to_string())
+                                } else {
+                                    no_connections
+                                        .then(|| "Add an RMM connection first, then map its devices here.".to_string())
+                                },
+                                onclick: move |_| creating.set(true),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Mapping"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -6055,7 +6778,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                                 rsx! {
                                     TableRow { key: "{key}",
                                         TableCell {
-                                            span { class: "font-medium", "{device_display}" }
+                                            span { class: "font-medium text-content", "{device_display}" }
                                         }
                                         TableCell {
                                             span { class: "font-mono text-xs text-muted break-all", "{device_id}" }
@@ -6070,23 +6793,15 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                                                 // MAPPS-357: block deletes while the server is unreachable.
                                                 disabled: !can_mutate,
                                                 title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                                                onclick: move |_| {
-                                                    if deleting_id.read().is_some() {
-                                                        return;
-                                                    }
-                                                    deleting_id.set(Some(rid));
-                                                    row_error.set(String::new());
-                                                    spawn(async move {
-                                                        #[cfg(feature = "web")]
-                                                        {
-                                                            match delete_lookup(&rid.to_string(), "/rmm/device-mappings").await {
-                                                                Ok(true) => resource.restart(),
-                                                                Ok(false) => {}
-                                                                Err(err) => row_error.set(format!("Could not delete mapping: {err}")),
-                                                            }
+                                                onclick: {
+                                                    let label = device_display.clone();
+                                                    move |_| {
+                                                        if deleting_id.read().is_some() {
+                                                            return;
                                                         }
-                                                        deleting_id.set(None);
-                                                    });
+                                                        row_error.set(String::new());
+                                                        pending_delete.set(Some((rid, label.clone())));
+                                                    }
                                                 },
                                                 "Delete"
                                             }
@@ -6107,6 +6822,43 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                 onsaved: move |_| {
                     creating.set(false);
                     resource.restart();
+                },
+            }
+        }
+
+        // MAPPS-436: the DELETE fires from `onconfirm` only.
+        if let Some((pid, label)) = pending {
+            crate::components::ConfirmDialog {
+                open: true,
+                title: "Delete device mapping".to_string(),
+                message: format!("Delete the device mapping for \"{label}\"?"),
+                confirm_text: "Delete".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                loading: *deleting_id.read() == Some(pid),
+                onconfirm: move |_| {
+                    if deleting_id.read().is_some() {
+                        return;
+                    }
+                    deleting_id.set(Some(pid));
+                    row_error.set(String::new());
+                    spawn(async move {
+                        #[cfg(feature = "app")]
+                        {
+                            match delete_lookup(&pid.to_string(), "/rmm/device-mappings").await {
+                                Ok(true) => resource.restart(),
+                                Ok(false) => {}
+                                Err(err) => row_error.set(format!("Could not delete mapping: {err}")),
+                            }
+                        }
+                        deleting_id.set(None);
+                        pending_delete.set(None);
+                    });
+                },
+                oncancel: move |_| {
+                    if deleting_id.read().is_none() {
+                        pending_delete.set(None);
+                    }
                 },
             }
         }
@@ -6175,7 +6927,7 @@ fn RmmDeviceMappingFormModal(props: RmmDeviceMappingFormModalProps) -> Element {
         let asset = asset_id.read().trim().to_string();
         let company = company_id.read().trim().to_string();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let body = serde_json::json!({
                     "rmm_connection_id": conn,
@@ -6314,6 +7066,9 @@ fn RmmAlertRulesSettingsBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut creating = use_signal(|| false);
     let mut deleting_id = use_signal(|| None::<Uuid>);
+    // MAPPS-436: the row Delete only opens the dialog; it holds the id plus the
+    // rule name so the message can name the row being destroyed.
+    let mut pending_delete = use_signal(|| None::<(Uuid, String)>);
     let mut row_error = use_signal(String::new);
     let current_page = (*page.read()).max(1);
 
@@ -6323,12 +7078,9 @@ fn RmmAlertRulesSettingsBody() -> Element {
         // dropdown; subscribe so it repopulates on reconnect. It degrades to an
         // empty set on failure - the primary resource drives the outage view.
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_authed::<Paginated<RmmConnectionRow>>(
-            "/rmm/connections?page=1&per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
+        crate::hooks::fetch::api::get_all_authed::<RmmConnectionRow>("/rmm/connections")
+            .await
+            .ok()
     });
     let connections: Vec<RmmConnectionRow> = conns_resource
         .read_unchecked()
@@ -6385,6 +7137,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
     };
 
     let no_connections = connections.is_empty();
+    let pending = pending_delete.read().clone();
 
     rsx! {
         PageHeader {
@@ -6446,7 +7199,24 @@ fn RmmAlertRulesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 5,
-                        message: "No alert rules yet. Click New Alert Rule to add one.".to_string(),
+                        title: "No alert rules yet".to_string(),
+                        description: "Alert rules turn incoming RMM alerts into tickets automatically.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same guards as the header button.
+                                disabled: no_connections || !can_mutate,
+                                title: if !can_mutate {
+                                    Some("Can't do this while the server is unreachable".to_string())
+                                } else {
+                                    no_connections
+                                        .then(|| "Add an RMM connection first, then define alert rules for it.".to_string())
+                                },
+                                onclick: move |_| creating.set(true),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Alert Rule"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -6467,7 +7237,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
                                 rsx! {
                                     TableRow { key: "{key}",
                                         TableCell {
-                                            span { class: "font-medium", "{name}" }
+                                            span { class: "font-medium text-content", "{name}" }
                                         }
                                         TableCell { "{connection}" }
                                         TableCell { "{alert_type_display}" }
@@ -6486,23 +7256,15 @@ fn RmmAlertRulesSettingsBody() -> Element {
                                                 // MAPPS-357: block deletes while the server is unreachable.
                                                 disabled: !can_mutate,
                                                 title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                                                onclick: move |_| {
-                                                    if deleting_id.read().is_some() {
-                                                        return;
-                                                    }
-                                                    deleting_id.set(Some(rid));
-                                                    row_error.set(String::new());
-                                                    spawn(async move {
-                                                        #[cfg(feature = "web")]
-                                                        {
-                                                            match delete_lookup(&rid.to_string(), "/rmm/alert-rules").await {
-                                                                Ok(true) => resource.restart(),
-                                                                Ok(false) => {}
-                                                                Err(err) => row_error.set(format!("Could not delete rule: {err}")),
-                                                            }
+                                                onclick: {
+                                                    let label = name.clone();
+                                                    move |_| {
+                                                        if deleting_id.read().is_some() {
+                                                            return;
                                                         }
-                                                        deleting_id.set(None);
-                                                    });
+                                                        row_error.set(String::new());
+                                                        pending_delete.set(Some((rid, label.clone())));
+                                                    }
                                                 },
                                                 "Delete"
                                             }
@@ -6523,6 +7285,43 @@ fn RmmAlertRulesSettingsBody() -> Element {
                 onsaved: move |_| {
                     creating.set(false);
                     resource.restart();
+                },
+            }
+        }
+
+        // MAPPS-436: the DELETE fires from `onconfirm` only.
+        if let Some((pid, label)) = pending {
+            crate::components::ConfirmDialog {
+                open: true,
+                title: "Delete alert rule".to_string(),
+                message: format!("Delete the alert rule \"{label}\"?"),
+                confirm_text: "Delete".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                loading: *deleting_id.read() == Some(pid),
+                onconfirm: move |_| {
+                    if deleting_id.read().is_some() {
+                        return;
+                    }
+                    deleting_id.set(Some(pid));
+                    row_error.set(String::new());
+                    spawn(async move {
+                        #[cfg(feature = "app")]
+                        {
+                            match delete_lookup(&pid.to_string(), "/rmm/alert-rules").await {
+                                Ok(true) => resource.restart(),
+                                Ok(false) => {}
+                                Err(err) => row_error.set(format!("Could not delete rule: {err}")),
+                            }
+                        }
+                        deleting_id.set(None);
+                        pending_delete.set(None);
+                    });
+                },
+                oncancel: move |_| {
+                    if deleting_id.read().is_none() {
+                        pending_delete.set(None);
+                    }
                 },
             }
         }
@@ -6588,7 +7387,7 @@ fn RmmAlertRuleFormModal(props: RmmAlertRuleFormModalProps) -> Element {
         let auto = *auto_create_ticket.read();
         let active = *is_active.read();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let body = serde_json::json!({
                     "rmm_connection_id": conn,
@@ -6730,7 +7529,7 @@ fn non_empty_color(c: &str) -> String {
 
 /// POST (create) or PUT (update) a lookup row. `base` is the collection
 /// path (e.g. `/tickets/statuses`); update targets `{base}/{id}`.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 async fn save_lookup(
     id: Option<String>,
     base: &str,
@@ -6752,7 +7551,7 @@ async fn save_lookup(
 /// DELETE a lookup row at `{base}/{id}`. Returns `Ok(true)` when deleted,
 /// `Err` on failure. Confirmation is handled up-front by the styled
 /// `SettingFormModal` ConfirmDialog (MAPPS-189), so this no longer prompts.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 async fn delete_lookup(id: &str, base: &str) -> Result<bool, String> {
     crate::hooks::fetch::api::delete_authed(&format!("{base}/{id}"))
         .await

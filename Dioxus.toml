@@ -35,8 +35,13 @@ ip = "0.0.0.0"
 # Middleware configuration (compression, cors handled in code)
 
 # Reverse-proxy /api/* to the mokosh-server container so the SPA and the
-# API share a single browser-visible origin in dev. Required for the
-# Google OAuth popup + postMessage flow to satisfy same-origin checks.
+# API share a single browser-visible origin in dev. Load-bearing, not a
+# convenience: `api::api_base()` (src/hooks/fetch.rs) resolves to the
+# same-origin `/api/v1` on any host that does not start with `msp.`, so
+# in dev every request the SPA makes is addressed to the dx server's own
+# origin and reaches mokosh-server only through this proxy. One origin is
+# also what keeps the server's CLIENT_ORIGIN and its CORS list a single
+# entry.
 # `server` is the in-network DNS name of the mokosh-server compose
 # service (the dev-mokosh-private-${USER} network is shared with the
 # server stack). The server listens on its $MOKOSH_PORT (8080); 4301 is
@@ -48,8 +53,17 @@ backend = "http://server:8080/api/"
 # Build configuration
 target_dir = "target"
 
+# MAPPS-504: consumed by `just desktop-bundle` (`dx bundle --platform desktop`).
+# The paths are repo-relative and the files are the ones that exist; before
+# MAPPS-504 they pointed at an `icons/` directory at the repo root, which has
+# never been where the icons live.
 [bundle]
-# Desktop bundle configuration (if building native apps)
 identifier = "com.mokosh.platform"
 publisher = "Mokosh Platform"
-icon = ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+icon = [
+    "assets/icons/32x32.png",
+    "assets/icons/128x128.png",
+    "assets/icons/128x128@2x.png",
+    "assets/icons/icon.icns",
+    "assets/icons/icon.ico",
+]

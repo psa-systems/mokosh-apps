@@ -1,6 +1,6 @@
 //! Reusable Company picker.
 //!
-//! Hits `GET /contacts/companies?q=...&per_page=20` on each keystroke
+//! Hits `GET /contacts/companies?q=...&status=active&per_page=20` on each keystroke
 //! (no debounce) and renders the matches in a click-to-select dropdown.
 //! The selected
 //! company's UUID is reported back via the `onselect` callback; the
@@ -16,8 +16,9 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    Button, ButtonSize, ButtonVariant, IconSize, Input, Modal, ModalSize, PlusIcon,
+    Button, ButtonSize, ButtonVariant, ErrorBanner, IconSize, Input, Modal, ModalSize, PlusIcon,
 };
+use crate::hooks::use_dropdown_nav;
 use crate::utils::url::urlencoding_minimal;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -65,6 +66,14 @@ pub struct CompanyPickerProps {
     /// entry pickers do not want the affordance.
     #[props(default)]
     pub allow_inline_create: bool,
+    /// MAPPS-484: render a "+ New company" button beside the input that opens
+    /// the same create modal `allow_inline_create` puts in the dropdown. The
+    /// dropdown affordance only exists once the dropdown is open, so a form
+    /// that needs a visible create control sets this too. Default off, so no
+    /// existing call site changes; ignored without `allow_inline_create`,
+    /// which owns the modal.
+    #[props(default)]
+    pub show_create_button: bool,
 }
 
 /// Subset of the server's `CompanyResponse` the inline-create modal
@@ -79,12 +88,16 @@ struct CreatedCompany {
 #[component]
 pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
     let mut query = use_signal(String::new);
-    let mut show_dropdown = use_signal(|| false);
+    // MAPPS-503: open / highlight state and the shared keyboard contract.
+    let mut nav = use_dropdown_nav("company-picker");
     // PMS-352: inline create-company modal state. `new_name` carries
     // whatever was typed into the picker input when the modal opened so
     // the user doesn't have to re-type the company name they were
     // already searching for.
     let allow_inline_create = props.allow_inline_create;
+    // MAPPS-484: the modal lives behind `allow_inline_create`, so the button
+    // that opens it cannot render without it.
+    let show_create_button = props.show_create_button && allow_inline_create;
     let mut show_create_modal = use_signal(|| false);
     let mut new_name = use_signal(String::new);
     let mut creating = use_signal(|| false);
@@ -100,20 +113,30 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
     let results = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let q = query.read().trim().to_string();
+        // MAPPS-575: active companies only. Archiving is meant to take a
+        // company out of day-to-day use, and this picker IS day-to-day use: an
+        // archived company still offered here would keep being attached to new
+        // contacts, tickets and time entries, which is the state the operator
+        // archived it to leave. Editing a record that already names an archived
+        // company is unaffected, because the stored name is rendered from the
+        // record rather than re-resolved through this search.
         let path = if q.is_empty() {
-            "/contacts/companies?per_page=20".to_string()
+            "/contacts/companies?status=active&per_page=20".to_string()
         } else {
             // The server stores names as-is and matches with ILIKE so
             // we can pass the trimmed query straight through.
             format!(
-                "/contacts/companies?q={}&per_page=20",
+                "/contacts/companies?q={}&status=active&per_page=20",
                 urlencoding_minimal(&q)
             )
         };
+        // MAPPS-503: keep the failure. `.ok()` here made a failed search
+        // indistinguishable from "still loading", so the panel sat on
+        // "Searching…" forever with nothing logged.
         crate::hooks::fetch::api::get_authed::<PickerPage>(&path)
             .await
-            .ok()
             .map(|p| p.data)
+            .inspect_err(|e| tracing::warn!("company search failed: {e}"))
     });
 
     if let Some(_id) = &props.selected_id {
@@ -129,7 +152,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                 label { class: "block text-sm font-medium text-content",
                     "{props.label}"
                     if props.required {
-                        span { class: "text-red-500 ml-0.5", "*" }
+                        span { class: "text-red-500 dark:text-red-400 ml-0.5", "*" }
                     }
                 }
                 div {
@@ -153,43 +176,125 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
 
     let snap = results.read_unchecked();
     let onselect = props.onselect;
+    // MAPPS-503: the navigable rows. The inline create action is the last
+    // one, so Down reaches it, and it only counts while a result list is
+    // actually rendered (not under "Searching…" or the failure banner).
+    let rows: Vec<PickerCompany> = match &*snap {
+        Some(Ok(rows)) => rows.clone(),
+        _ => Vec::new(),
+    };
+    let loaded = matches!(&*snap, Some(Ok(_)));
+    let create_index = if allow_inline_create && loaded {
+        Some(rows.len())
+    } else {
+        None
+    };
+    let nav_len = rows.len() + usize::from(create_index.is_some());
+    // The button sits beside the input, so it drops by the height of the
+    // label when the picker renders one.
+    let create_button_class = if props.label.is_empty() {
+        "whitespace-nowrap"
+    } else {
+        "whitespace-nowrap mt-6"
+    };
+    let query_for_button = query_text.clone();
+    let rows_for_keys = rows.clone();
+    let query_for_keys = query_text.clone();
     rsx! {
         div { class: "relative space-y-1",
-            Input {
-                name: "company_search",
-                label: props.label,
-                placeholder: "Search companies…",
-                required: props.required,
-                // MAPPS-322: forward the parent's validation message so a
-                // blank-company submit paints the red border + inline error
-                // on the picker, matching every other required field.
-                error: props.error.clone(),
-                value: query.read().clone(),
-                oninput: move |e: FormEvent| {
-                    query.set(e.value());
-                    show_dropdown.set(true);
-                },
+            div { class: "flex items-start gap-2",
+                // MAPPS-503: combobox seam. The handlers live on this wrapper
+                // rather than on the shared `Input` (MAPPS-347), and on the
+                // input's own wrapper rather than the row above it, so a click
+                // on the "+ New company" button does not bubble back in here
+                // and re-open the list it just closed.
+                div {
+                    class: "flex-1 min-w-0",
+                    role: "combobox",
+                    aria_expanded: nav.expanded(),
+                    aria_controls: nav.panel_id(),
+                    aria_activedescendant: nav.active_descendant(),
+                    onfocusin: move |_| nav.open(),
+                    onclick: move |_| nav.open(),
+                    onkeydown: move |e: KeyboardEvent| {
+                        let rows = rows_for_keys.clone();
+                        let seed = query_for_keys.clone();
+                        nav.keydown(&e, nav_len, move |index| {
+                            match rows.get(index) {
+                                Some(row) => {
+                                    let name = row.name.clone();
+                                    onselect.call((row.id.to_string(), name.clone()));
+                                    query.set(name);
+                                }
+                                // Past the last result row: the inline create action.
+                                None => {
+                                    new_name.set(seed);
+                                    create_error.set(String::new());
+                                    show_create_modal.set(true);
+                                }
+                            }
+                        });
+                    },
+                    Input {
+                        name: "company_search",
+                        label: props.label,
+                        placeholder: "Search companies…",
+                        required: props.required,
+                        // MAPPS-322: forward the parent's validation message so a
+                        // blank-company submit paints the red border + inline error
+                        // on the picker, matching every other required field.
+                        error: props.error.clone(),
+                        value: query.read().clone(),
+                        oninput: move |e: FormEvent| {
+                            query.set(e.value());
+                            nav.open_fresh();
+                        },
+                    }
+                }
+                // MAPPS-484: the visible create affordance. Opens the same
+                // modal as the in-dropdown "Create new company", so what it
+                // creates is a real `companies` row, not a typed name.
+                if show_create_button {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        class: create_button_class.to_string(),
+                        onclick: move |_| {
+                            new_name.set(query_for_button.clone());
+                            create_error.set(String::new());
+                            nav.close();
+                            show_create_modal.set(true);
+                        },
+                        PlusIcon { size: IconSize::Small, class: "mr-1".to_string() }
+                        "New company"
+                    }
+                }
             }
-            if *show_dropdown.read() {
+            if nav.is_open() {
                 // Transparent full-viewport backdrop: a click anywhere outside
                 // the dropdown dismisses it. Sits below the dropdown (z-10 vs
                 // z-20) so the rows stay clickable.
                 div {
                     class: "fixed inset-0 z-10",
-                    onclick: move |_| show_dropdown.set(false),
+                    onclick: move |_| nav.close(),
                 }
                 div {
-                    class: "absolute z-20 left-0 right-0 mt-1 max-h-72 overflow-y-auto rounded-md border border-line bg-raised shadow-lg",
+                    id: nav.panel_id(),
+                    role: "listbox",
+                    class: "dropdown-panel absolute z-20 left-0 right-0 mt-1 max-h-72 overflow-y-auto",
                     match &*snap {
                         None => rsx! {
                             div { class: "px-3 py-2 text-sm text-muted", "Searching…" }
                         },
-                        Some(None) => rsx! {
-                            div { class: "px-3 py-2 text-sm text-red-600", "Could not load companies." }
+                        // MAPPS-503: a failed search is its own state, distinct
+                        // from "Searching…" and "No matches."
+                        // MAPPS-444: it takes the shared banner (paired hues,
+                        // role="alert"); `m-1` keeps its border off the
+                        // dropdown's own edge.
+                        Some(Err(_)) => rsx! {
+                            ErrorBanner { class: "m-1", "Could not search. Try again." }
                         },
-                        Some(Some(rows)) if rows.is_empty() => {
-                            let query_for_seed = query_text.clone();
-                            rsx! {
+                        Some(Ok(_)) => rsx! {
+                            if rows.is_empty() {
                                 div { class: "px-3 py-2 text-sm text-muted",
                                     if query_text.is_empty() {
                                         "No companies yet."
@@ -197,45 +302,11 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                                         "No matches."
                                     }
                                 }
-                                // PMS-352: inline create affordance. Renders
-                                // only when the parent opted in via the new
-                                // `allow_inline_create` prop, so contact /
-                                // time-entry pickers stay unchanged.
-                                // MAPPS-320: render it in a visually distinct
-                                // band (gap + top border + muted background +
-                                // leading icon) so a hurried click can't be
-                                // confused with an existing match.
-                                if allow_inline_create {
-                                    div { class: "mt-1 border-t border-line",
-                                        button {
-                                            r#type: "button",
-                                            class: "flex w-full items-center gap-1.5 text-left px-3 py-2 text-sm bg-surface-2/50 text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30",
-                                            onclick: move |_| {
-                                                new_name.set(query_for_seed.clone());
-                                                create_error.set(String::new());
-                                                show_dropdown.set(false);
-                                                show_create_modal.set(true);
-                                            },
-                                            PlusIcon { size: IconSize::Small }
-                                            if query_text.is_empty() {
-                                                "Create new company"
-                                            } else {
-                                                {
-                                                    let q = query_text.clone();
-                                                    rsx! { "Create \"{q}\"" }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        Some(Some(rows)) => {
-                            let rows = rows.clone();
-                            let query_for_seed = query_text.clone();
-                            rsx! {
-                                ul { class: "py-1",
-                                    for row in rows.into_iter() {
+                            } else {
+                                // MAPPS-503: `role="none"` so the rows stay the
+                                // listbox panel's own options.
+                                ul { class: "py-1", role: "none",
+                                    for (index , row) in rows.iter().enumerate() {
                                         {
                                             let id_str = row.id.to_string();
                                             let key = id_str.clone();
@@ -245,12 +316,19 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                                             rsx! {
                                                 li {
                                                     key: "{key}",
+                                                    id: nav.row_id(index),
+                                                    role: "option",
+                                                    aria_selected: nav.row_selected(index),
                                                     button {
                                                         r#type: "button",
-                                                        class: "w-full text-left px-3 py-2 text-sm hover:bg-surface-2",
+                                                        // MAPPS-503: out of the tab order, so Tab
+                                                        // commits and moves to the next field
+                                                        // instead of walking into the list.
+                                                        tabindex: "-1",
+                                                        class: nav.row_class(index, "w-full text-left px-3 py-2 text-sm hover:bg-surface-2"),
                                                         onclick: move |_| {
                                                             onselect.call((id_for_click.clone(), name_for_click.clone()));
-                                                            show_dropdown.set(false);
+                                                            nav.close();
                                                             query.set(name_for_click.clone());
                                                         },
                                                         "{name}"
@@ -260,39 +338,48 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                                         }
                                     }
                                 }
-                                // PMS-352: same inline create affordance at
-                                // the bottom of the populated list so a user
-                                // searching for a similar-name company that
-                                // is not actually in the list can still
-                                // create one without leaving the form.
-                                // PMS-371: echo the typed text in the label
-                                // when non-empty (`+ Create "Wile E. Coyote
-                                // Demolition"`) so the affordance matches
-                                // the empty-list branch and gives the user
-                                // a clear preview of what name will be
-                                // submitted.
-                                // MAPPS-320: visually distinct Create band
-                                // (gap + top border + muted background +
-                                // leading icon) so a fat-finger click on the
-                                // bottom match can't bleed into Create.
-                                if allow_inline_create {
-                                    div { class: "mt-1 border-t border-line",
-                                        button {
-                                            r#type: "button",
-                                            class: "flex w-full items-center gap-1.5 text-left px-3 py-2 text-sm bg-surface-2/50 text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30",
-                                            onclick: move |_| {
-                                                new_name.set(query_for_seed.clone());
-                                                create_error.set(String::new());
-                                                show_dropdown.set(false);
-                                                show_create_modal.set(true);
-                                            },
-                                            PlusIcon { size: IconSize::Small }
-                                            if query_text.is_empty() {
-                                                "Create new company"
-                                            } else {
-                                                {
-                                                    let q = query_text.clone();
-                                                    rsx! { "Create \"{q}\"" }
+                            }
+                            // PMS-352: inline create affordance. Renders only
+                            // when the parent opted in via `allow_inline_create`,
+                            // so contact / time-entry pickers stay unchanged. It
+                            // sits below the matches so a user searching for a
+                            // similar-name company that is not actually in the
+                            // list can still create one without leaving the form.
+                            // PMS-371: echo the typed text in the label when
+                            // non-empty (`+ Create "Wile E. Coyote Demolition"`),
+                            // so the user sees what name will be submitted.
+                            // MAPPS-320: visually distinct Create band (gap + top
+                            // border + muted background + leading icon) so a
+                            // fat-finger click on the bottom match can't bleed
+                            // into Create.
+                            // MAPPS-503: it is the last navigable row, reachable
+                            // by Down and committed by Enter / Tab.
+                            if let Some(index) = create_index {
+                                {
+                                    let query_for_seed = query_text.clone();
+                                    rsx! {
+                                        div { class: "mt-1 border-t border-line",
+                                            button {
+                                                r#type: "button",
+                                                tabindex: "-1",
+                                                id: nav.row_id(index),
+                                                role: "option",
+                                                aria_selected: nav.row_selected(index),
+                                                class: nav.row_class(index, "flex w-full items-center gap-1.5 text-left px-3 py-2 text-sm bg-surface-2/50 text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30"),
+                                                onclick: move |_| {
+                                                    new_name.set(query_for_seed.clone());
+                                                    create_error.set(String::new());
+                                                    nav.close();
+                                                    show_create_modal.set(true);
+                                                },
+                                                PlusIcon { size: IconSize::Small }
+                                                if query_text.is_empty() {
+                                                    "Create new company"
+                                                } else {
+                                                    {
+                                                        let q = query_text.clone();
+                                                        rsx! { "Create \"{q}\"" }
+                                                    }
                                                 }
                                             }
                                         }
@@ -326,7 +413,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                         creating.set(true);
                         create_error.set(String::new());
                         spawn(async move {
-                            #[cfg(feature = "web")]
+                            #[cfg(feature = "app")]
                             {
                                 let body = serde_json::json!({ "name": name_v });
                                 match crate::hooks::fetch::api::post_authed::<CreatedCompany, _>(

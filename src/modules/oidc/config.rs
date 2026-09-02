@@ -17,6 +17,12 @@ pub struct OidcConfig {
     /// stubs so existing bookmarks land on the hub instead of a 404. No
     /// trailing slash.
     pub hub_base_url: &'static str,
+    /// MAPPS-453: base URL of the documentation subdomain (e.g.
+    /// `https://docs.n.niceguyit.biz`), runtime-injected via
+    /// `window.__MOKOSH_CONFIG__.docs_base_url` (`MOKOSH_DOCS_URL`). Empty when
+    /// unconfigured, which hides the Documentation menu entry and the help
+    /// links. No trailing slash.
+    pub docs_base_url: &'static str,
 }
 
 impl OidcConfig {
@@ -42,6 +48,14 @@ impl OidcConfig {
             hub_base_url: match option_env!("MOKOSH_HUB_BASE_URL") {
                 Some(s) => s,
                 None => "http://localhost:4400",
+            },
+            // MAPPS-453: empty by default. Set via MOKOSH_DOCS_URL /
+            // window.__MOKOSH_CONFIG__.docs_base_url; unset means no docs
+            // subdomain, so the menu entry and help links stay hidden rather
+            // than pointing somewhere wrong.
+            docs_base_url: match option_env!("MOKOSH_DOCS_URL") {
+                Some(s) => s,
+                None => "",
             },
         }
     }
@@ -108,8 +122,10 @@ impl OidcConfig {
         // image. Absent the override the compile-time default applies.
         let injected_scopes = crate::modules::runtime_config::get("oidc_scopes");
 
-        let host_rest = web_sys::window()
-            .and_then(|w| w.location().host().ok())
+        // MAPPS-504: `None` on the desktop, which has no host to derive
+        // from. A desktop install configures `oidc_issuer` / `hub_base_url`
+        // explicitly (see `crate::platform::config`) or runs standalone.
+        let host_rest = crate::platform::location::host()
             .and_then(|h| h.strip_prefix("msp.").map(str::to_string));
 
         if let Some(issuer) = injected_issuer {
@@ -128,6 +144,11 @@ impl OidcConfig {
             cfg.hub_base_url = Box::leak(hub.into_boxed_str());
         } else if let Some(rest) = host_rest.as_deref() {
             cfg.hub_base_url = Box::leak(format!("https://{rest}").into_boxed_str());
+        }
+
+        // MAPPS-453: docs subdomain is injection/env only (no host derivation).
+        if let Some(docs) = crate::modules::runtime_config::get("docs_base_url") {
+            cfg.docs_base_url = Box::leak(docs.into_boxed_str());
         }
 
         if let Some(scopes) = injected_scopes {
@@ -150,14 +171,111 @@ impl OidcConfig {
         !self.issuer.trim().is_empty()
     }
 
-    /// Resolve the redirect_uri. Falls back to `<origin>/auth/callback`
-    /// at runtime when not pinned at compile time.
+    /// MAPPS-453: absolute URL to a documentation article on the docs
+    /// subdomain. `path` is joined to the configured base with one slash
+    /// boundary, mirroring [`hub_url`](Self::hub_url).
+    pub fn docs_url(&self, path: &str) -> String {
+        format!("{}{}", self.docs_base_url.trim_end_matches('/'), path)
+    }
+
+    /// MAPPS-453: whether a documentation subdomain is configured. When false
+    /// the Documentation menu entry and every `ContextualHelpLink` render
+    /// nothing, so an unconfigured deploy shows no link to a missing docs site.
+    pub fn has_docs(&self) -> bool {
+        !self.docs_base_url.trim().is_empty()
+    }
+
+    /// Resolve the redirect_uri, when it is not pinned at compile time.
+    ///
+    /// Browser: `<origin>/auth/callback`.
+    ///
+    /// Desktop (MAPPS-505): the RFC 8252 loopback URI of the listener the
+    /// current flow bound, `http://127.0.0.1:<port>/auth/callback`. The
+    /// port is ephemeral and chosen per flow, so this answers only from
+    /// `start_login` binding it onwards; before that there is nothing to
+    /// redirect to, and saying so is what makes the caller fail loudly
+    /// instead of handing the OP a `redirect_uri` it cannot honour.
     pub fn resolve_redirect_uri(&self) -> Result<String, &'static str> {
         if let Some(s) = self.redirect_uri {
             return Ok(s.to_string());
         }
-        let win = web_sys::window().ok_or("no window")?;
-        let origin = win.location().origin().map_err(|_| "no origin")?;
-        Ok(format!("{origin}/auth/callback"))
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            crate::platform::loopback::redirect_uri()
+                .ok_or("no loopback listener is bound; the sign-in flow has not started")
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let origin = crate::platform::location::origin()
+                .ok_or("this build has no origin to derive a redirect URI from")?;
+            Ok(format!("{origin}/auth/callback"))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OidcConfig;
+
+    fn with_docs(base: &'static str) -> OidcConfig {
+        let mut cfg = OidcConfig::from_env();
+        cfg.docs_base_url = base;
+        cfg
+    }
+
+    #[test]
+    fn docs_url_joins_base_and_path_with_one_slash() {
+        assert_eq!(
+            with_docs("https://docs.example.test/").docs_url("/tickets/sla"),
+            "https://docs.example.test/tickets/sla"
+        );
+        assert_eq!(
+            with_docs("https://docs.example.test").docs_url("/tickets/sla"),
+            "https://docs.example.test/tickets/sla"
+        );
+        assert_eq!(
+            with_docs("https://docs.example.test").docs_url(""),
+            "https://docs.example.test"
+        );
+    }
+
+    #[test]
+    fn has_docs_reflects_configuration() {
+        assert!(with_docs("https://docs.example.test").has_docs());
+        assert!(!with_docs("").has_docs());
+        assert!(!with_docs("   ").has_docs());
+    }
+
+    /// A `redirect_uri` pinned at build time is the answer on every
+    /// target; neither the origin nor the loopback listener is consulted.
+    #[test]
+    fn a_pinned_redirect_uri_wins() {
+        let mut cfg = OidcConfig::from_env();
+        cfg.redirect_uri = Some("https://pinned.example.test/auth/callback");
+        assert_eq!(
+            cfg.resolve_redirect_uri().unwrap(),
+            "https://pinned.example.test/auth/callback"
+        );
+    }
+
+    /// MAPPS-505: unpinned, the desktop answers with the loopback URI of
+    /// the listener the flow bound, port included. The wasm branch is the
+    /// unchanged `<origin>/auth/callback` and is covered by the browser
+    /// build; there is no origin to read here.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_unpinned_redirect_uri_is_the_bound_loopback_listener() {
+        let _guard = crate::platform::loopback::test_bind_lock();
+        let listener = crate::platform::loopback::bind().expect("bind a loopback listener");
+        let mut cfg = OidcConfig::from_env();
+        cfg.redirect_uri = None;
+        let resolved = cfg
+            .resolve_redirect_uri()
+            .expect("a bound listener resolves");
+        assert_eq!(resolved, listener.redirect_uri());
+        assert_eq!(
+            resolved,
+            format!("http://127.0.0.1:{}/auth/callback", listener.port())
+        );
     }
 }

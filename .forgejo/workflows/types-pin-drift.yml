@@ -1,0 +1,44 @@
+---
+
+# MAPPS-537 backstop.
+#
+# check.yml's pin guard now passes a catch-up-only move, because failing every
+# mokosh-apps PR whenever mokosh-server merged anything made a reviewed, green
+# PR go red for reasons in another repository, and taught reviewers to approve
+# lock bumps without reading them.
+#
+# What that gives up is the thing MAPPS-525 was filed for: with nothing
+# obliging anyone to bump, the pin drifted 92, then 138, then 214 commits
+# behind across three parity audits while every check stayed green. This run is
+# what keeps that visible. It applies the pre-MAPPS-537 rule once a week and is
+# allowed to be red: it gates no pull request, so a catch-up bump is scheduled
+# work rather than a toll on whoever happened to open a PR that morning.
+#
+# A red run here means: run `cargo update --package mokosh-types`, read the
+# diff, and land it as its own PR.
+name: mokosh-types pin drift
+
+on:
+  schedule:
+    # 07:00 UTC on Mondays: a distance to close during the week, not a
+    # notification that arrives mid-review.
+    - cron: '0 7 * * 1'
+  # So the distance can be checked on demand without waiting for Monday.
+  workflow_dispatch:
+
+jobs:
+  drift:
+    name: how far behind is the pin
+    # Dev label: this job runs `cargo update`, which needs a cargo the base
+    # image does not carry. It compiles nothing, so the C toolchain that label
+    # also brings is incidental here.
+    runs-on: ${{ vars.RUNS_ON_OPENSUSE_DEV_LATEST }}
+
+    steps:
+      - name: Clone the repository
+        uses: https://code.forgejo.org/actions/checkout@v5
+
+      - name: mokosh-types pin drift
+        run: |
+          bash scripts/check-types-pin.sh --self-test
+          bash scripts/check-types-pin.sh --strict

@@ -1,23 +1,23 @@
 //! Authentication hooks
 
 use dioxus::prelude::*;
-use wasm_bindgen::JsCast;
 
 use crate::modules::auth::{CurrentUser, UserRole};
 use crate::modules::oidc::Tokens;
 use crate::Route;
 
-/// One row in [`AuthContext::memberships`]. Mirrors the shape of the
-/// server's `/v1/auth/memberships` response so the switcher UI can
-/// render directly off the cached vec.
+/// One organisation the signed-in user acts under.
+///
+/// MAPPS-427: this used to mirror bunyip's `/v1/auth/memberships` response
+/// field for field. It no longer comes from there, and of the six fields only
+/// these two were ever read: `tenant_id` to match the active org, `tenant_name`
+/// to display it. `tenant_kind`, `role`, `status` and `is_active` existed to
+/// mirror a payload nothing consumed, and keeping them now would mean inventing
+/// four values per row.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
 pub struct MembershipView {
     pub tenant_id: String,
     pub tenant_name: String,
-    pub tenant_kind: String,
-    pub role: String,
-    pub status: String,
-    pub is_active: bool,
 }
 
 /// Authentication context for the application
@@ -32,10 +32,17 @@ pub struct AuthContext {
     /// Tenant the user is currently acting under. Seeded from the home
     /// tenant at sign-in and updated on switch. None before sign-in.
     pub active_tenant_id: Option<uuid::Uuid>,
-    /// Every membership the user has. Loaded from /v1/auth/memberships
-    /// after sign-in; powers the tenant switcher UI. Empty before
-    /// sign-in.
+    /// Every organisation the user acts under. One row today: mokosh is
+    /// single-tenant-per-user (PMS-447) and the switcher itself lives in
+    /// bunyip's hub. Empty before sign-in, and empty when the load failed.
     pub memberships: Vec<MembershipView>,
+    /// MAPPS-427: whether the org load has been attempted, successful or not.
+    ///
+    /// The effect used to re-fire on an empty list, which meant a failure had
+    /// to be papered over with a fabricated row or it would retry on every
+    /// render. This lets a failure stay a failure: no org name is shown, and
+    /// nothing invents one.
+    pub memberships_loaded: bool,
     /// MAPPS-317: false until `/api/v1/auth/me` has reconciled the
     /// optimistic rehydrate at least once. The AuthGuard's forced-
     /// onboarding redirect reads this so it never fires on the
@@ -101,6 +108,44 @@ impl AuthContext {
     pub fn active_org_name(&self) -> Option<&str> {
         self.active_membership().map(|m| m.tenant_name.as_str())
     }
+
+    /// Point the cached organisation name at what the server just stored.
+    ///
+    /// MAPPS-571: [`use_active_org_loader`] runs once per session. It sets
+    /// `memberships_loaded` on its first attempt, deliberately, so a failed load
+    /// stays a failure instead of re-firing forever (MAPPS-427) - but that also
+    /// means nothing re-reads `tenants.name` after a rename. Both writers of
+    /// that column call this so the top bar, the dispatch board heading and the
+    /// onboarding screen show the new name without a page reload.
+    ///
+    /// Pass the name from the server's response rather than the form signal: the
+    /// server trims and length-checks it, so the response is what was actually
+    /// stored and the form value is only what was typed.
+    ///
+    /// Updates an existing row and otherwise does nothing, returning whether it
+    /// found one. A rename is not a reason to break MAPPS-427's rule that a
+    /// failed org load leaves the list empty rather than inventing a row: with no
+    /// membership the right thing to display is still no name, not one
+    /// reconstructed from a form field. An empty or whitespace name is ignored
+    /// for the same reason - the server rejects it (`1..=255`), so seeing one
+    /// here means the response was not what it claimed, and the previous name is
+    /// a better answer than none.
+    pub fn set_active_org_name(&mut self, name: &str) -> bool {
+        let name = name.trim();
+        if name.is_empty() {
+            return false;
+        }
+        let Some(active) = self.active_tenant_id.map(|id| id.to_string()) else {
+            return false;
+        };
+        match self.memberships.iter_mut().find(|m| m.tenant_id == active) {
+            Some(m) => {
+                m.tenant_name = name.to_string();
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 /// Hook to access authentication state
@@ -165,6 +210,7 @@ fn initial_auth_context() -> AuthContext {
             tokens: None,
             active_tenant_id: None,
             memberships: Vec::new(),
+            memberships_loaded: false,
             // Dev-only ADMIN_EMAIL bypass; the AuthGuard's onboarding
             // gate trusts this synthesized user without a /me round-trip.
             server_loaded: true,
@@ -255,6 +301,7 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
         // re-fetches them once the SPA mounts. Avoids persisting the
         // membership list (it can drift independently of the token).
         memberships: Vec::new(),
+        memberships_loaded: false,
         // MAPPS-317: false until the post-rehydrate /me fetch lands.
         // AuthGuard's onboarding gate trusts this flag; see lib.rs.
         server_loaded: false,
@@ -280,6 +327,7 @@ fn rehydrate_standalone() -> Option<AuthContext> {
         tokens: None,
         active_tenant_id,
         memberships: Vec::new(),
+        memberships_loaded: false,
         // /me reconciles the authoritative user on the next tick.
         server_loaded: false,
     })
@@ -299,12 +347,16 @@ fn rehydrate_standalone() -> Option<AuthContext> {
 /// fallback are gone; a failed fetch leaves `memberships` empty, which
 /// the switcher UI handles (hides the trigger, shows "Create new"
 /// through the user menu instead).
+///
+/// Exposed under the historical `use_active_org_loader` name as well
+/// (see the `pub use` further down) so mid-merge callers keep
+/// compiling.
 pub fn use_memberships_loader() {
     let mut auth = use_auth();
     use_effect(move || {
         let needs_load = {
             let a = auth.read();
-            a.is_authenticated() && a.memberships.is_empty()
+            a.is_authenticated() && !a.memberships_loaded
         };
         if !needs_load {
             return;
@@ -320,27 +372,48 @@ pub fn use_memberships_loader() {
                     Ok(list) if !list.is_empty() => {
                         let mut a = auth.write();
                         a.memberships = list;
+                        a.memberships_loaded = true;
                     }
                     Ok(_) => {
                         tracing::debug!("mokosh /auth/memberships returned no rows");
+                        auth.write().memberships_loaded = true;
                     }
                     Err(e) => {
                         tracing::warn!("mokosh /auth/memberships load failed: {e}");
+                        auth.write().memberships_loaded = true;
                     }
                 }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                auth.write().memberships_loaded = true;
             }
         });
     });
 }
 
+/// Historical name used by `src/main.rs` and older doc comments. Kept as an
+/// alias so the mid-merge boot path keeps compiling; delegates straight to
+/// [`use_memberships_loader`].
+pub fn use_active_org_loader() {
+    use_memberships_loader();
+}
+
 /// Background token-refresh loop. Mount once near the root of the app
-/// (alongside `use_auth_provider`). Polls the AuthContext every 30
-/// seconds; if the access token is within 60s of expiry, exchanges the
-/// refresh token for a new pair and pushes the result back into the
-/// context. On any refresh failure (the storage layer detected reuse,
-/// the refresh token has expired, the network is gone) the local auth
-/// state is cleared and the browser is sent to /login. The user
-/// experiences a transparent re-login rather than mysterious 401s.
+/// (alongside `use_auth_provider`). Evaluates the persisted token bundle
+/// at mount and every 30 seconds after; if the access token is within
+/// 60s of expiry, exchanges the refresh token for a new pair and pushes
+/// the result back into the context. On any refresh failure (the storage
+/// layer detected reuse, the refresh token has expired, the network is
+/// gone) the local auth state is cleared and the browser is sent to
+/// /login. The user experiences a transparent re-login rather than
+/// mysterious 401s.
+///
+/// MAPPS-435: this loop is no longer the only thing standing between a
+/// spent token and a request. The renewal it drives lives in
+/// [`crate::hooks::fetch::api::renew_access_token`], which the request
+/// path also calls, because a tab the browser discarded and re-created
+/// mounts its pages before any loop has ticked.
 pub fn use_token_refresh() {
     let mut auth = use_auth();
     // Note: this hook is mounted on the root `App` component, which is
@@ -351,90 +424,78 @@ pub fn use_token_refresh() {
 
     use_future(move || async move {
         loop {
-            #[cfg(feature = "web")]
-            gloo_timers::future::TimeoutFuture::new(30_000).await;
-
-            // Snapshot what we need under a short read; never hold the
-            // lock across the network call.
-            let snap = {
-                let a = auth.read();
-                a.tokens.as_ref().and_then(|t| {
-                    t.refresh_token.as_ref().map(|rt| {
-                        (
-                            t.access_token.clone(),
-                            rt.clone(),
-                            t.id_token.clone(),
-                            t.expires_at,
-                        )
-                    })
-                })
-            };
-            let (_access, refresh, id_token, expires_at) = match snap {
-                Some(s) => s,
-                None => continue, // not signed in, nothing to do
-            };
-
-            // Refresh window: 60s before expiry. If we already missed
-            // it (clock jump / tab was backgrounded), refresh now.
-            let now = chrono::Utc::now();
-            if expires_at - now > chrono::Duration::seconds(60) {
-                continue;
-            }
-
-            let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
-            match crate::modules::oidc::refresh_tokens(&cfg, &refresh, &id_token).await {
-                Ok(new_tokens) => {
-                    crate::hooks::fetch::api::set_access_token(Some(
-                        new_tokens.access_token.clone(),
-                    ));
-                    crate::modules::oidc::storage::save_auth(
-                        &crate::modules::oidc::storage::StoredTokens {
-                            access_token: new_tokens.access_token.clone(),
-                            id_token: new_tokens.id_token.clone(),
-                            refresh_token: new_tokens.refresh_token.clone(),
-                            expires_at: new_tokens.expires_at,
-                            scope: new_tokens.scope.clone(),
-                        },
-                    );
-                    auth.write().tokens = Some(new_tokens);
-
-                    // Refresh the cached CurrentUser from /v1/auth/me so
-                    // any server-side change since the original id_token
-                    // was minted (role demotion, name update, active-
-                    // tenant switch from another tab) propagates within
-                    // one refresh window. Mokosh is RFC-compliant and
-                    // typically omits id_token on refresh-grant responses,
-                    // so the cached id_token's claims will be stale for
-                    // the life of the session if we don't actively
-                    // re-fetch. Memberships are also cleared so the
-                    // membership-loader effect re-runs.
-                    refresh_user_from_me(&mut auth).await;
-                }
-                Err(e) => {
-                    tracing::warn!("token refresh failed; signing out: {e}");
-                    {
-                        let mut a = auth.write();
-                        a.user = None;
-                        a.tokens = None;
-                    }
-                    crate::hooks::fetch::api::set_access_token(None);
-                    crate::modules::oidc::storage::clear_auth();
-                    // Hard redirect (see note on the hook above): we
-                    // are outside the Router subtree, so use_navigator
-                    // is unavailable. window.location.set_href works
-                    // regardless and triggers a full page reload,
-                    // which is appropriate after a forced sign-out.
-                    // MAPPS-518 URL swap: tenant login lives at
-                    // /client/login now; /login is the platform-admin
-                    // page and would be the wrong destination for a
-                    // forced tenant sign-out.
-                    if let Some(win) = web_sys::window() {
-                        let _ = win.location().set_href("/client/login");
-                    }
-                }
-            }
+            oidc_refresh_tick(&mut auth).await;
+            // MAPPS-435: the sleep is LAST. Sleeping first meant a tab the
+            // browser had discarded and re-created ran on whatever
+            // sessionStorage held for the first 30 seconds, however dead, and
+            // every page that mounted in that window 401'd.
+            #[cfg(feature = "app")]
+            crate::platform::timer::sleep_ms(30_000).await;
         }
     });
+}
+
+/// One evaluation of the OIDC refresh window. Returns without renewing when
+/// there is no persisted OIDC session, it carries no refresh token, or the
+/// access token is still comfortably valid.
+async fn oidc_refresh_tick(auth: &mut Signal<AuthContext>) {
+    // The persisted bundle is the source of truth, not the context's copy: a
+    // renewal on the request path (MAPPS-435) rotates the refresh token in
+    // sessionStorage, and replaying the superseded copy the context still
+    // holds is what the OP's reuse detection answers by killing the grant.
+    let stored = match crate::modules::oidc::storage::load_auth() {
+        Some(s) => s,
+        None => return, // not signed in through OIDC, nothing to do
+    };
+    if stored.refresh_token.is_none() {
+        return; // nothing to renew with; let it expire
+    }
+
+    // Refresh window: 60s before expiry. If we already missed it (clock jump /
+    // tab was backgrounded), refresh now.
+    let now = chrono::Utc::now();
+    if stored.expires_at - now > chrono::Duration::seconds(60) {
+        return;
+    }
+
+    // Renewal itself lives in the fetch layer so a tick and a request-time
+    // renewal that coincide share one flight (MAPPS-435).
+    match crate::hooks::fetch::api::renew_access_token().await {
+        Ok(()) => {
+            // Mirror the rotated bundle into the context so its copy does not
+            // age out behind sessionStorage.
+            if let Some(fresh) = crate::modules::oidc::storage::load_auth() {
+                auth.write().tokens = Some(Tokens {
+                    access_token: fresh.access_token,
+                    id_token: fresh.id_token,
+                    refresh_token: fresh.refresh_token,
+                    expires_at: fresh.expires_at,
+                    scope: fresh.scope,
+                });
+            }
+
+            // Refresh the cached CurrentUser from /v1/auth/me so any
+            // server-side change since the original id_token was minted (role
+            // demotion, name update, active-tenant switch from another tab)
+            // propagates within one refresh window. Mokosh is RFC-compliant
+            // and typically omits id_token on refresh-grant responses, so the
+            // cached id_token's claims will be stale for the life of the
+            // session if we don't actively re-fetch. Memberships are also
+            // cleared so the membership-loader effect re-runs.
+            refresh_user_from_me(auth).await;
+        }
+        Err(e) => {
+            tracing::warn!("token refresh failed; signing out: {e}");
+            {
+                let mut a = auth.write();
+                a.user = None;
+                a.tokens = None;
+            }
+            crate::hooks::fetch::api::set_access_token(None);
+            crate::modules::oidc::storage::clear_auth();
+            redirect_to_login();
+        }
+    }
 }
 
 /// MAPPS-374: silent refresh for STANDALONE (non-OIDC) sessions - the mirror of
@@ -456,80 +517,52 @@ pub fn use_standalone_token_refresh() {
 
     use_future(move || async move {
         loop {
-            #[cfg(feature = "web")]
-            gloo_timers::future::TimeoutFuture::new(30_000).await;
-
-            // Reload the persisted session each tick so a login or logout in
-            // this tab is seen. No standalone session -> nothing to do (the OIDC
-            // loop above owns OIDC sessions).
-            let session = match crate::modules::oidc::storage::load_standalone() {
-                Some(s) => s,
-                None => continue,
-            };
-            // A standalone session with no refresh token cannot be renewed;
-            // leave it to expire rather than spin on it every tick.
-            let refresh = match session.refresh_token.clone() {
-                Some(rt) => rt,
-                None => continue,
-            };
-
-            // Refresh window: 60s before expiry. If a backgrounded tab sailed
-            // past it (throttled timers), refresh now - same policy as the OIDC
-            // loop above.
-            let now = chrono::Utc::now();
-            if session.expires_at - now > chrono::Duration::seconds(60) {
-                continue;
-            }
-
-            #[derive(serde::Serialize)]
-            struct RefreshReq {
-                refresh_token: String,
-            }
-            #[derive(serde::Deserialize)]
-            struct RefreshResp {
-                access_token: String,
-                refresh_token: String,
-                expires_at: chrono::DateTime<chrono::Utc>,
-            }
-
-            match crate::hooks::fetch::api::post_typed::<RefreshResp, _>(
-                "/auth/refresh",
-                &RefreshReq {
-                    refresh_token: refresh,
-                },
-            )
-            .await
-            {
-                Ok(resp) => {
-                    crate::hooks::fetch::api::set_access_token(Some(resp.access_token.clone()));
-                    crate::modules::oidc::storage::save_standalone(
-                        &crate::modules::oidc::storage::StandaloneSession {
-                            access_token: resp.access_token,
-                            refresh_token: Some(resp.refresh_token),
-                            expires_at: resp.expires_at,
-                            user: session.user,
-                        },
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!("standalone token refresh failed; signing out: {e:?}");
-                    {
-                        let mut a = auth.write();
-                        a.user = None;
-                        a.tokens = None;
-                    }
-                    crate::modules::oidc::storage::clear_standalone();
-                    crate::hooks::fetch::api::set_access_token(None);
-                    // Hard redirect (mirrors use_token_refresh): this hook is
-                    // mounted above the Router, so use_navigator is unavailable.
-                    // MAPPS-518 URL swap: tenant login is /client/login.
-                    if let Some(win) = web_sys::window() {
-                        let _ = win.location().set_href("/client/login");
-                    }
-                }
-            }
+            standalone_refresh_tick(&mut auth).await;
+            // MAPPS-435: sleep LAST, for the reason given on the OIDC loop.
+            #[cfg(feature = "app")]
+            crate::platform::timer::sleep_ms(30_000).await;
         }
     });
+}
+
+/// One evaluation of the standalone refresh window. Reloads the persisted
+/// session each tick so a login or logout in this tab is seen.
+async fn standalone_refresh_tick(auth: &mut Signal<AuthContext>) {
+    // An OIDC session is the loop above's business, and the shared renewal
+    // prefers the OIDC bundle, so bail before reaching for it.
+    if crate::modules::oidc::storage::load_auth().is_some() {
+        return;
+    }
+    let session = match crate::modules::oidc::storage::load_standalone() {
+        Some(s) => s,
+        None => return,
+    };
+    // A standalone session with no refresh token cannot be renewed; leave it
+    // to expire rather than spin on it every tick.
+    if session.refresh_token.is_none() {
+        return;
+    }
+
+    // Refresh window: 60s before expiry. If a backgrounded tab sailed past it
+    // (throttled timers), refresh now - same policy as the OIDC loop above.
+    let now = chrono::Utc::now();
+    if session.expires_at - now > chrono::Duration::seconds(60) {
+        return;
+    }
+
+    // Shared single-flight renewal (MAPPS-435); it persists the rotated
+    // session and swaps the fetch layer's bearer.
+    if let Err(e) = crate::hooks::fetch::api::renew_access_token().await {
+        tracing::warn!("standalone token refresh failed; signing out: {e}");
+        {
+            let mut a = auth.write();
+            a.user = None;
+            a.tokens = None;
+        }
+        crate::modules::oidc::storage::clear_standalone();
+        crate::hooks::fetch::api::set_access_token(None);
+        redirect_to_login();
+    }
 }
 
 /// MAPPS-355: proactive auth heartbeat. Mount once at the app root
@@ -557,47 +590,69 @@ pub fn use_standalone_token_refresh() {
 pub fn use_auth_heartbeat() {
     use_future(move || async move {
         loop {
-            #[cfg(feature = "web")]
-            gloo_timers::future::TimeoutFuture::new(30_000).await;
-
-            #[cfg(feature = "web")]
-            {
-                if *crate::hooks::fetch::ACCOUNT_DELETED.peek() {
-                    continue;
-                }
-                if crate::hooks::fetch::api::current_access_token().is_none() {
-                    continue;
-                }
-                if tab_is_hidden() {
-                    continue;
-                }
-                // Fire and discard. The fetch layer handles the 410 case
-                // (flips ACCOUNT_DELETED); 401 / 200 / network errors are
-                // no-ops here because the token-refresh loop above and the
-                // per-page fetches already handle those paths.
-                let _ = crate::hooks::fetch::api::get_authed_typed::<serde_json::Value>("/auth/me")
-                    .await;
-            }
+            heartbeat_tick().await;
+            // MAPPS-435: sleep LAST, for the reason given on the OIDC loop.
+            #[cfg(feature = "app")]
+            crate::platform::timer::sleep_ms(30_000).await;
         }
     });
 }
 
-/// Read `document.visibilityState`. Returns `true` when the tab is hidden
-/// (backgrounded, minimised, on another tab), so the heartbeat above skips
-/// its request. Non-`web` builds report the tab as visible so the same
-/// call site type-checks under `cargo check` without the `web` feature.
-#[cfg(feature = "web")]
-fn tab_is_hidden() -> bool {
-    web_sys::window()
-        .and_then(|w| w.document())
-        .map(|d| d.visibility_state() == web_sys::VisibilityState::Hidden)
-        .unwrap_or(false)
+/// One heartbeat evaluation. Returns without firing when the overlay is
+/// already up, nobody is signed in, or the tab is in the background.
+async fn heartbeat_tick() {
+    #[cfg(feature = "app")]
+    {
+        if *crate::hooks::fetch::ACCOUNT_DELETED.peek() {
+            return;
+        }
+        if crate::hooks::fetch::api::current_access_token().is_none() {
+            return;
+        }
+        if tab_is_hidden() {
+            return;
+        }
+        // Fire and discard. The fetch layer handles the 410 case (flips
+        // ACCOUNT_DELETED) and, since MAPPS-435, the 401 case (renew, else
+        // clear the session and redirect); 200 / network errors are no-ops
+        // here.
+        let _ = crate::hooks::fetch::api::get_authed_typed::<serde_json::Value>("/auth/me").await;
+    }
 }
 
-#[cfg(not(feature = "web"))]
+/// True when the app is out of sight, so the heartbeat above skips its
+/// request. In the browser that is `document.visibilityState`; a desktop
+/// window always reports itself visible (see
+/// [`crate::platform::dom::window_hidden`]). Non-`app` builds report
+/// visible too, so the call site type-checks under `cargo check` without
+/// the `app` feature.
+#[cfg(feature = "app")]
+fn tab_is_hidden() -> bool {
+    crate::platform::dom::window_hidden()
+}
+
+#[cfg(not(feature = "app"))]
 #[allow(dead_code)]
 fn tab_is_hidden() -> bool {
     false
+}
+
+/// Put a signed-out user back on the login screen.
+///
+/// Every caller has already cleared `AuthContext` and the persisted
+/// session, so the route guard would land them there on the next render
+/// regardless. In a browser the hard navigation is still worth doing: it
+/// reloads the document and drops every other piece of in-memory state
+/// with it. MAPPS-504: a desktop window has no document to replace, and
+/// the cleared context is what moves it.
+fn redirect_to_login() {
+    // MAPPS-518 URL swap: tenant login lives at /client/login now; /login is
+    // the platform-admin page and would be the wrong destination for a
+    // forced tenant sign-out.
+    #[cfg(target_arch = "wasm32")]
+    if let Err(e) = crate::platform::location::set_href("/client/login") {
+        tracing::warn!("redirect to /client/login after sign-out failed: {e}");
+    }
 }
 
 /// Pull the authoritative current user from mokosh-server
@@ -703,10 +758,12 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
     // mutate above so any AuthGuard re-render that observes
     // server_loaded=true also sees the reconciled profile flag.
     a.server_loaded = true;
-    // Force the memberships loader to re-fetch by clearing the cached
-    // list; the use_memberships_loader effect re-runs when
-    // `memberships.is_empty()` and the user is authenticated.
+    // MAPPS-427: force the org loader to run again now that /me has confirmed
+    // the session. Clearing the flag rather than the list, because the effect
+    // keys off the flag: an empty list is a legitimate outcome (the load
+    // failed), not a signal to retry on every render.
     a.memberships.clear();
+    a.memberships_loaded = false;
 }
 
 /// On first authenticated mount, fetch the authoritative user from
@@ -737,7 +794,14 @@ pub fn use_current_user_loader() {
 /// fires for bfcache restores, not normal loads) and force a full
 /// reload, which reruns `initial_auth_context()` and drops the user
 /// onto `/login` if they have no live session.
+///
+/// MAPPS-504: browser-only by nature. There is no back-forward cache on
+/// the desktop because there is no navigation away from the document to
+/// be restored from.
+#[cfg(all(feature = "app", target_arch = "wasm32"))]
 pub fn use_bfcache_invalidator() {
+    use wasm_bindgen::JsCast;
+
     use_effect(move || {
         let win = match web_sys::window() {
             Some(w) => w,
@@ -753,9 +817,7 @@ pub fn use_bfcache_invalidator() {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
             if persisted {
-                if let Some(w) = web_sys::window() {
-                    let _ = w.location().reload();
-                }
+                crate::platform::location::reload();
             }
         })
             as Box<dyn FnMut(web_sys::Event)>);
@@ -763,4 +825,217 @@ pub fn use_bfcache_invalidator() {
         // Listener must outlive its registration; SPA root, fires once.
         handler.forget();
     });
+}
+
+#[cfg(any(not(feature = "app"), not(target_arch = "wasm32")))]
+pub fn use_bfcache_invalidator() {}
+
+/// MAPPS-504: watch [`crate::hooks::fetch::SESSION_ENDED`] and clear the
+/// auth context when the fetch layer ends a session from outside the
+/// component tree.
+///
+/// In a browser that path finishes with `location.set_href("/login")`,
+/// and the reload wipes `AuthContext` on the way. A desktop window has
+/// no reload, so without this the user would keep looking at a populated
+/// dashboard whose every request 401s. Clearing the context is enough:
+/// the route guard reads it and moves them to the login screen.
+///
+/// Mounted once at the app root, alongside the refresh loops.
+#[cfg(all(feature = "app", not(target_arch = "wasm32")))]
+pub fn use_session_end_watch() {
+    let mut auth = use_auth();
+    use_effect(move || {
+        if !*crate::hooks::fetch::SESSION_ENDED.read() {
+            return;
+        }
+        {
+            let mut a = auth.write();
+            a.user = None;
+            a.tokens = None;
+        }
+        // One-shot: lower it so a later sign-in is not torn down by a
+        // flag left raised from the previous session.
+        *crate::hooks::fetch::SESSION_ENDED.write() = false;
+    });
+}
+
+/// The browser reloads instead, which is what clears the context there.
+#[cfg(any(not(feature = "app"), target_arch = "wasm32"))]
+pub fn use_session_end_watch() {}
+
+#[cfg(test)]
+mod tests {
+    /// This module's own source, minus this test module: the assertions below
+    /// name the very strings they forbid, so scanning the whole file would make
+    /// them match themselves.
+    fn production_src() -> &'static str {
+        const AUTH_SRC: &str = include_str!("auth.rs");
+        AUTH_SRC
+            .split_once("#[cfg(test)]")
+            .map(|(before, _)| before)
+            .expect("this file has a test module")
+    }
+
+    /// MAPPS-427 recurrence guard.
+    ///
+    /// The org name must come from mokosh's own tenant row. It used to come
+    /// from bunyip's `/v1/auth/memberships`, which answers 401 for this SPA's
+    /// token by design (BUNYIP-252 enforces `aud == OIDC_RS_AUDIENCE`), and the
+    /// failure path then displayed the user's email address as an organisation
+    /// name. A source scan rather than a behavioural test because the loader is
+    /// an effect that needs a browser; what is being pinned is which endpoint it
+    /// reaches for, and that is visible in the source.
+    #[test]
+    fn the_org_name_is_read_from_mokosh_not_the_issuer() {
+        assert!(
+            production_src().contains("get_authed::<TenantView>(\"/tenants/current\")"),
+            "the org loader must read mokosh's own tenant row"
+        );
+        // The doc comments explain the history, so only a real CALL counts.
+        assert!(
+            !production_src().contains("issuer_get_authed"),
+            "an issuer-hosted call cannot succeed with a mokosh-audience token"
+        );
+    }
+
+    /// MAPPS-571: a context holding one membership, the shape the loader
+    /// produces on a successful read.
+    fn with_org(name: &str) -> (super::AuthContext, uuid::Uuid) {
+        let id = uuid::Uuid::from_u128(0x0dd1);
+        let ctx = super::AuthContext {
+            active_tenant_id: Some(id),
+            memberships: vec![super::MembershipView {
+                tenant_id: id.to_string(),
+                tenant_name: name.to_string(),
+            }],
+            memberships_loaded: true,
+            ..Default::default()
+        };
+        (ctx, id)
+    }
+
+    #[test]
+    fn a_rename_updates_the_cached_org_name() {
+        let (mut ctx, _) = with_org("My workspace");
+        assert!(ctx.set_active_org_name("Niceguy IT"));
+        assert_eq!(ctx.active_org_name(), Some("Niceguy IT"));
+    }
+
+    #[test]
+    fn a_rename_with_no_membership_does_not_invent_one() {
+        // MAPPS-427 leaves the list empty when the org load failed, on purpose:
+        // no name beats a wrong one. A rename must not be the back door that
+        // reintroduces a fabricated row, because the name it would carry comes
+        // from a form field rather than from the row the server holds.
+        let mut ctx = super::AuthContext {
+            active_tenant_id: Some(uuid::Uuid::from_u128(0x0dd1)),
+            memberships_loaded: true,
+            ..Default::default()
+        };
+        assert!(!ctx.set_active_org_name("Niceguy IT"));
+        assert!(ctx.memberships.is_empty());
+        assert_eq!(ctx.active_org_name(), None);
+    }
+
+    #[test]
+    fn a_rename_before_the_active_tenant_is_known_changes_nothing() {
+        let (mut ctx, _) = with_org("My workspace");
+        ctx.active_tenant_id = None;
+        assert!(!ctx.set_active_org_name("Niceguy IT"));
+        assert_eq!(ctx.memberships[0].tenant_name, "My workspace");
+    }
+
+    #[test]
+    fn a_rename_never_touches_a_row_for_another_tenant() {
+        let (mut ctx, _) = with_org("My workspace");
+        ctx.memberships.push(super::MembershipView {
+            tenant_id: uuid::Uuid::from_u128(0xbeef).to_string(),
+            tenant_name: "Someone else".to_string(),
+        });
+        assert!(ctx.set_active_org_name("Niceguy IT"));
+        assert_eq!(ctx.memberships[0].tenant_name, "Niceguy IT");
+        assert_eq!(ctx.memberships[1].tenant_name, "Someone else");
+    }
+
+    #[test]
+    fn an_empty_name_leaves_the_previous_one_standing() {
+        // The server enforces `1..=255`, so an empty name in a 2xx response
+        // means the body was not what it claimed. Blanking the top bar on the
+        // strength of that is worse than keeping the name that was there.
+        let (mut ctx, _) = with_org("Niceguy IT");
+        assert!(!ctx.set_active_org_name(""));
+        assert!(!ctx.set_active_org_name("   "));
+        assert_eq!(ctx.active_org_name(), Some("Niceguy IT"));
+    }
+
+    #[test]
+    fn a_stored_name_is_cached_without_its_surrounding_space() {
+        let (mut ctx, _) = with_org("My workspace");
+        assert!(ctx.set_active_org_name("  Niceguy IT  "));
+        assert_eq!(ctx.active_org_name(), Some("Niceguy IT"));
+    }
+
+    /// MAPPS-571 recurrence guard, in the same shape as the MAPPS-427 one
+    /// above: both writers of `tenants.name` live in pages that need a browser,
+    /// so what is pinned here is the thing this file owns.
+    #[test]
+    fn a_rename_refreshes_the_cache_rather_than_re_running_the_loader() {
+        let src = production_src();
+        assert!(
+            src.contains("pub fn set_active_org_name"),
+            "the writers of tenants.name need a way to refresh the cached name"
+        );
+        // `memberships_loaded` is cleared in exactly one place: the `/me`
+        // reconcile, which re-runs the loader once the session is confirmed.
+        // A second site would almost certainly be a rename trying to refresh
+        // itself by making the effect fire again, which spends a round-trip on
+        // a value the PUT response already carried and re-opens the
+        // retry-on-failure behaviour MAPPS-427 closed.
+        assert_eq!(
+            src.matches("memberships_loaded = false").count(),
+            1,
+            "the org loader's guard flag is cleared by the /me reconcile and nothing else"
+        );
+    }
+
+    /// MAPPS-435 recurrence guard.
+    ///
+    /// A polling loop that sleeps before it evaluates is useless to the case
+    /// that motivated it: a tab the browser discarded and re-created starts
+    /// every loop from scratch, so a sleep-first loop leaves the SPA running
+    /// on whatever sessionStorage held for the first 30 seconds, however
+    /// stale, and every page that mounts in that window 401s. The condition
+    /// therefore has to be evaluated once at mount, before any sleep.
+    #[test]
+    fn the_auth_loops_evaluate_before_they_sleep() {
+        let mut loops = 0;
+        for segment in production_src().split("loop {").skip(1) {
+            loops += 1;
+            let first = segment
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty() && !l.starts_with("//"))
+                .unwrap_or_default();
+            assert!(
+                !first.contains("sleep_ms") && !first.starts_with("#[cfg"),
+                "this loop sleeps before it evaluates anything: {first}"
+            );
+        }
+        assert_eq!(loops, 3, "this file runs three polling loops");
+    }
+
+    /// A failed load must leave the org unnamed rather than invent one. The
+    /// effect keys off `memberships_loaded`, so an empty list is a legitimate
+    /// end state and not a signal to retry on every render.
+    #[test]
+    fn a_failed_load_does_not_fabricate_an_organisation() {
+        assert!(
+            !production_src().contains("fn synthesize_single_membership"),
+            "the synthetic fallback is what put an email address in the top bar"
+        );
+        assert!(
+            production_src().contains("a.memberships_loaded = true;"),
+            "the loader must record the attempt, not the outcome"
+        );
+    }
 }

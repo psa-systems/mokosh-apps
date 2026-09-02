@@ -11,12 +11,17 @@ use crate::Route;
 pub fn HomePage() -> Element {
     // Derive the copyright year at render so it never goes stale (MAPPS-229).
     let current_year = chrono::Utc::now().year();
+    // MAPPS-509: brand from runtime config so an operator's deployment
+    // presents as their own product without a rebuild.
+    let brand = crate::branding::product_name();
+    let hero = crate::branding::hero_src();
+    let hero_alt = crate::branding::hero_alt();
     rsx! {
         div { class: "min-h-screen bg-gradient-to-br from-blue-600 to-indigo-900",
             // Navigation
             nav { class: "container mx-auto px-6 py-4",
                 div { class: "flex items-center justify-between",
-                    span { class: "text-2xl font-bold text-white", "Mokosh Platform" }
+                    span { class: "text-2xl font-bold text-white", "{brand}" }
                     div { class: "flex items-center space-x-4",
                         // MAPPS-520: unified sign-in. The mokosh
                         // operator and the MSP tenant admin/user
@@ -81,8 +86,8 @@ pub fn HomePage() -> Element {
                     // Mascot + tagline caption
                     div { class: "flex flex-col items-center",
                         img {
-                            src: asset!("/assets/mokosh-hero.png"),
-                            alt: "Mokosh, the weaver goddess, at her loom",
+                            src: "{hero}",
+                            alt: "{hero_alt}",
                             class: "w-full max-w-md h-auto drop-shadow-2xl",
                         }
                         p { class: "relative z-10 -mt-24 rounded-full border border-blue-100 bg-white px-5 py-2 text-sm italic text-blue-700 shadow-lg whitespace-nowrap", // theme-guard-allow: marketing hero tagline pill on brand gradient
@@ -155,7 +160,7 @@ pub fn HomePage() -> Element {
                 div { class: "container mx-auto px-6",
                     div { class: "flex flex-col md:flex-row items-center justify-between",
                         span { class: "text-subtle text-sm",
-                            "© {current_year} Mokosh Platform. All rights reserved."
+                            "© {current_year} {brand}. All rights reserved."
                         }
                     }
                 }
