@@ -96,6 +96,10 @@
 
 :root {
   /* Base: Light */
+  /* MAPPS-655: keys every browser-painted sub-widget (number spinner, date picker
+     indicator, search clear, colour swatch) to the active base mode. Without it the UA
+     paints them from its own light palette even under .dark. */
+  color-scheme: light;
   --bg: #f8fafc;
   --surface: #ffffff;
   --surface-2: #f1f5f9;
@@ -142,6 +146,7 @@
 
 .dark {
   /* Base: Dark */
+  color-scheme: dark;
   --bg: #0f172a;
   --surface: #1e293b;
   --surface-2: #0f172a;
@@ -268,6 +273,23 @@
     @apply block w-full rounded-md border-line bg-surface text-content shadow-sm
            focus:border-accent focus:ring-accent
            sm:text-sm;
+  }
+
+  /* MAPPS-655: the browser paints the number spinner itself, so `color-scheme` on
+     :root / .dark above is what keys its hue to the active base mode. This drops it to
+     the text-subtle register so it sits level with neighbouring controls instead of
+     shouting, and returns it to full strength on hover and focus. WebKit/Chromium only;
+     Firefox has no equivalent pseudo-element and relies on `color-scheme` alone. */
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    opacity: 0.55;
+  }
+
+  input[type="number"]:hover::-webkit-inner-spin-button,
+  input[type="number"]:focus::-webkit-inner-spin-button,
+  input[type="number"]:hover::-webkit-outer-spin-button,
+  input[type="number"]:focus::-webkit-outer-spin-button {
+    opacity: 1;
   }
 
   /* MAPPS-479: native <select> popup rows. Chromium and Firefox paint the

@@ -33,6 +33,8 @@ Native `Select` popups are themed by element-level `option` / `optgroup` rules i
 `input.css` (MAPPS-479), so no call site adds option styling. Colors come from the
 semantic variables, so both base modes follow automatically.
 
+The sub-widgets the browser paints inside a form control (the `type="number"` spin buttons, the `type="date"` and `type="datetime-local"` picker indicator, the `type="search"` clear button, the `type="color"` swatch) follow the base mode through the `color-scheme` declarations in the `:root` and `.dark` blocks of `input.css` (MAPPS-655), so no call site styles them and no call site needs a `dark:` variant for them. The number spinner additionally carries a weight rule in `@layer base` so it reads at the text-subtle level at rest and at full strength on hover and focus; that half is WebKit and Chromium only, because Firefox exposes no pseudo-element for it.
+
 A hand-built floating dropdown panel (picker list, overflow menu, user menu,
 notification list) takes its surface from the `dropdown-panel` class in `input.css`
 and never re-declares `bg-raised` plus `shadow-lg` by hand; the call site keeps only
