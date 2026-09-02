@@ -2263,7 +2263,7 @@ fn CompanyPortalAccessCard(
             if let Some(pid) = portal_id {
                 div { class: "px-6 py-3 border-b border-line flex items-center justify-between gap-4 text-sm",
                     div {
-                        span { class: "text-muted", "Portal ID: " }
+                        span { class: "text-muted", "Company ID: " }
                         span { class: "font-mono font-medium text-content", "{pid}" }
                     }
                     if let Some(url) = portal_login_absolute {
@@ -5540,7 +5540,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
     let mut error = use_signal(String::new);
     let mut last_setup_link = use_signal(String::new);
     // MAPPS-589 (prompt 011): captured from the grant response so the
-    // card can render "Portal ID: 555556666" alongside the setup link
+    // card can render "Company ID: 555556666" alongside the setup link
     // once PMS-928 lands. `None` when the server response pre-dates
     // the field (the card falls back to showing the slug-based setup
     // link on its own).
@@ -5711,7 +5711,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                     // shape below.
                     if let Some(pid) = *last_portal_id.read() {
                         p { class: "text-xs text-muted",
-                            span { class: "font-medium text-content", "Portal ID: " }
+                            span { class: "font-medium text-content", "Company ID: " }
                             code { class: "text-xs", "{pid}" }
                         }
                     }

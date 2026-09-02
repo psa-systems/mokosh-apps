@@ -2,7 +2,7 @@
 //!
 //! Mounted at `/portal/{slug}/login` via the `ContactHandleLogin`
 //! wrapper (`src/lib.rs`), which forwards here whenever the URL
-//! handle does NOT match the 9-digit Portal ID shape (i.e. a legacy
+//! handle does NOT match the 9-digit Company ID shape (i.e. a legacy
 //! Crockford slug bookmark). Public (no `AuthGuard`). The slug
 //! arrives as a component prop so no `window.location` scraping is
 //! needed to route the visitor back on failure. On success the
@@ -30,7 +30,7 @@ use crate::Route;
 /// Server response shape for
 /// `GET /api/v1/contact/portal/{slug}/resolve-to-portal-id`
 /// (PMS-928). 200 with a numeric `portal_id` means the slug maps
-/// to a Company that has been assigned a Portal ID; 404 means the
+/// to a Company that has been assigned a Company ID; 404 means the
 /// slug is unknown or has not been backfilled yet.
 #[derive(Deserialize, Clone, Debug)]
 struct ResolveToPortalIdResp {
@@ -115,7 +115,7 @@ pub fn ContactLoginPage(slug: String) -> Element {
     let mut saving = use_signal(|| false);
 
     // MAPPS-589 (prompt 011): resolve-and-redirect. Fire once on
-    // mount; if the server maps this slug to a Portal ID, hop the
+    // mount; if the server maps this slug to a Company ID, hop the
     // visitor into the Portal-ID-scoped page. Any failure (404,
     // network, or 5xx) falls through to the slug form below - the
     // server's dual-accept login still honours the slug during the
@@ -299,7 +299,7 @@ pub fn ContactLoginPage(slug: String) -> Element {
     // 401. Detect the "host fetch resolved, no such portal" case
     // (Some(None) — distinct from None which is still-loading) and
     // render a proper "Portal not found" card that steers the visitor
-    // to `/portal/login` (step 1 by Portal ID). tenant_inactive still
+    // to `/portal/login` (step 1 by Company ID). tenant_inactive still
     // wins if the host DID resolve but the tenant is suspended.
     let host_not_found = matches!(&*host_snap, Some(None));
     rsx! {
@@ -308,13 +308,13 @@ pub fn ContactLoginPage(slug: String) -> Element {
                 div { class: "text-center mb-6",
                     h1 { class: "text-2xl font-semibold text-content", "Portal not found" }
                     p { class: "mt-2 text-sm text-content",
-                        "This portal link isn't valid. Check the URL your MSP sent you, or use your Portal ID instead."
+                        "This portal link isn't valid. Check the URL your MSP sent you, or use your Company ID instead."
                     }
                     div { class: "mt-4",
                         Link {
                             to: Route::ContactGenericLogin {},
                             class: "text-accent hover:underline text-sm",
-                            "Sign in with your Portal ID"
+                            "Sign in with your Company ID"
                         }
                     }
                 }

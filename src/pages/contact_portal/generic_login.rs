@@ -1,12 +1,12 @@
 //! MAPPS-615 (mokosh-contact-login prompt 014): step 1 of the two-step
 //! contact login flow.
 //!
-//! Mounted at `/portal/login` (no Portal ID in URL). Public (no
+//! Mounted at `/portal/login` (no Company ID in URL). Public (no
 //! `AuthGuard`). Rendered when the visitor lands from the homepage
 //! "Client portal" CTA or navigates here from the staff `/login` page's
 //! "Sign in to a client portal instead" link.
 //!
-//! One field: Portal ID (9-digit numeric). On Continue, the SPA fetches
+//! One field: Company ID (9-digit numeric). On Continue, the SPA fetches
 //! the branding hint via `GET /api/v1/contact/portal/{portal_id}/host`
 //! (existing endpoint from prompt 004; public, no auth). On 200 the
 //! visitor navigates to `/portal/{portal_id}/login` (the URL-scoped
@@ -14,10 +14,10 @@
 //! mount, renders Company + MSP branding + the email + password fields,
 //! and offers a "Choose a different portal" button that returns here.
 //!
-//! On 404 the visitor sees a friendly "Portal ID not found" inline,
+//! On 404 the visitor sees a friendly "Company ID not found" inline,
 //! matching the enum-resistance shape the /host endpoint already had.
 //!
-//! Prior to prompt 014 this page fit all three fields (Portal ID +
+//! Prior to prompt 014 this page fit all three fields (Company ID +
 //! email + password) on one screen with no branding, which read as
 //! sterile and had no way to switch portals mid-flow.
 
@@ -27,11 +27,11 @@ use serde::Deserialize;
 use crate::components::{AuthLayout, Button, ButtonVariant};
 use crate::Route;
 
-/// Length of the 9-digit numeric Portal ID (prompt 011 design
+/// Length of the 9-digit numeric Company ID (prompt 011 design
 /// decision: `100_000_000..=999_999_999`).
 const PORTAL_ID_DIGITS: usize = 9;
 
-/// Pure shape check: does `handle` look like a Portal ID (exactly
+/// Pure shape check: does `handle` look like a Company ID (exactly
 /// `PORTAL_ID_DIGITS` ASCII digits)? Called by the `ContactHandleLogin`
 /// wrapper in `src/lib.rs` to steer the URL-scoped page between the
 /// portal-id branch and the legacy slug branch.
@@ -59,10 +59,10 @@ pub enum VerifyBranch {
     /// Step 1 has not fired a fetch yet (idle) OR the fetch is still
     /// in flight. Render the form; disable the button while saving.
     Idle,
-    /// Portal ID matched. Carries the id back to the caller so the
+    /// Company ID matched. Carries the id back to the caller so the
     /// nav.replace can build the URL.
     Hit(String),
-    /// Portal ID did not match. Render the "not found" copy inline.
+    /// Company ID did not match. Render the "not found" copy inline.
     Miss,
     /// Transport-layer failure (offline, DNS, 500). Render the generic
     /// fallback copy inline. Distinct from Miss so a repeated Continue
@@ -101,12 +101,12 @@ pub fn ContactGenericLoginPage() -> Element {
         }
         let pid_raw = portal_id.read().trim().to_string();
         if pid_raw.is_empty() {
-            error.set("Enter your Portal ID.".to_string());
+            error.set("Enter your Company ID.".to_string());
             return;
         }
         if !handle_is_portal_id_shape(&pid_raw) {
             error.set(format!(
-                "Portal ID must be exactly {PORTAL_ID_DIGITS} digits."
+                "Company ID must be exactly {PORTAL_ID_DIGITS} digits."
             ));
             return;
         }
@@ -137,7 +137,7 @@ pub fn ContactGenericLoginPage() -> Element {
                     }
                     VerifyBranch::Miss => {
                         error.set(
-                            "Portal ID not found. Check the number your MSP sent you.".to_string(),
+                            "Company ID not found. Check the number your MSP sent you.".to_string(),
                         );
                     }
                     VerifyBranch::NetworkError => {
@@ -166,7 +166,7 @@ pub fn ContactGenericLoginPage() -> Element {
             div { class: "text-center mb-6",
                 h1 { class: "text-2xl font-semibold text-content", "Sign in to your portal" }
                 p { class: "mt-2 text-sm text-content",
-                    "Enter your Portal ID to continue. Your MSP sent it to you when portal access was granted."
+                    "Enter your Company ID to continue. Your MSP sent it to you when portal access was granted."
                 }
             }
             form {
@@ -180,7 +180,7 @@ pub fn ContactGenericLoginPage() -> Element {
                     label {
                         r#for: "portal_id_input",
                         class: "block text-sm font-medium text-content",
-                        "Portal ID"
+                        "Company ID"
                         span { class: "text-red-500 ml-1", aria_label: "required", role: "img", "*" }
                     }
                     input {

@@ -17,10 +17,10 @@ pub mod picker;
 pub mod reset_password;
 pub mod set_password;
 // MAPPS-589 (prompt 011): Portal-ID login pages.
-// - `generic_login` at `/portal/login` (three-field: Portal ID +
+// - `generic_login` at `/portal/login` (three-field: Company ID +
 //   email + password).
 // - `portal_id_login` at `/portal/{portal_id}/login` via the
-//   `ContactHandleLogin` wrapper (Portal ID read-only, email +
+//   `ContactHandleLogin` wrapper (Company ID read-only, email +
 //   password editable).
 pub mod generic_login;
 pub mod portal_branding;
