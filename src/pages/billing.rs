@@ -598,12 +598,95 @@ struct InvoiceLine {
     product_id: Option<uuid::Uuid>,
 }
 
-/// MAPPS-539: the invoice "Pay Now" mail is built in mokosh-server's billing
-/// service, not by a notification rule, so `POST /notifications/preview`
-/// renders nothing for it. Same position as the quote and invite sends; the
-/// modal says so rather than leaving the operator to read "nothing will be
-/// sent" and believe it. MAPPS-489 moves those onto the dispatcher.
-const INVOICE_SEND_PREVIEW_NOTE: &str = "The invoice email is built into the server rather than by a notification rule, so there is nothing to render yet. The billing contact is still emailed a link to view and pay the invoice.";
+/// MAPPS-642: what Send mails, described from the server's own template.
+///
+/// The invoice "Pay Now" mail is built in mokosh-server's billing service
+/// (`notify_invoice_pay_now`, PMS-711 and PMS-761), not by a notification
+/// rule, so `POST /notifications/preview` renders nothing for it. MAPPS-539
+/// put a note under the empty response; an operator read "nothing will be
+/// sent" as "email is not configured" and filed MAPPS-642. So the page now
+/// mirrors the template here and names the server's three conditions as
+/// blockers when the page can see they fail: a billing contact, an email on
+/// that contact, and a connected payment gateway. The two the page cannot
+/// see (a configured mailer and a portal origin) are deployment settings and
+/// are named as such in the body text.
+///
+/// `contact_email` is `None` for no billing contact, `Some(None)` for a
+/// contact with no address, `Some(Some(_))` otherwise; `gateway` is `None`
+/// while the check has not answered.
+pub(crate) fn invoice_pay_now_preview(
+    org_name: &str,
+    invoice_number: &str,
+    balance_due: &str,
+    currency: &str,
+    due_date: &str,
+    contact_email: Option<Option<&str>>,
+    gateway: Option<bool>,
+) -> crate::components::BuiltinEmail {
+    let org = if org_name.trim().is_empty() {
+        "Your organisation"
+    } else {
+        org_name.trim()
+    };
+    let currency = if currency.trim().is_empty() {
+        "USD"
+    } else {
+        currency.trim()
+    };
+    let mut blockers = Vec::new();
+    let recipient = match contact_email {
+        None => {
+            blockers.push(
+                "This invoice has no billing contact. Set one with Edit; the email goes to that contact."
+                    .to_string(),
+            );
+            "The billing contact (none set)".to_string()
+        }
+        Some(None) => {
+            blockers.push(
+                "The billing contact has no email address on file. Add one on the contact."
+                    .to_string(),
+            );
+            "The billing contact (no email address on file)".to_string()
+        }
+        Some(Some(email)) => email.to_string(),
+    };
+    match gateway {
+        Some(false) => blockers.push(
+            "No payment gateway is connected, so there is no Pay Now link to send. Connect one under Settings, Payment Gateways."
+                .to_string(),
+        ),
+        None => blockers.push(
+            "Could not check whether a payment gateway is connected; the email is sent only when one is."
+                .to_string(),
+        ),
+        Some(true) => {}
+    }
+    crate::components::BuiltinEmail {
+        recipient,
+        subject: format!("Invoice {invoice_number} from {org} is ready to pay"),
+        body: format!(
+            "{org} has sent you an invoice, ready for payment.\n\n\
+             Invoice: {invoice_number}\n\
+             Amount due: {balance_due} {currency}\n\
+             Due: {due_date}\n\n\
+             Review the invoice and pay online here:\n\n\
+             {{{{portal_link}}}}\n\n\
+             {{{{contact_line}}}}\n\n\
+             (Sent only if the server has email configured, which is a deployment setting.)"
+        ),
+        unresolved: vec!["portal_link".to_string(), "contact_line".to_string()],
+        blockers,
+    }
+}
+
+/// The billing contact, for the preview's recipient line. Only the field
+/// the preview needs.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct RemoteContactEmail {
+    #[serde(default)]
+    email: Option<String>,
+}
 
 /// The path the invoice **send** transition writes to (MAPPS-539).
 ///
@@ -673,6 +756,28 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         Some(Some(inv)) => Some(inv.clone()),
         _ => None,
     };
+    // MAPPS-642: the two conditions of the pay-now email the page can check,
+    // so Preview email can say whether Send will mail anyone. Both hooks sit
+    // before the early returns below (MAPPS-602).
+    let contact_for_preview = invoice.as_ref().and_then(|i| i.billing_contact_id);
+    let contact_resource = use_resource(move || async move {
+        let id = contact_for_preview?;
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<RemoteContactEmail>(&format!(
+            "/contacts/contacts/{id}"
+        ))
+        .await
+        .ok()
+        .map(|c| c.email.filter(|e| !e.trim().is_empty()))
+    });
+    let gateway_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_all_authed::<RemoteGateway>("/payment-gateways")
+            .await
+            .ok()
+            .map(|list| list.iter().any(|g| g.is_active && g.configured))
+    });
+
     let header_title = match &invoice {
         Some(inv) => format!("Invoice {}", inv.invoice_number),
         None => "Invoice".to_string(),
@@ -883,7 +988,25 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                 .and_then(|i| i.due_date.clone())
                                 .unwrap_or_default(),
                         }),
-                        empty_note: INVOICE_SEND_PREVIEW_NOTE.to_string(),
+                        // MAPPS-642: the server-built message, with the
+                        // conditions under which Send mails nobody.
+                        builtin: invoice.as_ref().map(|inv| {
+                            let contact_email: Option<Option<String>> = inv
+                                .billing_contact_id
+                                .map(|_| contact_resource.read_unchecked().clone().flatten().flatten());
+                            invoice_pay_now_preview(
+                                crate::hooks::use_auth()
+                                    .read()
+                                    .active_org_name()
+                                    .unwrap_or_default(),
+                                &inv.invoice_number,
+                                &inv.balance_due,
+                                inv.currency.as_deref().unwrap_or_default(),
+                                inv.due_date.as_deref().unwrap_or_default(),
+                                contact_email.as_ref().map(|e| e.as_deref()),
+                                (*gateway_resource.read_unchecked()).flatten(),
+                            )
+                        }),
                     }
                 }
                 if collectible {
@@ -3998,5 +4121,61 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                 }
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod invoice_preview_tests {
+    use super::invoice_pay_now_preview;
+
+    /// Every condition the server checks before mailing is a sentence the
+    /// operator sees, and a complete setup has none: the preview never says
+    /// "nothing will be sent" over a send that would mail.
+    #[test]
+    fn each_missing_condition_is_named_and_a_complete_setup_has_no_blockers() {
+        let ok = invoice_pay_now_preview(
+            "Acme MSP",
+            "INV-000001",
+            "50.00",
+            "USD",
+            "2026-09-30",
+            Some(Some("ap@client.example")),
+            Some(true),
+        );
+        assert!(ok.blockers.is_empty(), "{:?}", ok.blockers);
+        assert_eq!(ok.recipient, "ap@client.example");
+        assert_eq!(
+            ok.subject,
+            "Invoice INV-000001 from Acme MSP is ready to pay"
+        );
+        assert!(ok.body.contains("Amount due: 50.00 USD"));
+        assert!(ok.body.contains("{{portal_link}}"));
+        assert_eq!(ok.unresolved, vec!["portal_link", "contact_line"]);
+
+        let no_contact =
+            invoice_pay_now_preview("Acme MSP", "INV-1", "1", "", "", None, Some(true));
+        assert_eq!(no_contact.blockers.len(), 1);
+        assert!(no_contact.blockers[0].contains("no billing contact"));
+
+        let no_email =
+            invoice_pay_now_preview("Acme MSP", "INV-1", "1", "", "", Some(None), Some(true));
+        assert!(no_email.blockers[0].contains("no email address"));
+
+        let no_gateway = invoice_pay_now_preview(
+            "Acme MSP",
+            "INV-1",
+            "1",
+            "",
+            "",
+            Some(Some("a@b.c")),
+            Some(false),
+        );
+        assert!(no_gateway.blockers[0].contains("No payment gateway"));
+
+        let unknown = invoice_pay_now_preview("", "INV-1", "1", "", "", Some(Some("a@b.c")), None);
+        assert!(unknown.blockers[0].contains("Could not check"));
+        assert!(unknown
+            .subject
+            .starts_with("Invoice INV-1 from Your organisation"));
     }
 }
