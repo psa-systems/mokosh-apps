@@ -29,14 +29,14 @@ use crate::Route;
 #[derive(Serialize)]
 struct LoginLinkBody {
     email: String,
-    /// MAPPS-637: Portal ID is now required by the server. Sent as
+    /// MAPPS-637: Company ID is now required by the server. Sent as
     /// `Option<i64>` on the wire so an old client without the field
     /// still deserialises, but the SPA form validates presence
     /// client-side before submit.
     #[serde(skip_serializing_if = "Option::is_none")]
     portal_id: Option<i64>,
     /// Legacy slug hint - kept as a fallback in case a browser has
-    /// no Portal ID but still holds a slug in localStorage. Server
+    /// no Company ID but still holds a slug in localStorage. Server
     /// treats slug as equivalent scope to portal_id (see
     /// `request_login_link` in mokosh-server).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -50,11 +50,11 @@ pub fn ContactMagicLinkLoginPage(email: String) -> Element {
     // sign-in link" button on the picker's invalid-link branch can hand
     // the visitor's typed email back without a re-type.
     let mut email_sig = use_signal(|| email.clone());
-    // MAPPS-637: Portal ID is now required so the magic link is
+    // MAPPS-637: Company ID is now required so the magic link is
     // scoped to a specific portal end-to-end. The bare-email
     // finder used to fan out one email per matched tenant + let
     // the redeem step aggregate contacts across Companies; the
-    // Portal ID upfront collapses that to a single scoped intent.
+    // Company ID upfront collapses that to a single scoped intent.
     let mut portal_id_sig = use_signal(String::new);
     let mut error = use_signal(String::new);
     let mut saving = use_signal(|| false);
@@ -71,13 +71,13 @@ pub fn ContactMagicLinkLoginPage(email: String) -> Element {
             return;
         }
         if pid_raw.is_empty() {
-            error.set("Enter your Portal ID.".to_string());
+            error.set("Enter your Company ID.".to_string());
             return;
         }
         let pid = match pid_raw.parse::<i64>() {
             Ok(n) => Some(n),
             Err(_) => {
-                error.set("Portal ID must be a 9-digit number.".to_string());
+                error.set("Company ID must be a 9-digit number.".to_string());
                 return;
             }
         };
@@ -135,7 +135,7 @@ pub fn ContactMagicLinkLoginPage(email: String) -> Element {
                 div { class: "text-center mb-6",
                     h1 { class: "text-2xl font-semibold text-content", "Sign in to your portal" }
                     p { class: "mt-2 text-sm text-content",
-                        "Enter your Portal ID and email; we'll send a one-click sign-in link for that specific portal."
+                        "Enter your Company ID and email; we'll send a one-click sign-in link for that specific portal."
                     }
                 }
                 form {
@@ -144,11 +144,11 @@ pub fn ContactMagicLinkLoginPage(email: String) -> Element {
                         evt.prevent_default();
                         submit(());
                     },
-                    // MAPPS-637: Portal ID is required so the magic
+                    // MAPPS-637: Company ID is required so the magic
                     // link is scoped to one portal end-to-end.
                     Input {
                         name: "portal_id",
-                        label: "Portal ID",
+                        label: "Company ID",
                         r#type: "text".to_string(),
                         value: portal_id_sig(),
                         required: true,

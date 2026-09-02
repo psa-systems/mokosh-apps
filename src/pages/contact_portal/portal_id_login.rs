@@ -3,9 +3,9 @@
 //!
 //! Mounted at `/portal/{portal_id}/login` via the `ContactHandleLogin`
 //! wrapper (see `src/lib.rs`), which forwards here whenever the URL
-//! handle matches the 9-digit numeric Portal ID shape. Public (no
+//! handle matches the 9-digit numeric Company ID shape. Public (no
 //! `AuthGuard`). Mirrors prompt 005's `ContactLoginPage` in every way
-//! except that the Portal ID is a READ-ONLY field ABOVE email and the
+//! except that the Company ID is a READ-ONLY field ABOVE email and the
 //! login POST body carries `portal_id: i64` (no slug) so the server
 //! can resolve the Company without the legacy slug lookup.
 //!
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::components::{AuthLayout, Button, ButtonVariant, Input};
 use crate::Route;
 
-/// Login request body. Portal ID is parsed to `i64` at submit time so
+/// Login request body. Company ID is parsed to `i64` at submit time so
 /// the server's `ContactLoginRequest` receives the numeric shape the
 /// PMS-928 DTO defines (see prompt 011 §Login endpoint change).
 #[derive(Serialize)]
@@ -56,7 +56,7 @@ struct ContactSnippet {
     /// `portal_slug` column removal in a follow-up ticket.
     #[serde(default)]
     portal_slug: String,
-    /// Portal ID of the Company this session is for. Present once
+    /// Company ID of the Company this session is for. Present once
     /// PMS-928 ships; the client stores it in localStorage so a
     /// subsequent cold-load reaches `/portal/{portal_id}/login`
     /// directly instead of the slug-based bounce.
@@ -154,7 +154,7 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
     let host_loaded = host.is_some();
     // MAPPS-559 shape (mirrored from prompt 005): hide the form when
     // the owning tenant is not active. A missing host hint falls
-    // through to the form so a bad Portal ID still lets the visitor
+    // through to the form so a bad Company ID still lets the visitor
     // see a coherent page (submit will 401 or fail closed).
     let tenant_inactive = host_loaded && tenant_status != "active";
 
@@ -207,7 +207,7 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
             // parse failure here means the wrapper's shape check has
             // drifted from what the server accepts. Surface as an
             // opaque error rather than firing a garbage POST.
-            error.set("Invalid Portal ID.".to_string());
+            error.set("Invalid Company ID.".to_string());
             return;
         };
         saving.set(true);
@@ -257,7 +257,7 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
     // MAPPS-615 (prompt 014): "Not your portal? Choose a different one"
     // button. Rendered above the branding header so a visitor
     // recognises they landed on the wrong portal BEFORE they type
-    // credentials. Click hops back to the step-1 Portal ID entry page
+    // credentials. Click hops back to the step-1 Company ID entry page
     // and clears the last-portal-id hint so the AuthGuard cold-load
     // bootstrap does not immediately bounce back here.
     let switch_portal = move |_| {
@@ -297,13 +297,13 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
                         evt.prevent_default();
                         submit(());
                     },
-                    // Portal ID displayed as a read-only field ABOVE
+                    // Company ID displayed as a read-only field ABOVE
                     // email so the contact learns / recognises the
                     // number they can dictate over the phone (prompt
                     // 011 primary UX goal).
                     Input {
                         name: "portal_id",
-                        label: "Portal ID",
+                        label: "Company ID",
                         r#type: "text".to_string(),
                         value: portal_id_readonly.clone(),
                         disabled: true,

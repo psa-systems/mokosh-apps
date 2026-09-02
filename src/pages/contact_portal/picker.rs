@@ -578,20 +578,20 @@ pub fn ContactPickerPage(token: String) -> Element {
                     // redeem returns candidates, we now refuse the
                     // aggregate flow and steer the visitor at their
                     // Portal-ID login instead: the primary flow is
-                    // Portal-ID-scoped end-to-end and each Portal ID
+                    // Portal-ID-scoped end-to-end and each Company ID
                     // resolves to exactly one contact + one password.
                     rsx! {
                         div { class: "text-center mb-6",
-                            h1 { class: "text-2xl font-semibold text-content", "Sign in with your Portal ID" }
+                            h1 { class: "text-2xl font-semibold text-content", "Sign in with your Company ID" }
                             p { class: "mt-2 text-sm text-content",
-                                "Each of your portals has its own sign-in. Enter the Portal ID your MSP sent you to sign in to that specific portal."
+                                "Each of your portals has its own sign-in. Enter the Company ID your MSP sent you to sign in to that specific portal."
                             }
                         }
                         div { class: "pt-2",
                             Link {
                                 to: Route::ContactGenericLogin {},
                                 class: "block w-full text-center rounded-md bg-accent text-on-accent px-4 py-2 text-sm font-medium hover:opacity-90",
-                                "Enter my Portal ID"
+                                "Enter my Company ID"
                             }
                         }
                         if !error().is_empty() {
