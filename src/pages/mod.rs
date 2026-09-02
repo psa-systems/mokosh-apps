@@ -19,6 +19,7 @@ pub mod button_showcase;
 pub mod calendar;
 pub mod contacts;
 pub mod contracts;
+pub mod credit_notes;
 pub mod dashboard;
 pub mod dashboards;
 pub mod dashboards_view;

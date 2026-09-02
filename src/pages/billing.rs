@@ -198,7 +198,7 @@ fn invoice_select_options(invoices: &[RemoteInvoice]) -> Vec<SelectOption> {
 /// bare error sentence (MAPPS-133): an icon, a clear heading, who has
 /// access, and the viewer's current role for context.
 #[component]
-fn NoFinancePermission(title: String) -> Element {
+pub(crate) fn NoFinancePermission(title: String) -> Element {
     let auth = crate::hooks::use_auth();
     let role = auth
         .read()
