@@ -489,7 +489,7 @@ fn TenantRow(props: TenantRowProps) -> Element {
                         // PORTAL_HOST_SUFFIX configured (nothing to link
                         // to; a bare slug still identifies the tenant).
                         {
-                            let portal_url = crate::modules::runtime_config::portal_url_for_slug(&props.domain);
+                            let portal_url = crate::modules::runtime_config::portal_root_url();
                             match portal_url {
                                 Some(url) => rsx! {
                                     a {
@@ -876,7 +876,7 @@ fn CreateTenantModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> El
     // configured portal host suffix; the modal then hides the hint
     // block entirely rather than promise a URL that would 404.
     let slug_preview = slug.read().trim().to_ascii_lowercase();
-    let portal_preview = crate::modules::runtime_config::portal_url_for_slug(&slug_preview);
+    let portal_preview = crate::modules::runtime_config::portal_root_url();
 
     // Post-create success view. Renders once the server has returned
     // the fresh tenant id; the create form is hidden so the super-
@@ -884,7 +884,7 @@ fn CreateTenantModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> El
     // dismissing.
     let created_slug_str = created_slug.read().clone();
     let is_created = !created_slug_str.is_empty();
-    let created_portal_url = crate::modules::runtime_config::portal_url_for_slug(&created_slug_str);
+    let created_portal_url = crate::modules::runtime_config::portal_root_url();
     let created_admin_email_str = created_admin_email.read().clone();
 
     let modal_title = if is_created {
@@ -1356,7 +1356,7 @@ fn EditTenantModal(
                     let s = slug.read().trim().to_ascii_lowercase();
                     if s.is_empty() {
                         rsx! {}
-                    } else if let Some(url) = crate::modules::runtime_config::portal_url_for_slug(&s) {
+                    } else if let Some(url) = crate::modules::runtime_config::portal_root_url() {
                         rsx! {
                             p { class: "text-xs text-muted",
                                 "Portal URL: "

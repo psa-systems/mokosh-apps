@@ -153,48 +153,22 @@ pub mod api {
     #[cfg(feature = "web")]
     use serde::{de::DeserializeOwned, Serialize};
 
-    /// PMS-729: read the configured client-portal host suffix, checking
-    /// (in order) the container-emitted `window.__MOKOSH_CONFIG__.portal_host_suffix`
-    /// and, as a last-resort compile-time fallback, the
-    /// `MOKOSH_PORTAL_HOST_SUFFIX` env var baked in at build time. The
-    /// compile-time path lets a dev developer run
-    /// `MOKOSH_PORTAL_HOST_SUFFIX=.client.localhost dx serve` and hit
-    /// `http://acme.client.localhost:8080/portal/login` without also
-    /// having to author a `_mokosh_config.js` shim (dev has no
-    /// entrypoint to write one). Empty at every layer returns `None`.
-    #[cfg(feature = "web")]
-    fn portal_host_suffix() -> Option<String> {
-        if let Some(v) = crate::modules::runtime_config::get("portal_host_suffix") {
-            if !v.is_empty() {
-                return Some(v);
-            }
-        }
-        option_env!("MOKOSH_PORTAL_HOST_SUFFIX")
-            .map(str::to_string)
-            .filter(|s| !s.is_empty())
-    }
-
-    /// Derive the Mokosh API base URL.
+    /// MAPPS-649: derive the Mokosh API base URL.
     ///
     /// Resolution order:
     ///   1. `window.__MOKOSH_CONFIG__.api_base` if set by the prod
     ///      container's entrypoint. Self-hosters on a custom hostname
     ///      override here without rebuilding the image.
-    ///   2. PMS-729: portal-host derivation. When the current host ends
-    ///      with the configured `portal_host_suffix` (e.g.
-    ///      `.client.a8n.systems`), strip the suffix's leading label and
-    ///      point at `api.msp.<tld>` where `<tld>` is the rest of the
-    ///      suffix without its leading dot. Keeps the API host
-    ///      unchanged regardless of which client subdomain the SPA is
-    ///      served from, and stays shape-agnostic - swapping the
-    ///      `client` word (§13) is a config-only change with no Rust
-    ///      edit.
+    ///   2. Portal-host derivation: when the current host equals the
+    ///      configured `portal_host` (e.g. `portal.psa.systems`), point
+    ///      at `api.<apex>/api/v1` where `<apex>` is the portal host
+    ///      minus its leading label (`psa.systems`). Dev's bare
+    ///      `portal.localhost:PORT` collapses to same-origin `/api/v1`
+    ///      so the Dioxus dev proxy reaches mokosh-server.
     ///   3. Host-prefix derivation for the canonical `msp.<tld>`
-    ///      deploys (e.g. `msp.a8n.systems` SPA → `api.msp.a8n.systems`
-    ///      API).
+    ///      staff deploys (`msp.a8n.systems` -> `api.msp.a8n.systems`).
     ///   4. Same-origin `/api/v1` for dev (localhost, IP address, or
-    ///      any host that doesn't start with `msp.`) so the Dioxus dev
-    ///      server can proxy to a local backend.
+    ///      any host that doesn't match the cases above).
     #[cfg(feature = "web")]
     pub fn api_base() -> String {
         if let Some(injected) = crate::modules::runtime_config::get("api_base") {
@@ -202,24 +176,19 @@ pub mod api {
         }
         if let Some(win) = web_sys::window() {
             if let Ok(host) = win.location().host() {
-                // PMS-729: portal-host case. `host` includes port on
-                // non-443 dev; strip it before the suffix match.
-                if let Some(suffix) = portal_host_suffix() {
+                if let Some(portal_host) = crate::modules::runtime_config::portal_host() {
                     let host_no_port = host.split(':').next().unwrap_or(&host);
-                    let suffix_lower = suffix.to_ascii_lowercase();
-                    let host_lower = host_no_port.to_ascii_lowercase();
-                    if host_lower.ends_with(&suffix_lower) {
-                        // Strip the leading dot off the suffix to get the
-                        // apex. For dev (`.client.localhost`) the apex is
-                        // just `localhost`; aim at same-origin `/api/v1`
-                        // so the Dioxus dev proxy reaches mokosh-server.
-                        // For staging / prod, prefer `api.msp.<apex>`.
-                        let apex = suffix_lower.trim_start_matches('.');
-                        if apex == "localhost" || apex.ends_with(".localhost") {
+                    if host_no_port.eq_ignore_ascii_case(&portal_host) {
+                        // Dev's `portal.localhost` collapses to same-origin.
+                        let portal_lower = portal_host.to_ascii_lowercase();
+                        if portal_lower.ends_with(".localhost") || portal_lower == "localhost" {
                             return "/api/v1".to_string();
                         }
-                        if !apex.is_empty() {
-                            return format!("https://api.msp.{apex}/api/v1");
+                        // Prod: strip the leading label to get the apex.
+                        if let Some((_leading, apex)) = portal_lower.split_once('.') {
+                            if !apex.is_empty() {
+                                return format!("https://api.{apex}/api/v1");
+                            }
                         }
                     }
                 }
@@ -231,18 +200,17 @@ pub mod api {
         "/api/v1".to_string()
     }
 
-    /// PMS-729: `true` iff the SPA is currently served on a portal host
-    /// (i.e. the current `window.location.host` ends with the configured
-    /// `portal_host_suffix`). Used by the portal login page to decide
-    /// whether to hide the slug input and paint the MSP branding block.
+    /// MAPPS-649: `true` iff the SPA is currently served on the
+    /// configured portal host. Used by the portal login page to
+    /// decide whether to hide the identifier input and paint the
+    /// MSP branding block. Port-agnostic, case-insensitive host
+    /// compare against `runtime_config::portal_host`.
     ///
-    /// Kept in this module because it reads `runtime_config` + a
-    /// window location, both of which are `cfg(feature = "web")`. The
-    /// non-web stub returns `false` so downstream call sites compile
-    /// under a plain `cargo check`.
+    /// The non-web stub returns `false` so downstream call sites
+    /// compile under a plain `cargo check`.
     #[cfg(feature = "web")]
     pub fn on_portal_host() -> bool {
-        let Some(suffix) = portal_host_suffix() else {
+        let Some(portal_host) = crate::modules::runtime_config::portal_host() else {
             return false;
         };
         let Some(win) = web_sys::window() else {
@@ -252,9 +220,7 @@ pub mod api {
             return false;
         };
         let host_no_port = host.split(':').next().unwrap_or(&host);
-        host_no_port
-            .to_ascii_lowercase()
-            .ends_with(&suffix.to_ascii_lowercase())
+        host_no_port.eq_ignore_ascii_case(&portal_host)
     }
 
     #[cfg(not(feature = "web"))]
