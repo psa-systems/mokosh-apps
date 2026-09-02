@@ -796,6 +796,24 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                 }
             },
             actions: rsx! {
+                // MAPPS-641: the document. A sent invoice's PDF is the bytes
+                // stored when it was sent (PMS-959), carrying the identity of
+                // that day (PMS-911); a draft renders live and is a preview.
+                // The two must not read the same, or a draft PDF becomes a
+                // record in somebody's mind.
+                if let Some(inv) = invoice.as_ref() {
+                    crate::components::DownloadButton {
+                        path: format!("/invoices/{}/pdf", props.id),
+                        fallback_name: format!("{}.pdf", inv.invoice_number),
+                        what: "the invoice PDF".to_string(),
+                        label: if editable { "Preview PDF".to_string() } else { "Download PDF".to_string() },
+                        title: if editable {
+                            "Renders this draft as it would look now. Nothing is stored until the invoice is sent, so this is a preview, not a record.".to_string()
+                        } else {
+                            "The invoice as it was sent to the client. Stored at that moment; rebranding since does not change it.".to_string()
+                        },
+                    }
+                }
                 if editable {
                     Button {
                         variant: ButtonVariant::Secondary,
