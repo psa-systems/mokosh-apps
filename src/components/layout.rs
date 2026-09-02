@@ -382,6 +382,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                 NavItem { to: Route::PaymentList {}, icon: rsx!(CreditCardIcon {}), label: "Payments", collapsed }
                 if has_finance {
                     NavItem { to: Route::CreditNoteList {}, icon: rsx!(ReceiptRefundIcon {}), label: "Credit Notes", collapsed }
+                    NavItem { to: Route::Statement {}, icon: rsx!(DocumentTextIcon {}), label: "Statements", collapsed }
                 }
             }
 
