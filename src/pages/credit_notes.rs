@@ -551,43 +551,6 @@ fn CreditNoteDetailBody(id: String) -> Element {
         });
     };
 
-    let id_for_pdf = id.clone();
-    let number_for_pdf = note
-        .as_ref()
-        .map(|n| n.credit_note_number.clone())
-        .unwrap_or_default();
-    let mut downloading = use_signal(|| false);
-    let on_download = move |_| {
-        if *downloading.read() {
-            return;
-        }
-        downloading.set(true);
-        action_error.set(String::new());
-        let path = format!("/credit-notes/{id_for_pdf}/pdf");
-        let fallback = if number_for_pdf.is_empty() {
-            "credit-note.pdf".to_string()
-        } else {
-            format!("{number_for_pdf}.pdf")
-        };
-        spawn(async move {
-            #[cfg(feature = "app")]
-            {
-                match crate::hooks::fetch::api::get_authed_bytes(&path).await {
-                    Ok((bytes, name)) => {
-                        let filename = name.unwrap_or(fallback);
-                        if let Err(err) =
-                            crate::utils::download::save_bytes_as_file(&bytes, &filename)
-                        {
-                            action_error.set(format!("Could not save the PDF: {err}"));
-                        }
-                    }
-                    Err(err) => action_error.set(format!("Could not download the PDF: {err}")),
-                }
-            }
-            downloading.set(false);
-        });
-    };
-
     let fetch_failed = matches!(*snap, Some(None));
     if fetch_failed && !reachable {
         return rsx! {
@@ -626,12 +589,15 @@ fn CreditNoteDetailBody(id: String) -> Element {
                 }
             },
             actions: rsx! {
-                if note.is_some() {
-                    Button {
-                        variant: ButtonVariant::Secondary,
-                        loading: *downloading.read(),
-                        onclick: on_download,
-                        "Download PDF"
+                // MAPPS-641: the shared download control. A credit note is
+                // stored at creation and never changes, so this is always the
+                // document as issued.
+                if let Some(n) = note.as_ref() {
+                    crate::components::DownloadButton {
+                        path: format!("/credit-notes/{id}/pdf"),
+                        fallback_name: format!("{}.pdf", n.credit_note_number),
+                        what: "the credit note PDF".to_string(),
+                        title: "The credit note as it was issued. It was stored when it was created and never changes.".to_string(),
                     }
                 }
                 if is_issued {
