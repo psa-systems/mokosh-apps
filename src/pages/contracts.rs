@@ -1452,6 +1452,7 @@ async fn create_items(contract_id: &str, items: &[ItemFormValues]) -> Result<(),
             rollover_enabled: false,
             max_rollover_hours: None,
             sort_order: idx as i32,
+            product_id: None,
         };
         let path = format!("/contracts/{contract_id}/items");
         crate::hooks::fetch::api::post_authed_typed::<ContractItemResponse, _>(&path, &body)
@@ -1881,6 +1882,10 @@ struct ContractItemFormState {
     /// sort_order applied to a newly added item; ignored on edit, which
     /// keeps the original row's sort_order.
     new_sort_order: i32,
+    /// MAPPS-640: the catalog product this item sells, when one was picked
+    /// or the row already names one. The price is the item's own.
+    product_id: Option<String>,
+    product_name: String,
 }
 
 impl ContractItemFormState {
@@ -1892,6 +1897,8 @@ impl ContractItemFormState {
             quantity: "1".to_string(),
             unit_price: String::new(),
             new_sort_order: next_sort_order,
+            product_id: None,
+            product_name: String::new(),
         }
     }
 
@@ -1907,6 +1914,14 @@ impl ContractItemFormState {
             quantity: i.quantity.normalize().to_string(),
             unit_price: i.unit_price.to_string(),
             new_sort_order: 0,
+            product_id: i.product_id.map(|p| p.to_string()),
+            // The response carries the id only; the chip says "a product" until
+            // the operator changes it.
+            product_name: if i.product_id.is_some() {
+                "Product from the price list".to_string()
+            } else {
+                String::new()
+            },
         }
     }
 }
@@ -1925,10 +1940,13 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
     let original = initial.original.clone();
     let is_edit = original.is_some();
 
-    let name = use_signal(|| initial.name.clone());
+    let mut name = use_signal(|| initial.name.clone());
     let mut item_type = use_signal(|| initial.item_type.clone());
     let quantity = use_signal(|| initial.quantity.clone());
-    let unit_price = use_signal(|| initial.unit_price.clone());
+    let mut unit_price = use_signal(|| initial.unit_price.clone());
+    // MAPPS-640: the picked product, if any.
+    let mut product_id = use_signal(|| initial.product_id.clone());
+    let mut product_name = use_signal(|| initial.product_name.clone());
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut confirm_delete = use_signal(|| false);
@@ -2056,6 +2074,10 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
                         .as_ref()
                         .map(|o| o.sort_order)
                         .unwrap_or(new_sort_order),
+                    product_id: product_id
+                        .read()
+                        .as_deref()
+                        .and_then(|p| uuid::Uuid::parse_str(p).ok()),
                 };
                 let result = match &orig {
                     None => crate::hooks::fetch::api::post_authed_typed::<ContractItemResponse, _>(
@@ -2134,6 +2156,27 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
             onclose: move |_| onclose.call(()),
             onsave: handle_save,
             ondelete: handle_delete_click,
+            // MAPPS-640: pick from the price list. A pick fills the name and
+            // the unit price, sets the type to product, and keeps the
+            // reference; the price on the item is what the contract agreed.
+            crate::components::ProductPicker {
+                value: product_name.read().clone(),
+                selected_id: product_id.read().clone(),
+                label: "From the price list",
+                onselect: move |picked: crate::components::PickedProduct| {
+                    product_id.set(Some(picked.id.clone()));
+                    product_name.set(picked.name.clone());
+                    name_err.set(String::new());
+                    name.set(picked.name.clone());
+                    price_err.set(String::new());
+                    unit_price.set(picked.unit_price.clone());
+                    item_type.set("product".to_string());
+                },
+                onclear: move |_| {
+                    product_id.set(None);
+                    product_name.set(String::new());
+                },
+            }
             crate::components::Input {
                 name: "contract_item_name",
                 label: "Name",
@@ -2415,6 +2458,8 @@ fn AllotmentFormModal(props: AllotmentFormModalProps) -> Element {
                     rollover_enabled: item.rollover_enabled,
                     max_rollover_hours: item.max_rollover_hours,
                     sort_order: item.sort_order,
+                    // MAPPS-640: an edit elsewhere must not drop the reference.
+                    product_id: item.product_id,
                 };
                 match crate::hooks::fetch::api::put_authed_typed::<ContractItemResponse, _>(
                     &format!("/contract-items/{}", item.id),

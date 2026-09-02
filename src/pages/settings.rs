@@ -386,6 +386,14 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Billing,
         advanced: false,
     },
+    // MAPPS-640: the price list. Finance-gated on its page like Tax Rates.
+    SettingsSurface {
+        route: Route::SettingsProducts {},
+        title: "Products",
+        description: "The price list picked onto invoice lines and contract items.",
+        group: SettingsGroupKey::Billing,
+        advanced: false,
+    },
     SettingsSurface {
         route: Route::SettingsTicketStatuses {},
         title: "Ticket Statuses",
@@ -623,7 +631,7 @@ fn group_grid_class(prominent: bool) -> &'static str {
 /// Breadcrumb trail for a leaf settings page, derived from the taxonomy:
 /// Settings > {Group} > {Leaf}, with every ancestor a clickable `Link`.
 #[component]
-fn SettingsBreadcrumb(current: Route) -> Element {
+pub(crate) fn SettingsBreadcrumb(current: Route) -> Element {
     let mut items = vec![BreadcrumbItem {
         label: "Settings".to_string(),
         route: Some(Route::SettingsHome {}),

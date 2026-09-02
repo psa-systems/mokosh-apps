@@ -591,6 +591,11 @@ struct InvoiceLine {
     unit_price: String,
     #[serde(default)]
     total: String,
+    /// MAPPS-640: the catalog product this line sells, when it names one.
+    /// Carried through the edit modal so re-saving keeps the reference; the
+    /// price is never read back through it.
+    #[serde(default)]
+    product_id: Option<uuid::Uuid>,
 }
 
 /// MAPPS-539: the invoice "Pay Now" mail is built in mokosh-server's billing
@@ -1268,6 +1273,9 @@ pub fn InvoiceNewPage() -> Element {
     let mut line_description = use_signal(String::new);
     let mut line_quantity = use_signal(|| "1".to_string());
     let mut line_unit_price = use_signal(String::new);
+    // MAPPS-640: the catalog product the line sells, when one was picked.
+    let mut line_product_id = use_signal(String::new);
+    let mut line_product_name = use_signal(String::new);
     let mut tax_rate_id = use_signal(String::new);
     // `None` => follow the rate-computed tax; `Some` => a manual override.
     let mut tax_override = use_signal(|| None::<String>);
@@ -1417,6 +1425,9 @@ pub fn InvoiceNewPage() -> Element {
             "discount_amount": optional_string(&discount_amount.read()),
             "lines": [{
                 "line_type": "service",
+                // MAPPS-640: the reference, not the price; the price below is
+                // what was picked or typed and is what the line keeps.
+                "product_id": optional_string(&line_product_id.read()),
                 "description": description,
                 // Quantities/prices are decimals; the server parses the
                 // string into `rust_decimal::Decimal`.
@@ -1586,6 +1597,32 @@ pub fn InvoiceNewPage() -> Element {
 
                 div {
                     h3 { class: "text-sm font-medium text-content mb-3", "Line Item" }
+                    // MAPPS-640: pick from the price list. A pick fills the
+                    // description and the unit price and keeps the reference;
+                    // both stay editable, and the price on the line is what
+                    // is charged whatever the catalog says later.
+                    div { class: "mb-3",
+                        crate::components::ProductPicker {
+                            value: line_product_name.read().clone(),
+                            selected_id: {
+                                let id = line_product_id.read().clone();
+                                (!id.is_empty()).then_some(id)
+                            },
+                            label: "From the price list",
+                            onselect: move |picked: crate::components::PickedProduct| {
+                                line_product_id.set(picked.id.clone());
+                                line_product_name.set(picked.name.clone());
+                                line_description_error.set(String::new());
+                                line_description.set(picked.name.clone());
+                                unit_price_error.set(String::new());
+                                line_unit_price.set(picked.unit_price.clone());
+                            },
+                            onclear: move |_| {
+                                line_product_id.set(String::new());
+                                line_product_name.set(String::new());
+                            },
+                        }
+                    }
                     div { class: "grid grid-cols-1 gap-3 sm:grid-cols-[1fr_100px_140px]",
                         crate::components::Input {
                             name: "line_description",
@@ -2457,6 +2494,8 @@ struct EditableLine {
     description: String,
     quantity: String,
     unit_price: String,
+    /// MAPPS-640: the catalog product this line sells, kept across a re-save.
+    product_id: Option<String>,
     // PMS-518: per-field inline validation messages, populated on submit so each
     // failing line flags its own field instead of collapsing into one banner.
     // The message travels with the line through add/remove, staying aligned.
@@ -2521,6 +2560,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                 description: l.description.clone(),
                 quantity: l.quantity.clone(),
                 unit_price: l.unit_price.clone(),
+                product_id: l.product_id.map(|p| p.to_string()),
                 ..EditableLine::default()
             })
             .collect::<Vec<_>>()
@@ -2686,6 +2726,9 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             };
             lines_json.push(serde_json::json!({
                 "line_type": line_type,
+                // MAPPS-640: the reference survives a re-save; the price is
+                // the line's own.
+                "product_id": line.product_id.clone(),
                 "description": description,
                 // Decimal strings; the server parses into `rust_decimal::Decimal`.
                 "quantity": quantity,
@@ -2822,6 +2865,28 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                                     });
                             },
                             "Add line"
+                        }
+                    }
+                    // MAPPS-640: a line from the price list, prefilled with the
+                    // product's name and current price and carrying its id.
+                    div { class: "mb-3",
+                        crate::components::ProductPicker {
+                            value: String::new(),
+                            selected_id: None,
+                            label: "Add from the price list",
+                            placeholder: "Search the price list to add a line…",
+                            clear_on_select: true,
+                            onselect: move |picked: crate::components::PickedProduct| {
+                                lines.write().push(EditableLine {
+                                    line_type: "product".to_string(),
+                                    description: picked.name.clone(),
+                                    quantity: "1".to_string(),
+                                    unit_price: picked.unit_price.clone(),
+                                    product_id: Some(picked.id.clone()),
+                                    ..EditableLine::default()
+                                });
+                            },
+                            onclear: move |_| {},
                         }
                     }
                     if lines.read().is_empty() {
