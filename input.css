@@ -285,10 +285,10 @@
     opacity: 0.55;
   }
 
-  input[type="number"]:hover::-webkit-inner-spin-button,
-  input[type="number"]:focus::-webkit-inner-spin-button,
-  input[type="number"]:hover::-webkit-outer-spin-button,
-  input[type="number"]:focus::-webkit-outer-spin-button {
+  input[type="number"]:not(:disabled):hover::-webkit-inner-spin-button,
+  input[type="number"]:not(:disabled):focus::-webkit-inner-spin-button,
+  input[type="number"]:not(:disabled):hover::-webkit-outer-spin-button,
+  input[type="number"]:not(:disabled):focus::-webkit-outer-spin-button {
     opacity: 1;
   }
 
