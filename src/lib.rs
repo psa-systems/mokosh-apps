@@ -504,6 +504,10 @@ pub enum Route {
     #[route("/credit-notes/:id")]
     CreditNoteDetail { id: String },
 
+    // MAPPS-639: a company's account over a period, computed and not stored.
+    #[route("/statements")]
+    Statement {},
+
     // Assets
     #[route("/assets")]
     AssetList {},
@@ -1285,6 +1289,15 @@ fn CreditNoteDetail(id: String) -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             credit_notes::CreditNoteDetailPage { id }
+        }
+    }
+}
+
+#[component]
+fn Statement() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            statements::StatementPage {}
         }
     }
 }

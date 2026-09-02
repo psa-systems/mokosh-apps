@@ -42,6 +42,7 @@ pub mod request_form;
 pub mod request_links;
 pub mod settings;
 pub mod sla;
+pub mod statements;
 pub mod system_status;
 pub mod team;
 pub mod tickets;

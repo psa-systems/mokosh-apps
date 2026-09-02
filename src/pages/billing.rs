@@ -38,7 +38,7 @@ const PER_PAGE: usize = 25;
 use crate::utils::money::format_money_str;
 
 /// Map the server's snake_case `PaymentMethod` tag to a readable label.
-fn humanize_payment_method(raw: &str) -> String {
+pub(crate) fn humanize_payment_method(raw: &str) -> String {
     match raw {
         "check" => "Check".to_string(),
         "credit_card" => "Credit Card".to_string(),
