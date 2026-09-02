@@ -34,6 +34,7 @@ pub mod portal_forgot_password;
 pub mod portal_login;
 pub mod portal_reset_password;
 pub mod portal_set_password;
+pub mod products;
 pub mod profile;
 pub mod projects;
 pub mod quotes;

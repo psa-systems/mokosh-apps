@@ -609,6 +609,9 @@ pub enum Route {
     // MAPPS-170: invoice payment-terms lookup editor (server CRUD from PMS-333).
     #[route("/settings/payment-terms")]
     SettingsPaymentTerms {},
+    // MAPPS-640: the product catalog (server CRUD from PMS-955).
+    #[route("/settings/products")]
+    SettingsProducts {},
     // MAPPS-172: ticket lookup editors (server CRUD from PMS-321).
     #[route("/settings/ticket-statuses")]
     SettingsTicketStatuses {},
@@ -1521,6 +1524,15 @@ fn SettingsPaymentTerms() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             settings::PaymentTermsSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsProducts() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            products::ProductsSettingsPage {}
         }
     }
 }
