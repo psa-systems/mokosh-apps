@@ -105,6 +105,142 @@ pub fn window_hidden() -> bool {
         .unwrap_or(false)
 }
 
+// --- coming back to the foreground (MAPPS-645) ---------------------------
+//
+// `window_hidden()` above is a poll, and the auth loops only ever asked it
+// once every 30 seconds. A tab suspended past its token's expiry therefore
+// woke, fired the requests its pages mount with, and sat on whatever error
+// they earned until the remainder of that sleep ran out; a reload only
+// re-entered the same race. These three give the loops an edge to wake on
+// instead.
+
+thread_local! {
+    /// Advanced once per hidden -> visible transition. A generation rather
+    /// than a flag: a waiter compares the value it started with, so a wake
+    /// that lands between two polls is still seen on the next one.
+    static VISIBLE_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Everything currently parked in [`visible_again`], by waiter id.
+    static VISIBLE_WAITERS: std::cell::RefCell<Vec<(u64, std::task::Waker)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static NEXT_WAITER_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The app is back in front of the user: wake everything parked in
+/// [`visible_again`].
+///
+/// The browser's `visibilitychange` listener ([`watch_visibility`]) is the
+/// only caller in a shipped build. Nothing calls it on the desktop, where the
+/// window reports itself visible at all times (see [`window_hidden`]), so a
+/// native `visible_again()` never resolves and the auth loops keep the poll
+/// cadence they have always had there.
+pub fn notify_visible() {
+    VISIBLE_GENERATION.with(|g| g.set(g.get().wrapping_add(1)));
+    let waiters = VISIBLE_WAITERS.with(|w| std::mem::take(&mut *w.borrow_mut()));
+    for (_, waker) in waiters {
+        waker.wake();
+    }
+}
+
+/// Resolves the next time the app comes back to the foreground.
+pub fn visible_again() -> VisibleAgain {
+    VisibleAgain {
+        start: VISIBLE_GENERATION.with(std::cell::Cell::get),
+        id: NEXT_WAITER_ID.with(|n| {
+            let next = n.get().wrapping_add(1);
+            n.set(next);
+            next
+        }),
+    }
+}
+
+/// The future [`visible_again`] hands out. Deregisters itself when dropped,
+/// which is every time a caller races it against a timer and the timer wins.
+pub struct VisibleAgain {
+    start: u64,
+    id: u64,
+}
+
+impl std::future::Future for VisibleAgain {
+    type Output = ();
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        if VISIBLE_GENERATION.with(std::cell::Cell::get) != self.start {
+            return std::task::Poll::Ready(());
+        }
+        VISIBLE_WAITERS.with(|w| {
+            let mut waiters = w.borrow_mut();
+            match waiters.iter_mut().find(|(id, _)| *id == self.id) {
+                Some((_, waker)) => waker.clone_from(cx.waker()),
+                None => waiters.push((self.id, cx.waker().clone())),
+            }
+        });
+        std::task::Poll::Pending
+    }
+}
+
+impl Drop for VisibleAgain {
+    fn drop(&mut self) {
+        VISIBLE_WAITERS.with(|w| w.borrow_mut().retain(|(id, _)| *id != self.id));
+    }
+}
+
+/// Start reporting a return to the foreground. Idempotent, and mounted from
+/// the auth loops at the app root, so a second call installs nothing.
+#[cfg(target_arch = "wasm32")]
+pub fn watch_visibility() {
+    use wasm_bindgen::JsCast;
+
+    thread_local! {
+        static INSTALLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// What the last `visibilitychange` reported, so only the
+        /// hidden -> visible edge wakes anybody.
+        static WAS_HIDDEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    if INSTALLED.with(std::cell::Cell::get) {
+        return;
+    }
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        // Without this the SPA still works, it just recovers from a wake on
+        // the 30s poll instead of immediately, and nothing else would say so.
+        tracing::error!(
+            "no document to watch for a return to the foreground; the auth loops keep their 30s poll cadence"
+        );
+        return;
+    };
+    WAS_HIDDEN.with(|h| h.set(window_hidden()));
+
+    let handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::Event| {
+        let hidden_now = window_hidden();
+        // `visibilitychange` fires on the way out too, and renewing a token
+        // for a tab nobody is looking at is what the skip in the heartbeat
+        // exists to avoid.
+        if WAS_HIDDEN.with(|h| h.replace(hidden_now)) && !hidden_now {
+            notify_visible();
+        }
+    }) as Box<dyn FnMut(web_sys::Event)>);
+
+    if let Err(e) = document
+        .add_event_listener_with_callback("visibilitychange", handler.as_ref().unchecked_ref())
+    {
+        tracing::error!(
+            "could not listen for a return to the foreground: {e:?}; the auth loops keep their 30s poll cadence"
+        );
+        return;
+    }
+    INSTALLED.with(|i| i.set(true));
+    // The listener outlives this call; it is installed once, at the app root.
+    handler.forget();
+}
+
+/// A desktop window is always visible (see [`window_hidden`]), so there is no
+/// hidden -> visible edge to listen for and nothing to install.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn watch_visibility() {}
+
 /// Does the operating system ask for a dark UI right now?
 #[cfg(target_arch = "wasm32")]
 pub fn system_prefers_dark() -> bool {

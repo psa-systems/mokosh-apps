@@ -378,17 +378,24 @@ pub fn use_active_org_loader() {
 /// (alongside `use_auth_provider`). Evaluates the persisted token bundle
 /// at mount and every 30 seconds after; if the access token is within
 /// 60s of expiry, exchanges the refresh token for a new pair and pushes
-/// the result back into the context. On any refresh failure (the storage
-/// layer detected reuse, the refresh token has expired, the network is
-/// gone) the local auth state is cleared and the browser is sent to
-/// /login. The user experiences a transparent re-login rather than
-/// mysterious 401s.
+/// the result back into the context. When the refusal says the grant
+/// itself is dead (the storage layer detected reuse, the refresh token
+/// has expired, there is no refresh token left to spend) the local auth
+/// state is cleared and the browser is sent to /login. The user
+/// experiences a transparent re-login rather than mysterious 401s. A
+/// transient failure keeps the session and retries; see
+/// [`renewal_is_unrecoverable`].
 ///
 /// MAPPS-435: this loop is no longer the only thing standing between a
 /// spent token and a request. The renewal it drives lives in
 /// [`crate::hooks::fetch::api::renew_access_token`], which the request
 /// path also calls, because a tab the browser discarded and re-created
 /// mounts its pages before any loop has ticked.
+///
+/// MAPPS-645: nor is the 30-second cadence the only thing that drives it. A
+/// tab coming back to the foreground evaluates immediately, because that is
+/// the moment its pages re-fetch and the moment the token is most likely to
+/// have expired while nobody was looking.
 pub fn use_token_refresh() {
     let mut auth = use_auth();
     // Note: this hook is mounted on the root `App` component, which is
@@ -398,6 +405,7 @@ pub fn use_token_refresh() {
     // `/login`. Same end result for the user.
 
     use_future(move || async move {
+        crate::platform::dom::watch_visibility();
         loop {
             oidc_refresh_tick(&mut auth).await;
             // MAPPS-435: the sleep is LAST. Sleeping first meant a tab the
@@ -405,14 +413,99 @@ pub fn use_token_refresh() {
             // sessionStorage held for the first 30 seconds, however dead, and
             // every page that mounted in that window 401'd.
             #[cfg(feature = "app")]
-            crate::platform::timer::sleep_ms(30_000).await;
+            sleep_or_wake(POLL_INTERVAL_MS).await;
         }
     });
 }
 
+/// How long a poll tick waits before re-evaluating, when nothing wakes it.
+#[cfg(feature = "app")]
+const POLL_INTERVAL_MS: u32 = 30_000;
+
+/// Wait for the next scheduled tick, or for the app to come back to the
+/// foreground, whichever happens first (MAPPS-645).
+///
+/// A suspended tab used to wake, fire the requests its pages mount with
+/// against a token that had expired while it slept, and sit on whatever error
+/// they earned for the rest of this sleep - up to 30 seconds, with a reload
+/// only re-entering the same race. Both arms mean the same thing to the
+/// caller, "evaluate now", so there is no outcome to inspect.
+#[cfg(feature = "app")]
+async fn sleep_or_wake(ms: u32) {
+    let sleep = std::pin::pin!(crate::platform::timer::sleep_ms(ms));
+    let wake = std::pin::pin!(crate::platform::dom::visible_again());
+    futures_util::future::select(sleep, wake).await;
+}
+
+/// Is a failed renewal one this session cannot come back from?
+///
+/// [`crate::hooks::fetch::api::renew_access_token`] answers
+/// `Result<(), String>`, so the classification reads the message that layer
+/// produced. Anything unrecognised counts as transient on purpose: since
+/// MAPPS-645 a tick fires the instant a tab is foregrounded, which is exactly
+/// when the network is least likely to be back, and signing a user out over a
+/// blip is worse than the one 401 that follows. Nothing is stranded by being
+/// wrong in that direction - a request that then 401s runs
+/// `note_agent_unauthorized`, which ends the session itself.
+fn renewal_is_unrecoverable(err: &str) -> bool {
+    // Refused before it reached the wire: there is nothing to renew from and
+    // there never will be.
+    if err.contains("carries no refresh token") || err.contains("no persisted session to renew") {
+        return true;
+    }
+    // OIDC. `FlowError::TokenEndpoint` renders as
+    // `token endpoint: {error} ({description})`; only the OAuth 2.0 codes that
+    // mean the grant itself is dead count. A 5xx from the OP arrives here too
+    // (as the synthesized `token_endpoint_failed`) and is worth retrying.
+    if let Some(rest) = err.strip_prefix("token endpoint: ") {
+        let code = rest.split_once(' ').map_or(rest, |(code, _)| code);
+        return matches!(
+            code,
+            "invalid_grant" | "invalid_client" | "unauthorized_client" | "unsupported_grant_type"
+        );
+    }
+    // Standalone. `ApiError` renders as `http {code}: {message}`; a 4xx is the
+    // server refusing the refresh token, a 5xx is the server having a bad day.
+    if let Some(rest) = err.strip_prefix("http ") {
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        return matches!(digits.parse::<u16>(), Ok(400..=499));
+    }
+    false
+}
+
+/// Drop an OIDC session that cannot be renewed and put the user on /login.
+///
+/// The one place that branch lives, so the wake-triggered evaluation and the
+/// scheduled one end a dead session identically.
+fn end_oidc_session(auth: &mut Signal<AuthContext>, cause: &str) {
+    tracing::warn!("token refresh failed unrecoverably; signing out: {cause}");
+    {
+        let mut a = auth.write();
+        a.user = None;
+        a.tokens = None;
+    }
+    crate::hooks::fetch::api::set_access_token(None);
+    crate::modules::oidc::storage::clear_auth();
+    redirect_to_login();
+}
+
+/// The standalone (non-OIDC) equivalent of [`end_oidc_session`].
+fn end_standalone_session(auth: &mut Signal<AuthContext>, cause: &str) {
+    tracing::warn!("standalone token refresh failed unrecoverably; signing out: {cause}");
+    {
+        let mut a = auth.write();
+        a.user = None;
+        a.tokens = None;
+    }
+    crate::modules::oidc::storage::clear_standalone();
+    crate::hooks::fetch::api::set_access_token(None);
+    redirect_to_login();
+}
+
 /// One evaluation of the OIDC refresh window. Returns without renewing when
-/// there is no persisted OIDC session, it carries no refresh token, or the
-/// access token is still comfortably valid.
+/// there is no persisted OIDC session or the access token is still comfortably
+/// valid. A session already past expiry with no refresh token left to spend is
+/// ended here rather than renewed (MAPPS-645).
 async fn oidc_refresh_tick(auth: &mut Signal<AuthContext>) {
     // The persisted bundle is the source of truth, not the context's copy: a
     // renewal on the request path (MAPPS-435) rotates the refresh token in
@@ -422,14 +515,21 @@ async fn oidc_refresh_tick(auth: &mut Signal<AuthContext>) {
         Some(s) => s,
         None => return, // not signed in through OIDC, nothing to do
     };
-    if stored.refresh_token.is_none() {
-        return; // nothing to renew with; let it expire
-    }
-
     // Refresh window: 60s before expiry. If we already missed it (clock jump /
     // tab was backgrounded), refresh now.
     let now = chrono::Utc::now();
     if stored.expires_at - now > chrono::Duration::seconds(60) {
+        return;
+    }
+
+    // MAPPS-645: nothing to renew with. While the access token is still good
+    // there is nothing to do; once it is spent the session cannot come back,
+    // so end it here rather than leave the user on a page whose every request
+    // 401s until something else notices.
+    if stored.refresh_token.is_none() {
+        if stored.expires_at <= now {
+            end_oidc_session(auth, "the stored OIDC session carries no refresh token");
+        }
         return;
     }
 
@@ -459,16 +559,13 @@ async fn oidc_refresh_tick(auth: &mut Signal<AuthContext>) {
             // cleared so the membership-loader effect re-runs.
             refresh_user_from_me(auth).await;
         }
+        Err(e) if renewal_is_unrecoverable(&e) => end_oidc_session(auth, &e),
+        // MAPPS-645: a wake-triggered tick runs the moment the tab is
+        // foregrounded, which is where a network-shaped failure is most
+        // likely and least meaningful. Keep the session; the next tick (or
+        // the 401 handler, which ends the session itself) decides.
         Err(e) => {
-            tracing::warn!("token refresh failed; signing out: {e}");
-            {
-                let mut a = auth.write();
-                a.user = None;
-                a.tokens = None;
-            }
-            crate::hooks::fetch::api::set_access_token(None);
-            crate::modules::oidc::storage::clear_auth();
-            redirect_to_login();
+            tracing::warn!("token refresh failed transiently; keeping the session: {e}");
         }
     }
 }
@@ -484,18 +581,20 @@ async fn oidc_refresh_tick(auth: &mut Signal<AuthContext>) {
 /// Each tick reloads the persisted session (so a login or logout in this tab is
 /// picked up) and, once the access token is within 60s of expiry, rotates it via
 /// `POST /api/v1/auth/refresh`, persisting the new tokens back to sessionStorage
-/// and the fetch access-token holder. On any refresh failure the session is
-/// cleared and the browser is sent to /login, matching the OIDC error branch and
-/// the MAPPS-368 standalone-401 clear.
+/// and the fetch access-token holder. A refusal that says the grant is dead
+/// clears the session and sends the browser to /login, matching the OIDC error
+/// branch and the MAPPS-368 standalone-401 clear; a transient failure keeps the
+/// session and retries (MAPPS-645).
 pub fn use_standalone_token_refresh() {
     let mut auth = use_auth();
 
     use_future(move || async move {
+        crate::platform::dom::watch_visibility();
         loop {
             standalone_refresh_tick(&mut auth).await;
             // MAPPS-435: sleep LAST, for the reason given on the OIDC loop.
             #[cfg(feature = "app")]
-            crate::platform::timer::sleep_ms(30_000).await;
+            sleep_or_wake(POLL_INTERVAL_MS).await;
         }
     });
 }
@@ -512,12 +611,6 @@ async fn standalone_refresh_tick(auth: &mut Signal<AuthContext>) {
         Some(s) => s,
         None => return,
     };
-    // A standalone session with no refresh token cannot be renewed; leave it
-    // to expire rather than spin on it every tick.
-    if session.refresh_token.is_none() {
-        return;
-    }
-
     // Refresh window: 60s before expiry. If a backgrounded tab sailed past it
     // (throttled timers), refresh now - same policy as the OIDC loop above.
     let now = chrono::Utc::now();
@@ -525,18 +618,28 @@ async fn standalone_refresh_tick(auth: &mut Signal<AuthContext>) {
         return;
     }
 
+    // MAPPS-645: a standalone session with no refresh token cannot be renewed.
+    // Same policy as the OIDC tick above: nothing to do while the access token
+    // is still good, sign out once it is spent.
+    if session.refresh_token.is_none() {
+        if session.expires_at <= now {
+            end_standalone_session(
+                auth,
+                "the stored standalone session carries no refresh token",
+            );
+        }
+        return;
+    }
+
     // Shared single-flight renewal (MAPPS-435); it persists the rotated
     // session and swaps the fetch layer's bearer.
-    if let Err(e) = crate::hooks::fetch::api::renew_access_token().await {
-        tracing::warn!("standalone token refresh failed; signing out: {e}");
-        {
-            let mut a = auth.write();
-            a.user = None;
-            a.tokens = None;
+    match crate::hooks::fetch::api::renew_access_token().await {
+        Ok(()) => {}
+        Err(e) if renewal_is_unrecoverable(&e) => end_standalone_session(auth, &e),
+        // MAPPS-645: transient, for the reason given on the OIDC tick.
+        Err(e) => {
+            tracing::warn!("standalone token refresh failed transiently; keeping the session: {e}");
         }
-        crate::modules::oidc::storage::clear_standalone();
-        crate::hooks::fetch::api::set_access_token(None);
-        redirect_to_login();
     }
 }
 
@@ -562,13 +665,19 @@ async fn standalone_refresh_tick(auth: &mut Signal<AuthContext>) {
 /// - no access token in the holder (unauthenticated / booting),
 /// - `document.visibilityState == 'hidden'` (backgrounded tab),
 /// - `ACCOUNT_DELETED` is already set (overlay is up, no point poking).
+///
+/// MAPPS-645: a tab returning to the foreground fires the beat immediately
+/// rather than waiting out the sleep it was in the middle of. That request
+/// goes through `get_authed_typed`, so it renews a spent bearer on the way
+/// out and the generation bump re-drives every mounted resource with it.
 pub fn use_auth_heartbeat() {
     use_future(move || async move {
+        crate::platform::dom::watch_visibility();
         loop {
             heartbeat_tick().await;
             // MAPPS-435: sleep LAST, for the reason given on the OIDC loop.
             #[cfg(feature = "app")]
-            crate::platform::timer::sleep_ms(30_000).await;
+            sleep_or_wake(POLL_INTERVAL_MS).await;
         }
     });
 }
@@ -985,6 +1094,105 @@ mod tests {
             );
         }
         assert_eq!(loops, 3, "this file runs three polling loops");
+    }
+
+    /// MAPPS-645 recurrence guard, the wake half of the one above.
+    ///
+    /// Evaluating before the sleep only helps a tab that started over. A tab
+    /// the browser suspended and resumed keeps its loops, so it is mid-sleep
+    /// when its pages re-fetch against a token that expired while it was
+    /// hidden, and the page it lands on shows a dead-end error until the rest
+    /// of that sleep runs out. Every loop therefore waits on the wake-aware
+    /// sleep, and the raw timer is reached from exactly one place.
+    #[test]
+    fn the_auth_loops_wake_when_the_app_returns_to_the_foreground() {
+        let src = production_src();
+        assert_eq!(
+            src.matches("sleep_or_wake(POLL_INTERVAL_MS).await").count(),
+            3,
+            "all three polling loops must wait on the wake-aware sleep"
+        );
+        assert_eq!(
+            src.matches("crate::platform::timer::sleep_ms").count(),
+            1,
+            "the raw timer belongs to sleep_or_wake alone; a second caller is a loop that cannot be woken"
+        );
+        assert_eq!(
+            src.matches("crate::platform::dom::watch_visibility()")
+                .count(),
+            3,
+            "each loop installs the visibility listener, so one mounted alone still wakes"
+        );
+    }
+
+    /// MAPPS-645: the wake has to actually cut the sleep short. Racing a
+    /// 30-second timer and returning immediately is the whole behaviour; if
+    /// the wake future never resolves this test takes 30 seconds instead of
+    /// no time at all.
+    #[cfg(feature = "app")]
+    #[test]
+    fn a_return_to_the_foreground_cuts_the_poll_sleep_short() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("a tokio runtime to drive the sleep on");
+        let started = std::time::Instant::now();
+        rt.block_on(async {
+            let waiting = super::sleep_or_wake(super::POLL_INTERVAL_MS);
+            let waking = async {
+                // One yield so `waiting` is polled and parked before the wake
+                // lands; a wake nobody is waiting on is not what is under test.
+                tokio::task::yield_now().await;
+                crate::platform::dom::notify_visible();
+            };
+            futures_util::future::join(waiting, waking).await;
+        });
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the sleep waited out its interval instead of waking: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// MAPPS-645: a wake fires a tick the instant the tab is foregrounded,
+    /// which is exactly when the network is least likely to be back. Only a
+    /// refusal that says the grant is dead may sign the user out.
+    #[test]
+    fn only_a_dead_grant_signs_the_user_out() {
+        for dead in [
+            "the stored OIDC session carries no refresh token",
+            "the stored standalone session carries no refresh token",
+            "no persisted session to renew",
+            "token endpoint: invalid_grant (refresh token expired)",
+            "token endpoint: invalid_client ()",
+            "http 401: token has expired",
+            "http 400: invalid refresh token",
+        ] {
+            assert!(
+                super::renewal_is_unrecoverable(dead),
+                "{dead:?} means the session is over"
+            );
+        }
+    }
+
+    #[test]
+    fn a_transient_renewal_failure_leaves_the_session_alone() {
+        for transient in [
+            "network: error sending request",
+            "network: token body: unexpected end of input",
+            "token endpoint: token_endpoint_failed ()",
+            "token endpoint: temporarily_unavailable ()",
+            "http 500: internal server error",
+            "http 502",
+            "network error: connection refused",
+            "decode error: missing field `access_token`",
+            "something nobody has seen before",
+        ] {
+            assert!(
+                !super::renewal_is_unrecoverable(transient),
+                "{transient:?} is worth another tick, not a sign-out"
+            );
+        }
     }
 
     /// A failed load must leave the org unnamed rather than invent one. The
