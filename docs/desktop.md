@@ -182,7 +182,44 @@ These behave differently on the desktop on purpose, not by omission:
 - **Exports report their path.** The browser has a download shelf; here the app
   picks the destination, so it says where the file went.
 
+## Reading from the webview
+
+Writes into the document are one-way `eval` calls and need nothing back. Four
+behaviours needed something back, and each of them was inert here until
+MAPPS-511: sidebar scroll memory, modal focus return, markdown task-list
+toggling, and live OS theme switching.
+
+`dioxus::document::eval` is bidirectional, so all four go through the same
+channel rather than one mechanism each (`src/platform/dom.rs`):
+
+- **A value out of the webview** is an `async` read. `scroll_top_async` returns
+  what the script returns, and the caller awaits it from the handler it already
+  runs inside. The browser answers from the document it is already in.
+- **An event into Rust** is the injected script attaching the listener and
+  `dioxus.send`ing each occurrence, with a spawned task looping on `recv()`.
+  That carries the markdown checkbox clicks (they live inside
+  `dangerous_inner_html`, so they cannot carry a Dioxus handler) and the OS
+  light/dark switch.
+
+Focus is the exception: nothing is read. An async read of
+`document.activeElement` would resolve after the dialog had already taken
+focus, so `capture_focus` has the script park the element in the webview under
+a token and `restore` focuses whatever is parked there.
+
+The OS theme comes from the webview's own `prefers-color-scheme`, not from
+tao's `WindowEvent::ThemeChanged`. tao 0.34 emits that event on macOS and
+Windows only (`platform_impl/{macos,windows}`, verified in the vendored
+source), so a Linux window would go on ignoring theme changes; the media query
+is also exactly what the browser build listens to. The window's tao theme is
+still what resolves `Theme::System` at boot, until the listener reports.
+
 ## Known gaps
 
-- Sidebar scroll memory, modal focus return, markdown task-list toggling, and
-  live OS theme switching are inert: MAPPS-511.
+Both need the same channel described above, and both are MAPPS-699. Their
+comments in `src/` still name MAPPS-511 as the reason they are inert, which
+that issue corrects.
+
+- Pasting an image into the KB body does nothing
+  (`src/platform/clipboard.rs`); pasting text works.
+- The markdown editor's two panes scroll independently
+  (`src/platform/scroll_sync.rs`).

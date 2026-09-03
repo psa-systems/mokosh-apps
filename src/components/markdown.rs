@@ -112,13 +112,13 @@ pub fn Markdown(props: MarkdownProps) -> Element {
             }
             // MAPPS-504: the rendered markdown is raw HTML, so these clicks are
             // caught by one delegated listener rather than per-element Dioxus
-            // handlers - and installing that listener needs the DOM in-process.
-            // On the desktop the checkboxes render but do not toggle. Tracked
-            // in MAPPS-511.
+            // handlers. The browser attaches that listener itself; the desktop
+            // cannot attach one from Rust, so MAPPS-511 has the injected script
+            // attach it and post each click back over the `eval` channel.
             #[cfg(target_arch = "wasm32")]
             install_click_listener(dom_id.clone(), interactive.then_some(on_toggle));
             #[cfg(not(target_arch = "wasm32"))]
-            let _ = (&dom_id, on_toggle);
+            crate::platform::dom::watch_task_toggles(&dom_id, on_toggle);
         });
     }
 
@@ -331,6 +331,25 @@ mod mention_wiring_tests {
             CSS[loose..].contains("margin-top: 0.5em;"),
             "a loose list item keeps more room than a tight one, because \
              Markdown distinguishes the two on purpose"
+        );
+    }
+
+    /// MAPPS-511: the checkboxes are wired on the desktop too.
+    ///
+    /// They used to render there and do nothing, because the listener that
+    /// carries a click out of `dangerous_inner_html` could only be attached
+    /// from Rust. Pinned because the failure is silent: the checkbox is drawn
+    /// either way, and a discarded handler looks like a cfg tidy-up.
+    #[test]
+    fn the_desktop_branch_installs_a_listener_too() {
+        let code = code_only();
+        assert!(
+            code.contains("crate::platform::dom::watch_task_toggles(&dom_id, on_toggle);"),
+            "the desktop branch hands the handler to the platform listener"
+        );
+        assert!(
+            !code.contains("let _ = (&dom_id, on_toggle);"),
+            "and does not discard it"
         );
     }
 
