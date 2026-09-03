@@ -5021,7 +5021,7 @@ mod prefill_tests {
 }
 
 /// MAPPS-686: the shared-DTO contract for this page's ticket and note writes,
-/// and for the two payloads it decodes.
+/// and for the payloads it decodes (MAPPS-698 added the time entry).
 ///
 /// `mokosh_types::tickets` derives `Deserialize` on the request types and
 /// `Serialize` on the response types, which is the server's half of the wire
@@ -5040,7 +5040,7 @@ mod prefill_tests {
 mod mapps686_shared_dto_tests {
     use super::{
         CreateNoteBody, CreateTicketBody, RemoteNote, RemoteSummary, RemoteTicket,
-        RemoteTicketDetail, SlaStatus, UpdateNoteBody, UpdateTicketBody,
+        RemoteTicketDetail, RemoteTimeEntry, SlaStatus, UpdateNoteBody, UpdateTicketBody,
     };
 
     const TICKET: &str = "aaaaaaaa-0000-4000-8000-000000000001";
@@ -5452,5 +5452,87 @@ mod mapps686_shared_dto_tests {
             created_at,
             updated_at: Some(updated_at),
         };
+    }
+
+    /// MAPPS-698: the ticket page's own narrowing of a time entry. Not a
+    /// picker subset: `duration_minutes` is summed into the Time Logged total
+    /// and the rest feeds the MAPPS-517 journal, so it gets the same gate as
+    /// the wider read in `src/pages/time.rs`.
+    #[allow(dead_code)]
+    fn time_entry_response_fields_this_page_reads(
+        resp: mokosh_types::time_tracking::TimeEntryResponse,
+    ) {
+        let mokosh_types::time_tracking::TimeEntryResponse {
+            id,
+            user_id,
+            date,
+            start_time,
+            end_time,
+            duration_minutes,
+            worked_minutes,
+            billable_minutes,
+            work_type_id,
+            ticket_id,
+            project_id,
+            work_category,
+            task_id,
+            entry_kind,
+            company_id,
+            notes,
+            is_billable,
+            billing_status,
+            hourly_rate,
+            total_amount,
+            approval_status,
+            created_at,
+            updated_at,
+            ticket_number,
+            ticket_title,
+            project_name,
+            task_title,
+        } = resp;
+        // Both `Some(...)` are fields the server always sends that this page
+        // still decodes as optional, the same stated read-path tolerance as
+        // the ticket and the note above: a server that predates one leaves a
+        // journal line unattributed or unordered rather than failing the whole
+        // list to decode and blanking the Time Logged total with it.
+        let _ = RemoteTimeEntry {
+            date,
+            duration_minutes,
+            notes,
+            is_billable,
+            created_at: Some(created_at),
+            user_id: Some(user_id),
+        };
+        // Carried by the response and read by neither the total nor the
+        // journal: the request already filters to this ticket, so the entry's
+        // own id, its work-item ids and the joined names add nothing to a line
+        // rendered under the ticket; the worked / billed split, the rate and
+        // the amount are reporting and invoicing concerns; the approval state
+        // is read off the timesheet rollup on the Time page; and the journal
+        // orders on `created_at`, so a later edit must not move the line.
+        let _ = (
+            id,
+            start_time,
+            end_time,
+            worked_minutes,
+            billable_minutes,
+            work_type_id,
+            ticket_id,
+            project_id,
+            work_category,
+            task_id,
+            entry_kind,
+            company_id,
+            billing_status,
+            hourly_rate,
+            total_amount,
+            approval_status,
+            updated_at,
+            ticket_number,
+            ticket_title,
+            project_name,
+            task_title,
+        );
     }
 }
