@@ -89,6 +89,37 @@ The mechanics that go with it:
 Native `Select` fields need none of this; the browser already gives
 click-to-open, arrow navigation and Tab-commit.
 
+### The inline-create modal keeps the keyboard (MAPPS-694)
+
+Committing the create row opens a modal, and the keyboard path used to stop at
+that boundary: `ModalDialog` focuses the dialog PANEL on mount, so the prefilled
+name field was several Tabs away, and Enter in it did nothing. Typing an unknown
+name and pressing Enter twice now creates the record.
+
+| Input | Behaviour |
+| --- | --- |
+| The modal opens | Focus lands in the prefilled field: "Company name" on `CompanyPicker`, "First name" on `ContactPicker`. |
+| Enter, anywhere in the modal body | Runs the same create action as the Create button, and is consumed, so it never reaches the form the modal opened on top of. |
+| Escape | Cancels, from `ModalChrome`'s own handler. Closing restores focus to the picker, as every close path already did. |
+
+The two pieces, both opt-in per call site so no other modal changes:
+
+- `Input` takes `autofocus: bool` (default false), which sets the HTML attribute
+  AND focuses the field on mount. The attribute alone is not enough: a browser
+  ignores `autofocus` on an element inserted after load, which is every field in
+  a modal. A call site never hand-rolls a raw `input` to get focus;
+  `scripts/check-kit-adoption.sh` exists to keep fields on the shared component.
+- `form::submit_on_enter` wraps the create action and goes on the modal BODY,
+  never on `Input` (same MAPPS-347 rule as the dropdown handlers). On the body it
+  commits from any field in the modal; it `prevent_default`s first, because the
+  same Enter is otherwise the implicit submit of the parent form behind the
+  modal. Only Enter is touched, which is what leaves Escape to the dialog.
+
+Focusing the first focusable child from `Modal` itself would have covered both
+pickers at once and is deliberately not done: it also lands the caret in a
+destructive `ConfirmDialog`'s type-to-confirm box, which is a delete gate and no
+place to start typing.
+
 ### Company picker - every call site uses `CompanyPicker`
 
 Ticket, Contact, Asset, Contract (create), Project, Invoice, the Record-Payment
