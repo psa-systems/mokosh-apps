@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, NaiveDate, Utc};
 use dioxus::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::components::{
     clear_selection, ticket_status_badge, use_bulk_selection, use_page_title, AlertType, Badge,
@@ -214,6 +214,82 @@ struct RemoteNote {
     /// server that predates PMS-931 decodes rather than failing the whole list.
     #[serde(default)]
     updated_at: Option<DateTime<Utc>>,
+}
+
+// ============================================================================
+// Request bodies (MAPPS-686)
+//
+// The write path has no tolerance argument: a field the server no longer
+// accepts, or one whose type moved, should fail THIS build rather than reach a
+// running server as JSON it will reject or silently drop. These structs stand
+// in for `mokosh_types::tickets::CreateTicketRequest`, `UpdateTicketRequest`,
+// `CreateNoteRequest` and `UpdateNoteRequest`, which derive only `Deserialize`
+// (they are the server's input types) and so cannot be serialized here until
+// mokosh-types derives both. The `*_fields_are_all_considered` functions in
+// `mapps686_shared_dto_tests` below are what tie each one to its shared DTO:
+// they destructure the shared request exhaustively and feed the bindings into
+// the body struct, so an added, removed, renamed or retyped field is a compile
+// error. Same shape as `src/pages/time.rs` (MAPPS-627).
+// ============================================================================
+
+/// `POST /api/v1/tickets`, sent by the New Ticket form.
+#[derive(Debug, Serialize)]
+struct CreateTicketBody {
+    title: String,
+    description: Option<String>,
+    company_id: uuid::Uuid,
+    contact_id: Option<uuid::Uuid>,
+    priority_id: Option<uuid::Uuid>,
+    asset_id: Option<uuid::Uuid>,
+    type_id: Option<uuid::Uuid>,
+    category_id: Option<uuid::Uuid>,
+    assigned_to_id: Option<uuid::Uuid>,
+    /// The Due Date input's `YYYY-MM-DD`, landed at 23:59 UTC. Typed as the
+    /// shared DTO types it, so the parse happens at this boundary rather than
+    /// leaving the server to reject a string it cannot read.
+    scheduled_end: Option<DateTime<Utc>>,
+    source_kb_article_id: Option<uuid::Uuid>,
+}
+
+/// `PUT /api/v1/tickets/{id}`, sent by the Description editor, the task-list
+/// checkboxes and each inline sidebar editor.
+///
+/// Every field is omitted rather than sent as null unless the editor that
+/// fired set it, so a status change carries `status_id` alone: the same wire
+/// bytes the hand-built JSON literals this replaced produced.
+#[derive(Debug, Default, Serialize)]
+struct UpdateTicketBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status_id: Option<uuid::Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    priority_id: Option<uuid::Uuid>,
+    /// Doubled because clearing is a real value here: absent leaves the
+    /// assignee alone, `null` is the Unassign. The shared DTO types the inner
+    /// half; the outer half is this page's own presence flag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    assigned_to_id: Option<Option<uuid::Uuid>>,
+    /// The shared DTO is itself a double `Option` (PMS-344's clearable FK) and
+    /// the outer half means the same thing on both sides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    asset_id: Option<Option<uuid::Uuid>>,
+}
+
+/// `POST /api/v1/tickets/{id}/notes`, sent by the note composer.
+#[derive(Debug, Serialize)]
+struct CreateNoteBody {
+    note_type: NoteType,
+    content: String,
+    send_email: bool,
+}
+
+/// `PUT /api/v1/tickets/{id}/notes/{note_id}`, sent by the inline note editor.
+#[derive(Debug, Serialize)]
+struct UpdateNoteBody {
+    content: String,
 }
 
 /// MAPPS-593: whether this viewer may edit this note.
@@ -1497,6 +1573,12 @@ pub fn TicketNewPage() -> Element {
     let mut title_error = use_signal(String::new);
     // PMS-518: per-field error for the now-enforced required Description.
     let mut description_error = use_signal(String::new);
+    // MAPPS-686: inline slot for a Due Date this page cannot turn into the
+    // `DateTime<Utc>` the shared `CreateTicketRequest` declares. The native
+    // picker only ever yields `YYYY-MM-DD` or nothing, so this stays empty in
+    // practice; a value that reaches the parse and fails it says so here
+    // instead of being posted as a string the server has to reject.
+    let mut due_date_error = use_signal(String::new);
     // MAPPS-592: who `@handle` completes against while the ticket is written.
     let mention_directory = crate::hooks::use_mention_directory(true);
     // MAPPS-322: per-field error for the required Company, routed into the
@@ -1691,11 +1773,32 @@ pub fn TicketNewPage() -> Element {
         // emits `YYYY-MM-DD`, so we land it at 23:59 UTC on the chosen
         // day - "due by end of day" is the intuitive read for "Due
         // Date" on a ticket.
-        let due_value = due_date.read().clone();
-        let scheduled_end: Option<String> = if due_value.trim().is_empty() {
+        //
+        // MAPPS-686: parsed here rather than posted as a formatted string,
+        // because the shared `CreateTicketRequest` types it as a
+        // `DateTime<Utc>`. A value the parse cannot read blocks the submit and
+        // lands in the field's own slot instead of reaching the server.
+        let due_value = due_date.read().trim().to_string();
+        let scheduled_end: Option<DateTime<Utc>> = if due_value.is_empty() {
+            due_date_error.set(String::new());
             None
         } else {
-            Some(format!("{}T23:59:00Z", due_value.trim()))
+            match NaiveDate::parse_from_str(&due_value, "%Y-%m-%d")
+                .ok()
+                .and_then(|d| d.and_hms_opt(23, 59, 0))
+                .map(|dt| dt.and_utc())
+            {
+                Some(dt) => {
+                    due_date_error.set(String::new());
+                    Some(dt)
+                }
+                None => {
+                    tracing::warn!("ticket due date {due_value:?} is not a YYYY-MM-DD date");
+                    due_date_error.set("Enter the due date as YYYY-MM-DD.".to_string());
+                    is_submitting.set(false);
+                    return;
+                }
+            }
         };
 
         // Title + Description are already validated and captured (trimmed)
@@ -1712,34 +1815,44 @@ pub fn TicketNewPage() -> Element {
                 // defensively (the prefill already validated it as
                 // a UUID, but a hand-edited URL could still slip
                 // through) and folded into the body as Null when
-                // absent so the server uses its default.
-                let kb_article_uuid: serde_json::Value = match uuid::Uuid::parse_str(&kb_article_id)
-                {
-                    Ok(u) => serde_json::Value::String(u.to_string()),
-                    Err(_) => serde_json::Value::Null,
+                // absent so the server uses its default. MAPPS-686:
+                // an id that is present and unreadable is logged
+                // rather than dropped in silence.
+                let source_kb_article_id: Option<uuid::Uuid> = if kb_article_id.is_empty() {
+                    None
+                } else {
+                    match uuid::Uuid::parse_str(&kb_article_id) {
+                        Ok(u) => Some(u),
+                        Err(e) => {
+                            tracing::warn!(
+                                "source KB article id {kb_article_id:?} is not a UUID: {e}"
+                            );
+                            None
+                        }
+                    }
                 };
-                let body = serde_json::json!({
-                    "title": title_v,
+                let body = CreateTicketBody {
+                    title: title_v,
                     // MAPPS-322: Description is required and validated non-empty
                     // above, so send the (trimmed) string verbatim. The old
                     // "collapse empty to null" branch made the asterisk a lie:
                     // it let a blank description through as `null`.
-                    "description": description_v,
-                    "company_id": company_uuid,
-                    "contact_id": contact_uuid,
-                    "priority_id": priority_uuid,
-                    "asset_id": asset_uuid,
+                    description: Some(description_v),
+                    company_id: company_uuid,
+                    contact_id: contact_uuid,
+                    priority_id: priority_uuid,
+                    asset_id: asset_uuid,
                     // MAPPS-296: new fields. The server ignores `null`
                     // and uses its own defaults; this captures every
                     // field a dispatcher needs at creation instead of
                     // forcing a follow-up edit.
-                    "type_id": type_uuid,
-                    "category_id": category_uuid,
-                    "assigned_to_id": assignee_uuid,
-                    "scheduled_end": scheduled_end,
+                    type_id: type_uuid,
+                    category_id: category_uuid,
+                    assigned_to_id: assignee_uuid,
+                    scheduled_end,
                     // PMS-482: KB-article provenance.
-                    "source_kb_article_id": kb_article_uuid,
-                });
+                    source_kb_article_id,
+                };
 
                 #[derive(serde::Deserialize)]
                 struct CreatedTicket {
@@ -2014,7 +2127,11 @@ pub fn TicketNewPage() -> Element {
                         label: "Due Date".to_string(),
                         value: due_date.read().clone(),
                         help: "Stamps the ticket's scheduled-end so SLA + dispatch view it on creation.".to_string(),
-                        oninput: move |e: FormEvent| due_date.set(e.value()),
+                        error: due_date_error.read().clone(),
+                        oninput: move |e: FormEvent| {
+                            due_date_error.set(String::new());
+                            due_date.set(e.value());
+                        },
                     }
                 }
 
@@ -2060,6 +2177,12 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     // surfaced in the textarea's own slot by the FormGuard in the composer's
     // submit handler.
     let mut note_content_error = use_signal(String::new);
+    // MAPPS-686: inline slot for a Note Type the shared `CreateNoteRequest`
+    // does not name. Every option comes from `note_type_options()`, so this
+    // only fires if the server's `NoteType` and this composer disagree, and
+    // that has to be said next to the control rather than posted as a string
+    // the server will refuse.
+    let mut note_type_error = use_signal(String::new);
     let mut note_submitting = use_signal(|| false);
     let mut note_error = use_signal(String::new);
     let ticket_id_for_note = props.id.clone();
@@ -2385,10 +2508,11 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             // `desc_v` is already non-empty (the FormGuard above
             // blocks a blank edit), so an edit can no longer blank
             // an existing description.
-            let body = serde_json::json!({
-                "title": title_v,
-                "description": desc_v,
-            });
+            let body = UpdateTicketBody {
+                title: Some(title_v),
+                description: Some(desc_v),
+                ..Default::default()
+            };
             match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
                 &format!("/tickets/{save_id}"),
                 &body,
@@ -2743,7 +2867,10 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                                     let mut tr = ticket_resource;
                                                     let mut hr = history_resource;
                                                     spawn(async move {
-                                                        let body = serde_json::json!({ "description": new_desc });
+                                                        let body = UpdateTicketBody {
+                                                            description: Some(new_desc),
+                                                            ..Default::default()
+                                                        };
                                                         match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
                                                                 &format!("/tickets/{tid}"),
                                                                 &body,
@@ -2821,7 +2948,9 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                 label: "Note Type",
                                 options: note_type_options(),
                                 value: note_type.read().clone(),
+                                error: note_type_error.read().clone(),
                                 onchange: move |e: FormEvent| {
+                                    note_type_error.set(String::new());
                                     // Only a public note ever leaves the building,
                                     // whatever the flag says (mokosh-server
                                     // `add_note`). MAPPS-613: the checkbox is now
@@ -2895,18 +3024,32 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                     if guard.blocked() {
                                         return;
                                     }
-                                    note_submitting.set(true);
                                     let id = ticket_id_for_note.clone();
                                     let type_v = note_type.read().clone();
                                     let email_v = type_v == "public" && note_send_email();
+                                    // MAPPS-686: the composer holds the wire tag as a
+                                    // string; the shared `CreateNoteRequest` types it as
+                                    // a `NoteType`, so it is parsed here. Runs before
+                                    // `note_submitting` is set, so the bail path leaves
+                                    // it untouched.
+                                    let Some(type_kind) = NoteType::from_str(&type_v) else {
+                                        tracing::error!(
+                                            "note type {type_v:?} is not one the server accepts"
+                                        );
+                                        note_type_error
+                                            .set("Pick a note type.".to_string());
+                                        return;
+                                    };
+                                    note_type_error.set(String::new());
+                                    note_submitting.set(true);
                                     spawn(async move {
                                         #[cfg(feature = "app")]
                                         {
-                                            let body = serde_json::json!({
-                                                "note_type": type_v,
-                                                "content": content_v,
-                                                "send_email": email_v,
-                                            });
+                                            let body = CreateNoteBody {
+                                                note_type: type_kind,
+                                                content: content_v,
+                                                send_email: email_v,
+                                            };
                                             let path = format!("/tickets/{id}/notes");
                                             match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(&path, &body).await {
                                                 Ok(_) => {
@@ -3048,8 +3191,10 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                     let save_id = save_id.clone();
                                     spawn(async move {
                                         field_error.set(String::new());
-                                        let body =
-                                            serde_json::json!({ "status_id": new_id });
+                                        let body = UpdateTicketBody {
+                                            status_id: Some(new_id),
+                                            ..Default::default()
+                                        };
                                         match crate::hooks::fetch::api::put_authed::<
                                             serde_json::Value,
                                             _,
@@ -3110,8 +3255,10 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                     let save_id = save_id.clone();
                                     spawn(async move {
                                         field_error.set(String::new());
-                                        let body =
-                                            serde_json::json!({ "priority_id": new_id });
+                                        let body = UpdateTicketBody {
+                                            priority_id: Some(new_id),
+                                            ..Default::default()
+                                        };
                                         match crate::hooks::fetch::api::put_authed::<
                                             serde_json::Value,
                                             _,
@@ -3184,8 +3331,13 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                     let save_id = save_id.clone();
                                     spawn(async move {
                                         field_error.set(String::new());
-                                        let body =
-                                            serde_json::json!({ "assigned_to_id": new_id });
+                                        // `Some(None)` is the Unassign: present
+                                        // in the body and null, which is what
+                                        // clears the column server-side.
+                                        let body = UpdateTicketBody {
+                                            assigned_to_id: Some(new_id),
+                                            ..Default::default()
+                                        };
                                         match crate::hooks::fetch::api::put_authed::<
                                             serde_json::Value,
                                             _,
@@ -3245,9 +3397,10 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                     let save_id = save_id.clone();
                                     spawn(async move {
                                         field_error.set(String::new());
-                                        let body = serde_json::json!({
-                                            "asset_id": new_id,
-                                        });
+                                        let body = UpdateTicketBody {
+                                            asset_id: Some(new_id),
+                                            ..Default::default()
+                                        };
                                         match crate::hooks::fetch::api::put_authed::<
                                             serde_json::Value,
                                             _,
@@ -3515,7 +3668,7 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
             let path = format!("/tickets/{ticket_id}/notes/{note_id}");
             spawn(async move {
                 saving.set(true);
-                let body = serde_json::json!({ "content": next });
+                let body = UpdateNoteBody { content: next };
                 match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
                     .await
                 {
@@ -4852,5 +5005,440 @@ mod prefill_tests {
     fn kb_prefill_is_default_without_a_usable_id() {
         assert_eq!(kb_prefill_from("").id, "");
         assert_eq!(kb_prefill_from("?from_kb_article=not-a-uuid").id, "");
+    }
+}
+
+/// MAPPS-686: the shared-DTO contract for this page's ticket and note writes,
+/// and for the two payloads it decodes.
+///
+/// `mokosh_types::tickets` derives `Deserialize` on the request types and
+/// `Serialize` on the response types, which is the server's half of the wire
+/// and the opposite of what a client needs, so this page cannot use them
+/// directly. These functions are the substitute: each destructures the shared
+/// DTO exhaustively and feeds the bindings into the struct this page actually
+/// sends or decodes, so a field added, removed, renamed or retyped on
+/// mokosh-server fails this build instead of drifting silently. They are never
+/// called; compiling them is the whole check. Same shape as the MAPPS-627 gate
+/// in `src/pages/time.rs`.
+///
+/// The user, ticket-status, priority, type and category lookups this page also
+/// decodes are picker subsets (an id and a label) and are deliberately not
+/// gated; see the audit in `docs/client-server-integration.md`.
+#[cfg(test)]
+mod mapps686_shared_dto_tests {
+    use super::{
+        CreateNoteBody, CreateTicketBody, RemoteNote, RemoteSummary, RemoteTicket,
+        RemoteTicketDetail, SlaStatus, UpdateNoteBody, UpdateTicketBody,
+    };
+
+    const TICKET: &str = "aaaaaaaa-0000-4000-8000-000000000001";
+    const COMPANY: &str = "aaaaaaaa-0000-4000-8000-000000000002";
+
+    fn uuid(s: &str) -> uuid::Uuid {
+        uuid::Uuid::parse_str(s).expect("a fixture uuid")
+    }
+
+    /// The bytes on the wire did not move. Serde writes fields in declaration
+    /// order, so these are the exact payloads the hand-built literals produced:
+    /// a create that names every key including its nulls, and an inline edit
+    /// that carries its one field and nothing else.
+    #[test]
+    fn each_body_serialises_to_what_the_literal_sent() {
+        let created = CreateTicketBody {
+            title: "Printer down".to_string(),
+            description: Some("It is down".to_string()),
+            company_id: uuid(COMPANY),
+            contact_id: None,
+            priority_id: None,
+            asset_id: None,
+            type_id: None,
+            category_id: None,
+            assigned_to_id: None,
+            scheduled_end: chrono::NaiveDate::from_ymd_opt(2026, 6, 18)
+                .and_then(|d| d.and_hms_opt(23, 59, 0))
+                .map(|dt| dt.and_utc()),
+            source_kb_article_id: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&created).expect("serialise the create body"),
+            format!(
+                concat!(
+                    r#"{{"title":"Printer down","description":"It is down","company_id":"{}","#,
+                    r#""contact_id":null,"priority_id":null,"asset_id":null,"type_id":null,"#,
+                    r#""category_id":null,"assigned_to_id":null,"#,
+                    r#""scheduled_end":"2026-06-18T23:59:00Z","source_kb_article_id":null}}"#
+                ),
+                COMPANY
+            )
+        );
+
+        assert_eq!(
+            serde_json::to_string(&UpdateTicketBody {
+                title: Some("Printer down".to_string()),
+                description: Some("It is down".to_string()),
+                ..Default::default()
+            })
+            .expect("serialise the description-card body"),
+            r#"{"title":"Printer down","description":"It is down"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&UpdateTicketBody {
+                status_id: Some(uuid(TICKET)),
+                ..Default::default()
+            })
+            .expect("serialise the status body"),
+            format!(r#"{{"status_id":"{TICKET}"}}"#)
+        );
+        // The Unassign and the asset Clear: present and null, never omitted.
+        assert_eq!(
+            serde_json::to_string(&UpdateTicketBody {
+                assigned_to_id: Some(None),
+                ..Default::default()
+            })
+            .expect("serialise the unassign body"),
+            r#"{"assigned_to_id":null}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&UpdateTicketBody {
+                asset_id: Some(None),
+                ..Default::default()
+            })
+            .expect("serialise the asset-clear body"),
+            r#"{"asset_id":null}"#
+        );
+
+        assert_eq!(
+            serde_json::to_string(&CreateNoteBody {
+                note_type: super::NoteType::Public,
+                content: "Replaced the PSU".to_string(),
+                send_email: true,
+            })
+            .expect("serialise the note body"),
+            r#"{"note_type":"public","content":"Replaced the PSU","send_email":true}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&UpdateNoteBody {
+                content: "Replaced the PSU".to_string(),
+            })
+            .expect("serialise the note-edit body"),
+            r#"{"content":"Replaced the PSU"}"#
+        );
+    }
+
+    #[allow(dead_code)]
+    fn create_ticket_request_fields_are_all_considered(
+        req: mokosh_types::tickets::CreateTicketRequest,
+    ) {
+        let mokosh_types::tickets::CreateTicketRequest {
+            title,
+            description,
+            priority_id,
+            type_id,
+            category_id,
+            queue_id,
+            source,
+            company_id,
+            contact_id,
+            site_id,
+            assigned_to_id,
+            team_id,
+            contract_id,
+            sla_id,
+            scheduled_start,
+            scheduled_end,
+            estimated_hours,
+            is_billable,
+            asset_id,
+            custom_fields,
+            tags,
+            source_kb_article_id,
+            procedure_kb_article_id,
+            email_message_id,
+            email_thread_id,
+        } = req;
+        let _ = CreateTicketBody {
+            title,
+            description,
+            company_id,
+            contact_id,
+            priority_id,
+            asset_id,
+            type_id,
+            category_id,
+            assigned_to_id,
+            scheduled_end,
+            source_kb_article_id,
+        };
+        // Deliberately not sent by the New Ticket form. The queue, the team,
+        // the contract and the SLA are routing the server resolves from the
+        // company; `source` is stamped by the handler that received the create
+        // (this one is an agent's, not a portal's); the form offers a due date
+        // and no start, no estimate, no billing decision, no site, no custom
+        // fields and no tags, all of which are a later edit. The three
+        // remaining ids belong to other create paths entirely:
+        // `procedure_kb_article_id` to the MACD request-form flow (migration
+        // 099 keeps it apart from the `source_kb_article_id` this form does
+        // send), and the two email ids to email intake.
+        let _ = (
+            queue_id,
+            source,
+            site_id,
+            team_id,
+            contract_id,
+            sla_id,
+            scheduled_start,
+            estimated_hours,
+            is_billable,
+            custom_fields,
+            tags,
+            procedure_kb_article_id,
+            email_message_id,
+            email_thread_id,
+        );
+    }
+
+    #[allow(dead_code)]
+    fn update_ticket_request_fields_are_all_considered(
+        req: mokosh_types::tickets::UpdateTicketRequest,
+    ) {
+        let mokosh_types::tickets::UpdateTicketRequest {
+            title,
+            description,
+            status_id,
+            priority_id,
+            type_id,
+            category_id,
+            queue_id,
+            contact_id,
+            site_id,
+            assigned_to_id,
+            team_id,
+            contract_id,
+            sla_id,
+            scheduled_start,
+            scheduled_end,
+            estimated_hours,
+            is_billable,
+            billing_status,
+            asset_id,
+            custom_fields,
+            tags,
+        } = req;
+        let _ = UpdateTicketBody {
+            title,
+            description,
+            status_id,
+            priority_id,
+            // The shared DTO's field is the value; the outer `Option` is this
+            // page's own presence flag, because each inline editor sends one
+            // field and `null` here is the Unassign rather than an omission.
+            assigned_to_id: Some(assigned_to_id),
+            asset_id,
+        };
+        // Editable on the ticket, but not from this page: the detail sidebar
+        // offers Status, Priority, Assignee and Asset, and the card above it
+        // offers Title and Description. Everything else needs an editor this
+        // page does not render, and `billing_status` is invoicing's to move.
+        let _ = (
+            type_id,
+            category_id,
+            queue_id,
+            contact_id,
+            site_id,
+            team_id,
+            contract_id,
+            sla_id,
+            scheduled_start,
+            scheduled_end,
+            estimated_hours,
+            is_billable,
+            billing_status,
+            custom_fields,
+            tags,
+        );
+    }
+
+    #[allow(dead_code)]
+    fn create_note_request_fields_are_all_considered(
+        req: mokosh_types::tickets::CreateNoteRequest,
+    ) {
+        let mokosh_types::tickets::CreateNoteRequest {
+            note_type,
+            content,
+            send_email,
+        } = req;
+        let _ = CreateNoteBody {
+            note_type,
+            content,
+            send_email,
+        };
+    }
+
+    #[allow(dead_code)]
+    fn update_note_request_fields_are_all_considered(
+        req: mokosh_types::tickets::UpdateNoteRequest,
+    ) {
+        let mokosh_types::tickets::UpdateNoteRequest { content } = req;
+        let _ = UpdateNoteBody { content };
+    }
+
+    /// Both views of a ticket at once: the list narrows `TicketResponse` to
+    /// `RemoteTicket` and the detail page to `RemoteTicketDetail`, so one
+    /// destructure states what the page as a whole reads.
+    #[allow(dead_code)]
+    fn ticket_response_fields_this_page_reads(resp: mokosh_types::tickets::TicketResponse) {
+        let mokosh_types::tickets::TicketResponse {
+            id,
+            ticket_number,
+            title,
+            description,
+            status,
+            priority,
+            type_name,
+            category_name,
+            queue_name,
+            source,
+            company_id,
+            company_name,
+            contact_id,
+            contact_name,
+            assigned_to_id,
+            assigned_to_name,
+            sla_due_date,
+            sla_status,
+            is_billable,
+            billing_status,
+            estimated_hours,
+            actual_hours,
+            tags,
+            asset_id,
+            asset_name,
+            procedure_kb_article_id,
+            procedure_kb_article_title,
+            created_by_name,
+            created_at,
+            updated_at,
+        } = resp;
+        // The nested summaries, narrowed to the pair both views render. Their
+        // colours are the server's badge palette; this client keys its own
+        // badge on the name, and `is_closed` is read off the statuses lookup
+        // rather than off the ticket.
+        let mokosh_types::tickets::TicketStatusSummary {
+            id: status_id,
+            name: status_name,
+            color: status_color,
+            is_closed: status_is_closed,
+        } = status;
+        let mokosh_types::tickets::TicketPrioritySummary {
+            id: priority_id,
+            name: priority_name,
+            color: priority_color,
+        } = priority;
+        // Every `Some(...)` here is a field the server always sends that this
+        // page still decodes as optional. That is the stated read-path
+        // tolerance: a server that predates a field degrades one control or
+        // one line instead of failing the whole payload to decode.
+        let status_summary = RemoteSummary {
+            id: Some(status_id),
+            name: status_name,
+        };
+        let priority_summary = RemoteSummary {
+            id: Some(priority_id),
+            name: priority_name,
+        };
+        let _ = RemoteTicket {
+            id,
+            ticket_number: ticket_number.clone(),
+            title: title.clone(),
+            company_name: company_name.clone(),
+            status: status_summary.clone(),
+            priority: priority_summary.clone(),
+            assigned_to_name,
+            updated_at,
+        };
+        let _ = RemoteTicketDetail {
+            ticket_number,
+            title,
+            description,
+            company_id: Some(company_id),
+            company_name,
+            contact_name,
+            queue_name,
+            status: status_summary,
+            priority: priority_summary,
+            assigned_to_id,
+            asset_id,
+            asset_name,
+            procedure_kb_article_id,
+            procedure_kb_article_title,
+            created_by_name,
+            created_at,
+            sla_due_date,
+            // The page mirrors the shared enum locally so an unknown tag can
+            // default to `NotApplicable` rather than fail the decode. The
+            // match is exhaustive, so a fifth server variant fails here and
+            // somebody decides what badge it wears.
+            sla_status: match sla_status {
+                mokosh_types::tickets::SlaStatus::OnTrack => SlaStatus::OnTrack,
+                mokosh_types::tickets::SlaStatus::Warning => SlaStatus::Warning,
+                mokosh_types::tickets::SlaStatus::Breached => SlaStatus::Breached,
+                mokosh_types::tickets::SlaStatus::NotApplicable => SlaStatus::NotApplicable,
+            },
+        };
+        // Carried by the response and rendered by neither view: the type and
+        // category are captured at create time and shown nowhere afterwards,
+        // the contact is rendered by name, the billing trio belongs to
+        // invoicing, `actual_hours` is re-derived from the ticket's own time
+        // entries so the journal and the total cannot disagree, and there is
+        // no tag editor on this page.
+        let _ = (
+            type_name,
+            category_name,
+            source,
+            contact_id,
+            is_billable,
+            billing_status,
+            estimated_hours,
+            actual_hours,
+            tags,
+            status_color,
+            status_is_closed,
+            priority_color,
+        );
+    }
+
+    #[allow(dead_code)]
+    fn ticket_note_response_fields_this_page_reads(
+        resp: mokosh_types::tickets::TicketNoteResponse,
+    ) {
+        let mokosh_types::tickets::TicketNoteResponse {
+            id,
+            note_type,
+            content,
+            is_email_sent,
+            created_by_id,
+            created_by_name,
+            created_by_contact_id,
+            created_at,
+            updated_at,
+        } = resp;
+        let _ = RemoteNote {
+            id,
+            // The journal keeps the wire tag as a string: it compares against
+            // "public" and "time_entry" and renders the rest verbatim, so an
+            // unknown fifth type reads as a plain note instead of failing the
+            // whole journal to decode.
+            note_type: note_type.as_str().to_string(),
+            content,
+            created_by_name,
+            is_email_sent,
+            // The same stated tolerance as the ticket above: both are always
+            // sent, and a server that predates one degrades one entry's Edit
+            // control rather than the journal.
+            created_by_id: Some(created_by_id),
+            created_by_contact_id,
+            created_at,
+            updated_at: Some(updated_at),
+        };
     }
 }
