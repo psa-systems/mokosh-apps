@@ -346,6 +346,7 @@ Gated, with the destructuring function above:
 | `time.rs` | `Create`/`Update`/`RejectTimesheet` requests, `TimeEntry`/`TimesheetSummary`/`WorkType`/`TimeRoundingRule` responses | MAPPS-627 |
 | `tickets.rs` | `Create`/`UpdateTicketRequest`, `Create`/`UpdateNoteRequest`, `TicketResponse`/`TicketNoteResponse` | MAPPS-686 |
 | `profile.rs` | `UpdateUserRequest`, `UserResponse` | MAPPS-689 |
+| `settings.rs` | `Upsert{TicketStatus,TicketPriority,TicketType,TicketQueue,TicketCategory}Request`, `UpsertWorkTypeRequest`, `UpsertCompanyIndustryRequest`, `UpdateTenantRequest`, and the `TicketStatus`/`TicketPriority`/`TicketType`/`TicketQueue`/`TicketCategoryResponse`/`WorkTypeResponse`/`CompanyIndustryResponse`/`TenantResponse` reads behind them | MAPPS-688 |
 
 `tickets.rs` is the one worth reading for what a page pays to be typed
 rather than only for the destructuring functions. Six of its nine write
@@ -362,6 +363,29 @@ into `NoteType`. Each reports a parse failure in its own inline slot,
 because a value the client cannot read must not become a 422 the user
 has to interpret.
 
+`settings.rs` is the widest of them: eight write paths across the ticket
+taxonomy, the work types, the company industries and the tenant record,
+each with its own `Upsert*Body` and each of the reads behind them
+destructured too, because this page edits those rows rather than picking
+from them. Three form values stopped being strings at the boundary and
+report a parse failure in their own inline slot: the sort order, which
+used to become `0` on any unparseable input and silently reorder the
+list; the work type's default rate, into the `Decimal` the request
+declares; and the category's parent, into a `Uuid`. `UpdateTenantBody`
+is the one place the local struct is deliberately narrower than the
+shared DTO: `UpdateTenantRequest::branding` is a raw
+`serde_json::Value` merge document (PMS-758) and this page owns exactly
+the `BrandingView` keys, so it sends those and the destructuring
+function pins the DTO's own type for the field.
+
+`OrganizationProfileRequest` was listed against this page while it was
+ungated, and that was wrong: no caller in this client posts
+`/tenants/current/organization`
+(`grep -rn "current/organization" src/` returns nothing). The onboarding
+screen, which the DTO's own doc comment names, sends
+`PUT /tenants/current` and so is an `UpdateTenantRequest` caller like
+the organisation settings form.
+
 To gate, one page per issue under MAPPS-685, because each owns a
 feature's whole write surface and none of them reviews as part of
 another:
@@ -369,7 +393,6 @@ another:
 | Page | What is ungated | Issue |
 | --- | --- | --- |
 | `contacts.rs` | `Create`/`Update` for company, contact and site | MAPPS-687 |
-| `settings.rs` | `Upsert*` for the ticket taxonomy and work types, `UpdateTenantRequest`, `OrganizationProfileRequest` | MAPPS-688 |
 
 Deliberately not gated, and this is the decision that keeps the pattern
 from becoming a tax. These pages decode a **picker subset** off a
