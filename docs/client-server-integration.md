@@ -345,6 +345,7 @@ Gated, with the destructuring function above:
 | `request_form.rs`, `forms.rs` | `forms::*` used directly | MAPPS-535 |
 | `time.rs` | `Create`/`Update`/`RejectTimesheet` requests, `TimeEntry`/`TimesheetSummary`/`WorkType`/`TimeRoundingRule` responses | MAPPS-627 |
 | `tickets.rs` | `Create`/`UpdateTicketRequest`, `Create`/`UpdateNoteRequest`, `TicketResponse`/`TicketNoteResponse` | MAPPS-686 |
+| `profile.rs` | `UpdateUserRequest`, `UserResponse` | MAPPS-689 |
 
 `tickets.rs` is the one worth reading for what a page pays to be typed
 rather than only for the destructuring functions. Six of its nine write
@@ -369,7 +370,6 @@ another:
 | --- | --- | --- |
 | `contacts.rs` | `Create`/`Update` for company, contact and site | MAPPS-687 |
 | `settings.rs` | `Upsert*` for the ticket taxonomy and work types, `UpdateTenantRequest`, `OrganizationProfileRequest` | MAPPS-688 |
-| `profile.rs` | `UpdateMeRequest` is already a typed `Serialize` struct against `UpdateUserRequest`, with only prose holding it there | MAPPS-689 |
 
 Deliberately not gated, and this is the decision that keeps the pattern
 from becoming a tax. These pages decode a **picker subset** off a
