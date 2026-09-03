@@ -68,6 +68,17 @@ jobs:
       - name: Runner-label guard
         run: bash scripts/check-runner-labels.sh
 
+      # MAPPS-680: inside a Nushell `$"..."` string every `(` opens a
+      # subexpression, so `(MAPPS-421)` in a build-oci-image.yml message ran as
+      # an external command and failed the publish job AFTER the image was
+      # pushed. `nu --ide-check` parses it clean (the failure is at run time)
+      # and the branch that prints it only runs on a branch push, so this guard
+      # is the only thing that can see it before a release does.
+      - name: Nushell interpolation guard
+        run: |
+          bash scripts/check-nu-interpolation.sh --self-test
+          bash scripts/check-nu-interpolation.sh
+
       # MAPPS-401: enforce the MAPPS-259 semantic tokens in CI. Without this
       # step the guard only ran locally, and hardcoded grays drifted back in.
       # MAPPS-534: --self-test was on the local recipe and not here, so the

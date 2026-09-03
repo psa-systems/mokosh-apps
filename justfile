@@ -52,7 +52,7 @@ default:
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging
+check: check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging
 
 # Check web/WASM compilation
 [group: 'check']
@@ -122,6 +122,12 @@ check-defined-colors:
 [group: 'check']
 check-runner-labels:
     bash scripts/check-runner-labels.sh
+
+# MAPPS-680: a literal parenthesis inside a Nushell `$"..."` string is a subexpression, so `(MAPPS-421)` ran as an external command and killed the publish job after the image was already pushed. `nu --ide-check` parses it clean, because the failure is at run time. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-nu-interpolation:
+    bash scripts/check-nu-interpolation.sh --self-test
+    bash scripts/check-nu-interpolation.sh
 
 # MAPPS-423: keep shared create/edit forms cancelling to the record, and keep the pointer-cursor base rule in input.css
 [group: 'check']
