@@ -18,11 +18,12 @@
 //!   so editing the catalog cannot re-price anything already sold. The form
 //!   says so beside the price field.
 //! - **A sold product cannot be deleted**, only retired (`is_active = false`).
-//!   The server refuses the delete with a 409 and the form shows that message
-//!   in the confirm dialog rather than closing on nothing (MAPPS-574). The
-//!   server exposes no "is anything selling this" flag, so the page cannot
-//!   hide Delete where it would fail; it offers Retire as the primary path
-//!   and lets Delete fail loudly.
+//!   `ProductResponse.in_use` (PMS-1002) says whether anything names the
+//!   product, so the list shows "In use" and the modal withholds Delete where
+//!   the server would refuse it (MAPPS-684). The flag is advisory and the FK
+//!   is the guard: a product sold between the list read and the click is
+//!   still refused with a 409, and the form shows that message in the
+//!   confirm dialog rather than closing on nothing (MAPPS-574).
 
 use dioxus::prelude::*;
 use serde::Deserialize;
@@ -61,6 +62,11 @@ struct RemoteProduct {
     is_taxable: bool,
     #[serde(default)]
     is_active: bool,
+    /// Whether any invoice line or contract item names it (PMS-1002).
+    /// Defaulted so an older server reads false and the page behaves as it
+    /// did before the flag: Delete offered, and the 409 shown on refusal.
+    #[serde(default)]
+    in_use: bool,
 }
 
 // ============================================================================
@@ -282,6 +288,7 @@ fn ProductsSettingsBody() -> Element {
                                 let unit = row.unit.clone();
                                 let taxable = row.is_taxable;
                                 let active = row.is_active;
+                                let in_use = row.in_use;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
                                         onclick: {
@@ -315,6 +322,9 @@ fn ProductsSettingsBody() -> Element {
                                                 Badge { variant: BadgeVariant::Green, "Active" }
                                             } else {
                                                 Badge { variant: BadgeVariant::Gray, "Retired" }
+                                            }
+                                            if in_use {
+                                                Badge { variant: BadgeVariant::Purple, class: "ml-2", "In use" }
                                             }
                                         }
                                     }
@@ -353,6 +363,8 @@ struct ProductFormState {
     unit: String,
     is_taxable: bool,
     is_active: bool,
+    /// Carried from the row, never edited: the form has no say in it.
+    in_use: bool,
 }
 
 impl ProductFormState {
@@ -366,7 +378,15 @@ impl ProductFormState {
             unit: "each".to_string(),
             is_taxable: true,
             is_active: true,
+            in_use: false,
         }
+    }
+
+    /// Whether the modal offers Delete. Only an existing row can be deleted,
+    /// and only one nothing has sold; the server refuses the rest with a 409,
+    /// so the button is withheld rather than offered to fail.
+    fn deletable(&self) -> bool {
+        self.id.is_some() && !self.in_use
     }
 
     fn from_existing(r: &RemoteProduct) -> Self {
@@ -379,6 +399,7 @@ impl ProductFormState {
             unit: r.unit.clone(),
             is_taxable: r.is_taxable,
             is_active: r.is_active,
+            in_use: r.in_use,
         }
     }
 
@@ -409,6 +430,9 @@ struct ProductFormModalProps {
 fn ProductFormModal(props: ProductFormModalProps) -> Element {
     let initial = props.state.clone();
     let is_edit = initial.id.is_some();
+    let deletable = initial.deletable();
+    // The body ignores it; carried only so the state literal stays complete.
+    let deletable_in_use = initial.in_use;
 
     let mut sku = use_signal(|| initial.sku.clone());
     let mut name = use_signal(|| initial.name.clone());
@@ -482,6 +506,7 @@ fn ProductFormModal(props: ProductFormModalProps) -> Element {
             unit: unit_v,
             is_taxable: *is_taxable.read(),
             is_active: *is_active.read(),
+            in_use: deletable_in_use,
         }
         .body();
         let id = save_id.clone();
@@ -545,6 +570,7 @@ fn ProductFormModal(props: ProductFormModalProps) -> Element {
             onclose: move |_| onclose.call(()),
             onsave: handle_save,
             ondelete: handle_delete,
+            deletable,
             create_label: "Create Product".to_string(),
             delete_title: "Delete product".to_string(),
             delete_message: "Delete this product? Only a product nothing has sold can be deleted. One that is on an invoice or a contract is refused, because those documents still name it; retire it instead by unticking Active, which keeps it on what sold it and off the price list.".to_string(),
@@ -682,6 +708,7 @@ mod tests {
             unit: " ".to_string(),
             is_taxable: true,
             is_active: false,
+            in_use: false,
         };
         let body = state.body();
         assert!(body["sku"].is_null());
@@ -698,5 +725,26 @@ mod tests {
         .body();
         assert_eq!(with_sku["sku"], "WS-01");
         assert_eq!(with_sku["unit"], "month");
+    }
+
+    /// Delete is offered only where the server would not refuse it: an
+    /// existing row nothing has sold. A new row has nothing to delete, and a
+    /// sold one is retired instead.
+    #[test]
+    fn delete_is_withheld_for_a_new_row_and_for_a_sold_one() {
+        let fresh = ProductFormState {
+            id: Some("p1".to_string()),
+            ..ProductFormState::new()
+        };
+        assert!(fresh.deletable());
+        let sold = ProductFormState {
+            in_use: true,
+            ..fresh.clone()
+        };
+        assert!(!sold.deletable());
+        assert!(
+            !ProductFormState::new().deletable(),
+            "nothing to delete yet"
+        );
     }
 }
