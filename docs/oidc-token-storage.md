@@ -14,7 +14,23 @@ mokosh-apps is a Dioxus WASM **public** OIDC client (Authorization Code + PKCE a
 - The short-lived code-flow state (`PendingFlow`: PKCE verifier + state + nonce + `return_to`) is written under `mokosh_oidc_flow_v1` only between `start_login` and `complete_login`.
 
   MAPPS-505 runs the same flow on the desktop, as an RFC 8252 native app: same public-client model, same PKCE, same `PendingFlow`, and the authorization response arrives on a listener bound to `127.0.0.1` for that one flow instead of in a URL. The listener is loopback-only and serves exactly one request, so it is not reachable from the network and is not a second place a token can rest.
-- The ID token is decoded **without signature verification** in the browser (`IdTokenClaims::parse_unverified`, `src/modules/oidc/tokens.rs:59`) purely to read display claims. This is an accepted SPA pattern: the token arrives over TLS directly from the issuer, and the backend independently re-validates the access token on every API call, so the browser never trusts the ID token for authorization.
+- The ID token is decoded **without signature verification** in the browser (`IdTokenClaims::parse_unverified`, `src/modules/oidc/tokens.rs:56`) purely to read display claims. This is an accepted SPA pattern: the token arrives over TLS directly from the issuer, and the backend independently re-validates the access token on every API call, so the browser never trusts the ID token for authorization.
+
+## What the stored bundle is, and what it is not (MAPPS-661)
+
+The bundle is a **cache**. It is not, by itself, evidence that a session exists.
+
+`sessionStorage` outlives a tab the browser unloads to reclaim memory and hands back on restore, and nothing in the bundle records whether the SSO session it was minted under has since ended. So a restored tab can hold a perfectly well-formed bundle for a session that is over, and rebuilding `AuthContext` from it (`rehydrate_from_storage` / `rehydrate_standalone`, `src/hooks/auth.rs`) says only "we have tokens", never "we have a session".
+
+The two facts are therefore held apart. `AuthContext.confirmation` (`SessionConfirmation`) carries whether the identity provider has answered for this session during **this page lifetime**:
+
+- both rehydrate paths produce `Unconfirmed`;
+- a successful refresh-token rotation, or a 200 from `GET /api/v1/auth/me` (which mokosh-server answers only for a verified `at+jwt`), moves it to `Confirmed`;
+- a rotation the OP refuses as `invalid_grant`, or a 401 the fetch layer cannot renew past, moves it to `Ended` and clears the store.
+
+`confirm_restored_session` puts the question at mount rather than on the next poll tick, through the single-flight renewal in `src/hooks/fetch.rs` so it never opens a second flight against the same refresh token. While the answer is outstanding for a bundle whose access token is spent or inside the renewal window, the app renders its loading state and not the signed-in shell; a bundle still comfortably inside the short access-token lifetime renders immediately, because the OP issued that token moments ago and re-confirming it would cost a spinner on every ordinary navigation.
+
+This is what the storage model rests on: an exfiltrated or merely outdated bundle is worth a request that the backend still independently validates, never a claim of identity the SPA makes on its own authority.
 
 ## The risk
 
@@ -51,4 +67,4 @@ This is the decision point held open by MAPPS-362; it is deferred, not chosen.
 
 ## Does the browser actually need the refresh token? (MAPPS-362 AC)
 
-Yes, in the current architecture. The SPA performs its **own** silent renewal in the browser: `use_token_refresh` (`src/hooks/auth.rs:288`) reads the stored refresh token and calls `refresh_tokens` with `grant_type=refresh_token` (`src/modules/oidc/flow.rs:305`) to mint a fresh access token before expiry, and `offline_access` is requested (`src/modules/oidc/config.rs:36`) precisely to obtain that refresh token. There is no backend session to hold it on the SPA's behalf. Therefore the refresh token **cannot** be moved server-side without adopting the BFF above; browser custody is a property of the public-client model, and removing it is exactly the BFF migration. Confirmed: the browser-held refresh token is required by the current design, and the only way to relocate it is the deferred BFF option.
+Yes, in the current architecture. The SPA performs its **own** silent renewal in the browser: `use_token_refresh` (`src/hooks/auth.rs:596`) reads the stored refresh token and calls `refresh_tokens` with `grant_type=refresh_token` (`src/modules/oidc/flow.rs:397`) to mint a fresh access token before expiry, and `offline_access` is requested (`src/modules/oidc/config.rs:46`) precisely to obtain that refresh token. There is no backend session to hold it on the SPA's behalf. Therefore the refresh token **cannot** be moved server-side without adopting the BFF above; browser custody is a property of the public-client model, and removing it is exactly the BFF migration. Confirmed: the browser-held refresh token is required by the current design, and the only way to relocate it is the deferred BFF option.

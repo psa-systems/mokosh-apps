@@ -18,6 +18,13 @@
 //!    additional exposure compared to the alternative
 //!    (localStorage cross-tab leak, or background-refresh complexity
 //!    via `prompt=none`).
+//!
+//!    MAPPS-661: this bundle is a CACHE, not evidence that a session
+//!    exists. It survives a tab the browser unloads and restores, and
+//!    it records nothing about whether the SSO session it was minted
+//!    under has since ended, so rehydrating from it produces an
+//!    unconfirmed `AuthContext` that `crate::hooks::auth` confirms
+//!    against the OP before the signed-in shell renders.
 //!  * `CALLBACK_RETRY_KEY` (a counter) - MAPPS-432: how many login restarts
 //!    `/auth/callback` has taken for a recoverable error, so the silent retry
 //!    is bounded. Cleared on a successful exchange.
