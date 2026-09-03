@@ -22,19 +22,29 @@ pub fn urlencoding_minimal(s: &str) -> String {
     out
 }
 
-/// Read a query-string parameter from the current browser URL.
+/// Read a query-string parameter from the route the app is currently on.
 ///
 /// MAPPS-249: the company context cards' "View All" links carry a
 /// `?company_id=<uuid>` so the destination list page can scope itself to that
 /// company. The list pages read it back through this helper. Returns `None`
-/// on a host with no URL, when the key is absent, or when its value is
+/// when the current location cannot be resolved (logged by
+/// `location::current_query`), when the key is absent, or when its value is
 /// empty. Values are
 /// matched on the raw (percent-encoded) text; callers that need a decoded
 /// value should decode it themselves, but `company_id` is a bare UUID so no
 /// decoding is required.
+///
+/// MAPPS-683: sourced from the router rather than the browser URL, so the
+/// desktop build reads the same scoping the link carried.
 pub fn current_query_param(key: &str) -> Option<String> {
-    let search = crate::platform::location::search()?;
-    let search = search.strip_prefix('?').unwrap_or(&search);
+    query_param_in(&crate::platform::location::current_query()?, key)
+}
+
+/// Pure core of [`current_query_param`]: the same lookup against a query
+/// string the caller already holds. Split out so the rule is testable
+/// without a host that has a location at all.
+pub fn query_param_in(search: &str, key: &str) -> Option<String> {
+    let search = search.strip_prefix('?').unwrap_or(search);
     for pair in search.split('&') {
         let mut parts = pair.splitn(2, '=');
         if parts.next() == Some(key) {
@@ -186,7 +196,33 @@ fn decode_component(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_component, encode_uri_component, safe_href, scheme_of, QueryString};
+    use super::{
+        decode_component, encode_uri_component, query_param_in, safe_href, scheme_of, QueryString,
+    };
+
+    #[test]
+    fn query_param_in_reads_the_query_a_link_carried() {
+        // The string `location::current_query()` hands back on either host.
+        let search = "?company_id=11111111-1111-1111-1111-111111111111&page=2";
+        assert_eq!(
+            query_param_in(search, "company_id"),
+            Some("11111111-1111-1111-1111-111111111111".to_string())
+        );
+        assert_eq!(query_param_in(search, "page"), Some("2".to_string()));
+        assert_eq!(query_param_in(search, "absent"), None);
+    }
+
+    #[test]
+    fn query_param_in_treats_an_empty_value_as_absent() {
+        assert_eq!(query_param_in("?company_id=", "company_id"), None);
+        assert_eq!(query_param_in("?company_id", "company_id"), None);
+        assert_eq!(query_param_in("", "company_id"), None);
+    }
+
+    #[test]
+    fn query_param_in_tolerates_a_missing_leading_question_mark() {
+        assert_eq!(query_param_in("tenant=acme", "tenant"), Some("acme".into()));
+    }
 
     #[test]
     fn encode_uri_component_matches_the_javascript_unreserved_set() {

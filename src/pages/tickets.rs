@@ -1361,16 +1361,24 @@ struct CompanyPrefill {
 fn read_company_prefill_from_url() -> CompanyPrefill {
     #[cfg(feature = "app")]
     {
-        if let Some(search) = crate::platform::location::search() {
-            {
-                let params = crate::utils::url::QueryString::parse(&search);
-                let id = params.get("company_id").unwrap_or_default();
-                let name = params.get("company_name").unwrap_or_default();
-                if uuid::Uuid::parse_str(&id).is_ok() {
-                    return CompanyPrefill { id, name };
-                }
-            }
+        // MAPPS-683: off the router, so the desktop reads the same
+        // prefill the link carried.
+        if let Some(search) = crate::platform::location::current_query() {
+            return company_prefill_from(&search);
         }
+    }
+    CompanyPrefill::default()
+}
+
+/// Pure core of [`read_company_prefill_from_url`], so the rule is testable
+/// without a location.
+#[cfg_attr(not(feature = "app"), allow(dead_code))]
+fn company_prefill_from(search: &str) -> CompanyPrefill {
+    let params = crate::utils::url::QueryString::parse(search);
+    let id = params.get("company_id").unwrap_or_default();
+    let name = params.get("company_name").unwrap_or_default();
+    if uuid::Uuid::parse_str(&id).is_ok() {
+        return CompanyPrefill { id, name };
     }
     CompanyPrefill::default()
 }
@@ -1391,17 +1399,25 @@ struct KbArticlePrefill {
 fn read_kb_prefill_from_url() -> KbArticlePrefill {
     #[cfg(feature = "app")]
     {
-        if let Some(search) = crate::platform::location::search() {
-            {
-                let params = crate::utils::url::QueryString::parse(&search);
-                let id = params.get("from_kb_article").unwrap_or_default();
-                let title = params.get("from_kb_title").unwrap_or_default();
-                let url = params.get("from_kb_url").unwrap_or_default();
-                if uuid::Uuid::parse_str(&id).is_ok() {
-                    return KbArticlePrefill { id, title, url };
-                }
-            }
+        // MAPPS-683: off the router, so the desktop reads the same
+        // prefill the link carried.
+        if let Some(search) = crate::platform::location::current_query() {
+            return kb_prefill_from(&search);
         }
+    }
+    KbArticlePrefill::default()
+}
+
+/// Pure core of [`read_kb_prefill_from_url`], so the rule is testable
+/// without a location.
+#[cfg_attr(not(feature = "app"), allow(dead_code))]
+fn kb_prefill_from(search: &str) -> KbArticlePrefill {
+    let params = crate::utils::url::QueryString::parse(search);
+    let id = params.get("from_kb_article").unwrap_or_default();
+    let title = params.get("from_kb_title").unwrap_or_default();
+    let url = params.get("from_kb_url").unwrap_or_default();
+    if uuid::Uuid::parse_str(&id).is_ok() {
+        return KbArticlePrefill { id, title, url };
     }
     KbArticlePrefill::default()
 }
@@ -2420,9 +2436,11 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let note_will_email = note_is_public && note_send_email();
 
     // PMS-362: carry the ticket into the Log Time flow so the work-item picker
-    // opens preselected. A plain <a href> (not a routed Link) because the
-    // TimeEntryNew route declares no query params, so a Link would strip
-    // `?ticket_id=`; the router still intercepts the same-origin anchor click.
+    // opens preselected. MAPPS-683: a routed Link, which keeps the query
+    // verbatim (`Route::from_str` splits `?` off before it matches segments,
+    // so the target parses and the whole string is what gets pushed). A raw
+    // anchor resolved to `dioxus://index.html/...` and the desktop webview
+    // refused it, leaving the button dead.
     let log_time_href = format!("/time/new?ticket_id={}", props.id);
 
     rsx! {
@@ -2456,8 +2474,8 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             // open in the journal below, so a note takes typing, not a click
             // that opens a modal first.
             actions: rsx! {
-                a {
-                    href: "{log_time_href}",
+                Link {
+                    to: log_time_href.clone(),
                     Button {
                         variant: ButtonVariant::Primary,
                         ClockIcon { size: IconSize::Small, class: "mr-2".to_string() }
@@ -4792,5 +4810,47 @@ mod mapps613_note_type_and_email_affordance_tests {
                 "added a public note (not emailed)".to_string(),
             ]
         );
+    }
+}
+
+/// MAPPS-683: the prefill readers resolve their query string on the desktop
+/// too, so these cover the parse against the string the router hands back.
+#[cfg(test)]
+mod prefill_tests {
+    use super::{company_prefill_from, kb_prefill_from};
+
+    const COMPANY: &str = "11111111-1111-4111-8111-111111111111";
+    const ARTICLE: &str = "22222222-2222-4222-8222-222222222222";
+
+    #[test]
+    fn company_prefill_comes_off_the_query_the_link_carried() {
+        let p = company_prefill_from(&format!(
+            "?company_id={COMPANY}&company_name=Acme%20%26%20Co"
+        ));
+        assert_eq!(p.id, COMPANY);
+        assert_eq!(p.name, "Acme & Co");
+    }
+
+    #[test]
+    fn company_prefill_is_default_without_a_usable_id() {
+        assert_eq!(company_prefill_from("").id, "");
+        assert_eq!(company_prefill_from("?company_id=not-a-uuid").id, "");
+        assert_eq!(company_prefill_from("?company_name=Acme").name, "");
+    }
+
+    #[test]
+    fn kb_prefill_comes_off_the_query_the_link_carried() {
+        let p = kb_prefill_from(&format!(
+            "?from_kb_article={ARTICLE}&from_kb_title=Add%20a%20mailbox&from_kb_url=%2Fkb%2Fx"
+        ));
+        assert_eq!(p.id, ARTICLE);
+        assert_eq!(p.title, "Add a mailbox");
+        assert_eq!(p.url, "/kb/x");
+    }
+
+    #[test]
+    fn kb_prefill_is_default_without_a_usable_id() {
+        assert_eq!(kb_prefill_from("").id, "");
+        assert_eq!(kb_prefill_from("?from_kb_article=not-a-uuid").id, "");
     }
 }
