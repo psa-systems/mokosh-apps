@@ -866,6 +866,14 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     let id_for_void = props.id.clone();
     let act_err = action_error.read().clone();
 
+    // PMS-1004: a Send the server refused with a 409 (no billing contact, or
+    // one with no address, PMS-992). The reason, kept apart from
+    // `action_error` because it gets a panel with the ways out rather than a
+    // bare banner: pick the contact here, or mark the invoice sent without
+    // emailing (`skip_email`, the server's explicit path for an invoice
+    // delivered another way).
+    let mut send_blocked = use_signal(|| None::<String>);
+    let mut confirming_skip = use_signal(|| false);
     // MAPPS-189: the Void button opens the styled ConfirmDialog; the void
     // PUT fires from `on_confirm_void` once the user confirms.
     let mut confirming_void = use_signal(|| false);
@@ -889,6 +897,69 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
             }
             busy.set(false);
             confirming_void.set(false);
+        });
+    };
+
+    // PMS-1004: the explicit no-email send. The same transition Send makes,
+    // with `skip_email`, so the server records that nobody was emailed
+    // rather than refusing.
+    let id_for_skip = props.id.clone();
+    let on_confirm_skip = move |_: ()| {
+        if *busy.read() {
+            return;
+        }
+        busy.set(true);
+        action_error.set(String::new());
+        let path = invoice_send_path(&id_for_skip);
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let body = serde_json::json!({ "status": "sent", "skip_email": true });
+                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                    .await
+                {
+                    Ok(_) => {
+                        send_blocked.set(None);
+                        invoice_resource.restart();
+                    }
+                    Err(err) => action_error.set(format!("Could not mark the invoice sent: {err}")),
+                }
+            }
+            busy.set(false);
+            confirming_skip.set(false);
+        });
+    };
+    // PMS-1004: setting the billing contact from the blocked-send panel. A
+    // plain field update; the operator then sends again, on purpose.
+    let id_for_contact = props.id.clone();
+    let on_pick_contact = move |(contact_id, _name): (String, String)| {
+        if *busy.read() {
+            return;
+        }
+        busy.set(true);
+        action_error.set(String::new());
+        let path = format!("/invoices/{id_for_contact}");
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let body = serde_json::json!({ "billing_contact_id": contact_id });
+                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                    .await
+                {
+                    Ok(_) => {
+                        send_blocked.set(None);
+                        invoice_resource.restart();
+                    }
+                    Err(err) => {
+                        action_error.set(format!("Could not set the billing contact: {err}"))
+                    }
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = (path, contact_id);
+            }
+            busy.set(false);
         });
     };
 
@@ -920,6 +991,20 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
             oncancel: move |_| {
                 if !*busy.read() {
                     confirming_void.set(false);
+                }
+            },
+        }
+        crate::components::ConfirmDialog {
+            open: confirming_skip(),
+            title: "Mark as sent without emailing".to_string(),
+            message: "Mark this invoice as sent without emailing it? It becomes a finalized record, exactly as a sent invoice does, and it records that nobody was emailed. Use this when the invoice is delivered another way.".to_string(),
+            confirm_text: "Mark as sent".to_string(),
+            cancel_text: "Cancel".to_string(),
+            loading: *busy.read(),
+            onconfirm: on_confirm_skip,
+            oncancel: move |_| {
+                if !*busy.read() {
+                    confirming_skip.set(false);
                 }
             },
         }
@@ -979,13 +1064,26 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                 #[cfg(feature = "app")]
                                 {
                                     let body = serde_json::json!({ "status": "sent" });
-                                    match crate::hooks::fetch::api::put_authed::<
+                                    // Typed, so a 409 can be told from any
+                                    // other refusal (PMS-1004).
+                                    match crate::hooks::fetch::api::put_authed_typed::<
                                         serde_json::Value,
                                         _,
                                     >(&path, &body)
                                         .await
                                     {
-                                        Ok(_) => invoice_resource.restart(),
+                                        Ok(_) => {
+                                            send_blocked.set(None);
+                                            invoice_resource.restart();
+                                        }
+                                        // PMS-1004: a 409 is "nobody to email",
+                                        // and it gets the panel with the ways
+                                        // out rather than the error banner.
+                                        Err(crate::hooks::fetch::api::ApiError::Status {
+                                            code: 409,
+                                            message,
+                                            ..
+                                        }) => send_blocked.set(Some(message)),
                                         Err(err) => action_error
                                             .set(format!("Could not send invoice: {err}")),
                                     }
@@ -1113,6 +1211,45 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
 
         if !act_err.is_empty() {
             ErrorBanner { class: "mb-3", "{act_err}" }
+        }
+
+        // PMS-1004: the server refused Send because there is nobody to email.
+        // Its sentence names the company or the contact; the panel offers the
+        // ways out it points at, in place, rather than leaving the operator
+        // to find them.
+        if let Some(reason) = send_blocked.read().clone() {
+            crate::components::StatusBanner {
+                tone: crate::components::BannerTone::Warning,
+                class: "mb-3",
+                p { class: "font-medium", "The invoice was not sent." }
+                p { class: "mt-1", "{reason}" }
+                div { class: "mt-3 space-y-3",
+                    crate::components::ContactPicker {
+                        value: String::new(),
+                        selected_id: None,
+                        label: "Billing contact for this invoice".to_string(),
+                        company_filter: (!pay_company_id.is_empty()).then(|| pay_company_id.clone()),
+                        onselect: on_pick_contact,
+                        onclear: move |_| {},
+                    }
+                    div { class: "flex flex-wrap items-center gap-3",
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            size: ButtonSize::Small,
+                            disabled: *busy.read(),
+                            onclick: move |_| confirming_skip.set(true),
+                            "Mark as sent without emailing"
+                        }
+                        if !pay_company_id.is_empty() {
+                            Link {
+                                to: Route::CompanyDetail { id: pay_company_id.clone() },
+                                class: "text-sm text-accent hover:opacity-90",
+                                "Open the company to set its default billing contact"
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         match &*snap {
