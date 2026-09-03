@@ -1448,15 +1448,17 @@ struct CompanyPrefill {
 fn read_company_prefill_from_url() -> CompanyPrefill {
     #[cfg(feature = "app")]
     {
-        if let Some(search) = crate::platform::location::search() {
-            {
-                let params = crate::utils::url::QueryString::parse(&search);
-                let id = params.get("company_id").unwrap_or_default();
-                let name = params.get("company_name").unwrap_or_default();
-                if uuid::Uuid::parse_str(&id).is_ok() {
-                    return CompanyPrefill { id, name };
-                }
-            }
+        // MAPPS-664: same router-strip fix as contacts.rs. See the
+        // long comment there. `initial_search()` returns the boot-
+        // time snapshot of `window.location.search` captured before
+        // the Dioxus router mounted and replaceState-erased the
+        // query.
+        let search = crate::modules::oidc::initial_search();
+        let params = crate::utils::url::QueryString::parse(&search);
+        let id = params.get("company_id").unwrap_or_default();
+        let name = params.get("company_name").unwrap_or_default();
+        if uuid::Uuid::parse_str(&id).is_ok() {
+            return CompanyPrefill { id, name };
         }
     }
     CompanyPrefill::default()

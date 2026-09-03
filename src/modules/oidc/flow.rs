@@ -142,6 +142,25 @@ pub fn snapshot_initial_search() {
     INITIAL_SEARCH.with(|cell| *cell.borrow_mut() = Some(s));
 }
 
+/// MAPPS-664: the same router-strip that erases `?code=...&state=...` on
+/// AuthCallback (see the `INITIAL_SEARCH` doc above) also erases every
+/// other route's query string, since a Dioxus route that does not
+/// declare a param in its `#[route(...)]` pattern gets a `replaceState`
+/// to the bare path on mount. Pages that read `?company_id=X`,
+/// `?company_name=Y`, etc. from `window.location.search` at render
+/// time see the empty post-strip value.
+///
+/// Share the same boot-time snapshot instead of maintaining a second
+/// `thread_local!`. Returns the snapshot verbatim (empty string if
+/// nothing was ever captured, which is the target-not-wasm case);
+/// callers parse it as a query string themselves via
+/// `utils::url::QueryString::parse`, which handles the leading `?`.
+pub fn initial_search() -> String {
+    INITIAL_SEARCH
+        .with(|cell| cell.borrow().clone())
+        .unwrap_or_default()
+}
+
 /// The authorization response to complete, as a URL query string.
 ///
 /// MAPPS-505: on the desktop it never was in a URL bar - it arrived on

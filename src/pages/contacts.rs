@@ -5385,15 +5385,24 @@ struct CompanyPrefill {
 fn read_company_prefill_from_url() -> CompanyPrefill {
     #[cfg(feature = "app")]
     {
-        if let Some(search) = crate::platform::location::search() {
-            {
-                let params = crate::utils::url::QueryString::parse(&search);
-                let id = params.get("company_id").unwrap_or_default();
-                let name = params.get("company_name").unwrap_or_default();
-                if uuid::Uuid::parse_str(&id).is_ok() {
-                    return CompanyPrefill { id, name };
-                }
-            }
+        // MAPPS-664: read the boot-time snapshot instead of live
+        // `window.location.search`. The Dioxus 0.7 router calls
+        // `history.replaceState()` on mount for routes whose
+        // `#[route(...)]` pattern declares no query params
+        // (`Route::ContactNew` is `#[route("/contacts/new")]`), which
+        // erases `?company_id=X&company_name=Y` before this component
+        // renders. The MAPPS-1 hard-nav from the Company page's + New
+        // Contact button preserves the query across the network round-
+        // trip, but the router still strips it once wasm boots. The
+        // OIDC flow captures `window.location.search` once in `main()`
+        // for the same reason (see `flow::snapshot_initial_search`);
+        // reuse that snapshot so `?company_id=` survives to here.
+        let search = crate::modules::oidc::initial_search();
+        let params = crate::utils::url::QueryString::parse(&search);
+        let id = params.get("company_id").unwrap_or_default();
+        let name = params.get("company_name").unwrap_or_default();
+        if uuid::Uuid::parse_str(&id).is_ok() {
+            return CompanyPrefill { id, name };
         }
     }
     CompanyPrefill::default()
