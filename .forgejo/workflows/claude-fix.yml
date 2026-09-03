@@ -93,6 +93,9 @@ jobs:
       # Step 2: Check out the PR branch using the bot's PAT
       # We use the PAT (not GITHUB_TOKEN) so that when we push later,
       # CI will actually re-run on the fix.
+      # MAPPS-628: the root justfile imports 'common/common.just', so without
+      # the submodule every `just` command the agent runs fails on the
+      # unresolved import instead of on the CI failure it was sent to fix.
       # ---------------------------------------------------------------------
       - name: Checkout PR branch
         uses: https://code.forgejo.org/actions/checkout@v5
@@ -100,6 +103,7 @@ jobs:
           ref: ${{ steps.pr.outputs.branch }}
           token: ${{ secrets.CLAUDE_BOT_PAT }}
           fetch-depth: 0
+          submodules: true
 
       # ---------------------------------------------------------------------
       # Step 3: Find and fetch the failed CI run's logs
