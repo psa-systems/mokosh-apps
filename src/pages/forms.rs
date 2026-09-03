@@ -1024,6 +1024,47 @@ fn field_name_problem(name: &str) -> Option<&'static str> {
         .then_some("Lowercase letters, digits and single underscores, starting with a letter.")
 }
 
+/// Parse a field's maximum length into the `i32` the request declares.
+///
+/// Blank is "no limit", which is what an untouched field has always meant.
+/// Anything else that is not an `i32` is reported on the row and logged: it
+/// used to become "no limit" too, so a typo silently published a field weaker
+/// than the limit the operator asked for (MAPPS-703).
+fn parse_max_length(raw: &str) -> Result<Option<i32>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match trimmed.parse::<i32>() {
+        Ok(v) => Ok(Some(v)),
+        Err(e) => {
+            tracing::warn!("maximum length {trimmed:?} is not a 32-bit integer: {e}");
+            Err("A maximum length has to be a whole number, or blank for no limit.".to_string())
+        }
+    }
+}
+
+/// Read the procedure picker's article id back out of it (MAPPS-535).
+///
+/// Blank is "no article". A value that is not a UUID should be unreachable,
+/// since every option comes from a server-issued id the picker listed, and
+/// there is no field a person could correct if it happened. It is logged
+/// rather than left silent because the substitution unlinks the form from its
+/// procedure and the log is the only witness (MAPPS-703).
+fn picked_article_id(raw: &str) -> Option<uuid::Uuid> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    match uuid::Uuid::parse_str(trimmed) {
+        Ok(id) => Some(id),
+        Err(e) => {
+            tracing::warn!("picked procedure article {trimmed:?} is not a UUID: {e}");
+            None
+        }
+    }
+}
+
 /// PMS-747: what is wrong with one field row, in the slots that can show it.
 ///
 /// Row problems used to exist only as a sentence in the form-level banner,
@@ -1034,6 +1075,9 @@ struct FieldRowErrors {
     label: String,
     name: String,
     options: String,
+    /// MAPPS-703: lives behind the row's Advanced disclosure, so a row carrying
+    /// one forces that disclosure open (see `advanced_open`).
+    max_length: String,
 }
 
 impl FieldRowErrors {
@@ -1545,11 +1589,26 @@ fn FormEditorModal(
         // and once into the banner, which is the only surface that can say
         // anything about a row scrolled out of view.
         let mut row_errors = vec![FieldRowErrors::default(); rows.len()];
+        // MAPPS-703: parsed here rather than while building the request, so a
+        // length limit that will not parse is reported on the row instead of
+        // being sent as no limit at all.
+        let mut row_max_lengths: Vec<Option<i32>> = vec![None; rows.len()];
         if rows.is_empty() {
             row_problems.push("A form needs at least one field.".to_string());
         }
         for (i, f) in rows.iter().enumerate() {
             let n = i + 1;
+            if f.field_type.honours_length() {
+                match parse_max_length(&f.max_length) {
+                    Ok(v) => row_max_lengths[i] = v,
+                    Err(problem) => {
+                        row_errors[i].max_length = problem;
+                        row_problems.push(format!(
+                            "Field {n} needs a whole number for its maximum length, or none."
+                        ));
+                    }
+                }
+            }
             if let Some(problem) = field_name_problem(f.name.trim()) {
                 row_errors[i].name = problem.to_string();
                 row_problems.push(format!("Field {n}: {problem}"));
@@ -1652,11 +1711,9 @@ fn FormEditorModal(
                 field_type: f.field_type,
                 is_required: f.is_required,
                 min_length: None,
-                max_length: f
-                    .field_type
-                    .honours_length()
-                    .then(|| f.max_length.trim().parse::<i32>().ok())
-                    .flatten(),
+                // Parsed in the validation pass above, which blocks the save
+                // on a value that will not read as a number (MAPPS-703).
+                max_length: row_max_lengths[i],
                 options: f.field_type.needs_options().then(|| f.parsed_options()),
                 date_not_in_past: matches!(f.field_type, FieldType::Date) && f.date_not_in_past,
                 // Position IS the order, so the operator reorders by moving
@@ -1674,7 +1731,7 @@ fn FormEditorModal(
             .collect();
 
         let draft_key_for_save = draft_key.clone();
-        let article = uuid::Uuid::parse_str(kb_article_id.read().trim()).ok();
+        let article = picked_article_id(&kb_article_id.read());
         let name_v = name.read().trim().to_string();
         let slug_v = slug.read().trim().to_string();
         let desc_v = optional(&description.read());
@@ -2345,7 +2402,11 @@ fn preview_form(
                 field_type: f.field_type,
                 is_required: f.is_required,
                 min_length: None,
-                max_length: f.max_length.trim().parse::<i32>().ok(),
+                // MAPPS-703: a preview has no slot of its own to report in, so
+                // it shows the field unlimited. The save path refuses the same
+                // value on the row it belongs to, and `parse_max_length` has
+                // already logged the cause, so this is not where it goes quiet.
+                max_length: parse_max_length(&f.max_length).unwrap_or(None),
                 options: f
                     .field_type
                     .needs_options()
@@ -2510,10 +2571,11 @@ fn FieldRowEditor(
         .collect();
 
     let mut show_advanced = use_signal(|| false);
-    // Forced open when the reference name is what is wrong, so a problem can
-    // never be reported by a control the operator cannot see. Derived rather
-    // than stored, so it follows the error rather than a stale copy of it.
-    let advanced_open = show_advanced() || !errors.name.is_empty();
+    // Forced open when the reference name or the maximum length is what is
+    // wrong (MAPPS-703), so a problem can never be reported by a control the
+    // operator cannot see. Derived rather than stored, so it follows the error
+    // rather than a stale copy of it.
+    let advanced_open = show_advanced() || !errors.name.is_empty() || !errors.max_length.is_empty();
 
     let has_problem = errors.any();
     let summary = field_summary_label(&row);
@@ -2837,8 +2899,10 @@ fn FieldRowEditor(
                                     min: Some("1".to_string()),
                                     value: row.max_length.clone(),
                                     disabled,
+                                    error: errors.max_length.clone(),
                                     help: "Optional.".to_string(),
                                     oninput: move |e: FormEvent| {
+                                        clear_error(|e| e.max_length.clear());
                                         let v = e.value();
                                         update(Box::new(move |r| r.max_length = v));
                                     },
@@ -2951,6 +3015,29 @@ mod tests {
             "",
             "a name with nothing sluggable yields an empty slug the operator must fill in"
         );
+    }
+
+    /// MAPPS-703: blank still means no limit, a number is the limit, and a
+    /// value that is neither is a message rather than a quietly dropped limit.
+    #[test]
+    fn max_length_reports_instead_of_dropping_the_limit() {
+        assert_eq!(parse_max_length(""), Ok(None));
+        assert_eq!(parse_max_length("   "), Ok(None));
+        assert_eq!(parse_max_length(" 120 "), Ok(Some(120)));
+        assert!(parse_max_length("one twenty").is_err());
+        assert!(parse_max_length("120.5").is_err());
+        assert!(parse_max_length("2147483648").is_err());
+    }
+
+    /// MAPPS-703: blank stays "no article", a picked id parses, and anything
+    /// else still reads as "no article" but has been logged on the way through.
+    #[test]
+    fn picked_article_keeps_blank_as_none() {
+        let id = uuid::Uuid::new_v4();
+        assert_eq!(picked_article_id(""), None);
+        assert_eq!(picked_article_id("   "), None);
+        assert_eq!(picked_article_id(&format!(" {id} ")), Some(id));
+        assert_eq!(picked_article_id("the onboarding one"), None);
     }
 
     /// PMS-747: the operator names the field; the payload key follows.
