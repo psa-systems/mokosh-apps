@@ -11,9 +11,22 @@
 //! these stay synchronous and nothing has to be awaited.
 //!
 //! Reads are the asymmetry. A value has to come BACK from the webview,
-//! which is asynchronous, and the callers here are synchronous. Those
-//! answer `None` on the desktop and the caller skips the behaviour
-//! rather than blocking or guessing.
+//! which is asynchronous, so a read is an `async fn` here
+//! ([`scroll_top_async`]) and the caller awaits it from an effect or an
+//! event handler. The browser answers from the document it is already
+//! in; the desktop asks the webview and waits for the answer.
+//!
+//! The same channel carries events the other way (MAPPS-511): the
+//! injected script attaches a listener and `dioxus.send`s each
+//! occurrence, and a spawned task loops on `recv()` and calls the
+//! handler ([`watch_task_toggles`], [`watch_system_theme`]). That is how
+//! the desktop gets the two things it cannot get from a Dioxus event: a
+//! click inside `dangerous_inner_html`, and an OS light/dark switch.
+//!
+//! What is still read-free is better off that way. [`capture_focus`]
+//! parks the focused element in the webview under a token rather than
+//! reading it back, because by the time an async read resolved the
+//! dialog would already have taken focus.
 
 /// Set the window/tab title.
 ///
@@ -285,9 +298,11 @@ pub fn focus_by_id(id: &str) {
 #[cfg(target_arch = "wasm32")]
 pub struct FocusToken(Option<web_sys::HtmlElement>);
 
+/// The desktop twin holds the key to an element parked in the webview,
+/// not the element itself (MAPPS-511).
 #[derive(Clone)]
 #[cfg(not(target_arch = "wasm32"))]
-pub struct FocusToken;
+pub struct FocusToken(u64);
 
 /// Record the currently-focused element.
 #[cfg(target_arch = "wasm32")]
@@ -316,19 +331,48 @@ impl FocusToken {
     }
 }
 
-/// Reading `document.activeElement` needs a value back out of the
-/// webview, which is asynchronous, so the desktop build records nothing
-/// and restores nothing: closing a modal leaves focus where the webview
-/// put it instead of returning it to the trigger. Tracked in MAPPS-511.
+/// Record the currently-focused element, in the webview.
+///
+/// MAPPS-511: reading `document.activeElement` back out would be
+/// asynchronous, and by the time the answer arrived the dialog that
+/// triggered this would already hold focus - the wrong element, read
+/// too late. So nothing is read: the script parks the element under a
+/// token and [`FocusToken::restore`] focuses whatever is parked there.
+/// Both halves are writes, which the desktop can do synchronously.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn capture_focus() -> FocusToken {
-    FocusToken
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    let token = NEXT.fetch_add(1, Ordering::Relaxed);
+    eval(&format!(
+        "window.{FOCUS_STASH} = window.{FOCUS_STASH} || new Map(); \
+         window.{FOCUS_STASH}.set({token}, document.activeElement);"
+    ));
+    FocusToken(token)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl FocusToken {
-    pub fn restore(&self) {}
+    /// Put focus back on the parked element and let go of it. No-op when
+    /// nothing was focused, or when the element has since left the
+    /// document - the same best-effort contract as the browser's.
+    pub fn restore(&self) {
+        let token = self.0;
+        eval(&format!(
+            "{{ const stash = window.{FOCUS_STASH}; \
+                const el = stash && stash.get({token}); \
+                if (stash) stash.delete({token}); \
+                if (el && el.focus) el.focus(); }}"
+        ));
+    }
 }
+
+/// Where [`capture_focus`] parks elements. On `window` because each
+/// `eval` is a separate script with its own scope, so the capture and
+/// the restore have no other way to name the same object.
+#[cfg(not(target_arch = "wasm32"))]
+const FOCUS_STASH: &str = "__mokoshFocusStash";
 
 /// MAPPS-579: the selection on a `<textarea>`, in UTF-16 code units, or the
 /// end of `fallback_len` when the element cannot be reached.
@@ -373,6 +417,14 @@ pub fn scroll_top(id: &str) -> Option<i32> {
         .and_then(|w| w.document())
         .and_then(|d| d.get_element_by_id(id))
         .map(|el| el.scroll_top())
+}
+
+/// MAPPS-511: the read as the shared call sites take it. The browser is
+/// already in the document, so this is [`scroll_top`] with an `await` in
+/// front of it; the desktop twin asks the webview and waits.
+#[cfg(target_arch = "wasm32")]
+pub async fn scroll_top_async(id: &str) -> Option<i32> {
+    scroll_top(id)
 }
 
 /// Restore a scroll offset onto the element with this id.
@@ -472,13 +524,31 @@ pub fn window_hidden() -> bool {
     false
 }
 
-/// The window's theme as the OS reports it to tao.
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    /// What the webview last reported for `prefers-color-scheme`
+    /// (MAPPS-511). `None` until [`watch_system_theme`] has said
+    /// anything, which is why the window's own theme answers at boot.
+    static WEBVIEW_PREFERS_DARK: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Does the operating system ask for a dark UI right now?
 ///
-/// Without the `desktop` feature there is no window to ask - that build
-/// is `cargo check` / `cargo test` on the host, which renders nothing -
-/// so it reports light and the caller's explicit preference still wins.
-#[cfg(all(not(target_arch = "wasm32"), feature = "desktop"))]
+/// The webview's own `prefers-color-scheme` once it has reported one,
+/// so the theme that got applied and the theme the accent picker shows
+/// are the same answer; the window's tao theme until then.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn system_prefers_dark() -> bool {
+    if let Some(is_dark) = WEBVIEW_PREFERS_DARK.with(std::cell::Cell::get) {
+        return is_dark;
+    }
+    window_theme_is_dark()
+}
+
+/// The window's theme as the OS reports it to tao.
+#[cfg(all(not(target_arch = "wasm32"), feature = "desktop"))]
+fn window_theme_is_dark() -> bool {
     let Some(ctx) = dioxus::prelude::try_consume_context::<dioxus::desktop::DesktopContext>()
     else {
         return false;
@@ -486,9 +556,103 @@ pub fn system_prefers_dark() -> bool {
     ctx.window.theme() == dioxus::desktop::tao::window::Theme::Dark
 }
 
+/// Without the `desktop` feature there is no window to ask - that build
+/// is `cargo check` / `cargo test` on the host, which renders nothing -
+/// so it reports light and the caller's explicit preference still wins.
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "desktop")))]
-pub fn system_prefers_dark() -> bool {
+fn window_theme_is_dark() -> bool {
     false
+}
+
+/// Follow the OS light/dark preference for as long as the caller's
+/// scope lives, calling `on_change` each time it flips (MAPPS-511).
+///
+/// The webview's `prefers-color-scheme` is the source, not tao's
+/// `WindowEvent::ThemeChanged`: tao 0.34 only emits that event on macOS
+/// and Windows (`platform_impl/{macos,windows}`), so the Linux build -
+/// which is what the repo's own toolchain targets - would go on
+/// ignoring OS theme changes. The media query is also the exact
+/// mechanism the browser build uses, so one behaviour has one
+/// definition on both hosts.
+///
+/// The listener reports its current value immediately, so a window
+/// whose webview disagrees with the tao theme it booted on lands on the
+/// webview's answer rather than staying wrong until the user switches.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn watch_system_theme(mut on_change: impl FnMut() + 'static) {
+    if !in_runtime() {
+        return;
+    }
+    // Installed once per window: the effect that calls this re-runs, and
+    // a second listener would report every change twice. The query is
+    // parked on `window` because a MediaQueryList nothing references can
+    // be collected along with the listener attached to it.
+    let mut eval = dioxus::document::eval(
+        "if (window.__mokoshThemeWatch) return; \
+         window.__mokoshThemeWatch = true; \
+         const mql = window.matchMedia('(prefers-color-scheme: dark)'); \
+         window.__mokoshThemeMql = mql; \
+         mql.addEventListener('change', (e) => dioxus.send(e.matches)); \
+         dioxus.send(mql.matches);",
+    );
+    dioxus::prelude::spawn(async move {
+        loop {
+            match eval.recv::<bool>().await {
+                Ok(is_dark) => {
+                    WEBVIEW_PREFERS_DARK.with(|c| c.set(Some(is_dark)));
+                    on_change();
+                }
+                Err(e) => {
+                    // Losing this pins a `Theme::System` user to whatever
+                    // the OS said at boot, with nothing to say why.
+                    tracing::error!("stopped following OS dark-mode changes: {e}");
+                    return;
+                }
+            }
+        }
+    });
+}
+
+/// Report every click on an element carrying `data-ti` inside the
+/// container with this id, as the index that attribute holds
+/// (MAPPS-511).
+///
+/// Markdown task-list checkboxes are raw HTML injected with
+/// `dangerous_inner_html`, so they cannot carry a Dioxus handler. The
+/// browser answers that with one delegated DOM listener
+/// (`components::markdown`); the desktop cannot attach a listener from
+/// Rust at all, so the script attaches it and posts each click back
+/// over the `eval` channel instead.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn watch_task_toggles(dom_id: &str, on_toggle: dioxus::prelude::EventHandler<usize>) {
+    if !in_runtime() {
+        return;
+    }
+    let mut eval = dioxus::document::eval(&format!(
+        "const el = document.getElementById({}); \
+         if (!el) return 'missing'; \
+         if (el.dataset.mokoshToggles) return 'installed'; \
+         el.dataset.mokoshToggles = '1'; \
+         el.addEventListener('click', (e) => {{ \
+            const index = e.target && e.target.dataset && e.target.dataset.ti; \
+            if (index !== undefined && index !== null) dioxus.send(Number(index)); \
+         }}); \
+         return 'installed';",
+        js_string(dom_id)
+    ));
+    dioxus::prelude::spawn(async move {
+        loop {
+            match eval.recv::<usize>().await {
+                Ok(index) => on_toggle.call(index),
+                Err(e) => {
+                    // The checkboxes render either way, so without this
+                    // the only symptom is a click that does nothing.
+                    tracing::error!("stopped listening for markdown task toggles: {e}");
+                    return;
+                }
+            }
+        }
+    });
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -499,14 +663,37 @@ pub fn focus_by_id(id: &str) {
     ));
 }
 
-/// Always `None` on the desktop: reading a value out of the webview is
-/// asynchronous and this call is not. The one caller (the sidebar
-/// scroll memory in `components::layout`) treats `None` as "nothing to
-/// restore", so the sidebar simply starts at the top after a
-/// navigation. Tracked in MAPPS-511.
+/// MAPPS-511: ask the webview for the element's scroll offset and wait
+/// for the answer. `None` when there is no such element, and when the
+/// round trip fails - the caller (the sidebar scroll memory in
+/// `components::layout`) reads that as "nothing to record".
 #[cfg(not(target_arch = "wasm32"))]
-pub fn scroll_top(_id: &str) -> Option<i32> {
-    None
+pub async fn scroll_top_async(id: &str) -> Option<i32> {
+    if !in_runtime() {
+        return None;
+    }
+    let value = dioxus::document::eval(&format!(
+        "const el = document.getElementById({}); return el ? el.scrollTop : null;",
+        js_string(id)
+    ))
+    .await;
+    match value {
+        // `scrollTop` is fractional on a scaled display, and the offset
+        // is put back with `set_scroll_top`, which takes whole pixels.
+        Ok(serde_json::Value::Number(n)) => n.as_f64().map(|top| top.round() as i32),
+        Ok(serde_json::Value::Null) => None,
+        Ok(other) => {
+            tracing::warn!("the webview answered {other} for the scroll offset of #{id}");
+            None
+        }
+        Err(e) => {
+            // Nothing downstream can tell a failed round trip from an
+            // element that is not there, so the reason has to be logged
+            // here or the sidebar just stops remembering its place.
+            tracing::warn!("could not read the scroll offset of #{id}: {e}");
+            None
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -579,4 +766,89 @@ pub fn set_textarea_selection(id: &str, start: u32, end: u32) {
         "{{const e=document.getElementById({});if(e){{e.focus();e.setSelectionRange({start},{end});}}}}",
         js_string(id)
     ));
+}
+
+/// MAPPS-511: the desktop half of the four behaviours that used to be
+/// inert here, pinned in source.
+///
+/// A source scan, deliberately: every one of them needs a webview to
+/// evaluate JavaScript in, so no host test can drive them. What can
+/// regress is the wiring, and each of these went missing once already
+/// as a stub that answered "nothing to do" and said nothing about it.
+#[cfg(test)]
+mod desktop_wiring_tests {
+    const SRC: &str = include_str!("dom.rs");
+
+    /// The shipping code with runs of whitespace collapsed, so an
+    /// assertion pins the decision rather than the line breaks rustfmt
+    /// chose. Excludes this module, which quotes every pattern it looks
+    /// for and would otherwise match itself.
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod desktop_wiring_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// Both hosts answer the read, and neither answers it with `None`
+    /// unconditionally. The stub this replaced was invisible: the
+    /// sidebar just started at the top after every navigation.
+    #[test]
+    fn the_scroll_offset_is_read_on_both_hosts() {
+        let code = code_only();
+        assert_eq!(
+            code.matches("pub async fn scroll_top_async(id: &str) -> Option<i32>")
+                .count(),
+            2,
+            "one implementation per target"
+        );
+        assert!(
+            !code.contains("pub fn scroll_top(_id: &str) -> Option<i32> { None }"),
+            "the desktop answers from its webview, not with a stub"
+        );
+    }
+
+    /// The desktop records the focused element and puts focus back.
+    #[test]
+    fn the_focused_element_is_recorded_and_restored() {
+        let code = code_only();
+        assert!(
+            !code.contains("pub fn restore(&self) {}"),
+            "restoring focus is not a no-op on either host"
+        );
+        assert!(
+            code.contains("window.{FOCUS_STASH}.set({token}, document.activeElement);"),
+            "the desktop parks the element rather than reading it back, because \
+             an async read resolves after the dialog has taken focus"
+        );
+    }
+
+    /// A markdown checkbox click reaches Rust on the desktop.
+    #[test]
+    fn a_task_toggle_comes_back_over_the_channel() {
+        let code = code_only();
+        assert!(
+            code.contains("pub fn watch_task_toggles(dom_id: &str"),
+            "the desktop has the injected script attach the delegated listener"
+        );
+        assert!(
+            code.contains("dioxus.send(Number(index));"),
+            "and each click is posted back as its data-ti index"
+        );
+    }
+
+    /// A `Theme::System` desktop user follows the OS without a restart.
+    #[test]
+    fn an_os_theme_change_comes_back_over_the_channel() {
+        let code = code_only();
+        assert!(
+            code.contains("pub fn watch_system_theme("),
+            "the desktop subscribes to the OS light/dark preference"
+        );
+        assert!(
+            code.contains("dioxus.send(e.matches));"),
+            "through the same `prefers-color-scheme` query the browser uses, \
+             because tao only emits ThemeChanged on macOS and Windows"
+        );
+    }
 }
