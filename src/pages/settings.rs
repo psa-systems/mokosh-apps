@@ -871,10 +871,11 @@ fn address_lines_error(raw: &str) -> Option<String> {
 // `/data/seed-demo` trigger, the three `/rmm/*` editors, and the
 // `/asset-types`, `/task-statuses`, `/project-types` and `/payment-terms`
 // lookups. mokosh-types declares no request type for any of them, so there is
-// nothing for a body struct here to be checked against. Three of those lookups
-// still turn an unparseable Sort order into `0` without saying so, which is the
-// swallow `parse_sort_order` below fixes for the gated ones; MAPPS-700 carries
-// it across to them.
+// nothing for a body struct here to be checked against. They still parse what
+// they send, though: MAPPS-700 put the three lookups carrying a Sort order on
+// `parse_sort_order` below and the RMM sync interval on `parse_sync_interval`,
+// so an unparseable value is reported on the field instead of quietly becoming
+// a default.
 // ============================================================================
 
 /// `PUT /api/v1/tenants/current`, for
@@ -1905,6 +1906,19 @@ struct SettingValueRow {
     value: serde_json::Value,
 }
 
+/// Read the whole number a per-key setting row stores.
+///
+/// A missing row (404) is the unconfigured state and each caller handles it
+/// separately. A row that exists holding something that is not a whole number
+/// is a stored-data fault nobody can see from the form, so it is logged before
+/// `default` stands in rather than substituted in silence (MAPPS-700).
+fn setting_u64(value: &serde_json::Value, path: &str, default: u64) -> u64 {
+    value.as_u64().unwrap_or_else(|| {
+        tracing::warn!("setting {path} holds {value}, not a whole number; reading it as {default}");
+        default
+    })
+}
+
 const DEFAULT_DUE_SETTING_PATH: &str = "/settings/scheduling/default_due_business_days";
 const MAX_DUE_BUSINESS_DAYS: u32 = 365;
 
@@ -1941,9 +1955,7 @@ fn SchedulingSettingsBody() -> Element {
             .await
             {
                 Ok(row) => Some(
-                    row.value
-                        .as_u64()
-                        .unwrap_or(0)
+                    setting_u64(&row.value, DEFAULT_DUE_SETTING_PATH, 0)
                         .min(u64::from(MAX_DUE_BUSINESS_DAYS)) as u32,
                 ),
                 Err(e) if e.status_code() == Some(404) => Some(0u32),
@@ -2137,10 +2149,12 @@ fn MaxHoursPerDaySettingsBody() -> Element {
             .await
             {
                 Ok(row) => Some(
-                    row.value
-                        .as_u64()
-                        .unwrap_or(u64::from(DEFAULT_MAX_HOURS_PER_DAY))
-                        .clamp(1, u64::from(MAX_HOURS_PER_DAY_CEILING)) as u32,
+                    setting_u64(
+                        &row.value,
+                        MAX_HOURS_PER_DAY_SETTING_PATH,
+                        u64::from(DEFAULT_MAX_HOURS_PER_DAY),
+                    )
+                    .clamp(1, u64::from(MAX_HOURS_PER_DAY_CEILING)) as u32,
                 ),
                 Err(e) if e.status_code() == Some(404) => Some(DEFAULT_MAX_HOURS_PER_DAY),
                 Err(_) => None,
@@ -2914,6 +2928,9 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-700: the sort order is reported in its own inline slot, as on the
+    // shared-DTO editors, rather than becoming a silent `0`.
+    let mut sort_order_error = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -2923,6 +2940,7 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        sort_order_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
@@ -2932,13 +2950,20 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
             error.set("Color is required.".to_string());
             return;
         }
+        let sort = match parse_sort_order(&sort_order.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sort_order_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
         let body = serde_json::json!({
             "name": name.read().trim(),
             "color": color_val,
             "is_completed": *is_completed.read(),
-            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
+            "sort_order": sort,
         });
         let id = save_id.clone();
         spawn(async move {
@@ -3007,7 +3032,11 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
                 min: "0".to_string(),
                 max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
-                oninput: move |e: FormEvent| sort_order.set(e.value()),
+                error: sort_order_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sort_order_error.set(String::new());
+                    sort_order.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "task_status_completed",
@@ -3898,6 +3927,9 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-700: the sort order is reported in its own inline slot, as on the
+    // shared-DTO editors, rather than becoming a silent `0`.
+    let mut sort_order_error = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -3907,10 +3939,18 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        sort_order_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
         }
+        let sort = match parse_sort_order(&sort_order.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sort_order_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
         // `is_system` is server-owned and not sent.
@@ -3918,7 +3958,7 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
             "name": name.read().trim(),
             "is_default": *is_default.read(),
             "is_active": *is_active.read(),
-            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
+            "sort_order": sort,
         });
         let id = save_id.clone();
         spawn(async move {
@@ -3988,7 +4028,11 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
                 min: "0".to_string(),
                 max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
-                oninput: move |e: FormEvent| sort_order.set(e.value()),
+                error: sort_order_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sort_order_error.set(String::new());
+                    sort_order.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "project_type_default",
@@ -4270,6 +4314,9 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-700: the sort order is reported in its own inline slot, as on the
+    // shared-DTO editors, rather than becoming a silent `0`.
+    let mut sort_order_error = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -4279,6 +4326,7 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        sort_order_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
@@ -4290,13 +4338,20 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
                 return;
             }
         };
+        let sort = match parse_sort_order(&sort_order.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sort_order_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
         let body = serde_json::json!({
             "name": name.read().trim(),
             "is_default": *is_default.read(),
             "is_active": *is_active.read(),
-            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
+            "sort_order": sort,
             "net_days": net_days_value,
         });
         let id = save_id.clone();
@@ -4375,7 +4430,11 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
                 min: "0".to_string(),
                 max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
-                oninput: move |e: FormEvent| sort_order.set(e.value()),
+                error: sort_order_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sort_order_error.set(String::new());
+                    sort_order.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "payment_term_default",
@@ -6565,7 +6624,7 @@ impl RmmConnectionFormState {
             provider: RMM_PROVIDERS[0].0.to_string(),
             api_url: String::new(),
             is_active: true,
-            sync_interval_minutes: "60".to_string(),
+            sync_interval_minutes: DEFAULT_RMM_SYNC_INTERVAL_MINUTES.to_string(),
         }
     }
 
@@ -6579,6 +6638,26 @@ impl RmmConnectionFormState {
             sync_interval_minutes: r.sync_interval_minutes.to_string(),
         }
     }
+}
+
+/// Minutes a new connection starts on, and what a cleared field keeps meaning.
+const DEFAULT_RMM_SYNC_INTERVAL_MINUTES: i32 = 60;
+
+/// Parse the sync-interval field into the minutes the connection body sends.
+///
+/// Blank is [`DEFAULT_RMM_SYNC_INTERVAL_MINUTES`], which is what the field is
+/// seeded with and what an untouched form has always sent. Anything else that
+/// is not an `i32` is reported on the field and logged: it used to become 60
+/// silently, so a typo changed the sync cadence and said nothing (MAPPS-700).
+fn parse_sync_interval(raw: &str) -> Result<i32, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(DEFAULT_RMM_SYNC_INTERVAL_MINUTES);
+    }
+    trimmed.parse::<i32>().map_err(|e| {
+        tracing::warn!("sync interval {trimmed:?} is not a 32-bit integer: {e}");
+        "Enter a whole number of minutes, such as 60.".to_string()
+    })
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -6603,6 +6682,9 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-700: a sync interval that will not parse is reported here, on the
+    // field itself, rather than becoming the default cadence unannounced.
+    let mut sync_interval_error = use_signal(String::new);
     let mut testing = use_signal(|| false);
     // (reachable, message) of the most recent test, or None when untested.
     let mut test_result = use_signal(|| None::<(bool, String)>);
@@ -6623,6 +6705,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        sync_interval_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
@@ -6639,9 +6722,15 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
             error.set("API key is required.".to_string());
             return;
         }
+        let interval = match parse_sync_interval(&sync_interval.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sync_interval_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
-        let interval = sync_interval.read().trim().parse::<i32>().unwrap_or(60);
         let secret = api_secret.read().trim().to_string();
         let id = save_id.clone();
         let provider_v = provider.read().clone();
@@ -6839,7 +6928,11 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
                 min: "1".to_string(),
                 step: "1".to_string(),
                 value: sync_interval.read().clone(),
-                oninput: move |e: FormEvent| sync_interval.set(e.value()),
+                error: sync_interval_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sync_interval_error.set(String::new());
+                    sync_interval.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "rmm_conn_active",
@@ -7980,6 +8073,29 @@ mod tests {
         );
         assert!(parse_rate("$150").is_err());
         assert!(parse_rate("free").is_err());
+    }
+
+    /// A blank sync interval still means the 60-minute default the field is
+    /// seeded with, and anything that is not an `i32` is a refusal rather than a
+    /// silent 60 (MAPPS-700).
+    #[test]
+    fn a_bad_sync_interval_is_refused_rather_than_defaulted() {
+        assert_eq!(parse_sync_interval(""), Ok(60));
+        assert_eq!(parse_sync_interval("  "), Ok(60));
+        assert_eq!(parse_sync_interval(" 15 "), Ok(15));
+        assert!(parse_sync_interval("2147483648").is_err());
+        assert!(parse_sync_interval("1.5").is_err());
+        assert!(parse_sync_interval("hourly").is_err());
+    }
+
+    /// A stored setting that is not a whole number falls back to the default,
+    /// but only after saying so; a real number is read as itself (MAPPS-700).
+    #[test]
+    fn a_non_numeric_setting_value_falls_back_to_the_default() {
+        assert_eq!(setting_u64(&serde_json::json!(7), "/settings/x", 3), 7);
+        assert_eq!(setting_u64(&serde_json::json!("7"), "/settings/x", 3), 3);
+        assert_eq!(setting_u64(&serde_json::json!(null), "/settings/x", 3), 3);
+        assert_eq!(setting_u64(&serde_json::json!(-1), "/settings/x", 3), 3);
     }
 
     /// The parent picker's value is a UUID or nothing; anything else is refused
