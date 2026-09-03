@@ -1381,7 +1381,9 @@ mod tests {
     /// 30-second timer and returning immediately is the whole behaviour; if
     /// the wake future never resolves this test takes 30 seconds instead of
     /// no time at all.
-    #[cfg(feature = "app")]
+    // MAPPS-682: tokio is a non-wasm dependency, so this test cannot build for
+    // the browser target that `just check-web` now lints.
+    #[cfg(all(feature = "app", not(target_arch = "wasm32")))]
     #[test]
     fn a_return_to_the_foreground_cuts_the_poll_sleep_short() {
         let rt = tokio::runtime::Builder::new_current_thread()
