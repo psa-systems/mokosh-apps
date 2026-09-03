@@ -849,6 +849,182 @@ fn address_lines_error(raw: &str) -> Option<String> {
         .then(|| format!("Use {MAX_POSTAL_ADDRESS_LINES} lines or fewer; this has {lines}."))
 }
 
+// ============================================================================
+// Request bodies (MAPPS-688)
+//
+// Every write on this page whose producing DTO lives in `mokosh-types` builds
+// one of these instead of a `serde_json::json!` literal. The shared requests
+// derive only `Deserialize` - they are the server's input types - so they
+// cannot be built here; these structs stand in for them, field for field and
+// type for type, and the `*_fields_are_all_considered` functions in the tests
+// module at the end of this file are what tie each one to its DTO. A field
+// added, removed, renamed or retyped on mokosh-server is then a compile error
+// here instead of a 422 in front of a user. Same pattern as `src/pages/time.rs`
+// (MAPPS-627); the audit is in `docs/client-server-integration.md`.
+//
+// The wire bytes are unchanged from the literals these replaced, which is why
+// an omitted key stays omitted (`skip_serializing_if`) and a key the literal
+// sent as an explicit `null` is still an `Option` that is always serialized.
+//
+// The other writes on this page have no shared DTO and keep their `json!`
+// literals: the per-key `/settings/...` rows, the `/data/import` CSV, the
+// `/data/seed-demo` trigger, the three `/rmm/*` editors, and the
+// `/asset-types`, `/task-statuses`, `/project-types` and `/payment-terms`
+// lookups. mokosh-types declares no request type for any of them, so there is
+// nothing for a body struct here to be checked against. Three of those lookups
+// still turn an unparseable Sort order into `0` without saying so, which is the
+// swallow `parse_sort_order` below fixes for the gated ones; MAPPS-700 carries
+// it across to them.
+// ============================================================================
+
+/// `PUT /api/v1/tenants/current`, for
+/// `mokosh_types::tenants::UpdateTenantRequest`.
+#[derive(Debug, Serialize)]
+struct UpdateTenantBody {
+    name: Option<String>,
+    /// The shared DTO types this as a raw `serde_json::Value` on purpose
+    /// (PMS-758: a merge document with three writers). This page owns exactly
+    /// the [`BrandingView`] keys, so it sends those; the destructuring function
+    /// is where the DTO's own type for the field is pinned.
+    branding: BrandingView,
+}
+
+/// `POST /api/v1/work-types` and `PUT /api/v1/work-types/{id}`, for
+/// `mokosh_types::time_tracking::UpsertWorkTypeRequest`.
+#[derive(Debug, Serialize)]
+struct UpsertWorkTypeBody {
+    name: String,
+    description: Option<String>,
+    default_billable: bool,
+    /// `rust_decimal` serializes a `Decimal` as a JSON string, which is the
+    /// shape the literal this replaced sent and the shape the list read back.
+    default_rate: Option<rust_decimal::Decimal>,
+    is_active: bool,
+    sort_order: i32,
+}
+
+/// `POST /api/v1/contacts/company-industries` and
+/// `PUT /api/v1/contacts/company-industries/{id}`, for
+/// `mokosh_types::contacts::UpsertCompanyIndustryRequest`.
+#[derive(Debug, Serialize)]
+struct UpsertCompanyIndustryBody {
+    name: String,
+    is_active: bool,
+}
+
+/// `POST /api/v1/tickets/statuses` and `PUT /api/v1/tickets/statuses/{id}`, for
+/// `mokosh_types::tickets::UpsertTicketStatusRequest`.
+#[derive(Debug, Serialize)]
+struct UpsertTicketStatusBody {
+    name: String,
+    color: String,
+    is_closed: bool,
+    is_default: bool,
+    sort_order: i32,
+}
+
+/// `POST /api/v1/tickets/priorities` and
+/// `PUT /api/v1/tickets/priorities/{id}`, for
+/// `mokosh_types::tickets::UpsertTicketPriorityRequest`.
+#[derive(Debug, Serialize)]
+struct UpsertTicketPriorityBody {
+    name: String,
+    color: String,
+    icon: Option<String>,
+    sla_multiplier: f64,
+    is_default: bool,
+    sort_order: i32,
+}
+
+/// `POST /api/v1/tickets/types` and `PUT /api/v1/tickets/types/{id}`, for
+/// `mokosh_types::tickets::UpsertTicketTypeRequest`.
+#[derive(Debug, Serialize)]
+struct UpsertTicketTypeBody {
+    name: String,
+    description: Option<String>,
+    icon: Option<String>,
+    is_active: bool,
+    sort_order: i32,
+}
+
+/// `POST /api/v1/tickets/queues` and `PUT /api/v1/tickets/queues/{id}`, for
+/// `mokosh_types::tickets::UpsertTicketQueueRequest`.
+#[derive(Debug, Serialize)]
+struct UpsertTicketQueueBody {
+    name: String,
+    description: Option<String>,
+    /// Optional on the shared DTO, always sent here: the colour swatch falls
+    /// back to a neutral grey rather than to no value (`non_empty_color`).
+    color: Option<String>,
+    icon: Option<String>,
+    is_default: bool,
+    sort_order: i32,
+}
+
+/// `POST /api/v1/tickets/categories` and
+/// `PUT /api/v1/tickets/categories/{id}`, for
+/// `mokosh_types::tickets::UpsertTicketCategoryRequest`.
+#[derive(Debug, Serialize)]
+struct UpsertTicketCategoryBody {
+    name: String,
+    description: Option<String>,
+    parent_id: Option<Uuid>,
+    is_active: bool,
+    sort_order: i32,
+}
+
+/// Parse a sort-order field into the `i32` every `Upsert*` request declares.
+///
+/// Blank is `0`, which is the server's own `#[serde(default)]` and what an
+/// untouched field has always meant here. Anything else that is not an `i32` is
+/// reported on the field and logged: it used to become `0` silently, so a typo
+/// reordered the list and said nothing (MAPPS-688).
+fn parse_sort_order(raw: &str) -> Result<i32, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(0);
+    }
+    trimmed.parse::<i32>().map_err(|e| {
+        tracing::warn!("sort order {trimmed:?} is not a 32-bit integer: {e}");
+        "Enter a whole number between 0 and 2147483647.".to_string()
+    })
+}
+
+/// Parse a rate field into the `Decimal` `UpsertWorkTypeRequest` declares.
+/// Blank clears the rate; anything unparseable is reported on the field rather
+/// than sent for the server to refuse (MAPPS-688).
+fn parse_rate(raw: &str) -> Result<Option<rust_decimal::Decimal>, String> {
+    use std::str::FromStr;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match rust_decimal::Decimal::from_str(trimmed) {
+        Ok(d) => Ok(Some(d)),
+        Err(e) => {
+            tracing::warn!("default rate {trimmed:?} is not a decimal: {e}");
+            Err("Enter an amount like 150.00, or leave it blank.".to_string())
+        }
+    }
+}
+
+/// Parse the parent picker's value into the `Uuid` the category request
+/// declares. Blank is "top level"; a value that is not a UUID is reported on
+/// the picker rather than sent (MAPPS-688).
+fn parse_parent_id(raw: &str) -> Result<Option<Uuid>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match Uuid::parse_str(trimmed) {
+        Ok(id) => Ok(Some(id)),
+        Err(e) => {
+            tracing::warn!("category parent {trimmed:?} is not a UUID: {e}");
+            Err("Pick a parent category from the list.".to_string())
+        }
+    }
+}
+
 /// `/settings/organization` (MAPPS-426). Admin-only rename of this tenant.
 ///
 /// The name is customer-facing: it renders in the client request-form email
@@ -1002,13 +1178,13 @@ fn OrganizationSettingsBody() -> Element {
                 // later Save is a file input people forget to save.
                 match crate::hooks::fetch::api::put_authed_typed::<TenantView, _>(
                     TENANT_PATH,
-                    &serde_json::json!({
-                        "name": trimmed,
+                    &UpdateTenantBody {
+                        name: Some(trimmed),
                         // PMS-758: the server MERGES this into the branding
                         // document, so an emptied field has to be sent as an
                         // explicit null to clear, and a key this page does not
                         // own (the logo) is simply not sent.
-                        "branding": BrandingView {
+                        branding: BrandingView {
                             support_contact_name: optional_text(&contact_name.read()),
                             support_email: optional_text(&contact_email.read()),
                             support_phone: optional_text(&contact_phone.read()),
@@ -1017,7 +1193,7 @@ fn OrganizationSettingsBody() -> Element {
                             postal_address: optional_text(&postal_address.read()),
                             logo_url: None,
                         },
-                    }),
+                    },
                 )
                 .await
                 {
@@ -2358,6 +2534,10 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-688: the two fields this page now parses, each reported in its own
+    // inline slot rather than in the modal's banner.
+    let mut rate_error = use_signal(String::new);
+    let mut sort_order_error = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -2367,23 +2547,36 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        rate_error.set(String::new());
+        sort_order_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
         }
+        let rate = match parse_rate(&default_rate.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                rate_error.set(message);
+                return;
+            }
+        };
+        let sort = match parse_sort_order(&sort_order.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sort_order_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
-        let desc = description.read().trim().to_string();
-        let rate = default_rate.read().trim().to_string();
-        let body = serde_json::json!({
-            "name": name.read().trim(),
-            "description": opt_str(&desc),
-            "default_billable": *default_billable.read(),
-            // Server parses the rate string into `rust_decimal::Decimal`.
-            "default_rate": opt_str(&rate),
-            "is_active": *is_active.read(),
-            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
-        });
+        let body = UpsertWorkTypeBody {
+            name: name.read().trim().to_string(),
+            description: optional_text(&description.read()),
+            default_billable: *default_billable.read(),
+            default_rate: rate,
+            is_active: *is_active.read(),
+            sort_order: sort,
+        };
         let id = save_id.clone();
         spawn(async move {
             #[cfg(feature = "app")]
@@ -2452,7 +2645,11 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
                 min: "0".to_string(),
                 placeholder: "e.g. 150.00",
                 value: default_rate.read().clone(),
-                oninput: move |e: FormEvent| default_rate.set(e.value()),
+                error: rate_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    rate_error.set(String::new());
+                    default_rate.set(e.value());
+                },
             }
             crate::components::Input {
                 name: "work_type_sort_order",
@@ -2461,7 +2658,11 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
                 min: "0".to_string(),
                 max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
-                oninput: move |e: FormEvent| sort_order.set(e.value()),
+                error: sort_order_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sort_order_error.set(String::new());
+                    sort_order.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "work_type_billable",
@@ -3386,10 +3587,10 @@ fn CompanyIndustryFormModal(props: CompanyIndustryFormModalProps) -> Element {
         }
         saving.set(true);
         error.set(String::new());
-        let body = serde_json::json!({
-            "name": name.read().trim(),
-            "is_active": *is_active.read(),
-        });
+        let body = UpsertCompanyIndustryBody {
+            name: name.read().trim().to_string(),
+            is_active: *is_active.read(),
+        };
         let id = save_id.clone();
         spawn(async move {
             #[cfg(feature = "app")]
@@ -4436,6 +4637,8 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-688: the parsed field reports in its own inline slot.
+    let mut sort_order_error = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -4445,19 +4648,27 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        sort_order_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
         }
+        let sort = match parse_sort_order(&sort_order.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sort_order_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
-        let body = serde_json::json!({
-            "name": name.read().trim(),
-            "color": color.read().trim(),
-            "is_closed": *is_closed.read(),
-            "is_default": *is_default.read(),
-            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
-        });
+        let body = UpsertTicketStatusBody {
+            name: name.read().trim().to_string(),
+            color: color.read().trim().to_string(),
+            is_closed: *is_closed.read(),
+            is_default: *is_default.read(),
+            sort_order: sort,
+        };
         let id = save_id.clone();
         spawn(async move {
             #[cfg(feature = "app")]
@@ -4526,7 +4737,11 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
                 min: "0".to_string(),
                 max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
-                oninput: move |e: FormEvent| sort_order.set(e.value()),
+                error: sort_order_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sort_order_error.set(String::new());
+                    sort_order.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "ticket_status_closed",
@@ -4789,6 +5004,8 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-688: the parsed field reports in its own inline slot.
+    let mut sort_order_error = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -4798,6 +5015,7 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        sort_order_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
@@ -4812,17 +5030,23 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
                 return;
             }
         };
+        let sort = match parse_sort_order(&sort_order.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sort_order_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
-        let icon_val = icon.read().trim().to_string();
-        let body = serde_json::json!({
-            "name": name.read().trim(),
-            "color": color.read().trim(),
-            "icon": opt_str(&icon_val),
-            "sla_multiplier": sla,
-            "is_default": *is_default.read(),
-            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
-        });
+        let body = UpsertTicketPriorityBody {
+            name: name.read().trim().to_string(),
+            color: color.read().trim().to_string(),
+            icon: optional_text(&icon.read()),
+            sla_multiplier: sla,
+            is_default: *is_default.read(),
+            sort_order: sort,
+        };
         let id = save_id.clone();
         spawn(async move {
             #[cfg(feature = "app")]
@@ -4908,7 +5132,11 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
                 min: "0".to_string(),
                 max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
-                oninput: move |e: FormEvent| sort_order.set(e.value()),
+                error: sort_order_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sort_order_error.set(String::new());
+                    sort_order.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "ticket_priority_default",
@@ -5150,6 +5378,8 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-688: the parsed field reports in its own inline slot.
+    let mut sort_order_error = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -5159,21 +5389,27 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        sort_order_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
         }
+        let sort = match parse_sort_order(&sort_order.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sort_order_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
-        let desc = description.read().trim().to_string();
-        let icon_val = icon.read().trim().to_string();
-        let body = serde_json::json!({
-            "name": name.read().trim(),
-            "description": opt_str(&desc),
-            "icon": opt_str(&icon_val),
-            "is_active": *is_active.read(),
-            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
-        });
+        let body = UpsertTicketTypeBody {
+            name: name.read().trim().to_string(),
+            description: optional_text(&description.read()),
+            icon: optional_text(&icon.read()),
+            is_active: *is_active.read(),
+            sort_order: sort,
+        };
         let id = save_id.clone();
         spawn(async move {
             #[cfg(feature = "app")]
@@ -5248,7 +5484,11 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
                 min: "0".to_string(),
                 max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
-                oninput: move |e: FormEvent| sort_order.set(e.value()),
+                error: sort_order_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sort_order_error.set(String::new());
+                    sort_order.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "ticket_type_active",
@@ -5503,6 +5743,8 @@ fn TicketQueueFormModal(props: TicketQueueFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-688: the parsed field reports in its own inline slot.
+    let mut sort_order_error = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -5512,22 +5754,28 @@ fn TicketQueueFormModal(props: TicketQueueFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        sort_order_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
         }
+        let sort = match parse_sort_order(&sort_order.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sort_order_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
-        let desc = description.read().trim().to_string();
-        let icon_val = icon.read().trim().to_string();
-        let body = serde_json::json!({
-            "name": name.read().trim(),
-            "description": opt_str(&desc),
-            "color": color.read().trim(),
-            "icon": opt_str(&icon_val),
-            "is_default": *is_default.read(),
-            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
-        });
+        let body = UpsertTicketQueueBody {
+            name: name.read().trim().to_string(),
+            description: optional_text(&description.read()),
+            color: Some(color.read().trim().to_string()),
+            icon: optional_text(&icon.read()),
+            is_default: *is_default.read(),
+            sort_order: sort,
+        };
         let id = save_id.clone();
         spawn(async move {
             #[cfg(feature = "app")]
@@ -5609,7 +5857,11 @@ fn TicketQueueFormModal(props: TicketQueueFormModalProps) -> Element {
                 min: "0".to_string(),
                 max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
-                oninput: move |e: FormEvent| sort_order.set(e.value()),
+                error: sort_order_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sort_order_error.set(String::new());
+                    sort_order.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "ticket_queue_default",
@@ -5890,6 +6142,9 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-688: the two parsed fields report in their own inline slots.
+    let mut parent_error = use_signal(String::new);
+    let mut sort_order_error = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -5919,21 +6174,35 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        parent_error.set(String::new());
+        sort_order_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
         }
+        let parent = match parse_parent_id(&parent_id.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                parent_error.set(message);
+                return;
+            }
+        };
+        let sort = match parse_sort_order(&sort_order.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sort_order_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
-        let desc = description.read().trim().to_string();
-        let parent = parent_id.read().trim().to_string();
-        let body = serde_json::json!({
-            "name": name.read().trim(),
-            "description": opt_str(&desc),
-            "parent_id": opt_str(&parent),
-            "is_active": *is_active.read(),
-            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
-        });
+        let body = UpsertTicketCategoryBody {
+            name: name.read().trim().to_string(),
+            description: optional_text(&description.read()),
+            parent_id: parent,
+            is_active: *is_active.read(),
+            sort_order: sort,
+        };
         let id = save_id.clone();
         spawn(async move {
             #[cfg(feature = "app")]
@@ -5999,7 +6268,11 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
                 label: "Parent category",
                 options: parent_options,
                 value: parent_id.read().clone(),
-                onchange: move |e: FormEvent| parent_id.set(e.value()),
+                error: parent_error.read().clone(),
+                onchange: move |e: FormEvent| {
+                    parent_error.set(String::new());
+                    parent_id.set(e.value());
+                },
             }
             crate::components::Input {
                 name: "ticket_category_sort_order",
@@ -6008,7 +6281,11 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
                 min: "0".to_string(),
                 max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
-                oninput: move |e: FormEvent| sort_order.set(e.value()),
+                error: sort_order_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sort_order_error.set(String::new());
+                    sort_order.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "ticket_category_active",
@@ -7587,11 +7864,15 @@ fn non_empty_color(c: &str) -> String {
 
 /// POST (create) or PUT (update) a lookup row. `base` is the collection
 /// path (e.g. `/tickets/statuses`); update targets `{base}/{id}`.
+///
+/// MAPPS-688: generic over the body so the lookups with a shared request DTO
+/// can pass their `Serialize` body struct; the ones without keep passing a
+/// `serde_json::Value`.
 #[cfg(feature = "app")]
-async fn save_lookup(
+async fn save_lookup<B: serde::Serialize>(
     id: Option<String>,
     base: &str,
-    body: &serde_json::Value,
+    body: &B,
 ) -> Result<(), String> {
     match id {
         None => crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(base, body)
@@ -7666,5 +7947,447 @@ mod postal_address_tests {
             optional_text(" 12 Example St\nSydney NSW 2000 "),
             Some("12 Example St\nSydney NSW 2000".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A blank sort order still means 0, and a value that is not an `i32` is a
+    /// refusal rather than a silent 0 (MAPPS-688).
+    #[test]
+    fn a_bad_sort_order_is_refused_rather_than_defaulted() {
+        assert_eq!(parse_sort_order(""), Ok(0));
+        assert_eq!(parse_sort_order("  "), Ok(0));
+        assert_eq!(parse_sort_order(" 12 "), Ok(12));
+        assert_eq!(parse_sort_order("-3"), Ok(-3));
+        assert!(parse_sort_order("2147483648").is_err());
+        assert!(parse_sort_order("1.5").is_err());
+        assert!(parse_sort_order("first").is_err());
+    }
+
+    /// A blank rate clears it; anything unparseable is refused on the field
+    /// rather than sent for the server to reject (MAPPS-688).
+    #[test]
+    fn a_bad_rate_is_refused_rather_than_sent() {
+        assert_eq!(parse_rate("   "), Ok(None));
+        assert_eq!(
+            parse_rate(" 150.00 "),
+            Ok(Some(
+                rust_decimal::Decimal::from_str_exact("150.00").unwrap()
+            ))
+        );
+        assert!(parse_rate("$150").is_err());
+        assert!(parse_rate("free").is_err());
+    }
+
+    /// The parent picker's value is a UUID or nothing; anything else is refused
+    /// on the picker (MAPPS-688).
+    #[test]
+    fn a_bad_parent_is_refused_rather_than_sent() {
+        assert_eq!(parse_parent_id(" "), Ok(None));
+        let id = Uuid::nil();
+        assert_eq!(parse_parent_id(&format!(" {id} ")), Ok(Some(id)));
+        assert!(parse_parent_id("top-level").is_err());
+    }
+
+    // ---- MAPPS-688: the shared-DTO contract ------------------------------
+    //
+    // `mokosh-types` derives `Deserialize` on the request DTOs and `Serialize`
+    // on the response DTOs, which is the server's half of the wire and the
+    // opposite of what a client needs, so this page cannot use either side
+    // directly. These functions are the substitute: each destructures the
+    // shared DTO exhaustively and feeds the bindings into the struct this page
+    // actually sends or decodes, so a field added, removed, renamed or retyped
+    // on mokosh-server fails this build instead of drifting silently. They are
+    // never called; compiling them is the whole check. Same shape as MAPPS-627
+    // in `src/pages/time.rs`.
+
+    #[allow(dead_code)]
+    fn update_tenant_request_fields_are_all_considered(
+        req: mokosh_types::tenants::UpdateTenantRequest,
+    ) {
+        let mokosh_types::tenants::UpdateTenantRequest {
+            name,
+            billing_email,
+            billing_contact_name,
+            settings,
+            branding,
+        } = req;
+        let _ = UpdateTenantBody {
+            name,
+            branding: BrandingView::default(),
+        };
+        // `branding` IS sent, as the typed `BrandingView` above rather than as
+        // the shared DTO's raw merge document (PMS-758), so the annotation is
+        // what pins the DTO's own type for the field.
+        let _branding: Option<serde_json::Value> = branding;
+        // Deliberately not sent: the billing contact and address belong to the
+        // billing surfaces, and `settings` is written per key by the settings
+        // rows rather than as a whole document from this form.
+        let _ = (billing_email, billing_contact_name, settings);
+    }
+
+    #[allow(dead_code)]
+    fn tenant_response_fields_this_page_reads(resp: mokosh_types::tenants::TenantResponse) {
+        let mokosh_types::tenants::TenantResponse {
+            id,
+            name,
+            slug,
+            status,
+            billing_email,
+            billing_contact_name,
+            subscription_plan,
+            subscription_status,
+            trial_ends_at,
+            branding,
+            created_at,
+        } = resp;
+        let mokosh_types::tenants::TenantBranding {
+            logo_url,
+            logo_mime,
+            favicon_url,
+            primary_color,
+            secondary_color,
+            company_name,
+            support_email,
+            support_phone,
+            support_contact_name,
+            website,
+            portal_domain,
+            legal_name,
+            tax_id,
+            postal_address,
+        } = branding;
+        let _ = TenantView {
+            name,
+            branding: BrandingView {
+                support_contact_name,
+                support_email,
+                support_phone,
+                legal_name,
+                tax_id,
+                postal_address,
+                logo_url,
+            },
+        };
+        // Carried by the response but not rendered here: the tenant's identity
+        // and lifecycle belong to the super-admin list (`admin.rs`), the
+        // billing contact to the billing surfaces, and the branding keys below
+        // are unread by any surface today (see `BrandingView`). `logo_mime` is
+        // the upload's half of the document, never this form's.
+        let _ = (
+            id,
+            slug,
+            status,
+            billing_email,
+            billing_contact_name,
+            subscription_plan,
+            subscription_status,
+            trial_ends_at,
+            created_at,
+            logo_mime,
+            favicon_url,
+            primary_color,
+            secondary_color,
+            company_name,
+            website,
+            portal_domain,
+        );
+    }
+
+    #[allow(dead_code)]
+    fn upsert_work_type_request_fields_are_all_considered(
+        req: mokosh_types::time_tracking::UpsertWorkTypeRequest,
+    ) {
+        let mokosh_types::time_tracking::UpsertWorkTypeRequest {
+            name,
+            description,
+            default_billable,
+            default_rate,
+            is_active,
+            sort_order,
+        } = req;
+        let _ = UpsertWorkTypeBody {
+            name,
+            description,
+            default_billable,
+            default_rate,
+            is_active,
+            sort_order,
+        };
+    }
+
+    #[allow(dead_code)]
+    fn work_type_response_fields_this_page_reads(
+        resp: mokosh_types::time_tracking::WorkTypeResponse,
+    ) {
+        let mokosh_types::time_tracking::WorkTypeResponse {
+            id,
+            name,
+            description,
+            default_billable,
+            default_rate,
+            is_active,
+            sort_order,
+        } = resp;
+        let _ = WorkTypeRow {
+            id,
+            name,
+            description,
+            default_billable,
+            // The server serializes the `Decimal` as a JSON string and this
+            // page only formats it, so it is read back as one.
+            default_rate: default_rate.map(|d| d.to_string()),
+            is_active,
+            // The server types every sort order as `i32`; the rows widen to
+            // `i64`. Annotated so the widening is checked rather than assumed.
+            sort_order: i64::from(sort_order),
+        };
+    }
+
+    #[allow(dead_code)]
+    fn upsert_company_industry_request_fields_are_all_considered(
+        req: mokosh_types::contacts::UpsertCompanyIndustryRequest,
+    ) {
+        let mokosh_types::contacts::UpsertCompanyIndustryRequest { name, is_active } = req;
+        let _ = UpsertCompanyIndustryBody { name, is_active };
+    }
+
+    #[allow(dead_code)]
+    fn company_industry_response_fields_this_page_reads(
+        resp: mokosh_types::contacts::CompanyIndustryResponse,
+    ) {
+        let mokosh_types::contacts::CompanyIndustryResponse {
+            id,
+            name,
+            is_active,
+        } = resp;
+        let _ = CompanyIndustryRow {
+            id,
+            name,
+            is_active,
+        };
+    }
+
+    #[allow(dead_code)]
+    fn upsert_ticket_status_request_fields_are_all_considered(
+        req: mokosh_types::tickets::UpsertTicketStatusRequest,
+    ) {
+        let mokosh_types::tickets::UpsertTicketStatusRequest {
+            name,
+            color,
+            is_closed,
+            is_default,
+            sort_order,
+        } = req;
+        let _ = UpsertTicketStatusBody {
+            name,
+            color,
+            is_closed,
+            is_default,
+            sort_order,
+        };
+    }
+
+    #[allow(dead_code)]
+    fn ticket_status_fields_this_page_reads(row: mokosh_types::tickets::TicketStatus) {
+        let mokosh_types::tickets::TicketStatus {
+            id,
+            tenant_id,
+            name,
+            color,
+            is_closed,
+            is_default,
+            sort_order,
+        } = row;
+        let _ = TicketStatusRow {
+            id,
+            name,
+            color,
+            is_closed,
+            is_default,
+            sort_order: i64::from(sort_order),
+        };
+        // Every row is already scoped to the caller's tenant, so the column is
+        // read by nothing here. Same for the four taxonomy rows below.
+        let _ = tenant_id;
+    }
+
+    #[allow(dead_code)]
+    fn upsert_ticket_priority_request_fields_are_all_considered(
+        req: mokosh_types::tickets::UpsertTicketPriorityRequest,
+    ) {
+        let mokosh_types::tickets::UpsertTicketPriorityRequest {
+            name,
+            color,
+            icon,
+            sla_multiplier,
+            sort_order,
+            is_default,
+        } = req;
+        let _ = UpsertTicketPriorityBody {
+            name,
+            color,
+            icon,
+            sla_multiplier,
+            is_default,
+            sort_order,
+        };
+    }
+
+    #[allow(dead_code)]
+    fn ticket_priority_fields_this_page_reads(row: mokosh_types::tickets::TicketPriority) {
+        let mokosh_types::tickets::TicketPriority {
+            id,
+            tenant_id,
+            name,
+            color,
+            icon,
+            sla_multiplier,
+            sort_order,
+            is_default,
+        } = row;
+        let _ = TicketPriorityRow {
+            id,
+            name,
+            color,
+            icon,
+            sla_multiplier,
+            is_default,
+            sort_order: i64::from(sort_order),
+        };
+        let _ = tenant_id;
+    }
+
+    #[allow(dead_code)]
+    fn upsert_ticket_type_request_fields_are_all_considered(
+        req: mokosh_types::tickets::UpsertTicketTypeRequest,
+    ) {
+        let mokosh_types::tickets::UpsertTicketTypeRequest {
+            name,
+            description,
+            icon,
+            is_active,
+            sort_order,
+        } = req;
+        let _ = UpsertTicketTypeBody {
+            name,
+            description,
+            icon,
+            is_active,
+            sort_order,
+        };
+    }
+
+    #[allow(dead_code)]
+    fn ticket_type_fields_this_page_reads(row: mokosh_types::tickets::TicketType) {
+        let mokosh_types::tickets::TicketType {
+            id,
+            tenant_id,
+            name,
+            description,
+            icon,
+            is_active,
+            sort_order,
+        } = row;
+        let _ = TicketTypeRow {
+            id,
+            name,
+            description,
+            icon,
+            is_active,
+            sort_order: i64::from(sort_order),
+        };
+        let _ = tenant_id;
+    }
+
+    #[allow(dead_code)]
+    fn upsert_ticket_queue_request_fields_are_all_considered(
+        req: mokosh_types::tickets::UpsertTicketQueueRequest,
+    ) {
+        let mokosh_types::tickets::UpsertTicketQueueRequest {
+            name,
+            description,
+            color,
+            icon,
+            is_default,
+            sort_order,
+        } = req;
+        let _ = UpsertTicketQueueBody {
+            name,
+            description,
+            color,
+            icon,
+            is_default,
+            sort_order,
+        };
+    }
+
+    #[allow(dead_code)]
+    fn ticket_queue_fields_this_page_reads(row: mokosh_types::tickets::TicketQueue) {
+        let mokosh_types::tickets::TicketQueue {
+            id,
+            tenant_id,
+            name,
+            description,
+            color,
+            icon,
+            is_default,
+            sort_order,
+        } = row;
+        let _ = TicketQueueRow {
+            id,
+            name,
+            description,
+            color,
+            icon,
+            is_default,
+            sort_order: i64::from(sort_order),
+        };
+        let _ = tenant_id;
+    }
+
+    #[allow(dead_code)]
+    fn upsert_ticket_category_request_fields_are_all_considered(
+        req: mokosh_types::tickets::UpsertTicketCategoryRequest,
+    ) {
+        let mokosh_types::tickets::UpsertTicketCategoryRequest {
+            name,
+            description,
+            parent_id,
+            is_active,
+            sort_order,
+        } = req;
+        let _ = UpsertTicketCategoryBody {
+            name,
+            description,
+            parent_id,
+            is_active,
+            sort_order,
+        };
+    }
+
+    #[allow(dead_code)]
+    fn ticket_category_response_fields_this_page_reads(
+        resp: mokosh_types::tickets::TicketCategoryResponse,
+    ) {
+        let mokosh_types::tickets::TicketCategoryResponse {
+            id,
+            parent_id,
+            name,
+            description,
+            is_active,
+            sort_order,
+        } = resp;
+        let _ = TicketCategoryRow {
+            id,
+            parent_id,
+            name,
+            description,
+            is_active,
+            sort_order: i64::from(sort_order),
+        };
     }
 }
