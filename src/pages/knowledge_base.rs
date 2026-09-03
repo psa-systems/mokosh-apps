@@ -3331,9 +3331,12 @@ fn ArticleActions(
     let can_mutate = crate::hooks::use_can_mutate();
     // PMS-482: "Open ticket about this article" carries the article id + title
     // + URL on the query string; the ticket-new form pre-fills its title /
-    // description and stamps `source_kb_article_id` on the create body. Plain
-    // `<a>` so the query string survives intact and the user can right-click
-    // to open it in a new tab.
+    // description and stamps `source_kb_article_id` on the create body.
+    // MAPPS-632: routed `Link` - a raw `<a href>` to an internal path is inert
+    // in the desktop webview. The target is a string rather than a typed
+    // `Route` because `Route::TicketNew` declares no query segment and its
+    // `Display` would drop `?from_kb_*`; `Link` still renders the `href`, so
+    // right-click / open in a new tab keeps working.
     let qs = format!(
         "from_kb_article={}&from_kb_title={}&from_kb_url={}",
         article_id,
@@ -3359,8 +3362,8 @@ fn ArticleActions(
                 },
                 "Delete"
             }
-            a {
-                href: "/tickets/new?{qs}",
+            Link {
+                to: format!("{}?{qs}", Route::TicketNew {}),
                 class: "w-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium rounded-md border border-line hover:bg-surface-2 text-content",
                 "Open ticket about this article"
             }
