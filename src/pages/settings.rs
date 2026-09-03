@@ -34,7 +34,7 @@ use crate::components::{
     use_page_title, Badge, BadgeVariant, BannerTone, BreadcrumbItem, Breadcrumbs, Button,
     ButtonVariant, Card, Checkbox, DataTable, ErrorBanner, FileField, IconSize, Input, PageHeader,
     PlusIcon, SearchInput, Select, SelectOption, SettingFormModal, StatusBanner, Table, TableBody,
-    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, ThemePicker,
+    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, ThemePicker,
 };
 use crate::utils::money::format_money_str;
 use crate::utils::Paginated;
@@ -817,11 +817,36 @@ struct BrandingView {
     support_email: Option<String>,
     #[serde(default)]
     support_phone: Option<String>,
+    /// PMS-911: the invoice identity. The registered entity, where it differs
+    /// from the trading name; the identifier the MSP's jurisdiction wants on an
+    /// invoice; and the address the invoice is issued from.
+    #[serde(default)]
+    legal_name: Option<String>,
+    #[serde(default)]
+    tax_id: Option<String>,
+    #[serde(default)]
+    postal_address: Option<String>,
     /// Read to render the current logo. Never sent: the upload and the delete
     /// own this key, and PMS-758 is what happens when one writer overwrites
     /// another's half of the document.
     #[serde(default, skip_serializing)]
     logo_url: Option<String>,
+}
+
+/// PMS-911 bounds, mirrored from `validate_branding_value_as` on mokosh-server
+/// so an over-long value is refused in the field rather than by a 422.
+const MAX_LEGAL_NAME: i64 = 120;
+const MAX_TAX_ID: i64 = 60;
+const MAX_POSTAL_ADDRESS: i64 = 300;
+const MAX_POSTAL_ADDRESS_LINES: usize = 6;
+
+/// The one bound `maxlength` cannot express: the server holds a postal address
+/// to six lines as well as 300 characters. `\r` is folded away there, so it is
+/// not counted here either.
+fn address_lines_error(raw: &str) -> Option<String> {
+    let lines = raw.replace('\r', "").lines().count();
+    (lines > MAX_POSTAL_ADDRESS_LINES)
+        .then(|| format!("Use {MAX_POSTAL_ADDRESS_LINES} lines or fewer; this has {lines}."))
 }
 
 /// `/settings/organization` (MAPPS-426). Admin-only rename of this tenant.
@@ -846,9 +871,9 @@ struct BrandingView {
 /// Two reasons for the fetch survive that correction:
 ///
 /// - The page edits the branding document as well as the name (support contact,
-///   email, phone, logo), and `MembershipView` carries only `tenant_id` and
-///   `tenant_name`. Auth context could supply at most one of this form's five
-///   fields, so the round-trip happens either way.
+///   email, phone, logo, and the PMS-911 invoice identity), and `MembershipView`
+///   carries only `tenant_id` and `tenant_name`. Auth context could supply at
+///   most one of this form's fields, so the round-trip happens either way.
 /// - `active_org_name()` is `None` when the org load failed, deliberately:
 ///   MAPPS-427 leaves the list empty rather than inventing a row. Seeding the
 ///   form from it would leave an admin unable to see or fix the name on exactly
@@ -881,6 +906,11 @@ fn OrganizationSettingsBody() -> Element {
     let mut contact_name = use_signal(String::new);
     let mut contact_phone = use_signal(String::new);
     let mut contact_email = use_signal(String::new);
+    // PMS-911: the invoice identity, as opposed to the support contact above.
+    let mut legal_name = use_signal(String::new);
+    let mut tax_id = use_signal(String::new);
+    let mut postal_address = use_signal(String::new);
+    let mut postal_address_error = use_signal(String::new);
     let mut logo_url = use_signal(|| None::<String>);
     let mut logo_busy = use_signal(|| false);
     // PMS-758: reported next to the file input rather than in the form banner
@@ -921,6 +951,9 @@ fn OrganizationSettingsBody() -> Element {
             contact_name.set(t.branding.support_contact_name.clone().unwrap_or_default());
             contact_phone.set(t.branding.support_phone.clone().unwrap_or_default());
             contact_email.set(t.branding.support_email.clone().unwrap_or_default());
+            legal_name.set(t.branding.legal_name.clone().unwrap_or_default());
+            tax_id.set(t.branding.tax_id.clone().unwrap_or_default());
+            postal_address.set(t.branding.postal_address.clone().unwrap_or_default());
             logo_url.set(t.branding.logo_url.clone());
         }
         seeded.set(true);
@@ -940,6 +973,7 @@ fn OrganizationSettingsBody() -> Element {
         }
         error.set(String::new());
         name_error.set(String::new());
+        postal_address_error.set(String::new());
 
         let trimmed = name.read().trim().to_string();
         // The server enforces 1..=255; checking here keeps a blank submit from
@@ -951,6 +985,10 @@ fn OrganizationSettingsBody() -> Element {
         }
         if trimmed.chars().count() > 255 {
             name_error.set("Use 255 characters or fewer.".to_string());
+            return;
+        }
+        if let Some(message) = address_lines_error(&postal_address.read()) {
+            postal_address_error.set(message);
             return;
         }
 
@@ -973,6 +1011,9 @@ fn OrganizationSettingsBody() -> Element {
                             support_contact_name: optional_text(&contact_name.read()),
                             support_email: optional_text(&contact_email.read()),
                             support_phone: optional_text(&contact_phone.read()),
+                            legal_name: optional_text(&legal_name.read()),
+                            tax_id: optional_text(&tax_id.read()),
+                            postal_address: optional_text(&postal_address.read()),
                             logo_url: None,
                         },
                     }),
@@ -993,9 +1034,16 @@ fn OrganizationSettingsBody() -> Element {
                     }
                     Err(err) => {
                         crate::hooks::push_api_error(&err);
-                        match err.field_message("name") {
-                            Some(m) => name_error.set(m),
-                            None => error.set(err.user_message()),
+                        // The server names a rejected branding key
+                        // `branding.{key}`; hang the address message on the
+                        // field rather than only in the banner at the top.
+                        match (
+                            err.field_message("name"),
+                            err.field_message("branding.postal_address"),
+                        ) {
+                            (Some(m), _) => name_error.set(m),
+                            (None, Some(m)) => postal_address_error.set(m),
+                            (None, None) => error.set(err.user_message()),
                         }
                     }
                 }
@@ -1009,8 +1057,9 @@ fn OrganizationSettingsBody() -> Element {
             title: "Organization",
             // PMS-755: the page held one field when this said "the name". It now
             // carries the contact and logo a client sees too, so it describes
-            // the set rather than its first member.
-            subtitle: "What clients see when you send them a request form: your name, who to ask, and your logo",
+            // the set rather than its first member. PMS-911 added the invoice
+            // identity, which a client sees on a document rather than a form.
+            subtitle: "What clients see on the request forms and invoices you send them: your name, who to ask, your logo, and the entity that bills them",
             breadcrumbs: rsx! {
                 SettingsBreadcrumb { current: Route::SettingsOrganization {} }
             },
@@ -1066,6 +1115,44 @@ fn OrganizationSettingsBody() -> Element {
                     disabled: is_loading || saving(),
                     help: "Optional. Offered alongside the phone number, and usually the one a client reaches for first.".to_string(),
                     oninput: move |e: FormEvent| contact_email.set(e.value()),
+                }
+
+                // PMS-911: what an invoice has to carry beyond a trading name.
+                // Written through the same branding merge as the fields above,
+                // so an emptied one clears rather than storing "".
+                Input {
+                    name: "legal_name",
+                    label: "Legal name",
+                    value: legal_name(),
+                    maxlength: MAX_LEGAL_NAME,
+                    disabled: is_loading || saving(),
+                    help: "Optional. The registered entity your invoices are issued by, if that is not the name above. Left empty, an invoice uses the organization name.".to_string(),
+                    oninput: move |e: FormEvent| legal_name.set(e.value()),
+                }
+
+                Input {
+                    name: "tax_id",
+                    label: "Tax identifier",
+                    value: tax_id(),
+                    maxlength: MAX_TAX_ID,
+                    disabled: is_loading || saving(),
+                    help: "Optional. The VAT number, ABN, EIN or registration number your invoices must show. Printed as you enter it.".to_string(),
+                    oninput: move |e: FormEvent| tax_id.set(e.value()),
+                }
+
+                Textarea {
+                    name: "postal_address",
+                    label: "Postal address",
+                    value: postal_address(),
+                    rows: MAX_POSTAL_ADDRESS_LINES as u32,
+                    maxlength: MAX_POSTAL_ADDRESS,
+                    disabled: is_loading || saving(),
+                    error: postal_address_error(),
+                    help: "Optional. The address your invoices are issued from, one line each, up to 6 lines.".to_string(),
+                    oninput: move |e: FormEvent| {
+                        postal_address_error.set(String::new());
+                        postal_address.set(e.value());
+                    },
                 }
 
                 // MAPPS-429: the logo uploads on selection rather than on Save.
@@ -7507,5 +7594,34 @@ mod net_days_tests {
         assert!(net_days_json("-1").is_err());
         assert!(net_days_json("30.5").is_err());
         assert!(net_days_json("thirty").is_err());
+    }
+}
+
+#[cfg(test)]
+mod postal_address_tests {
+    use super::{address_lines_error, optional_text};
+
+    /// PMS-911: the server holds a postal address to six lines, which
+    /// `maxlength` cannot express, so the field checks it rather than spending
+    /// a save to learn it. `\r` is folded away there, so `\r\n` is one break.
+    #[test]
+    fn six_lines_pass_and_a_seventh_is_refused() {
+        assert!(address_lines_error("").is_none());
+        assert!(address_lines_error("12 Example St\nSydney NSW 2000").is_none());
+        assert!(address_lines_error("12 Example St\r\nSydney NSW 2000").is_none());
+        assert!(address_lines_error(&"line\n".repeat(6)).is_none());
+        assert!(address_lines_error(&"line\n".repeat(7)).is_some());
+        assert!(address_lines_error(&"line\r\n".repeat(7)).is_some());
+    }
+
+    /// An emptied field clears the key: it is sent as an explicit `null`, which
+    /// the branding merge removes, rather than as `""`.
+    #[test]
+    fn an_emptied_field_clears_rather_than_storing_empty() {
+        assert_eq!(optional_text("   "), None);
+        assert_eq!(
+            optional_text(" 12 Example St\nSydney NSW 2000 "),
+            Some("12 Example St\nSydney NSW 2000".to_string())
+        );
     }
 }
