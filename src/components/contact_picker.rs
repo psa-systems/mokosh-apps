@@ -21,7 +21,7 @@ use serde::Deserialize;
 use crate::components::{
     Button, ButtonSize, ButtonVariant, ErrorBanner, IconSize, Input, Modal, ModalSize, PlusIcon,
 };
-use crate::hooks::use_dropdown_nav;
+use crate::hooks::{use_dropdown_nav, NavRows};
 use crate::utils::url::urlencoding_minimal;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -122,7 +122,9 @@ impl CreatedContact {
 pub fn ContactPicker(props: ContactPickerProps) -> Element {
     let mut query = use_signal(String::new);
     // MAPPS-503: open / highlight state and the shared keyboard contract.
-    let mut nav = use_dropdown_nav("contact-picker");
+    // MAPPS-653: the field has to end up holding a contact, so Enter takes the
+    // first match when the user has not arrowed onto one.
+    let mut nav = use_dropdown_nav("contact-picker").enter_takes_first_match();
     let mut editing = use_signal(|| false);
     // MAPPS-276: inline-create modal state. Same shape as the
     // CompanyPicker's. `new_first`/`new_last` seed the form when opened
@@ -213,12 +215,9 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
         _ => Vec::new(),
     };
     let loaded = matches!(&*snap, Some(Ok(_)));
-    let create_index = if allow_inline_create && loaded {
-        Some(rows.len())
-    } else {
-        None
-    };
-    let nav_len = rows.len() + usize::from(create_index.is_some());
+    // MAPPS-653: with nothing matching the typed text, the create action is
+    // row 0, which is what makes Enter on a no-match query start a new contact.
+    let list = NavRows::new(rows.len(), allow_inline_create && loaded);
     let rows_for_keys = rows.clone();
     let query_for_keys = query_text.clone();
     rsx! {
@@ -236,7 +235,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                 onkeydown: move |e: KeyboardEvent| {
                     let rows = rows_for_keys.clone();
                     let seed = query_for_keys.clone();
-                    nav.keydown(&e, nav_len, move |index| {
+                    nav.keydown(&e, list.len, move |index| {
                         match rows.get(index) {
                             Some(row) => {
                                 let name = row.display_name();
@@ -366,7 +365,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                             // into Create.
                             // MAPPS-503: it is the last navigable row, reachable
                             // by Down and committed by Enter / Tab.
-                            if let Some(index) = create_index {
+                            if let Some(index) = list.create_index {
                                 {
                                     let query_for_seed = query_text.clone();
                                     rsx! {

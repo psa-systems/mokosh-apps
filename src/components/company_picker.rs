@@ -18,7 +18,7 @@ use serde::Deserialize;
 use crate::components::{
     Button, ButtonSize, ButtonVariant, ErrorBanner, IconSize, Input, Modal, ModalSize, PlusIcon,
 };
-use crate::hooks::use_dropdown_nav;
+use crate::hooks::{use_dropdown_nav, NavRows};
 use crate::utils::url::urlencoding_minimal;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -89,7 +89,9 @@ struct CreatedCompany {
 pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
     let mut query = use_signal(String::new);
     // MAPPS-503: open / highlight state and the shared keyboard contract.
-    let mut nav = use_dropdown_nav("company-picker");
+    // MAPPS-653: the field has to end up holding a company, so Enter takes the
+    // first match when the user has not arrowed onto one.
+    let mut nav = use_dropdown_nav("company-picker").enter_takes_first_match();
     // PMS-352: inline create-company modal state. `new_name` carries
     // whatever was typed into the picker input when the modal opened so
     // the user doesn't have to re-type the company name they were
@@ -184,12 +186,9 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
         _ => Vec::new(),
     };
     let loaded = matches!(&*snap, Some(Ok(_)));
-    let create_index = if allow_inline_create && loaded {
-        Some(rows.len())
-    } else {
-        None
-    };
-    let nav_len = rows.len() + usize::from(create_index.is_some());
+    // MAPPS-653: with nothing matching the typed text, the create action is
+    // row 0, which is what makes Enter on a no-match query start a new company.
+    let list = NavRows::new(rows.len(), allow_inline_create && loaded);
     // The button sits beside the input, so it drops by the height of the
     // label when the picker renders one.
     let create_button_class = if props.label.is_empty() {
@@ -219,7 +218,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                     onkeydown: move |e: KeyboardEvent| {
                         let rows = rows_for_keys.clone();
                         let seed = query_for_keys.clone();
-                        nav.keydown(&e, nav_len, move |index| {
+                        nav.keydown(&e, list.len, move |index| {
                             match rows.get(index) {
                                 Some(row) => {
                                     let name = row.name.clone();
@@ -354,7 +353,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                             // into Create.
                             // MAPPS-503: it is the last navigable row, reachable
                             // by Down and committed by Enter / Tab.
-                            if let Some(index) = create_index {
+                            if let Some(index) = list.create_index {
                                 {
                                     let query_for_seed = query_text.clone();
                                     rsx! {

@@ -50,7 +50,7 @@ too rather than growing its own handlers; five hand-rolled copies is how
 | --- | --- |
 | Focus (tab in) or click on the field | Opens the list, including with an empty query, where the picker's unfiltered fetch supplies the rows. |
 | Down / Up | Move the highlight one row, clamped at both ends (never wraps), opening the list first if it is closed. The active row scrolls into view. |
-| Enter | Takes the highlighted row. Does not submit the form. |
+| Enter | Takes the highlighted row, or the first row when none is highlighted in a record picker (MAPPS-653). Does not submit the form. |
 | Tab | Takes the highlighted row, or the first row when none is highlighted, then moves focus to the next field. Shift+Tab takes nothing. |
 | Escape | Closes without committing, leaving the typed text alone, so a following Tab leaves the field with what was typed. |
 
@@ -66,6 +66,18 @@ The mechanics that go with it:
   into the list.
 - An inline "+ Create new ..." row is part of the list: it is the last navigable
   item, and committing it opens the create modal exactly as clicking it does.
+  With nothing matching the typed text it is the ONLY navigable row, which is
+  what makes Enter on an unknown name start a new record with that name
+  prefilled (MAPPS-653), on the call sites that pass `allow_inline_create`.
+- Whether Enter takes an unhighlighted first row is per surface, opted in with
+  `DropdownNav::enter_takes_first_match` (MAPPS-653):
+
+  | Surface | Enter with no highlight | Why |
+  | --- | --- | --- |
+  | `CompanyPicker`, `ContactPicker`, `AssetPicker`, `ProductPicker` | takes the first row | The field has to end up holding a record, so a typed name that matched something is accepted without arrowing onto it. |
+  | `SuggestInput` (Industry, Title, Department) | takes nothing | Free text: the value is what was typed, and a suggestion is optional, so Enter must not overwrite it. |
+  | `GlobalSearch` | takes nothing | Committing navigates the app away rather than filling a field. |
+  | `MentionAutocomplete` | takes nothing | The popover sits over a textarea where Enter is the newline key. |
 - ARIA comes with the hook: `role="combobox"` with `aria-expanded` and
   `aria-controls` on the field wrapper, `role="listbox"` on the panel,
   `role="option"` plus `aria-selected` on the rows, and `aria-activedescendant`

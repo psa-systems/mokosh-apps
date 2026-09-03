@@ -59,7 +59,9 @@ pub struct AssetPickerProps {
 pub fn AssetPicker(props: AssetPickerProps) -> Element {
     let mut query = use_signal(String::new);
     // MAPPS-503: open / highlight state and the shared keyboard contract.
-    let mut nav = use_dropdown_nav("asset-picker");
+    // MAPPS-653: the field has to end up holding an asset, so Enter takes the
+    // first match when the user has not arrowed onto one.
+    let mut nav = use_dropdown_nav("asset-picker").enter_takes_first_match();
     // PMS-344 follow-up: when the picker has a selected_id from the
     // parent (e.g. the inline ticket-detail editor showing the currently
     // associated asset), clicking Change must surface the search input
