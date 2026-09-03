@@ -539,27 +539,35 @@ fn short_id(id: uuid::Uuid) -> String {
 /// links here so the work-item picker opens with that ticket preselected,
 /// instead of dropping the user into an empty form they have to re-search.
 /// Returns the `work_item` select value (`ticket:<uuid>`) or empty.
+///
+/// MAPPS-683: read off the router rather than the browser URL, so the
+/// desktop build gets the prefill the `Link` actually carried.
 fn read_ticket_prefill_from_url() -> String {
     #[cfg(feature = "app")]
     {
-        if let Some(search) = crate::platform::location::search() {
-            {
-                let params = crate::utils::url::QueryString::parse(&search);
-                let id = params.get("ticket_id").unwrap_or_default();
-                if uuid::Uuid::parse_str(&id).is_ok() {
-                    return format!("ticket:{id}");
-                }
-                // MAPPS-275: also honour `?project_id=` so the
-                // project-detail "Log Time" affordance can pre-select
-                // that project in the work-item picker. Mirrors the
-                // existing ticket prefill (the picker value is the
-                // `project:<uuid>` / `ticket:<uuid>` discriminator).
-                let pid = params.get("project_id").unwrap_or_default();
-                if uuid::Uuid::parse_str(&pid).is_ok() {
-                    return format!("project:{pid}");
-                }
-            }
+        if let Some(search) = crate::platform::location::current_query() {
+            return ticket_prefill_from(&search);
         }
+    }
+    String::new()
+}
+
+/// Pure core of [`read_ticket_prefill_from_url`], so the rule is testable
+/// without a location.
+#[cfg_attr(not(feature = "app"), allow(dead_code))]
+fn ticket_prefill_from(search: &str) -> String {
+    let params = crate::utils::url::QueryString::parse(search);
+    let id = params.get("ticket_id").unwrap_or_default();
+    if uuid::Uuid::parse_str(&id).is_ok() {
+        return format!("ticket:{id}");
+    }
+    // MAPPS-275: also honour `?project_id=` so the project-detail "Log
+    // Time" affordance can pre-select that project in the work-item
+    // picker. Mirrors the existing ticket prefill (the picker value is
+    // the `project:<uuid>` / `ticket:<uuid>` discriminator).
+    let pid = params.get("project_id").unwrap_or_default();
+    if uuid::Uuid::parse_str(&pid).is_ok() {
+        return format!("project:{pid}");
     }
     String::new()
 }
@@ -3047,6 +3055,27 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ticket_prefill_comes_off_the_query_the_link_carried() {
+        // MAPPS-683: the string the router hands back on the desktop for
+        // `Link { to: "/time/new?ticket_id=..." }`.
+        assert_eq!(
+            ticket_prefill_from("?ticket_id=11111111-1111-1111-1111-111111111111"),
+            "ticket:11111111-1111-1111-1111-111111111111"
+        );
+        assert_eq!(
+            ticket_prefill_from("?project_id=22222222-2222-2222-2222-222222222222"),
+            "project:22222222-2222-2222-2222-222222222222"
+        );
+    }
+
+    #[test]
+    fn ticket_prefill_is_empty_without_a_usable_id() {
+        assert_eq!(ticket_prefill_from(""), "");
+        assert_eq!(ticket_prefill_from("?ticket_id=not-a-uuid"), "");
+        assert_eq!(ticket_prefill_from("?other=1"), "");
+    }
 
     /// A bare entry with everything unset; each test overrides only the
     /// fields it exercises so `work_item_label`'s branch under test is clear.

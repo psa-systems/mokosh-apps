@@ -144,7 +144,7 @@ Everything the app needs from its host lives in `src/platform/`, split on
 | `store` | `sessionStorage` | in-process map, session-lifetime |
 | `prefs` | `localStorage` | JSON file in the config directory |
 | `config` | `window.__MOKOSH_CONFIG__` | `config.json` + `MOKOSH_*` env |
-| `location` | `window.location` | no URL; readers answer `None` |
+| `location` | `window.location` | no URL bar; readers answer `None`, except `current_query`, which answers from the router |
 | `loopback` | not used (the document redirects) | RFC 8252 listener for OIDC sign-in |
 | `dom` | `web-sys` on the document | JavaScript evaluated in the webview |
 | `log` | `console.error` | `tracing` |
@@ -152,6 +152,13 @@ Everything the app needs from its host lives in `src/platform/`, split on
 | `timer` | `gloo-timers` | `tokio::time` |
 | `tz` | `Intl.DateTimeFormat` | `iana-time-zone` |
 | `clock` | `chrono` (`wasmbind`) | `chrono` |
+
+Internal navigation goes through a router `Link` or the `Navigator`, never a raw
+`a { href: "/..." }`. The webview's navigation handler refuses every
+`dioxus://` target after the first load, and a relative `href` resolves to one,
+so a raw anchor is a dead control here while it works in a browser (MAPPS-632,
+MAPPS-683). A `Link` whose target carries a query keeps it verbatim, and
+`location::current_query` reads it back off the router.
 
 `web-sys`, `js-sys`, `gloo-net`, `gloo-timers` and `wasm-bindgen` are declared
 only under `[target.'cfg(target_arch = "wasm32")'.dependencies]`. A browser call

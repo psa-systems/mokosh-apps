@@ -6,6 +6,12 @@
 //! URL, or "not on that route"). That is a real difference, not a
 //! stub pretending to be a browser: the callers were already written
 //! for a `None`, because `web_sys::window()` is itself an `Option`.
+//!
+//! [`current_query`] is the exception, and MAPPS-683 is why. A reader
+//! that wants the query the app was NAVIGATED with is not asking about
+//! the URL bar at all: a `Link` pushes its target verbatim into the
+//! router's history on both hosts, so the router can answer it on the
+//! desktop too.
 
 /// Path component of the current URL, e.g. `/onboarding/profile`.
 #[cfg(target_arch = "wasm32")]
@@ -17,6 +23,63 @@ pub fn pathname() -> Option<String> {
 #[cfg(target_arch = "wasm32")]
 pub fn search() -> Option<String> {
     web_sys::window()?.location().search().ok()
+}
+
+/// Query string the app is currently on, leading `?` included, or
+/// `None` when the route carries none (MAPPS-683).
+///
+/// Distinct from [`search`], which is the browser's URL bar and so is
+/// browser-only. This is the query of the *route*, which both hosts
+/// have: the router's history holds whatever the `Link` pushed, query
+/// included. Use this for anything read back off an internal
+/// navigation target (`?ticket_id=`, `?company_id=`, ...); `search`
+/// stays for the browser-only cases, such as an OAuth response that
+/// arrived in the address bar.
+///
+/// Never silently `None`: an unreachable location is logged, because a
+/// prefill that quietly does not arrive looks exactly like a link that
+/// forgot to carry it.
+#[cfg(target_arch = "wasm32")]
+pub fn current_query() -> Option<String> {
+    let Some(win) = web_sys::window() else {
+        tracing::warn!("no window to read the current query string from");
+        return None;
+    };
+    match win.location().search() {
+        Ok(search) => query_of(&search),
+        Err(_) => {
+            tracing::warn!("the browser refused to report the current query string");
+            None
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn current_query() -> Option<String> {
+    // `try_router` consumes a context, and consuming one outside a
+    // Dioxus runtime panics rather than answering `None`. The host test
+    // build has no runtime, so check for one first.
+    if dioxus::core::Runtime::try_current().is_none() {
+        tracing::warn!("no Dioxus runtime to read the current query string from");
+        return None;
+    }
+    let Some(router) = dioxus::prelude::try_router() else {
+        tracing::warn!("no router to read the current query string from");
+        return None;
+    };
+    query_of(&router.full_route_string())
+}
+
+/// The query of an internal route string, leading `?` included.
+///
+/// `None` for a route with no query or an empty one, so a caller cannot
+/// tell "no query" from "a query of nothing" and act on the difference.
+fn query_of(route: &str) -> Option<String> {
+    // A fragment ends the query, and the router's route strings can
+    // carry one (`Route::from_str` splits `#` off before `?`).
+    let route = route.split('#').next().unwrap_or(route);
+    let (_, query) = route.split_once('?')?;
+    (!query.is_empty()).then(|| format!("?{query}"))
 }
 
 /// Scheme + host + port, e.g. `https://msp.example.com`.
@@ -142,4 +205,54 @@ pub fn open_external(url: &str) -> Result<(), String> {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn reload() -> bool {
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::query_of;
+
+    #[test]
+    fn query_of_reads_the_query_a_link_pushed() {
+        // What `Link { to: "/time/new?ticket_id=..." }` leaves in the
+        // router's history, verbatim, on the desktop.
+        assert_eq!(
+            query_of("/time/new?ticket_id=11111111-1111-1111-1111-111111111111"),
+            Some("?ticket_id=11111111-1111-1111-1111-111111111111".to_string())
+        );
+        assert_eq!(
+            query_of("/tickets/new?company_id=abc&company_name=Acme%20%26%20Co"),
+            Some("?company_id=abc&company_name=Acme%20%26%20Co".to_string())
+        );
+    }
+
+    #[test]
+    fn query_of_is_none_without_a_query() {
+        assert_eq!(query_of("/time/new"), None);
+        assert_eq!(query_of("/"), None);
+        assert_eq!(query_of(""), None);
+        // A `?` with nothing after it is no query, not an empty one.
+        assert_eq!(query_of("/time/new?"), None);
+    }
+
+    #[test]
+    fn query_of_stops_at_a_fragment() {
+        assert_eq!(query_of("/home#features"), None);
+        assert_eq!(query_of("/x?a=1#f"), Some("?a=1".to_string()));
+    }
+
+    #[test]
+    fn query_of_accepts_a_bare_browser_search_string() {
+        // `window.location.search` is the whole value, `?` and all.
+        assert_eq!(query_of("?a=1"), Some("?a=1".to_string()));
+        assert_eq!(query_of(""), None);
+    }
+
+    /// The host test build has no Dioxus runtime, so this exercises the
+    /// unreachable-location branch: `None`, logged, and no panic out of
+    /// `try_router`'s `consume_context`.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn current_query_is_none_without_a_runtime() {
+        assert_eq!(super::current_query(), None);
+    }
 }
