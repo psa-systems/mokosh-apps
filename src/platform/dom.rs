@@ -48,6 +48,10 @@ pub fn set_title(title: &str) {
 /// no renderer attached: `utils::form_guard` focuses a field as part of
 /// its validation, and a panic there would fail a test about validation
 /// for a reason that has nothing to do with it.
+///
+/// Both callers (`set_title` and `eval`) are host-only, so the wasm build
+/// carried it as dead code and warned on every `just check-web` (MAPPS-629).
+#[cfg(not(target_arch = "wasm32"))]
 fn in_runtime() -> bool {
     dioxus::core::Runtime::try_current().is_some()
 }
