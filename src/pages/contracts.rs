@@ -162,11 +162,28 @@ fn ContractListBody() -> Element {
     // is for, so it has to stay selectable here.
     let companies_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<CompanyOption>(&format!(
+        // The dropdown shows its placeholder alone for a tenant with no
+        // companies AND for a failed read, so each says which it is.
+        match crate::hooks::fetch::api::get_all_authed::<CompanyOption>(&format!(
             "/contacts/companies?{COMPANIES_BY_NAME_SORT}"
         ))
         .await
-        .ok()
+        {
+            Ok(rows) => {
+                if rows.is_empty() {
+                    tracing::info!(
+                        "contract company filter load succeeded and this tenant has no companies"
+                    );
+                }
+                Some(rows)
+            }
+            Err(e) => {
+                tracing::error!(
+                    "contract company filter load failed, the dropdown will be empty: {e}"
+                );
+                None
+            }
+        }
     });
     let company_options = {
         let mut opts = vec![SelectOption::new("", "All Companies")];
@@ -213,6 +230,7 @@ fn ContractListBody() -> Element {
             }
             crate::hooks::fetch::api::get_with_auth::<Paginated<ContractResponse>>(&path, &token)
                 .await
+                .inspect_err(|e| tracing::error!("contract list load failed: {e}"))
                 .ok()
         }
     });
@@ -489,6 +507,7 @@ pub fn ContractEditPage(props: ContractEditPageProps) -> Element {
             let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<ContractResponse>(&format!("/contracts/{id}"))
                 .await
+                .inspect_err(|e| tracing::error!("contract edit load failed for {id}: {e}"))
                 .ok()
         }
     });
@@ -778,11 +797,25 @@ fn ContractForm(props: ContractFormProps) -> Element {
     // reason archiving keeps history in the first place.
     let companies_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<CompanyOption>(&format!(
+        // Same pair of indistinguishable outcomes as the list filter above.
+        match crate::hooks::fetch::api::get_all_authed::<CompanyOption>(&format!(
             "/contacts/companies?status=active&{COMPANIES_BY_NAME_SORT}"
         ))
         .await
-        .ok()
+        {
+            Ok(rows) => {
+                if rows.is_empty() {
+                    tracing::info!("contract company picker load succeeded and this tenant has no active companies");
+                }
+                Some(rows)
+            }
+            Err(e) => {
+                tracing::error!(
+                    "contract company picker load failed, the dropdown will be empty: {e}"
+                );
+                None
+            }
+        }
     });
     let company_options = {
         let mut opts = vec![SelectOption::new("", "Select a company")];
@@ -1491,6 +1524,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
             let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<ContractResponse>(&format!("/contracts/{id}"))
                 .await
+                .inspect_err(|e| tracing::error!("contract detail load failed for {id}: {e}"))
                 .ok()
         }
     });
@@ -1504,6 +1538,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                 "/contracts/{id}/items"
             ))
             .await
+            .inspect_err(|e| tracing::error!("contract item load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -1515,6 +1550,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                 "/contracts/{id}/hour-balance"
             ))
             .await
+            .inspect_err(|e| tracing::error!("contract hour balance load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -2562,6 +2598,7 @@ fn RateCardListBody(open_create: bool, can_edit: bool) -> Element {
         let path = format!("/rate-cards?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_with_auth::<Paginated<RateCardResponse>>(&path, &token)
             .await
+            .inspect_err(|e| tracing::error!("rate card list load failed: {e}"))
             .ok()
     });
 
@@ -2747,6 +2784,7 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
             let _reachable = crate::hooks::use_server_reachable();
             let rows = crate::hooks::fetch::api::get_all_authed::<RateCardResponse>("/rate-cards")
                 .await
+                .inspect_err(|e| tracing::error!("rate card load failed for {id}: {e}"))
                 .ok()?;
             rows.into_iter().find(|c| c.id.to_string() == id)
         }
@@ -2759,6 +2797,7 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
                 "/rate-cards/{id}/items"
             ))
             .await
+            .inspect_err(|e| tracing::error!("rate card item load failed for {id}: {e}"))
             .ok()
         }
     });

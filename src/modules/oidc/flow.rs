@@ -334,6 +334,9 @@ pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowEr
         .map_err(|e| FlowError::Network(e.to_string()))?;
 
     if !resp.ok() {
+        // fetch-error-logging-allow: the token endpoint already refused and
+        // that refusal is the returned error; an unreadable body only costs
+        // the provider's own code, which `ErrorBody::generic` stands in for.
         let body: ErrorBody = resp
             .json()
             .await
@@ -416,6 +419,9 @@ pub async fn refresh_tokens(
         .map_err(|e| FlowError::Network(e.to_string()))?;
 
     if !resp.ok() {
+        // fetch-error-logging-allow: the token endpoint already refused and
+        // that refusal is the returned error; an unreadable body only costs
+        // the provider's own code, which `ErrorBody::generic` stands in for.
         let body: ErrorBody = resp
             .json()
             .await
@@ -500,6 +506,8 @@ pub async fn issuer_post_authed<T: serde::de::DeserializeOwned, B: serde::Serial
         .await
         .map_err(|e| FlowError::Network(e.to_string()))?;
     if !resp.ok() {
+        // fetch-error-logging-allow: the non-2xx is already the returned
+        // error; an unreadable body just leaves its message empty.
         let raw = resp.text().await.unwrap_or_default();
         return Err(FlowError::Network(raw));
     }

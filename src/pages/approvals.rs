@@ -120,6 +120,7 @@ pub fn ApprovalsPage() -> Element {
         let _v = version.read();
         crate::hooks::fetch::api::get_authed::<Vec<PendingApproval>>("/approvals/pending")
             .await
+            .inspect_err(|e| tracing::error!("approval queue load failed: {e}"))
             .ok()
     });
 

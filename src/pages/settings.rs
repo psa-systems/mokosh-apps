@@ -935,6 +935,7 @@ fn OrganizationSettingsBody() -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_authed::<TenantView>(TENANT_PATH)
             .await
+            .inspect_err(|e| tracing::error!("org settings load failed: {e}"))
             .ok()
     });
 
@@ -1313,6 +1314,8 @@ pub fn ImportExportSettingsPage() -> Element {
     let tenant = use_resource(move || async move {
         crate::hooks::fetch::api::get_authed::<TenantView>(TENANT_PATH)
             .await
+            // Best-effort: import/export falls back to the generic file name.
+            .inspect_err(|e| tracing::warn!("org name load failed for the export name: {e}"))
             .ok()
     });
     if !use_is_admin() {
@@ -2155,6 +2158,7 @@ fn WorkTypesSettingsBody() -> Element {
         let path = format!("/work-types?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("work type settings load failed: {e}"))
             .ok()
     });
 
@@ -2522,6 +2526,7 @@ fn TaskStatusesSettingsBody() -> Element {
         let path = format!("/task-statuses?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TaskStatusRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("task status settings load failed: {e}"))
             .ok()
     });
 
@@ -2861,6 +2866,7 @@ fn AssetTypesSettingsBody() -> Element {
         let path = format!("/asset-types?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<AssetTypeRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("asset type settings load failed: {e}"))
             .ok()
     });
 
@@ -3199,6 +3205,7 @@ fn CompanyIndustriesSettingsBody() -> Element {
         let path = format!("/contacts/company-industries?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<CompanyIndustryRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("company industry settings load failed: {e}"))
             .ok()
     });
 
@@ -3499,6 +3506,7 @@ fn ProjectTypesSettingsBody() -> Element {
         let path = format!("/project-types?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<ProjectTypeRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("project type settings load failed: {e}"))
             .ok()
     });
 
@@ -3851,6 +3859,7 @@ fn PaymentTermsSettingsBody() -> Element {
         let path = format!("/payment-terms?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<PaymentTermRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("payment term settings load failed: {e}"))
             .ok()
     });
 
@@ -4233,6 +4242,7 @@ fn TicketStatusesSettingsBody() -> Element {
         let path = format!("/tickets/statuses?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketStatusRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("ticket status settings load failed: {e}"))
             .ok()
     });
 
@@ -4587,6 +4597,7 @@ fn TicketPrioritiesSettingsBody() -> Element {
         let path = format!("/tickets/priorities?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketPriorityRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("ticket priority settings load failed: {e}"))
             .ok()
     });
 
@@ -4956,6 +4967,7 @@ fn TicketTypesSettingsBody() -> Element {
         let path = format!("/tickets/types?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketTypeRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("ticket type settings load failed: {e}"))
             .ok()
     });
 
@@ -5296,6 +5308,7 @@ fn TicketQueuesSettingsBody() -> Element {
         let path = format!("/tickets/queues?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketQueueRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("ticket queue settings load failed: {e}"))
             .ok()
     });
 
@@ -5655,6 +5668,7 @@ fn TicketCategoriesSettingsBody() -> Element {
         let path = format!("/tickets/categories?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketCategoryRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("ticket category settings load failed: {e}"))
             .ok()
     });
 
@@ -6117,6 +6131,7 @@ fn RmmConnectionsSettingsBody() -> Element {
         let path = format!("/rmm/connections?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<RmmConnectionRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("RMM connection settings load failed: {e}"))
             .ok()
     });
 
@@ -6634,9 +6649,21 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
         // dropdown; subscribe so it repopulates on reconnect. It degrades to an
         // empty set on failure - the primary resource drives the outage view.
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_all_authed::<RmmConnectionRow>("/rmm/connections")
-            .await
-            .ok()
+        match crate::hooks::fetch::api::get_all_authed::<RmmConnectionRow>("/rmm/connections").await
+        {
+            Ok(rows) => {
+                if rows.is_empty() {
+                    tracing::info!("device mapping connection load succeeded and this tenant has no connections");
+                }
+                Some(rows)
+            }
+            Err(e) => {
+                tracing::error!(
+                    "device mapping connection load failed, the dropdown will be empty: {e}"
+                );
+                None
+            }
+        }
     });
     let connections: Vec<RmmConnectionRow> = conns_resource
         .read_unchecked()
@@ -6652,6 +6679,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
         let path = format!("/rmm/device-mappings?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<RmmDeviceMappingRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("RMM device mapping settings load failed: {e}"))
             .ok()
     });
 
@@ -7093,9 +7121,23 @@ fn RmmAlertRulesSettingsBody() -> Element {
         // dropdown; subscribe so it repopulates on reconnect. It degrades to an
         // empty set on failure - the primary resource drives the outage view.
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_all_authed::<RmmConnectionRow>("/rmm/connections")
-            .await
-            .ok()
+        match crate::hooks::fetch::api::get_all_authed::<RmmConnectionRow>("/rmm/connections").await
+        {
+            Ok(rows) => {
+                if rows.is_empty() {
+                    tracing::info!(
+                        "alert rule connection load succeeded and this tenant has no connections"
+                    );
+                }
+                Some(rows)
+            }
+            Err(e) => {
+                tracing::error!(
+                    "alert rule connection load failed, the dropdown will be empty: {e}"
+                );
+                None
+            }
+        }
     });
     let connections: Vec<RmmConnectionRow> = conns_resource
         .read_unchecked()
@@ -7111,6 +7153,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
         let path = format!("/rmm/alert-rules?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<RmmAlertRuleRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("RMM alert rule settings load failed: {e}"))
             .ok()
     });
 

@@ -2994,6 +2994,7 @@ pub fn SchedulingTemplatesPage() -> Element {
                 "/scheduling-templates",
             )
             .await
+            .inspect_err(|e| tracing::error!("scheduling template load failed: {e}"))
             .ok()
         }
         #[cfg(not(feature = "app"))]

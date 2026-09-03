@@ -231,6 +231,7 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
                 "/portal/tickets/{id}"
             ))
             .await
+            .inspect_err(|e| tracing::error!("portal ticket load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -397,6 +398,7 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
             "/portal/tickets/{id_for_fetch}/notes"
         ))
         .await
+        .inspect_err(|e| tracing::error!("portal note thread load failed for {id_for_fetch}: {e}"))
         .ok()
     }));
 
@@ -707,6 +709,7 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                 "/portal/invoices/{id}"
             ))
             .await
+            .inspect_err(|e| tracing::error!("portal invoice load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -963,6 +966,7 @@ pub fn PortalKBPage() -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_all_portal_authed::<PortalKbArticle>("/portal/kb")
             .await
+            .inspect_err(|e| tracing::error!("portal kb feed load failed: {e}"))
             .ok()
     });
 
@@ -1102,6 +1106,7 @@ pub fn PortalQuoteListPage() -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_all_portal_authed::<QuoteResponse>("/portal/quotes")
             .await
+            .inspect_err(|e| tracing::error!("portal quote list load failed: {e}"))
             .ok()
     });
 
@@ -1209,6 +1214,7 @@ pub fn PortalQuoteDetailPage(props: PortalQuoteDetailPageProps) -> Element {
                 "/portal/quotes/{id}"
             ))
             .await
+            .inspect_err(|e| tracing::error!("portal quote load failed for {id}: {e}"))
             .ok()
         }
     });

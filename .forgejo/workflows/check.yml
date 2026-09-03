@@ -239,6 +239,14 @@ jobs:
           bash scripts/check-page-width.sh --self-test
           bash scripts/check-page-width.sh
 
+      # MAPPS-695: every page awaited a fetch and ended in `.ok()`, so a 401, a
+      # 500, a decode mismatch and a genuinely empty tenant all reached the card
+      # as the same `None` with nothing in the console to tell them apart.
+      - name: Fetch error-logging guard
+        run: |
+          bash scripts/check-fetch-error-logging.sh --self-test
+          bash scripts/check-fetch-error-logging.sh
+
       # MAPPS-584: @tailwindcss/typography writes .prose into `@layer utilities`
       # and the MAPPS-573 corrections were written into `@layer components`, so
       # the plugin won every declaration the two shared and the whole block

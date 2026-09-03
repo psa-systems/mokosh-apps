@@ -163,11 +163,28 @@ fn QuoteListBody() -> Element {
     // what archiving-instead-of-deleting is for.
     let companies_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<CompanyOption>(&format!(
+        // The dropdown shows its placeholder alone for a tenant with no
+        // companies AND for a failed read, so each says which it is.
+        match crate::hooks::fetch::api::get_all_authed::<CompanyOption>(&format!(
             "/contacts/companies?{COMPANIES_BY_NAME_SORT}"
         ))
         .await
-        .ok()
+        {
+            Ok(rows) => {
+                if rows.is_empty() {
+                    tracing::info!(
+                        "quote company filter load succeeded and this tenant has no companies"
+                    );
+                }
+                Some(rows)
+            }
+            Err(e) => {
+                tracing::error!(
+                    "quote company filter load failed, the dropdown will be empty: {e}"
+                );
+                None
+            }
+        }
     });
     let company_options = {
         let mut opts = vec![SelectOption::new("", "All Companies")];
@@ -201,6 +218,7 @@ fn QuoteListBody() -> Element {
             }
             crate::hooks::fetch::api::get_with_auth::<Paginated<QuoteResponse>>(&path, &token)
                 .await
+                .inspect_err(|e| tracing::error!("quote list load failed: {e}"))
                 .ok()
         }
     });
@@ -436,6 +454,7 @@ fn QuoteDetailBody(id: String) -> Element {
             let _v = version.read();
             crate::hooks::fetch::api::get_authed::<QuoteResponse>(&format!("/quotes/{qid}"))
                 .await
+                .inspect_err(|e| tracing::error!("quote detail load failed for {qid}: {e}"))
                 .ok()
         }
     });
@@ -1036,6 +1055,7 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
             let qid = qid?;
             crate::hooks::fetch::api::get_authed::<QuoteResponse>(&format!("/quotes/{qid}"))
                 .await
+                .inspect_err(|e| tracing::error!("quote edit load failed for {qid}: {e}"))
                 .ok()
         }
     });

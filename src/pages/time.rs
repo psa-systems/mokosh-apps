@@ -307,6 +307,7 @@ pub fn TimeEntryListPage() -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>("/time-entries")
             .await
+            .inspect_err(|e| tracing::error!("time entry list load failed: {e}"))
             .ok()
     });
     // MAPPS-166: click-to-edit a time entry via the modal below.
@@ -1188,6 +1189,7 @@ pub fn TimesheetsPage() -> Element {
         let path = format!("/time-entries?user_id={user_id}&date_from={start}&date_to={end}");
         crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>(&path)
             .await
+            .inspect_err(|e| tracing::error!("timesheet week load failed for {user_id}: {e}"))
             .ok()
     });
 
@@ -1999,6 +2001,7 @@ pub fn TimesheetApprovalsPage() -> Element {
         // to the end. The old `per_page=200` was clamped to 100.
         crate::hooks::fetch::api::get_all_authed::<ApprovalSummary>(&path)
             .await
+            .inspect_err(|e| tracing::error!("timesheet approval queue load failed: {e}"))
             .ok()
     });
 
@@ -2570,6 +2573,7 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
         let path = format!("/time-entries?user_id={uid}&date_from={week}&date_to={end}");
         crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>(&path)
             .await
+            .inspect_err(|e| tracing::error!("timesheet history load failed for {uid}: {e}"))
             .ok()
     });
 

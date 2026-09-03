@@ -246,6 +246,7 @@ fn CreditNoteListBody() -> Element {
             }
             crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteCreditNote>>(&path, &token)
                 .await
+                .inspect_err(|e| tracing::error!("credit note list load failed: {e}"))
                 .ok()
         }
     });
@@ -470,6 +471,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
             let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<RemoteCreditNote>(&format!("/credit-notes/{id}"))
                 .await
+                .inspect_err(|e| tracing::error!("credit note detail load failed for {id}: {e}"))
                 .ok()
         }
     });
@@ -499,6 +501,9 @@ fn CreditNoteDetailBody(id: String) -> Element {
                 "/invoices/{invoice_id}"
             ))
             .await
+            .inspect_err(|e| {
+                tracing::error!("credit note invoice balance load failed for {invoice_id}: {e}")
+            })
             .ok()
         }
     });
