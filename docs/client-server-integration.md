@@ -344,7 +344,7 @@ Gated, with the destructuring function above:
 | `login.rs` | `LoginRequest`, `LoginResponse` | MAPPS-397 |
 | `request_form.rs`, `forms.rs` | `forms::*` used directly | MAPPS-535 |
 | `time.rs` | `Create`/`Update`/`RejectTimesheet` requests, `TimeEntry`/`TimesheetSummary`/`WorkType`/`TimeRoundingRule` responses | MAPPS-627 |
-| `tickets.rs` | `Create`/`UpdateTicketRequest`, `Create`/`UpdateNoteRequest`, `TicketResponse`/`TicketNoteResponse` | MAPPS-686 |
+| `tickets.rs` | `Create`/`UpdateTicketRequest`, `Create`/`UpdateNoteRequest`, `TicketResponse`/`TicketNoteResponse`, `TimeEntryResponse` | MAPPS-686, MAPPS-698 |
 | `profile.rs` | `UpdateUserRequest`, `UserResponse` | MAPPS-689 |
 | `settings.rs` | `Upsert{TicketStatus,TicketPriority,TicketType,TicketQueue,TicketCategory}Request`, `UpsertWorkTypeRequest`, `UpsertCompanyIndustryRequest`, `UpdateTenantRequest`, and the `TicketStatus`/`TicketPriority`/`TicketType`/`TicketQueue`/`TicketCategoryResponse`/`WorkTypeResponse`/`CompanyIndustryResponse`/`TenantResponse` reads behind them | MAPPS-688 |
 | `contacts.rs` | `Create`/`UpdateCompanyRequest`, `Create`/`UpdateContactRequest`, `Create`/`UpdateSiteRequest`, `ContactPhoneInput`, `ContactCompanyLinkInput`, `Address`, and the `CompanyResponse`/`ContactResponse`/`ContactPhone`/`ContactCompanyLink`/`SiteResponse` reads behind them | MAPPS-687 |
