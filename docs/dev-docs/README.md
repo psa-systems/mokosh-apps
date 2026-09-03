@@ -1,11 +1,12 @@
 # Mokosh-apps developer docs
 
-Internal reference for developers working on `mokosh-apps`. The
-content here is derived from a 2026-05-06 UI/UX audit (every route in
-the router was clicked through in Chrome via MCP browser automation,
-combined with static analysis); treat it as a living snapshot and
-update it alongside the code changes that invalidate any of its
-claims. The same audit produced matching documentation in
+Internal reference for developers working on `mokosh-apps`. Most of
+what is in this directory is derived from a 2026-05-06 UI/UX audit
+(every route in the router was clicked through in Chrome via MCP
+browser automation, combined with static analysis) and is a dated
+record of that day rather than a description of the client now: see
+"Keeping these docs honest" below for which files are maintained and
+which are not. The same audit produced matching documentation in
 `mokosh-server/docs/dev-docs/`, in that repository.
 
 ## Contents
@@ -13,7 +14,7 @@ claims. The same audit produced matching documentation in
 | Document | Purpose |
 | --- | --- |
 | [`codebase-state.md`](codebase-state.md) | **Historical.** The record of a 2026-05-06 walk through every route: cross-cutting bugs, 27 ranked UI/UX issues, per-page findings and the proposed fixes (`F1..F19`). Not a description of the client now. |
-| [`../client-server-integration.md`](../client-server-integration.md) | What the two repositories share on the wire: which modules re-export `mokosh-types`, how the pin is guarded, and where the copies the compiler cannot see still are. Its status content was retired in MAPPS-540. |
+| [`../client-server-integration.md`](../client-server-integration.md) | **Maintained.** How this client reaches the server (`crate::hooks::fetch::api`, the base-URL resolution, the bearer and its renewal, how a failure reaches the user) and what the two repositories share on the wire: which modules re-export `mokosh-types`, how the pin is guarded, and where the copies the compiler cannot see still are. Its status content was retired in MAPPS-540. |
 | [`versioning.md`](../versioning.md) | Where the displayed version comes from (build-time wiring in `build.rs` -> footer/banner) and how staging-vs-production update targets work. |
 | [`spa-rollout-runbook.md`](../spa-rollout-runbook.md) | How to roll the SPA so the load balancer never serves two builds at once: pin a versioned image tag per deploy, roll replicas in lockstep, and verify a single `build_sha` from `_mokosh_config.js`. |
 | [`qa-test-plan.md`](qa-test-plan.md) | End-to-end functional QA coverage: what to exercise across every route and flow. |
@@ -23,11 +24,11 @@ claims. The same audit produced matching documentation in
 ## Recommended reading order
 
 1. **[`../client-server-integration.md`](../client-server-integration.md)**
-   when a change crosses the wire: which DTOs come from the shared
-   `mokosh-types` crate, what the pin guard enforces, and which copies
-   nothing checks. For "is there an endpoint yet?", read
-   mokosh-server's `CLAUDE.md` under "Routing model" - it is
-   maintained, and no table here is.
+   when a change crosses the wire: the request path out of this client,
+   which DTOs come from the shared `mokosh-types` crate, what the pin
+   guard enforces, and which copies nothing checks. For "is there an
+   endpoint yet?", read mokosh-server's `CLAUDE.md` under "Routing
+   model" - it is maintained, and no table here is.
 2. **[`codebase-state.md`](codebase-state.md)** for the `F1..F19` ids
    that source comments and issues cite, and for what the 2026-05-06
    walk found. Historical: it describes a client that made no API
@@ -51,8 +52,10 @@ claims. The same audit produced matching documentation in
 
 If you land a change that:
 
-- changes what the two repositories share on the wire (a module moved
-  onto `mokosh-types`, a new hand copy, a change to the pin guard),
+- changes how this client reaches the server (the fetch layer, the
+  base-URL resolution, the bearer or its renewal, the error envelope)
+  or what the two repositories share on the wire (a module moved onto
+  `mokosh-types`, a new hand copy, a change to the pin guard),
   **update**
   [`../client-server-integration.md`](../client-server-integration.md);
 - closes a fix the `F1..F19` ids name, **say so in the YouTrack issue**

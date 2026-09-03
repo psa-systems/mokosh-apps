@@ -1,26 +1,137 @@
-# Shared DTOs between mokosh-apps and mokosh-server
+# How mokosh-apps talks to mokosh-server
 
-What the two repositories share on the wire, and how much of it the
-compiler is actually checking.
+Two things: the path a request takes out of this client, and what the
+two repositories share on the wire with a compiler checking it.
 
-This file used to be a client/server status document: a per-section
-table of which endpoints were real and which returned 501, a priority
-ranking, and a recommended order in which to wire the UI to the
-backend. All of it described 2026-05-06. It said the client made
-"zero `/api/v1/*` requests in normal operation" while 25 of the 36
-files in `src/pages/` call an authed fetch helper, and it sent readers
-to `stub_routes()`, which does not exist in mokosh-server.
-
-mokosh-server retired its own copy of that document for the same
-reason (PMS-848): it was a status table end to end, and duplicated
-status in prose is exactly what goes stale. The status content is
-gone from here too. What is left is the part that is a contract
-rather than a snapshot.
+This file used to be a client/server status document instead: a
+per-section table of which endpoints were real and which returned 501,
+a priority ranking, and a recommended order in which to wire the UI to
+the backend, all of it describing one day in 2026 and none of it
+maintained. mokosh-server retired its own copy for the same reason
+(PMS-848): duplicated status in prose is exactly what goes stale. The
+status content is gone from here too, along with the counts and
+checklists that were the parts that rotted. What is left is the part
+that is a contract rather than a snapshot.
 
 **"Is there an endpoint I can call yet?"** is answered by
 mokosh-server's `CLAUDE.md`, under "Routing model", which names every
 top-level nest under `/api/v1` and what authenticates a request to
 each one. That file is maintained; a table here would not be.
+
+## The request path
+
+`crate::hooks::fetch::api` (`src/hooks/fetch.rs`) is the single entry
+point. A page calls a helper on it and passes a path; no page under
+`src/pages/` names a transport crate or holds a token of its own, so a
+change to how this client reaches the server is a change to that module
+and nowhere else. Two things do reach past the helpers, both
+deliberately: a page that calls a `_with_auth` variant reads the bearer
+with `api::current_access_token()` first, and the audit-log CSV export
+builds an `<a href>` from `api::api_base()` because the download is a
+real browser navigation rather than a fetch.
+
+`crate::platform::http` (`src/platform/http.rs`) is the transport under
+it, and the split is on `target_arch`, not on a cargo feature: the
+browser build uses `gloo-net` verbatim, the desktop build maps the same
+builder surface (`Request::get(url)`, `.header()`, `.json()`, `.send()`,
+then `status()` / `ok()` / `text()` / `json()` / `binary()`) onto
+`reqwest`. `multipart_file` is the one method `gloo-net` does not have,
+added for the tenant-logo `PUT` (MAPPS-429).
+
+### Where the requests go
+
+`api::api_base()` resolves the base once per call, in this order:
+
+1. Whatever the operator supplied, read through
+   `crate::modules::runtime_config` and so through
+   `crate::platform::config`: `window.__MOKOSH_CONFIG__.api_base` in the
+   browser, which is how a self-hoster on a custom hostname overrides
+   without rebuilding the image, and `MOKOSH_API_BASE` or `config.json`
+   on the desktop (see [`desktop.md`](desktop.md)).
+2. Host-prefix derivation for the canonical deploys: an SPA on
+   `msp.<tld>` calls `https://api.msp.<tld>/api/v1`. Browser only, since
+   a desktop window has no origin to derive from.
+3. Otherwise the per-host default. In a browser that is the same-origin
+   `/api/v1`, which the `dx` dev server and Caddy both proxy. On the
+   desktop it is `option_env!("MOKOSH_API_BASE")` if the build baked one
+   in and `http://localhost:8080/api/v1` if not, which is right for
+   development and wrong everywhere else: a real desktop install is
+   expected to have answered at step 1.
+
+Two related helpers exist because the base is not the origin.
+`normalize_api_base` strips a trailing slash, since every call site
+joins with `format!("{}{}", api_base(), path)` and staging is configured
+with one (PMS-751). `api_origin` drops the `/api/v1` suffix, for the
+values the server hands back that are already paths from the origin,
+`branding.logo_url` being the one that broke (PMS-758).
+
+### The bearer, and renewing it
+
+The access token lives in a thread-local `ACCESS_TOKEN` inside `api`. It
+is held in memory only and never written to `localStorage`; where the
+OIDC bundle it comes from is stored, and why, is
+[`oidc-token-storage.md`](oidc-token-storage.md).
+
+The client portal runs on a second identity (a `contacts` row, token
+`typ: "portal_access"`) with its own holder, and the two lanes never
+cross-populate (MAPPS-395). `src/hooks/fetch.rs` carries source-scanning
+tests that hold that boundary, because the request helpers themselves
+need a browser to run.
+
+Renewal is on the request path, not only in the 30-second loop in
+`crate::hooks::auth` (MAPPS-435): a tab the browser discarded and
+re-created fires its first fetches before any loop has evaluated
+anything. So an agent-lane helper calls `ensure_fresh_access_token`
+before the send, which renews when the held token is inside
+`REFRESH_WINDOW_SECS` of expiry, and a 401 that comes back anyway runs
+`note_agent_unauthorized` for one recovery attempt. Renewal is
+single-flight and shared with the auth loops, so a loop tick and a
+request-time renewal spend one refresh token between them instead of
+racing into a reuse detection, and a completed renewal answers for the
+401s still in flight for `RENEWAL_DEBOUNCE_SECS` so a 401 no renewal can
+fix cannot spend a refresh token per request forever. When renewal
+cannot help, `end_agent_session` clears the session and puts the user on
+the login screen: a hard redirect in the browser, and the
+`SESSION_ENDED` signal on the desktop, which has no reload (MAPPS-504).
+
+Only the agent lane reaches any of that. A `/portal/*` 401 belongs to
+the other identity and a `POST /auth/login` 401 means the password was
+wrong; neither may sign an agent out.
+
+### How a failure reaches the user
+
+mokosh-server answers a non-2xx with
+`{"error":{"code","message","errors":[...]}}`, decoded here as
+`crate::utils::error::ErrorResponse`. Both halves of the fetch layer
+parse it:
+
+- The `_typed` helpers return `ApiError` (`Network`, `Status { code,
+  message, fields }`, `Decode`). Pages render `ApiError::user_message()`
+  into a toast, and `field_message` routes a 422's per-field message
+  next to the input that caused it instead of showing the envelope's
+  generic one (MAPPS-210).
+- The older `String`-returning helpers get the same envelope flattened
+  by `status_error`, falling back to a user-facing message keyed on the
+  status class rather than "Request failed with status: 422"
+  (MAPPS-282).
+
+Three conditions are wider than one call and are classified centrally
+rather than at each call site. Any response at all proves the server is
+answering and a 5xx or a transport failure does not, which drives the
+`SERVER_REACHABLE` signal behind the outage banner (MAPPS-333). A `410`
+carrying `error.code == "ACCOUNT_DELETED"` is terminal and one-way
+(MAPPS-348). And every token change bumps a generation counter that
+pages read inside their `use_resource` closure, so an org switch
+re-fetches instead of leaving the previous tenant's rows on screen.
+
+### Reading a whole collection
+
+`get_all_authed` and its siblings are the only correct way to read a
+list in full. mokosh-server clamps an over-large `per_page` instead of
+rejecting it, so a page that asked for 200 got the cap and no sign the
+rest existed; the helpers request `MAX_PER_PAGE` (re-exported from the
+server's own constant) and keep going until a short page arrives,
+failing loudly rather than returning a silently short list (MAPPS-528).
 
 ## DTO sharing
 
