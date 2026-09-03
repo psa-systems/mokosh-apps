@@ -64,8 +64,11 @@ pub fn set_title(title: &str) {
 ///
 /// Both callers (`set_title` and `eval`) are host-only, so the wasm build
 /// carried it as dead code and warned on every `just check-web` (MAPPS-629).
+///
+/// `pub(crate)` for the sibling modules that open their own channel
+/// rather than going through [`eval`] (MAPPS-699).
 #[cfg(not(target_arch = "wasm32"))]
-fn in_runtime() -> bool {
+pub(crate) fn in_runtime() -> bool {
     dioxus::core::Runtime::try_current().is_some()
 }
 
@@ -733,8 +736,13 @@ pub fn set_scroll_top(id: &str, top: i32) {
 ///
 /// Silently does nothing when there is no runtime, which is the host
 /// test build and not a desktop window (see [`in_runtime`]).
+///
+/// `pub(crate)` for the two sibling modules that inject their own
+/// listeners (MAPPS-699): `platform::clipboard` and
+/// `platform::scroll_sync` write the same kind of script and must not
+/// each re-derive the runtime guard.
 #[cfg(not(target_arch = "wasm32"))]
-fn eval(js: &str) {
+pub(crate) fn eval(js: &str) {
     if !in_runtime() {
         return;
     }
@@ -744,19 +752,86 @@ fn eval(js: &str) {
 /// Encode `s` as a JavaScript string literal so an id carrying a quote
 /// cannot terminate the literal and change what the script does.
 #[cfg(not(target_arch = "wasm32"))]
-fn js_string(s: &str) -> String {
+pub(crate) fn js_string(s: &str) -> String {
     // Serializing a `&str` cannot fail; the fallback is an empty literal
     // so a future change that makes it fallible produces a script that
     // matches no element rather than one that is syntactically broken.
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
 }
 
-/// Desktop: the selection cannot be read back synchronously (see the module
-/// header on reads), so the caller is told the caret is at the end and the
-/// transform appends rather than guessing at a selection it cannot see.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn textarea_selection(_id: &str, fallback_end: u32) -> (u32, u32) {
-    (fallback_end, fallback_end)
+thread_local! {
+    /// What the webview last reported for each watched `<textarea>`'s
+    /// selection, in UTF-16 code units (MAPPS-699). Only ids that
+    /// [`watch_textarea_selection`] was called for ever appear here.
+    static TEXTAREA_SELECTION: std::cell::RefCell<std::collections::HashMap<String, (u32, u32)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Report the selection in the `<textarea>` with this id back over the eval
+/// channel, so [`textarea_selection`] has an answer for it (MAPPS-699).
+///
+/// Pushed rather than pulled, and that is the whole point. A read is
+/// asynchronous here (see the module header), and the caller that needs this -
+/// the markdown editor's "Sync to cursor", through `platform::scroll_sync` - is
+/// a click handler that has to answer at once. So the script posts the
+/// selection on every event that can move it and the last value it reported is
+/// what the read returns, the same shape as [`watch_system_theme`].
+///
+/// Idempotent per element: the marker rides on the element, so an effect that
+/// re-runs installs nothing and the first channel keeps reporting.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn watch_textarea_selection(id: &str) {
+    if !in_runtime() {
+        return;
+    }
+    let key = id.to_string();
+    // `selectionchange` on the element itself is recent enough that the
+    // webviews this ships against cannot be assumed to have it, so the events
+    // that can move a caret are listened for directly and the document-level
+    // `selectionchange` is filtered to this element.
+    let mut eval = dioxus::document::eval(&format!(
+        "const el = document.getElementById({}); \
+         if (!el) return 'missing'; \
+         if (el.dataset.mokoshSelection) return 'installed'; \
+         el.dataset.mokoshSelection = '1'; \
+         const post = () => dioxus.send([el.selectionStart || 0, el.selectionEnd || 0]); \
+         for (const name of ['keyup', 'mouseup', 'input', 'select', 'focus']) el.addEventListener(name, post); \
+         document.addEventListener('selectionchange', () => {{ if (document.activeElement === el) post(); }}); \
+         post(); \
+         return 'installed';",
+        js_string(id)
+    ));
+    dioxus::prelude::spawn(async move {
+        loop {
+            match eval.recv::<(u32, u32)>().await {
+                Ok(selection) => {
+                    TEXTAREA_SELECTION.with(|m| m.borrow_mut().insert(key.clone(), selection));
+                }
+                Err(e) => {
+                    // Losing this silently puts every caret-relative edit back
+                    // at the end of the field, which reads as the toolbar and
+                    // the sync button ignoring where the author is typing.
+                    tracing::error!("stopped following the selection in #{key}: {e}");
+                    return;
+                }
+            }
+        }
+    });
+}
+
+/// Desktop: whatever [`watch_textarea_selection`] last heard from the webview,
+/// in UTF-16 code units (MAPPS-699).
+///
+/// An element nobody is watching still answers "the caret is at the end", so a
+/// transform appends rather than guessing at a selection it cannot see; reading
+/// it on demand is asynchronous (see the module header on reads) and every
+/// caller is a handler that has to answer at once.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn textarea_selection(id: &str, fallback_end: u32) -> (u32, u32) {
+    TEXTAREA_SELECTION
+        .with(|m| m.borrow().get(id).copied())
+        .unwrap_or((fallback_end, fallback_end))
 }
 
 /// Desktop: a write, so it CAN be done through `eval`.
@@ -768,8 +843,8 @@ pub fn set_textarea_selection(id: &str, start: u32, end: u32) {
     ));
 }
 
-/// MAPPS-511: the desktop half of the four behaviours that used to be
-/// inert here, pinned in source.
+/// MAPPS-511, and the caret MAPPS-699 added: the desktop half of the
+/// behaviours that used to be inert here, pinned in source.
 ///
 /// A source scan, deliberately: every one of them needs a webview to
 /// evaluate JavaScript in, so no host test can drive them. What can
@@ -834,6 +909,32 @@ mod desktop_wiring_tests {
         assert!(
             code.contains("dioxus.send(Number(index));"),
             "and each click is posted back as its data-ti index"
+        );
+    }
+
+    /// MAPPS-699: the caret reaches Rust, so "Sync to cursor" lands on the
+    /// block the author is in rather than on the first one.
+    ///
+    /// The desktop read is a push: `textarea_selection` must answer from what
+    /// the webview last reported, not from the fallback alone, or the button
+    /// silently scrolls the preview to the top on every click.
+    #[test]
+    fn the_caret_comes_back_over_the_channel() {
+        let code = code_only();
+        assert!(
+            code.contains("pub fn watch_textarea_selection(id: &str)"),
+            "the desktop has the injected script report the selection"
+        );
+        assert!(
+            code.contains(
+                "const post = () => dioxus.send([el.selectionStart || 0, el.selectionEnd || 0]);"
+            ),
+            "and posts both ends of it, in the UTF-16 units selectionStart counts"
+        );
+        assert!(
+            code.contains("TEXTAREA_SELECTION .with(|m| m.borrow().get(id).copied())"),
+            "and the read answers from what was reported, falling back only for \
+             an element nobody is watching"
         );
     }
 

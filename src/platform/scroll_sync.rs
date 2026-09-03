@@ -215,21 +215,95 @@ pub fn scroll_to_block(preview_id: &str, index: usize, expected: usize) -> bool 
     true
 }
 
-/// MAPPS-504 / MAPPS-511: no in-process DOM on the desktop build, as with
-/// [`link`].
+/// MAPPS-699: the same jump, performed in the webview.
+///
+/// The walk, the count check and the offset arithmetic are the browser's,
+/// restated in JavaScript, because none of it needs a value back in Rust. The
+/// caret that produced `index` does: the caller reads it through
+/// `platform::dom::textarea_selection`, which answers from the webview only
+/// while [`link`] has its reporter installed - and it installs it for exactly
+/// the pane this button syncs.
+///
+/// Returns whether the script was dispatched, not whether the preview moved.
+/// That answer is only known in the webview and would have to come back
+/// asynchronously; no caller reads the value, and the alternative is reporting
+/// a fixed `false` that a stub is indistinguishable from.
 #[cfg(not(all(feature = "app", target_arch = "wasm32")))]
-pub fn scroll_to_block(_preview_id: &str, _index: usize, _expected: usize) -> bool {
-    false
+pub fn scroll_to_block(preview_id: &str, index: usize, expected: usize) -> bool {
+    if !crate::platform::dom::in_runtime() {
+        return false;
+    }
+    crate::platform::dom::eval(&format!(
+        "const boxEl = document.getElementById({}); \
+         if (!boxEl) return; \
+         const rendered = boxEl.firstElementChild; \
+         if (!rendered) return; \
+         if (rendered.childElementCount !== {expected}) return; \
+         let target = rendered.firstElementChild; \
+         for (let i = 0; i < {index}; i++) target = target && target.nextElementSibling; \
+         if (!target) return; \
+         const top = Math.max(Math.round(target.getBoundingClientRect().top \
+            - boxEl.getBoundingClientRect().top + boxEl.scrollTop), 0); \
+         if (top === boxEl.scrollTop) return; \
+         window.{PROGRAMMATIC_FLAG} = true; \
+         boxEl.scrollTop = top;",
+        crate::platform::dom::js_string(preview_id)
+    ));
+    true
 }
+
+/// Where the desktop keeps the flag the browser keeps in `PROGRAMMATIC`. On
+/// `window` because each `eval` is a separate script with its own scope, so the
+/// jump and the scroll listener that has to swallow it have no other way to
+/// name the same variable.
+#[cfg(not(all(feature = "app", target_arch = "wasm32")))]
+const PROGRAMMATIC_FLAG: &str = "__mokoshScrollProgrammatic";
 
 #[cfg(all(feature = "app", target_arch = "wasm32"))]
 const INSTALLED_ATTR: &str = "data-scroll-synced";
 
-/// MAPPS-504 / MAPPS-511: the desktop build has no in-process DOM, so the two
-/// panes stay independent there. The editor is usable either way; this is
-/// polish, not function.
+/// MAPPS-699: the same link, wired inside the webview.
+///
+/// One injected script and no channel, because nothing has to come back: both
+/// listeners, the proportional mapping and the echo guard all read and write
+/// the same document the script runs in. Every rule above is restated here in
+/// JavaScript - install once, a pane that cannot scroll does not drag the other,
+/// and a scroll this module caused is swallowed rather than answered - so the
+/// two hosts differ in language and not in behaviour.
+///
+/// It also installs the caret reporter for the source pane. "Sync to cursor"
+/// ([`scroll_to_block`]) needs `selectionStart`, and a desktop read is
+/// asynchronous while that button is a click handler that has to answer at
+/// once; the reporter pushes the value instead. It belongs here because this is
+/// the call that runs exactly when the split view exists, which is the only
+/// place that button is rendered.
 #[cfg(not(all(feature = "app", target_arch = "wasm32")))]
-pub fn link(_source_id: &str, _preview_id: &str) {}
+pub fn link(source_id: &str, preview_id: &str) {
+    crate::platform::dom::eval(&format!(
+        "const source = document.getElementById({source}); \
+         const preview = document.getElementById({preview}); \
+         if (!source || !preview) return; \
+         if (source.dataset.scrollSynced) return; \
+         source.dataset.scrollSynced = '1'; \
+         preview.dataset.scrollSynced = '1'; \
+         const state = {{ echo: false }}; \
+         const extent = (el) => {{ const e = el.scrollHeight - el.clientHeight; \
+            return e > 0 ? e : null; }}; \
+         const wire = (from, to) => from.addEventListener('scroll', () => {{ \
+            if (window.{PROGRAMMATIC_FLAG}) {{ window.{PROGRAMMATIC_FLAG} = false; return; }} \
+            if (state.echo) {{ state.echo = false; return; }} \
+            const span = extent(from); if (span === null) return; \
+            const reach = extent(to); if (reach === null) return; \
+            state.echo = true; \
+            to.scrollTop = Math.round(reach * Math.min(Math.max(from.scrollTop / span, 0), 1)); \
+         }}); \
+         wire(source, preview); \
+         wire(preview, source);",
+        source = crate::platform::dom::js_string(source_id),
+        preview = crate::platform::dom::js_string(preview_id),
+    ));
+    crate::platform::dom::watch_textarea_selection(source_id);
+}
 
 #[cfg(test)]
 mod tests {
@@ -365,6 +439,92 @@ mod tests {
         assert!(
             code.contains("let Some(frac) = scrolled_fraction(&from) else {"),
             "and a None short-circuits instead of scrolling"
+        );
+    }
+
+    /// MAPPS-699: the desktop half, pinned in source the way
+    /// `platform::dom::desktop_wiring_tests` pins the rest of the channel.
+    ///
+    /// It needs a webview to evaluate JavaScript in, so no host test can drive
+    /// it. What can regress is the wiring, and both of these went missing once
+    /// already as stubs that answered "nothing to do" and said nothing about it.
+    #[test]
+    fn the_desktop_wires_both_panes_inside_the_webview() {
+        let code = code_only();
+        assert_eq!(
+            code.matches("pub fn link(source_id: &str, preview_id: &str)")
+                .count(),
+            2,
+            "one implementation per target, and neither is an empty body"
+        );
+        assert!(
+            code.contains("wire(source, preview);") && code.contains("wire(preview, source);"),
+            "the injected script attaches a listener in each direction"
+        );
+        assert!(
+            code.contains("source.dataset.scrollSynced = '1';"),
+            "and marks the pair, so a re-running effect does not double every \
+             scroll event"
+        );
+        assert!(
+            code.contains("const span = extent(from); if (span === null) return;"),
+            "a pane that cannot scroll still does not drag the other"
+        );
+    }
+
+    /// Both guards survive the translation, or the desktop gets exactly the
+    /// bugs the browser implementation was written to avoid.
+    #[test]
+    fn the_desktop_script_keeps_both_guards() {
+        let code = code_only();
+        let programmatic = code
+            .find("if (window.{PROGRAMMATIC_FLAG})")
+            .expect("the script takes the programmatic flag");
+        let echo = code
+            .find("if (state.echo)")
+            .expect("and still has the echo guard");
+        assert!(
+            programmatic < echo,
+            "before the echo guard, not instead of it"
+        );
+        assert!(
+            code.contains("state.echo = true;"),
+            "the echo flag is raised immediately before driving the other pane"
+        );
+        assert!(
+            code.contains("window.{PROGRAMMATIC_FLAG} = true;"),
+            "and the programmatic flag immediately before the sync-to-cursor jump"
+        );
+        assert!(
+            code.contains("if (top === boxEl.scrollTop) return;"),
+            "a write that changes nothing fires no event, so it must not raise \
+             the flag either"
+        );
+    }
+
+    /// MAPPS-699: the desktop jump reads the caret, or it lands on block zero.
+    ///
+    /// `platform::dom::textarea_selection` answers from the webview only for an
+    /// element something is watching, and this is what puts the source pane on
+    /// that list. Without it the index the caller computes is always the one
+    /// for offset zero and the button scrolls the preview to the top.
+    #[test]
+    fn the_desktop_jump_has_a_caret_to_work_from() {
+        let code = code_only();
+        assert_eq!(
+            code.matches("pub fn scroll_to_block(preview_id: &str, index: usize, expected: usize)")
+                .count(),
+            2,
+            "one implementation per target, and neither ignores its arguments"
+        );
+        assert!(
+            code.contains("crate::platform::dom::watch_textarea_selection(source_id);"),
+            "linking the panes installs the caret reporter for the source pane"
+        );
+        assert!(
+            code.contains("if (rendered.childElementCount !== {expected}) return;"),
+            "and the desktop checks the block counts agree, exactly as the \
+             browser does"
         );
     }
 }

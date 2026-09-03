@@ -184,12 +184,13 @@ These behave differently on the desktop on purpose, not by omission:
 
 ## Reading from the webview
 
-Writes into the document are one-way `eval` calls and need nothing back. Four
+Writes into the document are one-way `eval` calls and need nothing back. Six
 behaviours needed something back, and each of them was inert here until
-MAPPS-511: sidebar scroll memory, modal focus return, markdown task-list
-toggling, and live OS theme switching.
+MAPPS-511 (sidebar scroll memory, modal focus return, markdown task-list
+toggling, live OS theme switching) and MAPPS-699 (pasting an image into an
+editor, and the markdown editor's linked scroll panes).
 
-`dioxus::document::eval` is bidirectional, so all four go through the same
+`dioxus::document::eval` is bidirectional, so they all go through the same
 channel rather than one mechanism each (`src/platform/dom.rs`):
 
 - **A value out of the webview** is an `async` read. `scroll_top_async` returns
@@ -198,8 +199,14 @@ channel rather than one mechanism each (`src/platform/dom.rs`):
 - **An event into Rust** is the injected script attaching the listener and
   `dioxus.send`ing each occurrence, with a spawned task looping on `recv()`.
   That carries the markdown checkbox clicks (they live inside
-  `dangerous_inner_html`, so they cannot carry a Dioxus handler) and the OS
-  light/dark switch.
+  `dangerous_inner_html`, so they cannot carry a Dioxus handler), the OS
+  light/dark switch, and each image pasted into an editor
+  (`src/platform/clipboard.rs`, base64 over the channel because a JSON number
+  per byte costs about four times the transfer for a screenshot).
+- **Neither** is needed when the whole exchange fits in the webview.
+  `scroll_sync::link` is one injected script: both scroll listeners, the
+  proportional mapping and the echo guard read and write the same document the
+  script runs in, so nothing comes back to Rust at all.
 
 Focus is the exception: nothing is read. An async read of
 `document.activeElement` would resolve after the dialog had already taken
@@ -213,13 +220,12 @@ source), so a Linux window would go on ignoring theme changes; the media query
 is also exactly what the browser build listens to. The window's tao theme is
 still what resolves `Theme::System` at boot, until the listener reports.
 
-## Known gaps
-
-Both need the same channel described above, and both are MAPPS-699. Their
-comments in `src/` still name MAPPS-511 as the reason they are inert, which
-that issue corrects.
-
-- Pasting an image into the KB body does nothing
-  (`src/platform/clipboard.rs`); pasting text works.
-- The markdown editor's two panes scroll independently
-  (`src/platform/scroll_sync.rs`).
+The caret is the other push (MAPPS-699). A `<textarea>`'s `selectionStart` can
+only be read asynchronously here, and every caller of
+`dom::textarea_selection` is a click handler that has to answer at once, so
+`dom::watch_textarea_selection` has the script post the selection on every
+event that can move it and the read answers from the last value reported.
+`scroll_sync::link` installs it for the split view's source pane, which is what
+lets "Sync to cursor" land on the block the caret is in rather than the first
+one. An element nobody watches still answers "the caret is at the end", so a
+toolbar transform outside the split view appends as it always did.
