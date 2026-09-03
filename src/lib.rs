@@ -1350,13 +1350,11 @@ fn KBArticleList(q: String, tag: String, category: String) -> Element {
     }
 }
 
+// MAPPS-652: no `max-w-7xl mx-auto` wrapper, deliberately, and the same
+// reasoning as `KBArticleEdit` below. See the comment there.
 #[component]
 fn KBArticleNew() -> Element {
-    rsx! {
-        div { class: "max-w-7xl mx-auto",
-            knowledge_base::KBArticleNewPage {}
-        }
-    }
+    rsx! { knowledge_base::KBArticleNewPage {} }
 }
 
 // MAPPS-624: no `max-w-7xl mx-auto` wrapper, deliberately. The reading view
@@ -1368,13 +1366,17 @@ fn KBArticleDetail(id: String) -> Element {
     rsx! { knowledge_base::KBArticleDetailPage { id } }
 }
 
+// MAPPS-652: no `max-w-7xl mx-auto` wrapper, deliberately. `mx-auto` splits
+// whatever `main` has over 1280px into two equal margins, so the editor's
+// edges were a function of the SHELL's width: collapsing the sidebar handed
+// back 12rem and the centred column just slid 6rem right instead of growing.
+// Without the cap the panel's edges are `main`'s own content box, which starts
+// where the sidebar ends, so collapsing the rail widens the writing area by
+// exactly what it gave back. `main` keeps `px-4 sm:px-6 lg:px-8`, which is the
+// only inset left.
 #[component]
 fn KBArticleEdit(id: String) -> Element {
-    rsx! {
-        div { class: "max-w-7xl mx-auto",
-            knowledge_base::KBArticleEditPage { id }
-        }
-    }
+    rsx! { knowledge_base::KBArticleEditPage { id } }
 }
 
 #[component]
@@ -2060,6 +2062,134 @@ mod admin_route_role_gates {
                 ROLE_REFUSALS.iter().any(|pat| source.contains(pat)),
                 "{route} renders {path}, which reads the user's role but never refuses on it. \
                  Return the access-denied view for a non-admin, as src/pages/audit_log.rs does."
+            );
+        }
+    }
+}
+
+/// MAPPS-652: the editing surface at a wide, a medium and a narrow viewport.
+///
+/// There is no browser in this suite, so each tier is asserted as the class
+/// ladder that decides the layout at that width, in the same source-scan shape
+/// `admin_route_role_gates` above uses. The layout spans four files - the shell
+/// supplies the padding, `src/lib.rs` decides the width, the page states the
+/// panel height and `MarkdownEditor` lays the panes out - and a change to any
+/// one of them can undo the other three, which is why they are checked
+/// together rather than one test per file.
+///
+/// `scripts/check-page-width.sh` is the other half: it fails if either editing
+/// route takes the `max-w-7xl mx-auto` cap back, which is the regression these
+/// tests would otherwise only catch through the `no cap` assertion below.
+#[cfg(test)]
+mod editing_surface_width {
+    const LIB: &str = include_str!("lib.rs");
+    const LAYOUT: &str = include_str!("components/layout.rs");
+    const KB: &str = include_str!("pages/knowledge_base.rs");
+    const EDITOR: &str = include_str!("components/markdown_editor.rs");
+    const TOOLBAR: &str = include_str!("components/markdown_toolbar.rs");
+
+    /// The routes whose whole job is editing a document.
+    const EDITING_ROUTES: &[&str] = &["KBArticleNew", "KBArticleEdit"];
+
+    /// A route component's body, from its signature to the closing brace. The
+    /// comments ABOVE it are excluded on purpose: they name the classes the
+    /// route does not carry, and reading those as the code would pass a route
+    /// that never dropped the cap.
+    fn route_body(name: &str) -> &'static str {
+        let head = format!("\nfn {name}(");
+        let start = LIB
+            .find(&head)
+            .unwrap_or_else(|| panic!("{name} is a route component in src/lib.rs"))
+            + 1;
+        let rest = &LIB[start..];
+        let end = rest
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("{name}'s component never closes"));
+        &rest[..end]
+    }
+
+    /// Wide: the editor gets the window, not a 1280px column centred in it.
+    ///
+    /// `max-w-7xl mx-auto` is what put dead margins either side of the writing
+    /// area on a monitor with room for twice that.
+    #[test]
+    fn wide_gives_the_editor_the_window_rather_than_a_centred_column() {
+        for name in EDITING_ROUTES {
+            let body = route_body(name);
+            assert!(
+                !body.contains("max-w-"),
+                "{name} is an editing surface and must not cap its width: {body}"
+            );
+            assert!(
+                !body.contains("mx-auto"),
+                "{name} must not centre itself either: auto margins are what turn \
+                 spare width into dead space instead of writing area: {body}"
+            );
+        }
+        assert!(
+            EDITOR.contains("grid gap-4 grid-cols-1 grid-rows-2 lg:grid-cols-2 lg:grid-rows-1"),
+            "and at `lg` the spare width buys a second pane side by side, which is \
+             the whole reason Split is worth having on a wide screen"
+        );
+    }
+
+    /// Medium: the ladder steps down rather than switching off. The shell's
+    /// padding tightens and the metadata row is still multi-column.
+    #[test]
+    fn medium_steps_the_padding_down_and_keeps_the_metadata_row_in_columns() {
+        assert!(
+            LAYOUT.contains("px-4 sm:px-6 lg:px-8"),
+            "`main` owns the only inset the editor has left, and it is a ladder: \
+             a single fixed value here is the dead margin coming back"
+        );
+        assert!(
+            KB.contains(r#"div { class: "grid grid-cols-1 gap-6 sm:grid-cols-3","#),
+            "Category, Visibility and Status stay three-up from `sm`, so the \
+             details block does not push the body down a screen at tablet width"
+        );
+        assert!(
+            KB.contains(r#"panel_class: "h-[calc(100vh-16rem)] min-h-[26rem]".to_string()"#),
+            "and the panel's height is still the window's minus the chrome beside \
+             it, with a floor for a short one"
+        );
+    }
+
+    /// Narrow: everything collapses to one column and nothing is unreachable.
+    #[test]
+    fn narrow_stacks_into_one_column_and_the_toolbar_wraps() {
+        assert!(
+            EDITOR.contains("grid-cols-1 grid-rows-2 lg:"),
+            "below `lg` Split stacks the panes instead of halving a phone's width"
+        );
+        assert!(
+            KB.contains("grid grid-cols-1 gap-6 sm:grid-cols-3"),
+            "and the metadata row is one column before `sm`"
+        );
+        assert!(
+            TOOLBAR.contains("flex flex-wrap items-center"),
+            "the toolbar wraps rather than scrolling its later groups off the edge"
+        );
+    }
+
+    /// AC3/AC4. The rail and the editor are flex siblings, so the 12rem a
+    /// collapse gives back lands in `main`. With `mx-auto` still on the page it
+    /// landed in the two margins instead, and collapsing the sidebar moved the
+    /// editor sideways without widening it by a pixel.
+    #[test]
+    fn collapsing_the_sidebar_widens_the_editor_instead_of_its_margins() {
+        assert!(
+            LAYOUT
+                .contains(r#"let desktop_width = if collapsed { "lg:w-16" } else { "lg:w-64" };"#),
+            "the rail's width is the only thing the collapse changes"
+        );
+        assert!(
+            LAYOUT.contains(r#"main { class: "flex-1 overflow-y-auto overscroll-contain py-6"#),
+            "and `main` takes whatever it releases"
+        );
+        for name in EDITING_ROUTES {
+            assert!(
+                !route_body(name).contains("mx-auto"),
+                "{name} would hand it straight back as margin"
             );
         }
     }
