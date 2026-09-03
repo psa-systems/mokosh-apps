@@ -4705,6 +4705,12 @@ fn CompanyInvoicesCard(
         "/invoices/new?company_id={}",
         urlencoding_minimal(&company_id)
     );
+    // MAPPS-639: the company's account over a period, seeded with this
+    // company the same way View All is.
+    let statement_href = format!(
+        "/statements?company_id={}",
+        urlencoding_minimal(&company_id)
+    );
     rsx! {
         CollapsibleCard {
             title: "Invoices",
@@ -4714,6 +4720,11 @@ fn CompanyInvoicesCard(
                     href: "{new_invoice_href}",
                     class: "text-sm text-accent hover:opacity-90",
                     "New Invoice"
+                }
+                a {
+                    href: "{statement_href}",
+                    class: "text-sm text-accent hover:opacity-90",
+                    "Statement"
                 }
                 a {
                     href: "{view_all_href}",

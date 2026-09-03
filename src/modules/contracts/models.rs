@@ -137,6 +137,10 @@ pub struct ContractItemResponse {
     pub max_rollover_hours: Option<Decimal>,
     #[serde(default)]
     pub sort_order: i32,
+    /// MAPPS-640: the catalog product this item sells, when it names one. The
+    /// price stays on the item (`unit_price`), never read back through this.
+    #[serde(default)]
+    pub product_id: Option<Uuid>,
 }
 
 /// Upsert contract line-item request. Mirrors `UpsertContractItemRequest`.
@@ -159,6 +163,9 @@ pub struct UpsertContractItemRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_rollover_hours: Option<Decimal>,
     pub sort_order: i32,
+    /// MAPPS-640: see `ContractItemResponse::product_id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub product_id: Option<Uuid>,
 }
 
 // ============================================================================

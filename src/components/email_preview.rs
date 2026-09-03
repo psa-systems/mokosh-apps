@@ -66,6 +66,36 @@ pub fn preview_body(body_text: &str, body_html: Option<&str>) -> PreviewBody {
     }
 }
 
+/// MAPPS-642: a message the SERVER composes rather than a notification rule,
+/// described by the page that knows its shape.
+///
+/// `POST /notifications/preview` renders rules, so for a trigger like the
+/// invoice pay-now mail (built in `billing::service`, PMS-711) it answers
+/// with nothing, and the modal used to say "No email rule matches this
+/// action, so nothing will be sent" over that. The first half was true of
+/// rules and the second half was false of the send, and an operator read it
+/// as "email is not configured". A page that mirrors the server's template
+/// passes one of these instead, with `blockers` naming every condition under
+/// which the server would send nothing, so the modal can say what Send does
+/// and why it might do nothing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BuiltinEmail {
+    /// Who receives it, as a sentence or an address.
+    pub recipient: String,
+    pub subject: String,
+    /// Plain text, with `{{key}}` for a value the server fills in when it
+    /// sends (a minted link), listed in `unresolved`.
+    pub body: String,
+    pub unresolved: Vec<String>,
+    /// Why Send would email nobody, each a full sentence. Empty when every
+    /// condition the server checks is met as far as the page can tell.
+    pub blockers: Vec<String>,
+    /// What the message will lack without stopping it (MAPPS-663): a pay
+    /// link with no gateway connected. Rendered as information, not a
+    /// warning, because Send still mails.
+    pub notes: Vec<String>,
+}
+
 /// "Preview email" trigger plus its modal.
 ///
 /// Render it beside the send button, not in place of it.
@@ -81,6 +111,10 @@ pub fn EmailPreview(
     /// whose message does not come from a notification rule at all.
     #[props(default)]
     empty_note: String,
+    /// MAPPS-642: a server-built message to show instead of asking the rules
+    /// endpoint, which cannot render it. When `Some`, no request is made.
+    #[props(default)]
+    builtin: Option<BuiltinEmail>,
 ) -> Element {
     let mut open = use_signal(|| false);
     let mut loading = use_signal(|| false);
@@ -88,13 +122,17 @@ pub fn EmailPreview(
     let mut entries = use_signal(Vec::<EmailPreviewEntry>::new);
 
     let request = serde_json::json!({ "event_type": event_type, "context": context });
+    let is_builtin = builtin.is_some();
 
     let on_open = move |_| {
         let request = request.clone();
         open.set(true);
-        loading.set(true);
         error.set(String::new());
         entries.set(Vec::new());
+        if is_builtin {
+            return;
+        }
+        loading.set(true);
         spawn(async move {
             match crate::hooks::fetch::api::post_authed_typed::<Vec<EmailPreviewEntry>, _>(
                 "/notifications/preview",
@@ -138,7 +176,43 @@ pub fn EmailPreview(
             },
 
             div { class: "space-y-4",
-                if loading() {
+                if let Some(mail) = builtin.as_ref() {
+                    if !mail.blockers.is_empty() {
+                        crate::components::StatusBanner {
+                            tone: crate::components::BannerTone::Warning,
+                            p { class: "font-medium", "Send will be refused as things stand." }
+                            ul { class: "mt-1 list-disc pl-5 space-y-1",
+                                for reason in mail.blockers.iter() {
+                                    li { key: "{reason}", "{reason}" }
+                                }
+                            }
+                        }
+                    }
+                    if !mail.notes.is_empty() {
+                        crate::components::StatusBanner {
+                            tone: crate::components::BannerTone::Info,
+                            ul { class: "list-disc pl-5 space-y-1",
+                                for note in mail.notes.iter() {
+                                    li { key: "{note}", "{note}" }
+                                }
+                            }
+                        }
+                    }
+                    p { class: "text-sm text-muted",
+                        "This message is built into the server rather than by a notification rule, so it cannot be edited under Settings. What follows is the text the server sends, with the values it fills in at send time marked."
+                    }
+                    EmailPreviewEntryView {
+                        entry: EmailPreviewEntry {
+                            rule_name: "Built into the server".to_string(),
+                            channel: "email".to_string(),
+                            recipients: vec![mail.recipient.clone()],
+                            subject: Some(mail.subject.clone()),
+                            body_text: mail.body.clone(),
+                            body_html: None,
+                            unresolved: mail.unresolved.clone(),
+                        },
+                    }
+                } else if loading() {
                     p { class: "text-sm text-subtle", "Rendering what the recipient will see." }
                 } else if !error().is_empty() {
                     ErrorBanner { "Could not render the preview: {error()}" }

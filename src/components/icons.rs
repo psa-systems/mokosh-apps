@@ -452,6 +452,69 @@ pub fn TagIcon(#[props(default)] size: IconSize, #[props(default)] class: String
 /// Primary path of [`CreditCardIcon`] (Heroicons `credit-card`).
 pub const CREDIT_CARD_PATH: &str = "M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 0 0 2.25-2.25V6.75A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25v10.5A2.25 2.25 0 0 0 4.5 19.5Z";
 
+/// Primary path of [`DocumentTextIcon`] (Heroicons `document-text`).
+pub const DOCUMENT_TEXT_PATH: &str = "M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z";
+
+/// A page with lines of text. Used for the Statements nav item (MAPPS-639),
+/// distinct from Quotes (`DocumentIcon`) and Timesheet Approvals
+/// (`DocumentCheckIcon`), because every sidebar row carries its own glyph.
+#[component]
+pub fn DocumentTextIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: DOCUMENT_TEXT_PATH,
+            }
+        }
+    }
+}
+
+/// Primary path of [`ReceiptRefundIcon`] (Heroicons `receipt-refund`).
+pub const RECEIPT_REFUND_PATH: &str = "M8.25 9.75h4.875a2.625 2.625 0 0 1 0 5.25H12M8.25 9.75 10.5 7.5M8.25 9.75 10.5 12m9-7.243V21.75l-3.75-1.5-3.75 1.5-3.75-1.5-3.75 1.5V4.757c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0c1.1.128 1.907 1.077 1.907 2.185Z";
+
+/// A receipt with a return arrow. Used for the Credit Notes nav item
+/// (MAPPS-638) so it is distinct from Invoices (`CurrencyIcon`), Payments
+/// (`CreditCardIcon`) and the Audit Log (`ClipboardDocumentListIcon`): every
+/// sidebar row carries its own glyph, and a test says so.
+#[component]
+pub fn ReceiptRefundIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: RECEIPT_REFUND_PATH,
+            }
+        }
+    }
+}
+
 /// Credit card. Used for the Payments nav item so it is distinct from
 /// Invoices (`CurrencyIcon`).
 #[component]
