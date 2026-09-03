@@ -1860,7 +1860,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     // (the child-list resources below are secondary and keep degrading to
     // their own empty/error cards). Subscribe to reachability so it
     // auto-refetches on reconnect.
-    let company_resource = use_resource(move || {
+    let mut company_resource = use_resource(move || {
         let id = company_id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -1872,7 +1872,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
             .ok()
         }
     });
-    let contacts_resource = use_resource(move || {
+    let mut contacts_resource = use_resource(move || {
         let id = company_id_for_contacts.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -2033,6 +2033,22 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     let mut delete_error = use_signal(String::new);
     // MAPPS-577: the archive alternative offered when a delete is refused.
     let mut archiving = use_signal(|| false);
+    // MAPPS-644: the billing contact, read on its own. The Contacts card
+    // preview is capped, so the billing contact need not be in it. The
+    // company is read INSIDE the closure so the fetch re-runs once the
+    // company has loaded and again after a change.
+    let billing_contact_resource = use_resource(move || async move {
+        let id = company_resource
+            .read_unchecked()
+            .clone()
+            .flatten()
+            .and_then(|c| c.default_billing_contact_id)?;
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<RemoteContact>(&format!("/contacts/contacts/{id}"))
+            .await
+            .ok()
+    });
+    let mut show_set_billing = use_signal(|| false);
     // MAPPS-357: gate the destructive Delete while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
     let on_confirm_delete = move |_: ()| {
@@ -2338,6 +2354,8 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 let phone = company.phone.clone();
                 let industry = company.industry.clone();
                 let am_name = company.account_manager_name.clone();
+                // MAPPS-644: the billing contact's row, once its read lands.
+                let billing_contact_row = billing_contact_resource.read_unchecked().clone().flatten();
                 let notes = company.notes.clone().unwrap_or_default();
                 let open_tickets = company.open_ticket_count.unwrap_or(0).max(0);
                 let contact_count = company.contact_count.unwrap_or(0).max(0);
@@ -2349,7 +2367,25 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                             CompanyContactsCard {
                                 company_id: company_id_str.clone(),
                                 company_name: company.name.clone(),
+                                billing_contact_id: company.default_billing_contact_id,
                                 contacts_resource,
+                            }
+                            // MAPPS-644: set or change the billing contact.
+                            if show_set_billing() {
+                                SetBillingContactModal {
+                                    company_id: company_id_str.clone(),
+                                    current_id: company.default_billing_contact_id.map(|c| c.to_string()),
+                                    current_name: billing_contact_row
+                                        .as_ref()
+                                        .map(|r| format!("{} {}", r.first_name, r.last_name).trim().to_string())
+                                        .unwrap_or_default(),
+                                    onclose: move |_| show_set_billing.set(false),
+                                    onsaved: move |_| {
+                                        show_set_billing.set(false);
+                                        company_resource.restart();
+                                        contacts_resource.restart();
+                                    },
+                                }
                             }
                             // Sites
                             CompanySitesCard {
@@ -2474,6 +2510,62 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                             }
                                         }
                                     }
+                                    // MAPPS-644: who invoices go to. Always
+                                    // rendered, because "not set" is the state
+                                    // that has to be visible: a send is refused
+                                    // until there is one (PMS-992).
+                                    div { class: "flex justify-between gap-4",
+                                        dt { class: "text-sm text-muted shrink-0", "Billing Contact" }
+                                        dd { class: "text-sm text-right min-w-0",
+                                            match (company.default_billing_contact_id, billing_contact_row.clone()) {
+                                                (None, _) => rsx! {
+                                                    p { class: "text-amber-700 dark:text-amber-300", "Not set" }
+                                                    p { class: "text-xs text-muted", "Invoices cannot be sent until one is set." }
+                                                    Button {
+                                                        variant: ButtonVariant::Link,
+                                                        size: ButtonSize::Small,
+                                                        onclick: move |_| show_set_billing.set(true),
+                                                        "Set billing contact"
+                                                    }
+                                                },
+                                                (Some(id), Some(row)) => {
+                                                    let name = format!("{} {}", row.first_name, row.last_name).trim().to_string();
+                                                    let email = row.email.clone().unwrap_or_default();
+                                                    rsx! {
+                                                        Link {
+                                                            to: Route::ContactDetail { id: id.to_string() },
+                                                            class: "text-accent hover:opacity-90",
+                                                            "{name}"
+                                                        }
+                                                        if email.is_empty() {
+                                                            p { class: "text-xs text-amber-700 dark:text-amber-300", "No email address on file, so invoices cannot be sent." }
+                                                        } else {
+                                                            p { class: "text-xs text-muted break-all", "{email}" }
+                                                        }
+                                                        Button {
+                                                            variant: ButtonVariant::Link,
+                                                            size: ButtonSize::Small,
+                                                            onclick: move |_| show_set_billing.set(true),
+                                                            "Change"
+                                                        }
+                                                    }
+                                                }
+                                                (Some(id), None) => rsx! {
+                                                    Link {
+                                                        to: Route::ContactDetail { id: id.to_string() },
+                                                        class: "text-accent hover:opacity-90",
+                                                        "View contact"
+                                                    }
+                                                    Button {
+                                                        variant: ButtonVariant::Link,
+                                                        size: ButtonSize::Small,
+                                                        onclick: move |_| show_set_billing.set(true),
+                                                        "Change"
+                                                    }
+                                                },
+                                            }
+                                        }
+                                    }
                                     if !address_parts.is_empty() {
                                         div {
                                             dt { class: "text-sm text-muted mb-1", "Address" }
@@ -2532,6 +2624,10 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
 #[derive(Clone, Debug, Deserialize)]
 struct CompanyDetail {
     name: String,
+    /// MAPPS-644: who invoices are emailed to when the invoice names no
+    /// contact of its own (PMS-992).
+    #[serde(default)]
+    default_billing_contact_id: Option<uuid::Uuid>,
     #[serde(default)]
     company_type: String,
     #[serde(default)]
@@ -2741,6 +2837,8 @@ fn RowActions(
 fn CompanyContactsCard(
     company_id: String,
     company_name: String,
+    /// MAPPS-644: the company's billing contact, marked in its row.
+    billing_contact_id: Option<uuid::Uuid>,
     mut contacts_resource: Resource<Option<PaginatedContacts>>,
 ) -> Element {
     let snap = contacts_resource.read_unchecked();
@@ -2814,6 +2912,7 @@ fn CompanyContactsCard(
                                         let role = humanize_contact_type(
                                             contact.contact_type.as_deref().unwrap_or_default(),
                                         );
+                                        let is_billing = billing_contact_id == Some(contact.id);
                                         rsx! {
                                             TableRow { key: "{id}", class: "group",
                                                 TableCell {
@@ -2821,6 +2920,10 @@ fn CompanyContactsCard(
                                                         to: Route::ContactDetail { id: id.clone() },
                                                         class: "font-medium text-accent hover:opacity-90",
                                                         "{name}"
+                                                    }
+                                                    // MAPPS-644: where this company's invoices go.
+                                                    if is_billing {
+                                                        Badge { variant: BadgeVariant::Blue, class: "ml-2", "Billing" }
                                                     }
                                                 }
                                                 TableCell { "{email}" }
@@ -2863,6 +2966,123 @@ fn CompanyContactsCard(
 /// select an existing contact (attaching it to this company via a PUT that
 /// sets `company_id`), or fall through to the full new-contact form with
 /// the company pre-filled.
+/// MAPPS-644: set or change the company's billing contact, the fallback
+/// recipient for every invoice that names no contact of its own (PMS-992).
+///
+/// Scoped to the company's contacts, because a billing contact at another
+/// company would be a foreign address on this company's invoices. No clear:
+/// the server leaves an absent value unchanged, and "no billing contact" is
+/// the state this page exists to make visible rather than easy to return to.
+#[component]
+fn SetBillingContactModal(
+    company_id: String,
+    current_id: Option<String>,
+    current_name: String,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+) -> Element {
+    let mut selected_id = use_signal(|| current_id.clone().unwrap_or_default());
+    let mut selected_name = use_signal(|| current_name.clone());
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+    let can_mutate = crate::hooks::use_can_mutate();
+
+    let picker_selected_id: Option<String> =
+        if uuid::Uuid::parse_str(selected_id.read().as_str()).is_ok() {
+            Some(selected_id.read().clone())
+        } else {
+            None
+        };
+    let unchanged = current_id.as_deref() == Some(selected_id.read().as_str());
+
+    let company_id_for_save = company_id.clone();
+    let on_save = move |_| {
+        let Ok(contact_uuid) = uuid::Uuid::parse_str(selected_id.read().as_str()) else {
+            error.set("Pick a contact.".to_string());
+            return;
+        };
+        if saving() {
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let path = format!("/contacts/companies/{company_id_for_save}");
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                // `UpdateCompanyRequest` is all-optional; a one-field PUT
+                // writes only this column.
+                let body = serde_json::json!({ "default_billing_contact_id": contact_uuid });
+                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                    .await
+                {
+                    Ok(_) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not set the billing contact: {err}")),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = (path, contact_uuid);
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        Modal {
+            open: true,
+            title: "Billing contact".to_string(),
+            onclose: move |_| {
+                if !saving() {
+                    onclose.call(());
+                }
+            },
+            footer: rsx! {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| {
+                        if !saving() {
+                            onclose.call(());
+                        }
+                    },
+                    "Cancel"
+                }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    loading: saving(),
+                    disabled: !can_mutate || unchanged || picker_selected_id.is_none(),
+                    title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
+                    onclick: on_save,
+                    "Save"
+                }
+            },
+            div { class: "space-y-4",
+                if !error.read().is_empty() {
+                    p { class: "text-sm text-red-600 dark:text-red-400", "{error}" }
+                }
+                crate::components::ContactPicker {
+                    value: selected_name.read().clone(),
+                    selected_id: picker_selected_id,
+                    label: "Billing contact".to_string(),
+                    required: true,
+                    company_filter: Some(company_id.clone()),
+                    onselect: move |(id, name): (String, String)| {
+                        selected_id.set(id);
+                        selected_name.set(name);
+                    },
+                    onclear: move |_| {
+                        selected_id.set(String::new());
+                        selected_name.set(String::new());
+                    },
+                }
+                p { class: "text-xs text-muted",
+                    "Invoices for this company are emailed to this contact unless the invoice names its own. Only contacts at this company are offered, and the contact needs an email address for a send to go through."
+                }
+            }
+        }
+    }
+}
+
 #[component]
 fn AddContactModal(
     company_id: String,

@@ -818,9 +818,16 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     // MAPPS-642: the two conditions of the pay-now email the page can check,
     // so Preview email can say whether Send will mail anyone. Both hooks sit
     // before the early returns below (MAPPS-602).
-    let contact_for_preview = invoice.as_ref().and_then(|i| i.billing_contact_id);
+    // MAPPS-644: the invoice is read INSIDE the closure. Capturing the id
+    // outside froze the value from the first render, before the invoice had
+    // loaded, so the read never ran and the preview always reported the
+    // contact as having no address.
     let contact_resource = use_resource(move || async move {
-        let id = contact_for_preview?;
+        let id = invoice_resource
+            .read_unchecked()
+            .clone()
+            .flatten()
+            .and_then(|i| i.billing_contact_id)?;
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_authed::<RemoteContactEmail>(&format!(
             "/contacts/contacts/{id}"
