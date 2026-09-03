@@ -665,7 +665,16 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
             // MAPPS-357: subscribe to reachability so the invoice auto-refetches
             // the instant the server comes back (paired with the recovery poll).
             let _reachable = crate::hooks::use_server_reachable();
-            crate::hooks::fetch::api::get_authed::<InvoiceDetail>(&format!("/invoices/{id}"))
+            // MAPPS-665: pair with the invoice-list fetch at line 329
+            // which already uses `get_authed_any` (contact-preferred
+            // bearer). The detail fetch had stayed on the staff-only
+            // `get_authed`, so a portal contact clicking through from
+            // their list got a bearerless 401 and the "Could not load
+            // invoice" card. The server's dual-plane get_invoice at
+            // src/modules/billing/routes.rs:410 already gates the
+            // contact branch on `invoices:read` + Company-scope 404,
+            // so contact-first bearer selection is safe.
+            crate::hooks::fetch::api::get_authed_any::<InvoiceDetail>(&format!("/invoices/{id}"))
                 .await
                 .ok()
         }
