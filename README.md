@@ -65,7 +65,7 @@ just dev              # run the dev server in Docker (see above)
 just css-build        # one-shot Tailwind build
 just css-watch        # Tailwind watch mode
 just check            # check-web, check-desktop, check-clippy, check-fmt, and the guard scripts
-just check-web        # cargo check --target wasm32-unknown-unknown
+just check-web        # cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings
 just check-desktop    # cargo check for the native desktop build
 just check-clippy     # cargo clippy --all-targets
 just check-fmt        # cargo fmt --all --check

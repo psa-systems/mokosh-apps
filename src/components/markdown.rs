@@ -173,7 +173,6 @@ fn install_click_listener(dom_id: String, on_toggle: Option<EventHandler<usize>>
                 .and_then(|s| s.parse::<usize>().ok())
             {
                 on_toggle.call(idx);
-                return;
             }
         }
     }) as Box<dyn FnMut(web_sys::Event)>);

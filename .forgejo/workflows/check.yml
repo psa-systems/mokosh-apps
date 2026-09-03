@@ -303,7 +303,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Check web/WASM build
-        run: cargo check --target wasm32-unknown-unknown
+        run: cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings
 
       # MAPPS-534: CI had never compiled this feature combination. The steps
       # above cover wasm and the host default, so a desktop-only break - a

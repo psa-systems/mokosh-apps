@@ -54,10 +54,12 @@ default:
 [group: 'check']
 check: check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging
 
-# Check web/WASM compilation
+# MAPPS-682: clippy, not check, and `-D warnings`, so the browser target fails
+# on a finding instead of printing it. Mirrors check-clippy and check.yml.
+[doc("Lint the web/WASM build, failing on any warning (MAPPS-682).")]
 [group: 'check']
 check-web:
-    cargo check --target wasm32-unknown-unknown
+    cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings
 
 # MAPPS-504: check the native desktop build. `--no-default-features` drops the
 # `web` renderer so dioxus links the desktop renderer alone; `desktop` pulls in
