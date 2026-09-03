@@ -289,8 +289,8 @@ pub fn SentRequestLinksPanel(reload: ReadSignal<u32>) -> Element {
 /// `/contacts/new` reads its prefill from the query string rather than from a
 /// typed route param (`contacts.rs::read_company_prefill_from_url`), so the
 /// pair of keys below is the contract: the new contact lands on this client and
-/// its breadcrumb leads back to the company. A plain anchor, matching the other
-/// company-scoped links in this file.
+/// its breadcrumb leads back to the company. MAPPS-696: routed through `Link`,
+/// because a raw anchor to an in-app path is inert in the desktop webview.
 fn add_contact_href(company_id: &str, company_name: &str) -> String {
     format!(
         "/contacts/new?company_id={}&company_name={}",
@@ -616,8 +616,8 @@ pub(crate) fn SendRequestLinkModal(
                 if no_contacts {
                     p { class: "-mt-2 text-xs text-muted",
                         "{company_name} has no contact with an email address yet. "
-                        a {
-                            href: "{add_contact_href}",
+                        Link {
+                            to: add_contact_href.clone(),
                             class: "underline text-accent hover:opacity-90",
                             "Add one"
                         }
