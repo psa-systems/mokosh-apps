@@ -113,7 +113,9 @@ pub struct ProductPickerProps {
 pub fn ProductPicker(props: ProductPickerProps) -> Element {
     let mut query = use_signal(String::new);
     // MAPPS-503: open / highlight state and the shared keyboard contract.
-    let mut nav = use_dropdown_nav("product-picker");
+    // MAPPS-653: the field has to end up holding a product, so Enter takes the
+    // first match when the user has not arrowed onto one.
+    let mut nav = use_dropdown_nav("product-picker").enter_takes_first_match();
     let mut editing = use_signal(|| false);
     // PMS-371: read the query INSIDE the resource closure so the fetch
     // subscribes to it.
