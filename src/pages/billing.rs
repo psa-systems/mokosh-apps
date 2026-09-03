@@ -571,8 +571,24 @@ struct InvoiceDetail {
     notes: Option<String>,
     #[serde(default)]
     po_number: Option<String>,
+    /// PMS-992: who the invoice went to and when, or nothing when it was
+    /// marked sent without emailing.
+    #[serde(default)]
+    emailed_at: Option<String>,
+    #[serde(default)]
+    emailed_to: Option<String>,
     #[serde(default)]
     lines: Option<Vec<InvoiceLine>>,
+}
+
+/// PMS-1004: the Details row for a sent invoice. The address, and the date
+/// part of the timestamp when there is one; the time of day says nothing an
+/// operator acts on.
+pub(crate) fn emailed_line(to: &str, at: Option<&str>) -> String {
+    match at.map(|a| a.chars().take(10).collect::<String>()) {
+        Some(date) if !date.is_empty() => format!("{to} on {date}"),
+        _ => to.to_string(),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -633,59 +649,102 @@ pub(crate) fn invoice_pay_now_preview(
     } else {
         currency.trim()
     };
+    // MAPPS-663: the two real blockers are the server's 409s (PMS-992). The
+    // gateway is not one since PMS-991: the invoice goes as a PDF regardless,
+    // and the pay link is the part that needs a gateway.
     let mut blockers = Vec::new();
+    let mut notes = Vec::new();
     let recipient = match contact_email {
         None => {
             blockers.push(
-                "This invoice has no billing contact. Set one with Edit; the email goes to that contact."
+                "This invoice has no billing contact and the company has no default one, so Send is refused. Set one with Edit, or pick one on the company."
                     .to_string(),
             );
             "The billing contact (none set)".to_string()
         }
         Some(None) => {
             blockers.push(
-                "The billing contact has no email address on file. Add one on the contact."
+                "The billing contact has no email address on file, so Send is refused. Add one on the contact."
                     .to_string(),
             );
             "The billing contact (no email address on file)".to_string()
         }
         Some(Some(email)) => email.to_string(),
     };
-    match gateway {
-        Some(false) => blockers.push(
-            "No payment gateway is connected, so there is no Pay Now link to send. Connect one under Settings, Payment Gateways."
-                .to_string(),
-        ),
-        None => blockers.push(
-            "Could not check whether a payment gateway is connected; the email is sent only when one is."
-                .to_string(),
-        ),
-        Some(true) => {}
+    let pay_link = match gateway {
+        Some(true) => true,
+        Some(false) => {
+            notes.push(
+                "No payment gateway is connected, so the email carries no Pay Now link. Connect one under Settings, Payment Gateways to add it."
+                    .to_string(),
+            );
+            false
+        }
+        None => {
+            notes.push(
+                "Could not check whether a payment gateway is connected; the Pay Now link is included only when one is."
+                    .to_string(),
+            );
+            false
+        }
+    };
+    // Mirrors the server's `compose_invoice_sent` (PMS-991): the same
+    // paragraphs in the same order, the pay paragraph only with a gateway.
+    let pay = if pay_link {
+        "Review the invoice and pay online here:\n\n{{portal_link}}\n\n"
+    } else {
+        ""
+    };
+    let subject = if pay_link {
+        format!("Invoice {invoice_number} from {org} is ready to pay")
+    } else {
+        format!("Invoice {invoice_number} from {org}")
+    };
+    let mut unresolved = Vec::new();
+    if pay_link {
+        unresolved.push("portal_link".to_string());
     }
+    unresolved.push("contact_line".to_string());
     crate::components::BuiltinEmail {
         recipient,
-        subject: format!("Invoice {invoice_number} from {org} is ready to pay"),
+        subject,
         body: format!(
-            "{org} has sent you an invoice, ready for payment.\n\n\
+            "{org} has sent you an invoice.\n\n\
              Invoice: {invoice_number}\n\
              Amount due: {balance_due} {currency}\n\
              Due: {due_date}\n\n\
-             Review the invoice and pay online here:\n\n\
-             {{{{portal_link}}}}\n\n\
-             {{{{contact_line}}}}\n\n\
-             (Sent only if the server has email configured, which is a deployment setting.)"
+             The invoice is attached as {invoice_number}.pdf.\n\n\
+             {pay}\
+             {{{{contact_line}}}}"
         ),
-        unresolved: vec!["portal_link".to_string(), "contact_line".to_string()],
+        unresolved,
         blockers,
+        notes,
     }
 }
 
-/// The billing contact, for the preview's recipient line. Only the field
-/// the preview needs.
+/// The billing contact: the address for the preview's recipient line, and
+/// the name for the editor's picker chip (PMS-1004).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RemoteContactEmail {
     #[serde(default)]
     email: Option<String>,
+    #[serde(default)]
+    first_name: String,
+    #[serde(default)]
+    last_name: String,
+}
+
+impl RemoteContactEmail {
+    fn email(&self) -> Option<String> {
+        self.email.clone().filter(|e| !e.trim().is_empty())
+    }
+
+    fn display_name(&self) -> String {
+        format!("{} {}", self.first_name.trim(), self.last_name.trim())
+            .trim()
+            .to_string()
+    }
 }
 
 /// The path the invoice **send** transition writes to (MAPPS-539).
@@ -768,7 +827,6 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         ))
         .await
         .ok()
-        .map(|c| c.email.filter(|e| !e.trim().is_empty()))
     });
     let gateway_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -835,6 +893,14 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     let id_for_void = props.id.clone();
     let act_err = action_error.read().clone();
 
+    // PMS-1004: a Send the server refused with a 409 (no billing contact, or
+    // one with no address, PMS-992). The reason, kept apart from
+    // `action_error` because it gets a panel with the ways out rather than a
+    // bare banner: pick the contact here, or mark the invoice sent without
+    // emailing (`skip_email`, the server's explicit path for an invoice
+    // delivered another way).
+    let mut send_blocked = use_signal(|| None::<String>);
+    let mut confirming_skip = use_signal(|| false);
     // MAPPS-189: the Void button opens the styled ConfirmDialog; the void
     // PUT fires from `on_confirm_void` once the user confirms.
     let mut confirming_void = use_signal(|| false);
@@ -858,6 +924,69 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
             }
             busy.set(false);
             confirming_void.set(false);
+        });
+    };
+
+    // PMS-1004: the explicit no-email send. The same transition Send makes,
+    // with `skip_email`, so the server records that nobody was emailed
+    // rather than refusing.
+    let id_for_skip = props.id.clone();
+    let on_confirm_skip = move |_: ()| {
+        if *busy.read() {
+            return;
+        }
+        busy.set(true);
+        action_error.set(String::new());
+        let path = invoice_send_path(&id_for_skip);
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let body = serde_json::json!({ "status": "sent", "skip_email": true });
+                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                    .await
+                {
+                    Ok(_) => {
+                        send_blocked.set(None);
+                        invoice_resource.restart();
+                    }
+                    Err(err) => action_error.set(format!("Could not mark the invoice sent: {err}")),
+                }
+            }
+            busy.set(false);
+            confirming_skip.set(false);
+        });
+    };
+    // PMS-1004: setting the billing contact from the blocked-send panel. A
+    // plain field update; the operator then sends again, on purpose.
+    let id_for_contact = props.id.clone();
+    let on_pick_contact = move |(contact_id, _name): (String, String)| {
+        if *busy.read() {
+            return;
+        }
+        busy.set(true);
+        action_error.set(String::new());
+        let path = format!("/invoices/{id_for_contact}");
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let body = serde_json::json!({ "billing_contact_id": contact_id });
+                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                    .await
+                {
+                    Ok(_) => {
+                        send_blocked.set(None);
+                        invoice_resource.restart();
+                    }
+                    Err(err) => {
+                        action_error.set(format!("Could not set the billing contact: {err}"))
+                    }
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = (path, contact_id);
+            }
+            busy.set(false);
         });
     };
 
@@ -889,6 +1018,20 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
             oncancel: move |_| {
                 if !*busy.read() {
                     confirming_void.set(false);
+                }
+            },
+        }
+        crate::components::ConfirmDialog {
+            open: confirming_skip(),
+            title: "Mark as sent without emailing".to_string(),
+            message: "Mark this invoice as sent without emailing it? It becomes a finalized record, exactly as a sent invoice does, and it records that nobody was emailed. Use this when the invoice is delivered another way.".to_string(),
+            confirm_text: "Mark as sent".to_string(),
+            cancel_text: "Cancel".to_string(),
+            loading: *busy.read(),
+            onconfirm: on_confirm_skip,
+            oncancel: move |_| {
+                if !*busy.read() {
+                    confirming_skip.set(false);
                 }
             },
         }
@@ -948,13 +1091,26 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                 #[cfg(feature = "app")]
                                 {
                                     let body = serde_json::json!({ "status": "sent" });
-                                    match crate::hooks::fetch::api::put_authed::<
+                                    // Typed, so a 409 can be told from any
+                                    // other refusal (PMS-1004).
+                                    match crate::hooks::fetch::api::put_authed_typed::<
                                         serde_json::Value,
                                         _,
                                     >(&path, &body)
                                         .await
                                     {
-                                        Ok(_) => invoice_resource.restart(),
+                                        Ok(_) => {
+                                            send_blocked.set(None);
+                                            invoice_resource.restart();
+                                        }
+                                        // PMS-1004: a 409 is "nobody to email",
+                                        // and it gets the panel with the ways
+                                        // out rather than the error banner.
+                                        Err(crate::hooks::fetch::api::ApiError::Status {
+                                            code: 409,
+                                            message,
+                                            ..
+                                        }) => send_blocked.set(Some(message)),
                                         Err(err) => action_error
                                             .set(format!("Could not send invoice: {err}")),
                                     }
@@ -993,7 +1149,13 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         builtin: invoice.as_ref().map(|inv| {
                             let contact_email: Option<Option<String>> = inv
                                 .billing_contact_id
-                                .map(|_| contact_resource.read_unchecked().clone().flatten().flatten());
+                                .map(|_| {
+                                    contact_resource
+                                        .read_unchecked()
+                                        .clone()
+                                        .flatten()
+                                        .and_then(|c| c.email())
+                                });
                             invoice_pay_now_preview(
                                 crate::hooks::use_auth()
                                     .read()
@@ -1064,18 +1226,57 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         }
 
         // MAPPS-539: Send is a one-way door that emails the client, and the
-        // button alone cannot say so. The conditions are the server's: it
-        // skips the mail when no payment gateway is connected, when the
-        // invoice has no billing contact, or when that contact has no address
-        // on file, so promise it only where it holds.
+        // button alone cannot say so. Since PMS-991 and PMS-992 the rule is
+        // the server's: the invoice goes as a PDF to the billing contact, the
+        // pay link rides along only with a payment gateway, and a send with
+        // nobody to email is refused rather than marked sent (MAPPS-663).
         if editable {
             p { class: "mb-3 text-xs text-subtle",
-                "Sending emails the billing contact a link to view and pay this invoice, if a payment gateway is connected and the contact has an email address. Use Preview email to read it first."
+                "Sending emails the billing contact the invoice as a PDF, with a link to pay online if a payment gateway is connected. It needs a billing contact with an email address. Use Preview email to read it first."
             }
         }
 
         if !act_err.is_empty() {
             ErrorBanner { class: "mb-3", "{act_err}" }
+        }
+
+        // PMS-1004: the server refused Send because there is nobody to email.
+        // Its sentence names the company or the contact; the panel offers the
+        // ways out it points at, in place, rather than leaving the operator
+        // to find them.
+        if let Some(reason) = send_blocked.read().clone() {
+            crate::components::StatusBanner {
+                tone: crate::components::BannerTone::Warning,
+                class: "mb-3",
+                p { class: "font-medium", "The invoice was not sent." }
+                p { class: "mt-1", "{reason}" }
+                div { class: "mt-3 space-y-3",
+                    crate::components::ContactPicker {
+                        value: String::new(),
+                        selected_id: None,
+                        label: "Billing contact for this invoice".to_string(),
+                        company_filter: (!pay_company_id.is_empty()).then(|| pay_company_id.clone()),
+                        onselect: on_pick_contact,
+                        onclear: move |_| {},
+                    }
+                    div { class: "flex flex-wrap items-center gap-3",
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            size: ButtonSize::Small,
+                            disabled: *busy.read(),
+                            onclick: move |_| confirming_skip.set(true),
+                            "Mark as sent without emailing"
+                        }
+                        if !pay_company_id.is_empty() {
+                            Link {
+                                to: Route::CompanyDetail { id: pay_company_id.clone() },
+                                class: "text-sm text-accent hover:opacity-90",
+                                "Open the company to set its default billing contact"
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         match &*snap {
@@ -1110,6 +1311,10 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "View company".to_string());
                 let billing_contact_id = inv.billing_contact_id.map(|c| c.to_string());
+                let emailed = inv
+                    .emailed_to
+                    .as_deref()
+                    .map(|to| emailed_line(to, inv.emailed_at.as_deref()));
                 let invoice_date = inv.invoice_date.clone().unwrap_or_default();
                 let due_date = inv.due_date.clone().unwrap_or_default();
                 let subtotal = format_money_str(&inv.subtotal);
@@ -1322,6 +1527,12 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                             }
                                         }
                                     }
+                                    if let Some(sent_to) = emailed.clone() {
+                                        div { class: "flex justify-between gap-4",
+                                            dt { class: "text-muted shrink-0", "Emailed to" }
+                                            dd { class: "text-right break-all", "{sent_to}" }
+                                        }
+                                    }
                                     if let Some(bcid) = billing_contact_id.clone() {
                                         div { class: "flex justify-between",
                                             dt { class: "text-muted", "Billing Contact" }
@@ -1346,6 +1557,14 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
             if let Some(inv) = invoice.clone() {
                 InvoiceEditModal {
                     id: props.id.clone(),
+                    company_id: inv.company_id.map(|c| c.to_string()).unwrap_or_default(),
+                    billing_contact_id: inv.billing_contact_id.map(|c| c.to_string()).unwrap_or_default(),
+                    billing_contact_name: contact_resource
+                        .read_unchecked()
+                        .clone()
+                        .flatten()
+                        .map(|c| c.display_name())
+                        .unwrap_or_default(),
                     invoice_date: inv.invoice_date.clone().unwrap_or_default(),
                     due_date: inv.due_date.clone().unwrap_or_default(),
                     payment_term_id: inv.payment_term_id.clone().unwrap_or_default(),
@@ -1407,6 +1626,10 @@ pub fn InvoiceNewPage() -> Element {
     let mut company_id =
         use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     let mut company_name = use_signal(String::new);
+    // PMS-1004: the contact the invoice is emailed to. Optional here (the
+    // company's default billing contact covers it), scoped to the company.
+    let mut billing_contact_id = use_signal(String::new);
+    let mut billing_contact_name = use_signal(String::new);
     let mut invoice_date = use_signal(String::new);
     let mut due_date = use_signal(String::new);
     // MAPPS-662: the payment term, seeded with the tenant's default once the
@@ -1590,6 +1813,7 @@ pub fn InvoiceNewPage() -> Element {
             .unwrap_or_else(|| computed_tax.read().clone());
         let body = serde_json::json!({
             "company_id": company_uuid,
+            "billing_contact_id": optional_string(&billing_contact_id.read()),
             "invoice_date": inv_date,
             // MAPPS-662: blank is null, and the server derives it from the term.
             "due_date": optional_string(&due),
@@ -1655,6 +1879,7 @@ pub fn InvoiceNewPage() -> Element {
         let due = optional_string(&due_date.read());
         let body = serde_json::json!({
             "company_id": company_uuid,
+            "billing_contact_id": optional_string(&billing_contact_id.read()),
             "invoice_date": inv_date,
             "due_date": due,
             "po_number": optional_string(&po_number.read()),
@@ -1725,14 +1950,44 @@ pub fn InvoiceNewPage() -> Element {
                     // PMS-579: inline field-level error instead of the banner.
                     error: company_error.read().clone(),
                     onselect: move |(id, name): (String, String)| {
+                        let changed = *company_id.read() != id;
                         company_id.set(id);
                         company_name.set(name);
                         company_error.set(String::new());
+                        if changed {
+                            billing_contact_id.set(String::new());
+                            billing_contact_name.set(String::new());
+                        }
                     },
                     onclear: move |_| {
                         company_id.set(String::new());
                         company_name.set(String::new());
+                        billing_contact_id.set(String::new());
+                        billing_contact_name.set(String::new());
                     },
+                }
+                // PMS-1004: who the invoice is emailed to (PMS-992). Shown
+                // once a company is picked, because the search is scoped to
+                // it; left empty, the company's default billing contact
+                // applies at send.
+                if !company_id.read().is_empty() {
+                    crate::components::ContactPicker {
+                        value: billing_contact_name.read().clone(),
+                        selected_id: {
+                            let id = billing_contact_id.read().clone();
+                            (!id.is_empty()).then_some(id)
+                        },
+                        label: "Billing Contact".to_string(),
+                        company_filter: Some(company_id.read().clone()),
+                        onselect: move |(id, name): (String, String)| {
+                            billing_contact_id.set(id);
+                            billing_contact_name.set(name);
+                        },
+                        onclear: move |_| {
+                            billing_contact_id.set(String::new());
+                            billing_contact_name.set(String::new());
+                        },
+                    }
                 }
 
                 div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
@@ -2701,6 +2956,11 @@ struct EditableLine {
 #[derive(Props, Clone, PartialEq)]
 struct InvoiceEditModalProps {
     id: String,
+    /// PMS-1004: the invoice's company, to scope the billing-contact picker.
+    company_id: String,
+    /// Current billing contact FK and its display name, empty when unset.
+    billing_contact_id: String,
+    billing_contact_name: String,
     invoice_date: String,
     due_date: String,
     /// Current payment-term FK (PMS-333), empty string when unset.
@@ -2754,6 +3014,8 @@ fn derived_due_date(invoice_date: &str, net_days: Option<i64>) -> Option<String>
 /// this modal is only opened for editable invoices.
 #[component]
 fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
+    let mut billing_contact_id = use_signal(|| props.billing_contact_id.clone());
+    let mut billing_contact_name = use_signal(|| props.billing_contact_name.clone());
     let mut invoice_date = use_signal(|| props.invoice_date.clone());
     let mut due_date = use_signal(|| props.due_date.clone());
     // MAPPS-662: whether the operator edited the due date in this session.
@@ -2967,6 +3229,9 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             .clone()
             .unwrap_or_else(|| computed_tax.read().clone());
         let body = serde_json::json!({
+            // PMS-1004: null leaves the contact as it is (the server
+            // COALESCEs), so clearing the chip changes nothing on save.
+            "billing_contact_id": optional_string(&billing_contact_id.read()),
             "invoice_date": inv_date,
             // MAPPS-662: only what the operator typed. Null leaves the date to
             // the server, which keeps it unless the term changed.
@@ -3027,6 +3292,27 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             div { class: "space-y-4",
                 if !error.read().is_empty() {
                     ErrorBanner { "{error.read()}" }
+                }
+                // PMS-1004: the contact the invoice is emailed to (PMS-992).
+                // Scoped to the invoice's company; the server refuses a send
+                // with none, so this is where "set a billing contact on the
+                // invoice" is done.
+                crate::components::ContactPicker {
+                    value: billing_contact_name.read().clone(),
+                    selected_id: {
+                        let id = billing_contact_id.read().clone();
+                        (!id.is_empty()).then_some(id)
+                    },
+                    label: "Billing Contact".to_string(),
+                    company_filter: (!props.company_id.is_empty()).then(|| props.company_id.clone()),
+                    onselect: move |(id, name): (String, String)| {
+                        billing_contact_id.set(id);
+                        billing_contact_name.set(name);
+                    },
+                    onclear: move |_| {
+                        billing_contact_id.set(String::new());
+                        billing_contact_name.set(String::new());
+                    },
                 }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
                     crate::components::DateField {
@@ -4206,9 +4492,10 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
 mod invoice_preview_tests {
     use super::invoice_pay_now_preview;
 
-    /// Every condition the server checks before mailing is a sentence the
-    /// operator sees, and a complete setup has none: the preview never says
-    /// "nothing will be sent" over a send that would mail.
+    /// The two conditions the server refuses a send on are blockers, a
+    /// missing gateway is a note (the invoice still goes, without its pay
+    /// link), and a complete setup has neither: the preview never says
+    /// "nothing will be sent" over a send that would mail (MAPPS-663).
     #[test]
     fn each_missing_condition_is_named_and_a_complete_setup_has_no_blockers() {
         let ok = invoice_pay_now_preview(
@@ -4221,12 +4508,14 @@ mod invoice_preview_tests {
             Some(true),
         );
         assert!(ok.blockers.is_empty(), "{:?}", ok.blockers);
+        assert!(ok.notes.is_empty(), "{:?}", ok.notes);
         assert_eq!(ok.recipient, "ap@client.example");
         assert_eq!(
             ok.subject,
             "Invoice INV-000001 from Acme MSP is ready to pay"
         );
         assert!(ok.body.contains("Amount due: 50.00 USD"));
+        assert!(ok.body.contains("attached as INV-000001.pdf"));
         assert!(ok.body.contains("{{portal_link}}"));
         assert_eq!(ok.unresolved, vec!["portal_link", "contact_line"]);
 
@@ -4248,13 +4537,41 @@ mod invoice_preview_tests {
             Some(Some("a@b.c")),
             Some(false),
         );
-        assert!(no_gateway.blockers[0].contains("No payment gateway"));
+        assert!(no_gateway.blockers.is_empty(), "{:?}", no_gateway.blockers);
+        assert!(no_gateway.notes[0].contains("No payment gateway"));
+        assert_eq!(no_gateway.subject, "Invoice INV-1 from Acme MSP");
+        assert!(
+            !no_gateway.body.contains("portal_link"),
+            "no gateway, no pay paragraph: {}",
+            no_gateway.body
+        );
+        assert_eq!(no_gateway.unresolved, vec!["contact_line"]);
 
         let unknown = invoice_pay_now_preview("", "INV-1", "1", "", "", Some(Some("a@b.c")), None);
-        assert!(unknown.blockers[0].contains("Could not check"));
+        assert!(unknown.notes[0].contains("Could not check"));
         assert!(unknown
             .subject
             .starts_with("Invoice INV-1 from Your organisation"));
+    }
+}
+
+#[cfg(test)]
+mod emailed_line_tests {
+    use super::emailed_line;
+
+    /// The address and the date it went, and the address alone when the
+    /// timestamp is missing or empty.
+    #[test]
+    fn the_row_says_who_and_when() {
+        assert_eq!(
+            emailed_line("ap@client.example", Some("2026-09-02T14:03:11Z")),
+            "ap@client.example on 2026-09-02"
+        );
+        assert_eq!(emailed_line("ap@client.example", None), "ap@client.example");
+        assert_eq!(
+            emailed_line("ap@client.example", Some("")),
+            "ap@client.example"
+        );
     }
 }
 
