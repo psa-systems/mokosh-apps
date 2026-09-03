@@ -3675,6 +3675,11 @@ struct RemoteGateway {
     is_test_mode: bool,
     #[serde(default)]
     configured: bool,
+    /// MAPPS-671 (mokosh-invoices P2a): admin-set override for the Pay
+    /// Now button label. `None` = fall back to the provider default in
+    /// `get_invoice_payment_readiness`.
+    #[serde(default)]
+    client_display_name: Option<String>,
 }
 
 /// Payment-gateway config view. GET `/payment-gateways` (paginated) and
@@ -3875,6 +3880,10 @@ struct GatewayFormState {
     /// "Configured" badge and lets the key field be left blank on edit to keep
     /// the existing secret.
     configured: bool,
+    /// MAPPS-671 (mokosh-invoices P2a): admin-set override for the Pay
+    /// Now button label. Empty string = clear the override (falls back
+    /// to the provider default).
+    client_display_name: String,
 }
 
 impl GatewayFormState {
@@ -3885,6 +3894,7 @@ impl GatewayFormState {
             is_active: false,
             is_test_mode: true,
             configured: false,
+            client_display_name: String::new(),
         }
     }
 
@@ -3895,6 +3905,7 @@ impl GatewayFormState {
             is_active: g.is_active,
             is_test_mode: g.is_test_mode,
             configured: g.configured,
+            client_display_name: g.client_display_name.clone().unwrap_or_default(),
         }
     }
 }
@@ -3926,6 +3937,12 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
     // never returns the stored secret); a blank value on save keeps the
     // existing key.
     let mut api_key = use_signal(String::new);
+    // MAPPS-671 (mokosh-invoices P2a): the admin's Pay Now button label.
+    // Seeded from the existing row so an edit keeps whatever was set;
+    // blank = clear the override on save (server treats empty-string as
+    // clear-to-provider-default).
+    let mut client_display_name = use_signal(|| initial.client_display_name.clone());
+    let mut client_display_name_err = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -3949,6 +3966,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
         }
         error.set(String::new());
         key_err.set(String::new());
+        client_display_name_err.set(String::new());
 
         // MAPPS-363: the key is write-only. Send `config` only when the admin
         // typed a key; a blank field keeps the existing secret (PMS-342
@@ -3960,11 +3978,26 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
             key_err.set("An API key is required to configure this gateway.".to_string());
             return;
         }
+        // MAPPS-671: 64-char cap mirrors the server's validator; catching it
+        // here gives a field-level error rather than a form-level 422.
+        let cdn = client_display_name.read().clone();
+        if cdn.chars().count() > 64 {
+            client_display_name_err.set(
+                "Button label must be 64 characters or fewer.".to_string(),
+            );
+            return;
+        }
         saving.set(true);
         let mut body = serde_json::json!({
             "provider": provider.read().clone(),
             "is_active": *is_active.read(),
             "is_test_mode": *is_test_mode.read(),
+            // MAPPS-671: always send the current value. A trimmed empty
+            // string clears the override on the server; a non-empty
+            // value sets it. Omitting the field would preserve whatever
+            // was previously set, which contradicts the visible form
+            // state (the input is empty).
+            "client_display_name": cdn.trim(),
         });
         if !key.is_empty() {
             body["config"] = serde_json::json!({ "api_key": key });
@@ -4116,6 +4149,22 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                             api_key.set(e.value());
                         },
                     }
+                }
+                // MAPPS-671 (mokosh-invoices P2a): admin-set override for
+                // the Pay Now button label the portal contact sees on
+                // their invoice.
+                crate::components::Input {
+                    name: "gateway_client_display_name",
+                    label: "Button label (optional)".to_string(),
+                    placeholder: "Pay with card".to_string(),
+                    help: "What the customer sees on the Pay Now button on their invoice. Leave blank to use the provider default.",
+                    maxlength: 64_i64,
+                    error: client_display_name_err(),
+                    value: client_display_name.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        client_display_name_err.set(String::new());
+                        client_display_name.set(e.value());
+                    },
                 }
             }
         }
