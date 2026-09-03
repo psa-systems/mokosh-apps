@@ -411,6 +411,7 @@ pub fn CompanyListPage() -> Element {
             }
             crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>(&path, &token)
                 .await
+                .inspect_err(|e| tracing::error!("company list load failed: {e}"))
                 .ok()
         }
     });
@@ -679,6 +680,7 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
                 "/contacts/companies/{id}"
             ))
             .await
+            .inspect_err(|e| tracing::error!("company edit load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -1869,6 +1871,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 "/contacts/companies/{id}"
             ))
             .await
+            .inspect_err(|e| tracing::error!("company detail load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -1888,6 +1891,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 "/contacts/companies/{id}/contacts?per_page=5"
             ))
             .await
+            .inspect_err(|e| tracing::error!("company contacts preview load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -1908,6 +1912,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 "/contacts/companies/{id}/sites"
             ))
             .await
+            .inspect_err(|e| tracing::error!("company sites load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -1919,6 +1924,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 "/tickets?company_id={id}&per_page=5&{TICKETS_RECENT_SORT}"
             ))
             .await
+            .inspect_err(|e| tracing::error!("company tickets load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -1935,6 +1941,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 "/contracts?company_id={id}&per_page=5"
             ))
             .await
+            .inspect_err(|e| tracing::error!("company contracts load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -1946,6 +1953,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 "/projects?company_id={id}&per_page=5"
             ))
             .await
+            .inspect_err(|e| tracing::error!("company projects load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -1957,6 +1965,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 "/invoices?company_id={id}&per_page=5"
             ))
             .await
+            .inspect_err(|e| tracing::error!("company invoices load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -1968,6 +1977,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 "/assets?company_id={id}&per_page=5"
             ))
             .await
+            .inspect_err(|e| tracing::error!("company assets load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -1975,9 +1985,20 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     // a human-readable type name in the Assets card.
     let asset_types_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<AssetTypeOption>("/asset-types")
-            .await
-            .ok()
+        // An empty type list and a failed read look identical on screen (no
+        // type name on any asset row), so the log is what tells them apart.
+        match crate::hooks::fetch::api::get_all_authed::<AssetTypeOption>("/asset-types").await {
+            Ok(types) => {
+                if types.is_empty() {
+                    tracing::info!("asset-type load succeeded and this tenant has no asset types");
+                }
+                Some(types)
+            }
+            Err(e) => {
+                tracing::error!("asset-type load failed, asset rows will show no type: {e}");
+                None
+            }
+        }
     });
 
     // Statistics counts pulled from each list envelope's `meta.total`.
@@ -2023,6 +2044,9 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 "/contacts/companies/{id}/deletion-preview"
             ))
             .await
+            // Best-effort: the dialog falls back to its generic warning and the
+            // delete still goes to the server, which refuses it if it must.
+            .inspect_err(|e| tracing::warn!("deletion preview load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -2046,6 +2070,8 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_authed::<RemoteContact>(&format!("/contacts/contacts/{id}"))
             .await
+            // Best-effort: the billing contact's row is simply omitted.
+            .inspect_err(|e| tracing::warn!("billing contact load failed for {id}: {e}"))
             .ok()
     });
     let mut show_set_billing = use_signal(|| false);
@@ -4396,6 +4422,7 @@ pub fn ContactListPage() -> Element {
             }
             crate::hooks::fetch::api::get_with_auth::<PaginatedContacts>(&path, &token)
                 .await
+                .inspect_err(|e| tracing::error!("contact list load failed: {e}"))
                 .ok()
         }
     });
@@ -4782,6 +4809,7 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
                 "/contacts/contacts/{id}"
             ))
             .await
+            .inspect_err(|e| tracing::error!("contact edit load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -5761,6 +5789,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                 "/contacts/contacts/{id}"
             ))
             .await
+            .inspect_err(|e| tracing::error!("contact detail load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -5772,6 +5801,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                 "/tickets?contact_id={id}&per_page=5&{TICKETS_RECENT_SORT}"
             ))
             .await
+            .inspect_err(|e| tracing::error!("contact tickets load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -7957,5 +7987,84 @@ mod mapps568_contact_notes_tests {
                 );
             }
         }
+    }
+}
+
+/// MAPPS-692: a fetch that fails says why, in the log, before the `Option` that
+/// drives the empty state replaces it.
+#[cfg(test)]
+mod mapps692_fetch_error_logging_tests {
+    const SRC: &str = include_str!("contacts.rs");
+
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod mapps692_fetch_error_logging_tests")
+            .expect("this module is part of this file");
+        SRC[..end]
+            .lines()
+            .map(|l| match l.find("//") {
+                Some(i) => &l[..i],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// The guard, so the pattern cannot come back one resource at a time. A
+    /// `.ok()` applied straight to an awaited fetch throws the server's reason
+    /// away at the same statement that decides what the card renders: a 401, a
+    /// 500 and a decode mismatch all arrive as the same `None` with nothing in
+    /// the console to separate them.
+    #[test]
+    fn no_awaited_fetch_result_is_discarded_without_logging() {
+        let code = code_only();
+        let mut offenders = Vec::new();
+        let mut cursor = 0;
+        while let Some(found) = code[cursor..].find(".ok()") {
+            let at = cursor + found;
+            cursor = at + ".ok()".len();
+            // Only an `.ok()` in the same statement as an `.await` is in
+            // scope; `parse().ok()` and friends carry no server reason to
+            // report, and their nearest `.await` is far away.
+            let Some(awaited) = code[..at].rfind(".await") else {
+                continue;
+            };
+            let between = &code[awaited + ".await".len()..at];
+            if between.len() > 200 {
+                continue;
+            }
+            if !between.contains("inspect_err") {
+                offenders.push(format!(".await{between}.ok()"));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these fetches drop the error instead of logging it first: {offenders:#?}"
+        );
+    }
+
+    /// The asset-type list is the one place where the substituted value is
+    /// indistinguishable on screen from a legitimate answer: no options at all
+    /// is what a tenant with no asset types looks like too. Both outcomes are
+    /// therefore stated in the log, not just the failure.
+    #[test]
+    fn the_asset_type_read_separates_a_failure_from_an_empty_tenant() {
+        let code = code_only();
+        let at = code
+            .find("get_all_authed::<AssetTypeOption>")
+            .expect("the asset-type read is in this file");
+        let window: String = code[at..].chars().take(600).collect();
+        assert!(
+            window.contains("tracing::error!(\"asset-type load failed"),
+            "a failed read is logged as an error: {window}"
+        );
+        assert!(
+            window.contains("types.is_empty()")
+                && window.contains("tracing::info!(\"asset-type load succeeded"),
+            "a genuinely empty list says so under its own message: {window}"
+        );
     }
 }
