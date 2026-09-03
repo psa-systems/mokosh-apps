@@ -277,6 +277,17 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
         .map(|u| u.role.can_manage_users())
         .unwrap_or(false);
 
+    // MAPPS-638: the Credit Notes entry matches the server's finance gate
+    // (super_admin / admin / finance). Its Invoices and Payments siblings are
+    // not gated today and render a locked state on the page instead; aligning
+    // them is filed separately.
+    let has_finance = auth
+        .read()
+        .user
+        .as_ref()
+        .map(|u| u.role.can_manage_billing())
+        .unwrap_or(false);
+
     // MAPPS-203: App-root-owned scroll offset that survives the
     // AppLayout re-mount on each navigation. Only the persistent desktop
     // sidebar (`persist_scroll`) reads/writes it; the mobile drawer
@@ -369,6 +380,10 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                 NavItem { to: Route::RateCardList {}, icon: rsx!(TagIcon {}), label: "Rate Cards", collapsed }
                 NavItem { to: Route::InvoiceList {}, icon: rsx!(CurrencyIcon {}), label: "Invoices", collapsed }
                 NavItem { to: Route::PaymentList {}, icon: rsx!(CreditCardIcon {}), label: "Payments", collapsed }
+                if has_finance {
+                    NavItem { to: Route::CreditNoteList {}, icon: rsx!(ReceiptRefundIcon {}), label: "Credit Notes", collapsed }
+                    NavItem { to: Route::Statement {}, icon: rsx!(DocumentTextIcon {}), label: "Statements", collapsed }
+                }
             }
 
             NavSection { title: "Assets", rail_collapsed: collapsed, color: SectionColor::Teal,
@@ -565,6 +580,7 @@ fn section_route(route: &Route) -> Route {
         // so it stays under the Rate Cards section (MAPPS-217).
         Route::RateCardNew { .. } => Route::RateCardList {},
         Route::InvoiceDetail { .. } => Route::InvoiceList {},
+        Route::CreditNoteDetail { .. } => Route::CreditNoteList {},
         Route::AssetDetail { .. } => Route::AssetList {},
         Route::KBArticleDetail { .. } => Route::KBHome {},
         Route::ReportDetail { .. } => Route::Reports {},

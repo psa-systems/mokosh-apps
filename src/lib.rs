@@ -497,6 +497,17 @@ pub enum Route {
     #[route("/payment-gateways")]
     PaymentGatewayConfig {},
 
+    // MAPPS-638: credit notes, the correction path for a sent invoice.
+    #[route("/credit-notes")]
+    CreditNoteList {},
+
+    #[route("/credit-notes/:id")]
+    CreditNoteDetail { id: String },
+
+    // MAPPS-639: a company's account over a period, computed and not stored.
+    #[route("/statements")]
+    Statement {},
+
     // Assets
     #[route("/assets")]
     AssetList {},
@@ -598,6 +609,9 @@ pub enum Route {
     // MAPPS-170: invoice payment-terms lookup editor (server CRUD from PMS-333).
     #[route("/settings/payment-terms")]
     SettingsPaymentTerms {},
+    // MAPPS-640: the product catalog (server CRUD from PMS-955).
+    #[route("/settings/products")]
+    SettingsProducts {},
     // MAPPS-172: ticket lookup editors (server CRUD from PMS-321).
     #[route("/settings/ticket-statuses")]
     SettingsTicketStatuses {},
@@ -1265,6 +1279,33 @@ fn PaymentGatewayConfig() -> Element {
 }
 
 #[component]
+fn CreditNoteList() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            credit_notes::CreditNoteListPage {}
+        }
+    }
+}
+
+#[component]
+fn CreditNoteDetail(id: String) -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            credit_notes::CreditNoteDetailPage { id }
+        }
+    }
+}
+
+#[component]
+fn Statement() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            statements::StatementPage {}
+        }
+    }
+}
+
+#[component]
 fn AssetList() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
@@ -1483,6 +1524,15 @@ fn SettingsPaymentTerms() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             settings::PaymentTermsSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsProducts() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            products::ProductsSettingsPage {}
         }
     }
 }
