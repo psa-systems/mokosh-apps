@@ -885,6 +885,8 @@ fn PreferencesCard() -> Element {
 
 #[cfg(test)]
 mod tests {
+    use super::{MeResponse, UpdateMeRequest};
+
     /// This module's own source, minus this test module: the assertion below
     /// names the very strings it forbids.
     fn production_src() -> &'static str {
@@ -925,5 +927,114 @@ mod tests {
         // `mobile` IS mokosh's own column, and the distinction is the whole
         // point: it stays.
         assert!(body.contains("mobile"));
+    }
+
+    // ---- MAPPS-689: the shared-DTO contract ------------------------------
+    //
+    // The guard above pins which keys the body carries; it cannot see the
+    // shared DTO, so a field PMS removes next fails exactly the way
+    // `first_name` did. These two functions are the gate. `mokosh_types::auth`
+    // derives `Deserialize` on `UpdateUserRequest` and `Serialize` on
+    // `UserResponse`, which is the server's half of the wire and the opposite
+    // of what a client needs, so this page cannot use them directly. Each
+    // destructures the shared DTO exhaustively and feeds the bindings into the
+    // struct this page actually sends or decodes, so a field added, removed,
+    // renamed or retyped on mokosh-server fails this build instead of drifting
+    // silently. They are never called; compiling them is the whole check. Same
+    // shape as the MAPPS-397 gate in `src/pages/login.rs`.
+
+    #[allow(dead_code)]
+    fn update_request_fields_are_all_considered(req: mokosh_types::auth::UpdateUserRequest) {
+        let mokosh_types::auth::UpdateUserRequest {
+            email,
+            mobile,
+            title,
+            role,
+            status,
+            timezone,
+            date_format_string,
+            theme_base_mode,
+            theme_accent_id,
+            login_location_alerts,
+        } = req;
+        let _ = UpdateMeRequest {
+            mobile,
+            title,
+            timezone,
+            date_format_string,
+        };
+        // Deliberately not sent by this screen: bunyip owns the email, the
+        // server's `update_current_user` strips role and status from any
+        // inbound body, the theme pair is a local-only preference persisted to
+        // `localStorage` by `utils::prefs`, and the login-location opt-out has
+        // no control here.
+        let _ = (
+            email,
+            role,
+            status,
+            theme_base_mode,
+            theme_accent_id,
+            login_location_alerts,
+        );
+    }
+
+    /// `GET`/`PUT /api/v1/auth/me` both answer with
+    /// `mokosh_types::auth::UserResponse` (mokosh-server
+    /// `src/modules/auth/routes.rs`), which this page narrows to `MeResponse`.
+    #[allow(dead_code)]
+    fn user_response_fields_this_page_reads(resp: mokosh_types::auth::UserResponse) {
+        let mokosh_types::auth::UserResponse {
+            id,
+            email,
+            first_name,
+            last_name,
+            full_name,
+            phone,
+            mobile,
+            title,
+            avatar_url,
+            timezone,
+            date_format_string,
+            theme_base_mode,
+            theme_accent_id,
+            role,
+            status,
+            mfa_enabled,
+            last_login_at,
+            created_at,
+            profile_completed,
+            own_company_id,
+        } = resp;
+        // Nothing is widened: every field the form binds is decoded at the
+        // type the server sends, so a `String` that becomes an `Option` over
+        // there is a compile error here rather than a silently empty input.
+        let _ = MeResponse {
+            mobile,
+            title,
+            timezone,
+            date_format_string,
+        };
+        // Read from `AuthContext` (the identity strip) or not rendered at all:
+        // the names, email and avatar are bunyip's and shown read-only, the
+        // theme pair is a local preference, and the rest is account metadata
+        // this screen does not display.
+        let _ = (
+            id,
+            email,
+            first_name,
+            last_name,
+            full_name,
+            phone,
+            avatar_url,
+            theme_base_mode,
+            theme_accent_id,
+            role,
+            status,
+            mfa_enabled,
+            last_login_at,
+            created_at,
+            profile_completed,
+            own_company_id,
+        );
     }
 }
