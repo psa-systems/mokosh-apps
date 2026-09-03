@@ -571,8 +571,24 @@ struct InvoiceDetail {
     notes: Option<String>,
     #[serde(default)]
     po_number: Option<String>,
+    /// PMS-992: who the invoice went to and when, or nothing when it was
+    /// marked sent without emailing.
+    #[serde(default)]
+    emailed_at: Option<String>,
+    #[serde(default)]
+    emailed_to: Option<String>,
     #[serde(default)]
     lines: Option<Vec<InvoiceLine>>,
+}
+
+/// PMS-1004: the Details row for a sent invoice. The address, and the date
+/// part of the timestamp when there is one; the time of day says nothing an
+/// operator acts on.
+pub(crate) fn emailed_line(to: &str, at: Option<&str>) -> String {
+    match at.map(|a| a.chars().take(10).collect::<String>()) {
+        Some(date) if !date.is_empty() => format!("{to} on {date}"),
+        _ => to.to_string(),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -680,12 +696,28 @@ pub(crate) fn invoice_pay_now_preview(
     }
 }
 
-/// The billing contact, for the preview's recipient line. Only the field
-/// the preview needs.
+/// The billing contact: the address for the preview's recipient line, and
+/// the name for the editor's picker chip (PMS-1004).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RemoteContactEmail {
     #[serde(default)]
     email: Option<String>,
+    #[serde(default)]
+    first_name: String,
+    #[serde(default)]
+    last_name: String,
+}
+
+impl RemoteContactEmail {
+    fn email(&self) -> Option<String> {
+        self.email.clone().filter(|e| !e.trim().is_empty())
+    }
+
+    fn display_name(&self) -> String {
+        format!("{} {}", self.first_name.trim(), self.last_name.trim())
+            .trim()
+            .to_string()
+    }
 }
 
 /// The path the invoice **send** transition writes to (MAPPS-539).
@@ -768,7 +800,6 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         ))
         .await
         .ok()
-        .map(|c| c.email.filter(|e| !e.trim().is_empty()))
     });
     let gateway_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -993,7 +1024,13 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         builtin: invoice.as_ref().map(|inv| {
                             let contact_email: Option<Option<String>> = inv
                                 .billing_contact_id
-                                .map(|_| contact_resource.read_unchecked().clone().flatten().flatten());
+                                .map(|_| {
+                                    contact_resource
+                                        .read_unchecked()
+                                        .clone()
+                                        .flatten()
+                                        .and_then(|c| c.email())
+                                });
                             invoice_pay_now_preview(
                                 crate::hooks::use_auth()
                                     .read()
@@ -1110,6 +1147,10 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "View company".to_string());
                 let billing_contact_id = inv.billing_contact_id.map(|c| c.to_string());
+                let emailed = inv
+                    .emailed_to
+                    .as_deref()
+                    .map(|to| emailed_line(to, inv.emailed_at.as_deref()));
                 let invoice_date = inv.invoice_date.clone().unwrap_or_default();
                 let due_date = inv.due_date.clone().unwrap_or_default();
                 let subtotal = format_money_str(&inv.subtotal);
@@ -1320,6 +1361,12 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                                     "{company_name}"
                                                 }
                                             }
+                                        }
+                                    }
+                                    if let Some(sent_to) = emailed.clone() {
+                                        div { class: "flex justify-between gap-4",
+                                            dt { class: "text-muted shrink-0", "Emailed to" }
+                                            dd { class: "text-right break-all", "{sent_to}" }
                                         }
                                     }
                                     if let Some(bcid) = billing_contact_id.clone() {
@@ -4255,6 +4302,26 @@ mod invoice_preview_tests {
         assert!(unknown
             .subject
             .starts_with("Invoice INV-1 from Your organisation"));
+    }
+}
+
+#[cfg(test)]
+mod emailed_line_tests {
+    use super::emailed_line;
+
+    /// The address and the date it went, and the address alone when the
+    /// timestamp is missing or empty.
+    #[test]
+    fn the_row_says_who_and_when() {
+        assert_eq!(
+            emailed_line("ap@client.example", Some("2026-09-02T14:03:11Z")),
+            "ap@client.example on 2026-09-02"
+        );
+        assert_eq!(emailed_line("ap@client.example", None), "ap@client.example");
+        assert_eq!(
+            emailed_line("ap@client.example", Some("")),
+            "ap@client.example"
+        );
     }
 }
 
