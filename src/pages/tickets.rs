@@ -2578,9 +2578,12 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             }
         }
 
-        div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
+        // MAPPS-693: the details column is a fixed 20rem track, not a third of
+        // the window. Three Markdown editors live in the other column, and a
+        // proportional split gave a wide monitor's spare width to dropdowns.
+        div { class: "grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]",
             // Main content
-            div { class: "lg:col-span-2 space-y-6",
+            div { class: "min-w-0 space-y-6",
                 // Description (real ticket description, editable - PMS-182)
                 {
                     let ticket_loaded = ticket.is_some();
