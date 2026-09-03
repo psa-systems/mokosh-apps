@@ -607,25 +607,18 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
 
             // MAPPS-520 walkthrough: the platform super-admin has its
             // OWN nav section (Tenants) that renders whenever a
-            // platform bearer is present in sessionStorage. Split out
-            // of the tenant "Admin" section below so a pure platform
-            // admin (users row deleted by migration 133; no
-            // tenant-plane `AuthContext`) still sees the top-level
-            // action they own instead of a completely empty admin
-            // area. The section renders WITHOUT gating on
-            // `is_admin` (which reads `auth.user.role.is_admin()` and
-            // is false when there is no users row at all).
-            if is_platform_admin {
-                NavSection { title: "Platform", rail_collapsed: collapsed, color: SectionColor::Violet,
-                    // MAPPS-447 / MAPPS-518: only the platform-admin
-                    // persona (`platform_admins` row + `/login`
-                    // bearer) can create / suspend / edit tenants
-                    // ("client portals" in the mokosh vocabulary).
-                    // Server side is gated on `RequirePlatformAdmin`;
-                    // this nav item mirrors the same gate.
-                    TenantsNavItem { visible: true, collapsed }
-                }
-            }
+            // mokosh-contact-login: the "Platform" sidebar section
+            // retired. Its sole child was `TenantsNavItem`, which the
+            // Clients-tab retirement earlier in this branch had
+            // already stubbed to a no-op (`rsx!{}`), leaving an empty
+            // "PLATFORM" section header rendering for a platform-
+            // admin visitor. The tenant management surface itself is
+            // gone with the Clients-tab retirement; a platform admin
+            // uses the Admin section widening on the block below
+            // (`is_admin || is_platform_admin`) to reach Teams /
+            // Invitations / Audit Log / Request Forms / SLA /
+            // Settings, which is the whole persona-scoped surface
+            // they still own.
 
             // Tenant-scoped admin surface (Teams, Invitations, Audit
             // Log, Request Forms, SLA, Settings). Renders when
@@ -893,32 +886,15 @@ fn NavItem(props: NavItemProps) -> Element {
     }
 }
 
-/// MAPPS-447: sidebar entry that opens the tenant roster (and its
-/// Create-tenant modal). Hoisted into its own component so it can be
-/// cfg-gated on `multi-tenant`: `Route::TenantManagement` only exists
-/// in that build, and referencing it from the always-compiled sidebar
-/// would break the `single-tenant` binary. The stub at the bottom of
-/// this pair keeps the call site identical across features.
-#[derive(Props, Clone, PartialEq)]
-struct TenantsNavItemProps {
-    visible: bool,
-    collapsed: bool,
-}
+// mokosh-contact-login: MAPPS-447's `TenantsNavItem` (and its
+// `TenantsNavItemProps`) retired alongside the "Platform" sidebar
+// section above. It was already a no-op after the Clients-tab
+// retirement (prompt 001) and had no live callers on this branch.
 
-// mokosh-contact-login: Clients tab retired on this branch (prompt
-// 001) - the tenants-as-clients concept goes away entirely; a mokosh
-// tenant is just a Bunyip-user workspace now, and the "client"
-// concept is companies + contacts inside that tenant. TenantsNavItem
-// stays as a no-op so its callers do not need cfg changes.
-#[component]
-fn TenantsNavItem(props: TenantsNavItemProps) -> Element {
-    let _ = props;
-    rsx! {}
-}
-
-/// PMS-791 phase 2 / MAPPS-463: Teams nav item. Uses the same cfg-gated
-/// pattern as TenantsNavItem so `single-tenant` builds do not need to
-/// know Route::Teams exists.
+/// PMS-791 phase 2 / MAPPS-463: Teams nav item. Cfg-gated on
+/// `multi-tenant` so a `single-tenant` build does not need to know
+/// Route::Teams exists (the retired `TenantsNavItem` used the same
+/// pattern before it went away with the Platform section).
 #[derive(Props, Clone, PartialEq)]
 struct TeamsNavItemProps {
     visible: bool,
