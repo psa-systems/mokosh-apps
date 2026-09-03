@@ -349,8 +349,12 @@ pub mod api {
     /// Expiry of the persisted session the held bearer came from. `None` when
     /// nothing is persisted (dev bypass, sessionStorage disabled), which is
     /// also "nothing to renew from".
+    ///
+    /// MAPPS-661: also read by the mount-time session confirmation in
+    /// `crate::hooks::auth`, which asks the same question of the same two
+    /// stores and must not answer it a second, drifting way.
     #[cfg(feature = "app")]
-    fn persisted_expiry() -> Option<chrono::DateTime<chrono::Utc>> {
+    pub fn persisted_expiry() -> Option<chrono::DateTime<chrono::Utc>> {
         if let Some(t) = crate::modules::oidc::storage::load_auth() {
             return Some(t.expires_at);
         }

@@ -20,6 +20,29 @@ pub struct MembershipView {
     pub tenant_name: String,
 }
 
+/// MAPPS-661: whether the identity provider has confirmed, during THIS page
+/// lifetime, that the session in the context still exists.
+///
+/// The persisted bundle is a cache, never an assertion of identity. A tab the
+/// browser unloaded and restored rebuilds `AuthContext` from `sessionStorage`
+/// (see [`rehydrate_from_storage`]), and that bundle says nothing about
+/// whether the session behind it ended while the tab was gone. Holding the two
+/// facts apart is what lets the shell wait for the answer instead of asserting
+/// one it never asked for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SessionConfirmation {
+    /// Nothing is outstanding: nobody is signed in, this page lifetime
+    /// performed the sign-in itself, or a rotation / `/api/v1/auth/me` has
+    /// since answered for the session.
+    #[default]
+    Confirmed,
+    /// Rebuilt from the persisted bundle and not yet checked against the OP.
+    Unconfirmed,
+    /// The check came back negative. The persisted bundle has been cleared and
+    /// the user belongs on the signed-out screen.
+    Ended,
+}
+
 /// Authentication context for the application
 #[derive(Clone, Default)]
 pub struct AuthContext {
@@ -51,12 +74,32 @@ pub struct AuthContext {
     /// effect sees profile_completed=true -> /dashboard bounces a
     /// user clicking Calendar to Dashboard on the first click.
     pub server_loaded: bool,
+    /// MAPPS-661: has the OP confirmed this session in this page lifetime?
+    ///
+    /// [`Self::is_authenticated`] answers "we hold a token bundle", which a
+    /// restored tab answers yes to for a session that ended while it was
+    /// unloaded. This is the narrower fact, and it is what the mount-time
+    /// confirmation ([`confirm_restored_session`]) resolves.
+    pub confirmation: SessionConfirmation,
 }
 
 impl AuthContext {
     /// Check if user is authenticated
     pub fn is_authenticated(&self) -> bool {
         self.user.is_some()
+    }
+
+    /// MAPPS-661: may the signed-in shell render right now?
+    ///
+    /// Holding a bundle is not the same as having a session, so a restored tab
+    /// whose access token is spent waits (`is_loading`) for the confirmation
+    /// rather than presenting a dashboard that is about to disappear. The
+    /// render site is `AuthGuard` (`src/lib.rs`), whose `is_loading` branch
+    /// shows the loading state before it ever reads
+    /// [`Self::is_authenticated`]; this names the same rule so it can be
+    /// asserted without a browser.
+    pub fn may_render_signed_in(&self) -> bool {
+        self.is_authenticated() && !self.is_loading
     }
 
     /// Check if user has a specific role
@@ -140,10 +183,21 @@ pub fn use_require_auth() -> Signal<AuthContext> {
     auth
 }
 
-/// Provide authentication context to the application
+/// Provide authentication context to the application.
+///
+/// MAPPS-661: also runs the mount-time session confirmation, because the
+/// context this provides may have been rebuilt from a persisted bundle that
+/// outlived the session it describes. Confirming here rather than from a
+/// polling loop is the point: a tab the browser discarded and re-created must
+/// get its answer at mount, not up to 30 seconds later, and it holds the
+/// signed-in shell back until it has one.
 pub fn use_auth_provider() -> Signal<AuthContext> {
     let auth = use_signal(initial_auth_context);
     use_context_provider(|| auth);
+    let mut confirming = auth;
+    use_future(move || async move {
+        confirm_restored_session(&mut confirming).await;
+    });
     auth
 }
 
@@ -186,6 +240,9 @@ fn initial_auth_context() -> AuthContext {
             // Dev-only ADMIN_EMAIL bypass; the AuthGuard's onboarding
             // gate trusts this synthesized user without a /me round-trip.
             server_loaded: true,
+            // MAPPS-661: this session came from compile-time env, not from a
+            // persisted bundle, so there is no OP answer to wait for.
+            confirmation: SessionConfirmation::Confirmed,
         },
         _ => rehydrate_from_storage()
             .or_else(rehydrate_standalone)
@@ -208,6 +265,11 @@ fn initial_auth_context() -> AuthContext {
 /// Returns `None` (caller falls back to `default()`) if there is no
 /// stored bundle, the bundle's id_token is malformed, or
 /// sessionStorage is disabled.
+///
+/// MAPPS-661: the context this builds is [`SessionConfirmation::Unconfirmed`].
+/// The bundle is a cache; nothing here has asked the OP whether the session it
+/// describes still exists, and a tab restored after the session ended would
+/// otherwise render a dashboard that is about to evict the user.
 fn rehydrate_from_storage() -> Option<AuthContext> {
     use crate::modules::oidc::storage::load_auth;
     use crate::modules::oidc::Tokens;
@@ -238,6 +300,10 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
     // The id_token has no active-tenant claim; seed the active tenant from the
     // home tenant. A tenant switch (or the memberships load) updates it.
     let active_tenant_id = Some(tenant_id);
+    // MAPPS-661: a bundle whose access token is spent (or nearly) is the
+    // discarded-tab case, and nothing signed-in renders until the confirmation
+    // answers.
+    let awaiting_confirmation = confirmation_gates_render(tokens.expires_at, chrono::Utc::now());
     crate::hooks::fetch::api::set_access_token(Some(tokens.access_token.clone()));
     Some(AuthContext {
         user: Some(CurrentUser {
@@ -261,7 +327,11 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
             // /me fetch (use_current_user_loader) fills it in within a tick.
             own_company_id: None,
         }),
-        is_loading: false,
+        // MAPPS-661: the app's existing loading state IS the render gate.
+        // `AuthGuard` shows it before it reads `is_authenticated`, so a
+        // restored tab with a spent token waits for the answer instead of
+        // presenting a shell it has not confirmed.
+        is_loading: awaiting_confirmation,
         error: None,
         tokens: Some(tokens),
         active_tenant_id,
@@ -273,6 +343,9 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
         // MAPPS-317: false until the post-rehydrate /me fetch lands.
         // AuthGuard's onboarding gate trusts this flag; see lib.rs.
         server_loaded: false,
+        // MAPPS-661: a bundle, not a session. `confirm_restored_session`
+        // resolves it at mount.
+        confirmation: SessionConfirmation::Unconfirmed,
     })
 }
 
@@ -286,10 +359,12 @@ fn rehydrate_standalone() -> Option<AuthContext> {
 
     let stored = load_standalone()?;
     let active_tenant_id = Some(stored.user.tenant_id);
+    // MAPPS-661: same gate as the OIDC path above, for the same reason.
+    let awaiting_confirmation = confirmation_gates_render(stored.expires_at, chrono::Utc::now());
     crate::hooks::fetch::api::set_access_token(Some(stored.access_token.clone()));
     Some(AuthContext {
         user: Some(stored.user),
-        is_loading: false,
+        is_loading: awaiting_confirmation,
         error: None,
         // No OIDC tokens in a standalone session; the refresh hook no-ops.
         tokens: None,
@@ -298,7 +373,147 @@ fn rehydrate_standalone() -> Option<AuthContext> {
         memberships_loaded: false,
         // /me reconciles the authoritative user on the next tick.
         server_loaded: false,
+        // MAPPS-661: a persisted session is a cache here too.
+        confirmation: SessionConfirmation::Unconfirmed,
     })
+}
+
+/// MAPPS-661: seconds of remaining access-token life below which a restored
+/// session has to be confirmed before anything signed-in renders.
+///
+/// Mirrors the fetch layer's renewal window deliberately: inside it the very
+/// next request renews anyway, so waiting for the answer costs nothing extra,
+/// and outside it the token is short-lived (600s on the client row) and was
+/// issued by the OP moments ago, which is confirmation enough to render while
+/// `/api/v1/auth/me` catches up. That is what keeps ordinary navigation free
+/// of a spinner.
+const CONFIRMATION_WINDOW_SECS: i64 = 60;
+
+/// Does a restored bundle expiring at `expires_at` have to be confirmed before
+/// the signed-in shell may render?
+fn confirmation_gates_render(
+    expires_at: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    expires_at - now <= chrono::Duration::seconds(CONFIRMATION_WINDOW_SECS)
+}
+
+/// MAPPS-661: ask the identity provider, once and at mount, whether the
+/// session rebuilt from the persisted bundle still exists.
+///
+/// Runs from [`use_auth_provider`], so it starts with the app rather than on a
+/// 30-second loop tick: a tab the browser discarded and re-created is exactly
+/// the case the loops are too late for, and the shell it would otherwise
+/// render is the bug this closes.
+///
+/// Which question gets asked depends on the bundle:
+///
+/// - Access token spent or inside the renewal window: the rotation IS the
+///   question, and the OP refusing it (`invalid_grant`) is the authoritative
+///   "this session is over". It goes through
+///   [`crate::hooks::fetch::api::renew_access_token`], the same single flight
+///   the request path uses (MAPPS-435), so a confirmation that coincides with
+///   a page fetch shares one flight instead of racing it into the OP's
+///   refresh-token reuse detection.
+/// - Access token still comfortably valid: the shell renders, and the answer
+///   comes from the `GET /api/v1/auth/me` that [`use_current_user_loader`]
+///   already fires on this same mount. [`refresh_user_from_me`] records the
+///   outcome, and a 401 there ends the session through the fetch layer. Asking
+///   again from here would spend a second round-trip on an answer already in
+///   flight.
+async fn confirm_restored_session(auth: &mut Signal<AuthContext>) {
+    if auth.peek().confirmation != SessionConfirmation::Unconfirmed {
+        return;
+    }
+    let Some(expires_at) = crate::hooks::fetch::api::persisted_expiry() else {
+        // Rehydrated from a bundle the session store no longer returns (it was
+        // cleared between boot and now, or the store is unreadable). There is
+        // no question left to ask, so release the gate rather than hold the
+        // user on a loading screen forever; the first request to 401 ends the
+        // session through the fetch layer.
+        release_render_gate(auth, "there is no persisted session to confirm");
+        return;
+    };
+    if !confirmation_gates_render(expires_at, chrono::Utc::now()) {
+        return;
+    }
+    // Which session kind this is decides which store the failure branch must
+    // clear. `renew_access_token` prefers the OIDC bundle for the same reason.
+    let standalone = crate::modules::oidc::storage::load_auth().is_none();
+    match crate::hooks::fetch::api::renew_access_token().await {
+        Ok(()) => {
+            // A standalone session keeps `tokens: None` by design (there is no
+            // OIDC bundle to mirror), so only the OIDC path has a copy to
+            // refresh.
+            if !standalone {
+                mirror_rotated_bundle(auth);
+            }
+            mark_session_confirmed(auth);
+        }
+        Err(e) if renewal_is_unrecoverable(&e) => {
+            if standalone {
+                end_standalone_session(auth, &e);
+            } else {
+                end_oidc_session(auth, &e);
+            }
+        }
+        // Same policy as the loops (MAPPS-645): a network-shaped failure is not
+        // evidence the session ended, and signing the user out over a blip is
+        // worse than the one 401 that follows.
+        Err(e) => release_render_gate(auth, &e),
+    }
+}
+
+/// Record that the OP has answered for this session in this page lifetime, and
+/// release the render gate the unconfirmed state was holding.
+fn mark_session_confirmed(auth: &mut Signal<AuthContext>) {
+    let mut a = auth.write();
+    a.confirmation = SessionConfirmation::Confirmed;
+    a.is_loading = false;
+}
+
+/// Let the shell render a session that could NOT be confirmed, because the
+/// question could not be put rather than because it was answered.
+///
+/// Deliberate suppression: the cause is logged, the context stays
+/// [`SessionConfirmation::Unconfirmed`] so nothing downstream reads this as an
+/// answer, and the refresh loops plus the fetch layer's 401 handling still end
+/// a session that really is over. Holding the loading screen instead would
+/// strand a live session behind one failed request.
+fn release_render_gate(auth: &mut Signal<AuthContext>, cause: &str) {
+    tracing::warn!("could not confirm the restored session, rendering it anyway: {cause}");
+    auth.write().is_loading = false;
+}
+
+/// Copy the freshly rotated bundle out of the session store and into the
+/// context, so the context's copy does not age out behind the store.
+///
+/// The store is the source of truth: the renewal wrote there first (MAPPS-435),
+/// and replaying the superseded copy the context still holds is what the OP's
+/// reuse detection answers by killing the grant.
+///
+/// Only for OIDC sessions; a standalone one holds no `tokens` to mirror.
+fn mirror_rotated_bundle(auth: &mut Signal<AuthContext>) {
+    match crate::modules::oidc::storage::load_auth() {
+        Some(fresh) => {
+            auth.write().tokens = Some(Tokens {
+                access_token: fresh.access_token,
+                id_token: fresh.id_token,
+                refresh_token: fresh.refresh_token,
+                expires_at: fresh.expires_at,
+                scope: fresh.scope,
+            });
+        }
+        // The rotation that just succeeded wrote the bundle here, so an empty
+        // store means something cleared it underneath us (a sign-out in
+        // flight, a store that stopped answering). Leaving the context's copy
+        // in place is the safe half; saying nothing about it is how a context
+        // silently ages out behind the store, so it is logged.
+        None => tracing::warn!(
+            "the session store held no bundle right after a successful rotation; \
+             the context keeps the copy it had"
+        ),
+    }
 }
 
 /// Load the organisation the user acts under, from mokosh, after sign-in.
@@ -483,6 +698,11 @@ fn end_oidc_session(auth: &mut Signal<AuthContext>, cause: &str) {
         let mut a = auth.write();
         a.user = None;
         a.tokens = None;
+        // MAPPS-661: the answer came back, and it was no. Release the render
+        // gate with it so the mount path lands on the signed-out state rather
+        // than on a loading screen nothing will ever clear.
+        a.confirmation = SessionConfirmation::Ended;
+        a.is_loading = false;
     }
     crate::hooks::fetch::api::set_access_token(None);
     crate::modules::oidc::storage::clear_auth();
@@ -496,6 +716,9 @@ fn end_standalone_session(auth: &mut Signal<AuthContext>, cause: &str) {
         let mut a = auth.write();
         a.user = None;
         a.tokens = None;
+        // MAPPS-661: see the note on [`end_oidc_session`].
+        a.confirmation = SessionConfirmation::Ended;
+        a.is_loading = false;
     }
     crate::modules::oidc::storage::clear_standalone();
     crate::hooks::fetch::api::set_access_token(None);
@@ -539,15 +762,11 @@ async fn oidc_refresh_tick(auth: &mut Signal<AuthContext>) {
         Ok(()) => {
             // Mirror the rotated bundle into the context so its copy does not
             // age out behind sessionStorage.
-            if let Some(fresh) = crate::modules::oidc::storage::load_auth() {
-                auth.write().tokens = Some(Tokens {
-                    access_token: fresh.access_token,
-                    id_token: fresh.id_token,
-                    refresh_token: fresh.refresh_token,
-                    expires_at: fresh.expires_at,
-                    scope: fresh.scope,
-                });
-            }
+            mirror_rotated_bundle(auth);
+            // MAPPS-661: the OP honoured the grant, so the session it belongs
+            // to exists. That is the confirmation, independently of whether
+            // the /me below lands.
+            mark_session_confirmed(auth);
 
             // Refresh the cached CurrentUser from /v1/auth/me so any
             // server-side change since the original id_token was minted (role
@@ -634,7 +853,9 @@ async fn standalone_refresh_tick(auth: &mut Signal<AuthContext>) {
     // Shared single-flight renewal (MAPPS-435); it persists the rotated
     // session and swaps the fetch layer's bearer.
     match crate::hooks::fetch::api::renew_access_token().await {
-        Ok(()) => {}
+        // MAPPS-661: the server honoured the refresh token, so the session
+        // behind it exists.
+        Ok(()) => mark_session_confirmed(auth),
         Err(e) if renewal_is_unrecoverable(&e) => end_standalone_session(auth, &e),
         // MAPPS-645: transient, for the reason given on the OIDC tick.
         Err(e) => {
@@ -786,12 +1007,26 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
             if standalone_session {
                 crate::modules::oidc::storage::clear_auth();
                 crate::hooks::fetch::api::set_access_token(None);
-                *auth.write() = AuthContext::default();
+                // MAPPS-661: the session is over, and this ran at mount as
+                // readily as from a loop tick. `default()` is the signed-out
+                // context, so `is_loading` goes false with it and AuthGuard
+                // routes to the login screen rather than holding the loading
+                // state. Recorded as Ended so nothing reads the cleared
+                // context as merely "not confirmed yet".
+                *auth.write() = AuthContext {
+                    confirmation: SessionConfirmation::Ended,
+                    ..AuthContext::default()
+                };
             }
             return;
         }
         Err(e) => {
+            // MAPPS-661: not an answer, so the confirmation state is left
+            // alone; a restored context stays Unconfirmed and the loops (or
+            // the next 401) decide. The render gate is released here because
+            // one failed /me must not strand a live session on a spinner.
             tracing::warn!("/api/v1/auth/me failed; keeping cached user: {e:?}");
+            auth.write().is_loading = false;
             return;
         }
     };
@@ -830,6 +1065,13 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
     // mutate above so any AuthGuard re-render that observes
     // server_loaded=true also sees the reconciled profile flag.
     a.server_loaded = true;
+    // MAPPS-661: a 200 from /me is the OP-backed answer that this session
+    // exists (mokosh-server verifies the `at+jwt` before it replies), so it is
+    // what confirms a context rebuilt from the persisted bundle. This is the
+    // confirmation for a mount whose access token was still comfortably
+    // valid; the spent-token case is renewed by `confirm_restored_session`.
+    a.confirmation = SessionConfirmation::Confirmed;
+    a.is_loading = false;
     // MAPPS-427: force the org loader to run again now that /me has confirmed
     // the session. Clearing the flag rather than the list, because the effect
     // keys off the flag: an empty list is a legitimate outcome (the load
@@ -843,6 +1085,11 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
 /// avatar) is correct immediately, not only after the first token
 /// refresh. Sources the role from the API for the reasons in
 /// [`refresh_user_from_me`] (PMS-158). Mount once near the app root.
+///
+/// MAPPS-661: this is also the confirmation for a restored tab whose access
+/// token is still comfortably inside its lifetime. It fires at mount, its
+/// bearer is renewed on the way out by the fetch layer's single flight if it
+/// turns out to be spent, and [`refresh_user_from_me`] records the answer.
 pub fn use_current_user_loader() {
     let mut auth = use_auth();
     let mut loaded = use_signal(|| false);
@@ -924,6 +1171,11 @@ pub fn use_session_end_watch() {
             let mut a = auth.write();
             a.user = None;
             a.tokens = None;
+            // MAPPS-661: the fetch layer ended the session, which is an
+            // answer. Release the render gate with it so a restored window
+            // cannot sit on the loading state instead of the login screen.
+            a.confirmation = SessionConfirmation::Ended;
+            a.is_loading = false;
         }
         // One-shot: lower it so a later sign-in is not torn down by a
         // flag left raised from the previous session.
@@ -1193,6 +1445,167 @@ mod tests {
                 "{transient:?} is worth another tick, not a sign-out"
             );
         }
+    }
+
+    /// MAPPS-661: a context rebuilt from the persisted bundle, as the two
+    /// rehydrate paths produce it. `expires_in` is the access token's
+    /// remaining life at the moment of the rebuild.
+    fn restored(expires_in: chrono::Duration) -> super::AuthContext {
+        let now = chrono::Utc::now();
+        super::AuthContext {
+            user: Some(a_user()),
+            is_loading: super::confirmation_gates_render(now + expires_in, now),
+            confirmation: super::SessionConfirmation::Unconfirmed,
+            ..Default::default()
+        }
+    }
+
+    fn a_user() -> crate::modules::auth::CurrentUser {
+        crate::modules::auth::CurrentUser {
+            id: uuid::Uuid::from_u128(0xf00d),
+            tenant_id: uuid::Uuid::from_u128(0x0dd1),
+            email: "someone@example.com".to_string(),
+            first_name: String::new(),
+            last_name: String::new(),
+            role: crate::modules::auth::UserRole::default(),
+            timezone: "UTC".to_string(),
+            avatar_url: None,
+            profile_completed: true,
+            date_format_string: None,
+            theme_base_mode: None,
+            theme_accent_id: None,
+            own_company_id: None,
+        }
+    }
+
+    /// MAPPS-661 recurrence guard, in the shape of the MAPPS-435 and MAPPS-522
+    /// ones: the persisted bundle is a cache, and a tab the browser unloaded
+    /// and restored may not present a signed-in shell on the strength of it.
+    /// The reported symptom was exactly that - a restored tab showing the
+    /// dashboard for a session that had already ended, then evicting the user
+    /// out from under themselves ten seconds later.
+    #[test]
+    fn a_restored_session_does_not_render_before_it_is_confirmed() {
+        let ctx = restored(chrono::Duration::seconds(-1));
+        assert_eq!(ctx.confirmation, super::SessionConfirmation::Unconfirmed);
+        assert!(
+            !ctx.may_render_signed_in(),
+            "a restored context with a spent access token must wait for the confirmation"
+        );
+        // Inside the renewal window is the same case: the next request renews
+        // anyway, so there is nothing to gain by rendering first.
+        assert!(!restored(chrono::Duration::seconds(30)).may_render_signed_in());
+        // And the shape above is the shape the rehydrates actually build, so
+        // this cannot pass on a context only the test constructs.
+        assert_eq!(
+            production_src()
+                .matches("is_loading: awaiting_confirmation")
+                .count(),
+            2,
+            "both rehydrate paths must hold the render back on a spent token"
+        );
+    }
+
+    /// The other half of the rule: confirmation must not cost a spinner on
+    /// every navigation. A token comfortably inside its 600s lifetime was
+    /// issued by the OP moments ago, so the shell renders while
+    /// `/api/v1/auth/me` catches up.
+    #[test]
+    fn a_restored_session_with_a_live_token_renders_immediately() {
+        let ctx = restored(chrono::Duration::seconds(500));
+        assert_eq!(ctx.confirmation, super::SessionConfirmation::Unconfirmed);
+        assert!(ctx.may_render_signed_in());
+    }
+
+    #[test]
+    fn only_a_spent_token_gates_the_render() {
+        let now = chrono::Utc::now();
+        for (remaining, gated) in [(-600, true), (-1, true), (0, true), (59, true), (61, false)] {
+            assert_eq!(
+                super::confirmation_gates_render(now + chrono::Duration::seconds(remaining), now),
+                gated,
+                "{remaining}s of remaining access-token life"
+            );
+        }
+    }
+
+    /// MAPPS-661: both rehydrate paths produce the unconfirmed state, and the
+    /// state only moves on an OP-backed answer. A source scan because the
+    /// rehydrates read the session store and the transitions run inside
+    /// futures that need a browser; what is pinned is which sites may decide.
+    #[test]
+    fn only_the_identity_provider_confirms_a_session() {
+        let src = production_src();
+        assert_eq!(
+            src.matches("confirmation: SessionConfirmation::Unconfirmed")
+                .count(),
+            2,
+            "both rehydrate paths must produce the unconfirmed state"
+        );
+        // The renewal and the /me reconcile, and nothing else.
+        assert_eq!(
+            src.matches("fn mark_session_confirmed").count(),
+            1,
+            "one helper owns the move to confirmed"
+        );
+        assert_eq!(
+            src.matches("SessionConfirmation::Confirmed").count(),
+            3,
+            "confirmed is set by mark_session_confirmed, the /me reconcile, and the dev bypass"
+        );
+    }
+
+    /// MAPPS-661: the confirmation runs at mount, not on a loop tick, and
+    /// spends the renewal already single-flighted by the fetch layer
+    /// (MAPPS-435) rather than opening a second one against the same refresh
+    /// token - which is what the OP's reuse detection answers by killing the
+    /// grant.
+    #[test]
+    fn the_mount_confirmation_shares_the_single_flight_renewal() {
+        let src = production_src();
+        let provider = src
+            .split_once("pub fn use_auth_provider()")
+            .map(|(_, after)| after)
+            .expect("the auth provider is what mounts the confirmation");
+        assert!(
+            provider.contains("confirm_restored_session(&mut confirming).await"),
+            "the confirmation must start with the app, not with a poll tick"
+        );
+        let confirmation = src
+            .split_once("async fn confirm_restored_session")
+            .map(|(_, after)| after)
+            .expect("this file owns the mount confirmation");
+        assert!(
+            confirmation.contains("crate::hooks::fetch::api::renew_access_token().await"),
+            "the shared renewal is the vehicle; a second flight is a reuse detection"
+        );
+        assert!(
+            !confirmation.contains("refresh_tokens("),
+            "reaching past the fetch layer would race the request path's renewal"
+        );
+    }
+
+    /// MAPPS-661: `AuthGuard` is the render site, and its loading branch is
+    /// what holds an unconfirmed restore back. It sits in `src/lib.rs`, so
+    /// this pins the two properties that make `is_loading` the gate: the
+    /// branch exists, and it is reached BEFORE the authenticated one.
+    #[test]
+    fn the_route_guard_shows_the_loading_state_before_it_reads_the_session() {
+        const LIB_SRC: &str = include_str!("../lib.rs");
+        let guard = LIB_SRC
+            .split_once("pub fn AuthGuard()")
+            .map(|(_, after)| after)
+            .expect("the router's authenticated layout");
+        let loading = guard
+            .find("if auth_state.is_loading {")
+            .expect("AuthGuard must render the loading state while a session is unconfirmed");
+        let authenticated = guard
+            .find("if !auth_state.is_authenticated() {")
+            .expect("AuthGuard must still route a signed-out user away");
+        assert!(
+            loading < authenticated,
+            "the loading branch has to come first, or an unconfirmed restore renders the shell"
+        );
     }
 
     /// A failed load must leave the org unnamed rather than invent one. The
