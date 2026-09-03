@@ -6,7 +6,7 @@ name: Build OCI container
 on:
   push:
     branches:
-      - "main"
+      #- "main"
       # Branch publish allow-list (MAPPS-421). A push to a branch named here
       # publishes ONLY a tag derived from the branch name, so staging can run a
       # feature branch while `:latest` stays reachable from main alone. This
