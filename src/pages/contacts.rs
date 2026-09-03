@@ -5740,6 +5740,8 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     let contact_id_str = props.id.clone();
     let id_for_resource = contact_id_str.clone();
     let id_for_tickets = contact_id_str.clone();
+    // MAPPS-568: the id the ticket-notes feed is read for.
+    let id_for_notes = contact_id_str.clone();
     let id_for_edit = contact_id_str.clone();
     let id_for_delete = contact_id_str.clone();
     let id_for_portal = contact_id_str.clone();
@@ -5771,6 +5773,20 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
             ))
             .await
             .ok()
+        }
+    });
+    // MAPPS-568: the notes written on this contact's tickets (PMS-468's agent
+    // feed). Secondary like the tickets list above, but the `Result` is kept
+    // rather than `.ok()`-ed so the card can report a failed read instead of
+    // rendering it as an empty history.
+    let notes_resource = use_resource(move || {
+        let id = id_for_notes.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_all_authed::<ContactNote>(&format!(
+                "/contacts/{id}/notes"
+            ))
+            .await
         }
     });
 
@@ -6008,6 +6024,10 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                     div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
                         div { class: "lg:col-span-2 space-y-6",
                             ContactTicketsCard { tickets_resource: tickets }
+                            // MAPPS-568: beside Recent Tickets, because the two
+                            // answer different questions - which tickets exist,
+                            // and what was said on them.
+                            ContactNotesCard { notes_resource }
                             // MAPPS-614: near the bottom of the record, the
                             // Google Contacts placement David described.
                             // Hidden when empty, like the company card.
@@ -6298,6 +6318,137 @@ fn ContactTicketsCard(tickets_resource: Resource<Option<PaginatedTicketSummaries
                         }
                     },
                 }
+            }
+        }
+    }
+}
+
+/// MAPPS-568: one note off `GET /contacts/{id}/notes`, the agent-side "all
+/// comments from this contact" feed PMS-468 added.
+///
+/// Read-only on this page: a note belongs to a ticket, so there is no
+/// `POST /contacts/{id}/notes` and writing one still happens on ticket detail.
+/// The server sends more of `TicketNoteResponse` than this decodes; serde drops
+/// the rest.
+#[derive(Clone, Debug, Deserialize)]
+struct ContactNote {
+    id: uuid::Uuid,
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    created_by_name: String,
+    /// PMS-449 phase 2: set when a portal contact wrote it. `is_some()` is the
+    /// Customer / Agent distinction, the same one the portal conversation
+    /// draws, rather than a name-equality guess.
+    #[serde(default)]
+    created_by_contact_id: Option<uuid::Uuid>,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Newest first. The server already orders `created_at DESC`, but the card
+/// renders the order it states rather than inheriting one.
+fn notes_newest_first(mut notes: Vec<ContactNote>) -> Vec<ContactNote> {
+    notes.sort_by_key(|n| std::cmp::Reverse(n.created_at));
+    notes
+}
+
+/// Who a note came from, per row.
+///
+/// Today's server returns only notes the contact themself wrote
+/// (`list_notes_by_contact` filters on `created_by_contact_id` and
+/// `note_type='public'`), so every row reads Customer; the Agent branch is what
+/// keeps the labelling right if that feed widens.
+fn note_origin_label(note: &ContactNote) -> &'static str {
+    if note.created_by_contact_id.is_some() {
+        "Customer"
+    } else {
+        "Agent"
+    }
+}
+
+/// The author's name, or the origin label when the server sent none, so a row
+/// never renders a blank byline.
+fn note_author_name(note: &ContactNote) -> String {
+    let name = note.created_by_name.trim();
+    if name.is_empty() {
+        note_origin_label(note).to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// Absolute timestamp for a note line, honouring the per-user format pref the
+/// same way the ticket journal's `fmt_datetime` does.
+fn fmt_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
+    let pref = crate::utils::datetime::user_format_pref();
+    crate::utils::datetime::format_user_datetime(
+        dt,
+        pref.as_deref().filter(|s| !s.trim().is_empty()),
+    )
+}
+
+/// MAPPS-568: the notes written on this contact's tickets, so an agent reads
+/// the conversation history without opening each ticket.
+///
+/// The resource keeps its `Result` rather than `.ok()`-ing it: a failed fetch
+/// renders the server's reason, because "no notes" and "could not read the
+/// notes" are different facts.
+#[component]
+fn ContactNotesCard(notes_resource: Resource<Result<Vec<ContactNote>, String>>) -> Element {
+    let snap = notes_resource.read_unchecked();
+    rsx! {
+        Card { title: "Ticket Notes",
+            match &*snap {
+                None => rsx! {
+                    p { class: "text-sm text-muted", "Loading notes…" }
+                },
+                Some(Err(err)) => rsx! {
+                    p { class: "text-sm text-red-600 dark:text-red-300",
+                        "Could not load notes for this contact: {err}"
+                    }
+                },
+                Some(Ok(rows)) if rows.is_empty() => rsx! {
+                    p { class: "text-sm text-muted", "No notes from this contact's tickets yet." }
+                },
+                Some(Ok(rows)) => {
+                    let rows = notes_newest_first(rows.clone());
+                    rsx! {
+                        ul { class: "space-y-4",
+                            for note in rows.into_iter() {
+                                {
+                                    let key = note.id.to_string();
+                                    let author = note_author_name(&note);
+                                    let label = note_origin_label(&note);
+                                    let variant = if note.created_by_contact_id.is_some() {
+                                        BadgeVariant::Blue
+                                    } else {
+                                        BadgeVariant::Gray
+                                    };
+                                    let when = fmt_datetime(note.created_at);
+                                    // MAPPS-409: machine-readable form for the `<time>` wrapper.
+                                    let when_iso = note.created_at.to_rfc3339();
+                                    rsx! {
+                                        li { key: "{key}", class: "rounded-md border border-line bg-surface-2 p-4",
+                                            div { class: "flex items-center justify-between mb-2 gap-2",
+                                                div { class: "flex items-center gap-2",
+                                                    span { class: "font-medium text-content text-sm", "{author}" }
+                                                    Badge { variant, "{label}" }
+                                                }
+                                                span { class: "text-xs text-muted",
+                                                    time { datetime: "{when_iso}", "{when}" }
+                                                }
+                                            }
+                                            // Notes are authored with the Markdown
+                                            // composer on ticket detail, so they are
+                                            // rendered, not shown as raw asterisks.
+                                            crate::components::Markdown { content: note.content.clone() }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
             }
         }
     }
@@ -7682,5 +7833,129 @@ mod mapps614_notes_as_markdown_tests {
             !code.contains("\"notes\": optional_string("),
             "optional_string would send null for an emptied field"
         );
+    }
+}
+
+#[cfg(test)]
+mod mapps568_contact_notes_tests {
+    use super::*;
+
+    const SRC: &str = include_str!("contacts.rs");
+
+    /// The shipping code with runs of whitespace collapsed, excluding this
+    /// module: every assertion quotes the pattern it looks for, so a scan
+    /// including its own source would match itself and pass regardless.
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod mapps568_contact_notes_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    fn note(seconds: i64, author: &str, from_contact: bool) -> ContactNote {
+        ContactNote {
+            id: uuid::Uuid::from_u128(seconds as u128 + 1),
+            content: format!("note at {seconds}"),
+            created_by_name: author.to_string(),
+            created_by_contact_id: from_contact.then(|| uuid::Uuid::from_u128(99)),
+            created_at: chrono::DateTime::from_timestamp(seconds, 0)
+                .expect("a valid test timestamp"),
+        }
+    }
+
+    /// Newest first, whatever order the pages arrived in. The feed is a
+    /// conversation history, and a history that opens on the oldest line makes
+    /// the reader scroll to find out what happened last.
+    #[test]
+    fn notes_render_newest_first() {
+        let rows = vec![
+            note(200, "Middle", true),
+            note(100, "Oldest", true),
+            note(300, "Newest", true),
+        ];
+        let sorted = notes_newest_first(rows);
+        let names: Vec<&str> = sorted
+            .iter()
+            .map(|n| n.created_by_name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["Newest", "Middle", "Oldest"]);
+    }
+
+    /// Each row says whether the customer or an agent wrote it, taken from the
+    /// field the server sets rather than from comparing display names.
+    #[test]
+    fn each_note_is_labelled_customer_or_agent() {
+        assert_eq!(note_origin_label(&note(1, "Dana Reed", true)), "Customer");
+        assert_eq!(note_origin_label(&note(1, "Sam Agent", false)), "Agent");
+    }
+
+    /// A note whose `created_by_name` came back empty still names something, so
+    /// no row renders a blank byline next to its badge.
+    #[test]
+    fn a_nameless_note_falls_back_to_its_origin() {
+        assert_eq!(note_author_name(&note(1, "Dana Reed", true)), "Dana Reed");
+        assert_eq!(note_author_name(&note(1, "  ", true)), "Customer");
+        assert_eq!(note_author_name(&note(1, "", false)), "Agent");
+    }
+
+    /// The card is fed by the contact-scoped feed, through the paging helper,
+    /// and it is mounted on the detail page. Without the mount the component
+    /// compiles and renders nowhere.
+    #[test]
+    fn the_detail_page_reads_the_contact_notes_endpoint() {
+        let code = code_only();
+        assert!(
+            code.contains("get_all_authed::<ContactNote>"),
+            "the whole feed is read through the paging helper"
+        );
+        assert!(
+            code.contains("\"/contacts/{id}/notes\""),
+            "the contact-scoped notes path, not the ticket one"
+        );
+        assert!(
+            code.contains("ContactNotesCard { notes_resource }"),
+            "the card is mounted on ContactDetailPage"
+        );
+    }
+
+    /// A failed read says so. `.ok()` here would render a server error as an
+    /// empty history, which reads to an agent as "this contact has said
+    /// nothing" - a different and unfalsifiable claim.
+    #[test]
+    fn a_failed_read_is_reported_and_not_flattened_into_emptiness() {
+        let code = code_only();
+        let start = code
+            .find("get_all_authed::<ContactNote>")
+            .expect("the notes read is in this file");
+        let window: String = code[start..].chars().take(160).collect();
+        assert!(
+            !window.contains(".ok()"),
+            "the notes resource keeps its Result: {window}"
+        );
+        assert!(
+            code.contains("\"Could not load notes for this contact: {err}\""),
+            "the failure renders the server's reason inline"
+        );
+        assert!(
+            code.contains("\"No notes from this contact's tickets yet.\""),
+            "an empty feed has its own wording, distinct from the error"
+        );
+    }
+
+    /// Read-only, as the endpoint is: a note belongs to a ticket, and the
+    /// server offers no `POST /contacts/{id}/notes`. A composer here would be
+    /// a control that cannot work.
+    #[test]
+    fn the_notes_card_never_writes_a_note() {
+        let code = code_only();
+        for helper in ["post_authed", "put_authed", "patch_authed", "delete_authed"] {
+            for (idx, _) in code.match_indices(helper) {
+                let window: String = code[idx..].chars().take(200).collect();
+                assert!(
+                    !window.contains("/notes"),
+                    "{helper} must never address a notes path: {window}"
+                );
+            }
+        }
     }
 }
