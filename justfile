@@ -52,7 +52,7 @@ default:
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width
+check: check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging
 
 # Check web/WASM compilation
 [group: 'check']
@@ -98,6 +98,13 @@ check-page-width:
 check-hooks-before-return:
     bash scripts/check-hooks-before-return.sh --self-test
     bash scripts/check-hooks-before-return.sh
+
+# MAPPS-695: an awaited fetch collapsed with `.ok()` threw the server's reason away at the statement that decides what the page renders, so a 401, a 500, a decode mismatch and an empty tenant all arrived as the same `None`. --self-test first, so a guard that stopped guarding fails loudly.
+[doc("Fail if an awaited fetch drops its error instead of logging it first (MAPPS-695).")]
+[group: 'check']
+check-fetch-error-logging:
+    bash scripts/check-fetch-error-logging.sh --self-test
+    bash scripts/check-fetch-error-logging.sh
 
 # MAPPS-584: keep the Markdown corrections in a cascade layer that outranks @tailwindcss/typography. In `@layer components` they lost to the plugin and shipped inert. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']

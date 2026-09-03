@@ -57,6 +57,7 @@ pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Elem
                 "/form-request-links?company_id={id}"
             ))
             .await
+            .inspect_err(|e| tracing::error!("company request link load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -191,6 +192,7 @@ pub fn SentRequestLinksPanel(reload: ReadSignal<u32>) -> Element {
         let _token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_authed_typed::<Vec<RequestLink>>("/form-request-links")
             .await
+            .inspect_err(|e| tracing::error!("sent request link load failed: {e}"))
             .ok()
     });
 
@@ -322,9 +324,26 @@ pub(crate) fn SendRequestLinkModal(
     // arrival.
     let forms = use_resource(|| async {
         let _token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_authed_typed::<Vec<FormDefinition>>("/forms?active_only=true")
-            .await
-            .ok()
+        // An empty form picker is what a tenant with no active definitions
+        // looks like too, so each outcome says which it is.
+        match crate::hooks::fetch::api::get_authed_typed::<Vec<FormDefinition>>(
+            "/forms?active_only=true",
+        )
+        .await
+        {
+            Ok(rows) => {
+                if rows.is_empty() {
+                    tracing::info!(
+                        "form picker load succeeded and this tenant has no active forms"
+                    );
+                }
+                Some(rows)
+            }
+            Err(e) => {
+                tracing::error!("form picker load failed, the picker will be empty: {e}");
+                None
+            }
+        }
     });
     let form_options: Vec<SelectOption> = match &*forms.read_unchecked() {
         Some(Some(list)) => list
@@ -350,6 +369,18 @@ pub(crate) fn SendRequestLinkModal(
                 "/contacts/companies/{id}/contacts"
             ))
             .await
+            .inspect(|rows| {
+                if rows.is_empty() {
+                    tracing::info!(
+                        "contact picker load succeeded and company {id} has no contacts"
+                    );
+                }
+            })
+            .inspect_err(|e| {
+                tracing::error!(
+                    "contact picker load failed for {id}, the picker will be empty: {e}"
+                )
+            })
             .ok()
         }
     });

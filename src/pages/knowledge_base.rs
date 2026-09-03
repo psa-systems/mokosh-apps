@@ -398,6 +398,7 @@ pub fn KBHomePage() -> Element {
         let token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
             .await
+            .inspect_err(|e| tracing::error!("kb category grid load failed: {e}"))
             .ok()
     });
 
@@ -419,6 +420,7 @@ pub fn KBHomePage() -> Element {
         let path = format!("/kb/articles?page=1&per_page={RECENT_LIMIT}");
         crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(&path, &token)
             .await
+            .inspect_err(|e| tracing::error!("kb recent article load failed: {e}"))
             .ok()
     });
 
@@ -433,6 +435,9 @@ pub fn KBHomePage() -> Element {
             &token,
         )
         .await
+        // Best-effort: the card is omitted, the same as a window with no
+        // ticket-driving article in it.
+        .inspect_err(|e| tracing::warn!("kb top ticket-driving article load failed: {e}"))
         .ok()
     });
 
@@ -861,9 +866,24 @@ pub fn KBArticleListPage(
     let categories_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
+        // An empty dropdown is what a tenant with no categories looks like
+        // too, so each outcome says which it is.
+        match crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
             .await
-            .ok()
+        {
+            Ok(rows) => {
+                if rows.is_empty() {
+                    tracing::info!(
+                        "kb category filter load succeeded and this tenant has no categories"
+                    );
+                }
+                Some(rows)
+            }
+            Err(e) => {
+                tracing::error!("kb category filter load failed, the dropdown will be empty: {e}");
+                None
+            }
+        }
     });
     let categories: Vec<KbCategory> = match &*categories_resource.read_unchecked() {
         Some(Some(rows)) => rows.clone(),
@@ -880,6 +900,7 @@ pub fn KBArticleListPage(
         let token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_all_with_auth::<KbArticle>("/kb/articles", &token)
             .await
+            .inspect_err(|e| tracing::error!("kb list tree article load failed: {e}"))
             .ok()
     });
     let tree_articles: Vec<KbArticle> = match &*tree_articles_resource.read_unchecked() {
@@ -918,6 +939,7 @@ pub fn KBArticleListPage(
                 let path = format!("/kb/articles?page={current_page}&per_page={PER_PAGE}{filters}");
                 crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(&path, &token)
                     .await
+                    .inspect_err(|e| tracing::error!("kb article list load failed: {e}"))
                     .ok()
                     .map(|resp| (resp.data, resp.meta.total))
             } else {
@@ -932,6 +954,7 @@ pub fn KBArticleListPage(
                 };
                 crate::hooks::fetch::api::get_all_with_auth::<KbArticle>(&path, &token)
                     .await
+                    .inspect_err(|e| tracing::error!("kb tag view article load failed: {e}"))
                     .ok()
                     .map(|rows| {
                         let total = rows.len() as u64;
@@ -1239,6 +1262,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_authed::<KbArticle>(&format!("/kb/articles/{id_for_article}"))
             .await
+            .inspect_err(|e| tracing::error!("kb article load failed for {id_for_article}: {e}"))
             .ok()
     }));
 
@@ -1250,6 +1274,9 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
             "/kb/articles/{id_for_versions}/versions"
         ))
         .await
+        .inspect_err(|e| {
+            tracing::error!("kb version history load failed for {id_for_versions}: {e}")
+        })
         .ok()
     }));
 
@@ -1259,6 +1286,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         let token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
             .await
+            .inspect_err(|e| tracing::error!("kb breadcrumb category load failed: {e}"))
             .ok()
     });
 
@@ -1268,6 +1296,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         let token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_all_with_auth::<KbArticle>("/kb/articles", &token)
             .await
+            .inspect_err(|e| tracing::error!("kb detail tree article load failed: {e}"))
             .ok()
     });
 
@@ -1309,6 +1338,9 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
             &token,
         )
         .await
+        // Best-effort: an unknown count hides the rating UI, which is also
+        // what a single-user tenant does.
+        .inspect_err(|e| tracing::warn!("kb user count load failed, hiding the rating: {e}"))
         .ok()
         .map(|resp| resp.meta.total)
     });
@@ -1681,6 +1713,9 @@ fn MeasuredDurationCard(article_id: String) -> Element {
                 "/kb/articles/{id}/measured-duration"
             ))
             .await
+            // Best-effort: the card is omitted, the same as an article nobody
+            // has timed yet.
+            .inspect_err(|e| tracing::warn!("kb measured duration load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -2014,9 +2049,24 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     let categories_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
+        // An empty dropdown is what a tenant with no categories looks like
+        // too, so each outcome says which it is.
+        match crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
             .await
-            .ok()
+        {
+            Ok(rows) => {
+                if rows.is_empty() {
+                    tracing::info!(
+                        "kb editor category load succeeded and this tenant has no categories"
+                    );
+                }
+                Some(rows)
+            }
+            Err(e) => {
+                tracing::error!("kb editor category load failed, the dropdown will be empty: {e}");
+                None
+            }
+        }
     });
     let categories: Vec<KbCategory> = match &*categories_resource.read_unchecked() {
         Some(Some(rows)) => rows.clone(),

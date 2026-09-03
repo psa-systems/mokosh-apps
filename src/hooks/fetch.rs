@@ -36,6 +36,31 @@ pub fn active_tenant_generation() -> u64 {
     0
 }
 
+/// MAPPS-695: fall back to an empty list, saying which outcome happened.
+///
+/// A dropdown's option list, a badge that hides itself, a related-records
+/// card: on all of them a failed read and a tenant that genuinely has none
+/// render identically, so `.ok().unwrap_or_default()` left the console with
+/// nothing to separate a 500 from an empty tenant. Both outcomes are stated
+/// here under distinct messages, the failure at `error` because the empty
+/// list it substitutes is what the page then renders as fact.
+///
+/// `what` names the read, singular and lowercase: `"asset type option"`.
+pub fn list_or_empty<T, E: std::fmt::Display>(what: &str, result: Result<Vec<T>, E>) -> Vec<T> {
+    match result {
+        Ok(rows) => {
+            if rows.is_empty() {
+                tracing::info!("{what} load succeeded and this tenant has none");
+            }
+            rows
+        }
+        Err(e) => {
+            tracing::error!("{what} load failed, falling back to an empty list: {e}");
+            Vec::new()
+        }
+    }
+}
+
 /// App-wide "is mokosh-server reachable" flag (MAPPS-333). `true`
 /// (reachable) on boot; flipped to `false` by the classification helpers
 /// below when a request fails with a "down" condition, and back to
@@ -721,6 +746,9 @@ pub mod api {
         // A real HTTP response (even an error one) proves reachability; a
         // 5xx is classified as "down" (MAPPS-333).
         super::note_response_status(status);
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
         let body = response.text().await.unwrap_or_default();
         match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
             Ok(env) => {
@@ -1373,6 +1401,9 @@ pub mod api {
                 .await
                 .map_err(|e| ApiError::Decode(e.to_string()));
         }
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
         let body = response.text().await.unwrap_or_default();
         let (message, fields) =
             match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
@@ -1470,6 +1501,9 @@ pub mod api {
             note_agent_unauthorized().await;
         }
         if !(200..300).contains(&status) {
+            // fetch-error-logging-allow: the request already failed and its status
+            // is what gets reported; an unreadable body only costs the server's own
+            // message, and the status-class fallback is used in its place.
             let body = resp.text().await.unwrap_or_default();
             let (message, fields) =
                 match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
@@ -1594,6 +1628,9 @@ pub mod api {
         if (200..300).contains(&status) {
             return Ok(());
         }
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
         let body = resp.text().await.unwrap_or_default();
         let (message, fields) =
             match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
@@ -1686,6 +1723,9 @@ pub mod api {
         if (200..300).contains(&status) {
             Ok(())
         } else {
+            // fetch-error-logging-allow: the request already failed and its status
+            // is what gets reported; an unreadable body only costs the server's own
+            // message, and the status-class fallback is used in its place.
             let body = resp.text().await.unwrap_or_default();
             let (message, fields) =
                 match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {

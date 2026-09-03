@@ -975,8 +975,18 @@ fn NotificationBell() -> Element {
         // refetches when the user switches org (notifications are
         // tenant-scoped), matching the dashboard/list pages.
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // An empty bell is what a failed read looks like too, so both
+        // outcomes say which one they are.
         crate::hooks::fetch::api::get_authed::<NotificationPage>("/notifications")
             .await
+            .inspect(|page| {
+                if page.data.is_empty() {
+                    tracing::info!("notification load succeeded and the inbox is empty");
+                }
+            })
+            .inspect_err(|e| {
+                tracing::error!("notification load failed, the bell will read empty: {e}")
+            })
             .ok()
             .map(|page| page.data)
             .unwrap_or_default()
@@ -1046,8 +1056,18 @@ fn NotificationBell() -> Element {
 fn ApprovalsBadge() -> Element {
     let inbox = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // The badge collapses to nothing on an empty queue AND on a failed
+        // read, so the log is the only thing that separates them.
         crate::hooks::fetch::api::get_authed::<Vec<serde_json::Value>>("/approvals/pending")
             .await
+            .inspect(|rows| {
+                if rows.is_empty() {
+                    tracing::info!("pending approval load succeeded and the queue is empty");
+                }
+            })
+            .inspect_err(|e| {
+                tracing::error!("pending approval load failed, the badge will stay hidden: {e}")
+            })
             .ok()
             .unwrap_or_default()
     });

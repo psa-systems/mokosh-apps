@@ -113,6 +113,9 @@ fn first_image(evt: &web_sys::ClipboardEvent) -> Option<web_sys::File> {
 async fn read_bytes(file: &web_sys::File) -> Option<Vec<u8>> {
     let buffer = wasm_bindgen_futures::JsFuture::from(file.array_buffer())
         .await
+        // A `None` here silently drops the pasted image: nothing is uploaded
+        // and nothing is said, so the reason has to reach the console.
+        .inspect_err(|e| tracing::warn!("pasted image could not be read: {e:?}"))
         .ok()?;
     // `Uint8Array::new` takes the buffer as a `JsValue`, which is what the
     // promise already resolved to; there is nothing to downcast.

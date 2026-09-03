@@ -914,10 +914,11 @@ pub fn TicketListPage() -> Element {
     // strictly better than fabricating slugs.
     let status_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<RemoteTicketStatus>("/tickets/statuses")
-            .await
-            .ok()
-            .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "ticket status filter option",
+            crate::hooks::fetch::api::get_all_authed::<RemoteTicketStatus>("/tickets/statuses")
+                .await,
+        )
     });
     // MAPPS-546: the tenant's own priorities, for the same reason as the
     // statuses above - the filter sends an id, and the previous hardcoded
@@ -925,10 +926,11 @@ pub fn TicketListPage() -> Element {
     // never match.
     let priority_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<RemoteTicketPriority>("/tickets/priorities")
-            .await
-            .ok()
-            .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "ticket priority filter option",
+            crate::hooks::fetch::api::get_all_authed::<RemoteTicketPriority>("/tickets/priorities")
+                .await,
+        )
     });
 
     // MAPPS-438: `None` is a failed load, exactly like the other list pages.
@@ -991,6 +993,7 @@ pub fn TicketListPage() -> Element {
             }
             crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteTicket>>(&path, &token)
                 .await
+                .inspect_err(|e| tracing::error!("ticket list load failed: {e}"))
                 .ok()
         }
     });
@@ -1655,9 +1658,11 @@ pub fn TicketNewPage() -> Element {
     // matches the server's PaginatedResponse wire shape; meta is ignored
     // here (lookup tables are short enough to fit one page).
     let priorities_resource = use_resource(|| async move {
-        crate::hooks::fetch::api::get_all_authed::<RemoteTicketPriority>("/tickets/priorities")
-            .await
-            .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "new ticket priority option",
+            crate::hooks::fetch::api::get_all_authed::<RemoteTicketPriority>("/tickets/priorities")
+                .await,
+        )
     });
 
     // Once priorities load, seed the signal with the tenant's default row
@@ -2202,6 +2207,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<RemoteTicketDetail>(&format!("/tickets/{id}"))
                 .await
+                .inspect_err(|e| tracing::error!("ticket detail load failed for {id}: {e}"))
                 .ok()
         }
     });
@@ -2212,6 +2218,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             crate::hooks::fetch::api::get_all_authed::<RemoteNote>(&format!("/tickets/{id}/notes"))
                 .await
+                .inspect_err(|e| tracing::error!("ticket note thread load failed for {id}: {e}"))
                 .ok()
         }
     });
@@ -2224,6 +2231,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                 "/time-entries?ticket_id={id}"
             ))
             .await
+            .inspect_err(|e| tracing::error!("ticket time entry load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -2240,15 +2248,16 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                 "/audit-log/entity/tickets/{id}"
             ))
             .await
+            .inspect_err(|e| tracing::error!("ticket journal load failed for {id}: {e}"))
             .ok()
         }
     });
     let users_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<UserOpt>("/auth/users")
-            .await
-            .ok()
-            .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "ticket assignee option",
+            crate::hooks::fetch::api::get_all_authed::<UserOpt>("/auth/users").await,
+        )
     });
     // PMS-359: the tenant's ticket statuses + priorities, fetched once
     // and reused by the three inline editors on the sidebar. Same
@@ -2256,17 +2265,19 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     // (PMS-358).
     let statuses_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<RemoteTicketStatus>("/tickets/statuses")
-            .await
-            .ok()
-            .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "ticket status editor option",
+            crate::hooks::fetch::api::get_all_authed::<RemoteTicketStatus>("/tickets/statuses")
+                .await,
+        )
     });
     let priorities_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<RemoteTicketPriority>("/tickets/priorities")
-            .await
-            .ok()
-            .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "ticket priority editor option",
+            crate::hooks::fetch::api::get_all_authed::<RemoteTicketPriority>("/tickets/priorities")
+                .await,
+        )
     });
     // PMS-359: per-field error message surfaced inline below the editor.
     // One signal is enough since at most one of the three editors fires
@@ -3886,15 +3897,16 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                 "/{segment}/{id}/approvals"
             ))
             .await
+            .inspect_err(|e| tracing::error!("approval load failed for {segment}/{id}: {e}"))
             .ok()
         }
     });
     let users_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<UserPickerRow>("/auth/users")
-            .await
-            .ok()
-            .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "approver picker option",
+            crate::hooks::fetch::api::get_all_authed::<UserPickerRow>("/auth/users").await,
+        )
     });
 
     let snap = approvals_resource.read_unchecked();

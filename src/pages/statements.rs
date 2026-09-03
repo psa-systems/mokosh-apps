@@ -274,6 +274,7 @@ fn StatementBody() -> Element {
                     "/statements?{query}"
                 ))
                 .await
+                .inspect_err(|e| tracing::error!("statement load failed: {e}"))
                 .ok(),
             )
         }

@@ -89,6 +89,7 @@ fn FormsBuilderContent() -> Element {
         let _token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_authed_typed::<Vec<FormDefinition>>("/forms")
             .await
+            .inspect_err(|e| tracing::error!("request form load failed: {e}"))
             .ok()
     });
 
@@ -101,6 +102,9 @@ fn FormsBuilderContent() -> Element {
         let _token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_authed_typed::<Vec<ServerDraft>>("/forms/drafts")
             .await
+            // Best-effort: with no draft list the editor simply offers no
+            // restore, which is also what having no drafts looks like.
+            .inspect_err(|e| tracing::warn!("form draft load failed, offering no restore: {e}"))
             .ok()
     });
 
@@ -958,6 +962,8 @@ fn use_org_identity() -> (String, Option<String>) {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_authed::<TenantView>("/tenants/current")
             .await
+            // Best-effort: the preview falls back to no MSP name and no logo.
+            .inspect_err(|e| tracing::warn!("org identity load failed for the preview: {e}"))
             .ok()
     });
     match &*tenant.read_unchecked() {
@@ -1478,9 +1484,22 @@ fn FormEditorModal(
     // 100 articles could not pick the ones that fell off the page.
     let articles = use_resource(|| async {
         let _token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_all_authed::<KbArticle>("/kb/articles")
-            .await
-            .ok()
+        // An empty procedure picker is what a tenant with no published
+        // articles looks like too, so each outcome says which it is.
+        match crate::hooks::fetch::api::get_all_authed::<KbArticle>("/kb/articles").await {
+            Ok(rows) => {
+                if rows.is_empty() {
+                    tracing::info!(
+                        "procedure picker load succeeded and this tenant has no published articles"
+                    );
+                }
+                Some(rows)
+            }
+            Err(e) => {
+                tracing::error!("procedure picker load failed, the picker will be empty: {e}");
+                None
+            }
+        }
     });
     let article_options: Vec<SelectOption> = match &*articles.read_unchecked() {
         Some(Some(rows)) => rows

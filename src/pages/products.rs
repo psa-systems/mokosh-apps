@@ -151,6 +151,7 @@ fn ProductsSettingsBody() -> Element {
             let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<Paginated<RemoteProduct>>(&path)
                 .await
+                .inspect_err(|e| tracing::error!("product list load failed: {e}"))
                 .ok()
         }
     });

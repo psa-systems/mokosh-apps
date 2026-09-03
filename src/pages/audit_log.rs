@@ -315,6 +315,9 @@ fn AuditLogContent() -> Element {
         // page. MAPPS-528: the old `per_page=200` was clamped to 100.
         crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users")
             .await
+            // Best-effort: the diff falls back to raw ids and the name filter
+            // to an empty dropdown.
+            .inspect_err(|e| tracing::warn!("audit log user directory load failed: {e}"))
             .ok()
     });
     let users: Vec<RemoteUser> = match &*users_resource.read_unchecked() {

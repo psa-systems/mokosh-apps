@@ -485,10 +485,10 @@ pub fn DashboardTvPage() -> Element {
                 } else {
                     format!("/tickets?team_id={team}")
                 };
-                crate::hooks::fetch::api::get_all_authed::<DashTicket>(&path)
-                    .await
-                    .ok()
-                    .unwrap_or_default()
+                crate::hooks::fetch::list_or_empty(
+                    "dashboard ticket",
+                    crate::hooks::fetch::api::get_all_authed::<DashTicket>(&path).await,
+                )
             }
         })
     };
@@ -506,8 +506,13 @@ pub fn DashboardTvPage() -> Element {
                 } else {
                     format!("/reports/dashboard?team_id={team}")
                 };
+                // An all-zero KPI row is what a quiet tenant looks like too,
+                // so a failed read says so rather than reading as fact.
                 crate::hooks::fetch::api::get_authed::<DashboardReport>(&path)
                     .await
+                    .inspect_err(|e| {
+                        tracing::error!("dashboard KPI load failed, the tiles will read zero: {e}")
+                    })
                     .ok()
                     .unwrap_or_default()
             }
@@ -531,8 +536,18 @@ pub fn DashboardTvPage() -> Element {
                 from.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                 to.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
             );
+            // An empty board is also what a day with nothing scheduled looks
+            // like, so both outcomes name themselves.
             crate::hooks::fetch::api::get_authed::<DispatchResponse>(&path)
                 .await
+                .inspect(|d| {
+                    if d.appointments.is_empty() {
+                        tracing::info!("dispatch load succeeded and nothing is scheduled today");
+                    }
+                })
+                .inspect_err(|e| {
+                    tracing::error!("dispatch load failed, the board will read empty: {e}")
+                })
                 .ok()
                 .unwrap_or_else(empty_dispatch)
         }

@@ -80,9 +80,10 @@ struct CompanyOption {
 /// Load the tenant's companies for the billing pickers (PMS-186).
 /// Best-effort: an empty list on error so a form still renders.
 async fn load_companies() -> Vec<CompanyOption> {
-    crate::hooks::fetch::api::get_all_authed::<CompanyOption>("/contacts/companies")
-        .await
-        .unwrap_or_default()
+    crate::hooks::fetch::list_or_empty(
+        "billing company picker option",
+        crate::hooks::fetch::api::get_all_authed::<CompanyOption>("/contacts/companies").await,
+    )
 }
 
 /// Load the tenant's tax rates for the invoice pickers (MAPPS-192). Reuses the
@@ -308,6 +309,7 @@ fn InvoiceListBody() -> Element {
             }
             crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteInvoice>>(&path, &token)
                 .await
+                .inspect_err(|e| tracing::error!("invoice list load failed: {e}"))
                 .ok()
         }
     });
@@ -781,6 +783,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
             let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<InvoiceDetail>(&format!("/invoices/{id}"))
                 .await
+                .inspect_err(|e| tracing::error!("invoice detail load failed for {id}: {e}"))
                 .ok()
         }
     });
@@ -833,14 +836,29 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
             "/contacts/contacts/{id}"
         ))
         .await
+        // Best-effort: the email preview falls back to no billing address.
+        .inspect_err(|e| tracing::warn!("invoice billing contact load failed for {id}: {e}"))
         .ok()
     });
     let gateway_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<RemoteGateway>("/payment-gateways")
-            .await
-            .ok()
-            .map(|list| list.iter().any(|g| g.is_active && g.configured))
+        // "no gateway is live" and "the gateway list did not load" both hide
+        // the pay affordance, so each says which it is.
+        match crate::hooks::fetch::api::get_all_authed::<RemoteGateway>("/payment-gateways").await {
+            Ok(list) => {
+                let live = list.iter().any(|g| g.is_active && g.configured);
+                if !live {
+                    tracing::info!(
+                        "payment gateway load succeeded and none is active and configured"
+                    );
+                }
+                Some(live)
+            }
+            Err(e) => {
+                tracing::error!("payment gateway load failed, hiding the pay affordance: {e}");
+                None
+            }
+        }
     });
 
     let header_title = match &invoice {
@@ -2286,6 +2304,7 @@ fn PaymentListBody() -> Element {
             let path = format!("/payments?page={current_page}&per_page={PER_PAGE}");
             crate::hooks::fetch::api::get_with_auth::<Paginated<RemotePayment>>(&path, &token)
                 .await
+                .inspect_err(|e| tracing::error!("payment list load failed: {e}"))
                 .ok()
         }
     });
@@ -3584,6 +3603,7 @@ fn TaxRateListBody() -> Element {
         let path = format!("/tax-rates?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteTaxRate>>(&path, &token)
             .await
+            .inspect_err(|e| tracing::error!("tax rate list load failed: {e}"))
             .ok()
     });
 
@@ -4068,6 +4088,7 @@ fn PaymentGatewayConfigBody() -> Element {
         let token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_all_with_auth::<RemoteGateway>("/payment-gateways", &token)
             .await
+            .inspect_err(|e| tracing::error!("payment gateway list load failed: {e}"))
             .ok()
     });
 
