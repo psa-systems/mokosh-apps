@@ -52,14 +52,16 @@ against those modules later inherits the live shape. It did not change
 what the running SPA deserialises.
 
 **Where the copies that matter actually live: `src/pages/`.** There are
-170 `Deserialize` derives across 29 page files, and five of those
-files mention `mokosh_types` at all. `src/pages/tickets.rs` is the
-pattern: its own ticket struct, deserialised straight off the server's
-`TicketResponse`, carrying `procedure_kb_article_id` and
+far more `Deserialize` derives than there are page files that mention
+`mokosh_types` at all (`grep -c 'derive(.*Deserialize' src/pages/*.rs`
+against `grep -l mokosh_types src/pages/*.rs`). `src/pages/tickets.rs`
+is the pattern: its own ticket struct, deserialised straight off the
+server's `TicketResponse`, carrying `procedure_kb_article_id` and
 `asset_name` and a dozen more, with a comment explaining which field it
 deliberately dropped. Narrowing a payload to what a page renders is a
 defensible client design, and it is also a hand copy that no compiler
-compares against the producer. Nothing tracks that yet.
+compares against the producer. The audit at the end of this file is
+where each of those pages now has a decision.
 
 Where a module still carries handler / service files copied from the
 server (`tenants`, `billing`), they sit behind a `server` cargo
@@ -160,10 +162,111 @@ arrived here as `check-types-pin` failing on a real crate change and
 then a test in `src/modules/tickets/models.rs` failing on the bumped
 pin, with nobody diffing anything.
 
-The pages are not. `src/pages/` deserialises server payloads into
-structs declared per page, narrowed to what each page renders. That is
-a defensible client design, and it is also a hand copy no compiler
-compares against the producer. Nothing tracks it.
+The pages are not, by default. `src/pages/` deserialises server
+payloads into structs declared per page, narrowed to what each page
+renders. That is a defensible client design, and it is also a hand copy
+no compiler compares against the producer. MAPPS-627 measured what that
+costs and what to do about it, page by page; the rest of this section
+is that answer.
+
+MAPPS-627 was found while doing MAPPS-626, which bumped the pin for
+PMS-942. That server change made `CreateTimeEntryRequest.company_id`
+an `Option<Uuid>` instead of a `Uuid` and added `entry_kind` to both
+the request and the response. `check-types-pin.sh` went red and named
+the commit, exactly as designed. Bumping the pin and running
+`cargo check --all-targets` was then clean with no source change at
+all, because the page that owns
+time tracking named none of those types: it declared its own private
+decode struct and built its POST and PUT bodies as `serde_json::json!`
+literals. The guard can say a DTO moved. Only the compiler can say
+whether a page cares, and it was not being asked.
+
+### The gate
+
+The fix is one small pattern, not a migration. A page that sends a body
+declares a `Serialize` struct for it and builds that instead of a
+`json!` literal, and a `#[cfg(test)]` function destructures the shared
+DTO exhaustively and feeds the bindings into the local struct:
+
+```rust
+#[allow(dead_code)]
+fn create_request_fields_are_all_considered(req: CreateTimeEntryRequest) {
+    let CreateTimeEntryRequest { user_id, date, /* ...every field... */ } = req;
+    let _ = CreateTimeEntryBody { user_id, date, /* ...the ones we send... */ };
+    let _ = (start_time, end_time, /* ...the ones we deliberately do not... */);
+}
+```
+
+It never runs; compiling it is the whole check. A field added, removed,
+renamed or retyped on mokosh-server fails this build, and the tuple of
+unused bindings is a written record of what the page chooses not to
+send. `src/pages/login.rs` has had this since MAPPS-397 and
+`src/pages/time.rs` since MAPPS-627.
+
+Using the shared type directly is better where it is available, and it
+usually is not. `mokosh-types` derives `Deserialize` on request DTOs
+and `Serialize` on response DTOs, which is the server's half of the
+wire and the opposite of what a client needs, so neither can cross to
+this side. `forms` is the exception: PMS-898 derived both on
+`CreateFormDefinitionRequest` and its siblings, which is why
+`src/pages/forms.rs` can build one and post it with no local struct at
+all. Everything else needs the derive added on mokosh-server first.
+
+### The audit
+
+Every page that decodes or posts a payload whose producing DTO lives in
+`mokosh-types`, and what was decided for it. Pages not listed touch no
+shared-DTO endpoint (`approvals`, `team`, `portal*`, `reports`,
+`credit_notes`, `products`, `dashboards`, `system_status`, and the
+rest). Re-derive the set with:
+
+```sh
+grep -ohE '"/(time-entries|timesheets|work-types|tickets|companies|contacts|sites|auth/users|auth/me|tenants|forms|mileage)[a-z/-]*' src/pages/*.rs
+```
+
+Gated, with the destructuring function above:
+
+| Page | Shared DTOs | Issue |
+| --- | --- | --- |
+| `login.rs` | `LoginRequest`, `LoginResponse` | MAPPS-397 |
+| `request_form.rs`, `forms.rs` | `forms::*` used directly | MAPPS-535 |
+| `time.rs` | `Create`/`Update`/`RejectTimesheet` requests, `TimeEntry`/`TimesheetSummary`/`WorkType`/`TimeRoundingRule` responses | MAPPS-627 |
+
+To gate, one page per issue under MAPPS-685, because each owns a
+feature's whole write surface and none of them reviews as part of
+another:
+
+| Page | What is ungated | Issue |
+| --- | --- | --- |
+| `tickets.rs` | `Create`/`UpdateTicketRequest`, `Create`/`UpdateNoteRequest`, the ticket and note decodes | MAPPS-686 |
+| `contacts.rs` | `Create`/`Update` for company, contact and site | MAPPS-687 |
+| `settings.rs` | `Upsert*` for the ticket taxonomy and work types, `UpdateTenantRequest`, `OrganizationProfileRequest` | MAPPS-688 |
+| `profile.rs` | `UpdateMeRequest` is already a typed `Serialize` struct against `UpdateUserRequest`, with only prose holding it there | MAPPS-689 |
+
+Deliberately not gated, and this is the decision that keeps the pattern
+from becoming a tax. These pages decode a **picker subset** off a
+shared-DTO endpoint: a primary key plus a display label, sometimes a
+number or a company id, feeding a `<select>` or a name column. The key
+and the label are the two fields that do not move, the page renders
+nothing else, and a destructuring function per picker would be dozens
+of assertions about `id` and `name` carrying no signal. If one of these
+grows a write path or starts rendering a business field, it moves to
+the table above.
+
+`assets.rs`, `audit_log.rs`, `big_view.rs`, `billing.rs`, `calendar.rs`,
+`contracts.rs`, `dashboard.rs`, `dashboards_view.rs`,
+`knowledge_base.rs`, `projects.rs`, `quotes.rs`, `request_links.rs`,
+`sla.rs`, `statements.rs`, and the ticket / project / task / user
+pickers inside `time.rs` and `tickets.rs`. A few of these declare their
+picker struct under `src/modules/` rather than in the page: `sla.rs`
+reads `/tickets/priorities` into `TicketPriorityOption` in
+`src/modules/sla/models.rs`, an id and a name. The decision is the same
+wherever the struct sits.
+
+Two sit just outside that rule and stay ungated for their own reason.
+`admin.rs` narrows `TenantResponse` to six fields for a read-only
+super-admin list and sends no body. `onboarding.rs` reads a single
+completion flag.
 
 ## Not only DTOs
 
