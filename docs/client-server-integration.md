@@ -347,6 +347,7 @@ Gated, with the destructuring function above:
 | `tickets.rs` | `Create`/`UpdateTicketRequest`, `Create`/`UpdateNoteRequest`, `TicketResponse`/`TicketNoteResponse` | MAPPS-686 |
 | `profile.rs` | `UpdateUserRequest`, `UserResponse` | MAPPS-689 |
 | `settings.rs` | `Upsert{TicketStatus,TicketPriority,TicketType,TicketQueue,TicketCategory}Request`, `UpsertWorkTypeRequest`, `UpsertCompanyIndustryRequest`, `UpdateTenantRequest`, and the `TicketStatus`/`TicketPriority`/`TicketType`/`TicketQueue`/`TicketCategoryResponse`/`WorkTypeResponse`/`CompanyIndustryResponse`/`TenantResponse` reads behind them | MAPPS-688 |
+| `contacts.rs` | `Create`/`UpdateCompanyRequest`, `Create`/`UpdateContactRequest`, `Create`/`UpdateSiteRequest`, `ContactPhoneInput`, `ContactCompanyLinkInput`, `Address`, and the `CompanyResponse`/`ContactResponse`/`ContactPhone`/`ContactCompanyLink`/`SiteResponse` reads behind them | MAPPS-687 |
 
 `tickets.rs` is the one worth reading for what a page pays to be typed
 rather than only for the destructuring functions. Six of its nine write
@@ -386,13 +387,40 @@ screen, which the DTO's own doc comment names, sends
 `PUT /tenants/current` and so is an `UpdateTenantRequest` caller like
 the organisation settings form.
 
-To gate, one page per issue under MAPPS-685, because each owns a
-feature's whole write surface and none of them reviews as part of
-another:
+`contacts.rs` is the widest write surface of the three, and the one that
+shows what the pattern costs when a page owns a record's children as
+well as the record. Its company and contact forms each send the whole
+record on both the POST and the PUT, so one body struct serves the pair
+and both destructuring functions feed it; the six one-field PUTs behind
+Archive, the billing-contact picker, the company attach and the portal
+grant / revoke share an `UpdateCompanyBody` and an `UpdateContactBody`
+whose every field is `skip_serializing_if = "Option::is_none"`. The
+contact's `phones` and `companies` arrays became `ContactPhoneBody` and
+`ContactCompanyLinkBody` against PMS-806's own input types rather than
+`json!` objects built in a loop, and `Address` is used directly, since
+`mokosh-types` derives both halves on it. Five form values stopped being
+strings at the boundary and report a parse failure in their own inline
+slot: the company Type and Status selects into `CompanyType` and
+`CompanyStatus`, the contact Type select into `ContactType`, each linked
+company's id into the `Uuid` the link input declares, and the site
+modal's company id into `CreateSiteRequest`'s.
 
-| Page | What is ungated | Issue |
-| --- | --- | --- |
-| `contacts.rs` | `Create`/`Update` for company, contact and site | MAPPS-687 |
+The site modal is where the wire won over the shape: it sends
+`company_id` on its PUT as well as its POST, which `UpdateSiteRequest`
+does not declare and the server ignores, so `SiteFormBody` keeps the
+field and the update destructuring function takes it as a parameter
+rather than dropping a key from a write that works.
+
+The gate found one real drift on this page. `GET /contacts/companies/{id}`
+answers `CompanyResponse`, which carries no `default_billing_contact_id`,
+so MAPPS-644's Billing Contact card has been reading `None` for every
+company since it shipped: the picker's PUT stores the value against
+`UpdateCompanyRequest` and nothing ever reads it back. There is no
+binding to feed, so the destructuring function says so where the field
+is set to `None`. The fix is a mokosh-server change and is MAPPS-701.
+
+Every page MAPPS-685 listed is now gated; the "to gate" table it carried
+is gone with the last row in it.
 
 Deliberately not gated, and this is the decision that keeps the pattern
 from becoming a tax. These pages decode a **picker subset** off a
