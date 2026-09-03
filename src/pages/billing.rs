@@ -1530,6 +1530,14 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
             if let Some(inv) = invoice.clone() {
                 InvoiceEditModal {
                     id: props.id.clone(),
+                    company_id: inv.company_id.map(|c| c.to_string()).unwrap_or_default(),
+                    billing_contact_id: inv.billing_contact_id.map(|c| c.to_string()).unwrap_or_default(),
+                    billing_contact_name: contact_resource
+                        .read_unchecked()
+                        .clone()
+                        .flatten()
+                        .map(|c| c.display_name())
+                        .unwrap_or_default(),
                     invoice_date: inv.invoice_date.clone().unwrap_or_default(),
                     due_date: inv.due_date.clone().unwrap_or_default(),
                     payment_term_id: inv.payment_term_id.clone().unwrap_or_default(),
@@ -1591,6 +1599,10 @@ pub fn InvoiceNewPage() -> Element {
     let mut company_id =
         use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     let mut company_name = use_signal(String::new);
+    // PMS-1004: the contact the invoice is emailed to. Optional here (the
+    // company's default billing contact covers it), scoped to the company.
+    let mut billing_contact_id = use_signal(String::new);
+    let mut billing_contact_name = use_signal(String::new);
     let mut invoice_date = use_signal(String::new);
     let mut due_date = use_signal(String::new);
     // MAPPS-662: the payment term, seeded with the tenant's default once the
@@ -1774,6 +1786,7 @@ pub fn InvoiceNewPage() -> Element {
             .unwrap_or_else(|| computed_tax.read().clone());
         let body = serde_json::json!({
             "company_id": company_uuid,
+            "billing_contact_id": optional_string(&billing_contact_id.read()),
             "invoice_date": inv_date,
             // MAPPS-662: blank is null, and the server derives it from the term.
             "due_date": optional_string(&due),
@@ -1839,6 +1852,7 @@ pub fn InvoiceNewPage() -> Element {
         let due = optional_string(&due_date.read());
         let body = serde_json::json!({
             "company_id": company_uuid,
+            "billing_contact_id": optional_string(&billing_contact_id.read()),
             "invoice_date": inv_date,
             "due_date": due,
             "po_number": optional_string(&po_number.read()),
@@ -1909,14 +1923,44 @@ pub fn InvoiceNewPage() -> Element {
                     // PMS-579: inline field-level error instead of the banner.
                     error: company_error.read().clone(),
                     onselect: move |(id, name): (String, String)| {
+                        let changed = *company_id.read() != id;
                         company_id.set(id);
                         company_name.set(name);
                         company_error.set(String::new());
+                        if changed {
+                            billing_contact_id.set(String::new());
+                            billing_contact_name.set(String::new());
+                        }
                     },
                     onclear: move |_| {
                         company_id.set(String::new());
                         company_name.set(String::new());
+                        billing_contact_id.set(String::new());
+                        billing_contact_name.set(String::new());
                     },
+                }
+                // PMS-1004: who the invoice is emailed to (PMS-992). Shown
+                // once a company is picked, because the search is scoped to
+                // it; left empty, the company's default billing contact
+                // applies at send.
+                if !company_id.read().is_empty() {
+                    crate::components::ContactPicker {
+                        value: billing_contact_name.read().clone(),
+                        selected_id: {
+                            let id = billing_contact_id.read().clone();
+                            (!id.is_empty()).then_some(id)
+                        },
+                        label: "Billing Contact".to_string(),
+                        company_filter: Some(company_id.read().clone()),
+                        onselect: move |(id, name): (String, String)| {
+                            billing_contact_id.set(id);
+                            billing_contact_name.set(name);
+                        },
+                        onclear: move |_| {
+                            billing_contact_id.set(String::new());
+                            billing_contact_name.set(String::new());
+                        },
+                    }
                 }
 
                 div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
@@ -2885,6 +2929,11 @@ struct EditableLine {
 #[derive(Props, Clone, PartialEq)]
 struct InvoiceEditModalProps {
     id: String,
+    /// PMS-1004: the invoice's company, to scope the billing-contact picker.
+    company_id: String,
+    /// Current billing contact FK and its display name, empty when unset.
+    billing_contact_id: String,
+    billing_contact_name: String,
     invoice_date: String,
     due_date: String,
     /// Current payment-term FK (PMS-333), empty string when unset.
@@ -2938,6 +2987,8 @@ fn derived_due_date(invoice_date: &str, net_days: Option<i64>) -> Option<String>
 /// this modal is only opened for editable invoices.
 #[component]
 fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
+    let mut billing_contact_id = use_signal(|| props.billing_contact_id.clone());
+    let mut billing_contact_name = use_signal(|| props.billing_contact_name.clone());
     let mut invoice_date = use_signal(|| props.invoice_date.clone());
     let mut due_date = use_signal(|| props.due_date.clone());
     // MAPPS-662: whether the operator edited the due date in this session.
@@ -3151,6 +3202,9 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             .clone()
             .unwrap_or_else(|| computed_tax.read().clone());
         let body = serde_json::json!({
+            // PMS-1004: null leaves the contact as it is (the server
+            // COALESCEs), so clearing the chip changes nothing on save.
+            "billing_contact_id": optional_string(&billing_contact_id.read()),
             "invoice_date": inv_date,
             // MAPPS-662: only what the operator typed. Null leaves the date to
             // the server, which keeps it unless the term changed.
@@ -3211,6 +3265,27 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             div { class: "space-y-4",
                 if !error.read().is_empty() {
                     ErrorBanner { "{error.read()}" }
+                }
+                // PMS-1004: the contact the invoice is emailed to (PMS-992).
+                // Scoped to the invoice's company; the server refuses a send
+                // with none, so this is where "set a billing contact on the
+                // invoice" is done.
+                crate::components::ContactPicker {
+                    value: billing_contact_name.read().clone(),
+                    selected_id: {
+                        let id = billing_contact_id.read().clone();
+                        (!id.is_empty()).then_some(id)
+                    },
+                    label: "Billing Contact".to_string(),
+                    company_filter: (!props.company_id.is_empty()).then(|| props.company_id.clone()),
+                    onselect: move |(id, name): (String, String)| {
+                        billing_contact_id.set(id);
+                        billing_contact_name.set(name);
+                    },
+                    onclear: move |_| {
+                        billing_contact_id.set(String::new());
+                        billing_contact_name.set(String::new());
+                    },
                 }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
                     crate::components::DateField {
