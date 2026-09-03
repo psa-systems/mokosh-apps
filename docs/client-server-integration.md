@@ -166,13 +166,14 @@ what the running SPA deserialises.
 far more `Deserialize` derives than there are page files that mention
 `mokosh_types` at all (`grep -c 'derive(.*Deserialize' src/pages/*.rs`
 against `grep -l mokosh_types src/pages/*.rs`). `src/pages/tickets.rs`
-is the pattern: its own ticket struct, deserialised straight off the
+was the pattern: its own ticket struct, deserialised straight off the
 server's `TicketResponse`, carrying `procedure_kb_article_id` and
 `asset_name` and a dozen more, with a comment explaining which field it
 deliberately dropped. Narrowing a payload to what a page renders is a
 defensible client design, and it is also a hand copy that no compiler
-compares against the producer. The audit at the end of this file is
-where each of those pages now has a decision.
+compares against the producer. MAPPS-686 kept that page's narrow
+structs and put the compiler behind them instead; the audit at the end
+of this file is where each of these pages has its decision.
 
 Where a module still carries handler / service files copied from the
 server (`tenants`, `billing`), they sit behind a `server` cargo
@@ -311,8 +312,9 @@ fn create_request_fields_are_all_considered(req: CreateTimeEntryRequest) {
 It never runs; compiling it is the whole check. A field added, removed,
 renamed or retyped on mokosh-server fails this build, and the tuple of
 unused bindings is a written record of what the page chooses not to
-send. `src/pages/login.rs` has had this since MAPPS-397 and
-`src/pages/time.rs` since MAPPS-627.
+send. `src/pages/login.rs` has had this since MAPPS-397,
+`src/pages/time.rs` since MAPPS-627 and `src/pages/tickets.rs` since
+MAPPS-686.
 
 Using the shared type directly is better where it is available, and it
 usually is not. `mokosh-types` derives `Deserialize` on request DTOs
@@ -342,6 +344,22 @@ Gated, with the destructuring function above:
 | `login.rs` | `LoginRequest`, `LoginResponse` | MAPPS-397 |
 | `request_form.rs`, `forms.rs` | `forms::*` used directly | MAPPS-535 |
 | `time.rs` | `Create`/`Update`/`RejectTimesheet` requests, `TimeEntry`/`TimesheetSummary`/`WorkType`/`TimeRoundingRule` responses | MAPPS-627 |
+| `tickets.rs` | `Create`/`UpdateTicketRequest`, `Create`/`UpdateNoteRequest`, `TicketResponse`/`TicketNoteResponse` | MAPPS-686 |
+
+`tickets.rs` is the one worth reading for what a page pays to be typed
+rather than only for the destructuring functions. Six of its nine write
+paths PUT one field each (the inline Status, Priority, Assignee and
+Asset editors, the description card, the task-list checkboxes), so they
+share a single `UpdateTicketBody` whose every field is
+`skip_serializing_if = "Option::is_none"`, and `assigned_to_id` is a
+double `Option` there even though the shared DTO's is not: absent has to
+stay distinguishable from the `null` that unassigns. Two form values
+also stopped being strings at the boundary, which is where the type
+buys something a `json!` literal never did: the Due Date is parsed into
+the `DateTime<Utc>` the request declares, and the composer's note type
+into `NoteType`. Each reports a parse failure in its own inline slot,
+because a value the client cannot read must not become a 422 the user
+has to interpret.
 
 To gate, one page per issue under MAPPS-685, because each owns a
 feature's whole write surface and none of them reviews as part of
@@ -349,7 +367,6 @@ another:
 
 | Page | What is ungated | Issue |
 | --- | --- | --- |
-| `tickets.rs` | `Create`/`UpdateTicketRequest`, `Create`/`UpdateNoteRequest`, the ticket and note decodes | MAPPS-686 |
 | `contacts.rs` | `Create`/`Update` for company, contact and site | MAPPS-687 |
 | `settings.rs` | `Upsert*` for the ticket taxonomy and work types, `UpdateTenantRequest`, `OrganizationProfileRequest` | MAPPS-688 |
 | `profile.rs` | `UpdateMeRequest` is already a typed `Serialize` struct against `UpdateUserRequest`, with only prose holding it there | MAPPS-689 |
