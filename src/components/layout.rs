@@ -67,7 +67,7 @@ pub fn use_current_page_title() -> Signal<PageTitle> {
 /// `AppLayout { title: "..." }` prop: the persistent shell reads the same
 /// signal for the top bar and `document.title`. Writes only when the value
 /// changes so it never loops on the render it runs in; a page that swaps a
-/// "Loading..." placeholder for the real record name just calls it again with
+/// "Loading…" placeholder for the real record name just calls it again with
 /// the new value.
 pub fn use_page_title(title: impl Into<String>) {
     let mut sig = use_context::<Signal<PageTitle>>();
@@ -137,6 +137,9 @@ pub fn AppShell() -> Element {
 
     rsx! {
         div { class: "h-screen flex flex-col bg-app overflow-hidden",
+            // MAPPS-428: topmost row. Renders nothing until a new SPA build
+            // is detected, so the healthy path reserves no height.
+            super::UpdateAvailableBanner {}
             super::ServerStatusBanner {}
             super::UpdateBanner {}
             TopBar {
@@ -155,10 +158,14 @@ pub fn AppShell() -> Element {
                 }
                 // The routed page renders here. Only this subtree swaps on
                 // navigation; the chrome above and below stays mounted.
-                main { class: "flex-1 overflow-y-auto overscroll-contain py-6",
-                    div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
-                        Outlet::<crate::Route> {}
-                    }
+                //
+                // MAPPS-624: `main` supplies the shared padding but no width
+                // cap. The `max-w-7xl mx-auto` that used to live here now sits
+                // on each route component in `src/lib.rs`, so how wide a page
+                // renders is that page's own choice; `KBArticleDetail` is the
+                // first to opt out and fill the window.
+                main { class: "flex-1 overflow-y-auto overscroll-contain py-6 px-4 sm:px-6 lg:px-8",
+                    Outlet::<crate::Route> {}
                 }
             }
             crate::hooks::toast::ToastRoot {}
@@ -282,20 +289,12 @@ const SIDEBAR_NAV_ID: &str = "mokosh-sidebar-nav";
 
 /// Read the current scroll offset of the sidebar nav from the DOM.
 fn read_sidebar_scroll() -> Option<i32> {
-    web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.get_element_by_id(SIDEBAR_NAV_ID))
-        .map(|el| el.scroll_top())
+    crate::platform::dom::scroll_top(SIDEBAR_NAV_ID)
 }
 
 /// Restore a previously recorded scroll offset onto the sidebar nav.
 fn restore_sidebar_scroll(top: i32) {
-    if let Some(el) = web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.get_element_by_id(SIDEBAR_NAV_ID))
-    {
-        el.set_scroll_top(top);
-    }
+    crate::platform::dom::set_scroll_top(SIDEBAR_NAV_ID, top);
 }
 
 /// MAPPS-358: while mokosh-server is unreachable, the sidebar collapses to
@@ -318,7 +317,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
     // MAPPS-358: reading the reachability flag subscribes this sidebar, so it
     // collapses to Dashboard-only the instant the server goes down and
     // restores every section the instant the MAPPS-333 recovery poll flips the
-    // flag back. `use_server_reachable` is `true` on non-web builds.
+    // flag back. `use_server_reachable` is `true` on non-`app` builds.
     let show_full_nav = full_nav_visible(crate::hooks::use_server_reachable());
 
     // Admin-only nav (audit log, SLA management): rendered only for
@@ -331,6 +330,10 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
         .as_ref()
         .map(|u| u.role.is_admin())
         .unwrap_or(false);
+
+    // MAPPS-453: the documentation subdomain, if this deploy configured one.
+    // Gates the Documentation nav entry below.
+    let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
     // Manager+ (manager/admin/super_admin) see the timesheet approvals queue,
     // matching the server's RequireManager gate on approve/reject (MAPPS-194).
     let can_manage = auth
@@ -429,6 +432,17 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
     let show_knowledge_section = show_kb;
     let show_analytics_section = show_reports;
 
+    // MAPPS-638: the Credit Notes entry matches the server's finance gate
+    // (super_admin / admin / finance). Its Invoices and Payments siblings are
+    // not gated today and render a locked state on the page instead; aligning
+    // them is filed separately.
+    let has_finance = auth
+        .read()
+        .user
+        .as_ref()
+        .map(|u| u.role.can_manage_billing())
+        .unwrap_or(false);
+
     // MAPPS-203: App-root-owned scroll offset that survives the
     // AppLayout re-mount on each navigation. Only the persistent desktop
     // sidebar (`persist_scroll`) reads/writes it; the mobile drawer
@@ -493,6 +507,13 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                 // Company detail card for per-Company overrides.
                 if branding_link_visible {
                     NavItem { to: Route::ContactPortalBranding {}, icon: rsx!(SwatchIcon {}), label: "Portal Branding", collapsed }
+                }
+
+                // MAPPS-453: surface the docs subdomain in the main menu, not
+                // buried under Applications. External link (new tab), shown
+                // only when a docs base is configured.
+                if cfg.has_docs() {
+                    DocsNavItem { href: cfg.docs_url(""), collapsed }
                 }
 
             // MAPPS-358: every section below is hidden while the server is
@@ -568,6 +589,16 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     if show_payments {
                         NavItem { to: Route::PaymentList {}, icon: rsx!(CreditCardIcon {}), label: "Payments", collapsed }
                     }
+                    // MAPPS-638: PMS-953 Credit Notes + PMS-954 Statements are
+                    // both finance-only reads, so gate them on the same
+                    // has_finance check the server enforces (super_admin /
+                    // admin / finance). Merged from origin/main; the
+                    // surrounding cap-driven `show_*` structure is the
+                    // contact-login-side layout.
+                    if has_finance {
+                        NavItem { to: Route::CreditNoteList {}, icon: rsx!(ReceiptRefundIcon {}), label: "Credit Notes", collapsed }
+                        NavItem { to: Route::Statement {}, icon: rsx!(DocumentTextIcon {}), label: "Statements", collapsed }
+                    }
                 }
             }
 
@@ -597,25 +628,18 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
 
             // MAPPS-520 walkthrough: the platform super-admin has its
             // OWN nav section (Tenants) that renders whenever a
-            // platform bearer is present in sessionStorage. Split out
-            // of the tenant "Admin" section below so a pure platform
-            // admin (users row deleted by migration 133; no
-            // tenant-plane `AuthContext`) still sees the top-level
-            // action they own instead of a completely empty admin
-            // area. The section renders WITHOUT gating on
-            // `is_admin` (which reads `auth.user.role.is_admin()` and
-            // is false when there is no users row at all).
-            if is_platform_admin {
-                NavSection { title: "Platform", rail_collapsed: collapsed, color: SectionColor::Violet,
-                    // MAPPS-447 / MAPPS-518: only the platform-admin
-                    // persona (`platform_admins` row + `/login`
-                    // bearer) can create / suspend / edit tenants
-                    // ("client portals" in the mokosh vocabulary).
-                    // Server side is gated on `RequirePlatformAdmin`;
-                    // this nav item mirrors the same gate.
-                    TenantsNavItem { visible: true, collapsed }
-                }
-            }
+            // mokosh-contact-login: the "Platform" sidebar section
+            // retired. Its sole child was `TenantsNavItem`, which the
+            // Clients-tab retirement earlier in this branch had
+            // already stubbed to a no-op (`rsx!{}`), leaving an empty
+            // "PLATFORM" section header rendering for a platform-
+            // admin visitor. The tenant management surface itself is
+            // gone with the Clients-tab retirement; a platform admin
+            // uses the Admin section widening on the block below
+            // (`is_admin || is_platform_admin`) to reach Teams /
+            // Invitations / Audit Log / Request Forms / SLA /
+            // Settings, which is the whole persona-scoped surface
+            // they still own.
 
             // Tenant-scoped admin surface (Teams, Invitations, Audit
             // Log, Request Forms, SLA, Settings). Renders when
@@ -651,7 +675,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     TeamsNavItem { visible: is_org_tenant, collapsed }
                     NavItem { to: Route::Invitations {}, icon: rsx!(UserGroupIcon {}), label: "Invitations", collapsed }
                     NavItem { to: Route::AuditLog {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Audit Log", collapsed }
-                    NavItem { to: Route::FormsBuilder {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Request Forms", collapsed }
+                    NavItem { to: Route::FormsBuilder {}, icon: rsx!(InboxArrowDownIcon {}), label: "Request Forms", collapsed }
                     NavItem { to: Route::SlaManagement {}, icon: rsx!(ShieldCheckIcon {}), label: "SLA Management", collapsed }
                     // MAPPS-169: single entry into the centralized Settings hub.
                     NavItem { to: Route::SettingsHome {}, icon: rsx!(CogIcon {}), label: "Settings", collapsed }
@@ -820,6 +844,7 @@ fn section_route(route: &Route) -> Route {
         // so it stays under the Rate Cards section (MAPPS-217).
         Route::RateCardNew { .. } => Route::RateCardList {},
         Route::InvoiceDetail { .. } => Route::InvoiceList {},
+        Route::CreditNoteDetail { .. } => Route::CreditNoteList {},
         Route::AssetDetail { .. } => Route::AssetList {},
         Route::KBArticleDetail { .. } => Route::KBHome {},
         Route::ReportDetail { .. } => Route::Reports {},
@@ -883,32 +908,15 @@ fn NavItem(props: NavItemProps) -> Element {
     }
 }
 
-/// MAPPS-447: sidebar entry that opens the tenant roster (and its
-/// Create-tenant modal). Hoisted into its own component so it can be
-/// cfg-gated on `multi-tenant`: `Route::TenantManagement` only exists
-/// in that build, and referencing it from the always-compiled sidebar
-/// would break the `single-tenant` binary. The stub at the bottom of
-/// this pair keeps the call site identical across features.
-#[derive(Props, Clone, PartialEq)]
-struct TenantsNavItemProps {
-    visible: bool,
-    collapsed: bool,
-}
+// mokosh-contact-login: MAPPS-447's `TenantsNavItem` (and its
+// `TenantsNavItemProps`) retired alongside the "Platform" sidebar
+// section above. It was already a no-op after the Clients-tab
+// retirement (prompt 001) and had no live callers on this branch.
 
-// mokosh-contact-login: Clients tab retired on this branch (prompt
-// 001) - the tenants-as-clients concept goes away entirely; a mokosh
-// tenant is just a Bunyip-user workspace now, and the "client"
-// concept is companies + contacts inside that tenant. TenantsNavItem
-// stays as a no-op so its callers do not need cfg changes.
-#[component]
-fn TenantsNavItem(props: TenantsNavItemProps) -> Element {
-    let _ = props;
-    rsx! {}
-}
-
-/// PMS-791 phase 2 / MAPPS-463: Teams nav item. Uses the same cfg-gated
-/// pattern as TenantsNavItem so `single-tenant` builds do not need to
-/// know Route::Teams exists.
+/// PMS-791 phase 2 / MAPPS-463: Teams nav item. Cfg-gated on
+/// `multi-tenant` so a `single-tenant` build does not need to know
+/// Route::Teams exists (the retired `TenantsNavItem` used the same
+/// pattern before it went away with the Platform section).
 #[derive(Props, Clone, PartialEq)]
 struct TeamsNavItemProps {
     visible: bool,
@@ -938,6 +946,38 @@ fn TeamsNavItem(props: TeamsNavItemProps) -> Element {
     rsx! {}
 }
 
+/// MAPPS-453: the sidebar's Documentation entry. `NavItem` is an internal
+/// router `Link`; this is its visual twin for an off-site link (the docs
+/// subdomain), so it opens in a new tab and carries no active state.
+#[component]
+fn DocsNavItem(href: String, collapsed: bool) -> Element {
+    let icon_color = "text-subtle group-hover:text-content";
+    if collapsed {
+        return rsx! {
+            a {
+                href: "{href}",
+                target: "_blank",
+                rel: "noopener noreferrer",
+                class: "group flex items-center justify-center px-2 py-1 rounded-md text-muted hover:bg-surface hover:text-content",
+                title: "Documentation",
+                aria_label: "Documentation",
+                span { class: "{icon_color}", InformationIcon {} }
+            }
+        };
+    }
+    rsx! {
+        a {
+            href: "{href}",
+            target: "_blank",
+            rel: "noopener noreferrer",
+            class: "group flex items-center px-3 py-2 text-sm font-medium rounded-md text-muted hover:bg-surface hover:text-content",
+            span { class: "mr-3 {icon_color}", InformationIcon {} }
+            "Documentation"
+        }
+    }
+}
+
+
 /// Persistent top bar.
 ///
 /// Brand sits on the left, occupying the same column-width as the
@@ -959,20 +999,26 @@ pub fn TopBar(props: TopBarProps) -> Element {
     // the Outlet/page - so a page and its ContentUnavailable / PermissionRequired
     // branch can both call use_page_title without fighting into a render loop.
     let title = use_current_page_title().read().0.clone();
-    // MAPPS-287: keep document.title in sync. Both loading placeholders
-    // ("Loading…" U+2026 and ASCII "Loading...") read as "no title yet" so the
-    // tab shows a clean "Mokosh Platform" until the real title arrives.
-    #[cfg(feature = "web")]
+    // MAPPS-509: the deployment's brand, from runtime config, so an
+    // operator renames the tab and the wordmark without a rebuild.
+    let brand = crate::branding::product_name();
+    let logo = crate::branding::logo_src();
+    // MAPPS-287: keep document.title in sync. The loading placeholder
+    // ("Loading…", U+2026) reads as "no title yet" so the tab shows a clean
+    // brand name until the real title arrives. MAPPS-445 dropped the
+    // ASCII spelling; scripts/check-ellipsis-glyph.sh keeps it gone.
+    #[cfg(feature = "app")]
     {
-        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-            let t = title.trim();
-            let next = if t.is_empty() || t == "Loading…" || t == "Loading..." {
-                "Mokosh Platform".to_string()
-            } else {
-                format!("{} | Mokosh Platform", t)
-            };
-            doc.set_title(&next);
-        }
+        let t = title.trim();
+        let next = if t.is_empty() || t == "Loading…" {
+            brand.clone()
+        } else {
+            format!("{} | {}", t, brand)
+        };
+        // MAPPS-504: `platform::dom` sets `document.title` in the browser
+        // and the OS window title on the desktop, so the operator's brand
+        // name (MAPPS-509) reaches the window frame too.
+        crate::platform::dom::set_title(&next);
     }
     rsx! {
         header { class: "h-16 flex items-center bg-surface-2 border-b border-line shrink-0 z-20",
@@ -991,13 +1037,13 @@ pub fn TopBar(props: TopBarProps) -> Element {
                     to: Route::Dashboard {},
                     class: "flex items-center gap-2 min-w-0",
                     img {
-                        src: asset!("/assets/icon-192.png"),
-                        alt: "Mokosh",
+                        src: "{logo}",
+                        alt: "{brand}",
                         class: "h-8 w-8 shrink-0",
                     }
                     div { class: "flex flex-col leading-tight min-w-0",
                         span { class: "text-base font-bold text-content truncate",
-                            "Mokosh Platform"
+                            "{brand}"
                         }
                         // Active-org indicator. Hidden until auth resolves an
                         // active tenant - we don't show a "no org" state in
@@ -1088,42 +1134,12 @@ fn UserMenu() -> Element {
     // hidden for now (multi-app switching isn't a flow we want to surface
     // yet). Restore by reinstating this binding and the `a` block below.
     // let hub_dashboard = cfg.hub_url("/dashboard");
-    // RP-initiated logout via bunyip-api's `OptionalUser`-backed
-    // endpoint. bunyip-api's `GET /v1/auth/logout?url=<absolute>`
-    // clears the .a8n.systems-scoped cookies via Set-Cookie, then
-    // 302s the browser straight to `url`. The companion bunyip change
-    // (fix/logout-honors-final-url) replaced the old "bounce through
-    // /login" handler with a direct redirect, so this URL is now the
-    // user's actual landing page after logout.
-    //
-    // Land them on this SPA's own origin root (msp.<tld>/) so they
-    // see mokosh's public landing page, signed out. Falls back to
-    // the hub root when the browser origin is somehow unavailable
-    // (server-side render path, mostly unreachable in `web` builds).
-    let issuer = cfg.issuer.trim_end_matches('/');
-    let post_logout_target = web_sys::window()
-        .and_then(|w| w.location().origin().ok())
-        .map(|origin| format!("{}/", origin.trim_end_matches('/')))
-        .unwrap_or_else(|| cfg.hub_url("/"));
-    // MAPPS-520 walkthrough fix: with no bunyip issuer configured
-    // (standalone dev / self-hosted no-OP mode), `issuer` is the empty
-    // string and the format below collapsed to `/v1/auth/logout?url=...`
-    // - a same-origin path the browser hit on localhost:4301 and the
-    // SPA rendered as a 404 (no client route matches). Fall back to
-    // the SPA login URL directly when there is no OP to bounce
-    // through; the local session clear below is what actually signs
-    // the user out in standalone mode.
-    let hub_logout = if issuer.is_empty() {
-        "/login".to_string()
-    } else {
-        format!(
-            "{issuer}/v1/auth/logout?url={}",
-            js_sys::encode_uri_component(&post_logout_target)
-                .as_string()
-                .unwrap_or(post_logout_target)
-        )
-    };
 
+    // MAPPS-522: the whole sign-out sequence (revoke the mokosh session,
+    // revoke the OP refresh-token family, clear local storage, redirect off
+    // this origin) lives in `modules::auth::sign_out`, shared with the portal
+    // menu and the account-deleted overlay. It runs on a task so the closure
+    // stays sync; every step is awaited before it navigates away.
     let logout = move |_| {
         open.set(false);
         // MAPPS-605: a contact-plane session goes through its own
@@ -1169,40 +1185,14 @@ fn UserMenu() -> Element {
             }
             return;
         }
-        // Staff sign-out (existing behaviour):
-        //
-        // Order matters here: any write to the auth signal BEFORE
-        // `location.replace` schedules
-        // a Dioxus re-render. On that re-render `use_require_auth` (the
-        // route guard) sees `user = None` on `/dashboard` and calls
-        // `navigator.push(Route::Login {})`, which puts /client/login
-        // (post MAPPS-518 URL swap; was /login) on TOP of `/dashboard`
-        // in history. The subsequent `location.replace`
-        // then races with the router push; the user ends up navigated
-        // away from the hub logout URL and back onto an authenticated-
-        // looking dashboard view. So: clear sessionStorage, navigate
-        // away, let the full page reload reset all in-memory state.
-        //
-        // MAPPS-336: revoke the refresh token family at the OP BEFORE
-        // wiping local sessionStorage. The local clear alone left the
-        // rotated-but-not-revoked family alive until natural expiry, so
-        // a leaked / stolen refresh token survived the user clicking
-        // "Log out". `revoke_refresh_token` is fire-and-forget per RFC
-        // 7009 (`/oauth2/revoke` returns 200 for unknown tokens too) so
-        // a transient network failure doesn't block the local cleanup.
-        // The await runs on a fresh task so the closure stays sync.
-        if let Some(tokens) = crate::modules::oidc::storage::load_auth() {
-            if let Some(refresh) = tokens.refresh_token {
-                let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
-                spawn(async move {
-                    let _ = crate::modules::oidc::flow::revoke_refresh_token(&cfg, &refresh).await;
-                });
-            }
-        }
-        crate::modules::oidc::storage::clear_auth();
-        if let Some(win) = web_sys::window() {
-            let _ = win.location().replace(&hub_logout);
-        }
+        // Staff sign-out: the whole sequence lives in
+        // `modules::auth::sign_out::sign_out` (revoke mokosh session,
+        // revoke OP refresh-token family, clear local storage, redirect
+        // off origin - MAPPS-522). Runs on a task so the closure stays
+        // sync.
+        spawn(async move {
+            crate::modules::auth::sign_out::sign_out().await;
+        });
     };
 
     rsx! {
@@ -1243,7 +1233,7 @@ fn UserMenu() -> Element {
                     onclick: move |_| open.set(false),
                 }
                 div {
-                    class: "absolute right-0 mt-2 w-52 rounded-md shadow-lg bg-raised ring-1 ring-black/5 z-20 p-1",
+                    class: "dropdown-panel absolute right-0 mt-2 w-52 z-20 p-1",
                     role: "menu",
                     // Profile is a mokosh-side route, served by this
                     // SPA. Use the router `Link` so the SPA does an
@@ -1399,7 +1389,7 @@ fn NotificationBell() -> Element {
                     onclick: move |_| open.set(false),
                 }
                 div {
-                    class: "absolute right-0 mt-2 w-80 max-h-96 overflow-y-auto rounded-md shadow-lg bg-raised ring-1 ring-black/5 z-20",
+                    class: "dropdown-panel absolute right-0 mt-2 w-80 max-h-96 overflow-y-auto z-20",
                     role: "menu",
                     div { class: "px-4 py-2 border-b border-line text-sm font-semibold text-content",
                         "Notifications"
@@ -1490,9 +1480,20 @@ fn NotificationRow(item: NotificationItem, on_read: EventHandler<()>) -> Element
     }
 }
 
+// mokosh-contact-login: PortalLayout + PortalUserMenu retired with the
+// customer-portal /portal/* route family (prompt 001). Contact-plane
+// pages under `src/pages/contact_portal/` use their own layout.
+
+
 /// Auth layout (login, signup, password reset)
 #[derive(Props, Clone, PartialEq)]
 pub struct AuthLayoutProps {
+    /// Card width class (MAPPS-440). The public request form renders a whole
+    /// form here and needs the wider card; every other auth page keeps the
+    /// default. Applied to the wordmark, the card and the footer together so
+    /// the three stay aligned.
+    #[props(default = "sm:max-w-md".to_string())]
+    max_w: String,
     children: Element,
 }
 
@@ -1504,6 +1505,7 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
     // instance, unauthenticated pages that have not yet fetched a
     // `/host` snippet). Colors + background picture come with the
     // full CSS-custom-property pipeline in a follow-up commit.
+    let width = format!("sm:mx-auto sm:w-full {}", props.max_w);
     let brand = crate::hooks::branding::EFFECTIVE_BRANDING.read();
     let wordmark = brand
         .display_name
@@ -1523,7 +1525,7 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
     let support_contact = brand.support_contact_name.clone().filter(|s| !s.is_empty());
     rsx! {
         div { class: "min-h-screen flex flex-col justify-center py-12 sm:px-6 lg:px-8 bg-app",
-            div { class: "sm:mx-auto sm:w-full sm:max-w-md",
+            div { class: "{width}",
                 // Logo
                 div { class: "flex flex-col items-center gap-3",
                     if let Some(url) = logo_url.clone() {
@@ -1545,7 +1547,7 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
                 }
             }
 
-            div { class: "mt-8 sm:mx-auto sm:w-full sm:max-w-md",
+            div { class: "mt-8 {width}",
                 div { class: "bg-surface py-8 px-4 shadow sm:rounded-lg sm:px-10",
                     {props.children}
                 }
@@ -1556,7 +1558,7 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
             // page so the visitor knows who to call when the flow
             // dead-ends.
             if support_email.is_some() || support_phone.is_some() {
-                div { class: "mt-6 sm:mx-auto sm:w-full sm:max-w-md text-center text-xs text-muted space-y-1",
+                div { class: "mt-6 {width} text-center text-xs text-muted space-y-1",
                     if let Some(name) = support_contact.clone() {
                         p { "Need help? Contact {name}." }
                     } else {
@@ -1581,7 +1583,7 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
                 }
             }
 
-            div { class: "mt-6 sm:mx-auto sm:w-full sm:max-w-md",
+            div { class: "mt-6 {width}",
                 VersionFooter {}
             }
         }
@@ -1592,6 +1594,19 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
 #[derive(Props, Clone, PartialEq)]
 pub struct PageHeaderProps {
     title: String,
+    /// MAPPS-594: render this in place of the heading text.
+    ///
+    /// The ticket detail page edits its title where the title is, which is what
+    /// the reference in the report does and what makes an in-page edit read as
+    /// editing the thing rather than editing a copy of it. A slot rather than an
+    /// "editing" flag: this component keeps knowing nothing about edit state,
+    /// and the breadcrumbs, actions and responsive layout stay shared instead of
+    /// being reimplemented by a page that wants one different element.
+    ///
+    /// `title` is still required and still what the tab and any caller-side
+    /// label read, so a page cannot become nameless by passing a slot.
+    #[props(default)]
+    title_slot: Option<Element>,
     #[props(default)]
     subtitle: String,
     actions: Option<Element>,
@@ -1615,8 +1630,12 @@ pub fn PageHeader(props: PageHeaderProps) -> Element {
                     // page title at sm and up. Bump line-height to
                     // `leading-9` (36px) at the same breakpoint as the
                     // larger font so descenders sit inside the line box.
-                    h2 { class: "text-2xl font-bold leading-7 text-content sm:truncate sm:text-3xl sm:leading-9 sm:tracking-tight",
-                        "{props.title}"
+                    if let Some(slot) = props.title_slot.clone() {
+                        {slot}
+                    } else {
+                        h2 { class: "text-2xl font-bold leading-7 text-content sm:truncate sm:text-3xl sm:leading-9 sm:tracking-tight",
+                            "{props.title}"
+                        }
                     }
                     if !props.subtitle.is_empty() {
                         p { class: "mt-1 text-sm text-muted",
@@ -1648,6 +1667,27 @@ pub struct BreadcrumbItem {
 #[derive(Props, Clone, PartialEq)]
 pub struct BreadcrumbsProps {
     items: Vec<BreadcrumbItem>,
+}
+
+/// PMS-746: the `<List> > <record>` trail a detail page carries.
+///
+/// Every detail page builds the same two crumbs: the list it came from, then
+/// the record itself. The record is the page you are already on, so its crumb
+/// is inert (`route: None`) and renders as plain text rather than a link.
+///
+/// Kept as a plain function, not a component, so a page's trail can be
+/// asserted in a unit test without standing up a router.
+pub fn detail_breadcrumbs(list_label: &str, list_route: Route, title: &str) -> Vec<BreadcrumbItem> {
+    vec![
+        BreadcrumbItem {
+            label: list_label.to_string(),
+            route: Some(list_route),
+        },
+        BreadcrumbItem {
+            label: title.to_string(),
+            route: None,
+        },
+    ]
 }
 
 #[component]
@@ -1715,13 +1755,60 @@ pub fn EmptyState(props: EmptyStateProps) -> Element {
 }
 
 #[cfg(test)]
+mod page_header_tests {
+    const SRC: &str = include_str!("layout.rs");
+
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod page_header_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// MAPPS-594: the slot replaces the heading TEXT and nothing else.
+    ///
+    /// A page that edits its title in place needs a different element where the
+    /// `h2` is; it does not need its own breadcrumbs, its own actions or its own
+    /// responsive layout, and reimplementing those to change one element is how
+    /// a header stops matching every other page's.
+    #[test]
+    fn the_title_slot_replaces_only_the_heading() {
+        let code = code_only();
+        assert!(
+            code.contains("if let Some(slot) = props.title_slot.clone() { {slot} } else {"),
+            "the slot stands in for the heading"
+        );
+        assert!(
+            code.contains(r#"h2 { class: "text-2xl font-bold"#),
+            "and the plain heading is still what a page without one gets"
+        );
+    }
+
+    /// `title` stays required, so a page cannot become nameless by passing a
+    /// slot: the tab title and any caller-side label still read it.
+    #[test]
+    fn a_page_with_a_slot_still_has_a_title() {
+        let code = code_only();
+        let props = code
+            .find("pub struct PageHeaderProps {")
+            .expect("the props struct");
+        let window = &code[props..code.len().min(props + 900)];
+        assert!(
+            window.contains("title: String,"),
+            "title is not optional: {window}"
+        );
+        assert!(
+            window.contains("title_slot: Option<Element>"),
+            "and the slot is: {window}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
-    use super::full_nav_visible;
-    use crate::components::icons::{
-        CLIPBOARD_DOCUMENT_LIST_PATH, CREDIT_CARD_PATH, CURRENCY_PATH, DOCUMENT_CHECK_PATH,
-        DOCUMENT_PATH, SCALE_PATH, SHIELD_CHECK_PATH, TAG_PATH, USERS_PATH, USER_GROUP_PATH,
-    };
+    use super::{detail_breadcrumbs, full_nav_visible};
     use crate::modules::theme::SectionColor;
+    use crate::Route;
 
     /// MAPPS-359 AC1: every sidebar row must render a distinct icon. Before
     /// this change six rows shared `DocumentIcon`, two shared `UsersIcon`,
@@ -1731,27 +1818,66 @@ mod tests {
     /// icon actually renders (the exported `*_PATH` consts, so the guard can
     /// never drift from the rendered glyph). If a reassignment is ever
     /// reverted to a shared icon, this fails.
+    /// PMS-746: the shared detail trail is `<List> > <record>`, the first crumb
+    /// navigates back to the list, and the record's own crumb is inert.
     #[test]
-    fn distinct_icons() {
-        // (label, rendered icon path) for every row that sat in a family that
-        // previously reused one glyph. All ten must be unique.
-        let rows = [
-            ("Timesheets", DOCUMENT_PATH),
-            ("Timesheet Approvals", DOCUMENT_CHECK_PATH),
-            ("Contracts", SCALE_PATH),
-            ("Rate Cards", TAG_PATH),
-            ("Audit Log", CLIPBOARD_DOCUMENT_LIST_PATH),
-            ("SLA Management", SHIELD_CHECK_PATH),
-            ("Contacts", USERS_PATH),
-            ("Team", USER_GROUP_PATH),
-            ("Invoices", CURRENCY_PATH),
-            ("Payments", CREDIT_CARD_PATH),
-        ];
-        for (i, (label_a, path_a)) in rows.iter().enumerate() {
-            for (label_b, path_b) in &rows[i + 1..] {
+    fn detail_trail_leads_back_to_its_list() {
+        let crumbs = detail_breadcrumbs("Tickets", Route::TicketList {}, "TCK-1001");
+        let labels: Vec<&str> = crumbs.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["Tickets", "TCK-1001"]);
+        assert_eq!(crumbs[0].route, Some(Route::TicketList {}));
+        assert_eq!(crumbs[1].route, None);
+    }
+
+    /// The sidebar source, scanned rather than mirrored. See
+    /// [`every_sidebar_row_has_its_own_icon`].
+    const LAYOUT_SRC: &str = include_str!("layout.rs");
+
+    /// MAPPS-359 AC1 / PMS-752: every sidebar row renders a distinct icon.
+    ///
+    /// This used to be a hand-written list of ten (label, path) pairs. It
+    /// passed while the sidebar shipped Audit Log and Request Forms on the same
+    /// clipboard glyph, because Request Forms was never added to the list: a
+    /// guard that only checks what someone remembered to enrol is a guard for
+    /// the rows that were never going to break.
+    ///
+    /// Scanning `SidebarContent`'s own source covers every row, including the
+    /// next one added, and needs no maintenance.
+    #[test]
+    fn every_sidebar_row_has_its_own_icon() {
+        let mut rows: Vec<(String, String)> = Vec::new();
+        for line in LAYOUT_SRC.lines() {
+            let line = line.trim();
+            if !line.starts_with("NavItem {") {
+                continue;
+            }
+            let Some((icon, rest)) = line
+                .split_once("icon: rsx!(")
+                .and_then(|(_, r)| r.split_once(' '))
+            else {
+                panic!("a NavItem without an `icon: rsx!(...)`: {line}");
+            };
+            let label = rest
+                .split_once("label: \"")
+                .and_then(|(_, r)| r.split_once('"'))
+                .map(|(l, _)| l.to_string())
+                .unwrap_or_else(|| panic!("a NavItem without a string label: {line}"));
+            rows.push((icon.to_string(), label));
+        }
+
+        // If the parse ever stops matching (formatting change, multi-line
+        // NavItem), this fails loudly instead of passing on an empty set.
+        assert!(
+            rows.len() >= 15,
+            "only found {} sidebar rows; the scan is no longer matching the source",
+            rows.len()
+        );
+
+        for (i, (icon_a, label_a)) in rows.iter().enumerate() {
+            for (icon_b, label_b) in &rows[i + 1..] {
                 assert_ne!(
-                    path_a, path_b,
-                    "sidebar rows {label_a} and {label_b} render the same icon"
+                    icon_a, icon_b,
+                    "sidebar rows {label_a} and {label_b} both render {icon_a}"
                 );
             }
         }

@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::components::{
-    use_page_title, AlertType, Button, ButtonVariant, Card, Modal, PageHeader, Table, TableBody,
-    TableCell, TableHead, TableHeader, TableRow,
+    use_page_title, AlertType, Button, ButtonVariant, Card, Checkbox, Input, Modal, PageHeader,
+    Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableRow,
 };
 use crate::Route;
 
@@ -65,6 +65,10 @@ pub fn SavedDashboardsPage() -> Element {
     let mut show_create = use_signal(|| false);
     let mut new_name = use_signal(String::new);
     let mut new_is_default = use_signal(|| false);
+    // MAPPS-436: the row Delete only opens the dialog; it holds the id plus the
+    // dashboard name so the message can name the row being destroyed.
+    let mut pending_delete = use_signal(|| None::<(Uuid, String)>);
+    let mut deleting = use_signal(|| false);
 
     // MAPPS-357: writes (create / pin default / delete) are blocked while the
     // server is unreachable; `can_mutate` disables their buttons below.
@@ -108,7 +112,15 @@ pub fn SavedDashboardsPage() -> Element {
         });
     };
 
-    let on_delete = move |id: Uuid| {
+    // MAPPS-436: the DELETE fires from the ConfirmDialog's `onconfirm` only.
+    let on_confirm_delete = move |_: ()| {
+        let Some((id, _)) = pending_delete.read().clone() else {
+            return;
+        };
+        if *deleting.read() {
+            return;
+        }
+        deleting.set(true);
         spawn(async move {
             match crate::hooks::fetch::api::delete_authed(&format!("/dashboards/{id}")).await {
                 Ok(_) => {
@@ -122,6 +134,8 @@ pub fn SavedDashboardsPage() -> Element {
                     );
                 }
             }
+            deleting.set(false);
+            pending_delete.set(None);
         });
     };
 
@@ -158,6 +172,8 @@ pub fn SavedDashboardsPage() -> Element {
         });
     };
 
+    let pending = pending_delete.read().clone();
+
     rsx! {
         PageHeader {
             title: "Dashboards".to_string(),
@@ -192,8 +208,32 @@ pub fn SavedDashboardsPage() -> Element {
                     crate::components::TableLoading { columns: 4 }
                 }
             } else if rows.is_empty() {
-                div { class: "p-6 text-center text-muted",
-                    "No saved dashboards yet. Click 'New dashboard' to create your first."
+                // MAPPS-440: the empty state belongs inside the table, as the
+                // shared row every other list uses, not as a bare div beside it.
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Name" }
+                            TableHeader { "Default" }
+                            TableHeader { "Updated" }
+                            TableHeader { class: "text-right".to_string(), "Actions" }
+                        }
+                    }
+                    TableEmpty {
+                        columns: 4,
+                        title: "No saved dashboards yet".to_string(),
+                        description: "Create one to pin as your post-login landing page."
+                            .to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't create a dashboard while the server is unreachable".to_string()),
+                                onclick: move |_| show_create.set(true),
+                                "New dashboard"
+                            }
+                        },
+                    }
                 }
             } else {
                 Table {
@@ -213,13 +253,13 @@ pub fn SavedDashboardsPage() -> Element {
                                 let row_name = row.name.clone();
                                 let updated = row.updated_at.format("%Y-%m-%d %H:%M UTC").to_string();
                                 let on_pin = on_pin_default;
-                                let on_del = on_delete;
+                                let del_label = row_name.clone();
                                 rsx! {
                                     TableRow { key: "{id}",
                                         TableCell { "{row_name}" }
                                         TableCell {
                                             if row_default {
-                                                span { class: "text-success font-medium", "Default" }
+                                                span { class: "font-medium text-green-600 dark:text-green-400", "Default" }
                                             } else {
                                                 span { class: "text-muted", "-" }
                                             }
@@ -249,7 +289,9 @@ pub fn SavedDashboardsPage() -> Element {
                                                     // MAPPS-357: block delete while down.
                                                     disabled: !can_mutate,
                                                     title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                                                    onclick: move |_| on_del(id),
+                                                    onclick: move |_| {
+                                                        pending_delete.set(Some((id, del_label.clone())));
+                                                    },
                                                     "Delete"
                                                 }
                                             }
@@ -268,22 +310,17 @@ pub fn SavedDashboardsPage() -> Element {
             title: "New dashboard".to_string(),
             onclose: move |_| show_create.set(false),
             div { class: "space-y-4",
-                div {
-                    label { class: "block text-sm font-medium mb-1", "Name" }
-                    input {
-                        class: "input input-bordered w-full",
-                        r#type: "text",
-                        value: "{new_name}",
-                        oninput: move |e| new_name.set(e.value()),
-                    }
+                Input {
+                    name: "dashboard_name",
+                    label: "Name",
+                    value: "{new_name}",
+                    oninput: move |e: FormEvent| new_name.set(e.value()),
                 }
-                label { class: "flex items-center gap-2",
-                    input {
-                        r#type: "checkbox",
-                        checked: *new_is_default.read(),
-                        oninput: move |e| new_is_default.set(e.value() == "true"),
-                    }
-                    span { class: "text-sm", "Pin as my default dashboard" }
+                Checkbox {
+                    name: "dashboard_is_default",
+                    label: "Pin as my default dashboard",
+                    checked: *new_is_default.read(),
+                    onchange: move |e: FormEvent| new_is_default.set(e.checked()),
                 }
                 div { class: "flex justify-end gap-2 pt-2",
                     Button {
@@ -300,6 +337,24 @@ pub fn SavedDashboardsPage() -> Element {
                         "Create"
                     }
                 }
+            }
+        }
+
+        if let Some((_, del_name)) = pending {
+            crate::components::ConfirmDialog {
+                open: true,
+                title: "Delete dashboard".to_string(),
+                message: format!("Delete the saved dashboard \"{del_name}\"?"),
+                confirm_text: "Delete".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                loading: *deleting.read(),
+                onconfirm: on_confirm_delete,
+                oncancel: move |_| {
+                    if !*deleting.read() {
+                        pending_delete.set(None);
+                    }
+                },
             }
         }
     }

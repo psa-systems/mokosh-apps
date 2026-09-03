@@ -27,21 +27,37 @@ use dioxus::prelude::*;
 
 /// How often to re-probe `/ready` while the server is marked unreachable.
 /// Assumed 10s per MAPPS-333; revise if it proves too chatty or too slow.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 const RECOVERY_POLL_SECS: u32 = 10;
 
 /// Read the live server-reachable flag reactively. Call from a component
 /// (e.g. the banner) so it re-renders when the flag transitions.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub fn use_server_reachable() -> bool {
     *crate::hooks::fetch::SERVER_REACHABLE.read()
 }
 
 /// Non-web stub: native / SSR builds have no fetch layer to drive the
 /// flag, so the app is always considered reachable.
-#[cfg(not(feature = "web"))]
+#[cfg(not(feature = "app"))]
 pub fn use_server_reachable() -> bool {
     true
+}
+
+/// MAPPS-428: read the live "a newer SPA build has been deployed, this
+/// tab is stale" flag reactively. Same shape as [`use_server_reachable`]
+/// above: [`crate::components::UpdateAvailableBanner`] calls it and
+/// re-renders when [`crate::hooks::update_check::UPDATE_PENDING`] flips.
+#[cfg(feature = "app")]
+pub fn use_update_pending() -> bool {
+    *crate::hooks::update_check::UPDATE_PENDING.read()
+}
+
+/// Non-web stub: native / SSR builds run no update check, so there is
+/// never a stale bundle to report.
+#[cfg(not(feature = "app"))]
+pub fn use_update_pending() -> bool {
+    false
 }
 
 /// Whether the app may currently send a *mutating* request (create /
@@ -54,13 +70,13 @@ pub fn use_server_reachable() -> bool {
 /// on its own the instant the MAPPS-333 recovery poll flips the flag back.
 /// When the local-first epic lands, the guard flips from "block" to
 /// "enqueue" (see [`crate::hooks::edit_queue`]).
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub fn use_can_mutate() -> bool {
     use_server_reachable()
 }
 
 /// Non-web stub: no fetch layer, so writes are always permitted.
-#[cfg(not(feature = "web"))]
+#[cfg(not(feature = "app"))]
 pub fn use_can_mutate() -> bool {
     true
 }
@@ -74,7 +90,7 @@ pub fn use_can_mutate() -> bool {
 /// successful `/ready` (or any other request that succeeds in the
 /// meantime) flips the flag back to `true`, which re-runs the resource
 /// and drops it back to the idle branch.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 pub fn use_server_status_monitor() {
     let _server_monitor = use_resource(move || async move {
         // Subscribe to the flag: a transition to `false` re-runs this
@@ -84,7 +100,7 @@ pub fn use_server_status_monitor() {
             return;
         }
         loop {
-            gloo_timers::future::TimeoutFuture::new(RECOVERY_POLL_SECS * 1000).await;
+            crate::platform::timer::sleep_ms(RECOVERY_POLL_SECS * 1000).await;
             // `probe` classifies its own result, so a recovered server
             // flips `SERVER_REACHABLE` back to `true` here.
             let _ = crate::hooks::fetch::api::probe("/ready").await;
@@ -107,6 +123,6 @@ pub fn use_server_status_monitor() {
 }
 
 /// Non-web stub so `App` compiles under `cargo check`/`cargo test`
-/// without the `web` feature.
-#[cfg(not(feature = "web"))]
+/// without the `app` feature.
+#[cfg(not(feature = "app"))]
 pub fn use_server_status_monitor() {}

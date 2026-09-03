@@ -5,10 +5,10 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, Checkbox,
-    ChevronRightIcon, DataTable, ErrorBanner, IconSize, Modal, PageHeader, PlusIcon, Select,
-    SelectOption, StatCard, Table, TableAlign, TableBody, TableCell, TableEmptyRow, TableHead,
-    TableHeader, TableRow,
+    use_page_title, Badge, BadgeVariant, BannerTone, Button, ButtonSize, ButtonVariant, Card,
+    Checkbox, ChevronRightIcon, DataTable, ErrorBanner, IconSize, Modal, PageHeader, PlusIcon,
+    Select, SelectOption, StatCard, StatusBanner, Table, TableAlign, TableBody, TableCell,
+    TableEmptyRow, TableHead, TableHeader, TableRow,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
@@ -52,6 +52,13 @@ struct RemoteTimeEntry {
     notes: Option<String>,
     #[serde(default)]
     is_billable: bool,
+    // PMS-942 / MAPPS-626: "client" or "employee". The only field that tells
+    // the MSP's own overhead apart from a client's unticketed work, because
+    // `work_category` is derived from the absence of a ticket and a project
+    // and reads "general" for both. `None` on a server that predates PMS-942,
+    // which reads as client work: the behaviour before the split.
+    #[serde(default)]
+    entry_kind: Option<String>,
     // MAPPS-383: the shared enum, not a free `String`, so an unknown wire tag
     // fails decoding instead of reaching the UI as raw text.
     #[serde(default)]
@@ -191,6 +198,38 @@ fn work_item_label(e: &RemoteTimeEntry) -> String {
     }
 }
 
+/// PMS-942 / MAPPS-626: is this the MSP's own time rather than a client's?
+///
+/// Employee time can never be billed (the server settles `is_billable` from
+/// the kind), so a list that only knows "billable" and "non-billable" files
+/// the MSP's own overhead in with client work that simply has not been billed
+/// yet, and nothing on the row says which is which.
+fn is_employee_time(e: &RemoteTimeEntry) -> bool {
+    e.entry_kind.as_deref() == Some("employee")
+}
+
+/// MAPPS-626: client work that has not been billed, which is what the
+/// "Non-Billable" figure has always meant. Employee time is non-billable by
+/// construction since PMS-942, so it is excluded here rather than inflating
+/// every tenant's unbilled client work by the whole of its own overhead.
+fn is_unbilled_client_work(e: &RemoteTimeEntry) -> bool {
+    !e.is_billable && !is_employee_time(e)
+}
+
+/// MAPPS-626: does this work-item selection produce the MSP's own time?
+///
+/// General is the only selection that does, and it does so on every tenant:
+/// the form sends the tenant's internal company when it has one and no
+/// company when it does not, and PMS-942 derives `employee` from both. A
+/// ticket or a project always names a client, so it never does.
+///
+/// One definition, because two places act on the answer: the Billable
+/// checkbox, which must not offer what the server will discard, and the
+/// request body, which must not send it.
+fn work_item_is_own_time(work_item: &str) -> bool {
+    work_item == "general"
+}
+
 /// Time entry list page
 #[component]
 pub fn TimeEntryListPage() -> Element {
@@ -200,10 +239,9 @@ pub fn TimeEntryListPage() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimeEntry>>("/time-entries")
+        crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>("/time-entries")
             .await
             .ok()
-            .map(|p| p.data)
     });
     // MAPPS-166: click-to-edit a time entry via the modal below.
     let mut selected_entry = use_signal(|| None::<RemoteTimeEntry>);
@@ -214,13 +252,14 @@ pub fn TimeEntryListPage() -> Element {
     // client-side from a fetched lookup list.
     let work_types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOption>>(
-            "/work-types?per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<WorkTypeOption>("/work-types")
+            .await
+            .unwrap_or_else(|e| {
+                // Best-effort: entries still render, with a bare id for the
+                // work type instead of its name.
+                tracing::warn!("work-type load failed: {e}");
+                Vec::new()
+            })
     });
     let work_type_name_by_id: std::collections::HashMap<uuid::Uuid, String> = work_types_resource
         .read_unchecked()
@@ -254,7 +293,8 @@ pub fn TimeEntryListPage() -> Element {
     let today_h = hours(sum_minutes(&entries, |e| e.date == today));
     let week_h = hours(sum_minutes(&entries, |e| e.date >= week_start));
     let billable_h = hours(sum_minutes(&entries, |e| e.is_billable));
-    let nonbillable_h = hours(sum_minutes(&entries, |e| !e.is_billable));
+    let nonbillable_h = hours(sum_minutes(&entries, is_unbilled_client_work));
+    let own_time_h = hours(sum_minutes(&entries, is_employee_time));
     let total = entries.len();
 
     rsx! {
@@ -273,11 +313,12 @@ pub fn TimeEntryListPage() -> Element {
             },
         }
 
-        div { class: "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 mb-6",
+        div { class: "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5 mb-6",
             StatCard { label: "Today", value: "{today_h}" }
             StatCard { label: "This Week", value: "{week_h}" }
             StatCard { label: "Billable", value: "{billable_h}" }
             StatCard { label: "Non-Billable", value: "{nonbillable_h}" }
+            StatCard { label: "Own Time", value: "{own_time_h}" }
         }
 
         if load_failed {
@@ -370,7 +411,13 @@ pub fn TimeEntryListPage() -> Element {
                                         TableCell { class: "max-w-xs truncate", "{note}" }
                                         TableCell { class: "font-medium", "{hrs}" }
                                         TableCell {
-                                            if e.is_billable {
+                                            if is_employee_time(e) {
+                                                // MAPPS-626: the MSP's own time. Not
+                                                // "Non-Billable", which reads as client
+                                                // work nobody has billed yet; this can
+                                                // never be billed at all.
+                                                Badge { variant: BadgeVariant::Blue, "Own time" }
+                                            } else if e.is_billable {
                                                 Badge { variant: BadgeVariant::Green, "Billable" }
                                             } else {
                                                 Badge { variant: BadgeVariant::Gray, "Non-Billable" }
@@ -427,10 +474,11 @@ fn short_id(id: uuid::Uuid) -> String {
 /// instead of dropping the user into an empty form they have to re-search.
 /// Returns the `work_item` select value (`ticket:<uuid>`) or empty.
 fn read_ticket_prefill_from_url() -> String {
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     {
-        if let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) {
-            if let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) {
+        if let Some(search) = crate::platform::location::search() {
+            {
+                let params = crate::utils::url::QueryString::parse(&search);
                 let id = params.get("ticket_id").unwrap_or_default();
                 if uuid::Uuid::parse_str(&id).is_ok() {
                     return format!("ticket:{id}");
@@ -478,29 +526,28 @@ pub fn TimeEntryNewPage() -> Element {
     // select value is prefixed `ticket:` / `project:` to tell them apart.
     let tickets_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<TicketOption>>("/tickets")
+        crate::hooks::fetch::api::get_all_authed::<TicketOption>("/tickets")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
     let projects_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<ProjectPick>>("/projects")
+        crate::hooks::fetch::api::get_all_authed::<ProjectPick>("/projects")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
     let work_types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOption>>(
-            "/work-types?per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<WorkTypeOption>("/work-types")
+            .await
+            .unwrap_or_else(|e| {
+                // Best-effort: entries still render, with a bare id for the
+                // work type instead of its name.
+                tracing::warn!("work-type load failed: {e}");
+                Vec::new()
+            })
     });
     // Tasks for the selected project (only when a project work item is
     // picked); re-runs when `work_item` changes.
@@ -510,12 +557,11 @@ pub fn TimeEntryNewPage() -> Element {
             if let Some(pid) = wi.strip_prefix("project:") {
                 let pid = pid.to_string();
                 let _gen = crate::hooks::fetch::active_tenant_generation();
-                crate::hooks::fetch::api::get_authed::<Paginated<TaskPick>>(&format!(
+                crate::hooks::fetch::api::get_all_authed::<TaskPick>(&format!(
                     "/projects/{pid}/tasks"
                 ))
                 .await
                 .ok()
-                .map(|p| p.data)
                 .unwrap_or_default()
             } else {
                 Vec::new()
@@ -528,7 +574,7 @@ pub fn TimeEntryNewPage() -> Element {
     // outage never blocks logging; the server still enforces the real cap.
     let cap_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             match crate::hooks::fetch::api::get_authed_typed::<SettingValueRow>(
                 "/settings/time_tracking/max_hours_per_day",
@@ -544,7 +590,7 @@ pub fn TimeEntryNewPage() -> Element {
                 Err(_) => DEFAULT_MAX_MINUTES_PER_DAY,
             }
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             DEFAULT_MAX_MINUTES_PER_DAY
         }
@@ -557,13 +603,14 @@ pub fn TimeEntryNewPage() -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let today = Utc::now().date_naive();
         let user_id = auth.read().user.as_ref().map(|u| u.id)?;
-        let path = format!(
-            "/time-entries?user_id={user_id}&date_from={today}&date_to={today}&per_page=500"
-        );
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimeEntry>>(&path)
+        // MAPPS-528: page the whole day. The old `per_page=500` was clamped
+        // to 100 by the server, so a busy day undercounted its own total and
+        // the cap check silently passed.
+        let path = format!("/time-entries?user_id={user_id}&date_from={today}&date_to={today}");
+        crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>(&path)
             .await
             .ok()
-            .map(|p| p.data.iter().map(|e| e.duration_minutes).sum::<i64>())
+            .map(|rows| rows.iter().map(|e| e.duration_minutes).sum::<i64>())
     });
 
     let tickets = tickets_resource
@@ -588,9 +635,11 @@ pub fn TimeEntryNewPage() -> Element {
 
     // MAPPS-243: the tenant's own-company id (PMS-413), the company_id a
     // General / overhead entry is attributed to. Sourced from the cached
-    // `/auth/me` user. `None` only on a tenant that predates the backfill;
-    // in that case the General option is offered but disabled (see below)
-    // rather than POSTing a null company_id.
+    // `/auth/me` user. MAPPS-626: `None` is no longer a dead end. PMS-942
+    // made the column nullable, so an overhead entry with no company at all
+    // is a legal row the server reads as employee time. We still send the
+    // own-company when the tenant has one, purely so existing overhead stays
+    // attributed where it already is.
     let own_company_id: Option<uuid::Uuid> =
         auth.read().user.as_ref().and_then(|u| u.own_company_id);
 
@@ -601,14 +650,15 @@ pub fn TimeEntryNewPage() -> Element {
     // empty and let the Select's placeholder do that job.
     let mut work_item_options: Vec<SelectOption> = Vec::new();
     // MAPPS-243: a deliberate General (no ticket or project) overhead entry,
-    // modeled like the required Work Type field. Offered only when the tenant
-    // has an own-company to attribute it to; otherwise the option is disabled
-    // (see the inline notice under the picker) so we never send a null
-    // company_id.
-    work_item_options.push(SelectOption {
-        disabled: own_company_id.is_none(),
-        ..SelectOption::new("general", "General (no ticket or project)")
-    });
+    // modeled like the required Work Type field. MAPPS-626: always offered.
+    // It was disabled on a tenant with no own-company because the column was
+    // NOT NULL and there was nothing to put there, which left exactly the
+    // people with no internal company unable to log their own time at all.
+    // There is no longer a company to invent.
+    work_item_options.push(SelectOption::new(
+        "general",
+        "General (no ticket or project)",
+    ));
     work_item_options.extend(tickets.iter().map(|t| {
         SelectOption::new(
             format!("ticket:{}", t.id),
@@ -636,17 +686,19 @@ pub fn TimeEntryNewPage() -> Element {
     );
 
     let is_project_item = work_item.read().starts_with("project:");
+    // MAPPS-626: a General selection is the employee's own time, whether it
+    // names the tenant's internal company or no company at all, and PMS-942
+    // settles `is_billable` from the kind rather than from the request. So a
+    // ticked Billable box on this selection is discarded server-side.
+    let is_general_item = work_item_is_own_time(work_item.read().as_str());
+    let billable_help = if is_general_item {
+        "General time is your own, not a client's, so it is never billed."
+    } else {
+        "Mark this time entry as billable to the customer"
+    };
     let tickets_for_submit = tickets.clone();
     let projects_for_submit = projects.clone();
     let err = error.read().clone();
-    // MAPPS-243: explain the disabled "General" option when the tenant has no
-    // own-company on file yet (pre-backfill), so the greyed-out row is not a
-    // dead end. Empty otherwise (no help text).
-    let work_item_help = if own_company_id.is_none() {
-        "General (no ticket or project) needs your company on file, which isn't set yet."
-    } else {
-        ""
-    };
 
     // MAPPS-357: N/A for ContentUnavailable - this is a write (create) form, not
     // a data-display page. The tickets / projects / work-types / tasks resources
@@ -738,24 +790,16 @@ pub fn TimeEntryNewPage() -> Element {
                     // server classifies it via work_category (PMS-394).
                     let (ticket_id, project_id, task_id, company_id, work_category) =
                         if wi == "general" {
-                            // MAPPS-243: a deliberate overhead entry. The
-                            // option is UI-disabled when own_company_id is
-                            // None, but re-check here so we never POST a
-                            // null company_id (no invented fallback).
-                            match own_company_id {
-                                Some(cid) => (None, None, None, cid, "general"),
-                                None => {
-                                    error.set(
-                                        "General time needs your company on file, which isn't set yet. Pick a ticket or project, or contact an admin."
-                                            .to_string(),
-                                    );
-                                    return;
-                                }
-                            }
+                            // MAPPS-626: the MSP's own time. Send the tenant's
+                            // own-company when it has one, and no company at
+                            // all when it has none; PMS-942 reads both as
+                            // employee time, so the two tenants get the same
+                            // kind of row and neither is refused.
+                            (None, None, None, own_company_id, "general")
                         } else if let Some(tid) = wi.strip_prefix("ticket:") {
                             match tickets_for_submit.iter().find(|t| t.id.to_string() == tid) {
                                 Some(t) => {
-                                    (Some(tid.to_string()), None, None, t.company_id, "ticketed")
+                                    (Some(tid.to_string()), None, None, Some(t.company_id), "ticketed")
                                 }
                                 None => {
                                     error.set("Could not resolve the ticket.".to_string());
@@ -768,7 +812,7 @@ pub fn TimeEntryNewPage() -> Element {
                                     Some(cid) => {
                                         let tk = task.read().clone();
                                         let tk = if tk.is_empty() { None } else { Some(tk) };
-                                        (None, Some(pid.to_string()), tk, cid, "project")
+                                        (None, Some(pid.to_string()), tk, Some(cid), "project")
                                     }
                                     None => {
                                         error.set(
@@ -794,17 +838,24 @@ pub fn TimeEntryNewPage() -> Element {
                             return;
                         }
                     };
+                    // MAPPS-626: match the server rather than send it something
+                    // it will drop. PMS-942 makes employee time non-billable
+                    // whatever the request says, and General is employee time.
+                    let billable = billable && !work_item_is_own_time(&wi);
                     let date = Utc::now().date_naive().to_string();
 
                     is_submitting.set(true);
                     spawn(async move {
-                        #[cfg(feature = "web")]
+                        #[cfg(feature = "app")]
                         {
                             let mut body = serde_json::json!({
                                 "user_id": user_id,
                                 "date": date,
                                 "duration_minutes": duration_minutes,
                                 "work_type_id": wtid,
+                                // MAPPS-626: null on a tenant with no internal
+                                // company. PMS-942 made that a legal employee
+                                // entry rather than a 400.
                                 "company_id": company_id,
                                 // MAPPS-243 / PMS-394: classify the entry so
                                 // reports split overhead ("general") from
@@ -864,7 +915,6 @@ pub fn TimeEntryNewPage() -> Element {
                         required: true,
                         rules: vec![Rule::Required],
                         error: work_item_error.read().clone(),
-                        help: work_item_help.to_string(),
                         onchange: move |e: FormEvent| {
                             work_item_error.set(String::new());
                             work_item.set(e.value());
@@ -937,8 +987,12 @@ pub fn TimeEntryNewPage() -> Element {
                 crate::components::Checkbox {
                     name: "billable",
                     label: "Billable",
-                    checked: *is_billable.read(),
-                    help: "Mark this time entry as billable to the customer",
+                    // MAPPS-626: off and locked on General, where the server
+                    // will not bill it. The signal itself is left alone, so
+                    // picking a ticket or project again restores the choice.
+                    checked: *is_billable.read() && !is_general_item,
+                    disabled: is_general_item,
+                    help: billable_help.to_string(),
                     // PMS-571: drive state from the event's actual checked
                     // value (re-anchoring to the DOM) instead of inverting
                     // stored state, which could desync a controlled checkbox
@@ -998,12 +1052,10 @@ pub fn TimesheetsPage() -> Element {
         let start = week_start();
         let end = start + Duration::days(6);
         let user_id = auth.read().user.as_ref().map(|u| u.id)?;
-        let path =
-            format!("/time-entries?user_id={user_id}&date_from={start}&date_to={end}&per_page=500");
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimeEntry>>(&path)
+        let path = format!("/time-entries?user_id={user_id}&date_from={start}&date_to={end}");
+        crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>(&path)
             .await
             .ok()
-            .map(|p| p.data)
     });
 
     // The week summary, for the approval-status badge.
@@ -1011,6 +1063,9 @@ pub fn TimesheetsPage() -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let start = week_start();
         let user_id = auth.read().user.as_ref().map(|u| u.id)?;
+        // MAPPS-543: not a collection read. This filters to one user's one
+        // week and takes the first match, so the server's default page size
+        // cannot truncate anything that would be rendered.
         let path = format!("/timesheets?user_id={user_id}&week={start}");
         crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimesheet>>(&path)
             .await
@@ -1021,18 +1076,16 @@ pub fn TimesheetsPage() -> Element {
     // Work-item labels: tickets and projects.
     let tickets_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<TicketOption>>("/tickets")
+        crate::hooks::fetch::api::get_all_authed::<TicketOption>("/tickets")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
     let projects_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<ProjectOption>>("/projects")
+        crate::hooks::fetch::api::get_all_authed::<ProjectOption>("/projects")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
     let tickets = tickets_resource
@@ -1192,7 +1245,7 @@ pub fn TimesheetsPage() -> Element {
                                 let mut sr = summary_resource;
                                 let mut er = entries_resource;
                                 spawn(async move {
-                                    #[cfg(feature = "web")]
+                                    #[cfg(feature = "app")]
                                     {
                                         let path = format!("/timesheets/{user_id}/{start}/withdraw");
                                         match crate::hooks::fetch::api::post_authed::<
@@ -1256,9 +1309,7 @@ pub fn TimesheetsPage() -> Element {
         }
 
         if !msg.is_empty() {
-            div { class: "mb-4 rounded-md bg-green-50 dark:bg-green-900/20 p-3",
-                p { class: "text-sm text-green-700 dark:text-green-400", "{msg}" }
-            }
+            StatusBanner { tone: BannerTone::Success, class: "mb-4", "{msg}" }
         }
         if !err.is_empty() {
             ErrorBanner { class: "mb-4", "{err}" }
@@ -1340,7 +1391,7 @@ pub fn TimesheetsPage() -> Element {
                         }
                     } else if load_failed {
                         TableRow {
-                            TableCell { colspan: Some(9), class: "text-center text-red-500",
+                            TableCell { colspan: Some(9), class: "text-center text-red-500 dark:text-red-400",
                                 "Could not load timesheet. The time-tracking service may be unavailable."
                             }
                         }
@@ -1436,7 +1487,7 @@ pub fn TimesheetsPage() -> Element {
                 let mut sr = summary_resource;
                 let mut er = entries_resource;
                 spawn(async move {
-                    #[cfg(feature = "web")]
+                    #[cfg(feature = "app")]
                     {
                         let path = format!("/timesheets/{user_id}/{start}/submit");
                         match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
@@ -1798,15 +1849,16 @@ pub fn TimesheetApprovalsPage() -> Element {
         let path = if *range_mode.read() {
             let from = range_from();
             let to = range_to();
-            format!("/timesheets?from={from}&to={to}&status={status}&per_page=200")
+            format!("/timesheets?from={from}&to={to}&status={status}")
         } else {
             let start = week_start();
-            format!("/timesheets?week={start}&status={status}&per_page=200")
+            format!("/timesheets?week={start}&status={status}")
         };
-        crate::hooks::fetch::api::get_authed::<Paginated<ApprovalSummary>>(&path)
+        // MAPPS-528: the approval queue is the page's whole point, so it pages
+        // to the end. The old `per_page=200` was clamped to 100.
+        crate::hooks::fetch::api::get_all_authed::<ApprovalSummary>(&path)
             .await
             .ok()
-            .map(|p| p.data)
     });
 
     // Names for the user_ids in the summaries.
@@ -1820,11 +1872,13 @@ pub fn TimesheetApprovalsPage() -> Element {
         if !can {
             return Vec::<ApprovalUser>::new();
         }
-        crate::hooks::fetch::api::get_authed::<Paginated<ApprovalUser>>("/auth/users?per_page=100")
+        crate::hooks::fetch::api::get_all_authed::<ApprovalUser>("/auth/users")
             .await
-            .ok()
-            .map(|p| p.data)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                // Best-effort: rows fall back to the bare user id.
+                tracing::warn!("approval user-name load failed: {e}");
+                Vec::new()
+            })
     });
 
     // MAPPS-377: read reachability before the manager / outage early returns
@@ -1919,9 +1973,7 @@ pub fn TimesheetApprovalsPage() -> Element {
         }
 
         if !msg.is_empty() {
-            div { class: "mb-4 rounded-md bg-green-50 dark:bg-green-900/20 p-3",
-                p { class: "text-sm text-green-700 dark:text-green-400", "{msg}" }
-            }
+            StatusBanner { tone: BannerTone::Success, class: "mb-4", "{msg}" }
         }
         if !err.is_empty() {
             ErrorBanner { class: "mb-4", "{err}" }
@@ -2069,7 +2121,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                         }
                     } else if load_failed {
                         TableRow {
-                            TableCell { class: "text-red-500",
+                            TableCell { class: "text-red-500 dark:text-red-400",
                                 "Could not load timesheets. The time-tracking service may be unavailable."
                             }
                         }
@@ -2123,7 +2175,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                                         TableCell { class: "text-muted", "{week_label_row}" }
                                         TableCell { Badge { variant: status_variant, "{status_label}" } }
                                         TableCell { "{total}" }
-                                        TableCell { class: "text-green-600", "{billable}" }
+                                        TableCell { class: "text-green-600 dark:text-green-400", "{billable}" }
                                         TableCell { class: "text-xs text-muted",
                                             if row_pending {
                                                 "-"
@@ -2193,7 +2245,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                                                             approving.set(Some(uid));
                                                             let mut sr = summaries_resource;
                                                             spawn(async move {
-                                                                #[cfg(feature = "web")]
+                                                                #[cfg(feature = "app")]
                                                                 {
                                                                     let path = format!("/timesheets/{uid}/{row_week}/approve");
                                                                     match crate::hooks::fetch::api::post_authed::<
@@ -2250,7 +2302,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                 is_rejecting.set(true);
                 let mut sr = summaries_resource;
                 spawn(async move {
-                    #[cfg(feature = "web")]
+                    #[cfg(feature = "app")]
                     {
                         let path = format!("/timesheets/{uid}/{week}/reject");
                         match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
@@ -2374,12 +2426,10 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
     let entries_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let end = week + Duration::days(6);
-        let path =
-            format!("/time-entries?user_id={uid}&date_from={week}&date_to={end}&per_page=500");
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimeEntry>>(&path)
+        let path = format!("/time-entries?user_id={uid}&date_from={week}&date_to={end}");
+        crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>(&path)
             .await
             .ok()
-            .map(|p| p.data)
     });
 
     // AC2: the applicable per-day max-hours cap (a JSON integer setting;
@@ -2395,23 +2445,17 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
         .filter(|h| (1..=24).contains(h))
     });
 
-    // AC2: the tenant rounding rules. The endpoint returns a bare array today;
-    // decode to a Value first so a future paginated `{data:[...]}` shape is
-    // tolerated too. Any failure yields an empty list (the panel omits it).
+    // AC2: the tenant rounding rules. Rows decode through `Value` so a field
+    // the client does not model cannot fail the whole list. Any failure
+    // yields an empty list (the panel omits it).
     let rules_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        let v = crate::hooks::fetch::api::get_authed::<serde_json::Value>(
-            "/time-rounding-rules?per_page=100",
-        )
-        .await
-        .ok()?;
-        let arr = v
-            .get("data")
-            .and_then(|d| d.as_array())
-            .cloned()
-            .or_else(|| v.as_array().cloned())?;
+        let rows =
+            crate::hooks::fetch::api::get_all_authed::<serde_json::Value>("/time-rounding-rules")
+                .await
+                .ok()?;
         Some(
-            arr.into_iter()
+            rows.into_iter()
                 .filter_map(|item| serde_json::from_value::<RoundingRuleRow>(item).ok())
                 .collect::<Vec<_>>(),
         )
@@ -2595,13 +2639,14 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
 
     let work_types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOption>>(
-            "/work-types?per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<WorkTypeOption>("/work-types")
+            .await
+            .unwrap_or_else(|e| {
+                // Best-effort: entries still render, with a bare id for the
+                // work type instead of its name.
+                tracing::warn!("work-type load failed: {e}");
+                Vec::new()
+            })
     });
     let work_types = work_types_resource
         .read_unchecked()
@@ -2637,6 +2682,15 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
     let mut date_error = use_signal(String::new);
 
     let wi_label = work_item_label(&entry);
+    // MAPPS-626: an employee entry is the MSP's own time and PMS-942 keeps it
+    // non-billable server-side, so offering the checkbox here would let an
+    // edit look like it changed something it cannot.
+    let own_time = is_employee_time(&entry);
+    let billable_help = if own_time {
+        "This is your own time, not a client's, so it is never billed."
+    } else {
+        "Mark this time entry as billable to the customer"
+    };
 
     let handle_save = move |_| {
         if *saving.read() || *deleting.read() {
@@ -2683,7 +2737,7 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
         let desc = description.read().clone();
         let billable = *is_billable.read();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 // Re-send ticket/project so the direct-set update keeps them.
                 // `task_id` is intentionally omitted: the response does not
@@ -2694,7 +2748,7 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                     "duration_minutes": duration_minutes,
                     "work_type_id": wtid,
                     "notes": desc,
-                    "is_billable": billable,
+                    "is_billable": billable && !own_time,
                     "ticket_id": ticket_id,
                     "project_id": project_id,
                 });
@@ -2729,7 +2783,7 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::delete_authed(&format!("/time-entries/{eid}")).await
                 {
@@ -2842,7 +2896,9 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                 Checkbox {
                     name: "edit_billable",
                     label: "Billable",
-                    checked: *is_billable.read(),
+                    checked: *is_billable.read() && !own_time,
+                    disabled: own_time,
+                    help: billable_help.to_string(),
                     // PMS-571: re-anchor to the event's checked value (see the
                     // create-form billable checkbox) so the toggle is reliable.
                     onchange: move |e: FormEvent| is_billable.set(e.checked()),
@@ -2888,6 +2944,7 @@ mod tests {
             task_title: None,
             notes: None,
             is_billable: false,
+            entry_kind: None,
             billing_status: BillingStatus::NotBilled,
             created_at: None,
             updated_at: None,
@@ -2910,6 +2967,85 @@ mod tests {
     #[test]
     fn work_item_label_unlinked_entry_reads_dash() {
         assert_eq!(work_item_label(&entry()), "-");
+    }
+
+    // ---- PMS-942 / MAPPS-626: whose time is it ----------------------------
+
+    // The MSP's own time is the kind, never the category: `work_category` is
+    // derived from the absence of a ticket and a project, so it says "general"
+    // for the employee's overhead AND for a client's unticketed phone call.
+    #[test]
+    fn the_category_does_not_say_whose_time_it_is() {
+        let own = RemoteTimeEntry {
+            work_category: Some("general".to_string()),
+            entry_kind: Some("employee".to_string()),
+            ..entry()
+        };
+        let clients = RemoteTimeEntry {
+            work_category: Some("general".to_string()),
+            entry_kind: Some("client".to_string()),
+            ..entry()
+        };
+        assert_eq!(work_item_label(&own), work_item_label(&clients));
+        assert!(is_employee_time(&own));
+        assert!(!is_employee_time(&clients));
+    }
+
+    // A server that predates PMS-942 sends no `entry_kind` at all. That must
+    // read as client work, which is what every entry was before the split, and
+    // not blank the row or reclassify it.
+    #[test]
+    fn a_server_that_sends_no_kind_reads_as_client_work() {
+        assert!(!is_employee_time(&entry()));
+        assert!(is_unbilled_client_work(&entry()));
+    }
+
+    // The "Non-Billable" total means client work nobody has billed. Employee
+    // time is non-billable by construction since PMS-942, so leaving it in
+    // would grow that figure by the whole of the tenant's own overhead while
+    // still calling it client work.
+    #[test]
+    fn the_unbilled_client_total_leaves_out_the_msps_own_hours() {
+        let billed = RemoteTimeEntry {
+            duration_minutes: 60,
+            is_billable: true,
+            entry_kind: Some("client".to_string()),
+            ..entry()
+        };
+        let unbilled = RemoteTimeEntry {
+            duration_minutes: 30,
+            is_billable: false,
+            entry_kind: Some("client".to_string()),
+            ..entry()
+        };
+        let own = RemoteTimeEntry {
+            duration_minutes: 90,
+            is_billable: false,
+            entry_kind: Some("employee".to_string()),
+            ..entry()
+        };
+        let rows = vec![billed, unbilled, own];
+
+        assert_eq!(sum_minutes(&rows, |e| e.is_billable), 60);
+        assert_eq!(sum_minutes(&rows, is_unbilled_client_work), 30);
+        assert_eq!(sum_minutes(&rows, is_employee_time), 90);
+    }
+
+    // General is the employee's own time on EVERY tenant, including one with
+    // an internal company to attribute it to: the form sends that company and
+    // PMS-942 derives `employee` from it just as it does from no company at
+    // all. This is what locks the Billable checkbox and what strips the flag
+    // out of the request body, so the two cannot drift apart.
+    #[test]
+    fn general_is_own_time_and_a_work_item_never_is() {
+        assert!(work_item_is_own_time("general"));
+        assert!(!work_item_is_own_time(
+            "ticket:2a1c9d5e-0000-0000-0000-000000000000"
+        ));
+        assert!(!work_item_is_own_time(
+            "project:2a1c9d5e-0000-0000-0000-000000000000"
+        ));
+        assert!(!work_item_is_own_time(""));
     }
 
     // Ticket and project labels are unchanged by the general branch.

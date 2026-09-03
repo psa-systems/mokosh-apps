@@ -10,7 +10,7 @@
 //!    Read-only here; editing requires the "Account Settings" link
 //!    that bounces over to bunyip-web's `/settings`.
 //!
-//! 2. **Personal info.** First / last name, title, phone, mobile,
+//! 2. **Personal info.** Title, mobile,
 //!    timezone. Lives on mokosh-server's `users` row, edited via
 //!    `GET` + `PUT /api/v1/auth/me`. mokosh-server's
 //!    `update_current_user` handler already strips role / status from
@@ -26,8 +26,8 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{
-    use_page_title, Button, ButtonVariant, Card, ErrorBanner, Input, Modal, ModalSize, PageHeader,
-    Select, SelectOption,
+    use_page_title, BannerTone, Button, ButtonVariant, Card, ErrorBanner, Input, Modal, ModalSize,
+    PageHeader, Select, SelectOption, StatusBanner,
 };
 use crate::utils::datetime::{format_user_datetime, preset_label, token_warnings, PRESET_FORMATS};
 use crate::utils::prefs;
@@ -38,12 +38,6 @@ use crate::Route;
 /// rendered here are dropped at deserialise time.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct MeResponse {
-    #[serde(default)]
-    first_name: String,
-    #[serde(default)]
-    last_name: String,
-    #[serde(default)]
-    phone: Option<String>,
     #[serde(default)]
     mobile: Option<String>,
     #[serde(default)]
@@ -103,16 +97,16 @@ struct UpdateContactMeRequest {
 /// change them. Empty optionals are sent as `None` (no-op on the
 /// server) rather than empty strings.
 ///
-/// PMS-512: `first_name`, `last_name`, and `phone` are deliberately
-/// absent from the wire even though the form still binds them to
-/// input signals for display. The server dropped them silently because
-/// Bunyip is the identity source of truth for the names + phone (mokosh
-/// keeps them as a read-only cache refreshed on every login via
-/// `upsert_user_from_oidc`). Sending them here was worse than not
-/// asking: the user typed a new name, hit Save, saw no error, and
-/// nothing actually changed. The input fields stay visible so the user
-/// can see the current bunyip-sourced values; the wire strips them so
-/// the request stops pretending to persist edits it never persisted.
+/// PMS-512 / MAPPS-431: `first_name`, `last_name` and `phone` are
+/// deliberately absent from the wire even though the form still binds them
+/// to input signals for display. Bunyip is the identity source of truth for
+/// the names + phone; mokosh keeps them as a read-only cache refreshed on
+/// every login via `upsert_user_from_oidc`. Sending them here was worse than
+/// not asking: the user typed a new name, hit Save, saw a "Saved" toast, and
+/// the request reached no column. The input fields stay visible so the user
+/// can see the current bunyip-sourced values; the wire strips them so the
+/// request stops pretending to persist edits it never persisted. Nothing
+/// here may send a field the server does not accept.
 #[derive(Clone, Debug, Serialize)]
 struct UpdateMeRequest {
     mobile: Option<String>,
@@ -192,30 +186,12 @@ const COMMON_TIMEZONES: &[(&str, &str)] = &[
 ];
 
 /// Browser-detected IANA timezone via
-/// `Intl.DateTimeFormat().resolvedOptions().timeZone`. Returns `None`
-/// when the API is unavailable (older browser, non-web build, or some
-/// hardened environment without Intl). The fallback is the form's
-/// own initial value, which is whatever mokosh-server gave us.
-#[cfg(feature = "web")]
+/// `Intl.DateTimeFormat().resolvedOptions().timeZone` in the browser,
+/// the OS zone on the desktop (MAPPS-504, `crate::platform::tz`).
+/// Returns `None` when the host will not say, and the fallback is the
+/// form's own initial value, which is whatever mokosh-server gave us.
 fn browser_timezone() -> Option<String> {
-    use wasm_bindgen::{JsCast, JsValue};
-    let intl = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("Intl")).ok()?;
-    let dtf_ctor = js_sys::Reflect::get(&intl, &JsValue::from_str("DateTimeFormat")).ok()?;
-    let dtf_fn = dtf_ctor.dyn_into::<js_sys::Function>().ok()?;
-    let dtf = js_sys::Reflect::construct(&dtf_fn, &js_sys::Array::new()).ok()?;
-    let resolved_options_fn = js_sys::Reflect::get(&dtf, &JsValue::from_str("resolvedOptions"))
-        .ok()?
-        .dyn_into::<js_sys::Function>()
-        .ok()?;
-    let resolved = resolved_options_fn.call0(&dtf).ok()?;
-    js_sys::Reflect::get(&resolved, &JsValue::from_str("timeZone"))
-        .ok()?
-        .as_string()
-}
-
-#[cfg(not(feature = "web"))]
-fn browser_timezone() -> Option<String> {
-    None
+    crate::platform::tz::local_iana()
 }
 
 /// Build the option list, prepending the currently-stored value if it
@@ -271,14 +247,14 @@ pub fn ProfilePage() -> Element {
         // MAPPS-357: subscribe to reachability so the profile auto-refetches
         // the instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             crate::hooks::fetch::api::get_authed_typed::<MeResponse>("/auth/me").await
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             Err::<MeResponse, crate::hooks::fetch::api::ApiError>(
-                crate::hooks::fetch::api::ApiError::Network("non-web build".into()),
+                crate::hooks::fetch::api::ApiError::Network("non-app build".into()),
             )
         }
     });
@@ -374,6 +350,7 @@ fn IdentityStrip() -> Element {
             String::new(),
         ),
     };
+    let brand = crate::branding::product_name();
 
     rsx! {
         Card {
@@ -394,13 +371,13 @@ fn IdentityStrip() -> Element {
                         }
                     }
                     if !role.is_empty() {
-                        // MAPPS-329: explicit "Mokosh Role" so a user with
+                        // MAPPS-329: explicit "<brand> Role" so a user with
                         // admin-on-mokosh does not assume the same level on
                         // the Bunyip hub. The Bunyip role is a separate
                         // claim issued by the OP and managed in Bunyip's
                         // own admin surface.
                         p { class: "mt-1 text-xs uppercase tracking-wide text-muted",
-                            "Mokosh Role: {role}"
+                            "{brand} Role: {role}"
                         }
                         p { class: "text-xs text-muted",
                             "Bunyip hub role is separate."
@@ -434,9 +411,6 @@ struct PersonalInfoFormProps {
 /// Bunyip's canonical name so the difference is visible at a glance.
 #[component]
 fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
-    let mut first_name = use_signal(|| props.initial.first_name.clone());
-    let mut last_name = use_signal(|| props.initial.last_name.clone());
-    let mut phone = use_signal(|| props.initial.phone.clone().unwrap_or_default());
     let mut mobile = use_signal(|| props.initial.mobile.clone().unwrap_or_default());
     let mut title = use_signal(|| props.initial.title.clone().unwrap_or_default());
     // Default the timezone signal to the saved value; when the saved
@@ -482,7 +456,7 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
             date_format_string: optional_field(&date_format()),
         };
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::put_authed_typed::<MeResponse, _>("/auth/me", &body)
                     .await
@@ -491,7 +465,7 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
                     Err(e) => error.set(format!("Could not save profile: {}", e.user_message())),
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = body;
             }
@@ -515,24 +489,10 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
                     ErrorBanner { "{error}" }
                 }
                 if saved() {
-                    div { class: "rounded-md bg-green-50 dark:bg-green-900/40 p-3 text-sm text-green-700 dark:text-green-300",
-                        "Profile saved."
-                    }
+                    StatusBanner { tone: BannerTone::Success, "Profile saved." }
                 }
 
                 div { class: "grid gap-4 sm:grid-cols-2",
-                    Input {
-                        name: "first_name",
-                        label: "First name",
-                        value: first_name(),
-                        oninput: move |e: FormEvent| first_name.set(e.value()),
-                    }
-                    Input {
-                        name: "last_name",
-                        label: "Last name",
-                        value: last_name(),
-                        oninput: move |e: FormEvent| last_name.set(e.value()),
-                    }
                     Input {
                         name: "title",
                         label: "Title",
@@ -550,17 +510,11 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
                     }
                     DateFormatField { value: date_format }
                     Input {
-                        name: "phone",
-                        label: "Work phone",
-                        r#type: "tel".to_string(),
-                        value: phone(),
-                        oninput: move |e: FormEvent| phone.set(e.value()),
-                    }
-                    Input {
                         name: "mobile",
                         label: "Mobile",
                         r#type: "tel".to_string(),
                         value: mobile(),
+                        help: "Your own number, stored here. Your name and work phone belong to your account; change those in Account Settings above.".to_string(),
                         oninput: move |e: FormEvent| mobile.set(e.value()),
                     }
                 }
@@ -581,7 +535,7 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
 }
 
 /// PMS-253: date/time format picker that sits next to the timezone
-/// dropdown. Ships the preset list + a "Custom..." button that opens
+/// dropdown. Ships the preset list + a "Custom…" button that opens
 /// the [`CustomFormatBuilder`] modal (PMS-254). The matching token
 /// grammar + renderer live in [`crate::utils::datetime`].
 #[component]
@@ -707,7 +661,7 @@ const TOKEN_GROUPS: &[TokenGroup] = &[
 
 /// PMS-254: free-form custom date/time format builder.
 ///
-/// Opens in a modal triggered by the "Custom..." button under the
+/// Opens in a modal triggered by the "Custom…" button under the
 /// preset dropdown. The user picks tokens via the pill grid or types
 /// directly into the format string input; either path keeps the live
 /// preview at the top in sync. Unrecognized alphabetic runs (e.g. a
@@ -852,7 +806,7 @@ fn TokenGroupRow(group: &'static TokenGroup, draft: Signal<String>) -> Element {
                         rsx! {
                             button {
                                 key: "{group.label}-{token}-{descriptor}",
-                                class: "inline-flex items-center gap-1 rounded border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/40 px-2 py-1 text-xs text-blue-700 dark:text-blue-200 hover:bg-blue-100 dark:hover:bg-blue-900/60",
+                                class: "inline-flex items-center gap-1 rounded border border-accent-200 dark:border-accent-700 bg-accent-50 dark:bg-accent-900/40 px-2 py-1 text-xs text-accent-700 dark:text-accent-300 hover:bg-accent-100 dark:hover:bg-accent-900/60",
                                 title: "Token: {token}",
                                 onclick: move |_| {
                                     let mut cur = draft();
@@ -860,7 +814,7 @@ fn TokenGroupRow(group: &'static TokenGroup, draft: Signal<String>) -> Element {
                                     draft.set(cur);
                                 },
                                 span { class: "font-mono font-medium", "{rendered}" }
-                                span { class: "text-blue-500 dark:text-blue-300", "{descriptor}" }
+                                span { class: "text-accent-500 dark:text-accent-400", "{descriptor}" }
                             }
                         }
                     }
@@ -1218,5 +1172,50 @@ fn ContactPersonalInfoForm(props: ContactPersonalInfoFormProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// This module's own source, minus this test module: the assertion below
+    /// names the very strings it forbids.
+    fn production_src() -> &'static str {
+        const PROFILE_SRC: &str = include_str!("profile.rs");
+        PROFILE_SRC
+            .split_once("#[cfg(test)]")
+            .map(|(before, _)| before)
+            .expect("this file has a test module")
+    }
+
+    /// MAPPS-431 recurrence guard.
+    ///
+    /// The page used to send `first_name`, `last_name` and `phone` to
+    /// `PUT /auth/me`, which discards all three: PMS-512 removed them from
+    /// `UpdateUserRequest` because bunyip owns identity and mokosh keeps a
+    /// read-only cache. The PUT succeeded, the keys reached no column, and the
+    /// screen said "Saved".
+    ///
+    /// A source scan rather than a behavioural test, because what is being
+    /// pinned is which keys the body carries, and that is visible in the
+    /// source. Anything added back here has to exist in `UpdateUserRequest`
+    /// first.
+    #[test]
+    fn the_profile_never_sends_a_field_the_server_discards() {
+        let body_start = production_src()
+            .find("struct UpdateMeRequest")
+            .expect("the request body is defined here");
+        let body = &production_src()[body_start..];
+        let body = &body[..body.find('}').expect("struct ends")];
+
+        for ignored in ["first_name", "last_name", "phone:"] {
+            assert!(
+                !body.contains(ignored),
+                "`{ignored}` is absent from mokosh-server's UpdateUserRequest, so sending it \
+                 saves nothing and tells the user it did"
+            );
+        }
+        // `mobile` IS mokosh's own column, and the distinction is the whole
+        // point: it stays.
+        assert!(body.contains("mobile"));
     }
 }

@@ -2,7 +2,7 @@
 //! survive a full page reload.
 //!
 //! sessionStorage is cleared when the tab closes and is per-origin.
-//! Two distinct payloads:
+//! Distinct payloads:
 //!
 //!  * `STATE_KEY` (`PendingFlow`) - short-lived OIDC code-flow state
 //!    (verifier + state + nonce). Written by `start_login`, removed by
@@ -18,6 +18,9 @@
 //!    additional exposure compared to the alternative
 //!    (localStorage cross-tab leak, or background-refresh complexity
 //!    via `prompt=none`).
+//!  * `CALLBACK_RETRY_KEY` (a counter) - MAPPS-432: how many login restarts
+//!    `/auth/callback` has taken for a recoverable error, so the silent retry
+//!    is bounded. Cleared on a successful exchange.
 //!
 //! The full accepted-risk decision (mitigations, the httpOnly-cookie BFF option,
 //! and why the refresh token lives in the browser) is recorded in
@@ -95,6 +98,45 @@ pub fn clear_standalone() {
     }
 }
 
+/// MAPPS-432: consecutive login restarts kicked off by a recoverable
+/// `/auth/callback` failure. Tab-scoped like the flow state itself, so the
+/// budget dies with the tab it was spent in.
+const CALLBACK_RETRY_KEY: &str = "mokosh_oidc_callback_retry_v1";
+
+/// MAPPS-432: restarts allowed before `/auth/callback` gives up and shows the
+/// underlying error. The 3rd consecutive recoverable failure renders instead of
+/// navigating, so a callback that keeps failing cannot loop the user forever.
+pub const MAX_CALLBACK_RETRIES: u32 = 2;
+
+/// Count this restart and return the number taken in this tab so far,
+/// including this one. `Err` when the counter cannot be read or written: the
+/// caller must not restart without a working guard, or the loop is unbounded.
+pub fn bump_callback_retry() -> Result<u32, String> {
+    let storage = session_storage()?;
+    let previous = storage
+        .get_item(CALLBACK_RETRY_KEY)
+        .map_err(|_| "sessionStorage read failed".to_string())?
+        .map(|raw| {
+            raw.parse::<u32>()
+                .map_err(|e| format!("corrupt callback retry counter {raw:?}: {e}"))
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let count = previous.saturating_add(1);
+    storage
+        .set_item(CALLBACK_RETRY_KEY, &count.to_string())
+        .map_err(|_| "sessionStorage write failed".to_string())?;
+    Ok(count)
+}
+
+/// Reset the restart budget. Called on a successful token exchange so a later
+/// legitimate reload starts with a full one.
+pub fn clear_callback_retry() -> Result<(), String> {
+    session_storage()?
+        .remove_item(CALLBACK_RETRY_KEY)
+        .map_err(|_| "sessionStorage delete failed".to_string())
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct PendingFlow {
     pub code_verifier: String,
@@ -117,10 +159,11 @@ pub struct PendingFlow {
 /// flow older than that would fail the code-redemption side anyway.
 pub const PENDING_FLOW_TTL_MS: u64 = 10 * 60 * 1000;
 
-/// MAPPS-338: current epoch milliseconds. Wraps `js_sys::Date::now`
-/// because chrono in WASM does not give us a monotonic-friendly handle.
+/// MAPPS-338: current epoch milliseconds, via
+/// [`crate::platform::clock`] so the same reading works in a browser and
+/// on the desktop.
 fn now_ms() -> u64 {
-    js_sys::Date::now() as u64
+    crate::platform::clock::now_ms()
 }
 
 pub fn save_pending(flow: &mut PendingFlow) -> Result<(), String> {
@@ -155,10 +198,9 @@ pub fn take_pending() -> Result<PendingFlow, String> {
     Ok(flow)
 }
 
-fn session_storage() -> Result<web_sys::Storage, String> {
-    web_sys::window()
-        .ok_or_else(|| "no window".to_string())?
-        .session_storage()
-        .map_err(|_| "no sessionStorage handle".to_string())?
-        .ok_or_else(|| "sessionStorage disabled".to_string())
+/// MAPPS-504: `sessionStorage` in the browser, an in-process map on the
+/// desktop, where the window IS the session. Same lifetime either way:
+/// nothing here survives the app closing.
+fn session_storage() -> Result<crate::platform::store::Store, String> {
+    crate::platform::store::session()
 }

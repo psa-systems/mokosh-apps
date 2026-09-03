@@ -1,15 +1,30 @@
 //! Mokosh Platform - Cross-platform Dioxus client
 
 use dioxus::prelude::*;
-use mokosh_apps::components::use_page_title_provider;
+use mokosh_apps::components::{use_page_title_provider, CloseConfirmModal};
 use mokosh_apps::hooks::{
-    use_apply_theme, use_auth_heartbeat, use_auth_provider, use_bfcache_invalidator,
-    use_current_user_loader, use_memberships_loader, use_server_status_monitor,
-    use_sidebar_collapsed_provider, use_sidebar_provider, use_sidebar_scroll_provider,
-    use_standalone_token_refresh, use_theme_sync, use_token_refresh, use_update_check,
-    use_version_cache_provider,
+    use_active_org_loader, use_apply_theme, use_auth_heartbeat, use_auth_provider,
+    use_bfcache_invalidator, use_current_user_loader, use_server_status_monitor,
+    use_session_end_watch, use_sidebar_collapsed_provider, use_sidebar_provider,
+    use_sidebar_scroll_provider, use_standalone_token_refresh, use_theme_sync, use_token_refresh,
+    use_update_check, use_version_cache_provider,
 };
 use mokosh_apps::Route;
+
+// PMS-884: a wasm build with no renderer feature compiles cleanly and then
+// dies on `dioxus::launch` with "No platform feature enabled", which reaches
+// the user as a blank page and a console panic. That is exactly what shipped
+// to staging, because `dx build` does not take this crate's default features:
+// it picks the crate feature whose name matches the platform. Fail at compile
+// time instead, so a bundle that cannot start cannot be built.
+#[cfg(all(target_arch = "wasm32", not(feature = "web")))]
+compile_error!(
+    "a wasm build needs the `web` feature (it is what enables `dioxus/web`); \
+     without it `dioxus::launch` panics at runtime. `dx` substitutes its own \
+     feature list for this crate's defaults, so every dx invocation that \
+     targets the browser has to pass `--features web` explicitly (see \
+     oci-build/Dockerfile, Dockerfile and the `build` recipe)."
+);
 
 fn main() {
     // MAPPS-299: install the wasm panic hook BEFORE anything else runs so
@@ -29,7 +44,59 @@ fn main() {
     // sees what the OP actually sent.
     mokosh_apps::modules::oidc::snapshot_initial_search();
 
+    launch();
+}
+
+/// Start the app on the web renderer.
+#[cfg(not(feature = "desktop"))]
+fn launch() {
     dioxus::launch(App);
+}
+
+/// MAPPS-504: start the app in a native window.
+///
+/// The window is sized for the layout the SPA was designed around: the
+/// persistent sidebar plus a content column. The minimum stops the user
+/// dragging it narrower than the point where the sidebar rail and the
+/// table columns start colliding.
+#[cfg(feature = "desktop")]
+fn launch() {
+    use dioxus::desktop::{Config, LogicalSize, WindowBuilder, WindowCloseBehaviour};
+
+    let mut window = WindowBuilder::new()
+        .with_title("Mokosh Platform")
+        .with_inner_size(LogicalSize::new(1440.0, 900.0))
+        .with_min_inner_size(LogicalSize::new(1024.0, 680.0));
+
+    match window_icon() {
+        Ok(icon) => window = window.with_window_icon(Some(icon)),
+        // Not fatal - the window opens with the toolkit default - but it
+        // is a packaging mistake worth seeing rather than a blank icon
+        // nobody can explain.
+        Err(e) => tracing::error!("could not load the window icon: {e}"),
+    }
+
+    // MAPPS-506: a close request must never be the thing that destroys the
+    // webview, or unsaved edits are gone before anything can ask about them.
+    // `WindowHides` is dioxus-desktop's only non-destructive answer;
+    // `platform::window_close` runs ahead of it on every close request and
+    // decides between closing for real and asking first.
+    dioxus::LaunchBuilder::desktop()
+        .with_cfg(
+            Config::new()
+                .with_window(window)
+                .with_close_behaviour(WindowCloseBehaviour::WindowHides),
+        )
+        .launch(App);
+}
+
+/// Decode the 128x128 PNG that `Dioxus.toml`'s `[bundle]` block also
+/// ships, so a `cargo run --features desktop` window carries the same
+/// icon a bundled install does.
+#[cfg(feature = "desktop")]
+fn window_icon() -> Result<dioxus::desktop::tao::window::Icon, String> {
+    const ICON_PNG: &[u8] = include_bytes!("../assets/icons/128x128.png");
+    dioxus::desktop::icon_from_memory(ICON_PNG).map_err(|e| e.to_string())
 }
 
 #[component]
@@ -68,9 +135,10 @@ fn App() -> Element {
     // within one interval, even if the user is idle on a page that does
     // not otherwise poll.
     use_auth_heartbeat();
-    // Load /v1/auth/memberships after sign-in so AuthContext.memberships
-    // is populated for the tenant switcher.
-    use_memberships_loader();
+    // MAPPS-427: name the organisation from mokosh's own tenant row. This used
+    // to GET bunyip's /v1/auth/memberships, which 401s on every load and left
+    // the top bar displaying the user's email address as an org name.
+    use_active_org_loader();
     // Fetch the authoritative current user (role, name, avatar) from
     // mokosh-server /api/v1/auth/me on first authenticated mount, so the
     // displayed role reflects the server-side (PMS-172) translation rather
@@ -81,6 +149,16 @@ fn App() -> Element {
     // the dashboard's prior JS state (including populated auth) from
     // the cache.
     use_bfcache_invalidator();
+    // MAPPS-504: put the user on the login screen when the fetch layer
+    // ends a session from outside the component tree. The browser does
+    // that with a full reload; a desktop window has none, so it watches
+    // the signal and clears the auth context instead. No-op on wasm.
+    use_session_end_watch();
+    // MAPPS-506: gate the desktop window's close request on the unsaved-changes
+    // flag `use_unsaved_guard` publishes, so closing the window with a dirty
+    // form asks first instead of discarding it. The browser does that from
+    // `beforeunload`; no-op on wasm.
+    mokosh_apps::platform::window_close::use_close_guard();
     // Apply the persisted theme preference on boot and follow system
     // dark-mode changes for `Theme::System` users.
     use_apply_theme();
@@ -108,5 +186,8 @@ fn App() -> Element {
     rsx! {
         document::Stylesheet { href: asset!("/assets/styles.css") }
         Router::<Route> {}
+        // MAPPS-506: the answer to a refused window close. Renders nothing
+        // until one is refused, and nothing at all on the web.
+        CloseConfirmModal {}
     }
 }

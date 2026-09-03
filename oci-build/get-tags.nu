@@ -6,6 +6,10 @@
 # describe`) and passed in via --mode:
 # - release: an exact `v*` tag push. Publishes ONLY the immutable <version> artifact.
 # - latest:  a push to main. Publishes ONLY the rolling `latest` artifact.
+# - branch:  a push to an allow-listed feature branch (MAPPS-421). Publishes
+#            ONLY a tag derived from the branch name (`/` -> `-`), so staging can
+#            run the branch while `:latest` stays a main-only artifact. The
+#            allow-list is the workflow's `on: push: branches:` filter.
 # - dry-run: a workflow_dispatch. The caller builds and prints but mutates nothing.
 #
 # Deriving the mode from the trigger is what removes the twin-publish race
@@ -25,8 +29,9 @@
 # - --simulate-tag "" (default) -> resolve the `latest` train.
 #
 # Returns a record { mode, train, tag, describe }:
-# - train: release | latest (the effective publish branch)
-# - tag:   <version> for release (e.g. v1.2.3) or `latest` for latest
+# - train: release | latest | branch (the effective publish train)
+# - tag:   <version> for release (e.g. v1.2.3), `latest` for latest, or the
+#          sanitized branch name for branch
 # - describe: `git describe --tags --always`, kept for build-metadata /
 #             diagnostics only; it no longer decides the train.
 #
@@ -34,8 +39,8 @@
 # script for a workflow step, pass --json to serialize the record for capture
 # (e.g. `^nu oci-build/get-tags.nu --mode latest --json | from json`).
 export def main [
-    --mode: string                  # release | latest | dry-run (from the trigger)
-    --ref-name: string = ""         # tag ref name for release mode (e.g. v1.2.3)
+    --mode: string                  # release | latest | branch | dry-run (from the trigger)
+    --ref-name: string = ""         # ref name: the version for release mode (e.g. v1.2.3), the branch for branch mode
     --simulate-tag: string = ""      # dry-run only: simulate a release of this version
     --json(-j)                       # Serialize the record to JSON for shell capture
 ] {
@@ -50,6 +55,8 @@ export def main [
         { train: "release", version: $ref_name }
     } else if $mode == "latest" {
         { train: "latest", version: "" }
+    } else if $mode == "branch" {
+        { train: "branch", version: "" }
     } else if $mode == "dry-run" {
         if ($simulate_tag | is-not-empty) {
             { train: "release", version: $simulate_tag }
@@ -57,14 +64,37 @@ export def main [
             { train: "latest", version: "" }
         }
     } else {
-        error make { msg: $"[get-tags] Unknown mode: '($mode)'. Expected release|latest|dry-run." }
+        error make { msg: $"[get-tags] Unknown mode: '($mode)'. Expected release|latest|branch|dry-run." }
     }
 
     if $effective.train == "release" and ($effective.version | is-empty) {
         error make { msg: "[get-tags] release train requires a non-empty version (--ref-name for a tag build, or --simulate-tag for a dry-run)." }
     }
 
-    let tag = if $effective.train == "release" { $effective.version } else { "latest" }
+    if $effective.train == "branch" and ($ref_name | is-empty) {
+        error make { msg: "[get-tags] branch train requires a non-empty --ref-name (the pushed branch name)." }
+    }
+
+    let tag = if $effective.train == "release" {
+        $effective.version
+    } else if $effective.train == "branch" {
+        ($ref_name | str replace --all "/" "-")
+    } else {
+        "latest"
+    }
+
+    # A branch tag must never collide with the main train: `latest` is published
+    # from main only, so a branch that resolves to it is a config error.
+    if $effective.train == "branch" and $tag == "latest" {
+        error make { msg: $"[get-tags] branch '($ref_name)' resolves to the reserved tag 'latest', which is published from main only." }
+    }
+
+    # `/` is handled above, but a branch name can still hold characters an OCI
+    # tag cannot. Reject it here rather than deep inside buildx.
+    if not ($tag =~ '^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$') {
+        error make { msg: $"[get-tags] Resolved tag '($tag)' is not a valid OCI tag: it must start with an alphanumeric or underscore and hold only alphanumerics, dot, dash and underscore, up to 128 characters." }
+    }
+
     log info $"[get-tags] Resolved train: ($effective.train) tag: ($tag)"
 
     let resolved = {

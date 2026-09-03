@@ -72,7 +72,7 @@ struct StatusReport {
 /// Probe `GET /api/v1/version`. A non-2xx or unparseable body is an
 /// error; a clean parse is the server's build info.
 async fn probe_server_version() -> Result<ServerVersion, String> {
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     {
         let (status, body) = crate::hooks::fetch::api::probe("/version").await?;
         if !(200..300).contains(&status) {
@@ -80,23 +80,23 @@ async fn probe_server_version() -> Result<ServerVersion, String> {
         }
         serde_json::from_str::<ServerVersion>(&body).map_err(|e| e.to_string())
     }
-    #[cfg(not(feature = "web"))]
+    #[cfg(not(feature = "app"))]
     {
-        Err("unavailable in non-web build".to_string())
+        Err("unavailable in non-app build".to_string())
     }
 }
 
 /// Probe `GET /api/v1/ready`. Parses the JSON body on both `200` and
 /// `503`; only a transport failure or an unparseable body is an error.
 async fn probe_readiness() -> Result<Readiness, String> {
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     {
         let (_status, body) = crate::hooks::fetch::api::probe("/ready").await?;
         serde_json::from_str::<Readiness>(&body).map_err(|e| e.to_string())
     }
-    #[cfg(not(feature = "web"))]
+    #[cfg(not(feature = "app"))]
     {
-        Err("unavailable in non-web build".to_string())
+        Err("unavailable in non-app build".to_string())
     }
 }
 
@@ -155,22 +155,23 @@ pub fn SystemStatusPage() -> Element {
     // Resolved runtime endpoints for the connection card.
     let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
     let api_base = {
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             crate::hooks::fetch::api::api_base()
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             "n/a".to_string()
         }
     };
     let issuer = cfg.issuer.to_string();
     let hub_url = cfg.hub_url("/");
+    let brand = crate::branding::product_name();
 
     rsx! {
         PageHeader {
             title: "System Status",
-            subtitle: "Build versions and live health of the Mokosh client and API.",
+            subtitle: "Build versions and live health of the {brand} client and API.",
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Secondary,

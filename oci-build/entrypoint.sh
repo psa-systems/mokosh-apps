@@ -28,6 +28,12 @@ escape_js() {
     printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
 
+# HTML-escape for an attribute context (og:/twitter: content="..."). Distinct
+# from escape_js: the link-preview tags below live in HTML, not the JS object.
+escape_html() {
+    printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'
+}
+
 emit_field() {
     name="$1"
     val="$2"
@@ -59,6 +65,31 @@ origin_of() {
     esac
 }
 
+# MAPPS-477: resolve a branding image URL to the ABSOLUTE form og:image and
+# twitter:image require. A link-preview crawler fetches the image from its own
+# servers, with no page to resolve a relative path against, so it drops a
+# root-relative value - and root-relative is exactly what
+# docs/deployment-branding.md recommends for the logo, because the browser CSP
+# is `img-src 'self'`. Join such a value onto MOKOSH_PUBLIC_URL's origin. With
+# no MOKOSH_PUBLIC_URL there is no correct absolute form, so this yields empty
+# and the caller omits the image tags instead of emitting an unfetchable one.
+absolute_image_url() {
+    case "$1" in
+        "")
+            :
+            ;;
+        *://*)
+            printf '%s' "$1"
+            ;;
+        *)
+            image_base="$(origin_of "${MOKOSH_PUBLIC_URL:-}")"
+            if [ -n "$image_base" ]; then
+                printf '%s/%s' "$image_base" "${1#/}"
+            fi
+            ;;
+    esac
+}
+
 if ! {
     echo "// Generated at container start by oci-build/entrypoint.sh."
     echo "// Operators override these via env vars on the mokosh-www container."
@@ -77,6 +108,9 @@ if ! {
     # derivation. Retires the per-MSP `MOKOSH_PORTAL_HOST_SUFFIX` env;
     # see docs/dev-docs/portal-single-host-cutover.md in mokosh-server.
     emit_field portal_host "${MOKOSH_PORTAL_HOST:-}"
+    # MAPPS-453: documentation subdomain base URL (e.g. https://docs.n.niceguyit.biz).
+    # Unset hides the Documentation menu entry and every contextual help link.
+    emit_field docs_base_url "${MOKOSH_DOCS_URL:-}"
     # BUNYIP-142: requested scope string for /oauth2/authorize. Default
     # compile-time value is "openid email offline_access"; operators
     # opting in to bunyip's profile/phone claim emission set this to
@@ -88,6 +122,16 @@ if ! {
     # Team item under the Admin nav section. Route::Team and its API stay
     # reachable by direct URL regardless of the flag.
     emit_field team_enabled "${MOKOSH_TEAM_ENABLED:-}"
+    # MAPPS-509: operator branding. Unset means the SPA keeps its built-in
+    # name and artwork, so a deployment that sets none of these renders
+    # exactly as before. The logo and hero URLs must resolve on the SPA
+    # origin (mount the file into /usr/share/caddy) or on the API origin:
+    # the Caddyfile CSP is `img-src 'self' data: {API origin}`. Everything
+    # outside /assets/* and /wasm/* is served no-cache, so a remounted
+    # file propagates on the next load. See docs/deployment-branding.md.
+    emit_field brand_name "${MOKOSH_BRAND_NAME:-}"
+    emit_field brand_logo_url "${MOKOSH_BRAND_LOGO_URL:-}"
+    emit_field brand_hero_url "${MOKOSH_BRAND_HERO_URL:-}"
     # build_sha is the git revision the WASM bundle was built from.
     # Baked into the image at build time via Dockerfile's GIT_SHA build
     # arg. The SPA polls `_mokosh_config.js` and reloads when this
@@ -114,6 +158,53 @@ if ! grep -q -F "$INCLUDE_TAG" "$INDEX"; then
     if ! sed -i "s|</head>|    ${INCLUDE_TAG}\\n</head>|" "$INDEX" 2>/dev/null; then
         echo "[entrypoint] WARN: could not patch ${INDEX} (read-only fs?); SPA will fall back to compile-time config" >&2
     fi
+fi
+
+# MAPPS-477: link-preview (OpenGraph / Twitter) metadata. A link-preview
+# crawler does not run the WASM app, so these tags must live in the served
+# HTML. They are stamped from the branding env here, at container start, the
+# same way _mokosh_config.js is; the SPA never sets them. Idempotent (skips if
+# already injected) and best-effort (a read-only rootfs is not fatal).
+OG_MARKER='<!-- MAPPS-477 link-preview metadata -->'
+if ! grep -q -F "$OG_MARKER" "$INDEX"; then
+    og_title="$(escape_html "${MOKOSH_BRAND_NAME:-Mokosh Platform}")"
+    og_desc="$(escape_html "${MOKOSH_BRAND_DESCRIPTION:-Mokosh Platform - Professional Services Automation for MSPs}")"
+    og_image_raw="$(absolute_image_url "${MOKOSH_BRAND_LOGO_URL:-}")"
+    if [ -n "${MOKOSH_BRAND_LOGO_URL:-}" ] && [ -z "$og_image_raw" ]; then
+        echo "[entrypoint] WARN: MOKOSH_BRAND_LOGO_URL='${MOKOSH_BRAND_LOGO_URL}' is not absolute and MOKOSH_PUBLIC_URL is unset; og:image/twitter:image omitted because a link-preview crawler cannot resolve a relative image URL. Set MOKOSH_PUBLIC_URL to the site's public base URL." >&2
+    fi
+
+    og_blockfile="$(mktemp 2>/dev/null || echo "${INDEX}.ogblock")"
+    {
+        printf '    %s\n' "$OG_MARKER"
+        printf '    <meta property="og:type" content="website">\n'
+        printf '    <meta property="og:title" content="%s">\n' "$og_title"
+        printf '    <meta property="og:site_name" content="%s">\n' "$og_title"
+        printf '    <meta property="og:description" content="%s">\n' "$og_desc"
+        if [ -n "$og_image_raw" ]; then
+            og_image="$(escape_html "$og_image_raw")"
+            printf '    <meta property="og:image" content="%s">\n' "$og_image"
+            printf '    <meta name="twitter:card" content="summary_large_image">\n'
+        else
+            printf '    <meta name="twitter:card" content="summary">\n'
+        fi
+        printf '    <meta name="twitter:title" content="%s">\n' "$og_title"
+        printf '    <meta name="twitter:description" content="%s">\n' "$og_desc"
+        if [ -n "$og_image_raw" ]; then
+            printf '    <meta name="twitter:image" content="%s">\n' "$og_image"
+        fi
+    } > "$og_blockfile" 2>/dev/null
+
+    og_tmp="$(mktemp 2>/dev/null || echo "${INDEX}.ogtmp")"
+    if [ -s "$og_blockfile" ] \
+        && awk 'FNR==NR{b=b $0 ORS; next} !ins && /<\/head>/{printf "%s",b; ins=1} {print}' "$og_blockfile" "$INDEX" > "$og_tmp" 2>/dev/null \
+        && mv "$og_tmp" "$INDEX" 2>/dev/null; then
+        :
+    else
+        echo "[entrypoint] WARN: could not inject link-preview metadata into ${INDEX} (read-only fs?); a pasted link shows the built-in defaults or nothing" >&2
+        rm -f "$og_tmp" 2>/dev/null
+    fi
+    rm -f "$og_blockfile" 2>/dev/null
 fi
 
 # MAPPS-369: derive origin-scoped CSP sources from the operator-facing base

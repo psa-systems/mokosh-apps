@@ -452,6 +452,69 @@ pub fn TagIcon(#[props(default)] size: IconSize, #[props(default)] class: String
 /// Primary path of [`CreditCardIcon`] (Heroicons `credit-card`).
 pub const CREDIT_CARD_PATH: &str = "M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 0 0 2.25-2.25V6.75A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25v10.5A2.25 2.25 0 0 0 4.5 19.5Z";
 
+/// Primary path of [`DocumentTextIcon`] (Heroicons `document-text`).
+pub const DOCUMENT_TEXT_PATH: &str = "M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z";
+
+/// A page with lines of text. Used for the Statements nav item (MAPPS-639),
+/// distinct from Quotes (`DocumentIcon`) and Timesheet Approvals
+/// (`DocumentCheckIcon`), because every sidebar row carries its own glyph.
+#[component]
+pub fn DocumentTextIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: DOCUMENT_TEXT_PATH,
+            }
+        }
+    }
+}
+
+/// Primary path of [`ReceiptRefundIcon`] (Heroicons `receipt-refund`).
+pub const RECEIPT_REFUND_PATH: &str = "M8.25 9.75h4.875a2.625 2.625 0 0 1 0 5.25H12M8.25 9.75 10.5 7.5M8.25 9.75 10.5 12m9-7.243V21.75l-3.75-1.5-3.75 1.5-3.75-1.5-3.75 1.5V4.757c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0c1.1.128 1.907 1.077 1.907 2.185Z";
+
+/// A receipt with a return arrow. Used for the Credit Notes nav item
+/// (MAPPS-638) so it is distinct from Invoices (`CurrencyIcon`), Payments
+/// (`CreditCardIcon`) and the Audit Log (`ClipboardDocumentListIcon`): every
+/// sidebar row carries its own glyph, and a test says so.
+#[component]
+pub fn ReceiptRefundIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: RECEIPT_REFUND_PATH,
+            }
+        }
+    }
+}
+
 /// Credit card. Used for the Payments nav item so it is distinct from
 /// Invoices (`CurrencyIcon`).
 #[component]
@@ -537,6 +600,72 @@ pub fn ClipboardDocumentListIcon(
     }
 }
 
+/// Primary path of [`TableCellsIcon`]: a bordered grid. PMS-752: the Timesheets
+/// nav row, which shared `DocumentIcon` with Quotes. A timesheet IS a grid of
+/// days against hours, and a quote is genuinely a document, so the grid moved
+/// and the page stayed.
+pub const TABLE_CELLS_PATH: &str = "M4.5 5.25h15a.75.75 0 0 1 .75.75v12a.75.75 0 0 1-.75.75h-15a.75.75 0 0 1-.75-.75V6a.75.75 0 0 1 .75-.75Zm-.75 4.5h16.5m-16.5 4.5h16.5M10.5 5.25v13.5";
+
+/// Bordered grid. Used for the Timesheets nav item.
+#[component]
+pub fn TableCellsIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: TABLE_CELLS_PATH,
+            }
+        }
+    }
+}
+
+/// Primary path of [`InboxArrowDownIcon`]: an open tray with an arrow coming
+/// into it. PMS-752: the Request Forms nav row, which used to share the
+/// clipboard glyph with Audit Log. A request form is something you send out and
+/// get answers back from, so "arriving in a tray" reads closer than a clipboard
+/// and, more to the point, is not the icon the row above it uses.
+pub const INBOX_ARROW_DOWN_PATH: &str =
+    "M3.75 9.75v7.5A2.25 2.25 0 0 0 6 19.5h12a2.25 2.25 0 0 0 2.25-2.25v-7.5M12 3v10.5m0 0 3.75-3.75M12 13.5 8.25 9.75";
+
+/// Tray with an inbound arrow. Used for the Request Forms nav item.
+#[component]
+pub fn InboxArrowDownIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: INBOX_ARROW_DOWN_PATH,
+            }
+        }
+    }
+}
+
 /// Primary path of [`ShieldCheckIcon`] (Heroicons `shield-check`).
 pub const SHIELD_CHECK_PATH: &str = "M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z";
 
@@ -586,6 +715,115 @@ pub fn PlusIcon(#[props(default)] size: IconSize, #[props(default)] class: Strin
                 stroke_linecap: "round",
                 stroke_linejoin: "round",
                 d: "M12 4.5v15m7.5-7.5h-15",
+            }
+        }
+    }
+}
+
+/// Envelope. Heroicons `envelope` (outline). MAPPS-482: marks a button whose
+/// click makes the server email someone, so an outbound message is not
+/// indistinguishable from an action that just writes a row. Decorative beside
+/// the button's own label, so it carries no accessible name of its own.
+#[component]
+pub fn MailIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75",
+            }
+        }
+    }
+}
+
+/// PMS-760: reordering an item in a list, as icon-only controls.
+///
+/// Added for the request-form builder, where "Move up" / "Move down" as text
+/// links were most of the noise on a field row. Paired with [`ArrowDownIcon`];
+/// use them through `IconButton`, which requires the accessible name that the
+/// text used to carry.
+#[component]
+pub fn ArrowUpIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18",
+            }
+        }
+    }
+}
+
+/// The grip on a draggable row (Heroicons `bars-2`).
+///
+/// PMS-760: two bars rather than the six-dot grip other kits ship, because
+/// Heroicons has no grip and inventing one would be the only hand-drawn icon in
+/// the set. It is a cursor affordance, not a control: the row it sits on is
+/// what carries the drag, and the arrow buttons beside it are what a keyboard
+/// or a touch screen reorders with.
+#[component]
+pub fn DragHandleIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M3.75 9h16.5m-16.5 6.75h16.5",
+            }
+        }
+    }
+}
+
+/// See [`ArrowUpIcon`].
+#[component]
+pub fn ArrowDownIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M19.5 13.5 12 21m0 0-7.5-7.5M12 21V3",
             }
         }
     }
@@ -879,6 +1117,7 @@ pub fn CogIcon(#[props(default)] size: IconSize, #[props(default)] class: String
     }
 }
 
+
 /// PMS-729 phase 2 §6 slice 3: light-mode indicator for the portal
 /// theme toggle. Heroicons `sun` outline.
 #[component]
@@ -973,6 +1212,350 @@ pub fn ComputerDesktopIcon(
                 stroke_linecap: "round",
                 stroke_linejoin: "round",
                 d: "M9 17.25v1.007a3 3 0 0 1-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0 1 15 18.257V17.25m6-12V15a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 15V5.25m18 0A2.25 2.25 0 0 0 18.75 3H5.25A2.25 2.25 0 0 0 3 5.25m18 0V12a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 12V5.25",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn BoldIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M6.75 3.75h5.5a3.75 3.75 0 0 1 0 7.5h-5.5v-7.5Zm0 7.5h6.25a3.75 3.75 0 0 1 0 7.5H6.75v-7.5Z",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn ItalicIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M14.25 3.75h-5m1.5 16.5h-5M13.5 3.75 9 20.25",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn StrikethroughIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M4.5 12h15M16.5 6.75c-.6-1.7-2.4-3-4.7-3-2.8 0-4.8 1.5-4.8 3.6 0 1.5 1 2.6 2.7 3.2M7.5 17.25c.7 1.8 2.6 3 5 3 2.9 0 4.9-1.5 4.9-3.7 0-1.3-.6-2.3-1.8-3",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn QuoteIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M6.75 15.75A3 3 0 0 0 9.75 12.75V8.25h-6v4.5h3a3 3 0 0 1-3 3v0m13.5 0a3 3 0 0 0 3-3V8.25h-6v4.5h3a3 3 0 0 1-3 3v0",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn CodeIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "m9 8.25-4.5 3.75L9 15.75m6-7.5 4.5 3.75-4.5 3.75",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn CodeBlockIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M3.75 5.25h16.5v13.5H3.75zM9 10.5 7.125 12 9 13.5m6-3L16.875 12 15 13.5",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn LinkIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn BulletListIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M8.25 6.75h12M8.25 12h12M8.25 17.25h12M3.75 6.75h.008v.008H3.75zm0 5.25h.008v.008H3.75zm0 5.25h.008v.008H3.75z",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn NumberedListIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M8.25 6.75h12M8.25 12h12M8.25 17.25h12M3 5.25h1.5v3M3 11.25h1.875L3 13.5v.75h1.875M3 16.5h1.875v1.125H3.75m1.125 0H3.75v1.125H4.875",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn ChecklistIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M9.75 6.75h10.5M9.75 12h10.5M9.75 17.25h10.5M3 6.375l1.125 1.125L6.375 5.25M3 11.625l1.125 1.125L6.375 10.5M3 16.875l1.125 1.125 2.25-2.25",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn AlignTableIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    // MAPPS-600: three bars of even length, for "make these line up". Distinct
+    // from `TableIcon` (a grid), which inserts a table rather than tidying one.
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M3.75 6.75h16.5M3.75 12h16.5M3.75 17.25h16.5",
+            }
+        }
+    }
+}
+
+#[component]
+pub fn TableIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M3.75 5.25h16.5v13.5H3.75zM3.75 9.75h16.5M9.75 9.75v9M15 9.75v9",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn PhotoIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M2.25 15.75l5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M18 5.25h.008v.008H18zM2.25 4.5h19.5v15H2.25z",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn HeadingIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M5.25 4.5v15m9-15v15m-9-7.5h9m3 7.5V9.75l2.25 1.5",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn EyeIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178ZM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z",
             }
         }
     }

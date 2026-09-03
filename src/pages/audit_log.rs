@@ -15,7 +15,7 @@ use crate::components::{
     PageHeader, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
     TableHeader, TableLoading, TableRow,
 };
-use crate::modules::audit::AuditLogEntry;
+use crate::modules::audit::{enrichment_rows, AuditLogEntry, IpEnrichment};
 use crate::utils::url::urlencoding_minimal;
 use crate::utils::Paginated;
 
@@ -310,14 +310,15 @@ fn AuditLogContent() -> Element {
     // switch via the generation read; an error just leaves ids unresolved.
     let users_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        // PMS-584: pull a full page so the user-name filter dropdown (and the
-        // diff FK resolution) cover every user, not just the default page.
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteUser>>("/auth/users?per_page=200")
+        // PMS-584: pull every user so the user-name filter dropdown (and the
+        // diff FK resolution) cover the whole tenant, not just the default
+        // page. MAPPS-528: the old `per_page=200` was clamped to 100.
+        crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users")
             .await
             .ok()
     });
     let users: Vec<RemoteUser> = match &*users_resource.read_unchecked() {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
 
@@ -564,6 +565,40 @@ fn AuditLogContent() -> Element {
     }
 }
 
+/// Ask the server for one address's advisory enrichment.
+///
+/// `Option<IpEnrichment>` is what makes "nothing to report" legible: the route
+/// answers `200` with a JSON `null` for a private or reserved address, an
+/// address the dataset does not know, or a deployment with no dataset
+/// configured. Only a malformed IP is a `400`, and a transport failure or a
+/// `403` arrives here as an `Err` and stays one.
+async fn lookup_enrichment(addr: &str) -> EnrichState {
+    let path = format!("/ip-enrichment?ip={}", urlencoding_minimal(addr));
+    match crate::hooks::fetch::api::get_authed_typed::<Option<IpEnrichment>>(&path).await {
+        Ok(found) => EnrichState::Loaded(found),
+        Err(e) => EnrichState::Failed(e.to_string()),
+    }
+}
+
+/// What the on-demand `/ip-enrichment` lookup has produced for one row.
+///
+/// PMS-870: `Loaded(None)` and `Failed` are separate states on purpose. The
+/// server answers `200` with a JSON `null` when it has nothing to report (no
+/// dataset configured, a private or reserved address, an address the dataset
+/// does not know), and collapsing that into the error state would tell an admin
+/// the lookup broke when it answered. Collapsing it the other way is worse: a
+/// 403 or a dropped connection would read as "this address is unremarkable".
+#[derive(Clone, PartialEq)]
+enum EnrichState {
+    /// Never asked. The lookup is explicit per address, never automatic: the
+    /// endpoint is admin-gated and per-address, and a 25-row page must not fire
+    /// 25 requests.
+    Idle,
+    Loading,
+    Loaded(Option<IpEnrichment>),
+    Failed(String),
+}
+
 #[derive(Props, Clone, PartialEq)]
 struct AuditRowProps {
     entry: AuditLogEntry,
@@ -577,6 +612,11 @@ struct AuditRowProps {
 fn AuditRow(props: AuditRowProps) -> Element {
     let AuditRowProps { entry, users } = props;
     let mut expanded = use_signal(|| false);
+    // PMS-870: the actor IP's advisory enrichment, fetched only when asked for
+    // and kept per row, so reopening the panel does not re-request what this
+    // row already has.
+    let mut enrich_open = use_signal(|| false);
+    let mut enrich = use_signal(|| EnrichState::Idle);
 
     let has_detail =
         entry.old_values.is_some() || entry.new_values.is_some() || entry.user_agent.is_some();
@@ -586,6 +626,16 @@ fn AuditRow(props: AuditRowProps) -> Element {
     let variant = action_variant(&action);
     let entity_type = entry.entity_type.clone();
     let ip = entry.ip_address.clone().unwrap_or_else(|| "-".to_string());
+    // The address as the server sent it, or `None` when the row has none. `ip`
+    // above is the display fallback and is never a value to look up.
+    let actor_ip = entry
+        .ip_address
+        .clone()
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty());
+    // A second handle for the retry control in the failure branch; the first is
+    // consumed by the cell's own click handler.
+    let retry_ip = actor_ip.clone();
 
     let old_json = pretty_json(&entry.old_values);
     let new_json = pretty_json(&entry.new_values);
@@ -630,7 +680,40 @@ fn AuditRow(props: AuditRowProps) -> Element {
             TableCell { "{entity_type}" }
             TableCell { "{entity_label}" }
             TableCell { "{user_label}" }
-            TableCell { class: "text-muted", "{ip}" }
+            TableCell { class: "text-muted",
+                // The address itself is the control. A row with no IP has
+                // nothing to look up, so it stays inert text rather than a
+                // button that would answer 400.
+                if let Some(addr) = actor_ip.clone() {
+                    // Cloned out of the `if let` binding so the closure owns a
+                    // copy: the binding itself is still needed to render the
+                    // button's label.
+                    {{
+                        let lookup_addr = addr.clone();
+                        rsx! {
+                    Button {
+                        variant: ButtonVariant::Link,
+                        class: "font-mono text-xs",
+                        onclick: move |_| {
+                            let opening = !*enrich_open.read();
+                            enrich_open.set(opening);
+                            if !opening || *enrich.read() != EnrichState::Idle {
+                                return;
+                            }
+                            let target = lookup_addr.clone();
+                            enrich.set(EnrichState::Loading);
+                            spawn(async move {
+                                enrich.set(lookup_enrichment(&target).await);
+                            });
+                        },
+                        "{addr}"
+                    }
+                        }
+                    }}
+                } else {
+                    span { class: "text-subtle", "{ip}" }
+                }
+            }
             TableCell {
                 if has_detail {
                     Button {
@@ -643,6 +726,71 @@ fn AuditRow(props: AuditRowProps) -> Element {
                     }
                 } else {
                     span { class: "text-subtle", "-" }
+                }
+            }
+        }
+        if *enrich_open.read() {
+            tr {
+                td {
+                    colspan: "7",
+                    class: "px-6 py-4 bg-surface-2",
+                    div { class: "text-xs",
+                        match &*enrich.read() {
+                            EnrichState::Idle | EnrichState::Loading => rsx! {
+                                p { class: "text-muted", "Looking up the network for this address\u{2026}" }
+                            },
+                            // A real failure. Never folded into the empty
+                            // result, which would be indistinguishable from the
+                            // server having nothing to say about the address.
+                            EnrichState::Failed(message) => rsx! {
+                                ErrorBanner {
+                                    "Could not look up this address. {message}"
+                                }
+                                // Without this the row is stuck: the click
+                                // handler only fetches from `Idle`, so a
+                                // transient network failure would need a page
+                                // reload to clear.
+                                if let Some(addr) = retry_ip.clone() {
+                                    Button {
+                                        variant: ButtonVariant::Link,
+                                        onclick: move |_| {
+                                            let target = addr.clone();
+                                            enrich.set(EnrichState::Loading);
+                                            spawn(async move {
+                                                enrich.set(lookup_enrichment(&target).await);
+                                            });
+                                        },
+                                        "Try again"
+                                    }
+                                }
+                            },
+                            EnrichState::Loaded(None) => rsx! {
+                                p { class: "text-muted",
+                                    "No enrichment available for this address."
+                                }
+                                p { class: "text-subtle mt-1",
+                                    "The address may be private or reserved, unknown to the dataset, or this deployment may have no dataset configured."
+                                }
+                            },
+                            EnrichState::Loaded(Some(found)) => rsx! {
+                                dl { class: "grid grid-cols-1 gap-3 sm:grid-cols-2",
+                                    for (label , value) in enrichment_rows(found) {
+                                        div {
+                                            dt { class: "font-medium text-muted mb-1", "{label}" }
+                                            dd { class: "text-content break-all", "{value}" }
+                                        }
+                                    }
+                                }
+                                // BUNYIP-437: said in words, next to the
+                                // values, rather than rendered from the
+                                // response's own `advisory` boolean. Nothing in
+                                // this page turns any of it into a verdict.
+                                p { class: "text-subtle mt-3",
+                                    "Advisory context only. These values describe the network the address belongs to; they are not a judgement about the request or the person who made it."
+                                }
+                            },
+                        }
+                    }
                 }
             }
         }

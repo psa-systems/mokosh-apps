@@ -4,13 +4,47 @@
 //! token endpoint via `oidc::complete_login`, stashes the tokens in
 //! [`AuthContext`], and routes back to wherever the original
 //! `start_login` requested.
+//!
+//! MAPPS-432: a failed exchange is routed by `classify_flow_error`, which
+//! matches on the `FlowError` variant (never on its message text). Errors that
+//! only mean "no live authorization flow on this URL" restart the login flow
+//! silently via [`restart_login`]; everything else renders the error screen.
 
 use dioxus::prelude::*;
 
 use crate::hooks::use_auth;
 use crate::modules::auth::{CurrentUser, UserRole};
-use crate::modules::oidc::{complete_login, OidcConfig};
+use crate::modules::oidc::storage::{
+    bump_callback_retry, clear_callback_retry, MAX_CALLBACK_RETRIES,
+};
+use crate::modules::oidc::{
+    classify_flow_error, complete_login, log_auth_error, CallbackRecovery, OidcConfig,
+};
 use crate::Route;
+
+/// MAPPS-432: silently re-kick the login flow after a recoverable callback
+/// failure. `/login` (not a reload of `/auth/callback`, which MAPPS-336 strips
+/// of `code`/`state`) is the only URL that re-runs `start_login`, and a hard
+/// `replace` both re-runs `snapshot_initial_search` and keeps the dead callback
+/// URL out of history.
+///
+/// `Err` means the caller must fall through to the visible error screen rather
+/// than leave the user on `Signing you in…`: either the restart budget is
+/// spent, the counter is unusable (an unbounded loop otherwise), or the
+/// navigation itself failed.
+fn restart_login(underlying: &str) -> Result<(), String> {
+    let attempt = bump_callback_retry()?;
+    if attempt > MAX_CALLBACK_RETRIES {
+        return Err(format!(
+            "restart budget spent ({MAX_CALLBACK_RETRIES} allowed, this is attempt {attempt})"
+        ));
+    }
+    log_auth_error(&format!(
+        "auth callback: restarting the login flow (attempt {attempt} of {MAX_CALLBACK_RETRIES}): {underlying}"
+    ));
+    // MAPPS-518 URL swap: tenant login lives at /client/login now.
+    crate::platform::location::set_href("/client/login")
+}
 
 #[component]
 pub fn AuthCallbackPage() -> Element {
@@ -28,7 +62,10 @@ pub fn AuthCallbackPage() -> Element {
         // the router skipped or deferred the rewrite. Replace happens on
         // both success and error so a failed exchange does not leave the
         // sensitive query string sitting in the URL bar either.
-        #[cfg(feature = "web")]
+        // MAPPS-504: browser-only, and it has nothing to strip anywhere
+        // else - the desktop build never reaches this route, because it
+        // has no redirect to come back from (MAPPS-505).
+        #[cfg(all(feature = "app", target_arch = "wasm32"))]
         if let Some(win) = web_sys::window() {
             if let Ok(history) = win.history() {
                 let _ = history.replace_state_with_url(
@@ -101,6 +138,13 @@ pub fn AuthCallbackPage() -> Element {
                         scope: tokens.scope.clone(),
                     },
                 );
+                // MAPPS-432: a completed exchange ends the recoverable-failure
+                // streak, so a reload later in this tab gets a full budget.
+                if let Err(e) = clear_callback_retry() {
+                    log_auth_error(&format!(
+                        "auth callback: could not clear the restart counter: {e}"
+                    ));
+                }
                 {
                     let mut a = auth.write();
                     a.user = Some(CurrentUser {
@@ -113,7 +157,7 @@ pub fn AuthCallbackPage() -> Element {
                         timezone: "UTC".to_string(),
                         avatar_url: None,
                         // Optimistic default: the post-login /me fetch
-                        // (use_memberships_loader / use_token_refresh)
+                        // (use_active_org_loader / use_token_refresh)
                         // overwrites this with the authoritative value
                         // within a tick. New Bunyip-JIT users land with
                         // `profile_completed: false` from /me and the
@@ -156,9 +200,8 @@ pub fn AuthCallbackPage() -> Element {
                 //   re-login loop.
                 match crate::modules::oidc::classify_return_to(&return_to) {
                     crate::modules::oidc::ReturnTarget::Restore => {
-                        if let Some(win) = web_sys::window() {
-                            let _ = win.location().set_href(&return_to);
-                        } else {
+                        if let Err(e) = crate::platform::location::set_href(&return_to) {
+                            tracing::warn!("could not restore {return_to}: {e}");
                             navigator.push(Route::Dashboard {});
                         }
                     }
@@ -167,27 +210,27 @@ pub fn AuthCallbackPage() -> Element {
                     }
                 }
             }
-            Err(e) => error_msg.set(Some(e.to_string())),
-        }
-    });
-
-    // MAPPS-355: `storage:` errors (missing pending flow, expired flow) are the
-    // common "opened /auth/callback in a new tab / refreshed after MAPPS-336
-    // stripped the query" cases. Nothing an operator needs to look at: just
-    // start a fresh login. Auto-navigate to `/login` (which kicks
-    // `start_login`) so the user does not sit on a red "Sign-in failed" wall.
-    // CSRF / replay / config errors keep the manual screen because they can
-    // indicate a real problem that a silent retry would loop on.
-    let is_retriable = error_msg
-        .read()
-        .as_ref()
-        .is_some_and(|e| e.starts_with("storage:"));
-    #[cfg(feature = "web")]
-    use_effect(move || {
-        if is_retriable {
-            // MAPPS-518 URL swap: tenant login is /client/login.
-            if let Some(win) = web_sys::window() {
-                let _ = win.location().replace("/client/login");
+            // MAPPS-355/MAPPS-432: a missing or expired `PendingFlow`, a bare
+            // `/auth/callback` (reload, restored tab, bookmark), and the OP's
+            // re-authentication signals all mean "no live flow here". Nothing an
+            // operator needs to look at: start a fresh login rather than parking
+            // the user on a red "Sign-in failed" wall. CSRF / replay / config
+            // errors keep the visible screen because they can indicate a real
+            // problem that a silent retry would loop on, and a restart that
+            // cannot be bounded or cannot navigate falls through to it too.
+            Err(e) => {
+                let msg = e.to_string();
+                match classify_flow_error(&e) {
+                    CallbackRecovery::Show => error_msg.set(Some(msg)),
+                    CallbackRecovery::Restart => {
+                        if let Err(reason) = restart_login(&msg) {
+                            log_auth_error(&format!(
+                                "auth callback: showing the error instead of restarting ({reason}): {msg}"
+                            ));
+                            error_msg.set(Some(msg));
+                        }
+                    }
+                }
             }
         }
     });
@@ -195,15 +238,13 @@ pub fn AuthCallbackPage() -> Element {
     rsx! {
         div { class: "min-h-screen flex items-center justify-center",
             div { class: "text-center space-y-4",
-                if is_retriable {
-                    h1 { class: "text-xl", "Signing you in…" }
-                } else if let Some(err) = error_msg.read().as_ref() {
-                    h1 { class: "text-xl font-semibold text-red-600", "Sign-in failed" }
+                if let Some(err) = error_msg.read().as_ref() {
+                    h1 { class: "text-2xl font-semibold text-content", "Sign-in failed" }
                     p { class: "text-content", "{err}" }
                     // MAPPS-518 URL swap: tenant login is /client/login.
                     a { href: "/client/login", class: "text-accent underline", "Try again" }
                 } else {
-                    h1 { class: "text-xl", "Signing you in…" }
+                    h1 { class: "text-2xl font-semibold text-content", "Signing you in…" }
                 }
             }
         }

@@ -2,6 +2,13 @@
 
 # Validate code on every push and pull request by running 'just check'
 # Mirrors the local `just check` + `just test` recipes (which use ./dev/cargo).
+#
+# MAPPS-452: this stays a private workflow rather than calling
+# psa-systems/common's reusable check.yml, because the reusable one runs a
+# single host-target compile and cannot express this repo's target matrix (the
+# wasm32 SPA build plus the no-default-features desktop feature set) or the
+# guard scripts the CI-parity guard pins to it. The two justfile guards the
+# reusable workflow would have contributed run below instead.
 name: Check
 
 on:
@@ -21,7 +28,21 @@ jobs:
 
     steps:
       - name: Clone the repository
+        # `submodules: true` for the justfile guards below: cargo does not need
+        # common/, but `import 'common/common.just'` does.
         uses: https://code.forgejo.org/actions/checkout@v5
+        with:
+          submodules: true
+
+      # MAPPS-452: a justfile that does not parse takes every recipe and the
+      # git hook down with it, and the hook is bypassable with --no-verify, so
+      # both guards run here too. `--summary` parses the file and its imports
+      # without executing a recipe body.
+      - name: Validate the justfile
+        run: just --summary
+
+      - name: Check for shadowed common recipes
+        run: just check-justfile
 
       - name: Cap build parallelism
         # nproc/2 cap: never claim more than half the host (see CI.md "Concurrency cap").
@@ -45,8 +66,203 @@ jobs:
 
       # MAPPS-401: enforce the MAPPS-259 semantic tokens in CI. Without this
       # step the guard only ran locally, and hardcoded grays drifted back in.
+      # MAPPS-534: --self-test was on the local recipe and not here, so the
+      # guard could have stopped guarding in the one place that gates a merge.
       - name: Theme-token guard
-        run: bash scripts/check-theme-tokens.sh
+        run: |
+          bash scripts/check-theme-tokens.sh --self-test
+          bash scripts/check-theme-tokens.sh
+
+      # MAPPS-433: a colour name input.css never defined emits no CSS at all,
+      # so the mistake is invisible in the browser and passes the theme-token
+      # guard, which hunts the opposite mistake.
+      # MAPPS-437: --self-test proves the guard still rejects an undefined name.
+      # A guard that silently stopped guarding reports "clean" forever.
+      - name: Defined-colour guard
+        run: |
+          bash scripts/check-defined-colors.sh --self-test
+          bash scripts/check-defined-colors.sh
+
+      # MAPPS-423: pin Cancel destinations for shared create/edit forms and
+      # keep the base-layer pointer-cursor rule that compensates for Tailwind
+      # v4's `button { cursor: default }` preflight.
+      - name: Cancel-route and cursor guard
+        run: bash scripts/check-cancel-routes.sh
+
+      # MAPPS-432: /auth/callback classifies a failed exchange on the FlowError
+      # variant; a string match on the error message must not come back.
+      - name: Auth-error-prose guard
+        run: bash scripts/check-auth-error-prose.sh
+
+      # MAPPS-436: a Delete/Remove button only opens ConfirmDialog. MAPPS-189
+      # wired the dialog app-wide; row Deletes added later shipped with no
+      # confirmation at all, so the rule is enforced rather than documented.
+      - name: Destructive-confirm guard
+        # --self-test first (MAPPS-555): the guard silently reported clean on
+        # any file following a raw string with an odd quote count, so a guard
+        # that has stopped guarding now fails loudly before it is trusted.
+        run: |
+          bash scripts/check-confirm-destructive.sh --self-test
+          bash scripts/check-confirm-destructive.sh
+
+      # MAPPS-574: a destructive delete that reduces the server's answer to
+      # .is_ok() throws away the refusal, so the dialog closes and nothing says
+      # why. Eight call sites had it; the reason was devtools-only.
+      - name: Delete-result guard
+        # --self-test first, so a guard that has stopped guarding fails loudly
+        # rather than reporting clean.
+        run: |
+          bash scripts/check-delete-result.sh --self-test
+          bash scripts/check-delete-result.sh
+
+      # MAPPS-446: three class omissions with no effect in the default theme
+      # (a heading with no weight, a form grid gated at md:, a name cell with
+      # no colour token), so review does not catch them coming back.
+      - name: Class-omission guard
+        run: bash scripts/check-class-omissions.sh
+
+      # MAPPS-440: no DaisyUI class names, every full-screen auth surface on
+      # AuthLayout, and the file-input class recipe only in FileField.
+      # MAPPS-534: --self-test, as above.
+      - name: Kit-adoption guard
+        run: |
+          bash scripts/check-kit-adoption.sh --self-test
+          bash scripts/check-kit-adoption.sh
+
+      # MAPPS-445: rendered text uses U+2026, never three ASCII periods. The
+      # two spellings look alike in a diff, so the ASCII one kept coming back
+      # after MAPPS-410 standardized on the glyph. --self-test proves the guard
+      # still rejects it.
+      - name: Ellipsis-glyph guard
+        run: |
+          bash scripts/check-ellipsis-glyph.sh --self-test
+          bash scripts/check-ellipsis-glyph.sh
+
+      # MAPPS-442: every settings list page renders the rich three-part
+      # EmptyState with its "New <thing>" button as the CTA. The bare-message
+      # mode compiles just as well, so the prose CTA is kept out by the guard.
+      - name: Empty-state guard
+        run: |
+          bash scripts/check-empty-state.sh --self-test
+          bash scripts/check-empty-state.sh
+
+      # MAPPS-439: every inline status banner renders StatusBanner, and all
+      # four BannerTone recipes stay in components/error_banner.rs. MAPPS-418
+      # extracted the red one only, so the other three states drifted into six
+      # hand-rolled recipes that all compile and render.
+      - name: Status-banner guard
+        run: |
+          bash scripts/check-status-banner.sh --self-test
+          bash scripts/check-status-banner.sh
+
+      # MAPPS-438: a failed list fetch renders ErrorBanner over an empty table.
+      # Tickets and Tenants invented rows instead (TKT-1234 / "Acme Corp",
+      # four seeded tenants), on a path only a 4xx reaches, so the fabrication
+      # never showed up in review or in a normal run.
+      - name: Demo-row guard
+        run: |
+          bash scripts/check-no-demo-rows.sh --self-test
+          bash scripts/check-no-demo-rows.sh
+
+      # MAPPS-530: the dev-SSO overlay routes the SPA over TLS, so a plain-http
+      # URL baked into it is mixed content the browser blocks. MOKOSH_HUB_BASE_URL
+      # was http for two parity audits running; nothing in review catches a scheme.
+      - name: dev-SSO scheme guard
+        run: |
+          bash scripts/check-dev-sso-scheme.sh --self-test
+          bash scripts/check-dev-sso-scheme.sh
+
+      # MAPPS-527: the server drops a `?sort=` key it does not allow-list and
+      # answers in its default order, so an invented key paints a sorted header
+      # over rows that never moved. `company_type`, `company_name` and
+      # `-updated_at` all shipped that way and survived three parity audits.
+      - name: Sort-key guard
+        run: |
+          bash scripts/check-sort-keys.sh --self-test
+          bash scripts/check-sort-keys.sh
+
+      # MAPPS-528: the server clamps an over-cap `per_page` instead of
+      # rejecting it, so a page that asked for 200 got 100 rows and read them
+      # as the whole list. Fifteen sites did that, across three parity audits,
+      # and nothing in review or in a normal run showed it.
+      - name: per_page cap guard
+        run: |
+          bash scripts/check-per-page-cap.sh --self-test
+          bash scripts/check-per-page-cap.sh
+
+      # MAPPS-525: mokosh-types is a bare git dependency with no rev/tag/branch,
+      # so the only thing holding it still is the commit Cargo.lock resolved to,
+      # and nothing advances that commit. A wire-format change on mokosh-server
+      # main therefore never reaches this build: the audits measured the pin 92,
+      # then 138, then 214 commits stale while every check stayed green. This
+      # step is the gate the shared crate was adopted for. The fix for a red
+      # run is `cargo update --package mokosh-types`, reviewed with the diff.
+      #
+      # MAPPS-537: it fails only when crates/mokosh-types actually differs. A
+      # pin that is merely behind passes here and is chased by the weekly
+      # types-pin-drift.yml instead, so another repository merging a docs typo
+      # can no longer turn a reviewed PR red.
+      - name: mokosh-types pin guard
+        run: |
+          bash scripts/check-types-pin.sh --self-test
+          bash scripts/check-types-pin.sh
+
+      # MAPPS-585: a shared field's value must be the `value:` attribute. As a
+      # textarea CHILD it is only the DEFAULT value, so the first keystroke
+      # dirties the element and every later write lands on textContent instead.
+      # That killed the whole Markdown toolbar for anyone who had typed.
+      - name: Field value-binding guard
+        run: |
+          bash scripts/check-field-value-binding.sh --self-test
+          bash scripts/check-field-value-binding.sh
+          bash scripts/check-hooks-before-return.sh --self-test
+          bash scripts/check-hooks-before-return.sh
+
+      # MAPPS-624: the width cap lives on each route component, not on AppShell.
+      # Putting a max-w back on the shell re-caps the page that opted out, and a
+      # route added without its own wrapper is full width by accident.
+      - name: Page-width guard
+        run: |
+          bash scripts/check-page-width.sh --self-test
+          bash scripts/check-page-width.sh
+
+      # MAPPS-584: @tailwindcss/typography writes .prose into `@layer utilities`
+      # and the MAPPS-573 corrections were written into `@layer components`, so
+      # the plugin won every declaration the two shared and the whole block
+      # shipped inert. Nothing caught it because MAPPS-573's tests cover the
+      # Rust renderer and the stylesheet had none.
+      - name: Prose cascade-layer guard
+        run: |
+          bash scripts/check-prose-layer.sh --self-test
+          bash scripts/check-prose-layer.sh
+
+      # MAPPS-534: a send button carries a MailIcon, a send action goes through
+      # EmailPreview, and every listed path still has a caller. This ran only
+      # in `just check` until now, so a PR that broke it merged green.
+      - name: Email-affordance guard
+        run: |
+          bash scripts/check-email-affordance.sh --self-test
+          bash scripts/check-email-affordance.sh
+
+      # MAPPS-545: every relative Markdown link resolves. MAPPS-540 found 49
+      # that did not, all of them from a file move that left the links inside
+      # a relocated directory one level short. Nothing had caught them because
+      # a broken link fails silently: three doc audits reported stale content
+      # in those files without noticing the links underneath were dead.
+      - name: Markdown link targets
+        run: |
+          bash scripts/check-doc-links.sh --self-test
+          bash scripts/check-doc-links.sh
+
+      # MAPPS-534: the guard over this file. Every command in a `just check`
+      # recipe must appear in a `run:` block here, so the next guard added
+      # cannot be added to one of the two places and not the other. It compares
+      # command lines rather than recipe names, because two of the four drifts
+      # it was written for were steps present but invoked without --self-test.
+      - name: CI-parity guard
+        run: |
+          bash scripts/check-ci-parity.sh --self-test
+          bash scripts/check-ci-parity.sh
 
       # MAPPS-650 / PMS-946: David asked the user-facing identifier read
       # "Company ID", not "Portal ID". Grep the contact-plane pages for
@@ -66,6 +282,14 @@ jobs:
 
       - name: Check web/WASM build
         run: cargo check --target wasm32-unknown-unknown
+
+      # MAPPS-534: CI had never compiled this feature combination. The steps
+      # above cover wasm and the host default, so a desktop-only break - a
+      # `#[cfg(feature = "desktop")]` arm, or a web-only import the desktop
+      # feature set does not satisfy - merged green and surfaced to whoever
+      # next built the desktop app.
+      - name: Check desktop build
+        run: cargo check --no-default-features --features desktop,multi-tenant
 
       - name: Unit tests
         run: cargo test --lib

@@ -20,19 +20,18 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, ErrorBanner,
-    PageHeader, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
-    TableRow,
+    clear_on_edit, use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable,
+    ErrorBanner, PageHeader, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
+    TableLoading, TableRow,
 };
 use crate::modules::sla::{
     BusinessHours, HolidayCalendar, SlaPolicy, SlaTarget, TicketPriorityOption,
 };
-use crate::utils::Paginated;
 
-/// Rows per page for the SLA list views. SLA config sets are small, so a
-/// single page is almost always enough; the pager still appears if a
-/// tenant defines more than this.
-const PER_PAGE: usize = 100;
+// MAPPS-528: the SLA views have no pager of their own, so each list reads
+// every page and renders the lot. The old `per_page=100` single ask was the
+// server's cap, and a tenant past it lost rows with nothing on screen to say
+// so.
 
 /// Which SLA config surface is active. Tabs rather than separate routes:
 /// the three sets are small and admins flip between them constantly when
@@ -173,11 +172,9 @@ fn SlaPoliciesTab(tab: Signal<SlaTab>) -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
         let _token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_authed_typed::<Paginated<SlaPolicy>>(&format!(
-            "/sla/policies?page=1&per_page={PER_PAGE}"
-        ))
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_authed::<SlaPolicy>("/sla/policies")
+            .await
+            .ok()
     });
 
     // Editing state: Some(None-id) => create, Some(Some(id)) => edit.
@@ -189,13 +186,11 @@ fn SlaPoliciesTab(tab: Signal<SlaTab>) -> Element {
     let is_loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
     let rows: Vec<SlaPolicy> = match &*snap {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
-    let total = match &*snap {
-        Some(Some(resp)) => resp.meta.total as usize,
-        _ => 0,
-    };
+    // Every page was read, so the row count IS the total.
+    let total = rows.len();
 
     // MAPPS-357: a failed load while the server is flagged down is an outage,
     // not an empty policy set - render the honest unavailable page (which keeps
@@ -231,7 +226,7 @@ fn SlaPoliciesTab(tab: Signal<SlaTab>) -> Element {
             loading: is_loading,
             total_items: total,
             current_page: 1,
-            per_page: PER_PAGE,
+            per_page: if total == 0 { 25 } else { total },
             columns: 4,
             Table {
                 TableHead {
@@ -381,15 +376,12 @@ fn PolicyFormModal(props: PolicyFormModalProps) -> Element {
     let bh_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_authed_typed::<Paginated<BusinessHours>>(&format!(
-            "/sla/business-hours?page=1&per_page={PER_PAGE}"
-        ))
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_authed::<BusinessHours>("/sla/business-hours")
+            .await
+            .ok()
     });
     let bh_options: Vec<(String, String)> = match &*bh_resource.read_unchecked() {
-        Some(Some(resp)) => resp
-            .data
+        Some(Some(rows)) => rows
             .iter()
             .map(|b| (b.id.to_string(), b.name.clone()))
             .collect(),
@@ -419,7 +411,7 @@ fn PolicyFormModal(props: PolicyFormModalProps) -> Element {
         };
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result = match id {
                     None => crate::hooks::fetch::api::post_authed_typed::<SlaPolicy, _>(
@@ -554,17 +546,17 @@ fn TargetsModal(props: TargetsModalProps) -> Element {
         let pid = pid_for_targets.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
-                let path = format!("/sla/policies/{pid}/targets?page=1&per_page={PER_PAGE}");
-                crate::hooks::fetch::api::get_authed_typed::<Paginated<SlaTarget>>(&path)
+                let path = format!("/sla/policies/{pid}/targets");
+                crate::hooks::fetch::api::get_all_authed::<SlaTarget>(&path)
                     .await
                     .ok()
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = pid;
-                None::<Paginated<SlaTarget>>
+                None::<Vec<SlaTarget>>
             }
         }
     });
@@ -572,17 +564,15 @@ fn TargetsModal(props: TargetsModalProps) -> Element {
     // The tenant's priority list - one editor row per priority.
     let priorities = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
-            crate::hooks::fetch::api::get_authed_typed::<Paginated<TicketPriorityOption>>(&format!(
-                "/tickets/priorities?page=1&per_page={PER_PAGE}"
-            ))
-            .await
-            .ok()
+            crate::hooks::fetch::api::get_all_authed::<TicketPriorityOption>("/tickets/priorities")
+                .await
+                .ok()
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
-            None::<Paginated<TicketPriorityOption>>
+            None::<Vec<TicketPriorityOption>>
         }
     });
 
@@ -590,11 +580,11 @@ fn TargetsModal(props: TargetsModalProps) -> Element {
     let priorities_snap = priorities.read_unchecked();
 
     let priority_rows: Vec<TicketPriorityOption> = match &*priorities_snap {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
     let existing: Vec<SlaTarget> = match &*targets_snap {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
     let loading = targets_snap.is_none() || priorities_snap.is_none();
@@ -764,7 +754,7 @@ fn TargetRow(props: TargetRowProps) -> Element {
         };
         let pid = save_policy_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 // Upsert: the server keys on (policy, priority) so POST
                 // both creates and updates a target for this priority.
@@ -809,7 +799,7 @@ fn TargetRow(props: TargetRowProps) -> Element {
             }
             deleting.set(true);
             spawn(async move {
-                #[cfg(feature = "web")]
+                #[cfg(feature = "app")]
                 {
                     let path = format!("/sla/targets/{id}");
                     match crate::hooks::fetch::api::delete_authed_typed(&path).await {
@@ -936,18 +926,16 @@ fn BusinessHoursTab(tab: Signal<SlaTab>) -> Element {
     let mut hours = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             let _token = crate::hooks::fetch::api::current_access_token()?;
-            crate::hooks::fetch::api::get_authed_typed::<Paginated<BusinessHours>>(&format!(
-                "/sla/business-hours?page=1&per_page={PER_PAGE}"
-            ))
-            .await
-            .ok()
+            crate::hooks::fetch::api::get_all_authed::<BusinessHours>("/sla/business-hours")
+                .await
+                .ok()
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
-            None::<Paginated<BusinessHours>>
+            None::<Vec<BusinessHours>>
         }
     });
 
@@ -957,13 +945,11 @@ fn BusinessHoursTab(tab: Signal<SlaTab>) -> Element {
     let is_loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
     let rows: Vec<BusinessHours> = match &*snap {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
-    let total = match &*snap {
-        Some(Some(resp)) => resp.meta.total as usize,
-        _ => 0,
-    };
+    // Every page was read, so the row count IS the total.
+    let total = rows.len();
 
     // MAPPS-357: outage (failed load while flagged down) -> honest unavailable
     // page, not an empty set. A reachable 4xx keeps the inline banner below.
@@ -999,7 +985,7 @@ fn BusinessHoursTab(tab: Signal<SlaTab>) -> Element {
             loading: is_loading,
             total_items: total,
             current_page: 1,
-            per_page: PER_PAGE,
+            per_page: if total == 0 { 25 } else { total },
             columns: 4,
             Table {
                 TableHead {
@@ -1131,7 +1117,7 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
 
     let mut name = use_signal(|| initial.name.clone());
     let mut timezone = use_signal(|| initial.timezone.clone());
-    let mut schedule_json = use_signal(|| initial.schedule_json.clone());
+    let schedule_json = use_signal(|| initial.schedule_json.clone());
     let mut is_default = use_signal(|| initial.is_default);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -1185,7 +1171,7 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
         };
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result = match id {
                     None => crate::hooks::fetch::api::post_authed_typed::<BusinessHours, _>(
@@ -1279,7 +1265,7 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
                     help: "Per-day windows, e.g. {{\"mon\": [{{\"start\": \"09:00\", \"end\": \"17:00\"}}]}}.",
                     error: schedule_err.read().clone(),
                     value: schedule_json.read().clone(),
-                    oninput: move |e: FormEvent| schedule_json.set(e.value()),
+                    oninput: clear_on_edit(schedule_json, schedule_err),
                 }
                 crate::components::Checkbox {
                     name: "bh_is_default",
@@ -1310,18 +1296,16 @@ fn HolidayCalendarsTab(tab: Signal<SlaTab>) -> Element {
     let mut calendars = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             let _token = crate::hooks::fetch::api::current_access_token()?;
-            crate::hooks::fetch::api::get_authed_typed::<Paginated<HolidayCalendar>>(&format!(
-                "/sla/holiday-calendars?page=1&per_page={PER_PAGE}"
-            ))
-            .await
-            .ok()
+            crate::hooks::fetch::api::get_all_authed::<HolidayCalendar>("/sla/holiday-calendars")
+                .await
+                .ok()
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
-            None::<Paginated<HolidayCalendar>>
+            None::<Vec<HolidayCalendar>>
         }
     });
 
@@ -1331,13 +1315,11 @@ fn HolidayCalendarsTab(tab: Signal<SlaTab>) -> Element {
     let is_loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
     let rows: Vec<HolidayCalendar> = match &*snap {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
-    let total = match &*snap {
-        Some(Some(resp)) => resp.meta.total as usize,
-        _ => 0,
-    };
+    // Every page was read, so the row count IS the total.
+    let total = rows.len();
 
     // MAPPS-357: outage (failed load while flagged down) -> honest unavailable
     // page, not an empty set. A reachable 4xx keeps the inline banner below.
@@ -1373,7 +1355,7 @@ fn HolidayCalendarsTab(tab: Signal<SlaTab>) -> Element {
             loading: is_loading,
             total_items: total,
             current_page: 1,
-            per_page: PER_PAGE,
+            per_page: if total == 0 { 25 } else { total },
             columns: 3,
             Table {
                 TableHead {
@@ -1483,7 +1465,7 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
     };
 
     let mut name = use_signal(|| initial.name.clone());
-    let mut holidays_json = use_signal(|| initial.holidays_json.clone());
+    let holidays_json = use_signal(|| initial.holidays_json.clone());
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
     // PMS-604: holidays-specific error rendered inline on the Textarea (bad
@@ -1519,7 +1501,7 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
         };
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result = match id {
                     None => crate::hooks::fetch::api::post_authed_typed::<HolidayCalendar, _>(
@@ -1606,7 +1588,7 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
                     help: "List of {{date, name}} entries, e.g. [{{\"date\": \"2026-01-01\", \"name\": \"New Year's Day\"}}].",
                     error: holidays_err.read().clone(),
                     value: holidays_json.read().clone(),
-                    oninput: move |e: FormEvent| holidays_json.set(e.value()),
+                    oninput: clear_on_edit(holidays_json, holidays_err),
                 }
             }
         }
@@ -1651,10 +1633,12 @@ fn parse_hours(value: &str) -> Option<rust_decimal::Decimal> {
 /// rejected with visible feedback instead of silently dropping the input or
 /// storing a negative target (MAPPS-239).
 fn validate_hours(value: &str) -> Result<Option<rust_decimal::Decimal>, &'static str> {
-    if value.trim().is_empty() {
+    // MAPPS-582: the H:MM / decimal parsers are ASCII-only.
+    let value = crate::utils::text::clean_strict(value);
+    if value.is_empty() {
         return Ok(None);
     }
-    match parse_hours(value) {
+    match parse_hours(&value) {
         Some(d) if d >= rust_decimal::Decimal::ZERO => Ok(Some(d)),
         Some(_) => Err("SLA target hours cannot be negative."),
         None => {

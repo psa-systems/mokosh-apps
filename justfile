@@ -1,68 +1,218 @@
 # General Task Runner
+#
+# The hook, release and cleanup recipes come from the `common` submodule
+# (MAPPS-452). Configure them with the variables below rather than by
+# redefining a recipe; `just check-justfile` fails on a shadowed one. Run
+# `git submodule update --init` in a fresh clone or the import will not resolve.
 
-# Image used by the pre-commit hook. Matches ci-build/Dockerfile so `just pre-commit` and the Forgejo `check.yml` job run a toolchain compatible with the rust-builder-glibc image the client is built against.
+# Required: this file defines its own `default`, which collides with the imported one.
+set allow-duplicate-recipes := true
+
+# Names the cargo cache volumes the shared pre-commit uses (dev-mokosh-apps-cargo-*-$USER).
+app := "mokosh-apps"
+
+# No compose.dev.yml here, so the shared pre-commit runs the checks in a bare
+# `docker run`. The image matches ci-build/Dockerfile so `just pre-commit` and
+# the Forgejo `check.yml` job run a toolchain compatible with the
+# rust-builder-glibc image the client is built against.
+pre_commit_mode := "docker"
 dev_image := "ghcr.io/niceguyit/rust-builder-glibc:v1.0.1-rust1.94-trixie"
 
-# List available recipes
+# src/main.rs embeds assets/styles.css via asset!(), and that file is gitignored,
+# so Tailwind has to run on the host before any cargo step in the container.
+pre_commit_prepare := "css-build"
+
+# Mirrors check-clippy and check.yml. The shared default is --all-features,
+# which would turn on `desktop` (linking the system webview) and `single-tenant`
+# alongside `multi-tenant`, neither of which this repo compiles anywhere else.
+clippy_args := "--all-targets -- -D warnings"
+
+# The clippy pass above is this repo's host-target typecheck, so the container
+# compile step would only repeat it; the wasm pass is the one CI adds on top.
+pre_commit_compile := "false"
+wasm_check := "true"
+
+# Mirrors check.yml's `cargo test --lib`: the tests live on the library target.
+test_args := "--lib"
+
+# package.json carries the same semver as the crate, so the release bumps both.
+release_version_files := "package.json"
+
+# compose.yml names the dev server's cargo target volume, which is outside the
+# `dev-{{app}}-cargo-*` set dev-clean removes on its own.
+dev_extra_volumes := "dev-mokosh-apps-target"
+
+import 'common/common.just'
+
+# List available recipes. Keep FIRST: just picks the default recipe by source order.
 default:
     @just --list
-
-# -- Hooks ------------------------------------------------------------------
-
-# Install the git pre-commit hook (run once per fresh clone). Writes a stub at .git/hooks/pre-commit that execs `just pre-commit`. Bypass with `git commit --no-verify`.
-[group: 'hooks']
-install-hooks:
-    #!/usr/bin/env nu
-    let hook = ".git/hooks/pre-commit"
-    # Remove first so a leftover symlink from an older install does not get
-    # written through to its target file. `try` swallows the not-found case.
-    try { rm $hook }
-    "#!/usr/bin/env sh\nexec just pre-commit\n" | save $hook
-    ^chmod +x $hook
-    print $"Wrote ($hook) -> just pre-commit"
-
-# Run the same checks as .forgejo/workflows/check.yml inside the rust-builder-glibc image so the toolchain matches CI.
-# Depends on css-build because src/main.rs uses asset!("/assets/styles.css"), which requires the Tailwind output to exist at compile time. assets/styles.css is gitignored, so a clean clone must build it before clippy/check run.
-[group: 'hooks']
-pre-commit: css-build
-    #!/usr/bin/env nu
-    let img = "{{ dev_image }}"
-    # Share the cargo target cache with `just dev`/compose. compose.yml
-    # names this volume `dev-mokosh-apps-target-${USER}`; matching it here
-    # (per-user, not the old shared `dev-mokosh-apps-cargo-target`) means
-    # the pre-commit build reuses the dev container's compiled artifacts.
-    let user_name = (^whoami | str trim)
-    let target_vol = $"dev-mokosh-apps-target-($user_name)"
-    print "\n[pre-commit] cargo fmt --all --check"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/cargo-target" --env CARGO_TARGET_DIR=/cargo-target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo fmt --all --check
-    print "\n[pre-commit] cargo clippy --all-targets -- -D warnings"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/cargo-target" --env CARGO_TARGET_DIR=/cargo-target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo clippy --all-targets -- -D warnings
-    print "\n[pre-commit] cargo check --target wasm32-unknown-unknown"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/cargo-target" --env CARGO_TARGET_DIR=/cargo-target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo check --target wasm32-unknown-unknown
-    print "\n[pre-commit] cargo test --lib"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/cargo-target" --env CARGO_TARGET_DIR=/cargo-target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo test --lib
-    print "\n[pre-commit] all checks passed"
 
 # -- Checks ----------------------------------------------------------------------
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-web check-clippy check-fmt check-theme-tokens check-runner-labels
+check: check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width
 
 # Check web/WASM compilation
 [group: 'check']
 check-web:
     cargo check --target wasm32-unknown-unknown
 
-# MAPPS-259: fail on hardcoded neutral/brand color classes (use tokens)
+# MAPPS-504: check the native desktop build. `--no-default-features` drops the
+# `web` renderer so dioxus links the desktop renderer alone; `desktop` pulls in
+# the `app` runtime gate itself (see Cargo.toml).
+[group: 'check']
+check-desktop:
+    cargo check --no-default-features --features desktop,multi-tenant
+
+# MAPPS-259: fail on hardcoded neutral/brand color classes (use tokens). MAPPS-444: and on a red/green text class with no dark: pair. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']
 check-theme-tokens:
+    bash scripts/check-theme-tokens.sh --self-test
     bash scripts/check-theme-tokens.sh
+
+# MAPPS-585: keep a shared form field's value on the `value:` attribute. As a textarea CHILD it is only the default value, so every toolbar transform died on the first keystroke. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-field-value-binding:
+    bash scripts/check-field-value-binding.sh --self-test
+    bash scripts/check-field-value-binding.sh
+
+# MAPPS-624: the max-w-7xl cap lives on each AppShell route component in src/lib.rs, never back on the shell, so width stays a per-page choice. --self-test first, so a guard that stopped guarding fails loudly.
+[doc("Fail if AppShell caps every page again, or a route declares no width (MAPPS-624).")]
+[group: 'check']
+check-page-width:
+    bash scripts/check-page-width.sh --self-test
+    bash scripts/check-page-width.sh
+
+# MAPPS-602: a hook after an early return poisons the Dioxus runtime.
+[doc("Fail if a component calls a hook after an early return (MAPPS-602).")]
+[group: 'check']
+check-hooks-before-return:
+    bash scripts/check-hooks-before-return.sh --self-test
+    bash scripts/check-hooks-before-return.sh
+
+# MAPPS-584: keep the Markdown corrections in a cascade layer that outranks @tailwindcss/typography. In `@layer components` they lost to the plugin and shipped inert. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-prose-layer:
+    bash scripts/check-prose-layer.sh --self-test
+    bash scripts/check-prose-layer.sh
+
+# MAPPS-433: fail on colour classes input.css does not define (they render as nothing). MAPPS-437: --self-test first, so a guard that stopped guarding fails loudly instead of reporting clean.
+[group: 'check']
+check-defined-colors:
+    bash scripts/check-defined-colors.sh --self-test
+    bash scripts/check-defined-colors.sh
 
 # MAPPS-398: keep check.yml on the dev runner label and free of run-time package installs
 [group: 'check']
 check-runner-labels:
     bash scripts/check-runner-labels.sh
+
+# MAPPS-423: keep shared create/edit forms cancelling to the record, and keep the pointer-cursor base rule in input.css
+[group: 'check']
+check-cancel-routes:
+    bash scripts/check-cancel-routes.sh
+
+# MAPPS-432: keep /auth/callback classifying on the FlowError variant, not on error prose
+[group: 'check']
+check-auth-error-prose:
+    bash scripts/check-auth-error-prose.sh
+
+# MAPPS-436: keep every destructive mutation behind ConfirmDialog, never straight from a button onclick
+[group: 'check']
+check-confirm-destructive:
+    bash scripts/check-confirm-destructive.sh --self-test
+    bash scripts/check-confirm-destructive.sh
+
+# MAPPS-574: keep a destructive delete reporting the server's refusal, never reducing it to .is_ok()
+[group: 'check']
+check-delete-result:
+    bash scripts/check-delete-result.sh --self-test
+    bash scripts/check-delete-result.sh
+
+# MAPPS-446: keep headings declaring a weight, two-up form grids on sm:, and table name cells naming their colour token
+[group: 'check']
+check-class-omissions:
+    bash scripts/check-class-omissions.sh
+
+# MAPPS-440: keep the DaisyUI classes out, the auth shells on AuthLayout, and the file-input recipe in FileField. MAPPS-483: and every floating dropdown on the shared .dropdown-panel surface. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-kit-adoption:
+    bash scripts/check-kit-adoption.sh --self-test
+    bash scripts/check-kit-adoption.sh
+
+# MAPPS-445: keep rendered text on the single ellipsis character (U+2026), never three ASCII periods. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-ellipsis-glyph:
+    bash scripts/check-ellipsis-glyph.sh --self-test
+    bash scripts/check-ellipsis-glyph.sh
+
+# MAPPS-442: keep every settings list page on the rich three-part EmptyState (title, description, "New <thing>" button), never the bare-message mode. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-empty-state:
+    bash scripts/check-empty-state.sh --self-test
+    bash scripts/check-empty-state.sh
+
+# MAPPS-439: keep every inline status banner on StatusBanner, and keep all four BannerTone recipes in components/error_banner.rs. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-status-banner:
+    bash scripts/check-status-banner.sh --self-test
+    bash scripts/check-status-banner.sh
+
+# MAPPS-438: keep every list page rendering only rows the backend returned, never a seeded demo fallback. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-no-demo-rows:
+    bash scripts/check-no-demo-rows.sh --self-test
+    bash scripts/check-no-demo-rows.sh
+
+# MAPPS-482: keep every action that makes the server email someone marked with MailIcon and offering EmailPreview. The path list is maintained by hand (see docs/email-actions.md). --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-email-affordance:
+    bash scripts/check-email-affordance.sh --self-test
+    bash scripts/check-email-affordance.sh
+
+# MAPPS-530: keep every absolute URL in the TLS-routed dev-SSO overlay on https, so the SPA never fetches mixed content. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-dev-sso-scheme:
+    bash scripts/check-dev-sso-scheme.sh --self-test
+    bash scripts/check-dev-sso-scheme.sh
+
+# MAPPS-527: no page hardcodes a `?sort=` value; every fragment is a const in src/utils/sort_keys.rs that a test checks against the server's allow-list. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-sort-keys:
+    bash scripts/check-sort-keys.sh --self-test
+    bash scripts/check-sort-keys.sh
+
+# MAPPS-528: no call site asks for a page at or above the server's per_page cap; whole-collection reads go through the paging helpers in src/hooks/fetch.rs. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-per-page-cap:
+    bash scripts/check-per-page-cap.sh --self-test
+    bash scripts/check-per-page-cap.sh
+
+# MAPPS-545: every relative Markdown link resolves to a path that exists. MAPPS-540 took docs/ from 49 broken links to zero; all 49 came from a file move that left the links inside it one directory short, and a broken link fails silently - the reader lands on nothing and concludes the docs are abandoned. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-doc-links:
+    bash scripts/check-doc-links.sh --self-test
+    bash scripts/check-doc-links.sh
+
+# MAPPS-534: `.forgejo/workflows/check.yml` says it mirrors this recipe, and it had drifted in four places with nothing able to notice. Fails if a command any recipe in the `check` list runs has no `run:` line in the workflow. Compares command lines, not recipe names, because two of those four drifts were steps present but invoked without their --self-test. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-ci-parity:
+    bash scripts/check-ci-parity.sh --self-test
+    bash scripts/check-ci-parity.sh
+
+# MAPPS-525: fail when a shared-DTO change on mokosh-server main would otherwise sit unnoticed behind a pin nobody advances. MAPPS-537 narrowed it to moves where crates/mokosh-types actually differs, so another repository merging anything at all no longer turns this red. Needs network. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-types-pin:
+    bash scripts/check-types-pin.sh --self-test
+    bash scripts/check-types-pin.sh
+
+# MAPPS-537: the pre-MAPPS-537 rule, where any lock move is a finding. What `types-pin-drift.yml` runs weekly, kept here so the catch-up distance can be read on demand. Not part of `just check`: it is deliberately allowed to be red.
+[group: 'check']
+check-types-pin-strict:
+    bash scripts/check-types-pin.sh --self-test
+    bash scripts/check-types-pin.sh --strict
 
 # Run clippy lints
 [group: 'check']
@@ -202,10 +352,33 @@ fmt:
 test:
     cargo test
 
-# Build release WASM bundle
+# Build release WASM bundle. PMS-884: `--features web` because dx substitutes
+# its own feature list for this crate's defaults; without a renderer feature
+# the bundle builds and then panics on launch.
 [group: 'build']
 build: css-build
-    dx build --release
+    dx build --release --features web
+
+# MAPPS-504: run the desktop app against a local build.
+[group: 'dev']
+desktop-run: css-build
+    dx serve --platform desktop --no-default-features --features desktop,multi-tenant
+
+# MAPPS-504: build the desktop binary without launching it.
+[group: 'build']
+desktop-build: css-build
+    dx build --platform desktop --no-default-features --features desktop,multi-tenant
+
+# MAPPS-504: produce an installable desktop bundle for this platform.
+[group: 'build']
+desktop-bundle: css-build
+    dx bundle --release --platform desktop --no-default-features --features desktop,multi-tenant
+
+# MAPPS-477: prove a no-JS link-preview crawler receives the og:/twitter: tags. Runs the real entrypoint + Caddyfile in a container and fetches it with curl, so it needs docker and is not part of `just check` (which compiles on a runner with no docker), like check-docker below.
+[group: 'check']
+check-link-preview:
+    bash scripts/check-link-preview.sh --self-test
+    bash scripts/check-link-preview.sh
 
 # Build OCI image for validation
 [group: 'check']
@@ -216,117 +389,4 @@ check-docker:
 [group: 'build']
 build-docker:
     docker buildx build --tag mokosh-apps:local --file oci-build/Dockerfile .
-
-# -- Cleanup ------------------------------------------------------------------
-
-# -- Release ---------------------------------------------------------------------
-
-# Create a release: bump major (vx.0.0), minor (v0.x.0), or hotfix (v0.0.x), push the branch, and open the PR via fj.
-# After the PR merges, the create-release workflow creates the tag and release automatically.
-[group: 'release']
-create-release bump:
-    #!/usr/bin/env nu
-    let bump = "{{ bump }}"
-
-    # Abort if there are uncommitted changes
-    let status = git status --porcelain | str trim
-    if ($status | is-not-empty) {
-        print $"(ansi red)Working tree is dirty. Please stash or commit your changes first.(ansi reset)"
-        exit 1
-    }
-
-    # Switch to main if not already there
-    let branch = git branch --show-current | str trim
-    if $branch != "main" {
-        print $"Switching from ($branch) to main..."
-        git checkout main
-    }
-
-    # Pull latest changes
-    git pull --rebase origin main
-
-    let cargo_version = (open Cargo.toml | get package.version)
-    let pkg_version = (open package.json | get version)
-    if $cargo_version != $pkg_version {
-        print $"(ansi red)Error: Cargo.toml v($cargo_version) does not match package.json v($pkg_version)(ansi reset)"
-        exit 1
-    }
-
-    let current = ($cargo_version | split row "." | each { into int })
-    let next = match $bump {
-        "major" => [$"($current.0 + 1)" "0" "0"],
-        "minor" => [$"($current.0)" $"($current.1 + 1)" "0"],
-        "hotfix" => [$"($current.0)" $"($current.1)" $"($current.2 + 1)"],
-        _ => { print $"(ansi red)Usage: just create-release <major|minor|hotfix>(ansi reset)"; exit 1 }
-    }
-    let bare = ($next | str join ".")
-    let tag = $"v($bare)"
-    let release_branch = $"release/($tag)"
-
-    git checkout -b $release_branch
-    # Bump only the `[package]` version line as text. `open Cargo.toml | update
-    # package.version | to toml` round-trips through nu's TOML serializer, which
-    # drops every comment, so it silently deleted the feature-flag / dependency
-    # rationale on the v0.6.0 release. `str replace` (first match) targets the
-    # package `version` line, which is the first `version = "..."` in the file.
-    let old_version_line = $"version = \"($cargo_version)\""
-    let new_version_line = $"version = \"($bare)\""
-    open --raw Cargo.toml | str replace $old_version_line $new_version_line | save --force Cargo.toml
-    open package.json | update version $bare | save --force package.json
-    # MAPPS-371 (ports PMS-642): sync Cargo.lock to the bumped version so the
-    # lock never drifts from Cargo.toml. Without this a `--locked` build fails,
-    # every subsequent build re-dirties the lock (masking real lock changes in
-    # diffs), and the dirty tree aborts the next `create-release`. Dev boxes
-    # have no host cargo, so run the one cargo step in the rust-builder image
-    # (the same invocation the `pre-commit` recipe uses). `--workspace` limits
-    # the change to the workspace members' own versions - no transitive churn.
-    let img = "{{ dev_image }}"
-    let user_name = (^whoami | str trim)
-    let target_vol = $"dev-mokosh-apps-target-($user_name)"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/cargo-target" --env CARGO_TARGET_DIR=/cargo-target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo update --workspace
-    git add Cargo.toml package.json Cargo.lock
-    git commit --signoff --message $"Release ($tag)"
-
-    # Push release branch
-    git push --set-upstream origin $release_branch
-
-    # Open the release PR via fj. Body lives in a tempfile so the
-    # changelog can grow later without inline escaping pain.
-    let body_file = (mktemp --tmpdir --suffix .md)
-    [
-        $"Automated release PR for ($tag)."
-        ""
-        $"After merge, `.forgejo/workflows/create-release.yml` tags and publishes ($tag) to the Generic Packages registry."
-    ] | str join "\n" | save --force $body_file
-    let fj_result = (^fj --host dev.a8n.run pr create $"Release ($tag)" --body-file $body_file | complete)
-    rm $body_file
-    if $fj_result.exit_code != 0 {
-        print $"(ansi red)fj pr create failed(ansi reset)"
-        print $fj_result.stderr
-        exit 1
-    }
-
-    # `fj pr create` prints `created pull request #N: <title>` on success.
-    # Parse the number out and build the PR URL from `origin` so the user
-    # gets a clickable link instead of just the fj line.
-    let pr_num = (
-        $fj_result.stdout
-        | str trim
-        | parse --regex 'created pull request #(?P<num>\d+)'
-        | get num.0?
-    )
-    let remote = (git remote get-url origin | str trim)
-    let base_url = if ($remote | str starts-with "ssh://") {
-        $remote | str replace "ssh://git@" "https://" | str replace "git.a8n.run" "dev.a8n.run" | str replace ".git" ""
-    } else {
-        $remote | str replace --regex "git@([^:]+):" "https://$1/" | str replace "git.a8n.run" "dev.a8n.run" | str replace ".git" ""
-    }
-    print $"(ansi green)Pushed ($release_branch)(ansi reset)"
-    if ($pr_num | is-not-empty) {
-        print $"PR: ($base_url)/pulls/($pr_num)"
-    } else {
-        # fj output format drifted; fall back to whatever it said.
-        print $"fj output: ($fj_result.stdout | str trim)"
-    }
-    print $"After merging, the create-release workflow will tag and release ($tag) automatically."
 

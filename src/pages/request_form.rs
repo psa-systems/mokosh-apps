@@ -27,54 +27,23 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{
-    Button, ButtonVariant, Checkbox, DateField, Input, Select, SelectOption, Textarea,
+    AuthLayout, Button, ButtonVariant, Checkbox, DateField, Input, Select, SelectOption, Textarea,
 };
 
-/// One field of the form, mirroring mokosh-server's `PublicFormField`.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-struct PublicField {
-    name: String,
-    label: String,
-    #[serde(default)]
-    help_text: Option<String>,
-    field_type: String,
-    #[serde(default)]
-    is_required: bool,
-    #[serde(default)]
-    min_length: Option<i32>,
-    #[serde(default)]
-    max_length: Option<i32>,
-    #[serde(default)]
-    options: Option<Vec<String>>,
-    #[serde(default)]
-    date_not_in_past: bool,
-}
-
-/// A cross-field rule, mirroring mokosh-server's `FormRule`. One kind exists
-/// (`required_if`); an unknown kind deserialises into `Other` and is ignored
-/// here, so a server that grows a rule this build predates degrades to
-/// server-side enforcement rather than failing to render the form.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum PublicRule {
-    RequiredIf {
-        field: String,
-        when_field: String,
-        equals: String,
-    },
-    #[serde(other)]
-    Other,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-struct PublicForm {
-    name: String,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    rules: Vec<PublicRule>,
-    fields: Vec<PublicField>,
-}
+// MAPPS-535: `PublicField`, `PublicRule` and `PublicForm` used to be declared
+// here, a second hand copy of the public projection on top of the one in
+// `modules/forms`. They come from `mokosh_types::forms` now (PMS-898), which
+// carries the `#[serde(default)]` tolerances this page relied on, so a server
+// that predates PMS-748 or MAPPS-429 still renders the form unattributed
+// rather than not at all.
+//
+// The local `PublicRule::Unknown` is gone with them: PMS-898 put the catch-all
+// in the shared `FormRule` and made the SERVER refuse an unnamed rule on a
+// write, so the read stays tolerant without this page owning an enum for it.
+use mokosh_types::forms::FieldType;
+pub(crate) use mokosh_types::forms::{
+    FormRule as PublicRule, PublicFormField as PublicField, PublicFormResponse as PublicForm,
+};
 
 #[derive(Serialize)]
 struct SubmitBody {
@@ -124,7 +93,7 @@ pub fn RequestFormPage(token: String) -> Element {
         move || {
             let tok = token.read().clone();
             spawn(async move {
-                #[cfg(feature = "web")]
+                #[cfg(feature = "app")]
                 {
                     use crate::hooks::fetch::api::ApiError;
                     match crate::hooks::fetch::api::get_typed::<PublicForm>(&format!(
@@ -145,7 +114,7 @@ pub fn RequestFormPage(token: String) -> Element {
                         Err(_) => terminal.set(None),
                     }
                 }
-                #[cfg(not(feature = "web"))]
+                #[cfg(not(feature = "app"))]
                 {
                     let _ = tok;
                 }
@@ -181,7 +150,7 @@ pub fn RequestFormPage(token: String) -> Element {
                     .unwrap_or(false);
                 // A boolean is answered by existing: `false` is a real answer,
                 // so an unticked required checkbox is still "answered".
-                let answered = answered || f.field_type == "boolean";
+                let answered = answered || f.field_type == FieldType::Boolean;
                 if (f.is_required || required_by_rule(&def.rules, &f.name, &current)) && !answered {
                     errs.insert(f.name.clone(), format!("{} is required", f.label));
                 }
@@ -198,7 +167,7 @@ pub fn RequestFormPage(token: String) -> Element {
             let payload = build_payload(&def, &current);
 
             spawn(async move {
-                #[cfg(feature = "web")]
+                #[cfg(feature = "app")]
                 {
                     use crate::hooks::fetch::api::ApiError;
                     let body = SubmitBody { payload };
@@ -240,7 +209,7 @@ pub fn RequestFormPage(token: String) -> Element {
                         Err(e) => form_error.set(e.user_message()),
                     }
                 }
-                #[cfg(not(feature = "web"))]
+                #[cfg(not(feature = "app"))]
                 {
                     let _ = (tok, payload);
                 }
@@ -250,93 +219,160 @@ pub fn RequestFormPage(token: String) -> Element {
     };
 
     rsx! {
-        div { class: "min-h-screen bg-app flex items-center justify-center px-4 py-10",
-            div { class: "max-w-xl w-full",
-                div { class: "bg-surface rounded-lg shadow-lg p-8",
-                    match terminal() {
-                        Some(Terminal::Submitted(number)) => rsx! {
-                            div { class: "text-center", role: "status", aria_live: "polite",
-                                h1 { class: "text-2xl font-semibold text-content", "Request received" }
-                                p { class: "mt-2 text-sm text-content",
-                                    "Thanks. Your request is with us as ticket "
-                                    span { class: "font-mono font-medium", "{number}" }
-                                    ". Quote that number if you need to follow it up."
-                                }
-                            }
-                        },
-                        Some(Terminal::AlreadySubmitted) => rsx! {
-                            div { class: "text-center", role: "status", aria_live: "polite",
-                                h1 { class: "text-2xl font-semibold text-content", "Already submitted" }
-                                p { class: "mt-2 text-sm text-content",
-                                    "This link has already been used, so your request is with us. Ask your account team if you need to send another."
-                                }
-                            }
-                        },
-                        Some(Terminal::Unusable) => rsx! {
-                            div { class: "text-center", role: "status", aria_live: "polite",
-                                h1 { class: "text-2xl font-semibold text-content", "Link expired" }
-                                p { class: "mt-2 text-sm text-content",
-                                    "This link is expired or invalid. Ask your account team for a new one."
-                                }
-                            }
-                        },
-                        None if loading() => rsx! {
-                            p { class: "text-center text-sm text-content", "Loading your form..." }
-                        },
-                        None => match form() {
-                            None => rsx! {
-                                div { class: "text-center",
-                                    h1 { class: "text-2xl font-semibold text-content", "Something went wrong" }
-                                    p { class: "mt-2 text-sm text-content",
-                                        "We could not load your form. Check your connection and reload the page."
-                                    }
-                                }
-                            },
-                            Some(def) => rsx! {
-                                div { class: "mb-6",
-                                    h1 { class: "text-2xl font-semibold text-content", "{def.name}" }
-                                    if let Some(d) = def.description.clone() {
-                                        p { class: "mt-2 text-sm text-content", "{d}" }
-                                    }
-                                }
-
-                                if !form_error().is_empty() {
-                                    div {
-                                        class: "mb-4 rounded-md border border-danger px-3 py-2 text-sm text-danger",
-                                        role: "alert",
-                                        "{form_error()}"
-                                    }
-                                }
-
-                                form {
-                                    class: "space-y-4",
-                                    onsubmit: move |evt: Event<FormData>| {
-                                        evt.prevent_default();
-                                        handle_submit(());
-                                    },
-
-                                    for field in def.fields.clone() {
-                                        FieldInput {
-                                            key: "{field.name}",
-                                            field: field.clone(),
-                                            rules: def.rules.clone(),
-                                            answers,
-                                            field_errors,
-                                            disabled: submitting(),
-                                        }
-                                    }
-
-                                    Button {
-                                        variant: ButtonVariant::Primary,
-                                        r#type: "submit".to_string(),
-                                        disabled: submitting(),
-                                        class: "w-full".to_string(),
-                                        if submitting() { "Sending..." } else { "Send request" }
-                                    }
-                                }
-                            },
-                        },
+        AuthLayout {
+            max_w: "sm:max-w-xl",
+            match terminal() {
+                Some(Terminal::Submitted(number)) => rsx! {
+                    div { class: "text-center", role: "status", aria_live: "polite",
+                        h1 { class: "text-2xl font-semibold text-content", "Request received" }
+                        p { class: "mt-2 text-sm text-content",
+                            "Thanks. Your request is with us as ticket "
+                            span { class: "font-mono font-medium", "{number}" }
+                            ". Quote that number if you need to follow it up."
+                        }
                     }
+                },
+                Some(Terminal::AlreadySubmitted) => rsx! {
+                    div { class: "text-center", role: "status", aria_live: "polite",
+                        h1 { class: "text-2xl font-semibold text-content", "Already submitted" }
+                        p { class: "mt-2 text-sm text-content",
+                            "This link has already been used, so your request is with us. Ask your account team if you need to send another."
+                        }
+                    }
+                },
+                Some(Terminal::Unusable) => rsx! {
+                    div { class: "text-center", role: "status", aria_live: "polite",
+                        h1 { class: "text-2xl font-semibold text-content", "Link expired" }
+                        p { class: "mt-2 text-sm text-content",
+                            "This link is expired or invalid. Ask your account team for a new one."
+                        }
+                    }
+                },
+                None if loading() => rsx! {
+                    p { class: "text-center text-sm text-content", "Loading your form…" }
+                },
+                None => match form() {
+                    None => rsx! {
+                        div { class: "text-center",
+                            h1 { class: "text-2xl font-semibold text-content", "Something went wrong" }
+                            p { class: "mt-2 text-sm text-content",
+                                "We could not load your form. Check your connection and reload the page."
+                            }
+                        }
+                    },
+                    Some(def) => rsx! {
+                        RequestFormBody {
+                            def: def.clone(),
+                            answers,
+                            field_errors,
+                            form_error: form_error(),
+                            disabled: submitting(),
+                            loading: submitting(),
+                            onsubmit: move |_| handle_submit(()),
+                        }
+                    },
+                },
+            }
+        }
+    }
+}
+
+/// The form exactly as the client sees it: title, description, the ordered
+/// fields, and the submit button.
+///
+/// PMS-744 pulled this out of the page so the builder's preview renders the
+/// SAME component the client gets. A preview assembled from a second copy of
+/// this markup would drift from the real page, and a preview that lies is
+/// worse than no preview: it invites the operator to sign off on a form they
+/// have not actually seen.
+///
+/// The caller owns `answers` and `field_errors`, so the preview is live: type
+/// into it and a `required_if` rule lights up the same way it will for the
+/// client.
+#[component]
+pub(crate) fn RequestFormBody(
+    def: PublicForm,
+    answers: Signal<HashMap<String, String>>,
+    field_errors: Signal<HashMap<String, String>>,
+    form_error: String,
+    disabled: bool,
+    loading: bool,
+    onsubmit: EventHandler<()>,
+) -> Element {
+    rsx! {
+        // MAPPS-429: the MSP's logo, above their name. A client opening a link
+        // from an email recognises a logo before they read anything, and this
+        // page asks them for personal details.
+        if let Some(logo) = def.logo_url.clone().filter(|l| !l.trim().is_empty()) {
+            div { class: "mb-4",
+                img {
+                    src: "{crate::hooks::fetch::api::api_origin()}{logo}",
+                    alt: "{def.tenant_name}",
+                    class: "max-h-14 max-w-56",
+                }
+            }
+        }
+
+        div { class: "mb-6",
+            h1 { class: "text-2xl font-semibold text-content", "{def.name}" }
+            if let Some(d) = def.description.clone() {
+                p { class: "mt-2 text-sm text-content", "{d}" }
+            }
+        }
+
+        if !form_error.is_empty() {
+            div {
+                class: "mb-4 rounded-md border border-red-300 px-3 py-2 text-sm text-red-600 dark:border-red-600 dark:text-red-400",
+                role: "alert",
+                "{form_error}"
+            }
+        }
+
+        form {
+            class: "space-y-4",
+            onsubmit: move |evt: Event<FormData>| {
+                evt.prevent_default();
+                onsubmit.call(());
+            },
+
+            for field in def.fields.clone() {
+                FieldInput {
+                    key: "{field.name}",
+                    field: field.clone(),
+                    rules: def.rules.clone(),
+                    answers,
+                    field_errors,
+                    disabled,
+                }
+            }
+
+            // MAPPS-445: the spinner is the busy signal, so the label stays
+            // put. A swapped label on a greyed-out button reads as a dead
+            // control on the slow upload it is meant to explain.
+            Button {
+                variant: ButtonVariant::Primary,
+                r#type: "submit".to_string(),
+                disabled,
+                loading,
+                class: "w-full".to_string(),
+                "Send request"
+            }
+        }
+
+        // PMS-748: who is asking. Someone typing a phone number into a page
+        // they reached from an email is entitled to see whose page it is
+        // before they send it, without going back to the message. Inside the
+        // body rather than around it, so the builder's preview shows the
+        // operator exactly what their client will read.
+        //
+        // The name is not optional; the contact line is. A server that
+        // predates PMS-748 sends no name, and an empty attribution is dropped
+        // rather than rendered as a stray rule above nothing.
+        if !def.tenant_name.trim().is_empty() {
+            div { class: "mt-8 border-t border-line pt-4 text-xs text-muted",
+                p { "This form was sent to you by {def.tenant_name}." }
+                if let Some(contact) = def.contact_info.clone().filter(|c| !c.trim().is_empty()) {
+                    p { class: "mt-1", "Questions before you answer? Contact {contact}." }
                 }
             }
         }
@@ -371,8 +407,8 @@ fn FieldInput(
         }
     };
 
-    match field.field_type.as_str() {
-        "textarea" => rsx! {
+    match field.field_type {
+        FieldType::Textarea => rsx! {
             Textarea {
                 name: field.name.clone(),
                 label: field.label.clone(),
@@ -385,7 +421,7 @@ fn FieldInput(
                 oninput: move |e: FormEvent| set(e.value()),
             }
         },
-        "date" => rsx! {
+        FieldType::Date => rsx! {
             DateField {
                 name: field.name.clone(),
                 label: field.label.clone(),
@@ -397,7 +433,7 @@ fn FieldInput(
                 oninput: move |e: FormEvent| set(e.value()),
             }
         },
-        "select" => rsx! {
+        FieldType::Select => rsx! {
             Select {
                 name: field.name.clone(),
                 label: field.label.clone(),
@@ -417,7 +453,7 @@ fn FieldInput(
                 onchange: move |e: FormEvent| set(e.value()),
             }
         },
-        "boolean" => rsx! {
+        FieldType::Boolean => rsx! {
             Checkbox {
                 name: field.name.clone(),
                 label: field.label.clone(),
@@ -442,7 +478,7 @@ fn FieldInput(
             Input {
                 name: field.name.clone(),
                 label: field.label.clone(),
-                r#type: if field.field_type == "email" { "email".to_string() } else { "text".to_string() },
+                r#type: if field.field_type == FieldType::Email { "email".to_string() } else { "text".to_string() },
                 value,
                 required,
                 disabled,
@@ -472,7 +508,7 @@ fn required_by_rule(rules: &[PublicRule], field: &str, answers: &HashMap<String,
                     .map(|v| v.trim() == equals)
                     .unwrap_or(false)
         }
-        PublicRule::Other => false,
+        PublicRule::Unknown => false,
     })
 }
 
@@ -485,7 +521,7 @@ fn build_payload(def: &PublicForm, answers: &HashMap<String, String>) -> serde_j
         let Some(raw) = answers.get(&f.name) else {
             continue;
         };
-        if f.field_type == "boolean" {
+        if f.field_type == FieldType::Boolean {
             out.insert(f.name.clone(), serde_json::Value::Bool(raw == "true"));
             continue;
         }
@@ -511,6 +547,9 @@ mod tests {
         PublicForm {
             name: "Departure".into(),
             description: None,
+            tenant_name: "Acme IT".into(),
+            contact_info: None,
+            logo_url: None,
             rules: vec![PublicRule::RequiredIf {
                 field: "forward_to".into(),
                 when_field: "mailbox_handling".into(),
@@ -521,7 +560,7 @@ mod tests {
                     name: "employee_name".into(),
                     label: "Employee name".into(),
                     help_text: None,
-                    field_type: "text".into(),
+                    field_type: FieldType::Text,
                     is_required: true,
                     min_length: None,
                     max_length: None,
@@ -532,7 +571,7 @@ mod tests {
                     name: "equipment_moves".into(),
                     label: "Equipment moves".into(),
                     help_text: None,
-                    field_type: "boolean".into(),
+                    field_type: FieldType::Boolean,
                     is_required: false,
                     min_length: None,
                     max_length: None,
@@ -560,7 +599,7 @@ mod tests {
         let rules: Vec<PublicRule> =
             serde_json::from_str(r#"[{"kind":"invented_later","field":"x"}]"#)
                 .expect("an unknown rule kind still deserialises");
-        assert_eq!(rules, vec![PublicRule::Other]);
+        assert_eq!(rules, vec![PublicRule::Unknown]);
         assert!(!required_by_rule(&rules, "x", &HashMap::new()));
     }
 
@@ -584,5 +623,57 @@ mod tests {
             blank.get("employee_name").is_none(),
             "a whitespace-only answer is omitted, matching the server's own trim"
         );
+    }
+
+    #[component]
+    fn Body(loading: bool) -> Element {
+        let answers = use_signal(HashMap::new);
+        let field_errors = use_signal(HashMap::new);
+        rsx! {
+            RequestFormBody {
+                def: form(),
+                answers,
+                field_errors,
+                form_error: String::new(),
+                disabled: loading,
+                loading,
+                onsubmit: move |_| {},
+            }
+        }
+    }
+
+    fn render(loading: bool) -> String {
+        let mut dom = VirtualDom::new_with_props(Body, BodyProps { loading });
+        dom.rebuild_in_place();
+        dioxus_ssr::render(&dom)
+    }
+
+    /// MAPPS-445 regression: the submit used to swap its own label
+    /// ("Send request" -> "Sending...") and render no spinner, so a slow
+    /// upload showed a client nothing but a greyed-out button with different
+    /// words on it. The label is stable and the shared `Spinner` is the busy
+    /// signal, as it is on every other submit in the app.
+    #[test]
+    fn the_submit_button_spins_while_a_submission_is_in_flight() {
+        let busy = render(true);
+        assert!(
+            busy.contains("animate-spin"),
+            "a submission in flight renders the shared Spinner; got: {busy}"
+        );
+        assert!(
+            busy.contains("Send request"),
+            "and keeps its label rather than swapping it; got: {busy}"
+        );
+        assert!(
+            busy.contains("disabled"),
+            "and the control is disabled against a double-submit; got: {busy}"
+        );
+
+        let idle = render(false);
+        assert!(
+            !idle.contains("animate-spin"),
+            "an idle form shows no spinner; got: {idle}"
+        );
+        assert!(idle.contains("Send request"));
     }
 }

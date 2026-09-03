@@ -32,9 +32,9 @@ use dioxus::prelude::*;
 use crate::utils::datetime::{user_timezone, user_today};
 
 use crate::components::{
-    use_page_title, Button, ButtonVariant, Card, ChevronRightIcon, EmptyState, ErrorBanner,
-    IconSize, Input, Modal, ModalSize, PageHeader, PencilIcon, PlusIcon, Select, SelectOption,
-    SwatchIcon, Textarea,
+    clear_on_edit, use_page_title, BannerTone, Button, ButtonVariant, Card, ChevronRightIcon,
+    EmptyState, ErrorBanner, IconSize, Input, Modal, ModalSize, PageHeader, PencilIcon, PlusIcon,
+    Select, SelectOption, StatusBanner, SwatchIcon, Textarea,
 };
 use crate::modules::calendar::{
     AppointmentResponse, CreateAppointmentRequest, CreateSchedulingTemplateRequest,
@@ -85,21 +85,11 @@ fn hour_shade_class(hour: u32) -> &'static str {
 /// MAPPS-387: on first mount, scroll a grid container so the working-hours
 /// window is in view rather than midnight. `vertical` selects scrollTop
 /// (day/week grids) vs scrollLeft (the horizontal dispatch timeline).
-/// No-op off the web build and when the element is not (yet) in the DOM.
-#[cfg(feature = "web")]
+/// No-op when the element is not (yet) in the DOM.
+#[cfg(feature = "app")]
 fn scroll_grid_to_work_hours(id: &str, vertical: bool) {
-    let Some(el) = web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.get_element_by_id(id))
-    else {
-        return;
-    };
-    let frac = WORK_START_HOUR as f64 / GRID_TOTAL_HOURS;
-    if vertical {
-        el.set_scroll_top((el.scroll_height() as f64 * frac).round() as i32);
-    } else {
-        el.set_scroll_left((el.scroll_width() as f64 * frac).round() as i32);
-    }
+    let frac = f64::from(WORK_START_HOUR) / GRID_TOTAL_HOURS;
+    crate::platform::dom::scroll_to_fraction(id, vertical, frac);
 }
 
 /// Which calendar layout is active. Month is the default; Week and Day
@@ -148,23 +138,6 @@ impl RemoteUser {
             joined.to_string()
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
-struct PaginatedUsers {
-    #[serde(default)]
-    data: Vec<RemoteUser>,
-}
-
-/// Subset of the server's `PaginatedResponse<SchedulingTemplateResponse>`
-/// envelope (MAPPS-253). The scheduling-templates list endpoint wraps its
-/// rows in `{ data, meta }` like the other list endpoints; we only read
-/// `data` (the picker fetches up to `per_page=100`, which covers any
-/// realistic per-tenant template count).
-#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
-struct PaginatedTemplates {
-    #[serde(default)]
-    data: Vec<SchedulingTemplateResponse>,
 }
 
 /// Add `delta` months to `date`, anchored on day 1 of the result (the
@@ -343,6 +316,10 @@ const APPT_DESCRIPTION_MAX: i64 = 2000;
 /// `COUNT` and `UNTIL` are not both set, and that the common numeric / keyword
 /// values are well-formed. It does not evaluate the rule semantically.
 fn validate_rrule(rule: &str) -> Result<(), String> {
+    // MAPPS-582: an RRULE is a fixed ASCII grammar, and a pasted rule is
+    // exactly the kind of value that carries an invisible character.
+    let rule = crate::utils::text::clean_strict(rule);
+    let rule = rule.as_str();
     // Tolerate an optional `RRULE:` prefix (some pastes include it).
     let body = rule
         .trim()
@@ -659,18 +636,21 @@ fn travel_buffer_help(t: &SchedulingTemplateResponse) -> Option<String> {
 fn use_templates_resource(kind: Option<&'static str>) -> Resource<Vec<SchedulingTemplateResponse>> {
     use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             let path = match kind {
-                Some(k) => format!("/scheduling-templates?kind={k}&per_page=100"),
-                None => "/scheduling-templates?per_page=100".to_string(),
+                Some(k) => format!("/scheduling-templates?kind={k}"),
+                None => "/scheduling-templates".to_string(),
             };
-            crate::hooks::fetch::api::get_authed::<PaginatedTemplates>(&path)
+            crate::hooks::fetch::api::get_all_authed::<SchedulingTemplateResponse>(&path)
                 .await
-                .map(|p| p.data)
-                .unwrap_or_default()
+                .unwrap_or_else(|e| {
+                    // Best-effort: the picker falls back to the blank default.
+                    tracing::warn!("scheduling-template load failed: {e}");
+                    Vec::new()
+                })
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             let _ = kind;
             Vec::<SchedulingTemplateResponse>::new()
@@ -685,7 +665,7 @@ fn use_templates_resource(kind: Option<&'static str>) -> Resource<Vec<Scheduling
 /// `GET /api/v1/auth/users` is server-gated to Admin / Manager (see
 /// `src/modules/auth/routes.rs::list_users`), so signed-in users with
 /// lower roles would get a 403. Skip the fetch for them: the dropdown
-/// just shows the "Select technician..." placeholder and the user can
+/// just shows the "Select technician…" placeholder and the user can
 /// only self-assign anyway. Saves a noisy console error per page load.
 fn use_users_resource() -> Resource<Vec<RemoteUser>> {
     let auth = crate::hooks::use_auth();
@@ -699,14 +679,17 @@ fn use_users_resource() -> Resource<Vec<RemoteUser>> {
         if !can_manage {
             return Vec::<RemoteUser>::new();
         }
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
-            crate::hooks::fetch::api::get_authed::<PaginatedUsers>("/auth/users?per_page=100")
+            crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users")
                 .await
-                .map(|p| p.data)
-                .unwrap_or_default()
+                .unwrap_or_else(|e| {
+                    // Best-effort: the dropdown falls back to "Me".
+                    tracing::warn!("user load failed: {e}");
+                    Vec::new()
+                })
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             Vec::<RemoteUser>::new()
         }
@@ -743,7 +726,7 @@ pub fn CalendarPage() -> Element {
         // MAPPS-357: subscribe to reachability so the calendar auto-refetches
         // the instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             // Emit the UTC offset as `Z`, not `+00:00`. A literal `+`
             // in a query string URL-decodes to a space on the server
@@ -760,7 +743,7 @@ pub fn CalendarPage() -> Element {
                 .await
                 .map(|p| p.data)
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             let _ = (from_utc, to_utc);
             Ok::<Vec<AppointmentResponse>, String>(Vec::new())
@@ -981,6 +964,19 @@ pub fn CalendarPage() -> Element {
     }
 }
 
+/// MAPPS-443: does this key event mean "activate", for an element that
+/// announces itself as a button?
+///
+/// A real `button` gets Enter and Space for free. These three calendar
+/// create-targets cannot be `button`s - each one contains the appointment chips,
+/// which are themselves `button`s, and a button inside a button is invalid HTML
+/// that the browser silently reparents - so the behaviour is supplied by hand.
+/// Both keys, because a screen reader has already announced the element as a
+/// button and Space is what a button user presses.
+fn is_activation_key(e: &KeyboardEvent) -> bool {
+    e.key() == Key::Enter || e.key() == Key::Character(" ".to_string())
+}
+
 #[derive(Props, Clone, PartialEq)]
 struct ViewToggleButtonProps {
     label: &'static str,
@@ -1097,50 +1093,70 @@ fn MonthDayCell(props: MonthDayCellProps) -> Element {
     let cell_date = props.date;
 
     rsx! {
-        // MAPPS-319: the whole cell is clickable; the click opens the
-        // New Appointment modal pre-filled with this day. Appointment
-        // chips below stop propagation so their own onpick fires instead.
-        div {
-            class: "min-h-24 p-2 cursor-pointer {bg_class}",
-            role: "button",
-            tabindex: "0",
-            aria_label: "Create appointment on this day",
-            onclick: move |_| props.oncreate.call(cell_date),
-            span { class: "text-sm {text_class}", "{props.day}" }
-            div { class: "mt-1 space-y-1",
-                for (i, appt) in props.appointments.iter().enumerate() {
-                    if i < 3 {
-                        {
-                            let chip = type_chip_class(&appt.appointment_type);
-                            let past = past_class(appt);
-                            let appt_clone = appt.clone();
-                            let type_label = appointment_type_label(&appt.appointment_type);
-                            let label = format!("{} {}", time_label(appt.start_time), appt.title);
-                            rsx! {
-                                button {
-                                    key: "{appt.id}",
-                                    r#type: "button",
-                                    class: "w-full text-left text-xs truncate px-1 py-0.5 rounded {chip} {past} hover:opacity-80",
-                                    title: "{type_label} - {label}",
-                                    onclick: move |e: MouseEvent| {
-                                        e.stop_propagation();
-                                        props.onpick.call(appt_clone.clone());
-                                    },
-                                    "{label}"
+            // MAPPS-319: the whole cell is clickable; the click opens the
+            // New Appointment modal pre-filled with this day. Appointment
+            // chips below stop propagation so their own onpick fires instead.
+            div {
+                class: "min-h-24 p-2 cursor-pointer {bg_class}",
+                role: "button",
+                tabindex: "0",
+                aria_label: "Create appointment on this day",
+                onclick: move |_| props.oncreate.call(cell_date),
+                // MAPPS-443: Enter and Space, because `role="button"` +
+                // `tabindex="0"` already tell a screen reader this is a button.
+                // `prevent_default` stops Space scrolling the page past the cell
+                // the user just activated.
+                onkeydown: move |e: KeyboardEvent| {
+                    if is_activation_key(&e) {
+                        e.prevent_default();
+                        props.oncreate.call(cell_date);
+                    }
+                },
+                span { class: "text-sm {text_class}", "{props.day}" }
+                div { class: "mt-1 space-y-1",
+                    for (i, appt) in props.appointments.iter().enumerate() {
+                        if i < 3 {
+                            {
+                                let chip = type_chip_class(&appt.appointment_type);
+                                let past = past_class(appt);
+                                let appt_clone = appt.clone();
+                                let type_label = appointment_type_label(&appt.appointment_type);
+                                let label = format!("{} {}", time_label(appt.start_time), appt.title);
+                                rsx! {
+                                    button {
+                                        key: "{appt.id}",
+                                        r#type: "button",
+                                        class: "w-full text-left text-xs truncate px-1 py-0.5 rounded {chip} {past} hover:opacity-80",
+                                        title: "{type_label} - {label}",
+                                                                            // MAPPS-443: keydown bubbles, and the cell around this chip now
+                                        // activates on Enter/Space. Without this, Enter on a chip would
+                                        // open the appointment AND the New Appointment modal behind it.
+                                        // Propagation only; the browser still synthesises this button's
+                                        // own click, so the chip keeps working.
+                                        onkeydown: move |e: KeyboardEvent| {
+                                            if is_activation_key(&e) {
+                                                e.stop_propagation();
+                                            }
+                                        },
+    onclick: move |e: MouseEvent| {
+                                            e.stop_propagation();
+                                            props.onpick.call(appt_clone.clone());
+                                        },
+                                        "{label}"
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                if total > 3 {
-                    {
-                        let remaining = total - 3;
-                        rsx! { span { class: "text-xs text-muted", "+{remaining} more" } }
+                    if total > 3 {
+                        {
+                            let remaining = total - 3;
+                            rsx! { span { class: "text-xs text-muted", "+{remaining} more" } }
+                        }
                     }
                 }
             }
         }
-    }
 }
 
 // ============================================================================
@@ -1163,7 +1179,7 @@ struct WeekGridProps {
 fn WeekGrid(props: WeekGridProps) -> Element {
     let dates = week_dates(props.active_date);
     // MAPPS-387: default the scroll to the working-hours window on mount.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     use_effect(|| scroll_grid_to_work_hours("calendar-grid-scroll-week", true));
     rsx! {
         div { class: "overflow-x-auto",
@@ -1265,50 +1281,71 @@ fn DayColumn(props: DayColumnProps) -> Element {
     let rows = (GRID_END_HOUR - GRID_START_HOUR) as usize;
     let day = props.day;
     rsx! {
-        // MAPPS-319: column-level onclick opens New Appointment pre-
-        // filled with this day. Appointment blocks below stop
-        // propagation so their own onpick (edit) fires instead.
-        div {
-            class: "relative border-l border-line cursor-pointer",
-            style: "height: {rows as f64 * 3.0}rem;",
-            role: "button",
-            tabindex: "0",
-            aria_label: "Create appointment on this day",
-            onclick: move |_| props.oncreate.call(day),
-            // Hour grid lines; out-of-hours rows are muted, not struck
-            // through, and remain selectable (MAPPS-387).
-            for hour in GRID_START_HOUR..GRID_END_HOUR {
-                div { class: "h-12 border-b border-line {hour_shade_class(hour)}" }
-            }
-            // Appointment blocks. PMS-598: lane layout so concurrent events sit
-            // side by side instead of stacking; `key` keeps Dioxus from collapsing
-            // sibling blocks.
-            {
-                let lanes = overlap_lanes(&props.appointments);
-                rsx! {
-                    for (i, appt) in props.appointments.iter().enumerate() {
-                        {
-                            let (top_pct, height_pct) = block_geometry(appt);
-                            let (left_pct, width_pct) = lane_h_geometry(lanes[i]);
-                            let color = type_color(&appt.appointment_type);
-                            let past = past_class(appt);
-                            let appt_clone = appt.clone();
-                            let type_label = appointment_type_label(&appt.appointment_type);
-                            let label = appt.title.clone();
-                            let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
-                            rsx! {
-                                button {
-                                    key: "{appt.id}",
-                                    r#type: "button",
-                                    class: "absolute rounded px-1 py-0.5 text-[10px] leading-tight text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color} {past}",
-                                    style: "top: {top_pct:.4}%; height: {height_pct:.4}%; left: {left_pct:.4}%; width: {width_pct:.4}%;",
-                                    title: "{type_label} - {time}: {label}",
-                                    onclick: move |e: MouseEvent| {
-                                        e.stop_propagation();
-                                        props.onpick.call(appt_clone.clone());
-                                    },
-                                    div { class: "font-medium truncate", "{label}" }
-                                    div { class: "truncate opacity-90", "{time}" }
+            // MAPPS-319: column-level onclick opens New Appointment pre-
+            // filled with this day. Appointment blocks below stop
+            // propagation so their own onpick (edit) fires instead.
+            div {
+                class: "relative border-l border-line cursor-pointer",
+                style: "height: {rows as f64 * 3.0}rem;",
+                role: "button",
+                tabindex: "0",
+                aria_label: "Create appointment on this day",
+                onclick: move |_| props.oncreate.call(day),
+                // MAPPS-443: Enter and Space, because `role="button"` +
+                // `tabindex="0"` already tell a screen reader this is a button.
+                // `prevent_default` stops Space scrolling the page past the cell
+                // the user just activated.
+                onkeydown: move |e: KeyboardEvent| {
+                    if is_activation_key(&e) {
+                        e.prevent_default();
+                        props.oncreate.call(day);
+                    }
+                },
+                // Hour grid lines; out-of-hours rows are muted, not struck
+                // through, and remain selectable (MAPPS-387).
+                for hour in GRID_START_HOUR..GRID_END_HOUR {
+                    div { class: "h-12 border-b border-line {hour_shade_class(hour)}" }
+                }
+                // Appointment blocks. PMS-598: lane layout so concurrent events sit
+                // side by side instead of stacking; `key` keeps Dioxus from collapsing
+                // sibling blocks.
+                {
+                    let lanes = overlap_lanes(&props.appointments);
+                    rsx! {
+                        for (i, appt) in props.appointments.iter().enumerate() {
+                            {
+                                let (top_pct, height_pct) = block_geometry(appt);
+                                let (left_pct, width_pct) = lane_h_geometry(lanes[i]);
+                                let color = type_color(&appt.appointment_type);
+                                let past = past_class(appt);
+                                let appt_clone = appt.clone();
+                                let type_label = appointment_type_label(&appt.appointment_type);
+                                let label = appt.title.clone();
+                                let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
+                                rsx! {
+                                    button {
+                                        key: "{appt.id}",
+                                        r#type: "button",
+                                        class: "absolute rounded px-1 py-0.5 text-[10px] leading-tight text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color} {past}",
+                                        style: "top: {top_pct:.4}%; height: {height_pct:.4}%; left: {left_pct:.4}%; width: {width_pct:.4}%;",
+                                        title: "{type_label} - {time}: {label}",
+                                                                            // MAPPS-443: keydown bubbles, and the cell around this chip now
+                                        // activates on Enter/Space. Without this, Enter on a chip would
+                                        // open the appointment AND the New Appointment modal behind it.
+                                        // Propagation only; the browser still synthesises this button's
+                                        // own click, so the chip keeps working.
+                                        onkeydown: move |e: KeyboardEvent| {
+                                            if is_activation_key(&e) {
+                                                e.stop_propagation();
+                                            }
+                                        },
+    onclick: move |e: MouseEvent| {
+                                            e.stop_propagation();
+                                            props.onpick.call(appt_clone.clone());
+                                        },
+                                        div { class: "font-medium truncate", "{label}" }
+                                        div { class: "truncate opacity-90", "{time}" }
+                                    }
                                 }
                             }
                         }
@@ -1316,7 +1353,6 @@ fn DayColumn(props: DayColumnProps) -> Element {
                 }
             }
         }
-    }
 }
 
 /// MAPPS-387: offset% + size% of a `[start_h, end_h)` hour span within the
@@ -1466,75 +1502,96 @@ fn DayGrid(props: DayGridProps) -> Element {
         .collect();
     let rows = (GRID_END_HOUR - GRID_START_HOUR) as usize;
     // MAPPS-387: default the scroll to the working-hours window on mount.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     use_effect(|| scroll_grid_to_work_hours("calendar-grid-scroll-day", true));
 
     rsx! {
-        if day_appts.is_empty() {
-            div { class: "mb-3 text-sm text-muted", "No appointments scheduled for this day." }
-        }
-        // MAPPS-387: the 24-hour grid scrolls inside its own box, opening on
-        // the working-hours window, rather than the whole page scrolling.
-        div {
-            id: "calendar-grid-scroll-day",
-            class: "overflow-y-auto max-h-[70vh]",
-            // MAPPS-387: `pt-2` offsets the gutter labels' `-mt-2` pull so the
-            // first label (12 AM) is not clipped at the scroll-box top edge.
-            div { class: "grid grid-cols-[80px_1fr] pt-2",
-            // Hour gutter.
+            if day_appts.is_empty() {
+                div { class: "mb-3 text-sm text-muted", "No appointments scheduled for this day." }
+            }
+            // MAPPS-387: the 24-hour grid scrolls inside its own box, opening on
+            // the working-hours window, rather than the whole page scrolling.
             div {
-                for hour in GRID_START_HOUR..GRID_END_HOUR {
-                    {
-                        let label = hour_label(hour);
-                        rsx! {
-                            div { class: "h-16 text-right pr-3 text-xs text-subtle -mt-2", "{label}" }
+                id: "calendar-grid-scroll-day",
+                class: "overflow-y-auto max-h-[70vh]",
+                // MAPPS-387: `pt-2` offsets the gutter labels' `-mt-2` pull so the
+                // first label (12 AM) is not clipped at the scroll-box top edge.
+                div { class: "grid grid-cols-[80px_1fr] pt-2",
+                // Hour gutter.
+                div {
+                    for hour in GRID_START_HOUR..GRID_END_HOUR {
+                        {
+                            let label = hour_label(hour);
+                            rsx! {
+                                div { class: "h-16 text-right pr-3 text-xs text-subtle -mt-2", "{label}" }
+                            }
                         }
                     }
                 }
-            }
-            // Single positioned column (taller rows than the week view).
-            // MAPPS-319: column-level onclick opens New Appointment.
-            div {
-                class: "relative border-l border-line cursor-pointer",
-                style: "height: {rows as f64 * 4.0}rem;",
-                role: "button",
-                tabindex: "0",
-                aria_label: "Create appointment on this day",
-                onclick: move |_| props.oncreate.call(day),
-                for hour in GRID_START_HOUR..GRID_END_HOUR {
-                    div { class: "h-16 border-b border-line {hour_shade_class(hour)}" }
-                }
-                // PMS-598: lane layout so concurrent events sit side by side;
-                // `key` keeps Dioxus from collapsing sibling blocks.
-                {
-                    let lanes = overlap_lanes(&day_appts);
-                    rsx! {
-                        for (i, appt) in day_appts.iter().enumerate() {
-                            {
-                                let (top_pct, height_pct) = block_geometry(appt);
-                                let (left_pct, width_pct) = lane_h_geometry(lanes[i]);
-                                let color = type_color(&appt.appointment_type);
-                                let past = past_class(appt);
-                                let appt_clone = appt.clone();
-                                let type_label = appointment_type_label(&appt.appointment_type);
-                                let label = appt.title.clone();
-                                let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
-                                let location = appt.location.clone().unwrap_or_default();
-                                rsx! {
-                                    button {
-                                        key: "{appt.id}",
-                                        r#type: "button",
-                                        class: "absolute rounded-md px-2 py-1 text-xs text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color} {past}",
-                                        style: "top: {top_pct:.4}%; height: {height_pct:.4}%; left: {left_pct:.4}%; width: {width_pct:.4}%;",
-                                        title: "{type_label} - {time}: {label}",
-                                        onclick: move |e: MouseEvent| {
-                                            e.stop_propagation();
-                                            props.onpick.call(appt_clone.clone());
-                                        },
-                                        div { class: "font-medium truncate", "{label}" }
-                                        div { class: "opacity-90", "{time}" }
-                                        if !location.is_empty() {
-                                            div { class: "truncate opacity-90", "{location}" }
+                // Single positioned column (taller rows than the week view).
+                // MAPPS-319: column-level onclick opens New Appointment.
+                div {
+                    class: "relative border-l border-line cursor-pointer",
+                    style: "height: {rows as f64 * 4.0}rem;",
+                    role: "button",
+                    tabindex: "0",
+                    aria_label: "Create appointment on this day",
+                    onclick: move |_| props.oncreate.call(day),
+                    // MAPPS-443: Enter and Space, because `role="button"` +
+                    // `tabindex="0"` already tell a screen reader this is a button.
+                    // `prevent_default` stops Space scrolling the page past the cell
+                    // the user just activated.
+                    onkeydown: move |e: KeyboardEvent| {
+                        if is_activation_key(&e) {
+                            e.prevent_default();
+                            props.oncreate.call(day);
+                        }
+                    },
+                    for hour in GRID_START_HOUR..GRID_END_HOUR {
+                        div { class: "h-16 border-b border-line {hour_shade_class(hour)}" }
+                    }
+                    // PMS-598: lane layout so concurrent events sit side by side;
+                    // `key` keeps Dioxus from collapsing sibling blocks.
+                    {
+                        let lanes = overlap_lanes(&day_appts);
+                        rsx! {
+                            for (i, appt) in day_appts.iter().enumerate() {
+                                {
+                                    let (top_pct, height_pct) = block_geometry(appt);
+                                    let (left_pct, width_pct) = lane_h_geometry(lanes[i]);
+                                    let color = type_color(&appt.appointment_type);
+                                    let past = past_class(appt);
+                                    let appt_clone = appt.clone();
+                                    let type_label = appointment_type_label(&appt.appointment_type);
+                                    let label = appt.title.clone();
+                                    let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
+                                    let location = appt.location.clone().unwrap_or_default();
+                                    rsx! {
+                                        button {
+                                            key: "{appt.id}",
+                                            r#type: "button",
+                                            class: "absolute rounded-md px-2 py-1 text-xs text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color} {past}",
+                                            style: "top: {top_pct:.4}%; height: {height_pct:.4}%; left: {left_pct:.4}%; width: {width_pct:.4}%;",
+                                            title: "{type_label} - {time}: {label}",
+                                                                                    // MAPPS-443: keydown bubbles, and the cell around this chip now
+                                            // activates on Enter/Space. Without this, Enter on a chip would
+                                            // open the appointment AND the New Appointment modal behind it.
+                                            // Propagation only; the browser still synthesises this button's
+                                            // own click, so the chip keeps working.
+                                            onkeydown: move |e: KeyboardEvent| {
+                                                if is_activation_key(&e) {
+                                                    e.stop_propagation();
+                                                }
+                                            },
+    onclick: move |e: MouseEvent| {
+                                                e.stop_propagation();
+                                                props.onpick.call(appt_clone.clone());
+                                            },
+                                            div { class: "font-medium truncate", "{label}" }
+                                            div { class: "opacity-90", "{time}" }
+                                            if !location.is_empty() {
+                                                div { class: "truncate opacity-90", "{location}" }
+                                            }
                                         }
                                     }
                                 }
@@ -1542,10 +1599,9 @@ fn DayGrid(props: DayGridProps) -> Element {
                         }
                     }
                 }
-            }
+                }
             }
         }
-    }
 }
 
 // ============================================================================
@@ -1753,11 +1809,11 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
         }
     });
     let mut all_day = use_signal(|| init_all_day);
-    let mut start_date_value = use_signal(|| init_start_date.clone());
+    let start_date_value = use_signal(|| init_start_date.clone());
     // All-day End date is inclusive in the UI: the persisted End is local
     // 00:00 of the day AFTER this date, so a single-day span reads as one day.
-    let mut end_date_value = use_signal(|| init_end_date.clone());
-    let mut assignee = use_signal(|| init_assignee);
+    let end_date_value = use_signal(|| init_end_date.clone());
+    let assignee = use_signal(|| init_assignee);
     let mut recurrence = use_signal(|| init_recurrence);
     let mut recurrence_error = use_signal(String::new);
     // PMS-578: per-field inline errors (the standard pattern). `error` is now
@@ -1918,7 +1974,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
         error.set(String::new());
 
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result: Result<(), crate::hooks::fetch::api::ApiError> = match edit_id {
                     None => {
@@ -1976,7 +2032,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                     }
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = (
                     edit_id,
@@ -2014,7 +2070,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/appointments/{id}");
                 match crate::hooks::fetch::api::delete_authed_typed(&path).await {
@@ -2025,7 +2081,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                     )),
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = id;
             }
@@ -2074,8 +2130,8 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
             footer,
             div { class: "space-y-4",
                 if is_recurring_instance {
-                    div {
-                        class: "text-sm text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
+                    StatusBanner {
+                        tone: BannerTone::Warning,
                         "This is an occurrence of a recurring series. Editing individual occurrences isn't supported yet; edit the series from its first appointment."
                     }
                 }
@@ -2086,8 +2142,8 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                 // (create mode only; MAPPS-253). Hidden when editing an
                 // existing appointment, where a template does not apply.
                 if !is_edit {
-                    div {
-                        class: "text-sm text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 rounded-md px-3 py-2",
+                    StatusBanner {
+                        tone: BannerTone::Info,
                         "You are scheduling an appointment now. To save a reusable shape (type, duration, title) for next time, create a template on the Scheduling Templates page instead."
                     }
                     Select {
@@ -2156,7 +2212,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                     maxlength: APPT_TITLE_MAX,
                     error: title_err(),
                     value: title.read().clone(),
-                    oninput: move |e: FormEvent| title.set(e.value()),
+                    oninput: clear_on_edit(title, title_err),
                 }
                 crate::components::Checkbox {
                     name: "appt_all_day",
@@ -2175,7 +2231,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                             required: true,
                             error: start_err(),
                             value: start_date_value.read().clone(),
-                            oninput: move |e: FormEvent| start_date_value.set(e.value()),
+                            oninput: clear_on_edit(start_date_value, start_err),
                         }
                         Input {
                             name: "appt_end_date",
@@ -2185,7 +2241,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                             help: "Inclusive. The event spans whole days through this date.".to_string(),
                             error: end_err(),
                             value: end_date_value.read().clone(),
-                            oninput: move |e: FormEvent| end_date_value.set(e.value()),
+                            oninput: clear_on_edit(end_date_value, end_err),
                         }
                     }
                 } else {
@@ -2200,6 +2256,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                             error: start_err(),
                             value: start_value.read().clone(),
                             oninput: move |e: FormEvent| {
+                                start_err.set(String::new());
                                 let next = e.value();
                                 // Keep the Custom End anchored to the new Start
                                 // by shifting it by the same delta, preserving
@@ -2246,6 +2303,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                                 error: end_err(),
                                 value: end_value.read().clone(),
                                 oninput: move |e: FormEvent| {
+                                    end_err.set(String::new());
                                     let next = e.value();
                                     // Back-compute the duration so a later Start
                                     // edit preserves this custom span.
@@ -2293,7 +2351,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                         options: assignee_options.clone(),
                         error: assignee_err(),
                         value: assignee.read().clone(),
-                        onchange: move |e: FormEvent| assignee.set(e.value()),
+                        onchange: clear_on_edit(assignee, assignee_err),
                     }
                     if is_edit {
                         Select {
@@ -2424,7 +2482,7 @@ pub fn DispatchBoardPage() -> Element {
         };
         let from_utc = local_date_start_utc(from_date);
         let to_utc = local_date_start_utc(to_date);
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             // Emit the UTC offset as `Z`, not `+00:00`. A literal `+` in
             // a query string URL-decodes to a space server-side, so
@@ -2438,7 +2496,7 @@ pub fn DispatchBoardPage() -> Element {
             );
             crate::hooks::fetch::api::get_authed::<DispatchResponse>(&path).await
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             let _ = (from_utc, to_utc);
             Ok::<DispatchResponse, String>(DispatchResponse {
@@ -2651,9 +2709,9 @@ struct OnCallBannerProps {
 #[component]
 fn OnCallBanner(props: OnCallBannerProps) -> Element {
     rsx! {
-        div { class: "mb-4 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 px-4 py-3",
-            p { class: "text-sm font-medium text-amber-800 dark:text-amber-300 mb-1", "On call now" }
-            div { class: "flex flex-wrap gap-x-6 gap-y-1 text-sm text-amber-700 dark:text-amber-300",
+        StatusBanner { tone: BannerTone::Warning, class: "mb-4",
+            p { class: "font-medium mb-1", "On call now" }
+            div { class: "flex flex-wrap gap-x-6 gap-y-1",
                 for entry in props.on_call.iter() {
                     {
                         let who = entry
@@ -2719,7 +2777,7 @@ fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
 
     // MAPPS-387: the 24-hour timeline scrolls horizontally inside its box,
     // opening on the working-hours window rather than at midnight.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     use_effect(|| scroll_grid_to_work_hours("calendar-dispatch-scroll", false));
 
     if user_ids.is_empty() {
@@ -2930,16 +2988,15 @@ pub fn SchedulingTemplatesPage() -> Element {
     let mut templates_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
-            crate::hooks::fetch::api::get_authed::<PaginatedTemplates>(
-                "/scheduling-templates?per_page=100",
+            crate::hooks::fetch::api::get_all_authed::<SchedulingTemplateResponse>(
+                "/scheduling-templates",
             )
             .await
-            .map(|p| p.data)
             .ok()
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
             Some(Vec::<SchedulingTemplateResponse>::new())
         }
@@ -3177,7 +3234,7 @@ fn TemplateFormModal(props: TemplateFormModalProps) -> Element {
         error.set(String::new());
 
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result: Result<(), crate::hooks::fetch::api::ApiError> = match edit_id {
                     None => {
@@ -3230,7 +3287,7 @@ fn TemplateFormModal(props: TemplateFormModalProps) -> Element {
                     Err(e) => error.set(format!("Could not save template: {}", e.user_message())),
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = (
                     edit_id, name_val, kind_val, type_val, duration, before, after, title,
@@ -3255,7 +3312,7 @@ fn TemplateFormModal(props: TemplateFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/scheduling-templates/{id}");
                 match crate::hooks::fetch::api::delete_authed_typed(&path).await {
@@ -3263,7 +3320,7 @@ fn TemplateFormModal(props: TemplateFormModalProps) -> Element {
                     Err(e) => error.set(format!("Could not delete template: {}", e.user_message())),
                 }
             }
-            #[cfg(not(feature = "web"))]
+            #[cfg(not(feature = "app"))]
             {
                 let _ = id;
             }
@@ -3766,5 +3823,85 @@ mod grid_geometry_tests {
         assert_eq!(hour_shade_class(9), "");
         assert_eq!(hour_shade_class(2), "bg-surface-2");
         assert_eq!(hour_shade_class(22), "bg-surface-2");
+    }
+
+    /// MAPPS-443 recurrence guard: nothing may announce itself as a button
+    /// without being operable from the keyboard.
+    ///
+    /// A source scan, because these are Dioxus components that need a browser to
+    /// render and what is being pinned is a property of the markup rather than
+    /// of a value. The failure it catches is specific and silent: a keyboard
+    /// user tabs to a cell, hears "Create appointment on this day, button",
+    /// presses Enter, and nothing happens. That is strictly worse than the
+    /// element not being focusable, because the user has been told it works.
+    #[test]
+    fn every_element_that_claims_to_be_a_button_can_be_activated_by_keyboard() {
+        const SRC: &str = include_str!("calendar.rs");
+        let production = SRC
+            .split_once("#[cfg(test)]")
+            .map(|(before, _)| before)
+            .expect("this file has a test module");
+
+        let declared = production.matches(r#"role: "button""#).count();
+        assert_eq!(
+            declared, 3,
+            "the month cell, week column and day column are the three create-targets; \
+             a fourth means this guard has not seen it"
+        );
+        // One `onkeydown` per create-target, plus one per appointment chip (see
+        // below). Counting rather than parsing: an element that gained a
+        // `role="button"` without a handler moves these two numbers apart.
+        assert!(
+            production.matches("onkeydown").count() >= declared,
+            "every role=\"button\" element needs its own key handler"
+        );
+        assert!(
+            production.contains("fn is_activation_key"),
+            "Enter and Space are decided in one place so the three sites cannot drift"
+        );
+    }
+
+    /// MAPPS-443: the chips inside each cell must stop keydown, not only click.
+    ///
+    /// The cell is the chip's ancestor and now activates on Enter/Space, so a
+    /// chip that stopped only `onclick` propagation would open the appointment
+    /// AND the New Appointment modal behind it. `stop_propagation` does not
+    /// suppress the browser's own click synthesis, so the chip still works.
+    #[test]
+    fn an_appointment_chip_does_not_also_trigger_the_cell_behind_it() {
+        const SRC: &str = include_str!("calendar.rs");
+        let production = SRC
+            .split_once("#[cfg(test)]")
+            .map(|(before, _)| before)
+            .expect("this file has a test module");
+
+        let click_stops = production.matches("e.stop_propagation();").count();
+        assert!(
+            click_stops >= 6,
+            "each of the three chips stops both click and keydown from reaching its \
+             cell, so there are at least six; found {click_stops}"
+        );
+    }
+
+    /// MAPPS-443: why these are not simply `button` elements.
+    ///
+    /// The issue's acceptance criterion asked for exactly that, and it cannot be
+    /// met: every create-target contains the appointment chips, which are
+    /// themselves `button`s. A button inside a button is invalid HTML that the
+    /// browser silently reparents, which breaks the layout and is its own
+    /// accessibility defect. This pins the reason so the swap is not attempted
+    /// again from the issue text.
+    #[test]
+    fn the_create_targets_contain_buttons_which_is_why_they_are_not_buttons() {
+        const SRC: &str = include_str!("calendar.rs");
+        let production = SRC
+            .split_once("#[cfg(test)]")
+            .map(|(before, _)| before)
+            .expect("this file has a test module");
+        assert!(
+            production.matches(r#"r#type: "button""#).count() >= 3,
+            "each create-target still nests at least one real button (the chips), so \
+             promoting the cell itself to a button would nest one inside another"
+        );
     }
 }

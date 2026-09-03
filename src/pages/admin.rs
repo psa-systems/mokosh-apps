@@ -5,10 +5,19 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, DataTable, Input, Modal,
-    PageHeader, StatCard, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
-    TableLoading, TableRow,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, ErrorBanner,
+    Input, Modal, PageHeader, StatCard, Table, TableBody, TableCell, TableEmpty, TableHead,
+    TableHeader, TableLoading, TableRow,
 };
+
+/// Where the tenant roster came from. `Backend` = live server; `Demo`
+/// = seeded fallback (no platform bearer / API unreachable).
+#[cfg(feature = "multi-tenant")]
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TenantSource {
+    Backend,
+    Demo,
+}
 
 /// Subset of mokosh-server's `TenantResponse` we render in the admin
 /// tenant table. Serde drops unknown fields so adding columns later
@@ -60,13 +69,6 @@ struct TenantBrandingWire {
 #[derive(Clone, Debug, Deserialize)]
 struct PaginatedTenants {
     data: Vec<RemoteTenant>,
-}
-
-#[cfg(feature = "multi-tenant")]
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum TenantSource {
-    Backend,
-    Demo,
 }
 
 #[cfg(feature = "multi-tenant")]
@@ -127,7 +129,16 @@ fn format_created(when: chrono::DateTime<chrono::Utc>) -> String {
     }
 }
 
-/// Tenant management page (multi-tenant mode only)
+/// Tenant management page (multi-tenant mode only). Role-gated.
+///
+/// MAPPS-526: the outer component holds only the role gate so its hook order
+/// stays stable across renders (rules of hooks), matching `audit_log.rs`. The
+/// roster fetch lives in [`TenantManagementContent`], which a user who cannot
+/// read the roster never mounts.
+///
+/// Super-admin rather than the `is_admin()` its `/admin/*` siblings use:
+/// mokosh-server's `GET /tenants` takes `RequireSuperAdmin`, so a plain admin
+/// would get the page and a 403 for its only fetch.
 #[cfg(feature = "multi-tenant")]
 #[component]
 pub fn TenantManagementPage() -> Element {
@@ -169,8 +180,8 @@ pub fn TenantManagementPage() -> Element {
         // F1: re-fetch on org switch / token swap so the roster reflects
         // the active scope instead of the prior tenant's cached rows.
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        // MAPPS-351: also refetch on reconnect so the roster drops the demo
-        // fallback once the real backend answers again.
+        // MAPPS-351: also refetch on reconnect so the roster fills in once the
+        // real backend answers again.
         let _reachable = crate::hooks::use_server_reachable();
         // MAPPS-518: `GET /api/v1/tenants` is now gated on
         // `RequirePlatformAdmin`; the tenant `ACCESS_TOKEN` is a
@@ -192,18 +203,19 @@ pub fn TenantManagementPage() -> Element {
 
     let resource_snapshot = tenants_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
-    let (remote_tenants, source) = match &*resource_snapshot {
-        Some((rows, source)) => (rows.clone(), *source),
+    let (remote_tenants, source): (Vec<RemoteTenant>, TenantSource) = match &*resource_snapshot {
+        Some((rows, src)) => (rows.clone(), *src),
         None => (Vec::new(), TenantSource::Demo),
     };
+    let fetch_failed = false;
 
-    // MAPPS-351: this page intentionally falls back to demo rows when the
-    // backend errors, so it stays demoable. But when the server is flagged
-    // DOWN, those demo rows would masquerade as real data during an outage -
-    // show the honest unavailable state instead. Gated on the reachability
-    // flag so a reachable no-token / 4xx keeps the demo fallback. Clears on
-    // reconnect (the resource subscribes to reachability above).
-    if !crate::hooks::use_server_reachable() && source == TenantSource::Demo && !is_loading {
+    // MAPPS-351: a failed load while the server is flagged DOWN is an outage,
+    // not an empty roster - show the honest unavailable state instead of an
+    // empty table. A reachable no-token / 4xx keeps the inline error banner
+    // below. Clears on reconnect (the resource subscribes to reachability
+    // above).
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Client Management".to_string() }
         };
@@ -211,25 +223,20 @@ pub fn TenantManagementPage() -> Element {
 
     // Stat-card counts are derived from the same data the table renders,
     // so they stay in sync with the roster instead of the old hardcoded
-    // 42/38/4 literals. In demo mode they match the four seeded rows
-    // below. MRR has no source field on the tenants API (per-row MRR is
-    // "-" too), so it is shown as "-" rather than a fabricated dollar
+    // 42/38/4 literals. MRR has no source field on the tenants API (per-row
+    // MRR is "-" too), so it is shown as "-" rather than a fabricated dollar
     // figure.
-    let (total_tenants, active_count, trial_count) = if source == TenantSource::Backend {
-        (
-            remote_tenants.len(),
-            remote_tenants
-                .iter()
-                .filter(|t| humanize_tenant_status(&t.status) == "Active")
-                .count(),
-            remote_tenants
-                .iter()
-                .filter(|t| humanize_plan(&t.subscription_plan) == "Trial")
-                .count(),
-        )
-    } else {
-        (4, 3, 1)
-    };
+    let (total_tenants, active_count, trial_count) = (
+        remote_tenants.len(),
+        remote_tenants
+            .iter()
+            .filter(|t| humanize_tenant_status(&t.status) == "Active")
+            .count(),
+        remote_tenants
+            .iter()
+            .filter(|t| humanize_plan(&t.subscription_plan) == "Trial")
+            .count(),
+    );
     let stat = |n: usize| -> String {
         if is_loading {
             "-".to_string()
@@ -276,10 +283,13 @@ pub fn TenantManagementPage() -> Element {
                 "Backend clients API not reachable - showing demo rows."
             }
         }
+        if fetch_failed {
+            ErrorBanner { class: "mb-3", "Could not load tenants. Refresh the page to retry." }
+        }
 
         DataTable {
             loading: is_loading,
-            total_items: if source == TenantSource::Backend { remote_tenants.len() } else { 4 },
+            total_items: remote_tenants.len(),
             current_page: 1,
             per_page: 25,
             columns: 7,
@@ -306,69 +316,30 @@ pub fn TenantManagementPage() -> Element {
                     }
                 } else {
                     TableBody {
-                        if source == TenantSource::Backend {
-                            for tenant in remote_tenants.iter().cloned() {
-                                TenantRow {
-                                    key: "{tenant.id}",
-                                    name: tenant.name.clone(),
-                                    domain: tenant.slug.clone(),
-                                    plan: humanize_plan(&tenant.subscription_plan),
-                                    users: 0,
-                                    mrr: "-".to_string(),
-                                    status: humanize_tenant_status(&tenant.status),
-                                    created: format_created(tenant.created_at),
-                                    logo_url: tenant.branding.logo_url.clone(),
-                                    editable: true,
-                                    // MAPPS-451: pass the id + resource
-                                    // restart hook so the row can wire
-                                    // suspend / reactivate without
-                                    // hoisting the fetch back to the
-                                    // parent.
-                                    tenant_id: Some(tenant.id),
-                                    can_mutate,
-                                    on_lifecycle_changed: move |_| tenants_resource.restart(),
-                                    on_edit: {
-                                        let row = tenant.clone();
-                                        move |_| edit_target.set(Some(row.clone()))
-                                    },
-                                }
-                            }
-                        } else {
+                        for tenant in remote_tenants.iter().cloned() {
                             TenantRow {
-                                name: "Acme MSP",
-                                domain: "acme-msp",
-                                plan: "Professional",
-                                users: 8,
-                                mrr: "$299",
-                                status: "Active",
-                                created: "Jan 15, 2024",
-                            }
-                            TenantRow {
-                                name: "TechPro Services",
-                                domain: "techpro",
-                                plan: "Enterprise",
-                                users: 25,
-                                mrr: "$599",
-                                status: "Active",
-                                created: "Mar 1, 2024",
-                            }
-                            TenantRow {
-                                name: "IT Solutions Co",
-                                domain: "itsolutions",
-                                plan: "Professional",
-                                users: 5,
-                                mrr: "$299",
-                                status: "Active",
-                                created: "Jun 15, 2024",
-                            }
-                            TenantRow {
-                                name: "New MSP Trial",
-                                domain: "newmsp-trial",
-                                plan: "Trial",
-                                users: 2,
-                                mrr: "$0",
-                                status: "Trial",
-                                created: "Jan 10, 2025",
+                                key: "{tenant.id}",
+                                name: tenant.name.clone(),
+                                domain: tenant.slug.clone(),
+                                plan: humanize_plan(&tenant.subscription_plan),
+                                users: 0,
+                                mrr: "-".to_string(),
+                                status: humanize_tenant_status(&tenant.status),
+                                created: format_created(tenant.created_at),
+                                logo_url: tenant.branding.logo_url.clone(),
+                                editable: true,
+                                // MAPPS-451: pass the id + resource
+                                // restart hook so the row can wire
+                                // suspend / reactivate without
+                                // hoisting the fetch back to the
+                                // parent.
+                                tenant_id: Some(tenant.id),
+                                can_mutate,
+                                on_lifecycle_changed: move |_| tenants_resource.restart(),
+                                on_edit: {
+                                    let row = tenant.clone();
+                                    move |_| edit_target.set(Some(row.clone()))
+                                },
                             }
                         }
                     }

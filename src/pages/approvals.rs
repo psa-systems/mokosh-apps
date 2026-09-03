@@ -35,6 +35,16 @@ struct PendingApproval {
     entity_id: Option<Uuid>,
     #[serde(default)]
     ticket_id: Option<Uuid>,
+    /// PMS-940: the parent's human handle (a ticket number, a quote
+    /// number). Null for the targets that have no number column and
+    /// for a parent that has been deleted.
+    #[serde(default)]
+    entity_reference: Option<String>,
+    /// PMS-940: the parent's title, or a time entry's duration and
+    /// date. Null on a deleted parent, and absent entirely from a
+    /// server that pre-dates PMS-940 - hence `default`.
+    #[serde(default)]
+    entity_label: Option<String>,
     #[serde(default)]
     requested_by_name: Option<String>,
     #[serde(default)]
@@ -56,6 +66,42 @@ impl PendingApproval {
     /// `entity_id` column with fallback to the legacy `ticket_id`.
     fn entity(&self) -> Option<Uuid> {
         self.entity_id.or(self.ticket_id)
+    }
+
+    /// PMS-940: the parent's handle, empty when the server sent none.
+    /// Trimmed because a blank chip is worse than no chip.
+    fn reference(&self) -> String {
+        self.entity_reference
+            .clone()
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    }
+
+    /// PMS-940: the parent's title, empty when the server sent none.
+    fn label(&self) -> String {
+        self.entity_label
+            .clone()
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    }
+
+    /// PMS-940: what the chip shows when the server resolved neither a
+    /// handle nor a title. Only a deleted parent reaches this - the
+    /// server always resolves at least a title for a live one - and the
+    /// full 36-character key buys nothing there, so show a prefix and
+    /// leave the whole value to the tooltip. An approval with no
+    /// entity id at all cannot happen against a current server, but it
+    /// is what the payload's `Option` says, so it renders as a dash.
+    fn fallback(&self) -> String {
+        if !self.reference().is_empty() || !self.label().is_empty() {
+            return String::new();
+        }
+        match self.entity() {
+            Some(e) => e.to_string().chars().take(8).collect(),
+            None => "-".to_string(),
+        }
     }
 }
 
@@ -100,7 +146,7 @@ pub fn ApprovalsPage() -> Element {
 
     let decide = move |id: Uuid, decision: &'static str| {
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let body = serde_json::json!({ "decision": decision });
                 match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
@@ -189,22 +235,48 @@ pub fn ApprovalsPage() -> Element {
                             "quote" => "Quote",
                             other => other,
                         };
+                        // PMS-940: name the subject. The server
+                        // resolves the parent's handle and title; a
+                        // target with no number column sends only the
+                        // title, and a parent that has been deleted
+                        // sends neither.
+                        let reference = row.reference();
+                        let label = row.label();
+                        let fallback = row.fallback();
+                        let full_id = entity.map(|e| e.to_string()).unwrap_or_default();
+                        let subject = rsx! {
+                            if !reference.is_empty() {
+                                span { class: "font-mono", "{reference}" }
+                            }
+                            if !label.is_empty() {
+                                span { "{label}" }
+                            }
+                            if !fallback.is_empty() {
+                                span {
+                                    class: "font-mono text-subtle",
+                                    title: "{full_id}",
+                                    "{fallback}"
+                                }
+                            }
+                        };
                         // Link to the parent ticket when target is
-                        // ticket and we have an id. For non-ticket
-                        // targets we render the entity id verbatim
-                        // (no client routes for those yet).
+                        // ticket and we have an id. The other three
+                        // targets render unlinked - there are still no
+                        // client routes for them.
                         let entity_chip = match (target.as_str(), entity) {
                             ("ticket", Some(t)) => rsx! {
                                 a {
                                     href: "/tickets/{t}",
-                                    class: "text-sm text-accent hover:opacity-90 font-mono",
-                                    "{t}"
+                                    class: "text-sm text-accent hover:opacity-90 inline-flex items-baseline gap-2",
+                                    {subject}
                                 }
                             },
-                            (_, Some(e)) => rsx! {
-                                span { class: "text-sm text-content font-mono", "{e}" }
+                            _ => rsx! {
+                                span {
+                                    class: "text-sm text-content inline-flex items-baseline gap-2",
+                                    {subject}
+                                }
                             },
-                            _ => rsx! { span { class: "text-sm text-subtle", "-" } },
                         };
                         rsx! {
                             Card { key: "{key}",
@@ -261,5 +333,63 @@ pub fn ApprovalsPage() -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod mapps611_subject_tests {
+    use super::PendingApproval;
+    use serde_json::json;
+
+    fn row(extra: serde_json::Value) -> PendingApproval {
+        let mut base = json!({
+            "id": "11111111-1111-1111-1111-111111111111",
+            "entity_id": "853a5a2f-a58e-44e5-9a80-f8f8852e1a93",
+        });
+        let map = base.as_object_mut().unwrap();
+        for (k, v) in extra.as_object().unwrap() {
+            map.insert(k.clone(), v.clone());
+        }
+        serde_json::from_value(base).expect("decode")
+    }
+
+    #[test]
+    fn a_ticket_shows_its_number_and_title() {
+        let r = row(json!({
+            "entity_reference": "T000123",
+            "entity_label": "Printer offline in Accounts",
+        }));
+        assert_eq!(r.reference(), "T000123");
+        assert_eq!(r.label(), "Printer offline in Accounts");
+        assert!(r.fallback().is_empty(), "a named subject needs no fallback");
+    }
+
+    #[test]
+    fn a_target_with_no_number_shows_the_label_alone() {
+        let r = row(json!({ "entity_label": "90 min on 2026-03-04" }));
+        assert!(r.reference().is_empty());
+        assert_eq!(r.label(), "90 min on 2026-03-04");
+        assert!(r.fallback().is_empty());
+    }
+
+    #[test]
+    fn a_deleted_parent_falls_back_to_a_short_id() {
+        // The server resolves both columns through LEFT JOINs, so an
+        // approval that outlived its parent arrives with neither.
+        let r = row(json!({}));
+        assert_eq!(r.fallback(), "853a5a2f");
+    }
+
+    #[test]
+    fn a_server_predating_the_resolved_columns_still_decodes() {
+        // Both fields are `#[serde(default)]`: an older server omits
+        // them entirely rather than sending null, and the row must
+        // still decode into the same fallback.
+        let r: PendingApproval = serde_json::from_value(json!({
+            "id": "11111111-1111-1111-1111-111111111111",
+            "ticket_id": "853a5a2f-a58e-44e5-9a80-f8f8852e1a93",
+        }))
+        .expect("decode without the PMS-940 fields");
+        assert_eq!(r.fallback(), "853a5a2f");
     }
 }

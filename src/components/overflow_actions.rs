@@ -25,7 +25,7 @@ pub fn OverflowActions(children: Element) -> Element {
                     class: "fixed inset-0 z-40",
                     onclick: move |_| open.set(false),
                 }
-                div { class: "absolute right-0 z-50 mt-1 w-48 rounded-md bg-raised shadow-lg ring-1 ring-black/5 p-2 flex flex-col gap-2",
+                div { class: "dropdown-panel absolute right-0 z-50 mt-1 w-48 p-2 flex flex-col gap-2",
                     {children}
                 }
             }

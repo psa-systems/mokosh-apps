@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::components::{
-    use_page_title, AlertType, Button, ButtonVariant, Card, PageHeader, Table, TableBody,
+    use_page_title, AlertType, Button, ButtonVariant, Card, Input, PageHeader, Table, TableBody,
     TableCell, TableHead, TableHeader, TableRow,
 };
 use crate::utils::Paginated;
@@ -124,7 +124,7 @@ pub fn SavedDashboardViewPage(id: String) -> Element {
     // MAPPS-357: the saved dashboard row is this page's PRIMARY resource - if
     // it fails to load, there is nothing meaningful to render. Move to
     // `use_remote_resource` so an outage surfaces the honest unavailable state
-    // instead of a perpetual "Loading...". The fetcher returns the raw
+    // instead of a perpetual "Loading…". The fetcher returns the raw
     // `Result` (no `.ok()`); the `version` subscription stays inside the
     // closure so a Save still refetches, and the hook adds the
     // reachability + tenant-generation deps itself.
@@ -150,7 +150,7 @@ pub fn SavedDashboardViewPage(id: String) -> Element {
         };
     }
     // `into_ready()` keeps the Loading (None) vs Ready (Some) distinction the
-    // old `.flatten()` provided, so a still-loading page keeps its "Loading..."
+    // old `.flatten()` provided, so a still-loading page keeps its "Loading…"
     // header rather than flashing an empty editor.
     let row = row_resource.into_ready();
 
@@ -418,69 +418,67 @@ fn render_widget_editor_cell(
         div { key: "{key}", style: "{style}",
             Card { title: title.to_string(),
                 div { class: "grid grid-cols-2 gap-2 text-sm",
-                    label { class: "flex items-center gap-2",
-                        span { class: "w-16 text-muted", "Col" }
-                        input {
-                            r#type: "number", min: "1", max: "12",
-                            class: "input input-bordered w-full",
-                            value: "{w.grid_col}",
-                            oninput: move |e| {
-                                if let Ok(v) = e.value().parse::<u32>() {
-                                    if let Some(s) = draft.write().widgets.get_mut(idx) {
-                                        s.grid_col = v.max(1);
-                                    }
-                                    dirty.set(true);
+                    Input {
+                        name: "{key}-col",
+                        label: "Col",
+                        r#type: "number",
+                        min: "1",
+                        max: "12",
+                        value: "{w.grid_col}",
+                        oninput: move |e: FormEvent| {
+                            if let Ok(v) = e.value().parse::<u32>() {
+                                if let Some(s) = draft.write().widgets.get_mut(idx) {
+                                    s.grid_col = v.max(1);
                                 }
-                            },
-                        }
+                                dirty.set(true);
+                            }
+                        },
                     }
-                    label { class: "flex items-center gap-2",
-                        span { class: "w-16 text-muted", "Row" }
-                        input {
-                            r#type: "number", min: "1",
-                            class: "input input-bordered w-full",
-                            value: "{w.grid_row}",
-                            oninput: move |e| {
-                                if let Ok(v) = e.value().parse::<u32>() {
-                                    if let Some(s) = draft.write().widgets.get_mut(idx) {
-                                        s.grid_row = v.max(1);
-                                    }
-                                    dirty.set(true);
+                    Input {
+                        name: "{key}-row",
+                        label: "Row",
+                        r#type: "number",
+                        min: "1",
+                        value: "{w.grid_row}",
+                        oninput: move |e: FormEvent| {
+                            if let Ok(v) = e.value().parse::<u32>() {
+                                if let Some(s) = draft.write().widgets.get_mut(idx) {
+                                    s.grid_row = v.max(1);
                                 }
-                            },
-                        }
+                                dirty.set(true);
+                            }
+                        },
                     }
-                    label { class: "flex items-center gap-2",
-                        span { class: "w-16 text-muted", "W" }
-                        input {
-                            r#type: "number", min: "1", max: "12",
-                            class: "input input-bordered w-full",
-                            value: "{w.grid_col_span}",
-                            oninput: move |e| {
-                                if let Ok(v) = e.value().parse::<u32>() {
-                                    if let Some(s) = draft.write().widgets.get_mut(idx) {
-                                        s.grid_col_span = v.clamp(1, 12);
-                                    }
-                                    dirty.set(true);
+                    Input {
+                        name: "{key}-w",
+                        label: "Width",
+                        r#type: "number",
+                        min: "1",
+                        max: "12",
+                        value: "{w.grid_col_span}",
+                        oninput: move |e: FormEvent| {
+                            if let Ok(v) = e.value().parse::<u32>() {
+                                if let Some(s) = draft.write().widgets.get_mut(idx) {
+                                    s.grid_col_span = v.clamp(1, 12);
                                 }
-                            },
-                        }
+                                dirty.set(true);
+                            }
+                        },
                     }
-                    label { class: "flex items-center gap-2",
-                        span { class: "w-16 text-muted", "H" }
-                        input {
-                            r#type: "number", min: "1",
-                            class: "input input-bordered w-full",
-                            value: "{w.grid_row_span}",
-                            oninput: move |e| {
-                                if let Ok(v) = e.value().parse::<u32>() {
-                                    if let Some(s) = draft.write().widgets.get_mut(idx) {
-                                        s.grid_row_span = v.max(1);
-                                    }
-                                    dirty.set(true);
+                    Input {
+                        name: "{key}-h",
+                        label: "Height",
+                        r#type: "number",
+                        min: "1",
+                        value: "{w.grid_row_span}",
+                        oninput: move |e: FormEvent| {
+                            if let Ok(v) = e.value().parse::<u32>() {
+                                if let Some(s) = draft.write().widgets.get_mut(idx) {
+                                    s.grid_row_span = v.max(1);
                                 }
-                            },
-                        }
+                                dirty.set(true);
+                            }
+                        },
                     }
                 }
                 div { class: "flex justify-end mt-3",
@@ -569,13 +567,21 @@ struct TimeEntryLite {
 
 #[component]
 fn WidgetTimeThisWeek() -> Element {
+    // MAPPS-543: this widget sums a week, so it needs rows rather than a count -
+    // but only this week's. The server takes `date_from`, so the fetch is
+    // bounded by the window the tile reports instead of the tenant's whole time
+    // history. It previously read the server's default 25 rows and summed them
+    // as if they were the week, which reports a wrong number of hours rather
+    // than no number at all.
     let entries = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<TimeEntryLite>>("/time-entries")
-            .await
-            .ok()
-            .map(|p| p.data)
-            .unwrap_or_default()
+        let week_start = monday_of_week(Utc::now().date_naive());
+        crate::hooks::fetch::api::get_all_authed::<TimeEntryLite>(&format!(
+            "/time-entries?date_from={week_start}"
+        ))
+        .await
+        .ok()
+        .unwrap_or_default()
     });
     let rows = entries.read_unchecked().clone().unwrap_or_default();
     let week_start = monday_of_week(Utc::now().date_naive());
@@ -607,7 +613,7 @@ fn WidgetSlaAtRisk() -> Element {
             span { class: "font-medium", "{r.sla_warnings}" }
         }
         div { class: "flex justify-between text-sm mt-1",
-            span { class: "text-red-700", "Breached" }
+            span { class: "text-red-700 dark:text-red-400", "Breached" }
             span { class: "font-medium", "{r.sla_breached}" }
         }
     }

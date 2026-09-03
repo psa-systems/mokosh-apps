@@ -49,8 +49,8 @@ pub enum Rule {
         max_decimals: Option<u32>,
     },
     /// Escape hatch: a predicate returning `Some(message)` when invalid, `None`
-    /// when valid. Receives the trimmed value. Use for rules not yet promoted to
-    /// a first-class variant.
+    /// when valid. Receives the trimmed, invisible-stripped value (MAPPS-582).
+    /// Use for rules not yet promoted to a first-class variant.
     Custom(fn(&str) -> Option<String>),
 }
 
@@ -105,10 +105,14 @@ fn decimal_places(value: &str) -> u32 {
 /// Validate `value` against `rules`, returning the first failing rule's message.
 /// `label` is the field's human-readable name, woven into the message.
 pub fn validate(value: &str, label: &str, rules: &[Rule]) -> Option<String> {
-    let trimmed = value.trim();
+    // MAPPS-582: `trim` alone leaves the characters that render as nothing, so
+    // the structured rules (Email, Uuid, Number) reject a value the user has no
+    // way of seeing anything wrong with, and Required is satisfied by a field
+    // that looks empty. `clean_strict` trims AND removes those characters.
+    let strict = crate::utils::text::clean_strict(value);
     let name = field_label(label);
     for rule in rules {
-        let failure = check(rule, value, trimmed, name);
+        let failure = check(rule, value, &strict, name);
         if failure.is_some() {
             return failure;
         }
@@ -121,10 +125,14 @@ pub fn is_valid(value: &str, rules: &[Rule]) -> bool {
     validate(value, "", rules).is_none()
 }
 
-fn check(rule: &Rule, raw: &str, trimmed: &str, name: &str) -> Option<String> {
+/// Every rule is evaluated against `strict`: the value trimmed and stripped of
+/// invisible characters (MAPPS-582), so a character that renders as nothing can
+/// neither satisfy a rule nor fail one. `raw` stays available for [`Rule::MaxLen`],
+/// which counts what was actually typed.
+fn check(rule: &Rule, raw: &str, strict: &str, name: &str) -> Option<String> {
     match rule {
         Rule::Required => {
-            if trimmed.is_empty() {
+            if strict.is_empty() {
                 Some(format!("{name} is required."))
             } else {
                 None
@@ -139,29 +147,29 @@ fn check(rule: &Rule, raw: &str, trimmed: &str, name: &str) -> Option<String> {
             }
         }
         Rule::MinLen(n) => {
-            if trimmed.is_empty() {
+            if strict.is_empty() {
                 None
-            } else if trimmed.chars().count() < *n {
+            } else if strict.chars().count() < *n {
                 Some(format!("{name} must be at least {n} characters."))
             } else {
                 None
             }
         }
         Rule::Email => {
-            if trimmed.is_empty() {
+            if strict.is_empty() {
                 return None;
             }
-            if is_email(trimmed) {
+            if is_email(strict) {
                 None
             } else {
                 Some(format!("{name} must be a valid email address."))
             }
         }
         Rule::Uuid => {
-            if trimmed.is_empty() {
+            if strict.is_empty() {
                 return None;
             }
-            if uuid::Uuid::parse_str(trimmed).is_ok() {
+            if uuid::Uuid::parse_str(strict).is_ok() {
                 None
             } else {
                 Some(format!("{name} must be a valid selection."))
@@ -172,10 +180,10 @@ fn check(rule: &Rule, raw: &str, trimmed: &str, name: &str) -> Option<String> {
             max,
             max_decimals,
         } => {
-            if trimmed.is_empty() {
+            if strict.is_empty() {
                 return None;
             }
-            let Ok(parsed) = trimmed.parse::<f64>() else {
+            let Ok(parsed) = strict.parse::<f64>() else {
                 return Some(format!("{name} must be a number."));
             };
             if !parsed.is_finite() {
@@ -196,14 +204,14 @@ fn check(rule: &Rule, raw: &str, trimmed: &str, name: &str) -> Option<String> {
                 }
             }
             if let Some(dp) = max_decimals {
-                if decimal_places(trimmed) > *dp {
+                if decimal_places(strict) > *dp {
                     let unit = if *dp == 1 { "place" } else { "places" };
                     return Some(format!("{name} must have at most {dp} decimal {unit}."));
                 }
             }
             None
         }
-        Rule::Custom(f) => f(trimmed),
+        Rule::Custom(f) => f(strict),
     }
 }
 

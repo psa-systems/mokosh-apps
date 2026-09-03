@@ -50,11 +50,17 @@
         # `msp.<tld>` calls API `api.msp.<tld>`), so it must set MOKOSH_API_BASE
         # (its entrypoint does) for that origin to be allowed here; relying on
         # the SPA's runtime host-prefix derivation alone would leave connect-src
-        # without the API origin. `'wasm-unsafe-eval'` is required because Dioxus boots through
+        # without the API origin.
+        #
+        # PMS-758: `img-src` carries the same origin. The tenant logo
+        # (MAPPS-429) is served BY the API, and the browser blocked it on
+        # `img-src 'self' data:` even once its URL was right, because the SPA
+        # and the API are different origins by construction on every deployed
+        # environment. `'wasm-unsafe-eval'` is required because Dioxus boots through
         # `WebAssembly.instantiate` in a code path Chromium's strict CSP
         # enforces against; `'unsafe-inline'` on style-src covers Tailwind's
         # small inline `style="..."` usages.
-        Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' {$MOKOSH_API_ORIGIN:} {$MOKOSH_OIDC_ORIGIN:}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: {$MOKOSH_API_ORIGIN:}; font-src 'self' data:; connect-src 'self' {$MOKOSH_API_ORIGIN:} {$MOKOSH_OIDC_ORIGIN:}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
         X-Frame-Options "DENY"
         X-Content-Type-Options "nosniff"
         Referrer-Policy "strict-origin-when-cross-origin"

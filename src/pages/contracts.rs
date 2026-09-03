@@ -16,26 +16,23 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::components::{
-    contract_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card,
-    DataTable, ErrorBanner, IconSize, PageHeader, PlusIcon, Select, SelectOption, SettingFormModal,
-    Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    clear_on_edit, contract_status_badge, use_page_title, Badge, BadgeVariant, Button,
+    ButtonVariant, Card, DataTable, ErrorBanner, IconSize, PageHeader, PlusIcon, Select,
+    SelectOption, SettingFormModal, Table, TableBody, TableCell, TableEmpty, TableHead,
+    TableHeader, TableLoading, TableRow,
 };
 use crate::modules::contracts::{
     ContractHourBalanceResponse, ContractItemResponse, ContractResponse, CreateContractRequest,
     RateCardItemResponse, RateCardResponse, UpdateContractRequest, UpsertRateCardItemRequest,
     UpsertRateCardRequest,
 };
+use crate::utils::sort_keys::COMPANIES_BY_NAME_SORT;
 use crate::utils::url::urlencoding_minimal;
 use crate::utils::{FormGuard, Paginated};
 use crate::Route;
 
 /// Rows per page for the contract list (mirrors `contacts.rs` PER_PAGE).
 const PER_PAGE: usize = 25;
-
-/// Detail sub-lists (items, hour-balance, rate-card items) are not
-/// paginated in the UI; request a large page so a single fetch covers
-/// every row a contract or rate card realistically has.
-const SUBLIST_PER_PAGE: usize = 100;
 
 /// Contract-type enum tags (`managed_services`, `block_hours`,
 /// `time_and_materials`, `fixed_price`, ...) to a title-case label. Also maps
@@ -163,18 +160,22 @@ fn ContractListBody() -> Element {
     ];
 
     // Company filter is a dropdown populated from the companies endpoint.
+    //
+    // MAPPS-575: NOT narrowed to active. An archived company's contracts still
+    // exist and looking at them is exactly what archiving-instead-of-deleting
+    // is for, so it has to stay selectable here.
     let companies_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>(
-            "/contacts/companies?page=1&per_page=100&sort=name&sort_dir=asc",
-        )
+        crate::hooks::fetch::api::get_all_authed::<CompanyOption>(&format!(
+            "/contacts/companies?{COMPANIES_BY_NAME_SORT}"
+        ))
         .await
         .ok()
     });
     let company_options = {
         let mut opts = vec![SelectOption::new("", "All Companies")];
-        if let Some(Some(resp)) = &*companies_resource.read_unchecked() {
-            for c in &resp.data {
+        if let Some(Some(rows)) = &*companies_resource.read_unchecked() {
+            for c in rows {
                 opts.push(SelectOption::new(c.id.to_string(), c.name.clone()));
             }
         }
@@ -619,7 +620,11 @@ fn decimal_parse_error(raw: &str, label: &str) -> String {
 /// Rejects negatives, more than two decimal places, and out-of-range values,
 /// distinguishing a non-numeric entry from one that is numeric but too large.
 fn validate_money(raw: &str, label: &str) -> Result<Option<Decimal>, String> {
-    let s = raw.trim();
+    // MAPPS-582: `Decimal::from_str` is ASCII-only, so an invisible character
+    // makes a correct amount report "must be a number" with nothing on screen
+    // to explain it.
+    let s = crate::utils::text::clean_strict(raw);
+    let s = s.as_str();
     if s.is_empty() {
         return Ok(None);
     }
@@ -643,7 +648,9 @@ fn validate_money(raw: &str, label: &str) -> Result<Option<Decimal>, String> {
 /// Validate a required quantity (MAPPS-211): present, non-negative, in range.
 /// Allows fractional quantities (the server column is `Decimal`).
 fn validate_quantity(raw: &str, label: &str) -> Result<Decimal, String> {
-    let s = raw.trim();
+    // MAPPS-582: see `validate_money`.
+    let s = crate::utils::text::clean_strict(raw);
+    let s = s.as_str();
     if s.is_empty() {
         return Err(format!("{label} is required."));
     }
@@ -714,8 +721,13 @@ fn ContractForm(props: ContractFormProps) -> Element {
     let initial = props.initial.clone();
     let mode = props.mode.clone();
     let is_edit = matches!(mode, ContractFormMode::Edit { .. });
+    // MAPPS-423: Cancel returns to what the user was editing, not to the list.
+    let cancel_route = match &mode {
+        ContractFormMode::Create => Route::ContractList {},
+        ContractFormMode::Edit { id } => Route::ContractDetail { id: id.clone() },
+    };
 
-    let mut name = use_signal(|| initial.name.clone());
+    let name = use_signal(|| initial.name.clone());
     let mut company_id = use_signal(|| initial.company_id.clone());
     // PMS-352 AC3: the create flow uses CompanyPicker (with inline create) so a
     // tenant with zero companies isn't dead-ended; the picker reports the
@@ -743,12 +755,12 @@ fn ContractForm(props: ContractFormProps) -> Element {
             initial.billing_cycle.clone()
         }
     });
-    let mut billing_amount = use_signal(|| initial.billing_amount.clone());
-    let mut start_date = use_signal(|| initial.start_date.clone());
-    let mut end_date = use_signal(|| initial.end_date.clone());
+    let billing_amount = use_signal(|| initial.billing_amount.clone());
+    let start_date = use_signal(|| initial.start_date.clone());
+    let end_date = use_signal(|| initial.end_date.clone());
     let mut auto_renew = use_signal(|| initial.auto_renew);
-    let mut contract_number = use_signal(|| initial.contract_number.clone());
-    let mut notes = use_signal(|| initial.notes.clone());
+    let contract_number = use_signal(|| initial.contract_number.clone());
+    let notes = use_signal(|| initial.notes.clone());
     let mut items = use_signal(|| initial.items.clone());
     let mut is_submitting = use_signal(|| false);
     // Server/submit-time errors only (e.g. a failed POST). Field validation
@@ -767,18 +779,25 @@ fn ContractForm(props: ContractFormProps) -> Element {
 
     // Company dropdown options (create flow needs to pick a company; the
     // server forbids changing it on update so the edit flow disables it).
+    //
+    // MAPPS-575: active only. This picks the company a NEW contract is written
+    // against, which is day-to-day use, and offering an archived company here
+    // would put it straight back into the state it was archived to leave. The
+    // contracts LIST filter above deliberately does not narrow: an archived
+    // company's contracts still exist, and being able to look at them is the
+    // reason archiving keeps history in the first place.
     let companies_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>(
-            "/contacts/companies?page=1&per_page=100&sort=name&sort_dir=asc",
-        )
+        crate::hooks::fetch::api::get_all_authed::<CompanyOption>(&format!(
+            "/contacts/companies?status=active&{COMPANIES_BY_NAME_SORT}"
+        ))
         .await
         .ok()
     });
     let company_options = {
         let mut opts = vec![SelectOption::new("", "Select a company")];
-        if let Some(Some(resp)) = &*companies_resource.read_unchecked() {
-            for c in &resp.data {
+        if let Some(Some(rows)) = &*companies_resource.read_unchecked() {
+            for c in rows {
                 opts.push(SelectOption::new(c.id.to_string(), c.name.clone()));
             }
         }
@@ -999,7 +1018,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
         let items_snapshot = items.read().clone();
 
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result = match &mode {
                     ContractFormMode::Create => {
@@ -1141,7 +1160,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         maxlength: CONTRACT_NAME_MAX as i64,
                         value: name.read().clone(),
                         error: name_err(),
-                        oninput: move |e: FormEvent| name.set(e.value()),
+                        oninput: clear_on_edit(name, name_err),
                     }
                     // PMS-352 AC3: on create, use CompanyPicker so a tenant with
                     // no companies can create one inline instead of dead-ending.
@@ -1156,7 +1175,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                             required: true,
                             disabled: true,
                             error: company_err(),
-                            onchange: move |e: FormEvent| company_id.set(e.value()),
+                            onchange: clear_on_edit(company_id, company_err),
                         }
                     } else {
                         div { class: "space-y-1",
@@ -1218,7 +1237,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         step: "0.01".to_string(),
                         value: billing_amount.read().clone(),
                         error: billing_err(),
-                        oninput: move |e: FormEvent| billing_amount.set(e.value()),
+                        oninput: clear_on_edit(billing_amount, billing_err),
                     }
                 }
 
@@ -1229,14 +1248,14 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         required: true,
                         value: start_date.read().clone(),
                         error: start_err(),
-                        oninput: move |e: FormEvent| start_date.set(e.value()),
+                        oninput: clear_on_edit(start_date, start_err),
                     }
                     crate::components::DateField {
                         name: "end_date",
                         label: "End Date",
                         value: end_date.read().clone(),
                         error: end_err(),
-                        oninput: move |e: FormEvent| end_date.set(e.value()),
+                        oninput: clear_on_edit(end_date, end_err),
                     }
                 }
 
@@ -1248,7 +1267,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         maxlength: CONTRACT_NUMBER_MAX as i64,
                         value: contract_number.read().clone(),
                         error: number_err(),
-                        oninput: move |e: FormEvent| contract_number.set(e.value()),
+                        oninput: clear_on_edit(contract_number, number_err),
                     }
                 }
 
@@ -1270,7 +1289,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                     maxlength: CONTRACT_NOTES_MAX as i64,
                     value: notes.read().clone(),
                     error: notes_err(),
-                    oninput: move |e: FormEvent| notes.set(e.value()),
+                    oninput: clear_on_edit(notes, notes_err),
                 }
 
                 // Line items (create flow only). On edit, items are
@@ -1313,6 +1332,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                                                 oninput: move |e: FormEvent| {
                                                     let mut next = items.read().clone();
                                                     next[idx].name = e.value();
+                                                    next[idx].name_err.clear();
                                                     items.set(next);
                                                 },
                                             }
@@ -1340,6 +1360,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                                             oninput: move |e: FormEvent| {
                                                 let mut next = items.read().clone();
                                                 next[idx].quantity = e.value();
+                                                next[idx].qty_err.clear();
                                                 items.set(next);
                                             },
                                         }
@@ -1355,6 +1376,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                                             oninput: move |e: FormEvent| {
                                                 let mut next = items.read().clone();
                                                 next[idx].unit_price = e.value();
+                                                next[idx].price_err.clear();
                                                 items.set(next);
                                             },
                                         }
@@ -1377,7 +1399,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
 
                 div { class: "flex justify-end space-x-3",
                     Link {
-                        to: Route::ContractList {},
+                        to: cancel_route.clone(),
                         Button { variant: ButtonVariant::Secondary, "Cancel" }
                     }
                     Button {
@@ -1397,7 +1419,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
 
 /// POST each entered line item to `/contracts/{id}/items`. Blank rows
 /// (no name) are skipped. Returns the first error encountered.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 async fn create_items(contract_id: &str, items: &[ItemFormValues]) -> Result<(), String> {
     use crate::modules::contracts::UpsertContractItemRequest;
     for (idx, item) in items.iter().enumerate() {
@@ -1440,6 +1462,7 @@ async fn create_items(contract_id: &str, items: &[ItemFormValues]) -> Result<(),
             rollover_enabled: false,
             max_rollover_hours: None,
             sort_order: idx as i32,
+            product_id: None,
         };
         let path = format!("/contracts/{contract_id}/items");
         crate::hooks::fetch::api::post_authed_typed::<ContractItemResponse, _>(&path, &body)
@@ -1485,8 +1508,10 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
         let id = id_for_items.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<ContractItemResponse>>(&format!(
-                "/contracts/{id}/items?page=1&per_page={SUBLIST_PER_PAGE}"
+            // MAPPS-528: detail sub-lists are not paginated in the UI, so
+            // they page to the end rather than asking for one big page.
+            crate::hooks::fetch::api::get_all_authed::<ContractItemResponse>(&format!(
+                "/contracts/{id}/items"
             ))
             .await
             .ok()
@@ -1496,9 +1521,9 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
         let id = id_for_balance.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<ContractHourBalanceResponse>>(
-                &format!("/contracts/{id}/hour-balance?page=1&per_page={SUBLIST_PER_PAGE}"),
-            )
+            crate::hooks::fetch::api::get_all_authed::<ContractHourBalanceResponse>(&format!(
+                "/contracts/{id}/hour-balance"
+            ))
             .await
             .ok()
         }
@@ -1517,6 +1542,8 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
     // MAPPS-189: the Delete button opens the styled ConfirmDialog; the
     // actual DELETE fires from `on_confirm_delete` when confirmed.
     let mut confirming_delete = use_signal(|| false);
+    // MAPPS-574: the server's reason for refusing this delete.
+    let mut delete_error = use_signal(String::new);
     let edit_id = id_for_edit.clone();
     let delete_id = id_for_delete.clone();
 
@@ -1542,19 +1569,27 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
         }
         let id = delete_id.clone();
         deleting.set(true);
+        delete_error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/contracts/{id}");
-                if crate::hooks::fetch::api::delete_authed_typed(&path)
-                    .await
-                    .is_ok()
-                {
-                    navigator.push(Route::ContractList {});
+                // MAPPS-574: report the refusal instead of discarding it. This
+                // one already used the typed client, so the message is
+                // `user_message()` rather than the raw string.
+                match crate::hooks::fetch::api::delete_authed_typed(&path).await {
+                    Ok(()) => {
+                        crate::hooks::toast::push_toast(
+                            crate::components::AlertType::Success,
+                            "Contract deleted.",
+                        );
+                        confirming_delete.set(false);
+                        navigator.push(Route::ContractList {});
+                    }
+                    Err(err) => delete_error.set(err.user_message()),
                 }
             }
             deleting.set(false);
-            confirming_delete.set(false);
         });
     };
 
@@ -1566,11 +1601,13 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
             confirm_text: "Delete".to_string(),
             cancel_text: "Cancel".to_string(),
             destructive: true,
+            error: delete_error.read().clone(),
             loading: *deleting.read(),
             onconfirm: on_confirm_delete,
             oncancel: move |_| {
                 if !*deleting.read() {
                     confirming_delete.set(false);
+                    delete_error.set(String::new());
                 }
             },
         }
@@ -1735,7 +1772,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
 
 #[component]
 fn ContractItemsCard(
-    items_resource: Resource<Option<Paginated<ContractItemResponse>>>,
+    items_resource: Resource<Option<Vec<ContractItemResponse>>>,
     editing_item: Signal<Option<ContractItemFormState>>,
     // MAPPS-357: false while the server is unreachable, so the Add Item
     // affordance (which opens a POST/PUT/DELETE modal) disables.
@@ -1745,7 +1782,7 @@ fn ContractItemsCard(
     let snap = items_resource.read_unchecked();
     // Newly added items sort after the existing rows.
     let next_sort_order = match &*snap {
-        Some(Some(resp)) => resp.data.len() as i32,
+        Some(Some(rows)) => rows.len() as i32,
         _ => 0,
     };
     rsx! {
@@ -1778,11 +1815,11 @@ fn ContractItemsCard(
                     Some(None) => rsx! {
                         TableEmpty { columns: 5, message: "Could not load line items.".to_string() }
                     },
-                    Some(Some(resp)) if resp.data.is_empty() => rsx! {
+                    Some(Some(rows)) if rows.is_empty() => rsx! {
                         TableEmpty { columns: 5, message: "No line items on this contract yet.".to_string() }
                     },
-                    Some(Some(resp)) => {
-                        let rows = resp.data.clone();
+                    Some(Some(rows)) => {
+                        let rows = rows.clone();
                         rsx! {
                             TableBody {
                                 for item in rows.into_iter() {
@@ -1797,8 +1834,17 @@ fn ContractItemsCard(
                                             TableRow {
                                                 key: "{key}",
                                                 clickable: true,
-                                                onclick: move |_| editing_item.set(Some(edit_state.clone())),
-                                                TableCell { class: "font-medium", "{item.name}" }
+                                                onclick: {
+                                                    let edit_state = edit_state.clone();
+                                                    move |_| editing_item.set(Some(edit_state.clone()))
+                                                },
+                                                TableCell {
+                                                    class: "font-medium",
+                                                    // MAPPS-569: the row's click opens a modal, so there is no
+                                                    // route to link to; this cell is the keyboard path instead.
+                                                    onactivate: move |_| editing_item.set(Some(edit_state.clone())),
+                                                    "{item.name}"
+                                                }
                                                 TableCell { "{type_label}" }
                                                 TableCell { "{qty}" }
                                                 TableCell { "{unit}" }
@@ -1846,6 +1892,10 @@ struct ContractItemFormState {
     /// sort_order applied to a newly added item; ignored on edit, which
     /// keeps the original row's sort_order.
     new_sort_order: i32,
+    /// MAPPS-640: the catalog product this item sells, when one was picked
+    /// or the row already names one. The price is the item's own.
+    product_id: Option<String>,
+    product_name: String,
 }
 
 impl ContractItemFormState {
@@ -1857,6 +1907,8 @@ impl ContractItemFormState {
             quantity: "1".to_string(),
             unit_price: String::new(),
             new_sort_order: next_sort_order,
+            product_id: None,
+            product_name: String::new(),
         }
     }
 
@@ -1872,6 +1924,14 @@ impl ContractItemFormState {
             quantity: i.quantity.normalize().to_string(),
             unit_price: i.unit_price.to_string(),
             new_sort_order: 0,
+            product_id: i.product_id.map(|p| p.to_string()),
+            // The response carries the id only; the chip says "a product" until
+            // the operator changes it.
+            product_name: if i.product_id.is_some() {
+                "Product from the price list".to_string()
+            } else {
+                String::new()
+            },
         }
     }
 }
@@ -1892,8 +1952,11 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
 
     let mut name = use_signal(|| initial.name.clone());
     let mut item_type = use_signal(|| initial.item_type.clone());
-    let mut quantity = use_signal(|| initial.quantity.clone());
+    let quantity = use_signal(|| initial.quantity.clone());
     let mut unit_price = use_signal(|| initial.unit_price.clone());
+    // MAPPS-640: the picked product, if any.
+    let mut product_id = use_signal(|| initial.product_id.clone());
+    let mut product_name = use_signal(|| initial.product_name.clone());
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut confirm_delete = use_signal(|| false);
@@ -1996,7 +2059,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
         let orig = original_for_save.clone();
         let contract = contract_for_save.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 use crate::modules::contracts::UpsertContractItemRequest;
                 // Preserve the fields the form does not expose so an edit
@@ -2021,6 +2084,10 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
                         .as_ref()
                         .map(|o| o.sort_order)
                         .unwrap_or(new_sort_order),
+                    product_id: product_id
+                        .read()
+                        .as_deref()
+                        .and_then(|p| uuid::Uuid::parse_str(p).ok()),
                 };
                 let result = match &orig {
                     None => crate::hooks::fetch::api::post_authed_typed::<ContractItemResponse, _>(
@@ -2067,7 +2134,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::delete_authed_typed(&format!(
                     "/contract-items/{iid}"
@@ -2099,6 +2166,27 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
             onclose: move |_| onclose.call(()),
             onsave: handle_save,
             ondelete: handle_delete_click,
+            // MAPPS-640: pick from the price list. A pick fills the name and
+            // the unit price, sets the type to product, and keeps the
+            // reference; the price on the item is what the contract agreed.
+            crate::components::ProductPicker {
+                value: product_name.read().clone(),
+                selected_id: product_id.read().clone(),
+                label: "From the price list",
+                onselect: move |picked: crate::components::PickedProduct| {
+                    product_id.set(Some(picked.id.clone()));
+                    product_name.set(picked.name.clone());
+                    name_err.set(String::new());
+                    name.set(picked.name.clone());
+                    price_err.set(String::new());
+                    unit_price.set(picked.unit_price.clone());
+                    item_type.set("product".to_string());
+                },
+                onclear: move |_| {
+                    product_id.set(None);
+                    product_name.set(String::new());
+                },
+            }
             crate::components::Input {
                 name: "contract_item_name",
                 label: "Name",
@@ -2106,7 +2194,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
                 required: true,
                 value: name.read().clone(),
                 error: name_err(),
-                oninput: move |e: FormEvent| name.set(e.value()),
+                oninput: clear_on_edit(name, name_err),
             }
             crate::components::Select {
                 name: "contract_item_type",
@@ -2124,7 +2212,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
                 required: true,
                 value: quantity.read().clone(),
                 error: qty_err(),
-                oninput: move |e: FormEvent| quantity.set(e.value()),
+                oninput: clear_on_edit(quantity, qty_err),
             }
             crate::components::Input {
                 name: "contract_item_price",
@@ -2135,7 +2223,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
                 placeholder: "0.00",
                 value: unit_price.read().clone(),
                 error: price_err(),
-                oninput: move |e: FormEvent| unit_price.set(e.value()),
+                oninput: clear_on_edit(unit_price, price_err),
             }
         }
         crate::components::ConfirmDialog {
@@ -2153,8 +2241,8 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
 
 #[component]
 fn ContractHourBalanceCard(
-    balance_resource: Resource<Option<Paginated<ContractHourBalanceResponse>>>,
-    items_resource: Resource<Option<Paginated<ContractItemResponse>>>,
+    balance_resource: Resource<Option<Vec<ContractHourBalanceResponse>>>,
+    items_resource: Resource<Option<Vec<ContractItemResponse>>>,
     // MAPPS-357: false while the server is unreachable, so the Edit Allotment
     // affordance (which PUTs the block-hours item) disables.
     can_mutate: bool,
@@ -2174,11 +2262,7 @@ fn ContractHourBalanceCard(
     // (f2-hours-balance-be data model), so editing the allotment means
     // editing that item. Find it; absence hides the edit affordance.
     let block_item: Option<ContractItemResponse> = match &*items_snap {
-        Some(Some(resp)) => resp
-            .data
-            .iter()
-            .find(|i| i.item_type == "block_hours")
-            .cloned(),
+        Some(Some(rows)) => rows.iter().find(|i| i.item_type == "block_hours").cloned(),
         _ => None,
     };
 
@@ -2186,7 +2270,7 @@ fn ContractHourBalanceCard(
     // headline so "X of Y hours remaining" reflects the live period rather
     // than an arbitrary table row.
     let headline: Option<(String, String)> = match &*snap {
-        Some(Some(resp)) => resp.data.iter().max_by_key(|b| b.period_start).map(|p| {
+        Some(Some(rows)) => rows.iter().max_by_key(|b| b.period_start).map(|p| {
             (
                 p.hours_remaining.normalize().to_string(),
                 p.hours_included.normalize().to_string(),
@@ -2239,11 +2323,11 @@ fn ContractHourBalanceCard(
                     Some(None) => rsx! {
                         TableEmpty { columns: 5, message: "Could not load hour balance.".to_string() }
                     },
-                    Some(Some(resp)) if resp.data.is_empty() => rsx! {
+                    Some(Some(rows)) if rows.is_empty() => rsx! {
                         TableEmpty { columns: 5, message: "No hour-balance periods for this contract.".to_string() }
                     },
-                    Some(Some(resp)) => {
-                        let rows = resp.data.clone();
+                    Some(Some(rows)) => {
+                        let rows = rows.clone();
                         rsx! {
                             TableBody {
                                 for bal in rows.into_iter() {
@@ -2310,7 +2394,7 @@ fn AllotmentFormModal(props: AllotmentFormModalProps) -> Element {
         .included_hours
         .map(|h| h.normalize().to_string())
         .unwrap_or_default();
-    let mut allotted = use_signal(|| initial.clone());
+    let allotted = use_signal(|| initial.clone());
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
     // PMS-518: per-field inline error so a FormGuard can focus the field.
@@ -2358,7 +2442,7 @@ fn AllotmentFormModal(props: AllotmentFormModalProps) -> Element {
         error.set(String::new());
         let item = item_for_save.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 use crate::modules::contracts::UpsertContractItemRequest;
                 // Full-replace PUT: carry over every field except the
@@ -2384,6 +2468,8 @@ fn AllotmentFormModal(props: AllotmentFormModalProps) -> Element {
                     rollover_enabled: item.rollover_enabled,
                     max_rollover_hours: item.max_rollover_hours,
                     sort_order: item.sort_order,
+                    // MAPPS-640: an edit elsewhere must not drop the reference.
+                    product_id: item.product_id,
                 };
                 match crate::hooks::fetch::api::put_authed_typed::<ContractItemResponse, _>(
                     &format!("/contract-items/{}", item.id),
@@ -2422,7 +2508,7 @@ fn AllotmentFormModal(props: AllotmentFormModalProps) -> Element {
                 placeholder: "0",
                 value: allotted.read().clone(),
                 error: allotted_err(),
-                oninput: move |e: FormEvent| allotted.set(e.value()),
+                oninput: clear_on_edit(allotted, allotted_err),
             }
         }
     }
@@ -2669,20 +2755,18 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             // MAPPS-357: re-run on reconnect so the outage state self-heals.
             let _reachable = crate::hooks::use_server_reachable();
-            let resp = crate::hooks::fetch::api::get_authed::<Paginated<RateCardResponse>>(
-                "/rate-cards?page=1&per_page=100",
-            )
-            .await
-            .ok()?;
-            resp.data.into_iter().find(|c| c.id.to_string() == id)
+            let rows = crate::hooks::fetch::api::get_all_authed::<RateCardResponse>("/rate-cards")
+                .await
+                .ok()?;
+            rows.into_iter().find(|c| c.id.to_string() == id)
         }
     });
     let mut items_resource = use_resource(move || {
         let id = id_for_items.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<RateCardItemResponse>>(&format!(
-                "/rate-cards/{id}/items?page=1&per_page={SUBLIST_PER_PAGE}"
+            crate::hooks::fetch::api::get_all_authed::<RateCardItemResponse>(&format!(
+                "/rate-cards/{id}/items"
             ))
             .await
             .ok()
@@ -2692,11 +2776,13 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
     // the rate editor's work-type picker.
     let work_types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOpt>>("/work-types?per_page=100")
+        crate::hooks::fetch::api::get_all_authed::<WorkTypeOpt>("/work-types")
             .await
-            .ok()
-            .map(|p| p.data)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                // Best-effort: rate rows fall back to a bare work-type id.
+                tracing::warn!("work-type load failed: {e}");
+                Vec::new()
+            })
     });
 
     let card_snapshot = card_resource.read_unchecked();
@@ -2720,11 +2806,7 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
     // (the server upsert would otherwise silently overwrite an existing row).
     let items_snap = items_resource.read_unchecked();
     let used_work_type_ids: Vec<String> = match &*items_snap {
-        Some(Some(resp)) => resp
-            .data
-            .iter()
-            .map(|i| i.work_type_id.to_string())
-            .collect(),
+        Some(Some(rows)) => rows.iter().map(|i| i.work_type_id.to_string()).collect(),
         _ => Vec::new(),
     };
 
@@ -2871,7 +2953,7 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
 
 #[component]
 fn RateCardItemsCard(
-    items_resource: Resource<Option<Paginated<RateCardItemResponse>>>,
+    items_resource: Resource<Option<Vec<RateCardItemResponse>>>,
     can_edit: bool,
     // MAPPS-357: false while the server is unreachable, so the Add Rate
     // affordance (which POSTs a rate) disables on top of the can_add gate.
@@ -2887,7 +2969,7 @@ fn RateCardItemsCard(
     // nothing left to add: disable the button rather than open a modal whose
     // picker is empty.
     let used_count = match &*snap {
-        Some(Some(resp)) => resp.data.len(),
+        Some(Some(rows)) => rows.len(),
         _ => 0,
     };
     let can_add = !work_types.is_empty() && used_count < work_types.len();
@@ -2947,11 +3029,11 @@ fn RateCardItemsCard(
                     Some(None) => rsx! {
                         TableEmpty { columns: 4, message: "Could not load rates.".to_string() }
                     },
-                    Some(Some(resp)) if resp.data.is_empty() => rsx! {
+                    Some(Some(rows)) if rows.is_empty() => rsx! {
                         TableEmpty { columns: 4, message: "No rates on this card yet.".to_string() }
                     },
-                    Some(Some(resp)) => {
-                        let rows = resp.data.clone();
+                    Some(Some(rows)) => {
+                        let rows = rows.clone();
                         rsx! {
                             TableBody {
                                 for item in rows.into_iter() {
@@ -3088,7 +3170,7 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
     let initial = props.state.clone();
     let is_edit = initial.id.is_some();
 
-    let mut name = use_signal(|| initial.name.clone());
+    let name = use_signal(|| initial.name.clone());
     let mut description = use_signal(|| initial.description.clone());
     let mut is_default = use_signal(|| initial.is_default);
     let mut saving = use_signal(|| false);
@@ -3126,7 +3208,7 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
         };
         let id = save_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match id {
                     None => match crate::hooks::fetch::api::post_authed::<RateCardResponse, _>(
@@ -3164,7 +3246,7 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
         spawn(async move {
             // MAPPS-189: confirmation is handled by the SettingFormModal
             // ConfirmDialog before this fires, so just perform the delete.
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::delete_authed(&format!("/rate-cards/{id}")).await {
                     Ok(()) => ondeleted.call(()),
@@ -3195,7 +3277,7 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
                 required: true,
                 value: name.read().clone(),
                 error: name_err(),
-                oninput: move |e: FormEvent| name.set(e.value()),
+                oninput: clear_on_edit(name, name_err),
             }
             crate::components::Input {
                 name: "rate_card_description",
@@ -3268,10 +3350,10 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
     let initial = props.state.clone();
     let is_edit = initial.item_id.is_some();
 
-    let mut work_type_id = use_signal(|| initial.work_type_id.clone());
-    let mut hourly = use_signal(|| initial.hourly.clone());
-    let mut after = use_signal(|| initial.after.clone());
-    let mut emergency = use_signal(|| initial.emergency.clone());
+    let work_type_id = use_signal(|| initial.work_type_id.clone());
+    let hourly = use_signal(|| initial.hourly.clone());
+    let after = use_signal(|| initial.after.clone());
+    let emergency = use_signal(|| initial.emergency.clone());
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -3417,7 +3499,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
         };
         let card = card_for_save.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::post_authed::<RateCardItemResponse, _>(
                     &format!("/rate-cards/{card}/items"),
@@ -3446,7 +3528,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
         spawn(async move {
             // MAPPS-189: confirmation is handled by the SettingFormModal
             // ConfirmDialog before this fires, so just perform the delete.
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::delete_authed(&format!("/rate-card-items/{iid}"))
                     .await
@@ -3479,7 +3561,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
                 value: work_type_id.read().clone(),
                 disabled: is_edit,
                 error: wt_err(),
-                onchange: move |e: FormEvent| work_type_id.set(e.value()),
+                onchange: clear_on_edit(work_type_id, wt_err),
             }
             crate::components::Input {
                 name: "rate_item_hourly",
@@ -3490,7 +3572,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
                 required: true,
                 value: hourly.read().clone(),
                 error: hourly_err(),
-                oninput: move |e: FormEvent| hourly.set(e.value()),
+                oninput: clear_on_edit(hourly, hourly_err),
             }
             crate::components::Input {
                 name: "rate_item_after",
@@ -3501,7 +3583,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
                 placeholder: "Optional",
                 value: after.read().clone(),
                 error: after_err(),
-                oninput: move |e: FormEvent| after.set(e.value()),
+                oninput: clear_on_edit(after, after_err),
             }
             crate::components::Input {
                 name: "rate_item_emergency",
@@ -3512,7 +3594,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
                 placeholder: "Optional",
                 value: emergency.read().clone(),
                 error: emergency_err(),
-                oninput: move |e: FormEvent| emergency.set(e.value()),
+                oninput: clear_on_edit(emergency, emergency_err),
             }
         }
     }

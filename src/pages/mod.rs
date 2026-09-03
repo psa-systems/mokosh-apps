@@ -25,6 +25,7 @@ pub mod company_role_edit;
 pub mod contacts;
 pub mod contracts;
 pub mod create_org;
+pub mod credit_notes;
 pub mod dashboard;
 pub mod dashboards;
 pub mod dashboards_view;
@@ -40,8 +41,11 @@ pub mod pick_tenant;
 pub mod platform_login;
 // mokosh-contact-login: /portal/* customer-portal pages retired on this
 // branch (prompt 001). Contact plane lands under `contact_portal` in
-// prompt 005.
+// prompt 005. Main added `portal`, `portal_forgot_password`,
+// `portal_login`, `portal_reset_password`, `portal_set_password` which
+// we deliberately leave dropped here.
 pub mod contact_portal;
+pub mod products;
 pub mod profile;
 pub mod projects;
 pub mod quotes;
@@ -57,6 +61,7 @@ pub mod settings_branding;
 // LOC file stays intact.
 pub mod settings_contact_roles;
 pub mod sla;
+pub mod statements;
 pub mod system_status;
 pub mod teams;
 pub mod tickets;

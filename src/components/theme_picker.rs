@@ -60,6 +60,7 @@ pub fn ThemePicker() -> Element {
     let mut base = use_signal(theme::current);
     let mut is_dark = use_signal(theme::current_is_dark);
     let mut accent_id = use_signal(|| theme::current_accent().id.to_string());
+    let brand = crate::branding::product_name();
 
     rsx! {
         div { class: "space-y-6",
@@ -197,7 +198,7 @@ pub fn ThemePicker() -> Element {
                     }
                 }
                 p { class: "text-xs text-subtle",
-                    "Saved to your account. Applies across Mokosh immediately."
+                    "Saved to your account. Applies across {brand} immediately."
                 }
             }
         }

@@ -4,14 +4,15 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    asset_status_badge, contract_status_badge, invoice_status_badge, project_status_badge,
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, Checkbox, CollapsibleCard,
-    DataTable, ErrorBanner, IconSize, Modal, PageHeader, PlusIcon, SearchInput, Select,
-    SelectOption, SortDirection, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
-    TableLoading, TableRow,
+    asset_status_badge, clear_on_edit, contract_status_badge, invoice_status_badge,
+    project_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant,
+    Card, Checkbox, CollapsibleCard, DataTable, ErrorBanner, IconSize, Modal, PageHeader, PlusIcon,
+    SearchInput, Select, SelectOption, SortDirection, Table, TableBody, TableCell, TableEmpty,
+    TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::modules::contacts::Address;
 use crate::utils::money::format_money_str;
+use crate::utils::sort_keys::TICKETS_RECENT_SORT;
 use crate::utils::url::{safe_href, urlencoding_minimal};
 use crate::utils::{FormGuard, Paginated};
 use crate::Route;
@@ -93,17 +94,36 @@ struct IndustryOption {
 }
 
 /// Sortable columns on the company list (F3).
+///
+/// MAPPS-527: only columns whose sort key is in `COMPANY_SORT_KEYS` belong
+/// here. `Type` mapped to `company_type`, which the server discards, so the
+/// header rendered a sort the rows never had; its affordance is gone until
+/// the server allow-lists the key.
 #[derive(Clone, Copy, PartialEq)]
 enum CompanySortKey {
     Company,
-    Type,
+}
+
+impl CompanySortKey {
+    /// Every variant, for the allow-list test. `company_sort_query` matches
+    /// exhaustively, so a new variant fails to compile until it is mapped.
+    #[cfg(test)]
+    const ALL: &'static [Self] = &[Self::Company];
 }
 
 /// Sortable columns on the contact list (F3).
+///
+/// MAPPS-527: `Company` mapped to `company_name`, which is absent from
+/// `CONTACT_SORT_KEYS`, so it is no longer offered.
 #[derive(Clone, Copy, PartialEq)]
 enum ContactSortKey {
     Name,
-    Company,
+}
+
+impl ContactSortKey {
+    /// Every variant, for the allow-list test.
+    #[cfg(test)]
+    const ALL: &'static [Self] = &[Self::Name];
 }
 
 /// First click sorts ascending; clicking the active column toggles
@@ -135,7 +155,6 @@ fn company_sort_query(
     let (key, dir) = current?;
     let field = match key {
         CompanySortKey::Company => "name",
-        CompanySortKey::Type => "company_type",
     };
     let dir = match dir {
         SortDirection::Ascending => "asc",
@@ -150,7 +169,6 @@ fn contact_sort_query(
     let (key, dir) = current?;
     let field = match key {
         ContactSortKey::Name => "last_name",
-        ContactSortKey::Company => "company_name",
     };
     let dir = match dir {
         SortDirection::Ascending => "asc",
@@ -185,10 +203,48 @@ struct RemoteCompany {
     name: String,
     #[serde(default)]
     company_type: String,
+    // MAPPS-575: `active` | `inactive` | `prospect`. Absent on an older server,
+    // which `#[serde(default)]` renders as empty and the UI treats as active.
+    #[serde(default)]
+    status: String,
     #[serde(default)]
     account_manager_name: Option<String>,
     #[serde(default)]
     open_ticket_count: Option<i64>,
+}
+
+/// PMS-926 `GET /contacts/companies/{id}/deletion-preview`.
+///
+/// The client deliberately holds no list of which tables block a delete. It
+/// held one until MAPPS-577, and that copy went stale the moment PMS-919
+/// changed the rules: the dialog kept warning about projects, appointments and
+/// sub-companies long after those started unlinking instead of blocking.
+#[derive(Clone, Debug, Default, Deserialize)]
+struct DeletionPreview {
+    #[serde(default)]
+    can_delete: bool,
+    /// Refused for what the company IS (the tenant's own company, PMS-919)
+    /// rather than for what references it, so `blocking` is empty and the
+    /// delete still fails.
+    #[serde(default)]
+    is_own_company: bool,
+    #[serde(default)]
+    blocking: Vec<DeletionRecords>,
+    #[serde(default)]
+    unlinked: Vec<DeletionRecords>,
+    #[serde(default)]
+    removed: Vec<DeletionRecords>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+struct DeletionRecords {
+    label: String,
+    count: i64,
+    /// PMS-920: these exist to be KEPT. Telling somebody to clear their
+    /// invoices to tidy a client list destroys the record the refusal is
+    /// protecting, so the two read differently.
+    #[serde(default)]
+    retained: bool,
 }
 
 /// Server-side paginated envelope (`PaginatedResponse<CompanyResponse>`).
@@ -203,6 +259,36 @@ struct PaginatedCompanies {
 struct PaginationMeta {
     #[serde(default)]
     total: u64,
+}
+
+/// MAPPS-481: one entry of a contact's `phones` array (PMS-806's
+/// `contact_phones`). The array already arrives in `sort_order`, so the SPA
+/// keeps the server's order rather than re-deriving it.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+struct RemotePhone {
+    #[serde(default)]
+    phone_type: String,
+    #[serde(default)]
+    number: String,
+    #[serde(default)]
+    extension: Option<String>,
+    #[serde(default)]
+    is_primary: bool,
+}
+
+/// MAPPS-481: one entry of a contact's `companies` array (PMS-806's
+/// `contact_companies`). `title` is the role at THIS company; the contact's
+/// own `title` stays their default.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+struct RemoteCompanyLink {
+    #[serde(default)]
+    company_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    company_name: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    is_primary: bool,
 }
 
 /// Subset of mokosh-server's `ContactResponse` we render in the contacts
@@ -241,6 +327,12 @@ struct RemoteContact {
     /// an older server variant ever omits it.
     #[serde(default)]
     is_portal_user: bool,
+    // MAPPS-481: `#[serde(default)]` so a server that predates PMS-806 still
+    // deserializes; the `phone` / `company_id` mirrors above cover that case.
+    #[serde(default)]
+    phones: Vec<RemotePhone>,
+    #[serde(default)]
+    companies: Vec<RemoteCompanyLink>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -255,6 +347,12 @@ struct PaginatedContacts {
 pub fn CompanyListPage() -> Element {
     let mut search = use_signal(String::new);
     let mut type_filter = use_signal(String::new);
+    // MAPPS-575: default to active, which is what makes archiving worth doing.
+    // The Select renders this value, so the default is STATED rather than
+    // silently applied: a user who cannot find a company they archived can see
+    // that the list is filtered and change it, instead of concluding it was
+    // deleted.
+    let mut status_filter = use_signal(|| "active".to_string());
     let mut sort = use_signal(|| None::<(CompanySortKey, SortDirection)>);
     let mut page = use_signal(|| 1usize);
 
@@ -264,9 +362,16 @@ pub fn CompanyListPage() -> Element {
         SelectOption::new("prospect", "Prospect"),
         SelectOption::new("vendor", "Vendor"),
     ];
+    let status_options = vec![
+        SelectOption::new("active", "Active"),
+        SelectOption::new("inactive", "Inactive (archived)"),
+        SelectOption::new("prospect", "Prospect"),
+        SelectOption::new("", "Any status"),
+    ];
 
     let search_text = search.read().trim().to_string();
     let type_text = type_filter.read().clone();
+    let status_text = status_filter.read().clone();
     let current_page = (*page.read()).max(1);
     let sort_snapshot = *sort.read();
 
@@ -282,6 +387,7 @@ pub fn CompanyListPage() -> Element {
     let companies_resource = use_resource(move || {
         let q = search.read().trim().to_string();
         let type_filter = type_filter.read().clone();
+        let status_filter = status_filter.read().clone();
         let sort = company_sort_query(*sort.read());
         let current_page = (*page.read()).max(1);
         async move {
@@ -299,6 +405,12 @@ pub fn CompanyListPage() -> Element {
                     "&company_type={}",
                     urlencoding_minimal(&type_filter)
                 ));
+            }
+            // Server-side (`CompanyFilter::status`), not a client-side pass over
+            // the current page: filtering after paging would show a short page
+            // and a wrong total.
+            if !status_filter.is_empty() {
+                path.push_str(&format!("&status={}", urlencoding_minimal(&status_filter)));
             }
             if let Some((field, dir)) = sort {
                 path.push_str(&format!("&sort={field}&sort_dir={dir}"));
@@ -328,7 +440,10 @@ pub fn CompanyListPage() -> Element {
         Some(Some(Ok(resp))) => (resp.data.clone(), resp.meta.total),
         _ => (Vec::new(), 0),
     };
-    let has_filters = !search_text.is_empty() || !type_text.is_empty();
+    // The status filter counts as a filter only when it is NOT the default:
+    // a brand-new tenant with no companies must read as "No companies yet",
+    // not as "No companies match your filters".
+    let has_filters = !search_text.is_empty() || !type_text.is_empty() || status_text != "active";
 
     use_page_title("Companies");
 
@@ -387,6 +502,15 @@ pub fn CompanyListPage() -> Element {
                         page.set(1);
                     },
                 }
+                Select {
+                    name: "status",
+                    options: status_options,
+                    value: status_filter.read().clone(),
+                    onchange: move |e: FormEvent| {
+                        status_filter.set(e.value());
+                        page.set(1);
+                    },
+                }
             }
         }
 
@@ -412,12 +536,7 @@ pub fn CompanyListPage() -> Element {
                             onsort: move |_| toggle_sort(&mut sort, CompanySortKey::Company, &mut page),
                             "Company"
                         }
-                        TableHeader {
-                            sortable: true,
-                            sort_direction: sort_dir_for(&sort_snapshot, CompanySortKey::Type),
-                            onsort: move |_| toggle_sort(&mut sort, CompanySortKey::Type, &mut page),
-                            "Type"
-                        }
+                        TableHeader { "Type" }
                         TableHeader { "Account Manager" }
                         TableHeader { "Open Tickets" }
                     }
@@ -439,6 +558,7 @@ pub fn CompanyListPage() -> Element {
                                     onclick: move |_| {
                                         search.set(String::new());
                                         type_filter.set(String::new());
+                                        status_filter.set("active".to_string());
                                     },
                                     "Clear filters"
                                 }
@@ -469,6 +589,7 @@ pub fn CompanyListPage() -> Element {
                                 id: company.id.to_string(),
                                 name: company.name,
                                 company_type: humanize_company_type(&company.company_type),
+                                status: company.status,
                                 primary_contact: company.account_manager_name.unwrap_or_default(),
                                 open_tickets: company.open_ticket_count.unwrap_or(0).max(0) as u32,
                             }
@@ -485,6 +606,9 @@ struct CompanyRowProps {
     id: String,
     name: String,
     company_type: String,
+    /// MAPPS-575: raw `companies.status`. Only `inactive` renders anything, so
+    /// an older server that omits the field reads as active.
+    status: String,
     primary_contact: String,
     open_tickets: u32,
 }
@@ -510,6 +634,14 @@ fn CompanyRow(props: CompanyRowProps) -> Element {
                     to: Route::CompanyDetail { id: props.id.clone() },
                     class: "font-medium text-accent hover:opacity-90",
                     "{props.name}"
+                }
+                // MAPPS-575: an archived company is reachable from "Any status",
+                // and once it is on screen it has to be distinguishable from an
+                // active one. Beside the name rather than in its own column: the
+                // default view is active-only, so a whole column would be empty
+                // almost always.
+                if props.status == "inactive" {
+                    Badge { variant: BadgeVariant::Gray, class: "ml-2", "Archived" }
                 }
             }
             TableCell {
@@ -604,6 +736,7 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
                 let initial = CompanyFormValues {
                     name: payload.name.clone(),
                     company_type: payload.company_type.clone(),
+                    status: payload.status.clone(),
                     industry: payload.industry.clone().unwrap_or_default(),
                     website: payload.website.clone().unwrap_or_default(),
                     phone: payload.phone.clone().unwrap_or_default(),
@@ -613,6 +746,7 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
                     address_state: payload.address.state.clone().unwrap_or_default(),
                     address_postal_code: payload.address.postal_code.clone().unwrap_or_default(),
                     address_country: payload.address.country.clone().unwrap_or_default(),
+                    notes: payload.notes.clone().unwrap_or_default(),
                 };
                 let id = id_for_form.clone();
                 rsx! {
@@ -632,6 +766,8 @@ struct CompanyEditPayload {
     #[serde(default)]
     company_type: String,
     #[serde(default)]
+    status: String,
+    #[serde(default)]
     industry: Option<String>,
     #[serde(default)]
     website: Option<String>,
@@ -639,12 +775,16 @@ struct CompanyEditPayload {
     phone: Option<String>,
     #[serde(default)]
     address: Address,
+    // MAPPS-614 / PMS-952: the free-text note, held and rendered as Markdown.
+    #[serde(default)]
+    notes: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 struct CompanyFormValues {
     name: String,
     company_type: String,
+    status: String,
     industry: String,
     website: String,
     phone: String,
@@ -654,6 +794,7 @@ struct CompanyFormValues {
     address_state: String,
     address_postal_code: String,
     address_country: String,
+    notes: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -678,39 +819,50 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         initial.company_type.clone()
     };
 
-    let mut name = use_signal(|| initial.name.clone());
+    // MAPPS-575: archiving is what an operator almost always wants when they
+    // reach for Delete on a company that has history, and it is the alternative
+    // the server's own delete refusal names (PMS-920). The column and the API
+    // have carried it since migration 004; only the form was missing.
+    let initial_status = if initial.status.is_empty() {
+        "active".to_string()
+    } else {
+        initial.status.clone()
+    };
+    let name = use_signal(|| initial.name.clone());
     let mut company_type = use_signal(|| initial_type.clone());
+    let mut status = use_signal(|| initial_status.clone());
     let mut industry = use_signal(|| initial.industry.clone());
     // PMS-601: industry suggestions come from the tenant's editable lookup
     // (Settings > Company Industries), not a hardcoded list. Active names only.
     let industry_options = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<IndustryOption>>(
-            "/contacts/company-industries?per_page=200",
-        )
-        .await
-        .ok()
-        .map(|p| {
-            p.data
-                .into_iter()
-                .filter(|o| o.is_active)
-                .map(|o| o.name)
-                .collect::<Vec<String>>()
-        })
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<IndustryOption>("/contacts/company-industries")
+            .await
+            .map(|rows| {
+                rows.into_iter()
+                    .filter(|o| o.is_active)
+                    .map(|o| o.name)
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_else(|e| {
+                // Best-effort: the field stays free-text without suggestions.
+                tracing::warn!("industry suggestion load failed: {e}");
+                Vec::new()
+            })
     });
     let industry_suggestions = industry_options
         .read_unchecked()
         .clone()
         .unwrap_or_default();
     let mut website = use_signal(|| initial.website.clone());
-    let mut phone = use_signal(|| initial.phone.clone());
-    let mut line1 = use_signal(|| initial.address_line1.clone());
-    let mut line2 = use_signal(|| initial.address_line2.clone());
-    let mut city = use_signal(|| initial.address_city.clone());
+    let phone = use_signal(|| initial.phone.clone());
+    let line1 = use_signal(|| initial.address_line1.clone());
+    let line2 = use_signal(|| initial.address_line2.clone());
+    let city = use_signal(|| initial.address_city.clone());
     let mut state = use_signal(|| initial.address_state.clone());
-    let mut postal = use_signal(|| initial.address_postal_code.clone());
+    let postal = use_signal(|| initial.address_postal_code.clone());
     let mut country = use_signal(|| initial.address_country.clone());
+    let mut notes = use_signal(|| initial.notes.clone());
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
     // Per-field inline validation errors (MAPPS-177, MAPPS-213, MAPPS-265).
@@ -718,6 +870,11 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let mut website_err = use_signal(String::new);
     let mut phone_err = use_signal(String::new);
     let mut postal_err = use_signal(String::new);
+    // MAPPS-480: advisory note under the Website field carrying the background
+    // probe's state, and the value that probe was last fired for so tabbing
+    // through an unchanged field does not re-fire it.
+    let mut website_note = use_signal(String::new);
+    let mut website_probed = use_signal(String::new);
     // PMS-581: inline errors for the previously-unvalidated address text fields.
     let mut line1_err = use_signal(String::new);
     let mut line2_err = use_signal(String::new);
@@ -738,8 +895,12 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         }
         let same_type_default =
             initial_for_dirty.company_type.is_empty() && *company_type.read() == "client";
+        // Same shape as the type default above: a blank incoming status renders
+        // as "active", which is not an edit.
+        let same_status_default = initial_for_dirty.status.is_empty() && *status.read() == "active";
         *name.read() != initial_for_dirty.name
             || (*company_type.read() != initial_for_dirty.company_type && !same_type_default)
+            || (*status.read() != initial_for_dirty.status && !same_status_default)
             || *industry.read() != initial_for_dirty.industry
             || *website.read() != initial_for_dirty.website
             || *phone.read() != initial_for_dirty.phone
@@ -770,6 +931,22 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                 current.clone(),
                 humanize_company_type(&current),
             ));
+        }
+        opts
+    };
+
+    // MAPPS-575: the three values `companies_status_check` allows. Preserve any
+    // value outside the list as its own option, the same way `type_options`
+    // does, so editing a company never silently retypes it.
+    let status_options = {
+        let current = status.read().clone();
+        let mut opts = vec![
+            SelectOption::new("active", "Active"),
+            SelectOption::new("inactive", "Inactive (archived)"),
+            SelectOption::new("prospect", "Prospect"),
+        ];
+        if !current.is_empty() && !opts.iter().any(|o| o.value == current) {
+            opts.push(SelectOption::new(current.clone(), current.clone()));
         }
         opts
     };
@@ -810,6 +987,72 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let submit_label = match &mode {
         CompanyFormMode::Create => "Create Company",
         CompanyFormMode::Edit { .. } => "Save Changes",
+    };
+    // MAPPS-423: Cancel returns to what the user was editing, not to the list.
+    let cancel_route = match &mode {
+        CompanyFormMode::Create => Route::CompanyList {},
+        CompanyFormMode::Edit { id } => Route::CompanyDetail { id: id.clone() },
+    };
+
+    // MAPPS-480: resolve what a typed domain actually serves, in the background,
+    // while the user finishes the rest of the form. Fired on blur only, so one
+    // completed value costs one request instead of one per keystroke. Advisory
+    // throughout: it never gates validation and never blocks or delays submit,
+    // which saves whatever is in the field at the time.
+    let mut probe_website = move || {
+        let typed = website.read().trim().to_string();
+        if typed.is_empty() || typed == website_probed() {
+            return;
+        }
+        let normalized = match validate_website_field(&typed) {
+            Ok(serde_json::Value::String(url)) => url,
+            // Blank returns above, so this arm is unreachable; it exists so
+            // the match is total rather than discarding the value.
+            Ok(_) => return,
+            // Nothing to probe, and the message is shown now rather than
+            // dropped and re-derived at submit. `oninput` clears it again as
+            // soon as the user resumes typing.
+            Err(msg) => {
+                website_err.set(msg);
+                website_note.set(String::new());
+                return;
+            }
+        };
+        website_probed.set(typed);
+        website_note.set(format!("Checking {}…", website_host(&normalized)));
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                // `/contacts` is where the server nests the contacts router
+                // (`api/router.rs`), so the probe sits beside the company
+                // create/edit calls above, not at a bare `/companies/...`.
+                let path = format!(
+                    "/contacts/companies/website-probe?url={}",
+                    urlencoding_minimal(&normalized)
+                );
+                match crate::hooks::fetch::api::get_authed::<WebsiteProbe>(&path).await {
+                    Ok(probe) => {
+                        // A site that answered replaces the value with the
+                        // address that actually answered; anything else keeps
+                        // the normalized value the user typed.
+                        if probe.reachable {
+                            if let Some(canonical) = probe.canonical_url.clone() {
+                                website.set(canonical.clone());
+                                website_probed.set(canonical);
+                            }
+                        }
+                        website_note.set(website_probe_note(&normalized, &probe));
+                    }
+                    Err(e) => {
+                        // Logged with the underlying cause before the note is
+                        // rendered, so a probe that failed is never a silent
+                        // no-op (error-visibility rule).
+                        tracing::warn!("website probe for {normalized} failed: {e}");
+                        website_note.set(website_unreachable_note(&normalized, "the check failed"));
+                    }
+                }
+            }
+        });
     };
 
     let handle_submit = move |e: FormEvent| {
@@ -884,6 +1127,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         let body = serde_json::json!({
             "name": name_value,
             "company_type": company_type.read().clone(),
+            "status": status.read().clone(),
             "industry": optional_string(&industry.read()),
             "website": website_value,
             "phone": phone_value,
@@ -895,13 +1139,15 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                 "postal_code": postal_value,
                 "country": country_value,
             },
+            // MAPPS-614: always a string, never null. See `clearable_string`.
+            "notes": clearable_string(&notes.read()),
         });
         let mode = mode.clone();
         // MAPPS-293: clone the mode again for the post-success toast so the
         // outer `mode` is still available in case of an Err branch.
         let mode_for_toast = mode.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 #[derive(serde::Deserialize)]
                 struct CompanyId {
@@ -1010,7 +1256,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         maxlength: 255,
                         value: name.read().clone(),
                         error: name_err(),
-                        oninput: move |e: FormEvent| name.set(e.value()),
+                        oninput: clear_on_edit(name, name_err),
                     }
                     Select {
                         name: "type",
@@ -1018,6 +1264,18 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         options: type_options,
                         value: company_type.read().clone(),
                         onchange: move |e: FormEvent| company_type.set(e.value()),
+                    }
+                    Select {
+                        name: "status",
+                        label: "Status",
+                        options: status_options,
+                        // MAPPS-575: say what archiving DOES, because the
+                        // alternative the user was reaching for is Delete, and
+                        // the difference that matters to them is whether the
+                        // company's history survives.
+                        help: "Inactive archives the company: its history is kept and it drops out of the default lists and pickers.",
+                        value: status.read().clone(),
+                        onchange: move |e: FormEvent| status.set(e.value()),
                     }
                     crate::components::SuggestInput {
                         name: "industry",
@@ -1030,11 +1288,22 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                     crate::components::Input {
                         name: "website",
                         label: "Website",
-                        placeholder: "https://example.com",
+                        placeholder: "example.com",
                         maxlength: 255,
                         value: website.read().clone(),
                         error: website_err(),
-                        oninput: move |e: FormEvent| website.set(e.value()),
+                        // MAPPS-480: the probe's note. `Input` renders `help`
+                        // only when no error is showing, so an inline
+                        // validation error takes precedence with no extra
+                        // logic here.
+                        help: website_note(),
+                        oninput: move |e: FormEvent| {
+                            // Clear the blur-time message as soon as the value
+                            // is being corrected.
+                            website_err.set(String::new());
+                            website.set(e.value());
+                        },
+                        onblur: move |_| probe_website(),
                     }
                     crate::components::Input {
                         name: "phone",
@@ -1042,7 +1311,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         placeholder: "(555) 555-5555",
                         value: phone.read().clone(),
                         error: phone_err(),
-                        oninput: move |e: FormEvent| phone.set(e.value()),
+                        oninput: clear_on_edit(phone, phone_err),
                     }
                 }
 
@@ -1056,7 +1325,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         maxlength: 255,
                         value: line1.read().clone(),
                         error: line1_err(),
-                        oninput: move |e: FormEvent| line1.set(e.value()),
+                        oninput: clear_on_edit(line1, line1_err),
                     }
                     crate::components::Input {
                         name: "address_line2",
@@ -1064,7 +1333,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         maxlength: 255,
                         value: line2.read().clone(),
                         error: line2_err(),
-                        oninput: move |e: FormEvent| line2.set(e.value()),
+                        oninput: clear_on_edit(line2, line2_err),
                     }
                     crate::components::Input {
                         name: "address_city",
@@ -1072,7 +1341,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         maxlength: 100,
                         value: city.read().clone(),
                         error: city_err(),
-                        oninput: move |e: FormEvent| city.set(e.value()),
+                        oninput: clear_on_edit(city, city_err),
                     }
                     Select {
                         name: "address_state",
@@ -1088,7 +1357,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         maxlength: 12,
                         value: postal.read().clone(),
                         error: postal_err(),
-                        oninput: move |e: FormEvent| postal.set(e.value()),
+                        oninput: clear_on_edit(postal, postal_err),
                     }
                     Select {
                         name: "address_country",
@@ -1100,9 +1369,26 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                     }
                 }
 
+                // MAPPS-614: David's ask, and the reason it is the shared
+                // editor rather than a textarea: every other Markdown surface
+                // in the app went through MAPPS-610 to get here, and a second
+                // implementation would be the one thing that ticket exists to
+                // prevent.
+                crate::components::MarkdownEditor {
+                    name: "company_notes".to_string(),
+                    label: "Notes".to_string(),
+                    placeholder: "Anything worth knowing about this company.".to_string(),
+                    rows: 8,
+                    views: true,
+                    view_pref_key: "company_notes_view_mode".to_string(),
+                    disabled: !can_mutate,
+                    value: notes.read().clone(),
+                    oninput: move |next: String| notes.set(next),
+                }
+
                 div { class: "flex justify-end space-x-3",
                     Link {
-                        to: Route::CompanyList {},
+                        to: cancel_route.clone(),
                         Button { variant: ButtonVariant::Secondary, "Cancel" }
                     }
                     Button {
@@ -1118,6 +1404,20 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             }
         }
     }
+}
+
+/// MAPPS-614: a field the user must be able to empty again.
+///
+/// `optional_string` below sends JSON null for a blank field, and the server's
+/// company and contact updates add `notes = $n` to the UPDATE only when the
+/// key carries a value (PMS-952 pins this). A null therefore means "leave it
+/// alone", not "erase it": a user who deletes their notes and saves would get
+/// a 200 and find the old text still there. An empty string is what clears it.
+///
+/// The same reasoning already governs `company_name`, which this form sends as
+/// `""` when a company is linked.
+fn clearable_string(value: &str) -> serde_json::Value {
+    serde_json::Value::String(value.trim().to_string())
 }
 
 fn optional_string(value: &str) -> serde_json::Value {
@@ -1141,8 +1441,15 @@ fn optional_string(value: &str) -> serde_json::Value {
 /// whitespace-only input, and reject control characters. On success returns the
 /// trimmed name so the client surfaces the "Company name is required" cue inline
 /// (MAPPS-246) before any request instead of bouncing off an opaque server 422.
+///
+/// MAPPS-582: `is_control` is true only for `Cc`, so it let U+200B and U+FEFF
+/// through and the app stored them, making `Acme\u{200B}` a second record
+/// indistinguishable from `Acme` on screen. The invisibles are stripped rather
+/// than rejected, because the user cannot see the character and so cannot act
+/// on a message about it; a real control character stays an error.
 fn validate_name_field(raw: &str) -> Result<String, String> {
-    let trimmed = raw.trim();
+    let cleaned = crate::utils::text::strip_invisible(raw);
+    let trimmed = cleaned.trim();
     if trimmed.is_empty() {
         return Err("Company name is required.".to_string());
     }
@@ -1183,9 +1490,16 @@ pub fn format_phone(raw: &str) -> String {
 }
 
 fn validate_phone_field(raw: &str, label: &str) -> Result<serde_json::Value, String> {
+    // MAPPS-582: `clean_strict` removes the characters that render as nothing
+    // (U+200B, U+FEFF, the soft hyphen, the bidi marks) and folds every exotic
+    // space onto a plain one. The strip set below then drops whitespace via
+    // `char::is_whitespace` rather than the three hardcoded space characters it
+    // used to name, which missed U+202F, U+2007, U+3000 and the rest and let
+    // them reach the E.164 check as "not a digit".
+    let raw = crate::utils::text::clean_strict(raw);
     let normalized: String = raw
         .chars()
-        .filter(|c| !matches!(c, ' ' | '\t' | '\u{00A0}' | '-' | '(' | ')' | '.'))
+        .filter(|c| !c.is_whitespace() && !matches!(c, '-' | '(' | ')' | '.'))
         .collect();
     if normalized.is_empty() {
         return Ok(serde_json::Value::Null);
@@ -1206,11 +1520,102 @@ fn validate_phone_field(raw: &str, label: &str) -> Result<serde_json::Value, Str
     }
 }
 
+// ---- MAPPS-481 / PMS-806: a contact's typed phone list and company links.
+
+/// The five `contact_phones.phone_type` values PMS-806's CHECK constraint
+/// allows, paired with their labels and in the order the form offers them.
+const PHONE_TYPES: &[(&str, &str)] = &[
+    ("mobile", "Mobile"),
+    ("work", "Work"),
+    ("home", "Home"),
+    ("fax", "Fax"),
+    ("other", "Other"),
+];
+
+/// Coerce a form value onto one of the wire values. Anything unrecognized
+/// becomes `other`, which is the server's own default for the column.
+fn normalize_phone_type(raw: &str) -> &'static str {
+    PHONE_TYPES
+        .iter()
+        .find(|(value, _)| *value == raw)
+        .map(|(value, _)| *value)
+        .unwrap_or("other")
+}
+
+/// Label a stored `phone_type` for the read surfaces. An unknown value (a
+/// server that grew a sixth type) passes through verbatim rather than
+/// vanishing, the same rule [`humanize_contact_type`] follows.
+fn humanize_phone_type(raw: &str) -> String {
+    PHONE_TYPES
+        .iter()
+        .find(|(value, _)| *value == raw)
+        .map(|(_, label)| (*label).to_string())
+        .unwrap_or_else(|| raw.to_string())
+}
+
+/// Render one phone entry as the read surfaces show it: the number with
+/// separators (MAPPS-283) and its extension when it has one.
+fn format_phone_entry(number: &str, extension: Option<&str>) -> String {
+    let base = format_phone(number);
+    match extension.map(str::trim).filter(|e| !e.is_empty()) {
+        Some(ext) => format!("{base} ext. {ext}"),
+        None => base,
+    }
+}
+
+/// The entry a list view shows for a contact: the one flagged primary, else
+/// the first. PMS-806 promotes the first entry when none is flagged, so this
+/// mirrors what the server stored.
+fn primary_entry<T>(entries: &[T], is_primary: impl Fn(&T) -> bool) -> Option<&T> {
+    entries
+        .iter()
+        .find(|e| is_primary(e))
+        .or_else(|| entries.first())
+}
+
+/// The contacts-list Phone cell: the primary number with its type, e.g.
+/// "Mobile (904) 210-8340". Falls back to the `phone` mirror when the server
+/// sent no list, so a pre-PMS-806 response still fills the column.
+fn primary_phone_label(phones: &[RemotePhone], fallback: &str) -> String {
+    match primary_entry(phones, |p| p.is_primary) {
+        Some(entry) => {
+            let number = format_phone_entry(&entry.number, entry.extension.as_deref());
+            let label = humanize_phone_type(&entry.phone_type);
+            if label.is_empty() {
+                number
+            } else {
+                format!("{label} {number}")
+            }
+        }
+        None => format_phone(fallback),
+    }
+}
+
+/// The row index in a server field name of the form `phones[2].number`, which
+/// is how PMS-806 identifies the entry that failed. `None` for any other field
+/// name, which keeps the existing mapping untouched.
+fn phone_row_index(field: &str) -> Option<usize> {
+    let (index, _) = field.strip_prefix("phones[")?.split_once(']')?;
+    index.parse().ok()
+}
+
+/// The contacts-list Company cell suffix: "+N" for the links beyond the one
+/// shown, empty when the contact links at most one company.
+fn extra_company_suffix(total: usize) -> String {
+    if total > 1 {
+        format!("+{}", total - 1)
+    } else {
+        String::new()
+    }
+}
+
 /// Validate an optional ISO 3166-1 alpha-2 country code. Blank -> `Ok(None)`.
 /// Requires exactly two ASCII letters (normalized to uppercase). The server
 /// (PMS-325) checks membership against the official set.
 fn validate_country_field(raw: &str) -> Result<serde_json::Value, String> {
-    let trimmed = raw.trim();
+    // MAPPS-582: a country code admits no invisible character anywhere.
+    let cleaned = crate::utils::text::clean_strict(raw);
+    let trimmed = cleaned.as_str();
     if trimmed.is_empty() {
         return Ok(serde_json::Value::Null);
     }
@@ -1226,7 +1631,11 @@ fn validate_country_field(raw: &str) -> Result<serde_json::Value, String> {
 /// (which includes NUL, rejected by Postgres anyway). Gating only - the body
 /// keeps sending the `optional_string` form.
 fn validate_address_text(raw: &str, label: &str, max: usize) -> Result<(), String> {
-    let trimmed = raw.trim();
+    // MAPPS-582: `is_control` covers only `Cc`, so an invisible `Cf` character
+    // used to pass this gate and get stored. Strip those first, then keep
+    // rejecting the real control characters.
+    let cleaned = crate::utils::text::strip_invisible(raw);
+    let trimmed = cleaned.trim();
     if trimmed.is_empty() {
         return Ok(());
     }
@@ -1242,7 +1651,10 @@ fn validate_address_text(raw: &str, label: &str, max: usize) -> Result<(), Strin
 /// Validate an optional postal code. Blank -> `Ok(None)`. Otherwise 2-12
 /// characters of letters, digits, spaces, or hyphens.
 fn validate_postal_field(raw: &str) -> Result<serde_json::Value, String> {
-    let trimmed = raw.trim();
+    // MAPPS-582: the charset below is ASCII-only, so an invisible character
+    // rejected the code with a message naming characters the user cannot see.
+    let cleaned = crate::utils::text::clean_strict(raw);
+    let trimmed = cleaned.as_str();
     if trimmed.is_empty() {
         return Ok(serde_json::Value::Null);
     }
@@ -1257,46 +1669,181 @@ fn validate_postal_field(raw: &str) -> Result<serde_json::Value, String> {
     }
 }
 
-/// Validate an optional Website URL. Blank -> `Ok(None)`. Otherwise the value
-/// must carry an explicit `http`/`https` scheme and a non-empty host. Dangerous
-/// schemes (`javascript:`, `data:`, `vbscript:`, anything else) and malformed
-/// URLs are rejected with an inline message *before* any request, so the user
-/// learns Website is the problem instead of hitting an opaque server 422
-/// (MAPPS-213). The scheme check reuses `utils::url::scheme_of`, the same
-/// whitespace-collapsing detection `safe_href` applies at render time, so
-/// `java\tscript:` cannot slip through.
+/// Validate an optional Website URL. Blank -> `Ok(None)`. An explicit
+/// `http`/`https` scheme passes through unchanged; a scheme-less value is
+/// treated as a bare host and normalized to `https://<value>` (MAPPS-480),
+/// which is what the server's own deserializer does (PMS-805). Any other
+/// scheme (`javascript:`, `data:`, `vbscript:`, `mailto:`, ...) and any value
+/// carrying whitespace or control characters is still rejected with an inline
+/// message *before* any request, so the user learns Website is the problem
+/// instead of hitting an opaque server 422 (MAPPS-213). The scheme check
+/// reuses `utils::url::scheme_of`, the same whitespace-collapsing detection
+/// `safe_href` applies at render time, so `java\tscript:` cannot slip through.
 fn validate_website_field(raw: &str) -> Result<serde_json::Value, String> {
-    let trimmed = raw.trim();
+    // MAPPS-582: an invisible character never belongs in a URL either, and it
+    // is one more way a scheme can disguise itself from the check below.
+    let cleaned = crate::utils::text::clean_strict(raw);
+    let trimmed = cleaned.as_str();
     if trimmed.is_empty() {
         return Ok(serde_json::Value::Null);
     }
-    const MSG: &str = "Website must be a valid http(s) URL (e.g. https://example.com).";
-    // Reject anything but an explicit http/https scheme (covers javascript:,
-    // data:, vbscript:, mailto:, scheme-less input, ...).
-    match crate::utils::url::scheme_of(trimmed).as_deref() {
-        Some("http") | Some("https") => {}
-        _ => return Err(MSG.to_string()),
-    }
-    // Require `scheme://host` with a non-empty host and no embedded whitespace
-    // so `http://`, `http:/x`, and `https://exa mple.com` are rejected.
-    let host = trimmed
-        .split_once("://")
-        .map(|(_, rest)| rest)
-        .unwrap_or("")
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or("");
-    if host.is_empty() || trimmed.chars().any(|c| c.is_whitespace()) {
+    const MSG: &str =
+        "Website must be a domain or http(s) URL (e.g. example.com or https://example.com).";
+    // Whitespace and control characters never belong in a URL whatever the
+    // scheme, and they are how `java\tscript:` disguises itself.
+    if trimmed
+        .chars()
+        .any(|c| c.is_whitespace() || (c as u32) < 0x20)
+    {
         return Err(MSG.to_string());
     }
-    Ok(serde_json::Value::String(trimmed.to_string()))
+    match crate::utils::url::scheme_of(trimmed).as_deref() {
+        // Require `scheme://host` with a non-empty host, so `http://` and
+        // `http:/x` are rejected.
+        Some("http") | Some("https") => {
+            let host = trimmed
+                .split_once("://")
+                .map(|(_, rest)| rest)
+                .unwrap_or("")
+                .split(['/', '?', '#'])
+                .next()
+                .unwrap_or("");
+            if host.is_empty() {
+                return Err(MSG.to_string());
+            }
+            Ok(serde_json::Value::String(trimmed.to_string()))
+        }
+        // Any other explicit scheme stays rejected.
+        Some(_) => Err(MSG.to_string()),
+        // Scheme-less: a bare host, so add the scheme the product wants and
+        // keep whatever path, query or fragment was typed after it.
+        None => {
+            let authority = trimmed.split(['/', '?', '#']).next().unwrap_or("");
+            if !is_host_like(authority) {
+                return Err(MSG.to_string());
+            }
+            Ok(serde_json::Value::String(format!("https://{trimmed}")))
+        }
+    }
+}
+
+/// Whether `host` can be the host of a public web address: host-legal
+/// characters only, and at least one dot with a non-empty label either side,
+/// so `localhost` and `no-dot` are not silently turned into `https://` URLs
+/// the server cannot resolve.
+///
+/// No port is accepted here, and none can reach this function: a `:` before
+/// the first `/` is what `scheme_of` reads as a scheme, so `example.com:8443`
+/// is rejected above as an unknown scheme. The server allows ports 80 and 443
+/// only, so nothing useful is lost.
+fn is_host_like(host: &str) -> bool {
+    if !host
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '.')
+    {
+        return false;
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    labels.len() >= 2 && labels.iter().all(|l| !l.is_empty())
+}
+
+/// The host of a normalized `https://...` value, for the probe note. The value
+/// always carries a scheme (it came out of [`validate_website_field`]), so the
+/// fallbacks below are unreachable rather than lossy.
+fn website_host(normalized: &str) -> String {
+    normalized
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(normalized)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(normalized)
+        .to_string()
+}
+
+/// PMS-805 `GET /companies/website-probe` response. Only the fields the note
+/// below renders are deserialized; the rest of the body is ignored.
+///
+/// `redirect_truncated` is `#[serde(default)]` because the shipped server does
+/// not send it: PMS-805 specified the field but merged without it, and a chain
+/// still redirecting at the hop limit comes back as `reachable: false` with
+/// `unreachable_reason: "refused"` instead. The branch here is inert until the
+/// server adds the field, and is tracked in MAPPS-486.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct WebsiteProbe {
+    reachable: bool,
+    canonical_url: Option<String>,
+    #[serde(default)]
+    http_redirects_to_https: bool,
+    #[serde(default)]
+    www_change: String,
+    unreachable_reason: Option<String>,
+    #[serde(default)]
+    redirect_truncated: bool,
+}
+
+/// Human-readable note for a probe that answered, rendered under the field.
+/// `normalized` is the value the probe was given, so an unreachable site still
+/// tells the user exactly what will be saved.
+fn website_probe_note(normalized: &str, probe: &WebsiteProbe) -> String {
+    if !probe.reachable {
+        let reason = match probe.unreachable_reason.as_deref() {
+            Some("dns") => "no DNS record",
+            Some("timeout") => "timeout",
+            Some("tls") => "TLS error",
+            Some("refused") => "connection refused",
+            Some("blocked_host") => "address not reachable from the internet",
+            // A reason the client does not know is still shown, never dropped.
+            Some(other) => other,
+            None => "no reason given",
+        };
+        return website_unreachable_note(normalized, reason);
+    }
+    let Some(canonical) = probe.canonical_url.as_deref() else {
+        // Reachable with no canonical URL is not a shape the server produces;
+        // say so rather than presenting the probe as having settled anything.
+        return format!(
+            "{} answered but reported no address. Saving as {normalized}.",
+            website_host(normalized)
+        );
+    };
+    let mut changes: Vec<&str> = Vec::new();
+    if probe.http_redirects_to_https {
+        changes.push("http redirects to https");
+    }
+    match probe.www_change.as_str() {
+        "added" => changes.push("www added"),
+        "removed" => changes.push("www removed"),
+        _ => {}
+    }
+    if probe.redirect_truncated {
+        changes.push("site redirects again; not followed");
+    }
+    if changes.is_empty() {
+        format!("Resolved to {canonical}")
+    } else {
+        format!("Resolved to {canonical} ({})", changes.join(", "))
+    }
+}
+
+/// Note for a site the probe could not resolve, and for a probe request that
+/// failed outright. Names the value that will be saved either way, because the
+/// probe is advisory and never blocks the form.
+fn website_unreachable_note(normalized: &str, reason: &str) -> String {
+    format!(
+        "Could not reach {} ({reason}). Saving as {normalized}.",
+        website_host(normalized)
+    )
 }
 
 /// Validate an optional IANA time zone. Blank -> `Ok(None)`. A light client
 /// check (must look like `Area/Location` with no spaces) that catches the
 /// common `America/New York` mistake; the server (PMS-325) is authoritative.
 fn validate_timezone_field(raw: &str) -> Result<serde_json::Value, String> {
-    let trimmed = raw.trim();
+    // MAPPS-582: an IANA name is ASCII, so strip the invisibles before the
+    // "no spaces, has a slash" shape check.
+    let cleaned = crate::utils::text::clean_strict(raw);
+    let trimmed = cleaned.as_str();
     if trimmed.is_empty() {
         return Ok(serde_json::Value::Null);
     }
@@ -1372,11 +1919,11 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
             // "View all" link to escape to (unlike Contacts /
             // Tickets / Contracts on the same page). Sites per
             // company are small in practice (typical 1-20), so
-            // dropping the cap to a high ceiling is the right
-            // shape: every site renders inline, no separate list
-            // page needed.
-            crate::hooks::fetch::api::get_authed::<PaginatedSites>(&format!(
-                "/contacts/companies/{id}/sites?per_page=200"
+            // every site renders inline, no separate list page
+            // needed. MAPPS-528: paged, because the old
+            // `per_page=200` was clamped to 100 by the server.
+            crate::hooks::fetch::api::get_all_authed::<SiteSummary>(&format!(
+                "/contacts/companies/{id}/sites"
             ))
             .await
             .ok()
@@ -1387,7 +1934,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             crate::hooks::fetch::api::get_authed::<PaginatedTicketSummaries>(&format!(
-                "/tickets?company_id={id}&per_page=5&sort=-updated_at"
+                "/tickets?company_id={id}&per_page=5&{TICKETS_RECENT_SORT}"
             ))
             .await
             .ok()
@@ -1446,11 +1993,9 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     // a human-readable type name in the Assets card.
     let asset_types_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<AssetTypeOption>>(
-            "/asset-types?per_page=100",
-        )
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_authed::<AssetTypeOption>("/asset-types")
+            .await
+            .ok()
     });
 
     // MAPPS-619: tenant branding defaults so the per-Company branding
@@ -1477,7 +2022,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     let asset_count = paginated_total(&assets_resource);
 
     let company_snapshot = company_resource.read_unchecked();
-    // MAPPS-278: while the record is loading, show "Loading..." instead
+    // MAPPS-278: while the record is loading, show "Loading…" instead
     // of the generic entity type ("Company"). The previous fallback
     // briefly flashed a generic header until the resource resolved,
     // which read as the wrong company before settling. A loading label
@@ -1494,6 +2039,35 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     let edit_id = company_id_for_edit.clone();
     let delete_id = company_id_for_delete.clone();
     let mut confirming_delete = use_signal(|| false);
+    // MAPPS-577: what a delete would actually do, from the server (PMS-926).
+    // NOT derived from the Statistics card: `open_ticket_count` counts only
+    // open tickets while the delete guard counts every one, so a company with
+    // closed tickets and none open reads as deletable there and is refused.
+    // Fetched when the dialog opens rather than on page load, because a page
+    // view is not an intent to delete.
+    let preview_id = company_id_str.clone();
+    let deletion_preview = use_resource(move || {
+        let id = preview_id.clone();
+        let open = confirming_delete();
+        async move {
+            if !open {
+                return None;
+            }
+            let _reachable = crate::hooks::use_server_reachable();
+            crate::hooks::fetch::api::get_authed::<DeletionPreview>(&format!(
+                "/contacts/companies/{id}/deletion-preview"
+            ))
+            .await
+            .ok()
+        }
+    });
+    // MAPPS-574: why the last delete attempt was refused. The server answers a
+    // blocked delete with 400 and an actionable message ("Cannot delete company
+    // with existing tickets", or the PMS-170 related-records list); this holds
+    // it for the dialog.
+    let mut delete_error = use_signal(String::new);
+    // MAPPS-577: the archive alternative offered when a delete is refused.
+    let mut archiving = use_signal(|| false);
     // MAPPS-357: gate the destructive Delete while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
     let on_confirm_delete = move |_: ()| {
@@ -1502,16 +2076,32 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         }
         let id = delete_id.clone();
         deleting.set(true);
+        delete_error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/contacts/companies/{id}");
-                if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
-                    navigator.push(Route::CompanyList {});
+                // MAPPS-574: a refusal is a normal outcome here, not an edge
+                // case - a company with a single ticket or project cannot be
+                // deleted - so it has to be reported. The previous
+                // `.is_ok()` discarded the message and closed the dialog, which
+                // left the user on the unchanged page with nothing to read and
+                // no way to tell a refusal from a dead button. The dialog stays
+                // open on failure so the reason sits next to the control that
+                // produced it.
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => {
+                        crate::hooks::toast::push_toast(
+                            crate::components::AlertType::Success,
+                            "Company deleted.",
+                        );
+                        confirming_delete.set(false);
+                        navigator.push(Route::CompanyList {});
+                    }
+                    Err(err) => delete_error.set(err),
                 }
             }
             deleting.set(false);
-            confirming_delete.set(false);
         });
     };
 
@@ -1520,6 +2110,9 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     // unavailable state instead of "Could not load company" (kept below for a
     // 4xx while still reachable).
     let fetch_failed = matches!(*company_snapshot, Some(None));
+    // MAPPS-575: read here rather than inside the body's match, because the
+    // banner renders above the header and outside that arm.
+    let archived_banner = matches!(&*company_snapshot, Some(Some(c)) if c.status == "inactive");
     let reachable = crate::hooks::use_server_reachable();
     if fetch_failed && !reachable {
         return rsx! {
@@ -1528,23 +2121,173 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     }
 
     rsx! {
-        crate::components::ConfirmDialog {
-            open: confirming_delete(),
-            title: "Delete company".to_string(),
-            message: "Delete this company? This will also remove its sites and unlink its contacts/tickets.".to_string(),
-            confirm_text: "Delete".to_string(),
-            cancel_text: "Cancel".to_string(),
-            destructive: true,
-            // PMS-369: this delete cascades (removes sites, unlinks
-            // contacts/tickets), so gate it behind typing the company name.
-            confirm_phrase: header_title.clone(),
-            loading: *deleting.read(),
-            onconfirm: on_confirm_delete,
-            oncancel: move |_| {
-                if !*deleting.read() {
-                    confirming_delete.set(false);
+        {
+            let snapshot = deletion_preview.read_unchecked().clone().flatten();
+            // MAPPS-577 AC7: a preview that has not arrived, or failed, must
+            // not block the delete. With none, the dialog behaves exactly as it
+            // did before this change: a generic warning, the phrase gate, an
+            // attempt, and the server's own refusal if it is refused. The
+            // delete path never depends on a second request succeeding.
+            let preview = snapshot.clone().unwrap_or_default();
+            let known = snapshot.is_some();
+            let blocked = known && !preview.can_delete;
+
+            // MAPPS-577 AC1: no hardcoded list of tables. Everything specific
+            // comes from the server, so the two cannot drift again.
+            let message = if !known {
+                "Delete this company? Its sites are removed and its contacts are unlinked, and this cannot be undone."
+                    .to_string()
+            } else if preview.is_own_company {
+                "This is your organisation's own company record, which general and overhead time is logged against. It cannot be deleted."
+                    .to_string()
+            } else if blocked {
+                "This company cannot be deleted while these records exist.".to_string()
+            } else {
+                "Delete this company? This cannot be undone.".to_string()
+            };
+
+            let retained: Vec<DeletionRecords> = preview
+                .blocking
+                .iter()
+                .filter(|r| r.retained)
+                .cloned()
+                .collect();
+            let removable: Vec<DeletionRecords> = preview
+                .blocking
+                .iter()
+                .filter(|r| !r.retained)
+                .cloned()
+                .collect();
+            let effects: Vec<(String, Vec<DeletionRecords>)> = vec![
+                ("Removed".to_string(), preview.removed.clone()),
+                ("Unlinked, not deleted".to_string(), preview.unlinked.clone()),
+            ];
+
+            let archive_id = company_id_str.clone();
+            rsx! {
+                crate::components::ConfirmDialog {
+                    open: confirming_delete(),
+                    title: "Delete company".to_string(),
+                    message,
+                    confirm_text: "Delete".to_string(),
+                    cancel_text: if blocked { "Close".to_string() } else { "Cancel".to_string() },
+                    destructive: true,
+                    // AC5: withheld while blocked, so nobody types a company
+                    // name to enable a button that cannot work.
+                    blocked,
+                    // PMS-369: the delete unlinks and removes, so gate it behind
+                    // typing the company name.
+                    confirm_phrase: header_title.clone(),
+                    error: delete_error.read().clone(),
+                    loading: *deleting.read(),
+                    body: rsx! {
+                        if !retained.is_empty() {
+                            div { class: "space-y-1",
+                                p { class: "text-xs font-medium text-content",
+                                    "Kept as a permanent record, so they are not something to clear:"
+                                }
+                                ul { class: "list-disc pl-5 text-sm text-muted",
+                                    for row in retained.iter() {
+                                        li { key: "{row.label}", "{row.count} {row.label}" }
+                                    }
+                                }
+                            }
+                        }
+                        if !removable.is_empty() {
+                            div { class: "mt-2 space-y-1",
+                                p { class: "text-xs font-medium text-content",
+                                    "Remove or reassign these first, or archive the company instead:"
+                                }
+                                ul { class: "list-disc pl-5 text-sm text-muted",
+                                    for row in removable.iter() {
+                                        li { key: "{row.label}", "{row.count} {row.label}" }
+                                    }
+                                }
+                            }
+                        }
+                        // AC2: what the delete WOULD do, shown whether or not
+                        // anything blocks it. On a deletable company this is
+                        // the whole point of opening the dialog.
+                        for (heading , rows) in effects.iter() {
+                            if !rows.is_empty() {
+                                div { key: "{heading}", class: "mt-2 space-y-1",
+                                    p { class: "text-xs font-medium text-content", "{heading}:" }
+                                    ul { class: "list-disc pl-5 text-sm text-muted",
+                                        for row in rows.iter() {
+                                            li { key: "{row.label}", "{row.count} {row.label}" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    // AC4: the refusal already names archiving; this makes it a
+                    // control rather than an instruction to go and find it.
+                    // Absent on the own-company refusal, where archiving is not
+                    // the answer either.
+                    alternative: (blocked && !preview.is_own_company).then(|| rsx! {
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            loading: *archiving.read(),
+                            disabled: !can_mutate,
+                            onclick: move |_| {
+                                if *archiving.read() { return; }
+                                archiving.set(true);
+                                delete_error.set(String::new());
+                                let id = archive_id.clone();
+                                spawn(async move {
+                                    #[cfg(feature = "app")]
+                                    {
+                                        let path = format!("/contacts/companies/{id}");
+                                        let body = serde_json::json!({ "status": "inactive" });
+                                        match crate::hooks::fetch::api::put_authed_typed::<
+                                            serde_json::Value,
+                                            _,
+                                        >(&path, &body)
+                                            .await
+                                        {
+                                            Ok(_) => {
+                                                crate::hooks::toast::push_toast(
+                                                    crate::components::AlertType::Success,
+                                                    "Company archived. Its history is kept and it is out of your active lists.",
+                                                );
+                                                confirming_delete.set(false);
+                                                let mut cr = company_resource;
+                                                cr.restart();
+                                            }
+                                            Err(e) => delete_error
+                                                .set(format!("Could not archive: {}", e.user_message())),
+                                        }
+                                    }
+                                    #[cfg(not(feature = "app"))]
+                                    let _ = &id;
+                                    archiving.set(false);
+                                });
+                            },
+                            "Archive instead"
+                        }
+                    }),
+                    onconfirm: on_confirm_delete,
+                    oncancel: move |_| {
+                        if !*deleting.read() {
+                            confirming_delete.set(false);
+                            delete_error.set(String::new());
+                        }
+                    },
                 }
-            },
+            }
+        }
+        // MAPPS-575: an archived company is out of the default lists and
+        // pickers, so anyone who reaches this page has arrived by a link or a
+        // deliberate filter change. Say so at the top: a field in the sidebar
+        // is easy to miss, and the consequence (it will not appear where they
+        // expect to pick it) is not something a Status badge conveys.
+        if archived_banner {
+            crate::components::StatusBanner {
+                tone: crate::components::BannerTone::Info,
+                class: "mb-4",
+                "This company is archived. Its history is kept, and it stays out of the default company list and pickers until its status is set back to Active."
+            }
         }
         PageHeader {
             title: "{header_title}",
@@ -1617,10 +2360,20 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 .filter(|s| !s.is_empty())
                 .collect();
                 let type_label = humanize_company_type(&company.company_type);
+                let is_archived = company.status == "inactive";
+                let status_label = match company.status.as_str() {
+                    "inactive" => "Inactive (archived)",
+                    "prospect" => "Prospect",
+                    // Empty from an older server reads as the default the
+                    // column itself carries.
+                    "" | "active" => "Active",
+                    other => other,
+                };
                 let website = company.website.clone();
                 let phone = company.phone.clone();
                 let industry = company.industry.clone();
                 let am_name = company.account_manager_name.clone();
+                let notes = company.notes.clone().unwrap_or_default();
                 let open_tickets = company.open_ticket_count.unwrap_or(0).max(0);
                 let contact_count = company.contact_count.unwrap_or(0).max(0);
                 let site_count = company.site_count.unwrap_or(0).max(0);
@@ -1707,6 +2460,18 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                 tenant_defaults_resource: tenant_branding_resource,
                                 company_resource,
                             }
+                            // MAPPS-614: near the bottom of the record, which
+                            // is where David asked for it. Rendered through
+                            // the shared component, so it is sanitised by the
+                            // same path as every other Markdown surface.
+                            // Hidden when empty, following the ticket
+                            // description's own rule, so a record nobody has
+                            // written on does not grow a blank card.
+                            if !notes.trim().is_empty() {
+                                Card { title: "Notes",
+                                    crate::components::Markdown { content: notes.clone() }
+                                }
+                            }
                         }
                         // Sidebar
                         div { class: "space-y-6",
@@ -1715,6 +2480,20 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                     div { class: "flex justify-between",
                                         dt { class: "text-sm text-muted", "Type" }
                                         dd { Badge { variant: BadgeVariant::Green, "{type_label}" } }
+                                    }
+                                    // MAPPS-575: the field the archive lives in,
+                                    // shown for every value rather than only the
+                                    // archived one, so "Active" is a fact the
+                                    // page states rather than an absence the
+                                    // reader has to infer.
+                                    div { class: "flex justify-between",
+                                        dt { class: "text-sm text-muted", "Status" }
+                                        dd {
+                                            Badge {
+                                                variant: if is_archived { BadgeVariant::Gray } else { BadgeVariant::Green },
+                                                "{status_label}"
+                                            }
+                                        }
                                     }
                                     if let Some(industry) = industry {
                                         if !industry.is_empty() {
@@ -1825,6 +2604,8 @@ struct CompanyDetail {
     #[serde(default)]
     company_type: String,
     #[serde(default)]
+    status: String,
+    #[serde(default)]
     industry: Option<String>,
     #[serde(default)]
     website: Option<String>,
@@ -1834,6 +2615,9 @@ struct CompanyDetail {
     address: Address,
     #[serde(default)]
     account_manager_name: Option<String>,
+    // MAPPS-614 / PMS-952: rendered as Markdown in the Notes card.
+    #[serde(default)]
+    notes: Option<String>,
     #[serde(default)]
     contact_count: Option<i64>,
     #[serde(default)]
@@ -1875,15 +2659,6 @@ struct SiteSummary {
     phone: Option<String>,
     #[serde(default)]
     timezone: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct PaginatedSites {
-    data: Vec<SiteSummary>,
-    // MAPPS-247: capped preview fetch carries the full count in `meta.total`
-    // so the collapsible Sites card can show how many sites exist.
-    #[serde(default)]
-    meta: PaginationMeta,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1941,6 +2716,8 @@ fn RowActions(
     let mut open = use_signal(|| false);
     let mut confirming = use_signal(|| false);
     let mut deleting = use_signal(|| false);
+    // MAPPS-574: the server's reason for refusing this row's delete.
+    let mut delete_error = use_signal(String::new);
     // MAPPS-357: gate the row Delete while the server is unreachable. Edit is
     // pure navigation and stays enabled.
     let can_mutate = crate::hooks::use_can_mutate();
@@ -1959,14 +2736,23 @@ fn RowActions(
             return;
         }
         deleting.set(true);
+        delete_error.set(String::new());
         let path = path.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
-                if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
-                    confirming.set(false);
-                    open.set(false);
-                    on_deleted.call(());
+                // MAPPS-574: this row menu deletes whatever `delete_path`
+                // points at, so it inherits every refusal the detail pages get.
+                // It used to leave the dialog open on failure with the spinner
+                // simply stopped, which reads as a hung request rather than a
+                // decision the server made.
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => {
+                        confirming.set(false);
+                        open.set(false);
+                        on_deleted.call(());
+                    }
+                    Err(err) => delete_error.set(err),
                 }
             }
             deleting.set(false);
@@ -1994,7 +2780,7 @@ fn RowActions(
                         open.set(false);
                     },
                 }
-                div { class: "absolute right-0 top-full z-50 mt-1 w-32 rounded-md bg-raised shadow-lg ring-1 ring-black/5 py-1 flex flex-col",
+                div { class: "dropdown-panel absolute right-0 top-full z-50 mt-1 w-32 py-1 flex flex-col",
                     button {
                         r#type: "button",
                         class: "px-3 py-1.5 text-left text-sm text-content hover:bg-surface-2",
@@ -2028,11 +2814,13 @@ fn RowActions(
             confirm_text: "Delete".to_string(),
             cancel_text: "Cancel".to_string(),
             destructive: true,
+            error: delete_error.read().clone(),
             loading: deleting(),
             onconfirm: on_confirm_delete,
             oncancel: move |_| {
                 if !deleting() {
                     confirming.set(false);
+                    delete_error.set(String::new());
                 }
             },
         }
@@ -2142,8 +2930,12 @@ fn CompanyContactsCard(
                                         let delete_path = format!("/contacts/contacts/{id}");
                                         let name = format!("{} {}", contact.first_name, contact.last_name).trim().to_string();
                                         let email = contact.email.clone().unwrap_or_default();
-                                        // MAPPS-283: render with separators.
-                                        let phone = format_phone(&contact.phone.clone().unwrap_or_default());
+                                        // MAPPS-481: the same primary-with-its-type cell as the
+                                        // contacts list, so every Phone column reads alike.
+                                        let phone = primary_phone_label(
+                                            &contact.phones,
+                                            contact.phone.as_deref().unwrap_or_default(),
+                                        );
                                         let role = humanize_contact_type(
                                             contact.contact_type.as_deref().unwrap_or_default(),
                                         );
@@ -2891,7 +3683,7 @@ fn AddContactModal(
         saving.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 // The server's `UpdateContactRequest` accepts a bare
                 // `company_id`; every other field is optional, so a
@@ -2997,7 +3789,7 @@ fn AddContactModal(
 #[component]
 fn CompanySitesCard(
     company_id: String,
-    mut sites_resource: Resource<Option<PaginatedSites>>,
+    mut sites_resource: Resource<Option<Vec<SiteSummary>>>,
     // The Statistics counters (Sites, Contacts, Open Tickets) read denormalized
     // counts off `company_resource`, not the child table resources. Restart it
     // after an add so the Sites counter refreshes in the same render cycle
@@ -3005,10 +3797,10 @@ fn CompanySitesCard(
     mut company_resource: Resource<Option<CompanyDetail>>,
 ) -> Element {
     let snap = sites_resource.read_unchecked();
-    // MAPPS-247: full count from the capped preview envelope feeds the
-    // collapsible header badge.
+    // MAPPS-528: every site is fetched, so the row count IS the full count
+    // that feeds the collapsible header badge.
     let count = match &*snap {
-        Some(Some(page)) => Some(page.meta.total),
+        Some(Some(rows)) => Some(rows.len() as u64),
         _ => None,
     };
     let mut editing = use_signal(|| None::<SiteFormState>);
@@ -3016,6 +3808,14 @@ fn CompanySitesCard(
     rsx! {
         CollapsibleCard {
             title: "Sites",
+            // MAPPS-597: say what a site IS, on the card that introduces them.
+            // The word was read as "web sites", which this page invites by
+            // carrying a Website field a few inches away. "Site" stays because
+            // it is what ConnectWise, HaloPSA and Atera call this and so is the
+            // word the audience already has; "Location" is taken by the
+            // appointment field, and "Office" is wrong for a warehouse or a
+            // datacenter. See the ticket for the rename that was rejected.
+            subtitle: "Offices, warehouses and other addresses where this company operates.",
             count,
             actions: rsx! {
                 Button {
@@ -3042,8 +3842,16 @@ fn CompanySitesCard(
                 match &*snap {
                     None => rsx! { TableLoading { columns: 4, rows: 2 } },
                     Some(None) => rsx! { TableEmpty { columns: 4, message: "Could not load sites.".to_string() } },
-                    Some(Some(page)) if page.data.is_empty() => rsx! {
-                        TableEmpty { columns: 4, message: "No sites for this company yet.".to_string() }
+                    Some(Some(page)) if page.is_empty() => rsx! {
+                        // MAPPS-597: an empty state is where a reader who does
+                        // not know what a site is meets the word. Saying only
+                        // that there are none teaches them nothing; this says
+                        // what to add and why they would.
+                        TableEmpty {
+                            columns: 4,
+                            message: "No locations recorded yet. Add the addresses you visit or support."
+                                .to_string(),
+                        }
                     },
                     Some(Some(page)) => {
                         // MAPPS-316: render every site the fetch
@@ -3051,7 +3859,7 @@ fn CompanySitesCard(
                         // the previous `.take(3)` capped the user
                         // out of seeing the rest because Sites has
                         // no "View all" escape link.
-                        let rows: Vec<_> = page.data.clone();
+                        let rows: Vec<_> = page.clone();
                         let company_id = company_id.clone();
                         rsx! {
                             TableBody {
@@ -3209,10 +4017,10 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
     let mut line2 = use_signal(|| initial.line2.clone());
     let mut city = use_signal(|| initial.city.clone());
     let mut state = use_signal(|| initial.state.clone());
-    let mut postal = use_signal(|| initial.postal_code.clone());
-    let mut country = use_signal(|| initial.country.clone());
-    let mut phone = use_signal(|| initial.phone.clone());
-    let mut timezone = use_signal(|| initial.timezone.clone());
+    let postal = use_signal(|| initial.postal_code.clone());
+    let country = use_signal(|| initial.country.clone());
+    let phone = use_signal(|| initial.phone.clone());
+    let timezone = use_signal(|| initial.timezone.clone());
     let mut is_primary = use_signal(|| initial.is_primary);
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
@@ -3294,7 +4102,7 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
         });
         let site_id = save_state.site_id.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let result: Result<(), String> = match site_id {
                     None => crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
@@ -3338,7 +4146,7 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/contacts/sites/{id}");
                 match crate::hooks::fetch::api::delete_authed(&path).await {
@@ -3388,6 +4196,14 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
             onclose: move |_| onclose.call(()),
             footer,
             div { class: "space-y-4",
+                // MAPPS-597: the same sentence the card carries, once, where
+                // somebody is about to type an address into the form. Only on
+                // the create path: an edit already has the answer in front of it.
+                if !is_edit {
+                    p { class: "text-sm text-muted",
+                        "A site is an office, warehouse or other address where this company operates."
+                    }
+                }
                 if !error.read().is_empty() {
                     ErrorBanner { "{error.read()}" }
                 }
@@ -3429,7 +4245,7 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
                         label: "Postal Code",
                         value: postal.read().clone(),
                         error: postal_err(),
-                        oninput: move |e: FormEvent| postal.set(e.value()),
+                        oninput: clear_on_edit(postal, postal_err),
                     }
                     crate::components::Input {
                         name: "site_country",
@@ -3437,14 +4253,14 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
                         placeholder: "US",
                         value: country.read().clone(),
                         error: country_err(),
-                        oninput: move |e: FormEvent| country.set(e.value()),
+                        oninput: clear_on_edit(country, country_err),
                     }
                     crate::components::Input {
                         name: "site_phone",
                         label: "Phone",
                         value: phone.read().clone(),
                         error: phone_err(),
-                        oninput: move |e: FormEvent| phone.set(e.value()),
+                        oninput: clear_on_edit(phone, phone_err),
                     }
                     crate::components::Input {
                         name: "site_timezone",
@@ -3452,7 +4268,7 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
                         placeholder: "e.g. America/New_York",
                         value: timezone.read().clone(),
                         error: tz_err(),
-                        oninput: move |e: FormEvent| timezone.set(e.value()),
+                        oninput: clear_on_edit(timezone, tz_err),
                     }
                 }
                 crate::components::Checkbox {
@@ -3889,6 +4705,12 @@ fn CompanyInvoicesCard(
         "/invoices/new?company_id={}",
         urlencoding_minimal(&company_id)
     );
+    // MAPPS-639: the company's account over a period, seeded with this
+    // company the same way View All is.
+    let statement_href = format!(
+        "/statements?company_id={}",
+        urlencoding_minimal(&company_id)
+    );
     rsx! {
         CollapsibleCard {
             title: "Invoices",
@@ -3898,6 +4720,11 @@ fn CompanyInvoicesCard(
                     href: "{new_invoice_href}",
                     class: "text-sm text-accent hover:opacity-90",
                     "New Invoice"
+                }
+                a {
+                    href: "{statement_href}",
+                    class: "text-sm text-accent hover:opacity-90",
+                    "Statement"
                 }
                 a {
                     href: "{view_all_href}",
@@ -3970,7 +4797,7 @@ fn CompanyInvoicesCard(
 fn CompanyAssetsCard(
     company_id: String,
     mut assets_resource: Resource<Option<Paginated<AssetSummary>>>,
-    asset_types_resource: Resource<Option<Paginated<AssetTypeOption>>>,
+    asset_types_resource: Resource<Option<Vec<AssetTypeOption>>>,
 ) -> Element {
     let snap = assets_resource.read_unchecked();
     let count = match &*snap {
@@ -3989,8 +4816,7 @@ fn CompanyAssetsCard(
     let type_name = |id: &Option<uuid::Uuid>| -> String {
         match id {
             Some(tid) => match &*types_snap {
-                Some(Some(page)) => page
-                    .data
+                Some(Some(types)) => types
                     .iter()
                     .find(|t| &t.id == tid)
                     .map(|t| t.name.clone())
@@ -4326,12 +5152,7 @@ pub fn ContactListPage() -> Element {
                             onsort: move |_| toggle_sort(&mut sort, ContactSortKey::Name, &mut page),
                             "Name"
                         }
-                        TableHeader {
-                            sortable: true,
-                            sort_direction: sort_dir_for(&sort_snapshot, ContactSortKey::Company),
-                            onsort: move |_| toggle_sort(&mut sort, ContactSortKey::Company, &mut page),
-                            "Company"
-                        }
+                        TableHeader { "Company" }
                         TableHeader { "Email" }
                         TableHeader { "Phone" }
                         TableHeader { "Role" }
@@ -4379,17 +5200,40 @@ pub fn ContactListPage() -> Element {
                 } else {
                     TableBody {
                         for contact in page_rows.iter().cloned() {
-                            ContactRow {
-                                key: "{contact.id}",
-                                id: contact.id.to_string(),
-                                name: format!("{} {}", contact.first_name, contact.last_name).trim().to_string(),
-                                company: contact.company_name.clone().unwrap_or_default(),
-                                company_id: contact.company_id.map(|id| id.to_string()).unwrap_or_default(),
-                                email: contact.email.clone().unwrap_or_default(),
-                                phone: contact.phone.clone().unwrap_or_default(),
-                                role: humanize_contact_type(
-                                    contact.contact_type.as_deref().unwrap_or_default(),
-                                ),
+                            // MAPPS-481: the Company cell shows the primary
+                            // link plus a "+N" for the rest, and the Phone cell
+                            // the primary number with its type. Both fall back
+                            // to the `company_id` / `phone` mirrors, which is
+                            // also the freeform-company case (no link at all).
+                            {
+                                let primary_company = primary_entry(&contact.companies, |c| c.is_primary);
+                                let company = primary_company
+                                    .and_then(|c| c.company_name.clone())
+                                    .or_else(|| contact.company_name.clone())
+                                    .unwrap_or_default();
+                                let company_id = primary_company
+                                    .and_then(|c| c.company_id)
+                                    .or(contact.company_id)
+                                    .map(|id| id.to_string())
+                                    .unwrap_or_default();
+                                rsx! {
+                                    ContactRow {
+                                        key: "{contact.id}",
+                                        id: contact.id.to_string(),
+                                        name: format!("{} {}", contact.first_name, contact.last_name).trim().to_string(),
+                                        company,
+                                        company_id,
+                                        company_extra: extra_company_suffix(contact.companies.len()),
+                                        email: contact.email.clone().unwrap_or_default(),
+                                        phone: primary_phone_label(
+                                            &contact.phones,
+                                            contact.phone.as_deref().unwrap_or_default(),
+                                        ),
+                                        role: humanize_contact_type(
+                                            contact.contact_type.as_deref().unwrap_or_default(),
+                                        ),
+                                    }
+                                }
                             }
                         }
                     }
@@ -4405,7 +5249,12 @@ struct ContactRowProps {
     name: String,
     company: String,
     company_id: String,
+    /// MAPPS-481: "+N" for the company links beyond the one shown; empty when
+    /// the contact links at most one.
+    company_extra: String,
     email: String,
+    /// MAPPS-481: the primary number already rendered with its type and
+    /// separators, because the cell shows one of a list rather than a field.
     phone: String,
     role: String,
 }
@@ -4437,12 +5286,22 @@ fn ContactRow(props: ContactRowProps) -> Element {
                     }
                 } else {
                     span { class: "text-muted", "{props.company}" }
+                    // MAPPS-484: say the name is a typed string, not a company
+                    // record. Link colour alone was the only signal before.
+                    if !props.company.is_empty() {
+                        span { class: "text-subtle ml-1", "(typed)" }
+                    }
+                }
+                // MAPPS-481: the contact links more companies than the one
+                // shown; the detail page lists them all.
+                if !props.company_extra.is_empty() {
+                    span { class: "text-subtle ml-1", "{props.company_extra}" }
                 }
             }
             TableCell { "{props.email}" }
-            // MAPPS-283: route the phone column through `format_phone`
-            // so the cell shows `(555) 123-4567` not `5551234567`.
-            TableCell { {format_phone(&props.phone)} }
+            // MAPPS-481: the primary number with its type, already formatted
+            // by `primary_phone_label` (which keeps the MAPPS-283 separators).
+            TableCell { "{props.phone}" }
             TableCell { "{props.role}" }
         }
     }
@@ -4467,9 +5326,14 @@ pub fn ContactNewPage() -> Element {
     let prefill = use_signal(read_company_prefill_from_url);
     let prefill = prefill.read().clone();
 
+    // MAPPS-481: the prefill seeds the first row of the company list rather
+    // than a single company field.
     let initial = ContactFormValues {
-        company_id: prefill.id.clone(),
-        company_name: prefill.name.clone(),
+        companies: company_rows_from_remote(
+            &[],
+            uuid::Uuid::parse_str(&prefill.id).ok(),
+            Some(&prefill.name),
+        ),
         contact_type: "other".to_string(),
         ..ContactFormValues::default()
     };
@@ -4530,16 +5394,26 @@ struct CompanyPrefill {
 }
 
 fn read_company_prefill_from_url() -> CompanyPrefill {
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     {
-        if let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) {
-            if let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) {
-                let id = params.get("company_id").unwrap_or_default();
-                let name = params.get("company_name").unwrap_or_default();
-                if uuid::Uuid::parse_str(&id).is_ok() {
-                    return CompanyPrefill { id, name };
-                }
-            }
+        // MAPPS-664: read the boot-time snapshot instead of live
+        // `window.location.search`. The Dioxus 0.7 router calls
+        // `history.replaceState()` on mount for routes whose
+        // `#[route(...)]` pattern declares no query params
+        // (`Route::ContactNew` is `#[route("/contacts/new")]`), which
+        // erases `?company_id=X&company_name=Y` before this component
+        // renders. The MAPPS-1 hard-nav from the Company page's + New
+        // Contact button preserves the query across the network round-
+        // trip, but the router still strips it once wasm boots. The
+        // OIDC flow captures `window.location.search` once in `main()`
+        // for the same reason (see `flow::snapshot_initial_search`);
+        // reuse that snapshot so `?company_id=` survives to here.
+        let search = crate::modules::oidc::initial_search();
+        let params = crate::utils::url::QueryString::parse(&search);
+        let id = params.get("company_id").unwrap_or_default();
+        let name = params.get("company_name").unwrap_or_default();
+        if uuid::Uuid::parse_str(&id).is_ok() {
+            return CompanyPrefill { id, name };
         }
     }
     CompanyPrefill::default()
@@ -4601,12 +5475,19 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
                 }
             },
             Some(Some(payload)) => {
+                // MAPPS-481: the child lists round-trip; the freeform name is
+                // seeded only when the contact links no company, which is the
+                // one case it can be set in (a link plus a freeform name is a
+                // 422 on the server).
+                let companies = company_rows_from_remote(
+                    &payload.companies,
+                    payload.company_id,
+                    payload.company_name.as_deref(),
+                );
                 let initial = ContactFormValues {
                     first_name: payload.first_name.clone(),
                     last_name: payload.last_name.clone(),
                     email: payload.email.clone().unwrap_or_default(),
-                    phone: payload.phone.clone().unwrap_or_default(),
-                    mobile: payload.mobile.clone().unwrap_or_default(),
                     title: payload.title.clone().unwrap_or_default(),
                     department: payload.department.clone().unwrap_or_default(),
                     contact_type: if payload.contact_type.is_empty() {
@@ -4614,11 +5495,18 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
                     } else {
                         payload.contact_type.clone()
                     },
-                    company_id: payload
-                        .company_id
-                        .map(|id| id.to_string())
-                        .unwrap_or_default(),
-                    company_name: payload.company_name.clone().unwrap_or_default(),
+                    company_name: if companies.is_empty() {
+                        payload.company_name.clone().unwrap_or_default()
+                    } else {
+                        String::new()
+                    },
+                    phones: phone_rows_from_remote(
+                        &payload.phones,
+                        payload.phone.as_deref(),
+                        payload.mobile.as_deref(),
+                    ),
+                    companies,
+                    notes: payload.notes.clone().unwrap_or_default(),
                 };
                 let id = id_for_form.clone();
                 rsx! {
@@ -4650,12 +5538,44 @@ struct ContactEditPayload {
     department: Option<String>,
     #[serde(default)]
     contact_type: String,
+    // MAPPS-614 / PMS-952: the free-text note, held and rendered as Markdown.
+    #[serde(default)]
+    notes: Option<String>,
     // MAPPS-251: optional so a freeform-company contact (company_name only,
     // no FK) deserializes without a null/absent company_id panicking.
     #[serde(default)]
     company_id: Option<uuid::Uuid>,
     #[serde(default)]
     company_name: Option<String>,
+    // MAPPS-481: `#[serde(default)]` so a pre-PMS-806 response still decodes
+    // and the form falls back to the scalar mirrors above.
+    #[serde(default)]
+    phones: Vec<RemotePhone>,
+    #[serde(default)]
+    companies: Vec<RemoteCompanyLink>,
+}
+
+/// MAPPS-481: one editable row of the contact form's phone list. `error` is
+/// the row's own inline slot, so one bad number never masks another's message
+/// (see the repeating-child-row rules in `docs/form-conventions.md`).
+#[derive(Clone, Debug, Default, PartialEq)]
+struct PhoneRow {
+    phone_type: String,
+    number: String,
+    extension: String,
+    is_primary: bool,
+    error: String,
+}
+
+/// MAPPS-481: one editable row of the contact form's company list. Always a
+/// linked CRM company; the freeform typed name is the no-linked-company case
+/// and lives in its own signal.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct CompanyRow {
+    company_id: String,
+    company_name: String,
+    title: String,
+    is_primary: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -4663,13 +5583,188 @@ struct ContactFormValues {
     first_name: String,
     last_name: String,
     email: String,
-    phone: String,
-    mobile: String,
     title: String,
     department: String,
     contact_type: String,
-    company_id: String,
+    /// MAPPS-481: the freeform typed company name (MAPPS-251), which is the
+    /// no-linked-company case and so is only ever set while `companies` is
+    /// empty.
     company_name: String,
+    phones: Vec<PhoneRow>,
+    companies: Vec<CompanyRow>,
+    notes: String,
+}
+
+/// MAPPS-481: seed the form's phone rows from a loaded contact. The PMS-806
+/// list wins; a response that carries none (a server that predates it) falls
+/// back to the `phone` / `mobile` mirrors so an edit does not silently drop
+/// the numbers already on the record.
+fn phone_rows_from_remote(
+    phones: &[RemotePhone],
+    phone: Option<&str>,
+    mobile: Option<&str>,
+) -> Vec<PhoneRow> {
+    if !phones.is_empty() {
+        return phones
+            .iter()
+            .map(|p| PhoneRow {
+                phone_type: normalize_phone_type(&p.phone_type).to_string(),
+                number: p.number.clone(),
+                extension: p.extension.clone().unwrap_or_default(),
+                is_primary: p.is_primary,
+                error: String::new(),
+            })
+            .collect();
+    }
+    let mut rows = Vec::new();
+    for (value, phone_type) in [(phone, "work"), (mobile, "mobile")] {
+        let number = value.unwrap_or_default().trim();
+        if !number.is_empty() {
+            rows.push(PhoneRow {
+                phone_type: phone_type.to_string(),
+                number: number.to_string(),
+                is_primary: rows.is_empty(),
+                ..PhoneRow::default()
+            });
+        }
+    }
+    rows
+}
+
+/// MAPPS-481: seed the form's company rows from a loaded contact. As with
+/// phones, the PMS-806 list wins and the single `company_id` mirror is the
+/// fallback. A freeform-only contact has neither and stays on the typed-name
+/// path.
+fn company_rows_from_remote(
+    companies: &[RemoteCompanyLink],
+    company_id: Option<uuid::Uuid>,
+    company_name: Option<&str>,
+) -> Vec<CompanyRow> {
+    if !companies.is_empty() {
+        return companies
+            .iter()
+            .filter_map(|c| {
+                Some(CompanyRow {
+                    company_id: c.company_id?.to_string(),
+                    company_name: c.company_name.clone().unwrap_or_default(),
+                    title: c.title.clone().unwrap_or_default(),
+                    is_primary: c.is_primary,
+                })
+            })
+            .collect();
+    }
+    match company_id {
+        Some(id) => vec![CompanyRow {
+            company_id: id.to_string(),
+            company_name: company_name.unwrap_or_default().to_string(),
+            title: String::new(),
+            is_primary: true,
+        }],
+        None => Vec::new(),
+    }
+}
+
+/// MAPPS-481: validate every phone row and build the request's `phones`
+/// array. Evaluates ALL rows before bailing and returns one message per row
+/// (empty where the row passed), so no row's failure masks another's, per the
+/// every-required-field rule in `docs/form-conventions.md`.
+///
+/// A row whose number is blank is dropped rather than rejected: an added row
+/// the user left empty is not a number, and a contact with none is valid.
+/// The surviving entries keep their form order, which is the `sort_order`
+/// PMS-806 derives from the array index, and exactly one carries
+/// `is_primary` - the flagged row, or the first when none is flagged.
+fn validate_phone_rows(rows: &[PhoneRow]) -> Result<Vec<serde_json::Value>, Vec<String>> {
+    let mut errors = vec![String::new(); rows.len()];
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    let mut primary_at: Option<usize> = None;
+
+    for (index, row) in rows.iter().enumerate() {
+        // The message lands in this row's own slot, so "Number" is the whole
+        // label the reader needs.
+        match validate_phone_field(&row.number, "Number") {
+            Err(message) => errors[index] = message,
+            // Blank row: nothing to send.
+            Ok(serde_json::Value::Null) => {}
+            Ok(number) => {
+                if row.is_primary && primary_at.is_none() {
+                    primary_at = Some(entries.len());
+                }
+                entries.push(serde_json::json!({
+                    "phone_type": normalize_phone_type(&row.phone_type),
+                    "number": number,
+                    "extension": optional_string(&row.extension),
+                    "is_primary": false,
+                }));
+            }
+        }
+    }
+
+    if errors.iter().any(|e| !e.is_empty()) {
+        return Err(errors);
+    }
+    // Send the promotion explicitly instead of leaning on the server's
+    // promote-the-first rule, so the saved primary is the one the form shows.
+    if let Some(index) = primary_at.or(if entries.is_empty() { None } else { Some(0) }) {
+        entries[index]["is_primary"] = serde_json::json!(true);
+    }
+    Ok(entries)
+}
+
+/// MAPPS-481: build the request's `companies` array from the form's rows,
+/// applying the same single-primary rule as [`validate_phone_rows`]. Rows
+/// carry an already-picked company id, so there is nothing left to validate.
+fn company_link_entries(rows: &[CompanyRow]) -> Vec<serde_json::Value> {
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    let mut primary_at: Option<usize> = None;
+    for row in rows {
+        if row.is_primary && primary_at.is_none() {
+            primary_at = Some(entries.len());
+        }
+        entries.push(serde_json::json!({
+            "company_id": row.company_id,
+            "title": optional_string(&row.title),
+            "is_primary": false,
+        }));
+    }
+    if let Some(index) = primary_at.or(if entries.is_empty() { None } else { Some(0) }) {
+        entries[index]["is_primary"] = serde_json::json!(true);
+    }
+    entries
+}
+
+/// MAPPS-484: the contact form's two company paths, each named for what it
+/// does. The old freeform toggle read "+ Add Company", which is a create
+/// label on a control that creates nothing; the picker's own "+ New company"
+/// button is the create affordance now.
+const FREEFORM_TOGGLE_LABEL: &str = "Enter a name without creating a company";
+const LINK_COMPANY_TOGGLE_LABEL: &str = "Link an existing company";
+
+/// MAPPS-484: marks a company name that is a typed string rather than a
+/// `companies` row, so link colour is not the only signal.
+const FREEFORM_COMPANY_NOTE: &str = "Typed name - not a company record.";
+
+/// MAPPS-481: the label on the control that appends a company LINK. Now that
+/// a contact holds several companies, "add" means "add another company" and
+/// nothing else; the picker's own "+ New company" button stays the only
+/// control on the form that creates a `companies` row (MAPPS-484).
+fn add_company_label(linked: usize) -> &'static str {
+    if linked == 0 {
+        "Add a company"
+    } else {
+        "Add another company"
+    }
+}
+
+/// MAPPS-484: the consequence of the typed-name path, stated in the value the
+/// user typed. Empty while nothing has been typed, so the form renders no note.
+fn freeform_company_note(value: &str) -> String {
+    let name = value.trim();
+    if name.is_empty() {
+        String::new()
+    } else {
+        format!("Saved as a typed name. {name} will not appear under Companies.")
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4688,11 +5783,9 @@ struct ContactFormProps {
 fn ContactForm(props: ContactFormProps) -> Element {
     let initial = props.initial.clone();
     let mode = props.mode.clone();
-    let mut first_name = use_signal(|| initial.first_name.clone());
-    let mut last_name = use_signal(|| initial.last_name.clone());
-    let mut email = use_signal(|| initial.email.clone());
-    let mut phone = use_signal(|| initial.phone.clone());
-    let mut mobile = use_signal(|| initial.mobile.clone());
+    let first_name = use_signal(|| initial.first_name.clone());
+    let last_name = use_signal(|| initial.last_name.clone());
+    let email = use_signal(|| initial.email.clone());
     let mut title = use_signal(|| initial.title.clone());
     let mut department = use_signal(|| initial.department.clone());
     let mut contact_type = use_signal(|| {
@@ -4702,7 +5795,6 @@ fn ContactForm(props: ContactFormProps) -> Element {
             initial.contact_type.clone()
         }
     });
-    let mut company_id = use_signal(|| initial.company_id.clone());
     let mut company_name = use_signal(|| initial.company_name.clone());
     // MAPPS-396 / PMS-729: single-shot "create contact + grant portal
     // access" checkbox. Only wired in Create mode (Edit uses the
@@ -4712,12 +5804,20 @@ fn ContactForm(props: ContactFormProps) -> Element {
     // `create_portal_access: true` and the server mints the setup token
     // and dispatches the auth.welcome email in the same transaction.
     let mut create_portal_access = use_signal(|| false);
+    // MAPPS-481: the two child collections. Row order is the order the server
+    // stores (it derives `sort_order` from the array index).
+    let mut phones = use_signal(|| initial.phones.clone());
+    let mut companies = use_signal(|| initial.companies.clone());
+    let mut notes = use_signal(|| initial.notes.clone());
+    // MAPPS-481: the "+ Add another company" picker, shown only while the user
+    // is adding one, and the inline note for picking one already in the list.
+    let mut adding_company = use_signal(|| false);
+    let mut company_add_note = use_signal(String::new);
     // MAPPS-251: a contact's company can be a freeform typed name instead of an
-    // FK-linked CRM company. Open in freeform mode when the loaded contact has a
-    // company_name but no resolvable company_id (a freeform-only contact); else
-    // open in the existing "link a CRM company" picker mode.
-    let initial_freeform = uuid::Uuid::parse_str(initial.company_id.as_str()).is_err()
-        && !initial.company_name.trim().is_empty();
+    // FK-linked CRM company. MAPPS-481: that path is the no-linked-company
+    // case, so it opens only when the loaded contact links none and carries a
+    // typed name.
+    let initial_freeform = initial.companies.is_empty() && !initial.company_name.trim().is_empty();
     let mut freeform_mode = use_signal(|| initial_freeform);
     let mut freeform_company = use_signal(|| {
         if initial_freeform {
@@ -4728,12 +5828,11 @@ fn ContactForm(props: ContactFormProps) -> Element {
     });
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
-    // Per-field inline validation errors (MAPPS-177, MAPPS-265).
+    // Per-field inline validation errors (MAPPS-177, MAPPS-265). Phone errors
+    // live on their own row (MAPPS-481), not in a shared slot.
     let mut first_name_err = use_signal(String::new);
     let mut last_name_err = use_signal(String::new);
     let mut email_err = use_signal(String::new);
-    let mut phone_err = use_signal(String::new);
-    let mut mobile_err = use_signal(String::new);
 
     let type_options = vec![
         SelectOption::new("primary", "Primary"),
@@ -4741,6 +5840,10 @@ fn ContactForm(props: ContactFormProps) -> Element {
         SelectOption::new("billing", "Billing"),
         SelectOption::new("other", "Other"),
     ];
+    let phone_type_options: Vec<SelectOption> = PHONE_TYPES
+        .iter()
+        .map(|(value, label)| SelectOption::new(*value, *label))
+        .collect();
 
     let navigator = use_navigator();
     // MAPPS-357: block the Create / Save submit while the server is
@@ -4750,6 +5853,11 @@ fn ContactForm(props: ContactFormProps) -> Element {
         ContactFormMode::Create => "Create Contact",
         ContactFormMode::Edit { .. } => "Save Changes",
     };
+    // MAPPS-423: Cancel returns to what the user was editing, not to the list.
+    let cancel_route = match &mode {
+        ContactFormMode::Create => Route::ContactList {},
+        ContactFormMode::Edit { id } => Route::ContactDetail { id: id.clone() },
+    };
 
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
@@ -4757,8 +5865,11 @@ fn ContactForm(props: ContactFormProps) -> Element {
         first_name_err.set(String::new());
         last_name_err.set(String::new());
         email_err.set(String::new());
-        phone_err.set(String::new());
-        mobile_err.set(String::new());
+        // MAPPS-481: clear every phone row's own slot, same as the fixed
+        // fields it replaced.
+        for row in phones.write().iter_mut() {
+            row.error.clear();
+        }
 
         // MAPPS-281: trim required name fields client-side so a
         // whitespace-only value cannot satisfy the browser's native
@@ -4782,54 +5893,62 @@ fn ContactForm(props: ContactFormProps) -> Element {
             guard.note_invalid(Some("last_name"));
         }
 
-        // MAPPS-251: company is optional - an FK-linked CRM company (company_id)
-        // OR a freeform typed name (company_name), not both. The XOR error has no
-        // inline slot, so it goes to the banner; note_invalid blocks and ties
-        // focus to the freeform input.
-        let picked_company = uuid::Uuid::parse_str(company_id.read().as_str()).ok();
+        // MAPPS-251 / MAPPS-481: company is optional - any number of linked CRM
+        // companies OR a freeform typed name, never both (the server 422s on
+        // the pair). The XOR error has no inline slot, so it goes to the
+        // banner; note_invalid blocks and ties focus to the freeform input.
+        let company_rows = companies.read().clone();
         let freeform_name = freeform_company.read().trim().to_string();
-        if picked_company.is_some() && !freeform_name.is_empty() {
-            error.set("Pick an existing company or type a new one, not both.".to_string());
+        if !company_rows.is_empty() && !freeform_name.is_empty() {
+            error.set("Link companies or type a name, not both.".to_string());
             guard.note_invalid(Some("company_name_freeform"));
         }
 
-        // Validate phone/mobile inline before submit (MAPPS-177). The bespoke
-        // validator parses-and-returns the value the body uses.
-        let phone_res = validate_phone_field(&phone.read(), "Phone");
-        if let Err(msg) = &phone_res {
-            phone_err.set(msg.clone());
-            guard.note_invalid(Some("phone"));
-        }
-        let mobile_res = validate_phone_field(&mobile.read(), "Mobile");
-        if let Err(msg) = &mobile_res {
-            mobile_err.set(msg.clone());
-            guard.note_invalid(Some("mobile"));
-        }
+        // MAPPS-481: every phone row is validated and every failure lands in
+        // that row's own slot before the submit bails once.
+        let phone_rows = phones.read().clone();
+        let phone_entries = match validate_phone_rows(&phone_rows) {
+            Ok(entries) => Some(entries),
+            Err(messages) => {
+                let mut rows = phones.write();
+                for (index, message) in messages.iter().enumerate() {
+                    if message.is_empty() {
+                        continue;
+                    }
+                    rows[index].error = message.clone();
+                    guard.note_invalid(Some(&format!("phone_number_{index}")));
+                }
+                None
+            }
+        };
 
         if guard.blocked() {
             return;
         }
-        let phone_value = phone_res.expect("phone validated above");
-        let mobile_value = mobile_res.expect("mobile validated above");
+        let phone_entries = phone_entries.expect("phone rows validated above");
+        let company_entries = company_link_entries(&company_rows);
         is_submitting.set(true);
 
+        let has_links = !company_entries.is_empty();
         let mut body = serde_json::json!({
             "first_name": first_name.read().trim(),
             "last_name": last_name.read().trim(),
             "email": optional_string(&email.read()),
-            "phone": phone_value,
-            "mobile": mobile_value,
             "title": optional_string(&title.read()),
             "department": optional_string(&department.read()),
             "contact_type": contact_type.read().clone(),
+            // PMS-806: both lists are authoritative when present, and both are
+            // always sent, so removing the last row really unlinks.
+            "phones": phone_entries,
+            "companies": company_entries,
+            // MAPPS-251: the freeform typed name is the no-linked-company case.
+            // Sent as `""` whenever a company is linked, which clears any name
+            // stored by an earlier save (a link plus a name is a 422).
+            "company_name": if has_links { "" } else { freeform_name.as_str() },
+            // MAPPS-614: always a string, never null, for the same reason
+            // `company_name` above is. See `clearable_string`.
+            "notes": clearable_string(&notes.read()),
         });
-        // MAPPS-251: send company_id when a CRM company is picked, company_name
-        // when a freeform name is typed, and neither when left blank.
-        if let Some(company_uuid) = picked_company {
-            body["company_id"] = serde_json::json!(company_uuid);
-        } else if !freeform_name.is_empty() {
-            body["company_name"] = serde_json::json!(freeform_name);
-        }
         // MAPPS-396 / PMS-729: opt-in single-shot "create + grant portal
         // access". Only sent on Create (Edit ignores it; the toggle on
         // the detail page owns the grant/revoke there).
@@ -4839,7 +5958,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
         let mode = mode.clone();
         let mode_for_toast = mode.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 #[derive(serde::Deserialize)]
                 struct ContactId {
@@ -4880,12 +5999,20 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         } else {
                             let mut leftover = Vec::new();
                             for fe in fields {
+                                // MAPPS-481: PMS-806 names a bad entry
+                                // `phones[i].number`, so route it to that row's
+                                // own slot rather than the banner.
+                                if let Some(index) = phone_row_index(&fe.field) {
+                                    let mut rows = phones.write();
+                                    if let Some(row) = rows.get_mut(index) {
+                                        row.error = fe.message.clone();
+                                        continue;
+                                    }
+                                }
                                 match fe.field.as_str() {
                                     "first_name" => first_name_err.set(fe.message.clone()),
                                     "last_name" => last_name_err.set(fe.message.clone()),
                                     "email" => email_err.set(fe.message.clone()),
-                                    "phone" => phone_err.set(fe.message.clone()),
-                                    "mobile" => mobile_err.set(fe.message.clone()),
                                     _ => leftover.push(fe.message.clone()),
                                 }
                             }
@@ -4903,12 +6030,10 @@ fn ContactForm(props: ContactFormProps) -> Element {
         });
     };
 
-    let picker_selected_id: Option<String> =
-        if uuid::Uuid::parse_str(company_id.read().as_str()).is_ok() {
-            Some(company_id.read().clone())
-        } else {
-            None
-        };
+    // MAPPS-481: snapshots, so the rsx below holds no signal borrow while a
+    // row handler writes back into the same signal.
+    let phone_rows = phones.read().clone();
+    let company_rows = companies.read().clone();
 
     rsx! {
         Card {
@@ -4927,7 +6052,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         required: true,
                         value: first_name.read().clone(),
                         error: first_name_err(),
-                        oninput: move |e: FormEvent| first_name.set(e.value()),
+                        oninput: clear_on_edit(first_name, first_name_err),
                     }
                     crate::components::Input {
                         name: "last_name",
@@ -4935,7 +6060,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         required: true,
                         value: last_name.read().clone(),
                         error: last_name_err(),
-                        oninput: move |e: FormEvent| last_name.set(e.value()),
+                        oninput: clear_on_edit(last_name, last_name_err),
                     }
                     crate::components::Input {
                         name: "email",
@@ -4943,7 +6068,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         r#type: "email",
                         value: email.read().clone(),
                         error: email_err(),
-                        oninput: move |e: FormEvent| email.set(e.value()),
+                        oninput: clear_on_edit(email, email_err),
                     }
                     crate::components::SuggestInput {
                         name: "title",
@@ -4952,20 +6077,6 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         help: "Free text. Suggestions are titles already used in your workspace.",
                         value: title.read().clone(),
                         oninput: move |v: String| title.set(v),
-                    }
-                    crate::components::Input {
-                        name: "phone",
-                        label: "Phone",
-                        value: phone.read().clone(),
-                        error: phone_err(),
-                        oninput: move |e: FormEvent| phone.set(e.value()),
-                    }
-                    crate::components::Input {
-                        name: "mobile",
-                        label: "Mobile",
-                        value: mobile.read().clone(),
-                        error: mobile_err(),
-                        oninput: move |e: FormEvent| mobile.set(e.value()),
                     }
                     crate::components::SuggestInput {
                         name: "department",
@@ -4984,32 +6095,153 @@ fn ContactForm(props: ContactFormProps) -> Element {
                     }
                 }
 
-                // MAPPS-251: company is optional and can be entered two ways. The
-                // toggle flips between "link an existing CRM company" (the picker)
-                // and "+ Add Company" (a freeform typed name that creates no
-                // `companies` row). Switching modes clears the other mode's value
-                // so only one company source is ever submitted.
-                div { class: "space-y-2",
-                    div { class: "flex items-center justify-between",
-                        span { class: "block text-sm font-medium text-content", "Company" }
-                        button {
-                            r#type: "button",
-                            class: "inline-flex items-center text-sm text-blue-600 hover:text-blue-500",
-                            onclick: move |_| {
-                                let next = !*freeform_mode.read();
-                                if next {
-                                    company_id.set(String::new());
-                                    company_name.set(String::new());
-                                } else {
-                                    freeform_company.set(String::new());
+                // MAPPS-481: the phone list. Any number of typed numbers, each
+                // with its own type, extension, primary radio and remove
+                // control, and each with its own error slot so one bad number
+                // never masks another's message. Zero rows is valid.
+                fieldset { class: "space-y-2",
+                    legend { class: "block text-sm font-medium text-content", "Phone Numbers" }
+                    if phone_rows.is_empty() {
+                        p { class: "text-xs text-muted", "No phone numbers yet. A contact can be saved without one." }
+                    }
+                    for (index, row) in phone_rows.iter().cloned().enumerate() {
+                        div {
+                            key: "{index}",
+                            class: "rounded-md border border-line p-3 space-y-2",
+                            div { class: "grid grid-cols-1 gap-3 sm:grid-cols-12",
+                                div { class: "sm:col-span-3",
+                                    Select {
+                                        name: "phone_type_{index}",
+                                        label: "Type",
+                                        options: phone_type_options.clone(),
+                                        value: row.phone_type.clone(),
+                                        onchange: move |e: FormEvent| {
+                                            phones.write()[index].phone_type = e.value();
+                                        },
+                                    }
                                 }
-                                freeform_mode.set(next);
-                            },
-                            if *freeform_mode.read() {
-                                "Link existing company"
-                            } else {
-                                PlusIcon { size: IconSize::Small, class: "mr-1".to_string() }
-                                "Add Company"
+                                div { class: "sm:col-span-6",
+                                    crate::components::Input {
+                                        name: "phone_number_{index}",
+                                        label: "Number",
+                                        value: row.number.clone(),
+                                        error: row.error.clone(),
+                                        oninput: move |e: FormEvent| {
+                                            let mut rows = phones.write();
+                                            rows[index].number = e.value();
+                                            rows[index].error.clear();
+                                        },
+                                    }
+                                }
+                                div { class: "sm:col-span-3",
+                                    crate::components::Input {
+                                        name: "phone_extension_{index}",
+                                        label: "Extension",
+                                        maxlength: 20,
+                                        value: row.extension.clone(),
+                                        oninput: move |e: FormEvent| {
+                                            phones.write()[index].extension = e.value();
+                                        },
+                                    }
+                                }
+                            }
+                            div { class: "flex items-center justify-between",
+                                label { class: "flex items-center gap-2 text-sm text-content",
+                                    input {
+                                        r#type: "radio",
+                                        name: "phone_primary",
+                                        checked: row.is_primary,
+                                        // Single-select: marking one row primary
+                                        // clears the flag on every other row.
+                                        onchange: move |_| {
+                                            let mut rows = phones.write();
+                                            for (i, r) in rows.iter_mut().enumerate() {
+                                                r.is_primary = i == index;
+                                            }
+                                        },
+                                    }
+                                    "Primary"
+                                }
+                                crate::components::IconButton {
+                                    label: "Remove phone number".to_string(),
+                                    class: "p-1 text-subtle hover:text-red-600 dark:hover:text-red-400".to_string(),
+                                    onclick: move |_| { phones.write().remove(index); },
+                                    crate::components::TrashIcon { size: IconSize::Small }
+                                }
+                            }
+                        }
+                    }
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        size: ButtonSize::Small,
+                        onclick: move |_| {
+                            // The first number added is the primary one; after
+                            // that the user picks.
+                            let is_first = phones.read().is_empty();
+                            phones.write().push(PhoneRow {
+                                phone_type: "mobile".to_string(),
+                                is_primary: is_first,
+                                ..PhoneRow::default()
+                            });
+                        },
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "Add phone number"
+                    }
+                }
+
+                // MAPPS-251: company is optional and can be entered two ways -
+                // link CRM companies (the picker) or type a name that creates
+                // no `companies` row. Switching modes clears the other mode's
+                // value so only one company source is ever submitted.
+                // MAPPS-484: the picker's own "+ New company" button is the
+                // visible create affordance and it really does create; the
+                // typed-name path is a secondary text link named for what it
+                // does, because the old "+ Add Company" button created nothing.
+                // MAPPS-481: a contact can link several companies, one of them
+                // primary, each with its role at THAT company. The typed name
+                // is the no-linked-company case and is offered only while the
+                // list is empty.
+                fieldset { class: "space-y-2",
+                    legend { class: "block text-sm font-medium text-content", "Companies" }
+                    for (index, row) in company_rows.iter().cloned().enumerate() {
+                        div {
+                            key: "{row.company_id}",
+                            class: "rounded-md border border-line p-3 space-y-2",
+                            div { class: "flex items-center justify-between gap-3",
+                                span { class: "text-sm font-medium text-content", "{row.company_name}" }
+                                crate::components::IconButton {
+                                    label: "Remove company link".to_string(),
+                                    class: "p-1 text-subtle hover:text-red-600 dark:hover:text-red-400".to_string(),
+                                    onclick: move |_| {
+                                        companies.write().remove(index);
+                                        company_add_note.set(String::new());
+                                    },
+                                    crate::components::TrashIcon { size: IconSize::Small }
+                                }
+                            }
+                            crate::components::Input {
+                                name: "company_title_{index}",
+                                label: "Title at this company",
+                                maxlength: 100,
+                                help: "Optional. Leave blank to use the contact's own title.".to_string(),
+                                value: row.title.clone(),
+                                oninput: move |e: FormEvent| {
+                                    companies.write()[index].title = e.value();
+                                },
+                            }
+                            label { class: "flex items-center gap-2 text-sm text-content",
+                                input {
+                                    r#type: "radio",
+                                    name: "company_primary",
+                                    checked: row.is_primary,
+                                    onchange: move |_| {
+                                        let mut rows = companies.write();
+                                        for (i, r) in rows.iter_mut().enumerate() {
+                                            r.is_primary = i == index;
+                                        }
+                                    },
+                                }
+                                "Primary"
                             }
                         }
                     }
@@ -5019,13 +6251,18 @@ fn ContactForm(props: ContactFormProps) -> Element {
                             value: freeform_company.read().clone(),
                             oninput: move |e: FormEvent| freeform_company.set(e.value()),
                         }
-                        p { class: "text-xs text-muted",
-                            "Typed company name only. Not linked to a CRM company record."
+                        // MAPPS-484: state the outcome in the user's own value
+                        // instead of the old "not linked to a CRM company record"
+                        // jargon. Empty until something is typed.
+                        if !freeform_company_note(&freeform_company.read()).is_empty() {
+                            p { class: "text-xs text-muted",
+                                {freeform_company_note(&freeform_company.read())}
+                            }
                         }
-                    } else {
+                    } else if *adding_company.read() {
                         crate::components::CompanyPicker {
-                            value: company_name.read().clone(),
-                            selected_id: picker_selected_id,
+                            value: String::new(),
+                            selected_id: None,
                             // MAPPS-251: company is no longer mandatory; a contact
                             // can be saved with no company at all.
                             required: false,
@@ -5035,14 +6272,87 @@ fn ContactForm(props: ContactFormProps) -> Element {
                             // distinct from the freeform path, it materializes a real
                             // `companies` row.
                             allow_inline_create: true,
+                            // MAPPS-484: and surface it as a button beside the
+                            // input, so a user with nothing to search for does
+                            // not have to open the dropdown to find it.
+                            show_create_button: true,
                             onselect: move |(id, name): (String, String)| {
-                                company_id.set(id);
-                                company_name.set(name);
+                                // Picking a company already linked is a no-op
+                                // that says so, not a duplicate row (the server
+                                // 422s on a repeated company_id anyway).
+                                if companies.read().iter().any(|c| c.company_id == id) {
+                                    company_add_note.set(format!("{name} is already linked to this contact."));
+                                    return;
+                                }
+                                let is_first = companies.read().is_empty();
+                                companies.write().push(CompanyRow {
+                                    company_id: id,
+                                    company_name: name,
+                                    title: String::new(),
+                                    is_primary: is_first,
+                                });
+                                // Linking a company clears the typed name: the
+                                // server rejects a link plus a freeform name.
+                                freeform_company.set(String::new());
+                                company_add_note.set(String::new());
+                                adding_company.set(false);
                             },
-                            onclear: move |_| {
-                                company_id.set(String::new());
-                                company_name.set(String::new());
-                            },
+                            onclear: move |_| { company_add_note.set(String::new()); },
+                        }
+                    }
+                    if !company_add_note.read().is_empty() {
+                        p { class: "text-xs text-muted", role: "status", "{company_add_note}" }
+                    }
+                    div { class: "flex flex-wrap items-center gap-3",
+                        if !*freeform_mode.read() {
+                            if *adding_company.read() {
+                                // The picker is open with nothing picked yet,
+                                // so there is a way back out of it.
+                                button {
+                                    r#type: "button",
+                                    class: "inline-flex items-center text-xs text-accent hover:opacity-90",
+                                    onclick: move |_| {
+                                        company_add_note.set(String::new());
+                                        adding_company.set(false);
+                                    },
+                                    "Don't add a company"
+                                }
+                            } else {
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    size: ButtonSize::Small,
+                                    onclick: move |_| {
+                                        company_add_note.set(String::new());
+                                        adding_company.set(true);
+                                    },
+                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                    {add_company_label(company_rows.len())}
+                                }
+                            }
+                        }
+                        // MAPPS-481: the typed name is what a contact has
+                        // INSTEAD of a link, so the path disappears once one
+                        // company is linked.
+                        if company_rows.is_empty() {
+                            button {
+                                r#type: "button",
+                                class: "inline-flex items-center text-xs text-accent hover:opacity-90",
+                                onclick: move |_| {
+                                    let next = !*freeform_mode.read();
+                                    if next {
+                                        adding_company.set(false);
+                                    } else {
+                                        freeform_company.set(String::new());
+                                    }
+                                    company_add_note.set(String::new());
+                                    freeform_mode.set(next);
+                                },
+                                if *freeform_mode.read() {
+                                    {LINK_COMPANY_TOGGLE_LABEL}
+                                } else {
+                                    {FREEFORM_TOGGLE_LABEL}
+                                }
+                            }
                         }
                     }
                 }
@@ -5074,9 +6384,24 @@ fn ContactForm(props: ContactFormProps) -> Element {
                     }
                 }
 
+                // MAPPS-614: the same field and the same editor as the company
+                // form, because David asked for description-type fields across
+                // the system rather than for one record.
+                crate::components::MarkdownEditor {
+                    name: "contact_notes".to_string(),
+                    label: "Notes".to_string(),
+                    placeholder: "Anything worth knowing about this person.".to_string(),
+                    rows: 8,
+                    views: true,
+                    view_pref_key: "contact_notes_view_mode".to_string(),
+                    disabled: !can_mutate,
+                    value: notes.read().clone(),
+                    oninput: move |next: String| notes.set(next),
+                }
+
                 div { class: "flex justify-end space-x-3",
                     Link {
-                        to: Route::ContactList {},
+                        to: cancel_route.clone(),
                         Button { variant: ButtonVariant::Secondary, "Cancel" }
                     }
                     Button {
@@ -5094,6 +6419,14 @@ fn ContactForm(props: ContactFormProps) -> Element {
     }
 }
 
+/// MAPPS-484: the part of the created company's `CompanyResponse` the
+/// "Create this company" recovery needs to link the contact. Serde drops
+/// the rest.
+#[derive(Clone, Debug, Deserialize)]
+struct CreatedCompanyRef {
+    id: uuid::Uuid,
+}
+
 /// Contact detail page
 #[derive(Props, Clone, PartialEq)]
 pub struct ContactDetailPageProps {
@@ -5109,6 +6442,9 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     let id_for_edit = contact_id_str.clone();
     let id_for_delete = contact_id_str.clone();
     let id_for_portal = contact_id_str.clone();
+    // MAPPS-484: the id the "Create this company" recovery links the new
+    // company to.
+    let id_for_create_company = contact_id_str.clone();
 
     // MAPPS-357: the contact record is this detail page's primary resource
     // (the tickets list below is secondary and keeps degrading to its own
@@ -5130,7 +6466,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             crate::hooks::fetch::api::get_authed::<PaginatedTicketSummaries>(&format!(
-                "/tickets?contact_id={id}&per_page=5&sort=-updated_at"
+                "/tickets?contact_id={id}&per_page=5&{TICKETS_RECENT_SORT}"
             ))
             .await
             .ok()
@@ -5138,7 +6474,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     });
 
     let snap = contact.read_unchecked();
-    // MAPPS-278: prefer an honest "Loading..." over the generic entity
+    // MAPPS-278: prefer an honest "Loading…" over the generic entity
     // type while the fetch is in flight; reserve a distinct "Contact not
     // found" for a confirmed-empty resource so the user does not see a
     // blank "Contact" header that briefly looked correct.
@@ -5154,9 +6490,19 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     let navigator = use_navigator();
     let mut deleting = use_signal(|| false);
     let portal_toggling = use_signal(|| false);
+    // MAPPS-484: state for "Create this company", the recovery path for a
+    // contact whose company is a typed name.
+    let mut creating_company = use_signal(|| false);
+    let mut create_company_error = use_signal(String::new);
+    // Holds the company created by a first attempt whose link then failed, so
+    // the retry links that row instead of creating a duplicate.
+    let mut created_company_id = use_signal(String::new);
     let edit_id = id_for_edit.clone();
     let delete_id = id_for_delete.clone();
     let mut confirming_delete = use_signal(|| false);
+    // MAPPS-574: same swallow the company delete had - hold the server's reason
+    // instead of discarding it.
+    let mut delete_error = use_signal(String::new);
     // MAPPS-357: gate the destructive Delete while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
     let on_confirm_delete = move |_: ()| {
@@ -5165,16 +6511,24 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
         }
         let id = delete_id.clone();
         deleting.set(true);
+        delete_error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 let path = format!("/contacts/contacts/{id}");
-                if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
-                    navigator.push(Route::ContactList {});
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => {
+                        crate::hooks::toast::push_toast(
+                            crate::components::AlertType::Success,
+                            "Contact deleted.",
+                        );
+                        confirming_delete.set(false);
+                        navigator.push(Route::ContactList {});
+                    }
+                    Err(err) => delete_error.set(err),
                 }
             }
             deleting.set(false);
-            confirming_delete.set(false);
         });
     };
 
@@ -5198,16 +6552,27 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
             confirm_text: "Delete".to_string(),
             cancel_text: "Cancel".to_string(),
             destructive: true,
+            error: delete_error.read().clone(),
             loading: *deleting.read(),
             onconfirm: on_confirm_delete,
             oncancel: move |_| {
                 if !*deleting.read() {
                     confirming_delete.set(false);
+                    delete_error.set(String::new());
                 }
             },
         }
         PageHeader {
             title: "{header_title}",
+            // PMS-746: a route back to the list, matching CompanyDetailPage.
+            // The trail stays flat (`Contacts > <name>`) even though a contact
+            // also belongs to a company: a company-aware parent would have to
+            // depend on how the page was reached, which is a separate change.
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs {
+                    items: crate::components::detail_breadcrumbs("Contacts", Route::ContactList {}, &header_title),
+                }
+            },
             actions: rsx! {
                 Link {
                     to: Route::ContactEdit { id: edit_id },
@@ -5254,12 +6619,102 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                 let title = c.title.clone();
                 let department = c.department.clone();
                 let contact_type = c.contact_type.clone();
+                let notes = c.notes.clone().unwrap_or_default();
                 let is_portal_user = c.is_portal_user;
                 let portal_id = id_for_portal.clone();
+                // MAPPS-481: every phone and every company link, each as its
+                // own row. Empty lists keep the pre-PMS-806 scalar rendering
+                // below, which is also the freeform-company path (MAPPS-484).
+                let phone_entries = c.phones.clone();
+                let company_entries = c.companies.clone();
+                // MAPPS-484: turn a typed company name into a real `companies`
+                // row and link the contact to it. Two calls, each reported: the
+                // create, then the link. A create that succeeds with a failed
+                // link says so, naming both facts, so the half-state is never
+                // silent (the server clears the stored freeform name itself
+                // once `company_id` is set).
+                let create_name = company_name.clone();
+                let create_contact_id = id_for_create_company.clone();
+                let on_create_company = move |_| {
+                    if *creating_company.read() {
+                        return;
+                    }
+                    let name = create_name.clone();
+                    let contact_id = create_contact_id.clone();
+                    creating_company.set(true);
+                    create_company_error.set(String::new());
+                    spawn(async move {
+                        #[cfg(feature = "app")]
+                        {
+                            // A retry after a failed link must link the company
+                            // the first attempt created, not create a second one
+                            // under the same name.
+                            let already_created = created_company_id.read().clone();
+                            let company_id = if already_created.is_empty() {
+                                let body = serde_json::json!({ "name": name });
+                                match crate::hooks::fetch::api::post_authed::<CreatedCompanyRef, _>(
+                                    "/contacts/companies",
+                                    &body,
+                                )
+                                .await
+                                {
+                                    Ok(created) => {
+                                        let id = created.id.to_string();
+                                        created_company_id.set(id.clone());
+                                        id
+                                    }
+                                    Err(err) => {
+                                        tracing::warn!(
+                                            "creating company \"{name}\" from contact {contact_id} failed: {err}"
+                                        );
+                                        create_company_error
+                                            .set(format!("Could not create {name}: {err}"));
+                                        creating_company.set(false);
+                                        return;
+                                    }
+                                }
+                            } else {
+                                already_created
+                            };
+                            let path = format!("/contacts/contacts/{contact_id}");
+                            let link_body = serde_json::json!({ "company_id": company_id });
+                            match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                                &path, &link_body,
+                            )
+                            .await
+                            {
+                                Ok(_) => {
+                                    crate::hooks::toast::push_toast(
+                                        crate::components::AlertType::Success,
+                                        "Company created and linked.",
+                                    );
+                                    contact.restart();
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        "linking contact {contact_id} to new company {company_id} failed: {err}"
+                                    );
+                                    create_company_error.set(format!(
+                                        "{name} was created under Companies, but this contact still needs linking: {err}"
+                                    ));
+                                }
+                            }
+                        }
+                        creating_company.set(false);
+                    });
+                };
                 rsx! {
                     div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
                         div { class: "lg:col-span-2 space-y-6",
                             ContactTicketsCard { tickets_resource: tickets }
+                            // MAPPS-614: near the bottom of the record, the
+                            // Google Contacts placement David described.
+                            // Hidden when empty, like the company card.
+                            if !notes.trim().is_empty() {
+                                Card { title: "Notes",
+                                    crate::components::Markdown { content: notes.clone() }
+                                }
+                            }
                         }
                         div { class: "space-y-6",
                             Card { title: "Contact Information",
@@ -5278,21 +6733,40 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                             }
                                         }
                                     }
-                                    if let Some(phone) = phone {
-                                        if !phone.is_empty() {
-                                            div {
-                                                dt { class: "text-sm text-muted", "Phone" }
+                                    // MAPPS-481: one row per phone, labelled
+                                    // with its type and marking the primary.
+                                    if !phone_entries.is_empty() {
+                                        for (index, entry) in phone_entries.iter().cloned().enumerate() {
+                                            div { key: "{index}",
+                                                dt { class: "text-sm text-muted",
+                                                    {humanize_phone_type(&entry.phone_type)}
+                                                    if entry.is_primary {
+                                                        span { class: "text-subtle ml-1", "(primary)" }
+                                                    }
+                                                }
                                                 // MAPPS-283: render with separators.
-                                                dd { class: "mt-1", {format_phone(&phone)} }
+                                                dd { class: "mt-1",
+                                                    {format_phone_entry(&entry.number, entry.extension.as_deref())}
+                                                }
                                             }
                                         }
-                                    }
-                                    if let Some(mobile) = mobile {
-                                        if !mobile.is_empty() {
-                                            div {
-                                                dt { class: "text-sm text-muted", "Mobile" }
-                                                // MAPPS-283: render with separators.
-                                                dd { class: "mt-1", {format_phone(&mobile)} }
+                                    } else {
+                                        if let Some(phone) = phone {
+                                            if !phone.is_empty() {
+                                                div {
+                                                    dt { class: "text-sm text-muted", "Phone" }
+                                                    // MAPPS-283: render with separators.
+                                                    dd { class: "mt-1", {format_phone(&phone)} }
+                                                }
+                                            }
+                                        }
+                                        if let Some(mobile) = mobile {
+                                            if !mobile.is_empty() {
+                                                div {
+                                                    dt { class: "text-sm text-muted", "Mobile" }
+                                                    // MAPPS-283: render with separators.
+                                                    dd { class: "mt-1", {format_phone(&mobile)} }
+                                                }
                                             }
                                         }
                                     }
@@ -5320,7 +6794,37 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                             }
                                         }
                                     }
-                                    if !company_name.is_empty() {
+                                    // MAPPS-481: one row per linked company,
+                                    // each with its role at THAT company and
+                                    // the primary marked.
+                                    if !company_entries.is_empty() {
+                                        for (index, link) in company_entries.iter().cloned().enumerate() {
+                                            div { key: "{index}",
+                                                dt { class: "text-sm text-muted",
+                                                    "Company"
+                                                    if link.is_primary {
+                                                        span { class: "text-subtle ml-1", "(primary)" }
+                                                    }
+                                                }
+                                                dd { class: "mt-1",
+                                                    if let Some(cid) = link.company_id {
+                                                        Link {
+                                                            to: Route::CompanyDetail { id: cid.to_string() },
+                                                            class: "text-accent hover:opacity-90",
+                                                            {link.company_name.clone().unwrap_or_default()}
+                                                        }
+                                                    } else {
+                                                        span { class: "text-content",
+                                                            {link.company_name.clone().unwrap_or_default()}
+                                                        }
+                                                    }
+                                                    if let Some(role) = link.title.clone().filter(|t| !t.trim().is_empty()) {
+                                                        p { class: "text-xs text-subtle", "{role}" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else if !company_name.is_empty() {
                                         div {
                                             dt { class: "text-sm text-muted", "Company" }
                                             dd { class: "mt-1",
@@ -5335,6 +6839,29 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                                     }
                                                 } else {
                                                     span { class: "text-content", "{company_name}" }
+                                                    // MAPPS-484: say what the name is, and
+                                                    // offer the one click that turns it into
+                                                    // a real `companies` row. Before this the
+                                                    // only way out was retyping the name on
+                                                    // the Companies form.
+                                                    p { class: "text-xs text-subtle", {FREEFORM_COMPANY_NOTE} }
+                                                    if !create_company_error.read().is_empty() {
+                                                        p {
+                                                            class: "text-xs text-red-600 dark:text-red-400 mt-1",
+                                                            role: "alert",
+                                                            "{create_company_error}"
+                                                        }
+                                                    }
+                                                    Button {
+                                                        variant: ButtonVariant::Secondary,
+                                                        size: ButtonSize::Small,
+                                                        class: "mt-2".to_string(),
+                                                        loading: *creating_company.read(),
+                                                        disabled: !can_mutate,
+                                                        title: (!can_mutate).then(|| "Can't create a company while the server is unreachable".to_string()),
+                                                        onclick: on_create_company,
+                                                        "Create this company"
+                                                    }
                                                 }
                                             }
                                         }
@@ -5391,6 +6918,9 @@ struct ContactDetail {
     department: Option<String>,
     #[serde(default)]
     contact_type: String,
+    // MAPPS-614 / PMS-952: rendered as Markdown in the Notes card.
+    #[serde(default)]
+    notes: Option<String>,
     #[serde(default)]
     is_portal_user: bool,
     // MAPPS-251: optional FK; `None` for a freeform-company contact.
@@ -5398,6 +6928,12 @@ struct ContactDetail {
     company_id: Option<uuid::Uuid>,
     #[serde(default)]
     company_name: Option<String>,
+    // MAPPS-481: `#[serde(default)]` so a pre-PMS-806 response still decodes
+    // and the page keeps rendering the scalar mirrors above.
+    #[serde(default)]
+    phones: Vec<RemotePhone>,
+    #[serde(default)]
+    companies: Vec<RemoteCompanyLink>,
 }
 
 #[component]
@@ -5972,10 +7508,23 @@ mod company_type_tests {
 #[cfg(test)]
 mod validation_tests {
     use super::{
-        validate_country_field, validate_name_field, validate_phone_field, validate_postal_field,
-        validate_timezone_field, validate_website_field,
+        validate_address_text, validate_country_field, validate_name_field, validate_phone_field,
+        validate_postal_field, validate_timezone_field, validate_website_field, website_probe_note,
+        WebsiteProbe,
     };
     use serde_json::Value;
+
+    /// A reachable probe of `canonical`, with every optional signal off.
+    fn reached(canonical: &str) -> WebsiteProbe {
+        WebsiteProbe {
+            reachable: true,
+            canonical_url: Some(canonical.to_string()),
+            http_redirects_to_https: false,
+            www_change: "none".to_string(),
+            unreachable_reason: None,
+            redirect_truncated: false,
+        }
+    }
 
     #[test]
     fn name_required_and_rejects_control_chars() {
@@ -6007,12 +7556,128 @@ mod validation_tests {
         assert!(validate_website_field("java\tscript:alert(1)").is_err());
         assert!(validate_website_field("data:text/html,<script>").is_err());
         assert!(validate_website_field("vbscript:msgbox(1)").is_err());
-        // Non-http schemes and scheme-less input are rejected.
+        // Non-http schemes are rejected; a scheme-less host is accepted and
+        // normalized (MAPPS-480).
         assert!(validate_website_field("mailto:a@example.com").is_err());
-        assert!(validate_website_field("example.com").is_err());
+        assert_eq!(
+            validate_website_field("example.com").unwrap(),
+            Value::String("https://example.com".into())
+        );
         // Malformed http(s) URLs are rejected.
         assert!(validate_website_field("http://").is_err());
         assert!(validate_website_field("https://exa mple.com").is_err());
+        // Whitespace and control characters are rejected whatever the scheme.
+        assert!(validate_website_field("exa mple.com").is_err());
+        assert!(validate_website_field("example\u{0007}.com").is_err());
+    }
+
+    #[test]
+    fn website_normalizes_a_scheme_less_host() {
+        // MAPPS-480: a bare domain gets the scheme the product wants.
+        assert_eq!(
+            validate_website_field("DentalArtsPractice.com").unwrap(),
+            Value::String("https://DentalArtsPractice.com".into())
+        );
+        // Path, query and fragment survive normalization.
+        assert_eq!(
+            validate_website_field("example.com/path?q=1").unwrap(),
+            Value::String("https://example.com/path?q=1".into())
+        );
+        assert_eq!(
+            validate_website_field("example.com/a#frag").unwrap(),
+            Value::String("https://example.com/a#frag".into())
+        );
+        // Trimmed before normalization, so surrounding space is not baked in.
+        assert_eq!(
+            validate_website_field("  example.com  ").unwrap(),
+            Value::String("https://example.com".into())
+        );
+        // A single-label host is not a public website address.
+        assert!(validate_website_field("localhost").is_err());
+        assert!(validate_website_field("no-dot").is_err());
+        // Empty labels and non-host characters in the authority are rejected.
+        assert!(validate_website_field("example.").is_err());
+        assert!(validate_website_field(".com").is_err());
+        assert!(validate_website_field("user@example.com").is_err());
+        // A `:` before the first `/` reads as a scheme, so a scheme-less
+        // host:port is rejected rather than guessed at.
+        assert!(validate_website_field("example.com:8443").is_err());
+    }
+
+    #[test]
+    fn website_probe_note_reports_every_state() {
+        // Nothing changed: just the address that answered.
+        assert_eq!(
+            website_probe_note("https://example.com", &reached("https://example.com/")),
+            "Resolved to https://example.com/"
+        );
+        // What changed is named, so a rewritten value is never silent.
+        let mut probe = reached("https://www.example.com/");
+        probe.http_redirects_to_https = true;
+        probe.www_change = "added".to_string();
+        assert_eq!(
+            website_probe_note("https://example.com", &probe),
+            "Resolved to https://www.example.com/ (http redirects to https, www added)"
+        );
+        let mut probe = reached("https://example.com/");
+        probe.www_change = "removed".to_string();
+        assert_eq!(
+            website_probe_note("https://www.example.com", &probe),
+            "Resolved to https://example.com/ (www removed)"
+        );
+        // A chain the server stopped following is reported as unsettled
+        // rather than presented as canonical (MAPPS-486).
+        let mut probe = reached("https://www.example.com/");
+        probe.redirect_truncated = true;
+        assert_eq!(
+            website_probe_note("https://example.com", &probe),
+            "Resolved to https://www.example.com/ (site redirects again; not followed)"
+        );
+        // Unreachable names the cause and the value that will be saved.
+        let probe = WebsiteProbe {
+            reachable: false,
+            canonical_url: None,
+            http_redirects_to_https: false,
+            www_change: "none".to_string(),
+            unreachable_reason: Some("timeout".to_string()),
+            redirect_truncated: false,
+        };
+        assert_eq!(
+            website_probe_note("https://example.com", &probe),
+            "Could not reach example.com (timeout). Saving as https://example.com."
+        );
+        // An unknown reason is passed through, never dropped.
+        let probe = WebsiteProbe {
+            unreachable_reason: Some("teapot".to_string()),
+            ..probe
+        };
+        assert_eq!(
+            website_probe_note("https://example.com/x", &probe),
+            "Could not reach example.com (teapot). Saving as https://example.com/x."
+        );
+    }
+
+    #[test]
+    fn website_probe_body_deserializes_without_redirect_truncated() {
+        // The shipped server (PMS-805) omits `redirect_truncated`; the client
+        // must still read the body it actually sends (MAPPS-486).
+        let body = serde_json::json!({
+            "input": "example.com",
+            "reachable": true,
+            "canonical_url": "https://www.example.com/",
+            "https_ok": true,
+            "http_ok": true,
+            "http_redirects_to_https": true,
+            "www_change": "added",
+            "final_status": 200,
+            "unreachable_reason": null
+        });
+        let probe: WebsiteProbe = serde_json::from_value(body).unwrap();
+        assert!(!probe.redirect_truncated);
+        assert_eq!(
+            website_probe_note("https://example.com", &probe),
+            "Resolved to https://www.example.com/ (http redirects to https, www added)"
+        );
     }
 
     #[test]
@@ -6027,6 +7692,18 @@ mod validation_tests {
         // Garbage / leading zero rejected.
         assert!(validate_phone_field("not-a-phone", "Phone").is_err());
         assert!(validate_phone_field("0412 345 678", "Phone").is_err());
+    }
+
+    /// MAPPS-581 was reported as "Phone rejects 919-397-4144". The value was
+    /// always valid; the message on screen was a stale one from an earlier
+    /// submit that the field never cleared. This pins the value so a future
+    /// change to the rule cannot make the original report true after the fact.
+    #[test]
+    fn reported_us_phone_is_valid() {
+        assert_eq!(
+            validate_phone_field("919-397-4144", "Phone").unwrap(),
+            Value::String("9193974144".into())
+        );
     }
 
     #[test]
@@ -6069,5 +7746,1009 @@ mod validation_tests {
         // Unknown / absent values pass through verbatim rather than vanishing.
         assert_eq!(humanize_contact_type("escalation"), "escalation");
         assert_eq!(humanize_contact_type(""), "");
+    }
+
+    // ---- MAPPS-582: invisible characters never reach a validator, and never
+    // get stored under a name that looks clean.
+
+    /// The reported defect: `919-397-4144` with an invisible character
+    /// appended rendered identically to the valid number and was rejected with
+    /// a message the user could not act on. U+202F is the other half: `.trim()`
+    /// removed it, but the old hardcoded `' ' | '\t' | '\u{00A0}'` strip set
+    /// did not, so it reached the E.164 check as "not a digit".
+    #[test]
+    fn phone_accepts_a_number_carrying_an_invisible_character() {
+        for suffix in [
+            "\u{200B}", "\u{FEFF}", "\u{00AD}", "\u{200E}", "\u{200C}", "\u{202F}", "\u{00A0}",
+            "\u{2007}", "\u{3000}", "\u{2060}", "\u{2069}",
+        ] {
+            let raw = format!("919-397-4144{suffix}");
+            assert_eq!(
+                validate_phone_field(&raw, "Phone"),
+                Ok(serde_json::Value::String("9193974144".to_string())),
+                "U+{:04X} must not reject a valid number",
+                suffix.chars().next().unwrap() as u32
+            );
+        }
+        // An interior one is stripped too, not just a trailing one.
+        assert_eq!(
+            validate_phone_field("919-397\u{200B}-4144", "Phone"),
+            Ok(serde_json::Value::String("9193974144".to_string()))
+        );
+    }
+
+    /// Stripping the invisibles must not widen what the field accepts: an
+    /// extension is still not part of an E.164 number.
+    #[test]
+    fn phone_still_rejects_a_genuinely_invalid_number() {
+        for bad in ["919-397-4144 x12", "919-397-4144x12", "abc", "1"] {
+            assert!(
+                validate_phone_field(bad, "Phone").is_err(),
+                "{bad} must still be rejected"
+            );
+        }
+    }
+
+    /// The silent half of the bug: a free-text field with no format rule
+    /// accepted the invisible character and stored it, so `Acme\u{200B}` became
+    /// a second company indistinguishable from `Acme` in every list, search box
+    /// and picker.
+    #[test]
+    fn a_company_name_cannot_be_saved_with_an_invisible_character() {
+        let clean = validate_name_field("Acme").expect("Acme is a valid name");
+        for raw in [
+            "Acme\u{200B}",
+            "\u{FEFF}Acme",
+            "Ac\u{00AD}me",
+            "Acme\u{202F}",
+            "Acme\u{00A0}",
+            "Acme\u{2069}",
+        ] {
+            assert_eq!(
+                validate_name_field(raw).as_deref(),
+                Ok(clean.as_str()),
+                "{raw:?} must not be storable as a name distinct from \"Acme\""
+            );
+        }
+        // A real control character is still an error: it is not invisible in
+        // the same sense, and the user can remove it.
+        assert!(validate_name_field("Acme\u{0007}").is_err());
+    }
+
+    /// The same hole in the address fields, which also gated on `is_control`.
+    #[test]
+    fn an_address_line_accepts_a_value_carrying_an_invisible_character() {
+        assert_eq!(
+            validate_address_text("1 Main St\u{200B}", "Address", 255),
+            Ok(())
+        );
+        assert!(validate_address_text("1 Main St\u{0007}", "Address", 255).is_err());
+    }
+
+    /// The structured fields all take the same route.
+    #[test]
+    fn the_structured_fields_strip_invisible_characters() {
+        assert_eq!(
+            validate_country_field("US\u{200B}"),
+            Ok(serde_json::Value::String("US".to_string()))
+        );
+        assert_eq!(
+            validate_postal_field("27519\u{FEFF}"),
+            Ok(serde_json::Value::String("27519".to_string()))
+        );
+        assert_eq!(
+            validate_timezone_field("America/New_York\u{200E}"),
+            Ok(serde_json::Value::String("America/New_York".to_string()))
+        );
+        assert_eq!(
+            validate_website_field("https://example.com\u{00AD}"),
+            Ok(serde_json::Value::String("https://example.com".to_string()))
+        );
+    }
+
+    /// The hand-rolled strip set that could not see U+202F is gone, and the
+    /// whitespace test is `char::is_whitespace`, so a new exotic space cannot
+    /// reintroduce the defect.
+    #[test]
+    fn the_phone_strip_set_is_not_hardcoded() {
+        // The function's own body, so these needles cannot match themselves
+        // further down in this test.
+        let src = include_str!("contacts.rs");
+        let start = src
+            .find("fn validate_phone_field(")
+            .expect("validate_phone_field is defined in this file");
+        let rest = &src[start..];
+        let body = &rest[..rest.find("\n}\n").expect("the function closes")];
+        assert!(
+            !body.contains(r"'\u{00A0}'"),
+            "the hardcoded phone strip set must not come back"
+        );
+        assert!(
+            body.contains("!c.is_whitespace()"),
+            "validate_phone_field must strip whitespace via char::is_whitespace"
+        );
+    }
+}
+
+#[cfg(test)]
+mod company_source_tests {
+    use super::{
+        freeform_company_note, FREEFORM_COMPANY_NOTE, FREEFORM_TOGGLE_LABEL,
+        LINK_COMPANY_TOGGLE_LABEL,
+    };
+
+    /// MAPPS-484: the visible create affordance is the picker's "+ New
+    /// company" button, which creates a `companies` row. Neither company
+    /// control that does NOT create may read like one, which is what the old
+    /// "+ Add Company" label did.
+    #[test]
+    fn neither_toggle_label_promises_a_create() {
+        for label in [FREEFORM_TOGGLE_LABEL, LINK_COMPANY_TOGGLE_LABEL] {
+            let lowered = label.to_lowercase();
+            assert!(
+                !lowered.contains("add "),
+                "{label} reads like a create action but creates nothing"
+            );
+            assert!(
+                !lowered.contains("new compan"),
+                "{label} reads like a create action but creates nothing"
+            );
+        }
+        assert_eq!(
+            FREEFORM_TOGGLE_LABEL,
+            "Enter a name without creating a company"
+        );
+    }
+
+    /// The note names the value and the consequence, and says nothing until
+    /// something has been typed.
+    #[test]
+    fn freeform_note_names_the_value_and_the_consequence() {
+        assert_eq!(
+            freeform_company_note("PugTsurani"),
+            "Saved as a typed name. PugTsurani will not appear under Companies."
+        );
+        // Trimmed, so the note reads the same as the value that gets submitted.
+        assert_eq!(
+            freeform_company_note("  PugTsurani  "),
+            "Saved as a typed name. PugTsurani will not appear under Companies."
+        );
+        assert!(freeform_company_note("").is_empty());
+        assert!(freeform_company_note("   ").is_empty());
+    }
+
+    /// The read side says what the name is rather than leaving link colour as
+    /// the only signal.
+    #[test]
+    fn read_side_note_says_it_is_not_a_record() {
+        assert!(FREEFORM_COMPANY_NOTE.contains("not a company record"));
+    }
+}
+
+/// MAPPS-481: the contact form's two repeating child collections. The rules
+/// under test are the ones `docs/form-conventions.md` states for any repeating
+/// child row: validate every row, exactly one primary, order preserved.
+#[cfg(test)]
+mod contact_child_row_tests {
+    use super::{
+        add_company_label, company_link_entries, company_rows_from_remote, extra_company_suffix,
+        humanize_phone_type, normalize_phone_type, phone_row_index, phone_rows_from_remote,
+        primary_phone_label, validate_phone_rows, CompanyRow, ContactDetail, PhoneRow,
+        RemoteCompanyLink, RemoteContact, RemotePhone,
+    };
+
+    fn row(phone_type: &str, number: &str, is_primary: bool) -> PhoneRow {
+        PhoneRow {
+            phone_type: phone_type.to_string(),
+            number: number.to_string(),
+            is_primary,
+            ..PhoneRow::default()
+        }
+    }
+
+    /// Every row is evaluated before the submit bails, so a bad row two rows
+    /// down still gets its own message. No row's failure masks another's.
+    #[test]
+    fn every_row_is_validated_not_just_the_first() {
+        let rows = [
+            row("work", "not-a-phone", false),
+            row("mobile", "+14155551234", false),
+            row("home", "0412 345 678", false),
+        ];
+        let errors = validate_phone_rows(&rows).expect_err("two rows are invalid");
+        assert_eq!(errors.len(), 3);
+        assert!(errors[0].starts_with("Number must be a valid phone number"));
+        assert!(errors[1].is_empty(), "the valid row keeps a clean slot");
+        assert!(errors[2].starts_with("Number must be a valid phone number"));
+    }
+
+    /// A contact with no numbers is valid, and a row the user added and left
+    /// empty is not a number rather than an error.
+    #[test]
+    fn no_rows_and_blank_rows_both_save() {
+        assert!(validate_phone_rows(&[]).expect("valid").is_empty());
+        let entries = validate_phone_rows(&[row("work", "   ", false)]).expect("valid");
+        assert!(entries.is_empty());
+    }
+
+    /// Exactly one entry is sent primary: the flagged row, or the first when
+    /// none is flagged (which is also PMS-806's own promotion rule).
+    #[test]
+    fn exactly_one_entry_is_primary() {
+        let entries = validate_phone_rows(&[
+            row("work", "+14155551234", false),
+            row("mobile", "+14155559999", true),
+        ])
+        .expect("valid");
+        assert_eq!(entries[0]["is_primary"], serde_json::json!(false));
+        assert_eq!(entries[1]["is_primary"], serde_json::json!(true));
+
+        let promoted = validate_phone_rows(&[
+            row("work", "+14155551234", false),
+            row("mobile", "+14155559999", false),
+        ])
+        .expect("valid");
+        assert_eq!(promoted[0]["is_primary"], serde_json::json!(true));
+        assert_eq!(promoted[1]["is_primary"], serde_json::json!(false));
+    }
+
+    /// Row order is the payload order, which is the `sort_order` PMS-806
+    /// derives from the array index, and the type/extension travel with it.
+    #[test]
+    fn payload_keeps_row_order_and_fields() {
+        let rows = [
+            PhoneRow {
+                phone_type: "work".to_string(),
+                number: "(415) 555-1234".to_string(),
+                extension: "220".to_string(),
+                is_primary: false,
+                error: String::new(),
+            },
+            row("pager", "+14155559999", false),
+        ];
+        let entries = validate_phone_rows(&rows).expect("valid");
+        assert_eq!(entries[0]["phone_type"], serde_json::json!("work"));
+        // `validate_phone_field` strips the separators and keeps what was typed.
+        assert_eq!(entries[0]["number"], serde_json::json!("4155551234"));
+        assert_eq!(entries[0]["extension"], serde_json::json!("220"));
+        // An unknown type falls back to the server's own default.
+        assert_eq!(entries[1]["phone_type"], serde_json::json!("other"));
+        assert_eq!(entries[1]["extension"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn phone_types_normalize_and_humanize() {
+        assert_eq!(normalize_phone_type("fax"), "fax");
+        assert_eq!(normalize_phone_type("pager"), "other");
+        assert_eq!(normalize_phone_type(""), "other");
+        assert_eq!(humanize_phone_type("mobile"), "Mobile");
+        // Unknown values pass through rather than vanishing.
+        assert_eq!(humanize_phone_type("pager"), "pager");
+    }
+
+    /// Create and edit round-trip: the server's list reloads into the form
+    /// with the same rows, types, order and primary flags.
+    #[test]
+    fn phone_rows_round_trip_from_the_server_list() {
+        let remote = [
+            RemotePhone {
+                phone_type: "work".to_string(),
+                number: "+14155551234".to_string(),
+                extension: Some("220".to_string()),
+                is_primary: false,
+            },
+            RemotePhone {
+                phone_type: "mobile".to_string(),
+                number: "+14155559999".to_string(),
+                extension: None,
+                is_primary: true,
+            },
+        ];
+        let rows = phone_rows_from_remote(&remote, Some("+14155551234"), None);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].phone_type, "work");
+        assert_eq!(rows[0].extension, "220");
+        assert!(!rows[0].is_primary);
+        assert_eq!(rows[1].phone_type, "mobile");
+        assert!(rows[1].is_primary);
+    }
+
+    /// A server that predates PMS-806 sends no list, so the scalar mirrors
+    /// seed the rows instead of the edit silently dropping the numbers.
+    #[test]
+    fn phone_rows_fall_back_to_the_scalar_mirrors() {
+        let rows = phone_rows_from_remote(&[], Some("+14155551234"), Some("+14155559999"));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].phone_type, "work");
+        assert!(rows[0].is_primary);
+        assert_eq!(rows[1].phone_type, "mobile");
+        assert!(!rows[1].is_primary);
+        assert!(phone_rows_from_remote(&[], None, None).is_empty());
+    }
+
+    #[test]
+    fn company_rows_round_trip_and_fall_back() {
+        let remote = [
+            RemoteCompanyLink {
+                company_id: Some(uuid::Uuid::nil()),
+                company_name: Some("Acme".to_string()),
+                title: Some("IT Director".to_string()),
+                is_primary: true,
+            },
+            RemoteCompanyLink {
+                company_id: Some(uuid::Uuid::max()),
+                company_name: Some("Globex".to_string()),
+                title: None,
+                is_primary: false,
+            },
+        ];
+        let rows = company_rows_from_remote(&remote, None, None);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].company_name, "Acme");
+        assert_eq!(rows[0].title, "IT Director");
+        assert!(rows[0].is_primary);
+        assert_eq!(rows[1].company_name, "Globex");
+
+        // No list: the single-company mirror seeds one row.
+        let mirrored = company_rows_from_remote(&[], Some(uuid::Uuid::nil()), Some("Acme"));
+        assert_eq!(mirrored.len(), 1);
+        assert!(mirrored[0].is_primary);
+        // A freeform-only contact links nothing, so it stays on the typed path.
+        assert!(company_rows_from_remote(&[], None, Some("PugTsurani")).is_empty());
+    }
+
+    #[test]
+    fn company_entries_promote_exactly_one_primary() {
+        let rows = [
+            CompanyRow {
+                company_id: "a".to_string(),
+                company_name: "Acme".to_string(),
+                title: "  ".to_string(),
+                is_primary: false,
+            },
+            CompanyRow {
+                company_id: "b".to_string(),
+                company_name: "Globex".to_string(),
+                title: "Consultant".to_string(),
+                is_primary: true,
+            },
+        ];
+        let entries = company_link_entries(&rows);
+        assert_eq!(entries[0]["is_primary"], serde_json::json!(false));
+        assert_eq!(entries[0]["title"], serde_json::Value::Null);
+        assert_eq!(entries[1]["is_primary"], serde_json::json!(true));
+        assert_eq!(entries[1]["title"], serde_json::json!("Consultant"));
+        assert!(company_link_entries(&[]).is_empty());
+    }
+
+    /// The list Phone cell names the type, and the Company cell counts the
+    /// links the cell does not show.
+    #[test]
+    fn list_cells_show_the_primary_and_the_remainder() {
+        let phones = [
+            RemotePhone {
+                phone_type: "work".to_string(),
+                number: "+19042108340".to_string(),
+                extension: Some("12".to_string()),
+                is_primary: false,
+            },
+            RemotePhone {
+                phone_type: "mobile".to_string(),
+                number: "9042108340".to_string(),
+                extension: None,
+                is_primary: true,
+            },
+        ];
+        assert_eq!(
+            primary_phone_label(&phones, ""),
+            "Mobile (904) 210-8340".to_string()
+        );
+        // No list: the `phone` mirror still fills the column.
+        assert_eq!(primary_phone_label(&[], "9042108340"), "(904) 210-8340");
+        assert_eq!(primary_phone_label(&[], ""), "");
+        // No flag: the first entry is what the server promoted, and the
+        // extension rides along.
+        assert_eq!(
+            primary_phone_label(&phones[..1], ""),
+            "Work +1 (904) 210-8340 ext. 12".to_string()
+        );
+
+        assert_eq!(extra_company_suffix(0), "");
+        assert_eq!(extra_company_suffix(1), "");
+        assert_eq!(extra_company_suffix(3), "+2");
+    }
+
+    /// PMS-806 names a rejected entry `phones[i].number`, so the message can
+    /// land in that row's own slot instead of the form-level banner.
+    #[test]
+    fn server_phone_field_names_resolve_to_a_row() {
+        assert_eq!(phone_row_index("phones[0].number"), Some(0));
+        assert_eq!(phone_row_index("phones[12].number"), Some(12));
+        assert_eq!(phone_row_index("phones[].number"), None);
+        assert_eq!(phone_row_index("phone"), None);
+        assert_eq!(phone_row_index("first_name"), None);
+    }
+
+    /// "Add" on the company block means add another company, and never reads
+    /// like the create affordance MAPPS-484 reserved for the picker.
+    #[test]
+    fn add_company_label_only_ever_adds() {
+        assert_eq!(add_company_label(0), "Add a company");
+        assert_eq!(add_company_label(2), "Add another company");
+        for linked in [0usize, 2] {
+            assert!(!add_company_label(linked)
+                .to_lowercase()
+                .contains("new compan"));
+        }
+    }
+
+    /// The DTOs carry both lists with `#[serde(default)]`, so a response from
+    /// a server that predates PMS-806 still deserializes.
+    #[test]
+    fn contact_dtos_decode_without_the_child_lists() {
+        let body = serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+        });
+        let listed: RemoteContact = serde_json::from_value(body.clone()).expect("decodes");
+        assert!(listed.phones.is_empty());
+        assert!(listed.companies.is_empty());
+        let detail: ContactDetail = serde_json::from_value(body).expect("decodes");
+        assert!(detail.phones.is_empty());
+        assert!(detail.companies.is_empty());
+    }
+}
+
+/// MAPPS-481: the create/edit round trip. A contact saved with three phones
+/// and two companies reloads into the form with the same rows, types, order
+/// and primary flags. Exercised over the pure edges of the trip (form rows ->
+/// request payload, and server response -> form rows) with the payload echoed
+/// back as the server would return it.
+#[cfg(test)]
+mod contact_round_trip_tests {
+    use super::{
+        company_link_entries, company_rows_from_remote, phone_rows_from_remote,
+        validate_phone_rows, CompanyRow, PhoneRow, RemoteCompanyLink, RemotePhone,
+    };
+
+    /// Turn the request entries back into the response shape the server sends
+    /// for the same contact, so the reload starts from real wire values.
+    fn echo_phones(entries: &[serde_json::Value]) -> Vec<RemotePhone> {
+        entries
+            .iter()
+            .map(|e| RemotePhone {
+                phone_type: e["phone_type"].as_str().unwrap_or_default().to_string(),
+                number: e["number"].as_str().unwrap_or_default().to_string(),
+                extension: e["extension"].as_str().map(str::to_string),
+                is_primary: e["is_primary"].as_bool().unwrap_or_default(),
+            })
+            .collect()
+    }
+
+    fn echo_companies(entries: &[serde_json::Value], names: &[&str]) -> Vec<RemoteCompanyLink> {
+        entries
+            .iter()
+            .zip(names)
+            .map(|(e, name)| RemoteCompanyLink {
+                company_id: e["company_id"]
+                    .as_str()
+                    .and_then(|id| uuid::Uuid::parse_str(id).ok()),
+                company_name: Some((*name).to_string()),
+                title: e["title"].as_str().map(str::to_string),
+                is_primary: e["is_primary"].as_bool().unwrap_or_default(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn three_phones_and_two_companies_reload_unchanged() {
+        let saved_phones = vec![
+            PhoneRow {
+                phone_type: "work".to_string(),
+                number: "+14155551234".to_string(),
+                extension: "220".to_string(),
+                is_primary: false,
+                error: String::new(),
+            },
+            PhoneRow {
+                phone_type: "mobile".to_string(),
+                number: "+14155559999".to_string(),
+                extension: String::new(),
+                is_primary: true,
+                error: String::new(),
+            },
+            PhoneRow {
+                phone_type: "fax".to_string(),
+                number: "+14155550000".to_string(),
+                extension: String::new(),
+                is_primary: false,
+                error: String::new(),
+            },
+        ];
+        let acme = uuid::Uuid::nil();
+        let globex = uuid::Uuid::max();
+        let saved_companies = vec![
+            CompanyRow {
+                company_id: acme.to_string(),
+                company_name: "Acme".to_string(),
+                title: "IT Director".to_string(),
+                is_primary: false,
+            },
+            CompanyRow {
+                company_id: globex.to_string(),
+                company_name: "Globex".to_string(),
+                title: String::new(),
+                is_primary: true,
+            },
+        ];
+
+        let phone_entries = validate_phone_rows(&saved_phones).expect("valid");
+        let company_entries = company_link_entries(&saved_companies);
+        assert_eq!(phone_entries.len(), 3);
+        assert_eq!(company_entries.len(), 2);
+
+        // The mirrors the server derives are ignored once the lists arrive.
+        let reloaded_phones =
+            phone_rows_from_remote(&echo_phones(&phone_entries), Some("+14155559999"), None);
+        assert_eq!(reloaded_phones, saved_phones);
+
+        let reloaded_companies = company_rows_from_remote(
+            &echo_companies(&company_entries, &["Acme", "Globex"]),
+            Some(globex),
+            Some("Globex"),
+        );
+        assert_eq!(reloaded_companies, saved_companies);
+    }
+}
+
+/// MAPPS-527: every sort key these lists can send must be one the server
+/// allow-lists, or the header renders a sort the rows never got.
+#[cfg(test)]
+mod sort_key_tests {
+    use super::{
+        company_sort_query, contact_sort_query, CompanySortKey, ContactSortKey, SortDirection,
+    };
+    use crate::utils::sort_keys::{COMPANY_SORT_KEYS, CONTACT_SORT_KEYS};
+
+    #[test]
+    fn every_company_sort_key_is_server_accepted() {
+        for key in CompanySortKey::ALL {
+            let (field, _) =
+                company_sort_query(Some((*key, SortDirection::Ascending))).expect("maps to a key");
+            assert!(
+                COMPANY_SORT_KEYS.contains(&field),
+                "`{field}` is not in the server's company sort allow-list"
+            );
+        }
+    }
+
+    #[test]
+    fn every_contact_sort_key_is_server_accepted() {
+        for key in ContactSortKey::ALL {
+            let (field, _) =
+                contact_sort_query(Some((*key, SortDirection::Ascending))).expect("maps to a key");
+            assert!(
+                CONTACT_SORT_KEYS.contains(&field),
+                "`{field}` is not in the server's contact sort allow-list"
+            );
+        }
+    }
+
+    /// The two keys MAPPS-527 withdrew. Neither is accepted, so neither may
+    /// come back as a column affordance without a server change first.
+    #[test]
+    fn the_withdrawn_keys_are_still_not_accepted() {
+        assert!(!COMPANY_SORT_KEYS.contains(&"company_type"));
+        assert!(!CONTACT_SORT_KEYS.contains(&"company_name"));
+    }
+}
+
+/// MAPPS-575: archiving a company is only useful if it actually takes the
+/// company out of day-to-day use, and only safe if its history stays reachable.
+/// Those two pull in opposite directions at every call site that lists
+/// companies, so which ones narrow to `status=active` is the decision this
+/// feature rests on, and it is invisible in a rendered page.
+///
+/// A source scan rather than SSR: each of these is a URL built inside a
+/// `use_resource` closure that only runs under the `app` feature, so no host
+/// test can observe the request. What is being pinned is the classification.
+#[cfg(test)]
+mod archive_scope_tests {
+    /// Selectors that CHOOSE a company for new work. An archived company
+    /// offered here goes straight back into the state it was archived to leave.
+    const MUST_NARROW: &[(&str, &str)] = &[(
+        "company picker (new/edit contact, tickets, time entries)",
+        include_str!("../components/company_picker.rs"),
+    )];
+
+    #[test]
+    fn every_company_selector_for_new_work_asks_for_active_only() {
+        for (what, src) in MUST_NARROW {
+            let queries: Vec<&str> = src
+                .lines()
+                .filter(|l| l.contains("/contacts/companies?"))
+                .collect();
+            assert!(
+                !queries.is_empty(),
+                "{what}: expected at least one companies query; did the endpoint move?"
+            );
+            for q in queries {
+                assert!(
+                    q.contains("status=active"),
+                    "{what}: a selector for new work must ask for active companies only, \
+                     or archiving does not remove the company from day-to-day use. Found: {q}"
+                );
+            }
+        }
+    }
+
+    /// The counterweight. A LIST FILTER must not narrow: an archived company's
+    /// contracts and quotes still exist, and being able to look at them is the
+    /// reason archiving keeps history rather than deleting it. A blanket
+    /// "add status=active everywhere" sweep would break exactly this, and it
+    /// would look like tightening rather than like the regression it is.
+    #[test]
+    fn list_filters_still_offer_archived_companies() {
+        for (what, src) in [
+            ("contracts list filter", include_str!("contracts.rs")),
+            ("quotes list filter", include_str!("quotes.rs")),
+        ] {
+            let unnarrowed = src
+                .lines()
+                .filter(|l| l.contains("/contacts/companies?"))
+                .filter(|l| !l.contains("status=active"))
+                .count();
+            assert!(
+                unnarrowed >= 1,
+                "{what}: the list filter must still offer archived companies, so their \
+                 kept history is reachable; every companies query in this file narrows"
+            );
+        }
+    }
+
+    /// The company list's own default. Active, and the value is bound to the
+    /// Select, so the default is stated on screen rather than silently applied:
+    /// a user who cannot find a company they archived can see the list is
+    /// filtered instead of concluding it was deleted.
+    #[test]
+    fn the_company_list_defaults_to_active_and_says_so() {
+        const SRC: &str = include_str!("contacts.rs");
+        assert!(
+            SRC.contains(r#"let mut status_filter = use_signal(|| "active".to_string());"#),
+            "the company list must default to active"
+        );
+        assert!(
+            SRC.contains(r#"value: status_filter.read().clone(),"#),
+            "and must bind that default to the Select, so it is visible"
+        );
+        assert!(
+            SRC.contains(r#"SelectOption::new("", "Any status")"#),
+            "and must offer a way back to the archived ones"
+        );
+    }
+
+    /// The default must not read as a filter, or a brand-new tenant with no
+    /// companies is told "No companies match your filters" on first load and
+    /// offered a Clear filters button for filters it never set.
+    #[test]
+    fn the_default_status_does_not_count_as_a_filter() {
+        const SRC: &str = include_str!("contacts.rs");
+        assert!(
+            SRC.contains(
+                r#"!search_text.is_empty() || !type_text.is_empty() || status_text != "active""#
+            ),
+            "an empty tenant must read as \"No companies yet\", not as a filtered-out list"
+        );
+    }
+}
+
+/// MAPPS-577: the delete dialog's decisions, none of which a rendered snapshot
+/// shows. Source scans for the same reason the other page suites use them: the
+/// preview fetch and the archive PUT only run under the `app` feature.
+#[cfg(test)]
+mod delete_dialog_tests {
+    const SRC: &str = include_str!("contacts.rs");
+
+    /// Shipping code only, whitespace-collapsed. Excludes this module, because
+    /// every assertion quotes the pattern it looks for and would match itself.
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod delete_dialog_tests")
+            .expect("this module is part of this file");
+        SRC[..end]
+            .lines()
+            .map(|l| match l.find("//") {
+                Some(i) => &l[..i],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// AC1, and the defect MAPPS-577 reported. The client held an English copy
+    /// of the server's blocking rules; PMS-919 changed them and the copy went
+    /// stale, so the dialog kept warning that projects, appointments and
+    /// sub-companies block a delete long after they started unlinking.
+    #[test]
+    fn the_dialog_holds_no_copy_of_which_tables_block() {
+        let code = code_only();
+        for stale in [
+            "cannot be deleted; remove those first",
+            "appointments or sub-companies",
+        ] {
+            assert!(
+                !code.contains(stale),
+                "the dialog must not restate the server's blocking rules: found {stale:?}"
+            );
+        }
+        assert!(
+            code.contains("deletion-preview"),
+            "what blocks a delete comes from PMS-926, so the two cannot drift"
+        );
+    }
+
+    /// AC8. The Statistics card cannot answer this: `open_ticket_count` filters
+    /// on `closed_at IS NULL` while the delete guard counts every ticket, so a
+    /// company with closed tickets and none open reads as deletable there and
+    /// is then refused.
+    #[test]
+    fn the_counts_are_not_re_derived_from_the_statistics_card() {
+        let code = code_only();
+        let preview_block = {
+            let start = code
+                .find("let deletion_preview = use_resource")
+                .expect("the preview resource exists");
+            &code[start..start + 600]
+        };
+        assert!(
+            !preview_block.contains("open_ticket_count"),
+            "the preview must not be built from the page's own counts"
+        );
+    }
+
+    /// AC5. A refused delete offers no gate and no Delete button.
+    #[test]
+    fn a_blocked_delete_withholds_the_gate() {
+        let code = code_only();
+        assert!(
+            code.contains("let blocked = known && !preview.can_delete;"),
+            "blocked follows the server's own verdict"
+        );
+        assert!(
+            code.contains("blocked,"),
+            "and is passed to the dialog, which withholds the gate and the \
+             confirm button"
+        );
+    }
+
+    /// AC7. The delete path never depends on the preview arriving. An unknown
+    /// preview degrades to the pre-MAPPS-577 behaviour rather than blocking the
+    /// dialog or disabling the delete.
+    #[test]
+    fn an_absent_preview_does_not_block_the_delete() {
+        let code = code_only();
+        assert!(
+            code.contains("let known = snapshot.is_some();"),
+            "the dialog distinguishes 'no preview' from 'preview says blocked'"
+        );
+        assert!(
+            code.contains("let blocked = known && !preview.can_delete;"),
+            "an absent preview is NOT blocked: without the `known &&`, a failed \
+             fetch would withhold the Delete button on every company"
+        );
+    }
+
+    /// AC4. Archiving is a control in the dialog, not an instruction to go and
+    /// find the edit form.
+    #[test]
+    fn a_blocked_delete_offers_archiving_in_place() {
+        let code = code_only();
+        assert!(
+            code.contains(r#""status": "inactive""#),
+            "the alternative performs the archive itself"
+        );
+        assert!(
+            code.contains("Archive instead"),
+            "and is labelled as the alternative it is"
+        );
+        // The own-company refusal is not solved by archiving either, so the
+        // action is withheld there rather than offered and then failing.
+        assert!(
+            code.contains("(blocked && !preview.is_own_company).then("),
+            "archiving is not offered where it would not help"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mapps597_site_wording_tests {
+    const SRC: &str = include_str!("contacts.rs");
+
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod mapps597_site_wording_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// MAPPS-597: the word stays, and the card says what it means.
+    ///
+    /// "Site" is what ConnectWise, HaloPSA and Atera call a customer's physical
+    /// location, so it is the word staff arriving from those tools already
+    /// have. What it lacked was any statement of what it means, on a page that
+    /// also carries a Website field.
+    #[test]
+    fn the_sites_card_says_what_a_site_is() {
+        let code = code_only();
+        let card = code
+            .find("CollapsibleCard { title: \"Sites\",")
+            .expect("the Sites card");
+        let window = &code[card..code.len().min(card + 900)];
+        assert!(
+            window.contains("subtitle: \"Offices, warehouses and other addresses"),
+            "the card explains the term in its header: {window}"
+        );
+    }
+
+    /// An empty state is where a reader who does not know the word meets it.
+    /// Saying only that there are none teaches nothing.
+    #[test]
+    fn the_empty_state_says_what_to_add() {
+        let code = code_only();
+        assert!(
+            !code.contains("No sites for this company yet."),
+            "the bare count-of-zero message is gone"
+        );
+        assert!(
+            code.contains("No locations recorded yet. Add the addresses you visit or support."),
+            "and says what a site is for"
+        );
+    }
+
+    /// The rename was investigated and rejected: "Location" is taken by the
+    /// appointment field, "Office" is wrong for a warehouse or a datacenter,
+    /// and "Branch" is not a term any PSA uses. Pinned because a later reader
+    /// hitting the same ambiguity will reach for the same rename, and the
+    /// reasons live in the ticket rather than in the diff.
+    #[test]
+    fn nothing_was_renamed() {
+        let code = code_only();
+        for kept in [
+            "CollapsibleCard { title: \"Sites\",",
+            "\"New Site\"",
+            "\"Edit Site\"",
+            "\"Create Site\"",
+        ] {
+            assert!(code.contains(kept), "{kept} still says Site");
+        }
+        assert!(
+            code.contains("\"/contacts/sites\""),
+            "and the API path is untouched, because this is copy and not a contract change"
+        );
+    }
+
+    /// The hint belongs where somebody is about to type an address, and only
+    /// there: an edit form already has the answer filled in above it.
+    #[test]
+    fn the_create_form_explains_itself_once() {
+        let code = code_only();
+        assert!(
+            code.contains(
+                "if !is_edit { p { class: \"text-sm text-muted\", \
+                 \"A site is an office, warehouse or other address where this company operates.\" } }"
+            ),
+            "the create path carries the sentence and the edit path does not"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mapps614_notes_as_markdown_tests {
+    use super::*;
+
+    const SRC: &str = include_str!("contacts.rs");
+
+    /// The shipping code with runs of whitespace collapsed, excluding this
+    /// module: every assertion quotes the pattern it looks for, so a scan
+    /// including its own source would match itself and pass regardless.
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod mapps614_notes_as_markdown_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// The trap this whole field walks into, and the reason `clearable_string`
+    /// exists beside `optional_string` instead of reusing it.
+    ///
+    /// The server adds `notes = $n` to its UPDATE only when the request
+    /// carries a value (PMS-952 pins that from the other side), so a null is
+    /// "leave it alone" and not "erase it". Sent through `optional_string`, a
+    /// user who selects their notes, deletes them and saves would get a
+    /// success toast and find the old text still on the record.
+    #[test]
+    fn an_emptied_note_clears_the_record_rather_than_being_ignored() {
+        assert_eq!(clearable_string(""), serde_json::json!(""));
+        assert_eq!(clearable_string("   "), serde_json::json!(""));
+        assert!(
+            optional_string("").is_null(),
+            "the contrast is the point: the general helper sends null, which \
+             the server reads as no change"
+        );
+        // A real value is trimmed and sent as itself, so nothing else changes.
+        assert_eq!(
+            clearable_string("  Renews in March.  "),
+            serde_json::json!("Renews in March.")
+        );
+    }
+
+    /// Both records edit the note in the shared editor, so the toolbar, the
+    /// shortcuts and the Write/Preview/Split switcher come with it. A bare
+    /// textarea would be the same syntax with none of the help, which is the
+    /// state MAPPS-610 moved every other Markdown surface out of.
+    #[test]
+    fn both_records_edit_their_note_in_the_shared_editor() {
+        let code = code_only();
+        assert_eq!(
+            code.matches("crate::components::MarkdownEditor {").count(),
+            2,
+            "one on the company form, one on the contact form"
+        );
+        for name in ["\"company_notes\"", "\"contact_notes\""] {
+            assert!(
+                code.contains(&format!(
+                    "name: {name}.to_string(), label: \"Notes\".to_string(),"
+                )),
+                "{name} is the shared editor's field, labelled Notes"
+            );
+        }
+        assert!(
+            !code.contains("Textarea { name: \"notes\","),
+            "neither note is a bare textarea"
+        );
+    }
+
+    /// Both detail pages render through the shared component, which is the
+    /// only path in this app from Markdown source to HTML and is already
+    /// scrubbed with ammonia. Rendering here instead would mean a second
+    /// sanitiser to keep in step with the first.
+    #[test]
+    fn both_records_render_their_note_through_the_shared_renderer() {
+        let code = code_only();
+        assert_eq!(
+            code.matches("crate::components::Markdown { content: notes.clone() }")
+                .count(),
+            2,
+            "one on the company detail page, one on the contact detail page"
+        );
+        // Hidden when there is nothing in it, so a record nobody has written
+        // on does not grow a blank card.
+        assert_eq!(
+            code.matches("if !notes.trim().is_empty() { Card { title: \"Notes\",")
+                .count(),
+            2,
+            "each card is gated on having something to show"
+        );
+    }
+
+    /// The write path uses the clearing helper on both forms, and neither one
+    /// reaches for the general optional helper for this field.
+    #[test]
+    fn neither_form_sends_the_note_as_a_null() {
+        let code = code_only();
+        assert_eq!(
+            code.matches("\"notes\": clearable_string(&notes.read()),")
+                .count(),
+            2,
+            "the company body and the contact body"
+        );
+        assert!(
+            !code.contains("\"notes\": optional_string("),
+            "optional_string would send null for an emptied field"
+        );
     }
 }

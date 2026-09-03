@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 use crate::components::{
     use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, ErrorBanner,
-    IconSize, Input, Modal, ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table,
+    IconSize, Input, MailIcon, Modal, ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table,
     TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea,
 };
 use crate::hooks::use_can_mutate;
@@ -34,12 +34,20 @@ use crate::modules::quotes::{
     UpdateQuoteRequest,
 };
 use crate::utils::money::format_money;
+use crate::utils::sort_keys::COMPANIES_BY_NAME_SORT;
 use crate::utils::url::urlencoding_minimal;
 use crate::utils::validation::Rule;
 use crate::utils::{FormGuard, Paginated};
 use crate::Route;
 
 const PER_PAGE: usize = 25;
+
+/// MAPPS-482: the sign-off mail does not come from a notification rule.
+/// mokosh-server's `mail_quote_to_client` calls the mailer directly with a
+/// built-in template, so `POST /notifications/preview` has nothing to render
+/// and its empty answer must not be read as "no email goes out". MAPPS-489
+/// moves the send onto the dispatcher and deletes this note.
+const QUOTE_PREVIEW_NOTE: &str = "The quote email is built into the server rather than by a notification rule, so there is nothing to render yet. The billing contact is still emailed a sign-off link.";
 
 /// True when the signed-in user holds a finance role, matching the
 /// server's `RequireFinance` guard on every quote route. Mirrors the
@@ -161,18 +169,21 @@ fn QuoteListBody() -> Element {
         SelectOption::new("cancelled", "Cancelled"),
     ];
 
+    // MAPPS-575: NOT narrowed to active. This is the quotes LIST filter; an
+    // archived company's quotes still exist, and being able to look at them is
+    // what archiving-instead-of-deleting is for.
     let companies_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>(
-            "/contacts/companies?page=1&per_page=100&sort=name&sort_dir=asc",
-        )
+        crate::hooks::fetch::api::get_all_authed::<CompanyOption>(&format!(
+            "/contacts/companies?{COMPANIES_BY_NAME_SORT}"
+        ))
         .await
         .ok()
     });
     let company_options = {
         let mut opts = vec![SelectOption::new("", "All Companies")];
-        if let Some(Some(resp)) = &*companies_resource.read_unchecked() {
-            for c in &resp.data {
+        if let Some(Some(rows)) = &*companies_resource.read_unchecked() {
+            for c in rows {
                 opts.push(SelectOption::new(c.id.to_string(), c.name.clone()));
             }
         }
@@ -386,8 +397,16 @@ fn QuoteRow(props: QuoteRowProps) -> Element {
                 navigator.push(Route::QuoteDetail { id: id.clone() });
             },
             TableCell {
-                div { class: "font-medium", "{props.number}" }
-                div { class: "text-xs text-subtle", "{props.title}" }
+                // MAPPS-569: the row's `onclick` is on the `tr`, which is not
+                // focusable, so this Link is the keyboard path to the quote.
+                // Every other list row that navigates already had one; this was
+                // the only one that did not.
+                Link {
+                    to: Route::QuoteDetail { id: props.id.clone() },
+                    class: "block hover:underline",
+                    div { class: "font-medium", "{props.number}" }
+                    div { class: "text-xs text-subtle", "{props.title}" }
+                }
             }
             TableCell { "{props.company}" }
             TableCell { class: "font-medium", "{props.total}" }
@@ -438,6 +457,9 @@ fn QuoteDetailBody(id: String) -> Element {
     let action_error = use_signal(String::new);
     let busy = use_signal(|| false);
     let mut show_convert = use_signal(|| false);
+    // MAPPS-436: Cancel quote is destructive and has no undo, so the button
+    // only opens the dialog and the DELETE fires from `onconfirm`.
+    let mut confirming_cancel = use_signal(|| false);
 
     let id_for_fetch = id.clone();
     let quote_resource = use_resource(move || {
@@ -481,15 +503,23 @@ fn QuoteDetailBody(id: String) -> Element {
                 // server enforces, so a disabled button means "not in
                 // this state" rather than "this might 409".
                 let can_edit = status::allows_content_edit(&st) && can_mutate;
+                let header_title = q.quote_number.clone().unwrap_or_else(|| "Quote".to_string());
                 rsx! {
                     PageHeader {
-                        title: q.quote_number.clone().unwrap_or_else(|| "Quote".to_string()),
+                        title: header_title.clone(),
                         subtitle: q.title.clone(),
-                        actions: rsx! {
-                            Link {
-                                to: Route::QuoteList {},
-                                Button { variant: ButtonVariant::Secondary, "Back to Quotes" }
+                        // PMS-746: a route back to the list, matching
+                        // ContractDetailPage. This replaces the "Back to Quotes"
+                        // button that used to sit in the action cluster: the
+                        // crumb is the same destination in the place every other
+                        // detail page puts it, and the actions are left holding
+                        // only verbs that act on the quote.
+                        breadcrumbs: rsx! {
+                            crate::components::Breadcrumbs {
+                                items: crate::components::detail_breadcrumbs("Quotes", Route::QuoteList {}, &header_title),
                             }
+                        },
+                        actions: rsx! {
                             if can_download_pdf {
                                 Button {
                                     variant: ButtonVariant::Secondary,
@@ -710,7 +740,22 @@ fn QuoteDetailBody(id: String) -> Element {
                                                     send_quote(qid.clone(), version, busy, action_error);
                                                 }
                                             },
+                                            MailIcon { size: IconSize::Small, class: "mr-2".to_string() }
                                             "Send to client"
+                                        }
+                                        // MAPPS-482: the context this page already holds. The
+                                        // sign-off link is minted at send time, so it comes back
+                                        // in `unresolved`.
+                                        crate::components::EmailPreview {
+                                            event_type: "quote.sent".to_string(),
+                                            context: serde_json::json!({
+                                                "quote_id": q.id.to_string(),
+                                                "quote_number": q.quote_number.clone().unwrap_or_default(),
+                                                "title": q.title.clone(),
+                                                "total": format_money(q.total),
+                                                "company_name": q.company_name.clone().unwrap_or_default(),
+                                            }),
+                                            empty_note: QUOTE_PREVIEW_NOTE.to_string(),
                                         }
                                         p { class: "text-xs text-subtle",
                                             "Emails the billing contact a link to accept or decline."
@@ -733,13 +778,29 @@ fn QuoteDetailBody(id: String) -> Element {
                                         Button {
                                             variant: ButtonVariant::Danger,
                                             disabled: !can_mutate || *busy.read(),
-                                            onclick: {
+                                            onclick: move |_| confirming_cancel.set(true),
+                                            "Cancel quote"
+                                        }
+                                        // MAPPS-436: the DELETE fires from `onconfirm` only.
+                                        crate::components::ConfirmDialog {
+                                            open: confirming_cancel(),
+                                            title: "Cancel quote".to_string(),
+                                            message: format!("Cancel quote {header_title}? The client can no longer accept it and this cannot be undone."),
+                                            confirm_text: "Cancel quote".to_string(),
+                                            cancel_text: "Keep quote".to_string(),
+                                            destructive: true,
+                                            loading: *busy.read(),
+                                            onconfirm: {
                                                 let qid = quote_id.clone();
                                                 move |_| {
+                                                    if *busy.read() {
+                                                        return;
+                                                    }
+                                                    confirming_cancel.set(false);
                                                     cancel_quote(qid.clone(), version, busy, action_error);
                                                 }
                                             },
-                                            "Cancel quote"
+                                            oncancel: move |_| confirming_cancel.set(false),
                                         }
                                     }
                                 }
@@ -1038,6 +1099,11 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
     let navigator = use_navigator();
     let editing = props.quote_id.clone();
     let is_edit = editing.is_some();
+    // MAPPS-423: Cancel returns to what the user was editing, not to the list.
+    let cancel_route = match &editing {
+        Some(id) => Route::QuoteDetail { id: id.clone() },
+        None => Route::QuoteList {},
+    };
     let title = if is_edit { "Edit Quote" } else { "New Quote" };
     use_page_title(title);
 
@@ -1226,7 +1292,7 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
         }
 
         Card { class: "mb-6", title: "Details",
-            div { class: "grid grid-cols-1 md:grid-cols-2 gap-4",
+            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                 div {
                     // The client cannot change after creation: the
                     // quote's identity as "for this customer" is what
@@ -1406,7 +1472,7 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
 
         div { class: "flex justify-end gap-2",
             Link {
-                to: Route::QuoteList {},
+                to: cancel_route.clone(),
                 Button { variant: ButtonVariant::Secondary, "Cancel" }
             }
             Button {
