@@ -15,6 +15,10 @@ on:
   push:
     branches:
       - main
+      # TEMPORARY: mokosh-contact-login publishes its own image tag from
+      # build-oci-image.yml during the staging window, so run the check
+      # suite on it too. Retire this entry when the branch is merged.
+      - mokosh-contact-login
   pull_request:
     branches:
       - main
