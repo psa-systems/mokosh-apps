@@ -649,50 +649,77 @@ pub(crate) fn invoice_pay_now_preview(
     } else {
         currency.trim()
     };
+    // MAPPS-663: the two real blockers are the server's 409s (PMS-992). The
+    // gateway is not one since PMS-991: the invoice goes as a PDF regardless,
+    // and the pay link is the part that needs a gateway.
     let mut blockers = Vec::new();
+    let mut notes = Vec::new();
     let recipient = match contact_email {
         None => {
             blockers.push(
-                "This invoice has no billing contact. Set one with Edit; the email goes to that contact."
+                "This invoice has no billing contact and the company has no default one, so Send is refused. Set one with Edit, or pick one on the company."
                     .to_string(),
             );
             "The billing contact (none set)".to_string()
         }
         Some(None) => {
             blockers.push(
-                "The billing contact has no email address on file. Add one on the contact."
+                "The billing contact has no email address on file, so Send is refused. Add one on the contact."
                     .to_string(),
             );
             "The billing contact (no email address on file)".to_string()
         }
         Some(Some(email)) => email.to_string(),
     };
-    match gateway {
-        Some(false) => blockers.push(
-            "No payment gateway is connected, so there is no Pay Now link to send. Connect one under Settings, Payment Gateways."
-                .to_string(),
-        ),
-        None => blockers.push(
-            "Could not check whether a payment gateway is connected; the email is sent only when one is."
-                .to_string(),
-        ),
-        Some(true) => {}
+    let pay_link = match gateway {
+        Some(true) => true,
+        Some(false) => {
+            notes.push(
+                "No payment gateway is connected, so the email carries no Pay Now link. Connect one under Settings, Payment Gateways to add it."
+                    .to_string(),
+            );
+            false
+        }
+        None => {
+            notes.push(
+                "Could not check whether a payment gateway is connected; the Pay Now link is included only when one is."
+                    .to_string(),
+            );
+            false
+        }
+    };
+    // Mirrors the server's `compose_invoice_sent` (PMS-991): the same
+    // paragraphs in the same order, the pay paragraph only with a gateway.
+    let pay = if pay_link {
+        "Review the invoice and pay online here:\n\n{{portal_link}}\n\n"
+    } else {
+        ""
+    };
+    let subject = if pay_link {
+        format!("Invoice {invoice_number} from {org} is ready to pay")
+    } else {
+        format!("Invoice {invoice_number} from {org}")
+    };
+    let mut unresolved = Vec::new();
+    if pay_link {
+        unresolved.push("portal_link".to_string());
     }
+    unresolved.push("contact_line".to_string());
     crate::components::BuiltinEmail {
         recipient,
-        subject: format!("Invoice {invoice_number} from {org} is ready to pay"),
+        subject,
         body: format!(
-            "{org} has sent you an invoice, ready for payment.\n\n\
+            "{org} has sent you an invoice.\n\n\
              Invoice: {invoice_number}\n\
              Amount due: {balance_due} {currency}\n\
              Due: {due_date}\n\n\
-             Review the invoice and pay online here:\n\n\
-             {{{{portal_link}}}}\n\n\
-             {{{{contact_line}}}}\n\n\
-             (Sent only if the server has email configured, which is a deployment setting.)"
+             The invoice is attached as {invoice_number}.pdf.\n\n\
+             {pay}\
+             {{{{contact_line}}}}"
         ),
-        unresolved: vec!["portal_link".to_string(), "contact_line".to_string()],
+        unresolved,
         blockers,
+        notes,
     }
 }
 
@@ -1199,13 +1226,13 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         }
 
         // MAPPS-539: Send is a one-way door that emails the client, and the
-        // button alone cannot say so. The conditions are the server's: it
-        // skips the mail when no payment gateway is connected, when the
-        // invoice has no billing contact, or when that contact has no address
-        // on file, so promise it only where it holds.
+        // button alone cannot say so. Since PMS-991 and PMS-992 the rule is
+        // the server's: the invoice goes as a PDF to the billing contact, the
+        // pay link rides along only with a payment gateway, and a send with
+        // nobody to email is refused rather than marked sent (MAPPS-663).
         if editable {
             p { class: "mb-3 text-xs text-subtle",
-                "Sending emails the billing contact a link to view and pay this invoice, if a payment gateway is connected and the contact has an email address. Use Preview email to read it first."
+                "Sending emails the billing contact the invoice as a PDF, with a link to pay online if a payment gateway is connected. It needs a billing contact with an email address. Use Preview email to read it first."
             }
         }
 
@@ -4465,9 +4492,10 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
 mod invoice_preview_tests {
     use super::invoice_pay_now_preview;
 
-    /// Every condition the server checks before mailing is a sentence the
-    /// operator sees, and a complete setup has none: the preview never says
-    /// "nothing will be sent" over a send that would mail.
+    /// The two conditions the server refuses a send on are blockers, a
+    /// missing gateway is a note (the invoice still goes, without its pay
+    /// link), and a complete setup has neither: the preview never says
+    /// "nothing will be sent" over a send that would mail (MAPPS-663).
     #[test]
     fn each_missing_condition_is_named_and_a_complete_setup_has_no_blockers() {
         let ok = invoice_pay_now_preview(
@@ -4480,12 +4508,14 @@ mod invoice_preview_tests {
             Some(true),
         );
         assert!(ok.blockers.is_empty(), "{:?}", ok.blockers);
+        assert!(ok.notes.is_empty(), "{:?}", ok.notes);
         assert_eq!(ok.recipient, "ap@client.example");
         assert_eq!(
             ok.subject,
             "Invoice INV-000001 from Acme MSP is ready to pay"
         );
         assert!(ok.body.contains("Amount due: 50.00 USD"));
+        assert!(ok.body.contains("attached as INV-000001.pdf"));
         assert!(ok.body.contains("{{portal_link}}"));
         assert_eq!(ok.unresolved, vec!["portal_link", "contact_line"]);
 
@@ -4507,10 +4537,18 @@ mod invoice_preview_tests {
             Some(Some("a@b.c")),
             Some(false),
         );
-        assert!(no_gateway.blockers[0].contains("No payment gateway"));
+        assert!(no_gateway.blockers.is_empty(), "{:?}", no_gateway.blockers);
+        assert!(no_gateway.notes[0].contains("No payment gateway"));
+        assert_eq!(no_gateway.subject, "Invoice INV-1 from Acme MSP");
+        assert!(
+            !no_gateway.body.contains("portal_link"),
+            "no gateway, no pay paragraph: {}",
+            no_gateway.body
+        );
+        assert_eq!(no_gateway.unresolved, vec!["contact_line"]);
 
         let unknown = invoice_pay_now_preview("", "INV-1", "1", "", "", Some(Some("a@b.c")), None);
-        assert!(unknown.blockers[0].contains("Could not check"));
+        assert!(unknown.notes[0].contains("Could not check"));
         assert!(unknown
             .subject
             .starts_with("Invoice INV-1 from Your organisation"));

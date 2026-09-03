@@ -90,6 +90,10 @@ pub struct BuiltinEmail {
     /// Why Send would email nobody, each a full sentence. Empty when every
     /// condition the server checks is met as far as the page can tell.
     pub blockers: Vec<String>,
+    /// What the message will lack without stopping it (MAPPS-663): a pay
+    /// link with no gateway connected. Rendered as information, not a
+    /// warning, because Send still mails.
+    pub notes: Vec<String>,
 }
 
 /// "Preview email" trigger plus its modal.
@@ -176,10 +180,20 @@ pub fn EmailPreview(
                     if !mail.blockers.is_empty() {
                         crate::components::StatusBanner {
                             tone: crate::components::BannerTone::Warning,
-                            p { class: "font-medium", "Send will not email anyone as things stand." }
+                            p { class: "font-medium", "Send will be refused as things stand." }
                             ul { class: "mt-1 list-disc pl-5 space-y-1",
                                 for reason in mail.blockers.iter() {
                                     li { key: "{reason}", "{reason}" }
+                                }
+                            }
+                        }
+                    }
+                    if !mail.notes.is_empty() {
+                        crate::components::StatusBanner {
+                            tone: crate::components::BannerTone::Info,
+                            ul { class: "list-disc pl-5 space-y-1",
+                                for note in mail.notes.iter() {
+                                    li { key: "{note}", "{note}" }
                                 }
                             }
                         }
