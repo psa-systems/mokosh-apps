@@ -602,15 +602,21 @@ pub fn TimeEntryNewPage() -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_all_authed::<TicketOption>("/tickets")
             .await
-            .ok()
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                // Best-effort: the work-item select falls back to whatever
+                // other source loaded, so log why the tickets are missing.
+                tracing::warn!("ticket option load failed: {e}");
+                Vec::new()
+            })
     });
     let projects_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_all_authed::<ProjectPick>("/projects")
             .await
-            .ok()
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                tracing::warn!("project option load failed: {e}");
+                Vec::new()
+            })
     });
     let work_types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -635,8 +641,12 @@ pub fn TimeEntryNewPage() -> Element {
                     "/projects/{pid}/tasks"
                 ))
                 .await
-                .ok()
-                .unwrap_or_default()
+                .unwrap_or_else(|e| {
+                    // Best-effort: the task select is optional, but an empty
+                    // one must not look like a project with no tasks.
+                    tracing::warn!("task load failed for project {pid}: {e}");
+                    Vec::new()
+                })
             } else {
                 Vec::new()
             }
@@ -661,7 +671,17 @@ pub fn TimeEntryNewPage() -> Element {
                     .filter(|h| (1..=24).contains(h))
                     .map(|h| h * 60)
                     .unwrap_or(DEFAULT_MAX_MINUTES_PER_DAY),
-                Err(_) => DEFAULT_MAX_MINUTES_PER_DAY,
+                // A 404 is the documented "cap not configured" case, so it
+                // stays at debug; anything else is a real settings failure
+                // and the 24h fallback hides it unless it is logged.
+                Err(e) if e.status_code() == Some(404) => {
+                    tracing::debug!("no per-day cap configured, using the 24h default: {e}");
+                    DEFAULT_MAX_MINUTES_PER_DAY
+                }
+                Err(e) => {
+                    tracing::warn!("per-day cap load failed, using the 24h default: {e}");
+                    DEFAULT_MAX_MINUTES_PER_DAY
+                }
             }
         }
         #[cfg(not(feature = "app"))]
@@ -681,10 +701,18 @@ pub fn TimeEntryNewPage() -> Element {
         // to 100 by the server, so a busy day undercounted its own total and
         // the cap check silently passed.
         let path = format!("/time-entries?user_id={user_id}&date_from={today}&date_to={today}");
-        crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>(&path)
-            .await
-            .ok()
-            .map(|rows| rows.iter().map(|e| e.duration_minutes).sum::<i64>())
+        match crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>(&path).await {
+            Ok(rows) => Some(rows.iter().map(|e| e.duration_minutes).sum::<i64>()),
+            Err(e) => {
+                // `None` here is also what "still loading" looks like, so the
+                // log is the only thing that says the cap pre-flight was
+                // skipped because the read failed rather than not finishing.
+                tracing::error!(
+                    "today's logged total failed to load, skipping the per-day cap pre-flight: {e}"
+                );
+                None
+            }
+        }
     });
 
     let tickets = tickets_resource
@@ -1172,8 +1200,11 @@ pub fn TimesheetsPage() -> Element {
         // week and takes the first match, so the server's default page size
         // cannot truncate anything that would be rendered.
         let path = format!("/timesheets?user_id={user_id}&week={start}");
+        // A failed read lands on the same `None` as "this week was never
+        // submitted", which the badge renders as "Not submitted", so log it.
         crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimesheet>>(&path)
             .await
+            .map_err(|e| tracing::warn!("week approval status load failed: {e}"))
             .ok()
             .and_then(|p| p.data.into_iter().next())
     });
@@ -1183,15 +1214,20 @@ pub fn TimesheetsPage() -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_all_authed::<TicketOption>("/tickets")
             .await
-            .ok()
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                // Best-effort: rows fall back to the bare "Ticket <id>" label.
+                tracing::warn!("timesheet ticket label load failed: {e}");
+                Vec::new()
+            })
     });
     let projects_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_all_authed::<ProjectOption>("/projects")
             .await
-            .ok()
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                tracing::warn!("timesheet project label load failed: {e}");
+                Vec::new()
+            })
     });
     let tickets = tickets_resource
         .read_unchecked()
@@ -2545,6 +2581,9 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
             "/settings/time_tracking/max_hours_per_day",
         )
         .await
+        // A missing setting (404) and a broken settings read both omit the
+        // line, so the log is the only thing that tells them apart.
+        .map_err(|e| tracing::warn!("history cap load failed, omitting the cap line: {e}"))
         .ok()
         .and_then(|row| row.value.as_i64())
         .filter(|h| (1..=24).contains(h))
@@ -2558,10 +2597,21 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
         let rows =
             crate::hooks::fetch::api::get_all_authed::<serde_json::Value>("/time-rounding-rules")
                 .await
+                .map_err(|e| tracing::warn!("rounding-rule load failed, omitting the rules: {e}"))
                 .ok()?;
         Some(
             rows.into_iter()
-                .filter_map(|item| serde_json::from_value::<RoundingRuleRow>(item).ok())
+                .filter_map(
+                    |item| match serde_json::from_value::<RoundingRuleRow>(item) {
+                        Ok(rule) => Some(rule),
+                        Err(e) => {
+                            // One undecodable row must not fail the list, but a
+                            // silently dropped rule is invisible in the panel.
+                            tracing::warn!("skipping an undecodable rounding rule: {e}");
+                            None
+                        }
+                    },
+                )
                 .collect::<Vec<_>>(),
         )
     });
