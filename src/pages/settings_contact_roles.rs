@@ -843,7 +843,8 @@ fn ContactRoleEditForm(props: ContactRoleEditFormProps) -> Element {
                 }
 
                 div { class: "flex justify-end gap-2 pt-2",
-                    Link { to: Route::ContactRolesList {},
+                    Link {
+                        to: Route::ContactRolesList {},
                         Button { variant: ButtonVariant::Secondary, "Cancel" }
                     }
                     Button {

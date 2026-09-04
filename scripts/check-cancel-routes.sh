@@ -26,11 +26,13 @@ expected=$(
   cat <<'EOF'
 src/pages/assets.rs:Route::AssetList {}
 src/pages/billing.rs:Route::InvoiceList {}
+src/pages/company_role_edit.rs:back_route.clone()
 src/pages/contacts.rs:cancel_route.clone()
 src/pages/contacts.rs:cancel_route.clone()
 src/pages/contracts.rs:cancel_route.clone()
 src/pages/projects.rs:Route::ProjectList {}
 src/pages/quotes.rs:cancel_route.clone()
+src/pages/settings_contact_roles.rs:Route::ContactRolesList {}
 src/pages/tickets.rs:Route::TicketList {}
 src/pages/time.rs:Route::TimeEntryList {}
 EOF
