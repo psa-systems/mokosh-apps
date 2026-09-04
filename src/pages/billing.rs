@@ -853,9 +853,9 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     // session AND the cap so the button only renders on the portal plane.
     let can_pay = crate::hooks::capabilities::use_is_contact_session()
         && crate::hooks::capabilities::use_capability("invoices:pay");
-    let mut pdf_downloading = use_signal(|| false);
-    let mut pdf_error = use_signal(String::new);
-    let id_for_pdf = props.id.clone();
+    let _pdf_downloading = use_signal(|| false);
+    let pdf_error = use_signal(String::new);
+    let _id_for_pdf = props.id.clone();
     let id_for_resource = props.id.clone();
     // MAPPS-669 (P1d): post-checkout splash flag. Read `?paid=1` off
     // the boot-time search snapshot (the MAPPS-664 fix: the Dioxus
@@ -878,7 +878,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     // budget elapses.
     let mut poll_tick = use_signal(|| 0u32);
     let id_for_readiness = props.id.clone();
-    let mut readiness_resource = use_resource(move || {
+    let readiness_resource = use_resource(move || {
         let id = id_for_readiness.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -1263,14 +1263,14 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                             &body,
                                         ).await {
                                             Ok(resp) if !resp.checkout_url.is_empty() => {
-                                                #[cfg(feature = "web")]
+                                                #[cfg(target_arch = "wasm32")]
                                                 {
                                                     if let Some(win) = web_sys::window() {
                                                         let _ = win.location().replace(&resp.checkout_url);
                                                         return;
                                                     }
                                                 }
-                                                #[cfg(not(feature = "web"))]
+                                                #[cfg(not(target_arch = "wasm32"))]
                                                 {
                                                     // Desktop shell has no
                                                     // location redirect; the

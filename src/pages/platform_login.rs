@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::{AuthLayout, Button, ButtonVariant, Input};
 
+#[cfg(target_arch = "wasm32")]
 const PLATFORM_TOKEN_KEY: &str = "mokosh:platform_token";
 
 #[derive(Serialize)]
@@ -81,11 +82,14 @@ pub fn PlatformLoginPage() -> Element {
                         // session, and the platform token can be read
                         // independently by any platform-scoped page
                         // (e.g. a future /platform/tenants list).
+                        #[cfg(target_arch = "wasm32")]
                         if let Some(win) = web_sys::window() {
                             if let Ok(Some(store)) = win.session_storage() {
                                 let _ = store.set_item(PLATFORM_TOKEN_KEY, &resp.access_token);
                             }
                         }
+                        #[cfg(not(target_arch = "wasm32"))]
+                        let _ = &resp.access_token;
                         done_greeting.set(format!(
                             "Signed in as {} {} ({}). Platform token stored in session; the tenant surface is unchanged.",
                             resp.admin.first_name, resp.admin.last_name, resp.admin.email

@@ -2873,10 +2873,12 @@ fn CompanyContactsCard(
     let go_new_contact = {
         let href = new_contact_href.clone();
         move |_| {
-            #[cfg(feature = "web")]
+            #[cfg(target_arch = "wasm32")]
             if let Some(win) = web_sys::window() {
                 let _ = win.location().set_href(&href);
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = &href;
         }
     };
     rsx! {
@@ -3069,9 +3071,17 @@ fn CompanyPortalAccessCard(
                 .map(|slug| format!("/portal/{slug}/login"))
         });
     let portal_login_absolute = portal_login_path.as_ref().and_then(|p| {
-        web_sys::window()
-            .and_then(|w| w.location().origin().ok())
-            .map(|origin| format!("{}{}", origin.trim_end_matches('/'), p))
+        #[cfg(target_arch = "wasm32")]
+        {
+            web_sys::window()
+                .and_then(|w| w.location().origin().ok())
+                .map(|origin| format!("{}{}", origin.trim_end_matches('/'), p))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = p;
+            None::<String>
+        }
     });
     let portal_login_for_copy = portal_login_absolute.clone();
 
@@ -3108,7 +3118,7 @@ fn CompanyPortalAccessCard(
                     company_resource.restart();
                 }
                 Err(e) => {
-                    tier2_error.set(format!("{e}"));
+                    tier2_error.set(e.to_string());
                 }
             }
             tier2_saving.set(false);
@@ -3159,6 +3169,7 @@ fn CompanyPortalAccessCard(
                                 variant: ButtonVariant::Secondary,
                                 onclick: move |_| {
                                     let u = portal_login_for_copy.clone().unwrap_or_default();
+                                    #[cfg(target_arch = "wasm32")]
                                     if let Some(win) = web_sys::window() {
                                         let _ = win
                                             .navigator()
@@ -3169,6 +3180,8 @@ fn CompanyPortalAccessCard(
                                             "Portal login URL copied to clipboard.".to_string(),
                                         );
                                     }
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    let _ = u;
                                 },
                                 "Copy link"
                             }
@@ -3198,7 +3211,7 @@ fn CompanyPortalAccessCard(
                         TableEmpty { columns: 5, message: "No contacts at this company yet. Add one to grant portal access.".to_string() }
                     },
                     Some(Some(page_rows)) => {
-                        let rows: Vec<_> = page_rows.iter().cloned().collect();
+                        let rows: Vec<_> = page_rows.to_vec();
                         rsx! {
                             TableBody {
                                 for contact in rows.into_iter() {
@@ -3371,7 +3384,7 @@ fn EditPortalRolesButton(
     };
 
     let submit_id = contact_id.clone();
-    let mut submit = move |_| {
+    let submit = move |_| {
         if saving() {
             return;
         }
@@ -3482,7 +3495,7 @@ fn EditPortalRolesButton(
                             variant: ButtonVariant::Primary,
                             disabled: saving(),
                             loading: saving(),
-                            onclick: move |e| submit(e),
+                            onclick: submit,
                             "Save"
                         }
                     }
@@ -3965,10 +3978,12 @@ fn AddContactModal(
                         onclick: {
                             let href = new_href.clone();
                             move |_| {
-                                #[cfg(feature = "web")]
+                                #[cfg(target_arch = "wasm32")]
                                 if let Some(win) = web_sys::window() {
                                     let _ = win.location().set_href(&href);
                                 }
+                                #[cfg(not(target_arch = "wasm32"))]
+                                let _ = &href;
                             }
                         },
                         "+ Create a new contact instead"
@@ -5988,7 +6003,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
             initial.contact_type.clone()
         }
     });
-    let mut company_name = use_signal(|| initial.company_name.clone());
+    let _company_name = use_signal(|| initial.company_name.clone());
     // MAPPS-396 / PMS-729: single-shot "create contact + grant portal
     // access" checkbox. Only wired in Create mode (Edit uses the
     // dedicated ContactPortalCard toggle on the detail page, which the
@@ -7358,7 +7373,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
     };
 
     let submit_id = contact_id.clone();
-    let mut submit_grant = move |_| {
+    let submit_grant = move |_| {
         if *mutating.read() {
             return;
         }
@@ -7414,7 +7429,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
     };
 
     let resend_id = contact_id.clone();
-    let mut resend_invite = move |_| {
+    let resend_invite = move |_| {
         if *mutating.read() {
             return;
         }
@@ -7437,11 +7452,11 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
     };
 
     let revoke_id = contact_id.clone();
-    let mut revoke_access = move |_| {
+    let revoke_access = move |_| {
         if *mutating.read() {
             return;
         }
-        #[cfg(feature = "web")]
+        #[cfg(target_arch = "wasm32")]
         let confirmed = web_sys::window()
             .and_then(|w| {
                 w.confirm_with_message(
@@ -7451,7 +7466,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                 .ok()
             })
             .unwrap_or(false);
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(target_arch = "wasm32"))]
         let confirmed = false;
         if !confirmed {
             return;
@@ -7537,14 +7552,14 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                             variant: ButtonVariant::Secondary,
                             disabled: !can_mutate || *mutating.read(),
                             loading: *mutating.read(),
-                            onclick: move |e| resend_invite(e),
+                            onclick: resend_invite,
                             "Resend setup email"
                         }
                         Button {
                             variant: ButtonVariant::Danger,
                             disabled: !can_mutate || *mutating.read(),
                             loading: *mutating.read(),
-                            onclick: move |e| revoke_access(e),
+                            onclick: revoke_access,
                             "Revoke access"
                         }
                     }
@@ -7645,7 +7660,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                                 variant: ButtonVariant::Primary,
                                 disabled: !can_mutate || *mutating.read(),
                                 loading: *mutating.read(),
-                                onclick: move |e| submit_grant(e),
+                                onclick: submit_grant,
                                 if is_portal_user { "Update roles" } else { "Grant + send email" }
                             }
                         }

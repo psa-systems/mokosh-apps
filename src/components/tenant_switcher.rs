@@ -301,7 +301,7 @@ pub fn TenantSwitcher() -> Element {
                     if memberships.is_empty() {
                         div { class: "px-3 py-2 text-sm text-content", "No memberships loaded." }
                     } else {
-                        {memberships.iter().cloned().map(|m| {
+                        {memberships.iter().map(|m| {
                             let tenant_id = m.tenant_id.clone();
                             let is_active = Some(tenant_id.clone()) == active_id_str;
                             rsx! {

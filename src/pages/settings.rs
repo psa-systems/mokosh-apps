@@ -518,9 +518,9 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         advanced: false,
         visibility: SurfaceVisibility::Always,
     },
-    /// MAPPS-622: staff-side tenant branding editor. Sets the MSP
-    /// defaults every Company portal inherits; per-Company overrides
-    /// live on the Company detail page.
+    // MAPPS-622: staff-side tenant branding editor. Sets the MSP
+    // defaults every Company portal inherits; per-Company overrides
+    // live on the Company detail page.
     SettingsSurface {
         route: Route::SettingsBranding {},
         title: "Portal Branding",
@@ -529,11 +529,11 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         advanced: false,
         visibility: SurfaceVisibility::StaffAdmin,
     },
-    /// MAPPS-620: contact-plane portal branding editor. Rendered to
-    /// staff too (the SettingsHome hub does not filter by
-    /// capability), but the page's own gate degrades to
-    /// `ContentUnavailable` unless the caller holds
-    /// `settings:manage_company_branding`.
+    // MAPPS-620: contact-plane portal branding editor. Rendered to
+    // staff too (the SettingsHome hub does not filter by
+    // capability), but the page's own gate degrades to
+    // `ContentUnavailable` unless the caller holds
+    // `settings:manage_company_branding`.
     SettingsSurface {
         route: Route::ContactPortalBranding {},
         title: "My Portal Branding",

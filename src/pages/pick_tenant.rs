@@ -130,7 +130,7 @@ pub fn PickTenantPage() -> Element {
                 }
             }
             ul { class: "space-y-2",
-                {pending.memberships.iter().cloned().map(|m| {
+                {pending.memberships.iter().map(|m| {
                     let tenant_id = m.tenant_id.clone();
                     let label_name = m.tenant_name.clone();
                     let label_role = m.role.clone();

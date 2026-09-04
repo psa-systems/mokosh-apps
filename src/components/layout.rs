@@ -9,13 +9,14 @@ use super::theme_picker::ThemePickerButton;
 /// MAPPS-518: the sessionStorage key where `/platform/login` stashes
 /// the platform-admin bearer (mirrors
 /// `pages::platform_login::PLATFORM_TOKEN_KEY`).
+#[cfg(target_arch = "wasm32")]
 const PLATFORM_TOKEN_KEY: &str = "mokosh:platform_token";
 
 /// MAPPS-518: is the platform-admin bearer present in sessionStorage?
 /// Used to gate the Tenants nav item (and any other UI that requires
 /// a platform-admin session, distinct from a tenant admin session).
 fn platform_bearer_present() -> bool {
-    #[cfg(feature = "web")]
+    #[cfg(target_arch = "wasm32")]
     {
         if let Some(win) = web_sys::window() {
             if let Ok(Some(store)) = win.session_storage() {
@@ -106,7 +107,7 @@ pub fn AppShell() -> Element {
     // exclusive per origin).
     #[cfg(feature = "web")]
     use_effect(|| {
-        if !crate::hooks::fetch::api::current_access_token().is_some() {
+        if crate::hooks::fetch::api::current_access_token().is_none() {
             return;
         }
         // If the signal is already populated (e.g. by a prior tenant
@@ -1175,9 +1176,12 @@ fn UserMenu() -> Element {
             } else {
                 "/portal/login".to_string()
             };
+            #[cfg(target_arch = "wasm32")]
             if let Some(win) = web_sys::window() {
                 let _ = win.location().replace(&dest);
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = dest;
             return;
         }
         // Staff sign-out: the whole sequence lives in

@@ -768,7 +768,7 @@ pub mod api {
     /// today. The follow-up ticket to move this to a cookie is filed
     /// as a note in `docs/mokosh-client-login/dashboard-overhaul-1.md`
     /// under B2.
-    #[cfg(feature = "web")]
+    #[cfg(target_arch = "wasm32")]
     const PORTAL_REFRESH_STORAGE_KEY: &str = "mokosh:portal_refresh_token";
 
     /// PMS-729 phase 2 H2 / MAPPS-563: set the portal refresh token.
@@ -784,6 +784,7 @@ pub mod api {
         // token via /portal/auth/refresh before PortalGuard bounces.
         // Any storage access can throw (private-mode browsers, disabled
         // site data), so degrade to in-memory-only on failure.
+        #[cfg(target_arch = "wasm32")]
         if let Some(win) = web_sys::window() {
             if let Ok(Some(storage)) = win.local_storage() {
                 match token.as_deref() {
@@ -796,6 +797,8 @@ pub mod api {
                 }
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = token;
     }
 
     /// PMS-729 phase 2 H2 / MAPPS-563: read the portal refresh token.
@@ -814,18 +817,23 @@ pub mod api {
         if in_memory.is_some() {
             return in_memory;
         }
-        let win = web_sys::window()?;
-        let storage = win.local_storage().ok().flatten()?;
-        let stored = storage
-            .get_item(PORTAL_REFRESH_STORAGE_KEY)
-            .ok()
-            .flatten()?;
-        if stored.is_empty() {
-            return None;
+        #[cfg(target_arch = "wasm32")]
+        {
+            let win = web_sys::window()?;
+            let storage = win.local_storage().ok().flatten()?;
+            let stored = storage
+                .get_item(PORTAL_REFRESH_STORAGE_KEY)
+                .ok()
+                .flatten()?;
+            if stored.is_empty() {
+                return None;
+            }
+            // Prime the in-memory slot so the next caller skips storage.
+            PORTAL_REFRESH_TOKEN.with(|t| *t.borrow_mut() = Some(stored.clone()));
+            Some(stored)
         }
-        // Prime the in-memory slot so the next caller skips storage.
-        PORTAL_REFRESH_TOKEN.with(|t| *t.borrow_mut() = Some(stored.clone()));
-        Some(stored)
+        #[cfg(not(target_arch = "wasm32"))]
+        None
     }
 
     // --- Contact-plane session holders (mokosh-contact-login, prompt 005) ---
@@ -865,7 +873,7 @@ pub mod api {
         static CONTACT_ID: std::cell::RefCell<Option<uuid::Uuid>> = const { std::cell::RefCell::new(None) };
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(target_arch = "wasm32")]
     const CONTACT_REFRESH_STORAGE_KEY: &str = "mokosh:contact_refresh_token";
 
     /// `localStorage` key that remembers "this browser last signed in
@@ -921,6 +929,7 @@ pub mod api {
     #[cfg(feature = "web")]
     pub fn set_contact_refresh_token(token: Option<String>) {
         CONTACT_REFRESH_TOKEN.with(|t| *t.borrow_mut() = token.clone());
+        #[cfg(target_arch = "wasm32")]
         if let Some(win) = web_sys::window() {
             if let Ok(Some(storage)) = win.local_storage() {
                 match token.as_deref() {
@@ -933,6 +942,8 @@ pub mod api {
                 }
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = token;
     }
 
     /// Read the contact refresh token. Falls back to the localStorage
@@ -944,17 +955,22 @@ pub mod api {
         if in_memory.is_some() {
             return in_memory;
         }
-        let win = web_sys::window()?;
-        let storage = win.local_storage().ok().flatten()?;
-        let stored = storage
-            .get_item(CONTACT_REFRESH_STORAGE_KEY)
-            .ok()
-            .flatten()?;
-        if stored.is_empty() {
-            return None;
+        #[cfg(target_arch = "wasm32")]
+        {
+            let win = web_sys::window()?;
+            let storage = win.local_storage().ok().flatten()?;
+            let stored = storage
+                .get_item(CONTACT_REFRESH_STORAGE_KEY)
+                .ok()
+                .flatten()?;
+            if stored.is_empty() {
+                return None;
+            }
+            CONTACT_REFRESH_TOKEN.with(|t| *t.borrow_mut() = Some(stored.clone()));
+            Some(stored)
         }
-        CONTACT_REFRESH_TOKEN.with(|t| *t.borrow_mut() = Some(stored.clone()));
-        Some(stored)
+        #[cfg(not(target_arch = "wasm32"))]
+        None
     }
 
     /// Remember the last slug this browser signed in on. Used by the
@@ -962,28 +978,36 @@ pub mod api {
     /// to the same portal they came from.
     #[cfg(feature = "web")]
     pub fn set_contact_last_slug(slug: &str) {
+        #[cfg(target_arch = "wasm32")]
         if let Some(win) = web_sys::window() {
             if let Ok(Some(storage)) = win.local_storage() {
                 let _ = storage.set_item(CONTACT_LAST_SLUG_STORAGE_KEY, slug);
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = slug;
     }
 
     /// Read the last-known slug the browser signed in on. `None` when
     /// no contact login has ever happened on this browser.
     #[cfg(feature = "web")]
     pub fn current_contact_last_slug() -> Option<String> {
-        let win = web_sys::window()?;
-        let storage = win.local_storage().ok().flatten()?;
-        let stored = storage
-            .get_item(CONTACT_LAST_SLUG_STORAGE_KEY)
-            .ok()
-            .flatten()?;
-        if stored.is_empty() {
-            None
-        } else {
-            Some(stored)
+        #[cfg(target_arch = "wasm32")]
+        {
+            let win = web_sys::window()?;
+            let storage = win.local_storage().ok().flatten()?;
+            let stored = storage
+                .get_item(CONTACT_LAST_SLUG_STORAGE_KEY)
+                .ok()
+                .flatten()?;
+            if stored.is_empty() {
+                None
+            } else {
+                Some(stored)
+            }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        None
     }
 
     /// MAPPS-589 (prompt 011): remember the last Portal ID this
@@ -992,11 +1016,14 @@ pub mod api {
     /// cold-load bootstrap over the legacy slug key.
     #[cfg(feature = "web")]
     pub fn set_contact_last_portal_id(value: &str) {
+        #[cfg(target_arch = "wasm32")]
         if let Some(win) = web_sys::window() {
             if let Ok(Some(storage)) = win.local_storage() {
                 let _ = storage.set_item(CONTACT_LAST_PORTAL_ID_STORAGE_KEY, value);
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = value;
     }
 
     /// MAPPS-615 (prompt 014): drop the last-Portal-ID hint so a
@@ -1007,6 +1034,7 @@ pub mod api {
     /// button.
     #[cfg(feature = "web")]
     pub fn clear_contact_last_portal_id() {
+        #[cfg(target_arch = "wasm32")]
         if let Some(win) = web_sys::window() {
             if let Ok(Some(storage)) = win.local_storage() {
                 let _ = storage.remove_item(CONTACT_LAST_PORTAL_ID_STORAGE_KEY);
@@ -1020,17 +1048,22 @@ pub mod api {
     /// this key unset).
     #[cfg(feature = "web")]
     pub fn current_contact_last_portal_id() -> Option<String> {
-        let win = web_sys::window()?;
-        let storage = win.local_storage().ok().flatten()?;
-        let stored = storage
-            .get_item(CONTACT_LAST_PORTAL_ID_STORAGE_KEY)
-            .ok()
-            .flatten()?;
-        if stored.is_empty() {
-            None
-        } else {
-            Some(stored)
+        #[cfg(target_arch = "wasm32")]
+        {
+            let win = web_sys::window()?;
+            let storage = win.local_storage().ok().flatten()?;
+            let stored = storage
+                .get_item(CONTACT_LAST_PORTAL_ID_STORAGE_KEY)
+                .ok()
+                .flatten()?;
+            if stored.is_empty() {
+                None
+            } else {
+                Some(stored)
+            }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        None
     }
 
     /// MAPPS-604: overwrite the Company UUID this contact session is
@@ -1077,6 +1110,7 @@ pub mod api {
         set_contact_refresh_token(None);
         set_contact_company_id(None);
         set_contact_id(None);
+        #[cfg(target_arch = "wasm32")]
         if let Some(win) = web_sys::window() {
             if let Ok(Some(storage)) = win.local_storage() {
                 let _ = storage.remove_item(CONTACT_LAST_SLUG_STORAGE_KEY);
@@ -1095,6 +1129,7 @@ pub mod api {
     pub fn clear_staff_session_for_plane_switch() {
         set_access_token(None);
         crate::modules::oidc::storage::clear_auth();
+        #[cfg(target_arch = "wasm32")]
         if let Some(win) = web_sys::window() {
             if let Ok(Some(session)) = win.session_storage() {
                 // Kept in sync with the `PLATFORM_TOKEN_KEY` const in
@@ -1262,7 +1297,7 @@ pub mod api {
     /// [`permission_message`]. Anything else (e.g. "This organization
     /// is not active" for a suspended tenant, MFA-required copy)
     /// stays verbatim so users still see the specific reason.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     fn is_generic_auth_message(status: u16, msg: &str) -> bool {
         if !(status == 401 || status == 403) {
             return false;
@@ -1278,7 +1313,7 @@ pub mod api {
         )
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(target_arch = "wasm32")]
     fn permission_message() -> String {
         let has_any_session =
             current_access_token().is_some() || current_contact_access_token().is_some();
@@ -1291,7 +1326,7 @@ pub mod api {
 
     /// Non-web fallback so callers compile under `cargo check` without
     /// pulling in the plane-aware permission logic.
-    #[cfg(all(feature = "app", not(feature = "web")))]
+    #[cfg(all(feature = "app", not(target_arch = "wasm32")))]
     fn permission_message() -> String {
         "You don't have permission to perform this action.".into()
     }
@@ -1774,7 +1809,7 @@ pub mod api {
     /// header itself from the `FormData` body, so this helper deliberately
     /// omits it - overriding it here would strip the boundary and the
     /// server would 400.
-    #[cfg(feature = "web")]
+    #[cfg(target_arch = "wasm32")]
     pub async fn post_portal_authed_multipart<T: DeserializeOwned>(
         path: &str,
         form: &web_sys::FormData,
@@ -1802,7 +1837,7 @@ pub mod api {
     /// (`PUT /api/v1/companies/{id}/{asset}`). Deliberately omits the
     /// `Content-Type` header - the browser sets it (with the
     /// `boundary=...` parameter) from the `FormData` body itself.
-    #[cfg(feature = "web")]
+    #[cfg(target_arch = "wasm32")]
     pub async fn put_authed_multipart<T: DeserializeOwned>(
         path: &str,
         form: &web_sys::FormData,
@@ -1829,7 +1864,7 @@ pub mod api {
     /// Powers the same asset uploads on the contact plane
     /// (`PUT /api/v1/contact/companies/self/{asset}`), gated on the
     /// caller holding `settings:manage_company_branding`.
-    #[cfg(feature = "web")]
+    #[cfg(target_arch = "wasm32")]
     pub async fn put_contact_authed_multipart<T: DeserializeOwned>(
         path: &str,
         form: &web_sys::FormData,
@@ -2458,7 +2493,7 @@ pub mod api {
 
     /// MAPPS-518: the sessionStorage key `/platform/login` writes to.
     /// Kept in sync with `pages::platform_login::PLATFORM_TOKEN_KEY`.
-    #[cfg(feature = "web")]
+    #[cfg(target_arch = "wasm32")]
     const PLATFORM_TOKEN_KEY: &str = "mokosh:platform_token";
 
     /// MAPPS-518: read the current platform-admin bearer from
@@ -2466,14 +2501,19 @@ pub mod api {
     /// `/platform/login` (or the browser blocks sessionStorage).
     #[cfg(feature = "web")]
     pub fn current_platform_access_token() -> Option<String> {
-        let win = web_sys::window()?;
-        let store = win.session_storage().ok()??;
-        let token = store.get_item(PLATFORM_TOKEN_KEY).ok()??;
-        if token.trim().is_empty() {
-            None
-        } else {
-            Some(token)
+        #[cfg(target_arch = "wasm32")]
+        {
+            let win = web_sys::window()?;
+            let store = win.session_storage().ok()??;
+            let token = store.get_item(PLATFORM_TOKEN_KEY).ok()??;
+            if token.trim().is_empty() {
+                None
+            } else {
+                Some(token)
+            }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        None
     }
 
     #[cfg(feature = "web")]

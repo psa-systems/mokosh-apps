@@ -45,7 +45,7 @@ pub fn ContactPortalBrandingPage() -> Element {
         .ok()
     });
     let mut error: Signal<String> = use_signal(String::new);
-    let mut toast: Signal<String> = use_signal(String::new);
+    let _toast: Signal<String> = use_signal(String::new);
     let mut saving = use_signal(|| false);
     if !has_cap {
         return rsx! { NoAccessPanel {} };
@@ -64,7 +64,7 @@ pub fn ContactPortalBrandingPage() -> Element {
             EffectiveBranding::default(),
         ),
     };
-    let loading = matches!(&*snap, None);
+    let loading = (*snap).is_none();
     let load_declined = matches!(&*snap, Some(None));
     if load_declined {
         return rsx! { NoAccessPanel {} };

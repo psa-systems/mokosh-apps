@@ -208,7 +208,7 @@ pub fn SetPasswordPage(token: String) -> Element {
                             // tenant_slug) or the portal host suffix
                             // (dev without env, non-portal deploy)
                             // is missing.
-                            #[cfg(feature = "web")]
+                            #[cfg(target_arch = "wasm32")]
                             {
                                 // MAPPS-649: the portal is one host now,
                                 // so bounce to the portal root; the
@@ -226,7 +226,7 @@ pub fn SetPasswordPage(token: String) -> Element {
                                 }
                                 nav.replace(Route::Login {});
                             }
-                            #[cfg(not(feature = "web"))]
+                            #[cfg(not(target_arch = "wasm32"))]
                             {
                                 nav.replace(Route::Login {});
                             }

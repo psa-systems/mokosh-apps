@@ -5,9 +5,9 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, BannerTone, Button, ButtonVariant, Card, DataTable,
-    ErrorBanner, Input, Modal, PageHeader, StatCard, StatusBanner, Table, TableBody, TableCell,
-    TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    use_page_title, Badge, BadgeVariant, BannerTone, Button, ButtonVariant, DataTable, ErrorBanner,
+    Input, Modal, PageHeader, StatCard, StatusBanner, Table, TableBody, TableCell, TableEmpty,
+    TableHead, TableHeader, TableLoading, TableRow,
 };
 
 /// Subset of mokosh-server's `TenantResponse` we render in the admin
@@ -522,7 +522,6 @@ fn TenantRow(props: TenantRowProps) -> Element {
                                     for (label, kind) in actions.into_iter() {
                                         {
                                             let name = name.clone();
-                                            let on_changed = on_changed;
                                             rsx! {
                                                 button {
                                                     key: "{label}",
@@ -547,9 +546,12 @@ fn TenantRow(props: TenantRowProps) -> Element {
                                                                     "Reactivate client \"{name}\"? The client will resume normal access on their next request.",
                                                                 ),
                                                             };
+                                                            #[cfg(target_arch = "wasm32")]
                                                             let confirmed = web_sys::window()
                                                                 .and_then(|w| w.confirm_with_message(&msg).ok())
                                                                 .unwrap_or(false);
+                                                            #[cfg(not(target_arch = "wasm32"))]
+                                                            let confirmed = { let _ = &msg; false };
                                                             if !confirmed {
                                                                 return;
                                                             }
@@ -1130,7 +1132,7 @@ fn EditTenantModal(
             error.set("Slug is required.".to_string());
             return;
         }
-        let s_changed = s_raw.to_ascii_lowercase() != original_slug.to_ascii_lowercase();
+        let s_changed = !s_raw.eq_ignore_ascii_case(&original_slug);
         let body = UpdateTenantBody {
             name: Some(n),
             slug: if s_changed { Some(s_raw) } else { None },

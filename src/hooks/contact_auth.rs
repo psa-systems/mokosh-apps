@@ -173,24 +173,18 @@ pub async fn refresh_contact_session() -> Result<(), String> {
 /// session.
 pub fn use_contact_auto_refresh() {
     use_future(move || async move {
+        #[cfg(target_arch = "wasm32")]
         loop {
-            #[cfg(feature = "web")]
-            {
-                gloo_timers::future::TimeoutFuture::new(120_000).await;
-                if crate::hooks::fetch::api::has_contact_session() {
-                    let _ = refresh_contact_session().await;
-                }
-            }
-            #[cfg(not(feature = "web"))]
-            {
-                // Non-web builds have no timer; break so the future
-                // does not busy-loop under `cargo check`.
-                break;
+            gloo_timers::future::TimeoutFuture::new(120_000).await;
+            if crate::hooks::fetch::api::has_contact_session() {
+                let _ = refresh_contact_session().await;
             }
         }
+        // Non-web builds have no timer; the future returns immediately
+        // so `cargo check` does not busy-loop.
     });
 
-    #[cfg(feature = "web")]
+    #[cfg(target_arch = "wasm32")]
     use_effect(move || {
         install_focus_refresh_listener();
     });
@@ -203,7 +197,7 @@ pub fn use_contact_auto_refresh() {
 /// closure itself is `.forget()`-ed because the listener lives for
 /// the wasm module's lifetime (the auth.rs `pageshow` hook uses the
 /// same pattern).
-#[cfg(feature = "web")]
+#[cfg(target_arch = "wasm32")]
 fn install_focus_refresh_listener() {
     use wasm_bindgen::prelude::*;
     use wasm_bindgen::JsCast;

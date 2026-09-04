@@ -629,12 +629,12 @@ fn MembersSection(props: MembersSectionProps) -> Element {
                     label: "Add user (UUID)",
                     r#type: "text".to_string(),
                     value: new_user_id(),
-                    disabled: props.saving_parent.read().clone(),
+                    disabled: *props.saving_parent.read(),
                     oninput: move |e: FormEvent| { new_user_id.set(e.value()); },
                 }
                 Button {
                     variant: ButtonVariant::Secondary,
-                    disabled: props.saving_parent.read().clone(),
+                    disabled: *props.saving_parent.read(),
                     onclick: move |_| add(()),
                     "Add"
                 }

@@ -82,7 +82,7 @@ struct PlatformLoginResp {
 /// unified into `/login`) writes its bearer to. Kept in sync with
 /// `pages::platform_login::PLATFORM_TOKEN_KEY` and
 /// `components::layout::PLATFORM_TOKEN_KEY`.
-#[cfg(feature = "web")]
+#[cfg(target_arch = "wasm32")]
 const PLATFORM_TOKEN_KEY: &str = "mokosh:platform_token";
 
 /// MAPPS-549: request body for `POST /api/v1/auth/select-tenant`, used
@@ -302,11 +302,14 @@ pub fn StandaloneLogin() -> Element {
                     .await
                     {
                         Ok(resp) => {
+                            #[cfg(target_arch = "wasm32")]
                             if let Some(win) = web_sys::window() {
                                 if let Ok(Some(store)) = win.session_storage() {
                                     let _ = store.set_item(PLATFORM_TOKEN_KEY, &resp.access_token);
                                 }
                             }
+                            #[cfg(not(target_arch = "wasm32"))]
+                            let _ = &resp.access_token;
 
                             // MAPPS-520 walkthrough: chain a tenant
                             // login attempt with the same credentials

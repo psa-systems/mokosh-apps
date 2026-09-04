@@ -69,7 +69,7 @@ pub fn SettingsBrandingPage() -> Element {
         _ => CompanyBranding::default(),
     };
     let portal_module_enabled = matches!(&*snap, Some(Some(t)) if t.portal_module_enabled);
-    let loading = matches!(&*snap, None);
+    let loading = (*snap).is_none();
 
     // MAPPS-651 / MAPPS-648: tier-1 toggle. Save posts
     // `{portal_module_enabled: v}` alone so a flip does not disturb

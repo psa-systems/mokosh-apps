@@ -18,6 +18,7 @@
 //! the parent can refetch the Company / branding block and repaint.
 
 use dioxus::prelude::*;
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
 
 use crate::components::{Button, ButtonVariant, Card};
@@ -170,6 +171,7 @@ fn hint(plane: &BrandingPlane, default: Option<&str>) -> String {
 
 /// Kick off a multipart PUT of the picked file to the given URL,
 /// using the appropriate bearer for the plane. Returns Ok on 2xx.
+#[cfg(target_arch = "wasm32")]
 async fn upload_asset(
     plane: BrandingPlane,
     asset: &str,
@@ -310,34 +312,48 @@ fn AssetUploadRow(
         // `FormEvent::files()` returns a `FileEngine` that hides the
         // raw `web_sys::File`; a multipart upload needs the native
         // `Blob`, so bypass the engine and query the input by id.
-        let Some(el) = web_sys::window()
-            .and_then(|w| w.document())
-            .and_then(|d| d.get_element_by_id(&format!("brand_upload_{}", asset_for_upload)))
-        else {
-            error.set("Could not read the picked file.".to_string());
-            return;
-        };
-        let Ok(input) = el.dyn_into::<web_sys::HtmlInputElement>() else {
-            error.set("Could not read the picked file.".to_string());
-            return;
-        };
-        let Some(file_list) = input.files() else {
-            return;
-        };
-        let Some(file) = file_list.item(0) else {
-            return;
-        };
-        saving.set(true);
-        error.set(String::new());
-        let asset = asset_for_upload.clone();
-        let plane = plane_for_upload.clone();
-        spawn(async move {
-            match upload_asset(plane, &asset, file).await {
-                Ok(_) => on_saved.call(()),
-                Err(e) => error.set(format!("Upload failed: {e}")),
-            }
-            saving.set(false);
-        });
+        #[cfg(target_arch = "wasm32")]
+        {
+            let Some(el) = web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.get_element_by_id(&format!("brand_upload_{}", asset_for_upload)))
+            else {
+                error.set("Could not read the picked file.".to_string());
+                return;
+            };
+            let Ok(input) = el.dyn_into::<web_sys::HtmlInputElement>() else {
+                error.set("Could not read the picked file.".to_string());
+                return;
+            };
+            let Some(file_list) = input.files() else {
+                return;
+            };
+            let Some(file) = file_list.item(0) else {
+                return;
+            };
+            saving.set(true);
+            error.set(String::new());
+            let asset = asset_for_upload.clone();
+            let plane = plane_for_upload.clone();
+            spawn(async move {
+                match upload_asset(plane, &asset, file).await {
+                    Ok(_) => on_saved.call(()),
+                    Err(e) => error.set(format!("Upload failed: {e}")),
+                }
+                saving.set(false);
+            });
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = (
+                &_evt,
+                &asset_for_upload,
+                &plane_for_upload,
+                &mut saving,
+                &mut error,
+                &on_saved,
+            );
+        }
     };
     let asset_for_remove = asset.clone();
     let plane_for_remove = plane.clone();
@@ -404,10 +420,9 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
     // block. On Save we hand the full state back through the
     // `on_save` callback; on Reset we clear a single field.
     let mut display_name = use_signal(|| props.current.display_name.clone().unwrap_or_default());
-    let mut primary_color = use_signal(|| props.current.primary_color.clone().unwrap_or_default());
-    let mut secondary_color =
-        use_signal(|| props.current.secondary_color.clone().unwrap_or_default());
-    let mut background_color =
+    let primary_color = use_signal(|| props.current.primary_color.clone().unwrap_or_default());
+    let secondary_color = use_signal(|| props.current.secondary_color.clone().unwrap_or_default());
+    let background_color =
         use_signal(|| props.current.background_color.clone().unwrap_or_default());
     let mut support_email = use_signal(|| props.current.support_email.clone().unwrap_or_default());
     let mut support_phone = use_signal(|| props.current.support_phone.clone().unwrap_or_default());

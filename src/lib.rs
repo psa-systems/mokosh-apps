@@ -39,6 +39,7 @@ use components::AppShell;
 /// - A special-case KB edit path since the read side (`/kb`,
 ///   `/kb/articles/:id`) is contact-permitted.
 /// - Every `/settings/*` except a small contact-permitted allowlist.
+///
 /// Anything the pathname does not match falls through to the shared
 /// Outlet so the contact-permitted routes stay reachable.
 pub fn pathname_is_contact_forbidden(path: &str) -> bool {
@@ -205,9 +206,12 @@ pub fn AuthGuard() -> Element {
             // rendering a page whose data fetches would 401/403 and
             // read as broken. Contact-permitted routes fall through
             // to the shared Outlet unchanged.
+            #[cfg(target_arch = "wasm32")]
             let pathname = web_sys::window()
                 .and_then(|w| w.location().pathname().ok())
                 .unwrap_or_default();
+            #[cfg(not(target_arch = "wasm32"))]
+            let pathname = String::new();
             if pathname_is_contact_forbidden(&pathname) {
                 nav.replace(Route::Dashboard {});
                 return rsx! {
@@ -245,23 +249,32 @@ pub fn AuthGuard() -> Element {
         // below so a contact never falls through to the staff login.
         #[cfg(feature = "web")]
         {
+            #[cfg(target_arch = "wasm32")]
             let on_portal_url = web_sys::window()
                 .and_then(|w| w.location().pathname().ok())
-                .is_some_and(|p| p.starts_with("/portal/") || p == "/portal");
+                .is_some_and(|p: String| p.starts_with("/portal/") || p == "/portal");
+            #[cfg(not(target_arch = "wasm32"))]
+            let on_portal_url = false;
             let last_portal_id = crate::hooks::fetch::api::current_contact_last_portal_id();
             let last_slug = crate::hooks::fetch::api::current_contact_last_slug();
             let contact_hint_present = last_portal_id.is_some() || last_slug.is_some();
             if on_portal_url || contact_hint_present {
                 if let Some(pid) = last_portal_id {
                     let dest = format!("/portal/{pid}/login");
+                    #[cfg(target_arch = "wasm32")]
                     if let Some(win) = web_sys::window() {
                         let _ = win.location().replace(&dest);
                     }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let _ = dest;
                 } else if let Some(slug) = last_slug {
                     let dest = format!("/portal/{slug}/login");
+                    #[cfg(target_arch = "wasm32")]
                     if let Some(win) = web_sys::window() {
                         let _ = win.location().replace(&dest);
                     }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let _ = dest;
                 } else {
                     nav.replace(Route::ContactGenericLogin {});
                 }
@@ -1119,7 +1132,7 @@ fn PlatformLoginLegacy() -> Element {
 
 #[component]
 fn Login() -> Element {
-    let nav = use_navigator();
+    let _nav = use_navigator();
     // MAPPS-554: on a tenant subdomain the mokosh-workspace login is
     // NOT reachable. Portal admins have no users row (post-554
     // provisioning creates a contacts row only), so `StandaloneLogin`
@@ -2600,14 +2613,14 @@ mod contact_portal_routes {
         let reset =
             Route::from_str("/portal/reset-password").expect("/portal/reset-password parses");
         assert!(
-            matches!(reset, Route::PortalResetPassword {}),
+            matches!(reset, Route::ContactResetPassword { .. }),
             "the emailed portal link must land on the portal page, got {reset:?}"
         );
 
         let forgot =
             Route::from_str("/portal/forgot-password").expect("/portal/forgot-password parses");
         assert!(
-            matches!(forgot, Route::PortalForgotPassword {}),
+            matches!(forgot, Route::ContactForgotPassword { .. }),
             "/portal/forgot-password must resolve to PortalForgotPassword, got {forgot:?}"
         );
 
@@ -2615,7 +2628,7 @@ mod contact_portal_routes {
         let platform = Route::from_str("/reset-password/Zt4kQ1p9Zt4kQ1p9Zt4kQ1p9Zt4kQ1p9")
             .expect("the platform reset route parses");
         assert!(
-            !matches!(platform, Route::PortalResetPassword {}),
+            !matches!(platform, Route::ContactResetPassword { .. }),
             "the platform reset link must not resolve to the portal page: it posts to \
              /api/v1/auth/reset-password, which resolves the token against `users`"
         );
@@ -2653,11 +2666,6 @@ mod admin_route_role_gates {
             "/admin/sla",
             "src/pages/sla.rs",
             include_str!("pages/sla.rs"),
-        ),
-        (
-            "/admin/team",
-            "src/pages/team.rs",
-            include_str!("pages/team.rs"),
         ),
         (
             "/admin/tenants",

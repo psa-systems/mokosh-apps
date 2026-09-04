@@ -342,53 +342,51 @@ pub fn ContactPickerPage(token: String) -> Element {
     use_effect(move || {
         let tok = token_for_effect.clone();
         spawn(async move {
-            #[cfg(feature = "web")]
-            {
-                match post_redeem(&tok, None).await {
-                    Ok(outcome) => match classify_redeem(&outcome) {
-                        RedeemBranch::InstallSession => {
-                            if let Some(resp) = outcome.auto.as_ref() {
-                                install_session_and_go(&nav, resp);
-                            } else {
-                                state.set(PickerState::Invalid);
-                            }
-                        }
-                        RedeemBranch::PromptMfa => {
-                            state.set(PickerState::MfaAuto);
-                        }
-                        RedeemBranch::RedirectToSetPassword(url) => {
-                            // option-1 first-login gate: hard-nav to the
-                            // server-supplied /portal/{slug}/set-password
-                            // URL. Cannot use nav.push() (Dioxus router
-                            // works on the typed Route enum, not raw
-                            // path strings) so hop through
-                            // window.location.
-                            if let Some(win) = web_sys::window() {
-                                let _ = win.location().set_href(&url);
-                            } else {
-                                state.set(PickerState::Invalid);
-                            }
-                        }
-                        RedeemBranch::ShowPicker => {
-                            if let Some(cands) = outcome.candidates {
-                                state.set(PickerState::Picker(cands));
-                            } else {
-                                state.set(PickerState::Invalid);
-                            }
-                        }
-                        RedeemBranch::InvalidLink => {
+            match post_redeem(&tok, None).await {
+                Ok(outcome) => match classify_redeem(&outcome) {
+                    RedeemBranch::InstallSession => {
+                        if let Some(resp) = outcome.auto.as_ref() {
+                            install_session_and_go(&nav, resp);
+                        } else {
                             state.set(PickerState::Invalid);
                         }
-                    },
-                    Err(()) => {
+                    }
+                    RedeemBranch::PromptMfa => {
+                        state.set(PickerState::MfaAuto);
+                    }
+                    RedeemBranch::RedirectToSetPassword(url) => {
+                        // option-1 first-login gate: hard-nav to the
+                        // server-supplied /portal/{slug}/set-password
+                        // URL. Cannot use nav.push() (Dioxus router
+                        // works on the typed Route enum, not raw
+                        // path strings) so hop through
+                        // window.location.
+                        #[cfg(target_arch = "wasm32")]
+                        if let Some(win) = web_sys::window() {
+                            let _ = win.location().set_href(&url);
+                        } else {
+                            state.set(PickerState::Invalid);
+                        }
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            let _ = url;
+                            state.set(PickerState::Invalid);
+                        }
+                    }
+                    RedeemBranch::ShowPicker => {
+                        if let Some(cands) = outcome.candidates {
+                            state.set(PickerState::Picker(cands));
+                        } else {
+                            state.set(PickerState::Invalid);
+                        }
+                    }
+                    RedeemBranch::InvalidLink => {
                         state.set(PickerState::Invalid);
                     }
+                },
+                Err(()) => {
+                    state.set(PickerState::Invalid);
                 }
-            }
-            #[cfg(not(feature = "web"))]
-            {
-                let _ = tok;
-                state.set(PickerState::Invalid);
             }
         });
     });
@@ -472,48 +470,47 @@ pub fn ContactPickerPage(token: String) -> Element {
     };
 
     // Click handler for one candidate tile.
-    let mut pick_candidate = move |sel_tok: String, cid: Uuid| {
+    let _pick_candidate = move |sel_tok: String, cid: Uuid| {
         if submitting() {
             return;
         }
         submitting.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
-            {
-                match post_select(&sel_tok, cid, None).await {
-                    Ok(resp) => {
-                        if let Some(url) = resp.password_setup_url.as_ref() {
-                            if !url.is_empty() {
-                                // option-1 first-login gate on the
-                                // select path: hard-nav to the setup URL
-                                // scoped to the picked contact's Company.
-                                if let Some(win) = web_sys::window() {
-                                    let _ = win.location().set_href(url);
-                                } else {
-                                    state.set(PickerState::Invalid);
-                                }
-                                submitting.set(false);
-                                return;
+            match post_select(&sel_tok, cid, None).await {
+                Ok(resp) => {
+                    if let Some(url) = resp.password_setup_url.as_ref() {
+                        if !url.is_empty() {
+                            // option-1 first-login gate on the
+                            // select path: hard-nav to the setup URL
+                            // scoped to the picked contact's Company.
+                            #[cfg(target_arch = "wasm32")]
+                            if let Some(win) = web_sys::window() {
+                                let _ = win.location().set_href(url);
+                            } else {
+                                state.set(PickerState::Invalid);
                             }
-                        }
-                        if resp.mfa_required {
-                            state.set(PickerState::MfaSelect {
-                                selection_token: sel_tok,
-                                contact_id: cid,
-                            });
-                        } else {
-                            install_session_and_go(&nav, &resp);
+                            #[cfg(not(target_arch = "wasm32"))]
+                            {
+                                let _ = url;
+                                state.set(PickerState::Invalid);
+                            }
+                            submitting.set(false);
+                            return;
                         }
                     }
-                    Err(()) => {
-                        state.set(PickerState::Invalid);
+                    if resp.mfa_required {
+                        state.set(PickerState::MfaSelect {
+                            selection_token: sel_tok,
+                            contact_id: cid,
+                        });
+                    } else {
+                        install_session_and_go(&nav, &resp);
                     }
                 }
-            }
-            #[cfg(not(feature = "web"))]
-            {
-                let _ = (sel_tok, cid);
+                Err(()) => {
+                    state.set(PickerState::Invalid);
+                }
             }
             submitting.set(false);
         });

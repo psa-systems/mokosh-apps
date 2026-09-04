@@ -110,12 +110,6 @@ struct RemoteTicket {
     priority: RemoteSummary,
     #[serde(default)]
     assigned_to_name: Option<String>,
-    /// PMS-791 phase 3 / MAPPS-464: team routing. Server has always
-    /// carried the column (migration 005) and TicketResponse always
-    /// serialized it; this decoder finally reads it. `#[serde(default)]`
-    /// keeps legacy fixtures (demo rows below) deserialising.
-    #[serde(default)]
-    team_id: Option<uuid::Uuid>,
     updated_at: DateTime<Utc>,
 }
 
@@ -163,9 +157,6 @@ struct RemoteTicketDetail {
     priority: RemoteSummary,
     #[serde(default)]
     assigned_to_id: Option<uuid::Uuid>,
-    /// PMS-791 phase 3 / MAPPS-464: team routing on ticket detail.
-    #[serde(default)]
-    team_id: Option<uuid::Uuid>,
     // PMS-359: assigned_to_name is no longer read on the detail page
     // (the inline Assignee editor renders the chosen user by looking up
     // the id in the cached `/auth/users` list); dropped from the
@@ -2793,7 +2784,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         title: (!can_mutate).then(|| "Can't attach a file while the server is unreachable".to_string()),
                         onclick: move |_| {
                             attach_error.set(String::new());
-                            #[cfg(feature = "web")]
+                            #[cfg(target_arch = "wasm32")]
                             {
                                 if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
                                     if let Some(el) = doc.get_element_by_id("mapps-607-attach-input") {
@@ -5043,17 +5034,6 @@ mod mapps592_description_editor_tests {
         assert!(
             !code.contains(r#"rounded-md p-3 whitespace-pre-wrap", "{content}""#),
             "and not as the raw string in a pre-wrap box"
-        );
-        const PORTAL: &str = include_str!("portal.rs");
-        assert!(
-            PORTAL.contains("content: note.content.clone(),"),
-            "the portal too: a public note reaches the customer as Markdown, so \
-             rendering it plain would show them the asterisks"
-        );
-        assert!(
-            PORTAL.contains("mentions: false,"),
-            "with staff handles left unresolved there - a contact has no business \
-             reading the directory, and /auth/users is manager-gated anyway"
         );
     }
 

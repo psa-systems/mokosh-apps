@@ -8,7 +8,8 @@
 //!      UI regardless of contact caps.
 //!   3. Is a contact session active and does its `caps` snapshot
 //!      include the requested cap? True only then.
-//!   Otherwise false.
+//!
+//! Otherwise false.
 //!
 //! `caps` are refreshed on every `/contact/auth/login` and
 //! `/contact/auth/refresh` reply, so a role revoke lands on the SPA
@@ -28,7 +29,7 @@ use std::cell::RefCell;
 /// MAPPS-518: sessionStorage key the `/platform/login` page writes the
 /// platform-admin bearer under. Kept in sync with the definition in
 /// `pages::platform_login` and `hooks::fetch::api`.
-#[cfg(feature = "web")]
+#[cfg(target_arch = "wasm32")]
 const PLATFORM_TOKEN_KEY: &str = "mokosh:platform_token";
 
 #[cfg(feature = "web")]

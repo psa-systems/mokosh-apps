@@ -134,7 +134,7 @@ pub fn versioned_asset_url(url: &str, brand: &EffectiveBranding) -> String {
 /// unauthenticated `AuthLayout` render paints the neutral default.
 pub fn clear_effective_branding() {
     *EFFECTIVE_BRANDING.write() = EffectiveBranding::default();
-    #[cfg(feature = "web")]
+    #[cfg(target_arch = "wasm32")]
     clear_brand_css_vars();
 }
 
@@ -151,7 +151,7 @@ pub fn clear_effective_branding() {
 /// personal accent stays intact on staff pages (the brand signal
 /// stays default there because it is only populated from
 /// contact-plane fetches + the `/host` pre-auth splash).
-#[cfg(feature = "web")]
+#[cfg(target_arch = "wasm32")]
 pub fn apply_brand_css_vars(brand: &EffectiveBranding) {
     use wasm_bindgen::JsCast;
     let Some(win) = web_sys::window() else { return };
@@ -221,14 +221,14 @@ pub fn apply_brand_css_vars(brand: &EffectiveBranding) {
     }
 }
 
-#[cfg(not(feature = "web"))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn apply_brand_css_vars(_brand: &EffectiveBranding) {}
 
 /// Undo `apply_brand_css_vars` on sign-out so the theme-picker's
 /// stored accent is what the SPA reads again. Removes only the
 /// brand-owned properties; the theme's own `--accent-N` ramp stays
 /// intact (theme::apply_now re-applies on the next render).
-#[cfg(feature = "web")]
+#[cfg(target_arch = "wasm32")]
 pub fn clear_brand_css_vars() {
     use wasm_bindgen::JsCast;
     let Some(win) = web_sys::window() else { return };
@@ -261,7 +261,7 @@ pub fn clear_brand_css_vars() {
     crate::hooks::theme::apply_now();
 }
 
-#[cfg(not(feature = "web"))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn clear_brand_css_vars() {}
 
 /// Root-mounted hook that repaints the brand's CSS custom
@@ -271,7 +271,7 @@ pub fn clear_brand_css_vars() {}
 /// display name so the tab reads as the client-facing wordmark
 /// instead of "Mokosh Platform". Mount once at the App root next to
 /// `use_apply_theme`.
-#[cfg(feature = "web")]
+#[cfg(target_arch = "wasm32")]
 pub fn use_apply_brand() {
     use dioxus::prelude::*;
     use_effect(move || {
@@ -293,7 +293,7 @@ pub fn use_apply_brand() {
 /// this hook is the neutral shell fallback for pages that do not
 /// set their own title (login shell, dashboards where the tab title
 /// is not carrying page-specific context).
-#[cfg(feature = "web")]
+#[cfg(target_arch = "wasm32")]
 pub fn apply_document_title(brand: &EffectiveBranding) {
     let Some(win) = web_sys::window() else { return };
     let Some(doc) = win.document() else { return };
@@ -306,10 +306,10 @@ pub fn apply_document_title(brand: &EffectiveBranding) {
     doc.set_title(title);
 }
 
-#[cfg(not(feature = "web"))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn apply_document_title(_brand: &EffectiveBranding) {}
 
-#[cfg(not(feature = "web"))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn use_apply_brand() {}
 
 /// MAPPS-621: point every `<link rel="icon">` at
@@ -325,7 +325,7 @@ pub fn use_apply_brand() {}
 /// image will be whatever mime the upload stored (typically PNG or
 /// WebP). Most browsers still recompute the icon from the first
 /// success.
-#[cfg(feature = "web")]
+#[cfg(target_arch = "wasm32")]
 pub fn apply_favicon(brand: &EffectiveBranding) {
     use wasm_bindgen::JsCast;
     let Some(win) = web_sys::window() else { return };
@@ -363,5 +363,5 @@ pub fn apply_favicon(brand: &EffectiveBranding) {
     }
 }
 
-#[cfg(not(feature = "web"))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn apply_favicon(_brand: &EffectiveBranding) {}
