@@ -174,6 +174,46 @@ fn platform_bearer_present() -> bool {
 /// for them and false for every contact.
 pub const STAFF_ONLY: &str = "__staff_only__";
 
+/// MAPPS-707: true only when a contact session is active. Distinct
+/// from `use_capability` because the staff bypass in that helper
+/// widens read caps for admins - correct for surfaces admins should
+/// see, wrong for contact-plane ACTIONS (Pay Now mints a hosted-
+/// checkout session against the caller's card, which staff should
+/// never trigger).
+pub fn use_is_contact_session() -> bool {
+    #[cfg(feature = "web")]
+    {
+        crate::hooks::fetch::api::has_contact_session()
+    }
+    #[cfg(not(feature = "web"))]
+    {
+        false
+    }
+}
+
+/// MAPPS-705: true when a contact session is active AND the caps
+/// snapshot is empty. Used by the dashboard to render an empty-state
+/// landing ("signed in, but no access yet") instead of a shell that
+/// links to endpoints that all 403. Staff sessions return false here
+/// even without caps loaded, because the staff plane's authorization
+/// lives elsewhere.
+pub fn contact_has_no_capabilities() -> bool {
+    #[cfg(feature = "web")]
+    {
+        if !crate::hooks::fetch::api::has_contact_session() {
+            return false;
+        }
+        match current_contact_capabilities() {
+            Some(caps) => caps.is_empty(),
+            None => true,
+        }
+    }
+    #[cfg(not(feature = "web"))]
+    {
+        false
+    }
+}
+
 #[cfg(all(test, feature = "web"))]
 mod tests {
     use super::*;

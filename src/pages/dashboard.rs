@@ -194,6 +194,38 @@ fn ContactDashboardBody() -> Element {
     let quotes_label = summary.active_quotes.to_string();
     let contracts_label = summary.active_contracts.to_string();
 
+    // MAPPS-705: per-tile capability gates. Each tile links to a page
+    // the caller may not open; render only the tiles whose read cap the
+    // caller holds. A tile whose cap is missing would otherwise send
+    // the visitor into a 403 loop.
+    let can_read_tickets = crate::hooks::capabilities::use_capability("tickets:read");
+    let can_read_invoices = crate::hooks::capabilities::use_capability("invoices:read");
+    let can_read_quotes = crate::hooks::capabilities::use_capability("quotes:read");
+    let can_read_contracts = crate::hooks::capabilities::use_capability("contracts:read");
+    // MAPPS-705: empty-state landing. A contact whose JWT carries no
+    // caps has no tab to open; render a self-describing card instead
+    // of the 4-tile grid + empty activity list. Skipped when the load
+    // hasn't returned yet so an incoming caps snapshot doesn't flicker
+    // the empty state.
+    if !is_loading && crate::hooks::capabilities::contact_has_no_capabilities() {
+        return rsx! {
+            PageHeader {
+                title: "Dashboard",
+                subtitle: "Signed in, waiting on access.",
+            }
+            Card {
+                div { class: "py-10 text-center space-y-3",
+                    p { class: "text-base font-medium text-content",
+                        "You're signed in, but your MSP hasn't granted you access to any tab yet."
+                    }
+                    p { class: "text-sm text-muted",
+                        "Contact your MSP if that's not what you expected."
+                    }
+                }
+            }
+        };
+    }
+
     rsx! {
         PageHeader {
             title: "Dashboard",
@@ -218,41 +250,49 @@ fn ContactDashboardBody() -> Element {
                 }
             }
             div { class: "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 mb-8",
-                Link {
-                    to: Route::TicketList {},
-                    class: "block",
-                    StatCard {
-                        label: "Open Tickets",
-                        value: "{open_label}",
-                        icon: rsx!(TicketIcon { class: "h-6 w-6".to_string() }),
+                if can_read_tickets {
+                    Link {
+                        to: Route::TicketList {},
+                        class: "block",
+                        StatCard {
+                            label: "Open Tickets",
+                            value: "{open_label}",
+                            icon: rsx!(TicketIcon { class: "h-6 w-6".to_string() }),
+                        }
                     }
                 }
-                Link {
-                    to: Route::InvoiceList {},
-                    class: "block",
-                    StatCard {
-                        label: "Unpaid Invoices",
-                        value: "{unpaid_label}",
-                        icon_tone: StatCardTone::Danger,
-                        icon: rsx!(TicketIcon { class: "h-6 w-6".to_string() }),
+                if can_read_invoices {
+                    Link {
+                        to: Route::InvoiceList {},
+                        class: "block",
+                        StatCard {
+                            label: "Unpaid Invoices",
+                            value: "{unpaid_label}",
+                            icon_tone: StatCardTone::Danger,
+                            icon: rsx!(TicketIcon { class: "h-6 w-6".to_string() }),
+                        }
                     }
                 }
-                Link {
-                    to: Route::QuoteList {},
-                    class: "block",
-                    StatCard {
-                        label: "Active Quotes",
-                        value: "{quotes_label}",
-                        icon: rsx!(FolderIcon { class: "h-6 w-6".to_string() }),
+                if can_read_quotes {
+                    Link {
+                        to: Route::QuoteList {},
+                        class: "block",
+                        StatCard {
+                            label: "Active Quotes",
+                            value: "{quotes_label}",
+                            icon: rsx!(FolderIcon { class: "h-6 w-6".to_string() }),
+                        }
                     }
                 }
-                Link {
-                    to: Route::ContractList {},
-                    class: "block",
-                    StatCard {
-                        label: "Active Contracts",
-                        value: "{contracts_label}",
-                        icon: rsx!(ClockIcon { class: "h-6 w-6".to_string() }),
+                if can_read_contracts {
+                    Link {
+                        to: Route::ContractList {},
+                        class: "block",
+                        StatCard {
+                            label: "Active Contracts",
+                            value: "{contracts_label}",
+                            icon: rsx!(ClockIcon { class: "h-6 w-6".to_string() }),
+                        }
                     }
                 }
             }
