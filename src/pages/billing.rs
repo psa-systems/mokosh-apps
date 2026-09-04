@@ -100,10 +100,26 @@ async fn load_tax_rates() -> Vec<RemoteTaxRate> {
         })
 }
 
-/// Build `[("", "No tax"), (id, "name (rate%)"), ...]` select options from a
-/// loaded tax-rate list, keeping only active rates (MAPPS-192).
+/// The tenant's default rate, the one the server applies when a body names
+/// none (PMS-1029): active and flagged default.
+fn default_tax_rate(rates: &[RemoteTaxRate]) -> Option<&RemoteTaxRate> {
+    rates.iter().find(|r| r.is_default && r.is_active)
+}
+
+/// The label of the empty picker entry (MAPPS-712). Picking nothing sends no
+/// rate, and the server then applies the tenant's default, so the entry says
+/// which rate that is; a tenant with no default really gets no tax.
+fn unset_tax_rate_label(rates: &[RemoteTaxRate]) -> String {
+    match default_tax_rate(rates) {
+        Some(r) => format!("Default: {} ({}%)", r.name, r.rate.trim()),
+        None => "No tax".to_string(),
+    }
+}
+
+/// Build `[("", default-or-no-tax), (id, "name (rate%)"), ...]` select options
+/// from a loaded tax-rate list, keeping only active rates (MAPPS-192).
 fn tax_rate_select_options(rates: &[RemoteTaxRate]) -> Vec<SelectOption> {
-    let mut opts = vec![SelectOption::new("", "No tax")];
+    let mut opts = vec![SelectOption::new("", unset_tax_rate_label(rates))];
     opts.extend(
         rates.iter().filter(|r| r.is_active).map(|r| {
             SelectOption::new(r.id.to_string(), format!("{} ({}%)", r.name, r.rate.trim()))
@@ -112,23 +128,72 @@ fn tax_rate_select_options(rates: &[RemoteTaxRate]) -> Vec<SelectOption> {
     opts
 }
 
-/// Compute a tax amount from a line subtotal and a selected tax rate
-/// (MAPPS-192). `rate_id` is matched against `rates`; an empty id, an unknown
-/// id, or an unparseable subtotal/rate yields an empty string (no tax). Rates
-/// are stored as a percentage (PMS-339), so tax = subtotal * rate / 100,
-/// rounded to two decimals.
+/// Compute a tax amount from a taxable line subtotal and a selected tax rate
+/// (MAPPS-192). `rate_id` is matched against `rates`; an empty id is the
+/// tenant's default rate, the one the server applies (MAPPS-712); an unknown
+/// id, no default, or an unparseable subtotal/rate yields an empty string (no
+/// tax). Rates are stored as a percentage (PMS-339), so tax = subtotal * rate
+/// / 100, rounded to two decimals. A PREVIEW only: the server's figure is the
+/// one shown once the invoice is saved.
 fn computed_tax_amount(rates: &[RemoteTaxRate], rate_id: &str, subtotal: &str) -> String {
-    if rate_id.is_empty() {
-        return String::new();
-    }
-    let Some(rate) = rates.iter().find(|r| r.id.to_string() == rate_id) else {
+    let rate = if rate_id.is_empty() {
+        default_tax_rate(rates)
+    } else {
+        rates.iter().find(|r| r.id.to_string() == rate_id)
+    };
+    let Some(rate) = rate else {
         return String::new();
     };
     let rate_pct = Decimal::from_str(rate.rate.trim()).unwrap_or_default();
     let sub = Decimal::from_str(subtotal.trim()).unwrap_or_default();
+    // Half away from zero, the server's rounding (PMS-1029), so the preview
+    // and the saved figure agree on a half cent.
     ((sub * rate_pct) / Decimal::from(100))
-        .round_dp(2)
+        .round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero)
         .to_string()
+}
+
+/// The tax half of an invoice body (MAPPS-712). The server derives the tax
+/// from a rate over the taxable lines (PMS-1029), and a given amount wins and
+/// records no rate, so a body names ONE of the two or neither.
+#[derive(Debug, PartialEq)]
+struct TaxBody {
+    rate_id: serde_json::Value,
+    amount: serde_json::Value,
+}
+
+/// An override the user typed sends `tax_amount` and no rate; a picked rate
+/// sends `tax_rate_id` and no amount; nothing picked sends neither, and the
+/// server applies the tenant's default on create and keeps the recorded rate
+/// on edit. A blank override is not one: clearing the field goes back to the
+/// rate.
+fn tax_body_fields(rate_id: &str, override_amount: Option<&str>) -> TaxBody {
+    let override_amount = override_amount.map(str::trim).filter(|a| !a.is_empty());
+    match override_amount {
+        Some(amount) => TaxBody {
+            rate_id: serde_json::Value::Null,
+            amount: serde_json::Value::String(amount.to_string()),
+        },
+        None => TaxBody {
+            rate_id: optional_string(rate_id),
+            amount: serde_json::Value::Null,
+        },
+    }
+}
+
+/// The totals row label: `Tax (13%)` when the invoice recorded a rate, the
+/// way the document prints it (PMS-1029), and a bare `Tax` when it carries a
+/// given amount or none. The percent drops its trailing zeros (`13.0000` is
+/// `13`, `7.25` stays).
+fn tax_label(rate: Option<&str>) -> String {
+    match rate
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .and_then(|r| Decimal::from_str(r).ok())
+    {
+        Some(pct) => format!("Tax ({}%)", pct.normalize()),
+        None => "Tax".to_string(),
+    }
 }
 
 /// Build `[("", placeholder), (id, name), ...]` select options from a
@@ -608,6 +673,13 @@ struct InvoiceDetail {
     emailed_at: Option<String>,
     #[serde(default)]
     emailed_to: Option<String>,
+    /// PMS-1029: the rate the tax was derived from, frozen on the invoice;
+    /// both absent when the tax was a given amount.
+    #[serde(default)]
+    tax_rate_id: Option<uuid::Uuid>,
+    /// The percent as the server's decimal string, e.g. `13.0000`.
+    #[serde(default)]
+    tax_rate: Option<String>,
     #[serde(default)]
     lines: Option<Vec<InvoiceLine>>,
 }
@@ -643,6 +715,14 @@ struct InvoiceLine {
     /// price is never read back through it.
     #[serde(default)]
     product_id: Option<uuid::Uuid>,
+    /// PMS-1029: whether the rate applies to this line. Defaulted so an older
+    /// server reads taxable, the server's own default.
+    #[serde(default = "default_true")]
+    is_taxable: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// MAPPS-642: what Send mails, described from the server's own template.
@@ -1647,6 +1727,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                 let due_date = inv.due_date.clone().unwrap_or_default();
                 let subtotal = format_money_str(&inv.subtotal);
                 let tax_amount = format_money_str(&inv.tax_amount);
+                let tax_label = tax_label(inv.tax_rate.as_deref());
                 let discount_amount = format_money_str(&inv.discount_amount);
                 let total = format_money_str(&inv.total);
                 let amount_paid = format_money_str(&inv.amount_paid);
@@ -1702,7 +1783,12 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                         TableBody {
                                             for line in lines.iter().cloned() {
                                                 TableRow { key: "{line.id}",
-                                                    TableCell { "{line.description}" }
+                                                    TableCell {
+                                                        "{line.description}"
+                                                        if !line.is_taxable {
+                                                            span { class: "ml-2 text-xs text-muted", "tax exempt" }
+                                                        }
+                                                    }
                                                     TableCell { class: "text-right", "{line.quantity}" }
                                                     TableCell { class: "text-right", "{format_money_str(&line.unit_price)}" }
                                                     TableCell { class: "text-right font-medium", "{format_money_str(&line.total)}" }
@@ -1721,7 +1807,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                                 span { "{subtotal}" }
                                             }
                                             div { class: "flex justify-between",
-                                                span { class: "text-muted", "Tax" }
+                                                span { class: "text-muted", "{tax_label}" }
                                                 span { "{tax_amount}" }
                                             }
                                             div { class: "flex justify-between",
@@ -1899,6 +1985,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                     po_number: inv.po_number.clone().unwrap_or_default(),
                     notes: inv.notes.clone().unwrap_or_default(),
                     lines: inv.lines.clone().unwrap_or_default(),
+                    tax_rate_id: inv.tax_rate_id.map(|r| r.to_string()).unwrap_or_default(),
                     tax_amount: inv.tax_amount.clone(),
                     discount_amount: inv.discount_amount.clone(),
                     onclose: move |_| show_edit.set(false),
@@ -1999,6 +2086,10 @@ pub fn InvoiceNewPage() -> Element {
     // MAPPS-640: the catalog product the line sells, when one was picked.
     let mut line_product_id = use_signal(String::new);
     let mut line_product_name = use_signal(String::new);
+    // MAPPS-712: whether the rate applies to the line. A product line follows
+    // the product's own flag, which the server copies and the form shows
+    // read-only.
+    let mut line_is_taxable = use_signal(|| true);
     let mut tax_rate_id = use_signal(String::new);
     // `None` => follow the rate-computed tax; `Some` => a manual override.
     let mut tax_override = use_signal(|| None::<String>);
@@ -2029,13 +2120,19 @@ pub fn InvoiceNewPage() -> Element {
             .clone()
             .unwrap_or_default(),
     );
-    // Tax computed from the selected rate and the single line's subtotal
-    // (qty * unit price); recomputes as either input changes. A manual edit to
-    // the Tax field overrides it until another rate is picked.
+    // Tax previewed from the selected rate (else the tenant's default) and the
+    // single line's subtotal (qty * unit price) when the line is taxable;
+    // recomputes as any input changes. A manual edit to the Tax field
+    // overrides it until another rate is picked. The server's figure is the
+    // one shown after save (MAPPS-712).
     let computed_tax = use_memo(move || {
         let qty = Decimal::from_str(line_quantity.read().trim()).unwrap_or_default();
         let price = Decimal::from_str(line_unit_price.read().trim()).unwrap_or_default();
-        let subtotal = (qty * price).to_string();
+        let subtotal = if *line_is_taxable.read() {
+            (qty * price).to_string()
+        } else {
+            Decimal::ZERO.to_string()
+        };
         let rates = tax_rates_resource
             .read_unchecked()
             .clone()
@@ -2132,13 +2229,9 @@ pub fn InvoiceNewPage() -> Element {
         };
 
         is_submitting.set(true);
-        // Effective tax: a manual override if present, else the rate-computed
-        // value. Both tax and discount are optional; an empty string sends
-        // null so the server keeps its 0 default (existing flow unchanged).
-        let tax_str = tax_override
-            .read()
-            .clone()
-            .unwrap_or_else(|| computed_tax.read().clone());
+        // MAPPS-712: the rate, or the override, never both; the server derives
+        // the amount from the rate over the taxable lines (PMS-1029).
+        let tax = tax_body_fields(&tax_rate_id.read(), tax_override.read().as_deref());
         let body = serde_json::json!({
             "company_id": company_uuid,
             "billing_contact_id": optional_string(&billing_contact_id.read()),
@@ -2148,13 +2241,17 @@ pub fn InvoiceNewPage() -> Element {
             "payment_term_id": optional_string(&payment_term_id.read()),
             "po_number": optional_string(&po_number.read()),
             "notes": optional_string(&notes.read()),
-            "tax_amount": optional_string(&tax_str),
+            "tax_rate_id": tax.rate_id,
+            "tax_amount": tax.amount,
             "discount_amount": optional_string(&discount_amount.read()),
             "lines": [{
                 "line_type": "service",
                 // MAPPS-640: the reference, not the price; the price below is
                 // what was picked or typed and is what the line keeps.
                 "product_id": optional_string(&line_product_id.read()),
+                // Ignored by the server for a product line, which copies the
+                // product's flag (PMS-1029).
+                "is_taxable": *line_is_taxable.read(),
                 "description": description,
                 // Quantities/prices are decimals; the server parses the
                 // string into `rust_decimal::Decimal`.
@@ -2393,10 +2490,12 @@ pub fn InvoiceNewPage() -> Element {
                                 line_description.set(picked.name.clone());
                                 unit_price_error.set(String::new());
                                 line_unit_price.set(picked.unit_price.clone());
+                                line_is_taxable.set(picked.is_taxable);
                             },
                             onclear: move |_| {
                                 line_product_id.set(String::new());
                                 line_product_name.set(String::new());
+                                line_is_taxable.set(true);
                             },
                         }
                     }
@@ -2454,6 +2553,24 @@ pub fn InvoiceNewPage() -> Element {
                             },
                         }
                     }
+                    div { class: "mt-3",
+                        crate::components::Checkbox {
+                            name: "line_is_taxable",
+                            label: "Taxable",
+                            checked: *line_is_taxable.read(),
+                            // MAPPS-712: a product line follows the product.
+                            disabled: !line_product_id.read().is_empty(),
+                            help: if line_product_id.read().is_empty() {
+                                "The tax rate applies to this line.".to_string()
+                            } else {
+                                "Follows the product's own setting in the price list.".to_string()
+                            },
+                            onchange: move |_| {
+                                let next = !*line_is_taxable.read();
+                                line_is_taxable.set(next);
+                            },
+                        }
+                    }
                     p { class: "mt-2 text-xs text-muted",
                         "Manual invoices start with a single service line. Add more lines by editing the invoice after it is created."
                     }
@@ -2480,7 +2597,7 @@ pub fn InvoiceNewPage() -> Element {
                             step: "0.01".to_string(),
                             min: "0".to_string(),
                             placeholder: "0.00",
-                            help: "Auto-computed from the tax rate; edit to override.",
+                            help: "A preview from the rate over the taxable lines; edit to override. An override is stored as given and records no rate.",
                             value: tax_value.clone(),
                             oninput: move |e: FormEvent| tax_override.set(Some(e.value())),
                         }
@@ -3274,6 +3391,9 @@ struct EditableLine {
     unit_price: String,
     /// MAPPS-640: the catalog product this line sells, kept across a re-save.
     product_id: Option<String>,
+    /// MAPPS-712: whether the rate applies to the line. Read-only on a
+    /// product line, where the server copies the product's flag.
+    is_taxable: bool,
     // PMS-518: per-field inline validation messages, populated on submit so each
     // failing line flags its own field instead of collapsing into one banner.
     // The message travels with the line through add/remove, staying aligned.
@@ -3299,6 +3419,9 @@ struct InvoiceEditModalProps {
     /// Current line items, seeded into the editable line table (MAPPS-234).
     /// The tax-rate calculation derives its subtotal from these (MAPPS-192).
     lines: Vec<InvoiceLine>,
+    /// MAPPS-712: the rate the invoice recorded (PMS-1029), empty when the
+    /// tax was a given amount or none.
+    tax_rate_id: String,
     /// Current tax amount, seeded as the editable Tax field (MAPPS-192).
     tax_amount: String,
     /// Current discount amount, seeded as the editable Discount field (MAPPS-192).
@@ -3368,14 +3491,22 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                 quantity: l.quantity.clone(),
                 unit_price: l.unit_price.clone(),
                 product_id: l.product_id.map(|p| p.to_string()),
+                is_taxable: l.is_taxable,
                 ..EditableLine::default()
             })
             .collect::<Vec<_>>()
     });
-    let mut tax_rate_id = use_signal(String::new);
-    // Seed the override with the invoice's current tax so it shows on open;
-    // picking a rate clears it back to the rate-computed value (MAPPS-192).
-    let mut tax_override = use_signal(|| Some(props.tax_amount.clone()));
+    // MAPPS-712: an invoice carrying a rate follows it, and the server
+    // re-derives the amount from that rate when the lines change; one carrying
+    // a given amount keeps that amount as its override until a rate is picked,
+    // because sending nothing would let the tenant's default replace it.
+    let mut tax_rate_id = use_signal(|| props.tax_rate_id.clone());
+    let mut tax_override = use_signal(|| {
+        props
+            .tax_rate_id
+            .is_empty()
+            .then(|| props.tax_amount.clone())
+    });
     let mut discount_amount = use_signal(|| props.discount_amount.clone());
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -3400,10 +3531,12 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
     );
     // Subtotal follows the edited lines so picking a tax rate recomputes against
     // the current line set (MAPPS-234), not the subtotal the invoice opened with.
+    // Only the taxable lines count (MAPPS-712), as on the server.
     let line_subtotal = use_memo(move || {
         lines
             .read()
             .iter()
+            .filter(|l| l.is_taxable)
             .map(|l| {
                 let qty = Decimal::from_str(l.quantity.trim()).unwrap_or_default();
                 let price = Decimal::from_str(l.unit_price.trim()).unwrap_or_default();
@@ -3537,6 +3670,9 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                 // MAPPS-640: the reference survives a re-save; the price is
                 // the line's own.
                 "product_id": line.product_id.clone(),
+                // Ignored by the server for a product line, which copies the
+                // product's flag (PMS-1029).
+                "is_taxable": line.is_taxable,
                 "description": description,
                 // Decimal strings; the server parses into `rust_decimal::Decimal`.
                 "quantity": quantity,
@@ -3550,13 +3686,10 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
         }
         saving.set(true);
         let path = format!("/invoices/{invoice_id}");
-        // Effective tax: a manual override if present, else the rate-computed
-        // value. Empty sends null, so the server COALESCE keeps the current
-        // amount (existing zero-tax invoices stay unchanged unless edited).
-        let tax_str = tax_override
-            .read()
-            .clone()
-            .unwrap_or_else(|| computed_tax.read().clone());
+        // MAPPS-712: the rate, or the override, never both. Neither leaves the
+        // recorded rate in place, and the server re-derives the amount from it
+        // over the replaced lines (PMS-1029).
+        let tax = tax_body_fields(&tax_rate_id.read(), tax_override.read().as_deref());
         let body = serde_json::json!({
             // PMS-1004: null leaves the contact as it is (the server
             // COALESCEs), so clearing the chip changes nothing on save.
@@ -3568,7 +3701,8 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             "payment_term_id": optional_string(&payment_term_id.read()),
             "po_number": optional_string(&po_number.read()),
             "notes": optional_string(&notes.read()),
-            "tax_amount": optional_string(&tax_str),
+            "tax_rate_id": tax.rate_id,
+            "tax_amount": tax.amount,
             "discount_amount": optional_string(&discount_amount.read()),
             // Replace the line set (server deletes + reinserts transactionally
             // and recomputes the subtotal). MAPPS-234.
@@ -3695,6 +3829,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                                     .write()
                                     .push(EditableLine {
                                         line_type: "service".to_string(),
+                                        is_taxable: true,
                                         ..EditableLine::default()
                                     });
                             },
@@ -3717,6 +3852,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                                     quantity: "1".to_string(),
                                     unit_price: picked.unit_price.clone(),
                                     product_id: Some(picked.id.clone()),
+                                    is_taxable: picked.is_taxable,
                                     ..EditableLine::default()
                                 });
                             },
@@ -3732,7 +3868,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                         for (idx , line) in lines.read().clone().into_iter().enumerate() {
                             div {
                                 key: "{idx}",
-                                class: "grid grid-cols-1 gap-3 sm:grid-cols-[1fr_90px_120px_auto] sm:items-end",
+                                class: "grid grid-cols-1 gap-3 sm:grid-cols-[1fr_90px_120px_auto_auto] sm:items-end",
                                 crate::components::Input {
                                     name: "line_description_{idx}",
                                     label: "Description",
@@ -3796,6 +3932,17 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                                         w[idx].unit_price_err = String::new();
                                     },
                                 }
+                                crate::components::Checkbox {
+                                    name: "line_is_taxable_{idx}",
+                                    label: "Taxable",
+                                    checked: line.is_taxable,
+                                    // MAPPS-712: a product line follows the product.
+                                    disabled: line.product_id.is_some(),
+                                    onchange: move |_| {
+                                        let mut w = lines.write();
+                                        w[idx].is_taxable = !w[idx].is_taxable;
+                                    },
+                                }
                                 Button {
                                     variant: ButtonVariant::Ghost,
                                     onclick: move |_| {
@@ -3825,7 +3972,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                         step: "0.01".to_string(),
                         min: "0".to_string(),
                         placeholder: "0.00",
-                        help: "Auto-computed from the tax rate; edit to override.",
+                        help: "A preview from the rate over the taxable lines; edit to override. An override is stored as given and records no rate.",
                         value: tax_value.clone(),
                         oninput: move |e: FormEvent| tax_override.set(Some(e.value())),
                     }
