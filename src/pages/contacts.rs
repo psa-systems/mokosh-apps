@@ -3004,16 +3004,28 @@ fn CompanyPortalAccessCard(
     company_resource: Resource<Option<CompanyDetail>>,
 ) -> Element {
     let id_for_resource = company_id.clone();
+    // MAPPS-528 / per_page-cap guard: walk the whole roster through the
+    // shared pager rather than passing `per_page=200` (server clamps to
+    // 100 and returns a truncated page, so the operator would see only
+    // the first hundred contacts of a large Company without knowing).
     let mut roster = use_resource(move || {
         let id = id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let _reachable = crate::hooks::use_server_reachable();
-            crate::hooks::fetch::api::get_authed::<PaginatedContacts>(&format!(
-                "/contacts/companies/{id}/contacts?per_page=200"
-            ))
-            .await
-            .ok()
+            #[cfg(feature = "app")]
+            {
+                crate::hooks::fetch::api::get_all_authed::<RemoteContact>(&format!(
+                    "/contacts/companies/{id}/contacts"
+                ))
+                .await
+                .ok()
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = id;
+                None::<Vec<RemoteContact>>
+            }
         }
     });
     // MAPPS-608: tenant portal-role lookup used to translate the per-
@@ -3039,7 +3051,7 @@ fn CompanyPortalAccessCard(
     let all_roles_snap: Vec<PortalRoleSummaryWire> =
         all_roles.read_unchecked().clone().unwrap_or_default();
     let count = match &*snap {
-        Some(Some(page)) => Some(page.meta.total),
+        Some(Some(rows)) => Some(rows.len() as u64),
         _ => None,
     };
     // MAPPS-635 B: Portal ID + copy-link affordance rendered whenever
@@ -3182,11 +3194,11 @@ fn CompanyPortalAccessCard(
                 match &*snap {
                     None => rsx! { TableLoading { columns: 5, rows: 3 } },
                     Some(None) => rsx! { TableEmpty { columns: 5, message: "Could not load contacts.".to_string() } },
-                    Some(Some(page)) if page.data.is_empty() => rsx! {
+                    Some(Some(rows)) if rows.is_empty() => rsx! {
                         TableEmpty { columns: 5, message: "No contacts at this company yet. Add one to grant portal access.".to_string() }
                     },
-                    Some(Some(page)) => {
-                        let rows: Vec<_> = page.data.iter().cloned().collect();
+                    Some(Some(page_rows)) => {
+                        let rows: Vec<_> = page_rows.iter().cloned().collect();
                         rsx! {
                             TableBody {
                                 for contact in rows.into_iter() {
