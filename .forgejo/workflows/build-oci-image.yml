@@ -271,7 +271,7 @@ jobs:
           let registry = $env.IMAGE_REGISTRY
           print $"($prefix) ($registry)/($image):($tag)"
           if $train == "branch" {
-            print $"Branch build: ($image):($tag) is a staging-only artifact, so it was NOT mirrored to the public registry (MAPPS-421)."
+            print $"Branch build: ($image):($tag) is a staging-only artifact, so it was NOT mirrored to the public registry \(MAPPS-421\)."
           } else if ($env.PUBLIC_REGISTRY_OWNER | is-not-empty) {
             let public_reg = $"($env.REGISTRY_PROVIDER)/($env.PUBLIC_REGISTRY_OWNER)"
             let mirror_prefix = if $dry_run { "[dry-run] WOULD mirror image to" } else { "Image mirrored to" }
