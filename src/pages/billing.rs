@@ -845,7 +845,14 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     // and the invoice status, so a contact without the cap sees nothing
     // and a contact with the cap on a Draft sees an inline note instead
     // of a button.
-    let can_pay = crate::hooks::capabilities::use_capability("invoices:pay");
+    // MAPPS-707: Pay Now is contact-plane only. `use_capability` bypasses
+    // the cap check for staff/platform sessions (so admins can see every
+    // read affordance), which is right for Download PDF and wrong for Pay
+    // Now - clicking it as a staff caller would mint a hosted-checkout
+    // session for the admin's own browser. Require BOTH a live contact
+    // session AND the cap so the button only renders on the portal plane.
+    let can_pay = crate::hooks::capabilities::use_is_contact_session()
+        && crate::hooks::capabilities::use_capability("invoices:pay");
     let mut pdf_downloading = use_signal(|| false);
     let mut pdf_error = use_signal(String::new);
     let id_for_pdf = props.id.clone();
@@ -4628,9 +4635,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
         // here gives a field-level error rather than a form-level 422.
         let cdn = client_display_name.read().clone();
         if cdn.chars().count() > 64 {
-            client_display_name_err.set(
-                "Button label must be 64 characters or fewer.".to_string(),
-            );
+            client_display_name_err.set("Button label must be 64 characters or fewer.".to_string());
             return;
         }
         saving.set(true);
