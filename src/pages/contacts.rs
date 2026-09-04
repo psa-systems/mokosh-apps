@@ -3051,7 +3051,11 @@ fn CompanyPortalAccessCard(
     // MAPPS-635) so it stays visible after any page reload.
     let portal_login_path = portal_id
         .map(|pid| format!("/portal/{pid}/login"))
-        .or_else(|| portal_slug.clone().map(|slug| format!("/portal/{slug}/login")));
+        .or_else(|| {
+            portal_slug
+                .clone()
+                .map(|slug| format!("/portal/{slug}/login"))
+        });
     let portal_login_absolute = portal_login_path.as_ref().and_then(|p| {
         web_sys::window()
             .and_then(|w| w.location().origin().ok())
@@ -3078,8 +3082,7 @@ fn CompanyPortalAccessCard(
         spawn(async move {
             let path = format!("/contacts/companies/{id}");
             let body = serde_json::json!({ "portal_enabled": next });
-            match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await
-            {
+            match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await {
                 Ok(_) => {
                     crate::hooks::toast::push_toast(
                         crate::components::AlertType::Success,
@@ -3222,40 +3225,46 @@ fn CompanyPortalAccessCard(
                                                         span { class: "text-xs text-muted", "-" }
                                                     }
                                                 }
-                                                TableCell { class: "text-right w-32",
+                                                TableCell { class: "text-right w-56",
                                                     if is_portal_user {
-                                                        Button {
-                                                            variant: ButtonVariant::Secondary,
-                                                            loading: is_toggling,
-                                                            disabled: is_toggling || !can_mutate,
-                                                            onclick: move |_| {
-                                                                let path = format!("/contacts/contacts/{contact_id_str}");
-                                                                toggling.write().insert(contact_id);
-                                                                spawn(async move {
-                                                                    let body = serde_json::json!({ "is_portal_user": false });
-                                                                    match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await {
-                                                                        Ok(_) => {
-                                                                            crate::hooks::toast::push_toast(
-                                                                                crate::components::AlertType::Success,
-                                                                                "Portal access revoked.",
-                                                                            );
-                                                                            // MAPPS-635 F: repaint every
-                                                                            // ContactRoleBadges row so
-                                                                            // this revoke's effect is
-                                                                            // visible on the same page
-                                                                            // without a manual reload.
-                                                                            crate::hooks::fetch::bump_portal_roles_generation();
-                                                                            roster.restart();
+                                                        div { class: "flex justify-end gap-2",
+                                                            EditPortalRolesButton {
+                                                                contact_id: contact_id_str.clone(),
+                                                                all_roles: all_roles_snap.clone(),
+                                                                disabled: is_toggling || !can_mutate,
+                                                                on_saved: move |_| {
+                                                                    crate::hooks::fetch::bump_portal_roles_generation();
+                                                                    roster.restart();
+                                                                },
+                                                            }
+                                                            Button {
+                                                                variant: ButtonVariant::Secondary,
+                                                                loading: is_toggling,
+                                                                disabled: is_toggling || !can_mutate,
+                                                                onclick: move |_| {
+                                                                    let path = format!("/contacts/contacts/{contact_id_str}");
+                                                                    toggling.write().insert(contact_id);
+                                                                    spawn(async move {
+                                                                        let body = serde_json::json!({ "is_portal_user": false });
+                                                                        match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await {
+                                                                            Ok(_) => {
+                                                                                crate::hooks::toast::push_toast(
+                                                                                    crate::components::AlertType::Success,
+                                                                                    "Portal access revoked.",
+                                                                                );
+                                                                                crate::hooks::fetch::bump_portal_roles_generation();
+                                                                                roster.restart();
+                                                                            }
+                                                                            Err(err) => crate::hooks::toast::push_toast(
+                                                                                crate::components::AlertType::Error,
+                                                                                format!("Could not revoke portal access: {err}"),
+                                                                            ),
                                                                         }
-                                                                        Err(err) => crate::hooks::toast::push_toast(
-                                                                            crate::components::AlertType::Error,
-                                                                            format!("Could not revoke portal access: {err}"),
-                                                                        ),
-                                                                    }
-                                                                    toggling.write().remove(&contact_id);
-                                                                });
-                                                            },
-                                                            "Revoke"
+                                                                        toggling.write().remove(&contact_id);
+                                                                    });
+                                                                },
+                                                                "Revoke"
+                                                            }
                                                         }
                                                     } else if !has_email {
                                                         // Mirror the per-contact card's guard: no email = no
@@ -3302,6 +3311,169 @@ fn CompanyPortalAccessCard(
                             }
                         }
                     },
+                }
+            }
+        }
+    }
+}
+
+/// MAPPS-706: per-row "Edit roles" affordance on the Company Portal
+/// Access card. Opens a modal seeded with the contact's currently
+/// assigned role_ids and POSTs the new set to
+/// `/contacts/contacts/{id}/grant-portal-access`. Server's grant path
+/// fast-forwards through the token / setup-email work when the contact
+/// is already credentialled and just rewrites `contact_role_assignments`
+/// (MAPPS-635 C), so a role-only edit never re-emails.
+#[component]
+fn EditPortalRolesButton(
+    contact_id: String,
+    all_roles: Vec<PortalRoleSummaryWire>,
+    disabled: bool,
+    on_saved: EventHandler<()>,
+) -> Element {
+    let mut open = use_signal(|| false);
+    let mut picked: Signal<Vec<uuid::Uuid>> = use_signal(Vec::new);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let assigned_id = contact_id.clone();
+    let assigned = use_resource(move || {
+        let id = assigned_id.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _roles_gen = crate::hooks::fetch::active_portal_roles_generation();
+            crate::hooks::fetch::api::get_authed::<Vec<uuid::Uuid>>(&format!(
+                "/contacts/contacts/{id}/portal-roles"
+            ))
+            .await
+            .unwrap_or_default()
+        }
+    });
+    let assigned_snap: Vec<uuid::Uuid> = assigned.read_unchecked().clone().unwrap_or_default();
+
+    let assigned_for_seed = assigned_snap.clone();
+    let open_modal = move |_| {
+        picked.set(assigned_for_seed.clone());
+        error.set(String::new());
+        open.set(true);
+    };
+
+    let submit_id = contact_id.clone();
+    let mut submit = move |_| {
+        if saving() {
+            return;
+        }
+        let ids = picked.read().clone();
+        if ids.is_empty() {
+            error.set("Pick at least one role.".to_string());
+            return;
+        }
+        let id = submit_id.clone();
+        saving.set(true);
+        error.set(String::new());
+        spawn(async move {
+            let path = format!("/contacts/contacts/{id}/grant-portal-access");
+            let body = serde_json::json!({ "role_ids": ids });
+            match crate::hooks::fetch::api::post_authed_typed::<PortalGrantOutcomeWire, _>(
+                &path, &body,
+            )
+            .await
+            {
+                Ok(_) => {
+                    crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Success,
+                        "Portal roles updated.".to_string(),
+                    );
+                    crate::hooks::fetch::bump_portal_roles_generation();
+                    open.set(false);
+                    on_saved.call(());
+                }
+                Err(err) => error.set(format!("{err}")),
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        Button {
+            variant: ButtonVariant::Secondary,
+            disabled,
+            onclick: open_modal,
+            "Edit roles"
+        }
+        if open() {
+            div {
+                class: "fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4",
+                onclick: move |_| { if !saving() { open.set(false); } },
+                div {
+                    class: "bg-surface rounded-lg shadow-lg max-w-md w-full p-6 space-y-4",
+                    onclick: move |evt: Event<MouseData>| { evt.stop_propagation(); },
+                    h3 { class: "text-lg font-semibold text-content", "Edit portal roles" }
+                    p { class: "text-xs text-muted",
+                        "Pick every role this contact should hold. Effective capabilities are the union across all picked roles."
+                    }
+                    if all_roles.is_empty() {
+                        p { class: "text-sm text-muted",
+                            "No portal roles configured yet. Open Settings, then Service & Asset Types, then Contact Roles to create one."
+                        }
+                    } else {
+                        div { class: "space-y-2 max-h-64 overflow-y-auto",
+                            for role in all_roles.iter().cloned() {
+                                {
+                                    let role_id = role.id;
+                                    let checked = picked.read().iter().any(|p| p == &role_id);
+                                    rsx! {
+                                        label { key: "{role.id}", class: "flex items-start gap-2 cursor-pointer",
+                                            input {
+                                                r#type: "checkbox",
+                                                checked,
+                                                class: "mt-1",
+                                                onchange: move |evt: Event<FormData>| {
+                                                    let want = evt.value() == "true" || evt.value() == "on";
+                                                    let mut current = picked.read().clone();
+                                                    if want {
+                                                        if !current.iter().any(|c| c == &role_id) {
+                                                            current.push(role_id);
+                                                        }
+                                                    } else {
+                                                        current.retain(|c| c != &role_id);
+                                                    }
+                                                    picked.set(current);
+                                                },
+                                            }
+                                            span { class: "text-sm text-content",
+                                                span { class: "font-medium", "{role.name}" }
+                                                if role.is_builtin {
+                                                    span { class: "ml-2 text-xs text-muted", "(built-in)" }
+                                                }
+                                                if role.company_id.is_some() {
+                                                    span { class: "ml-2 text-xs text-muted", "(Company only)" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !error.read().is_empty() {
+                        p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
+                    }
+                    div { class: "flex justify-end gap-2 pt-2",
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            disabled: saving(),
+                            onclick: move |_| open.set(false),
+                            "Cancel"
+                        }
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            disabled: saving(),
+                            loading: saving(),
+                            onclick: move |e| submit(e),
+                            "Save"
+                        }
+                    }
                 }
             }
         }
