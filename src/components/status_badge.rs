@@ -18,6 +18,15 @@ use super::table::BadgeVariant;
 
 /// Title-case an unknown snake_case status token for the fallback label so a
 /// new server status reads as `Partially Refunded`, not `partially_refunded`.
+///
+/// Also re-exported (via [`humanize_enum_label`]) so callers outside this
+/// module can humanize server-side enum values that do not have their own
+/// badge helper (e.g. asset `asset_type`, contract `contract_type`, time-
+/// entry `entry_type`).
+pub fn humanize_enum_label(raw: &str) -> String {
+    humanize_token(raw)
+}
+
 fn humanize_token(raw: &str) -> String {
     if raw.is_empty() {
         return "-".to_string();

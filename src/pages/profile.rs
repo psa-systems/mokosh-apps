@@ -50,17 +50,63 @@ struct MeResponse {
     date_format_string: Option<String>,
 }
 
+/// MAPPS-604: subset of mokosh-server's `ContactMe` the contact-facing
+/// profile screen reads. Mirrors the shape returned by
+/// `GET /api/v1/contact/auth/me`. Fields not rendered here are dropped
+/// at deserialise time.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct ContactMeResponse {
+    #[serde(default)]
+    first_name: String,
+    #[serde(default)]
+    last_name: String,
+    /// Display-only for contacts; staff CRM owns the identity, so this
+    /// is rendered but the form has no submit path for it.
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    phone: Option<String>,
+    #[serde(default)]
+    mobile: Option<String>,
+    #[serde(default)]
+    timezone: String,
+    #[serde(default)]
+    company_name: Option<String>,
+}
+
+/// Body for `PUT /api/v1/contact/auth/me`. Omits `email` (staff owns
+/// contact identity per prompt 013a). Every field is optional so a
+/// partial edit sends only the touched fields.
+#[derive(Clone, Debug, Default, Serialize)]
+struct UpdateContactMeRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phone: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mobile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timezone: Option<String>,
+}
+
 /// Body sent on `PUT /api/v1/auth/me`. Matches mokosh-server's
 /// `UpdateUserRequest`; fields not editable from this screen are
 /// omitted so the server's existing validation rejects any attempt to
 /// change them. Empty optionals are sent as `None` (no-op on the
 /// server) rather than empty strings.
 ///
-/// MAPPS-431: `first_name`, `last_name` and `phone` used to be here and were
-/// discarded on arrival. PMS-512 removed them from `UpdateUserRequest` because
-/// bunyip owns identity and mokosh keeps a read-only cache refreshed on every
-/// login, so the PUT succeeded, the keys reached no column, and the screen said
-/// "Saved". Nothing here may send a field the server does not accept.
+/// PMS-512 / MAPPS-431: `first_name`, `last_name` and `phone` are
+/// deliberately absent from the wire even though the form still binds them
+/// to input signals for display. Bunyip is the identity source of truth for
+/// the names + phone; mokosh keeps them as a read-only cache refreshed on
+/// every login via `upsert_user_from_oidc`. Sending them here was worse than
+/// not asking: the user typed a new name, hit Save, saw a "Saved" toast, and
+/// the request reached no column. The input fields stay visible so the user
+/// can see the current bunyip-sourced values; the wire strips them so the
+/// request stops pretending to persist edits it never persisted. Nothing
+/// here may send a field the server does not accept.
 #[derive(Clone, Debug, Serialize)]
 struct UpdateMeRequest {
     mobile: Option<String>,
@@ -174,8 +220,26 @@ fn timezone_options(current: &str) -> Vec<SelectOption> {
 const PREF_TIME_FORMAT: &str = "mokosh_time_format";
 const PREF_FIRST_DAY: &str = "mokosh_first_day_of_week";
 
+/// MAPPS-604: a contact-plane session sees a different profile body
+/// (fetches `/contact/auth/me`, PUTs the same route, email is
+/// read-only). Staff sessions fall through to the workspace body.
+/// The dispatch happens BEFORE any hook fires (this component owns
+/// none) so MAPPS-602 (hooks-before-return guard) stays green: the
+/// two bodies live in their own components and each runs its own
+/// hooks unconditionally.
 #[component]
 pub fn ProfilePage() -> Element {
+    #[cfg(feature = "web")]
+    if crate::hooks::fetch::api::has_contact_session()
+        && crate::hooks::fetch::api::current_access_token().is_none()
+    {
+        return rsx! { ContactProfilePage {} };
+    }
+    rsx! { StaffProfilePage {} }
+}
+
+#[component]
+fn StaffProfilePage() -> Element {
     use_page_title("Profile");
     // MAPPS-331: keep the actual `/auth/me` failure mode on the resource
     // (status + server message) instead of collapsing every fault into a
@@ -387,6 +451,8 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
         saving.set(true);
         error.set(String::new());
         saved.set(false);
+        // PMS-512: first_name / last_name / phone stripped from the
+        // wire; bunyip owns those fields (see UpdateMeRequest doc).
         let body = UpdateMeRequest {
             mobile: optional_field(&mobile()),
             title: optional_field(&title()),
@@ -883,6 +949,235 @@ fn PreferencesCard() -> Element {
     }
 }
 
+// ============================================================================
+// MAPPS-604: contact-plane profile.
+// ============================================================================
+
+/// Contact-plane profile page. Rendered when [`has_contact_session`]
+/// returns true (see `ProfilePage`'s early branch). Fetches
+/// `/contact/auth/me`, populates the personal-info form, PUTs back to
+/// `/contact/auth/me`. Email is display-only ("Managed by your MSP")
+/// per prompt 013a; contacts cannot change identity through the portal.
+///
+/// Gated on `settings:manage_own` so a contact role without the
+/// capability sees the same `PermissionRequired` splash the sidebar
+/// entry already hides behind.
+#[component]
+fn ContactProfilePage() -> Element {
+    // MAPPS-602: every hook fires BEFORE the not-permitted early
+    // return so the render that takes the exit does not leave the
+    // component a hook short.
+    use_page_title("Profile");
+    let can_manage_own = crate::hooks::capabilities::use_capability("settings:manage_own");
+    let me_resource = use_resource(|| async {
+        #[cfg(feature = "web")]
+        {
+            crate::hooks::fetch::api::get_contact_authed::<ContactMeResponse>("/contact/auth/me")
+                .await
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            Err::<ContactMeResponse, crate::hooks::fetch::api::ApiError>(
+                crate::hooks::fetch::api::ApiError::Network("non-web build".into()),
+            )
+        }
+    });
+    if !can_manage_own {
+        return rsx! {
+            crate::components::PermissionRequired {
+                title: "Profile".to_string(),
+                body: "Ask your MSP to grant you the settings:manage_own capability.".to_string(),
+            }
+        };
+    }
+
+    let snap = me_resource.read_unchecked();
+
+    rsx! {
+        PageHeader {
+            title: "Profile",
+            subtitle: "Your contact information for this portal.",
+        }
+
+        match &*snap {
+            None => rsx! { crate::components::DetailSkeleton {} },
+            Some(Err(err)) => {
+                let detail = err.to_string();
+                let toast = err.user_message();
+                rsx! {
+                    Card {
+                        div { class: "py-12 text-center",
+                            p { class: "text-sm text-red-600 dark:text-red-300",
+                                "Could not load your profile: {toast}"
+                            }
+                            p { class: "mt-2 text-xs text-muted", "Detail: {detail}" }
+                        }
+                    }
+                }
+            }
+            Some(Ok(me)) => rsx! {
+                ContactPersonalInfoForm { initial: me.clone() }
+            },
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct ContactPersonalInfoFormProps {
+    initial: ContactMeResponse,
+}
+
+/// Editable contact-owned fields. Email is rendered but not editable;
+/// staff owns contact identity (see MSP CRM). The submit path PUTs the
+/// same `/contact/auth/me` route.
+#[component]
+fn ContactPersonalInfoForm(props: ContactPersonalInfoFormProps) -> Element {
+    let mut first_name = use_signal(|| props.initial.first_name.clone());
+    let mut last_name = use_signal(|| props.initial.last_name.clone());
+    let mut phone = use_signal(|| props.initial.phone.clone().unwrap_or_default());
+    let mut mobile = use_signal(|| props.initial.mobile.clone().unwrap_or_default());
+    let mut timezone = use_signal(|| {
+        let saved = props.initial.timezone.clone();
+        let looks_placeholder = saved.is_empty() || saved == "UTC" || saved == "Etc/UTC";
+        if looks_placeholder {
+            browser_timezone().unwrap_or(saved)
+        } else {
+            saved
+        }
+    });
+
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+    let mut saved = use_signal(|| false);
+
+    let can_mutate = crate::hooks::use_can_mutate();
+    let email = props.initial.email.clone();
+    let company_name = props.initial.company_name.clone();
+
+    let handle_save = move |_| {
+        if saving() {
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        saved.set(false);
+        let body = UpdateContactMeRequest {
+            first_name: optional_field(&first_name()),
+            last_name: optional_field(&last_name()),
+            phone: optional_field(&phone()),
+            mobile: optional_field(&mobile()),
+            timezone: optional_field(&timezone()),
+        };
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match crate::hooks::fetch::api::put_contact_authed_typed::<ContactMeResponse, _>(
+                    "/contact/auth/me",
+                    &body,
+                )
+                .await
+                {
+                    Ok(_) => saved.set(true),
+                    Err(e) => error.set(format!("Could not save profile: {}", e.user_message())),
+                }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                let _ = body;
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        Card {
+            div { class: "space-y-6 p-6",
+                div {
+                    h2 { class: "text-base font-semibold text-content", "Personal info" }
+                    p { class: "text-sm text-muted",
+                        "Your name, contact numbers, and timezone. Email is managed by your MSP."
+                    }
+                }
+
+                if !error().is_empty() {
+                    ErrorBanner { "{error}" }
+                }
+                if saved() {
+                    StatusBanner { tone: BannerTone::Success, "Profile saved." }
+                }
+
+                div { class: "grid gap-4 sm:grid-cols-2",
+                    Input {
+                        name: "first_name",
+                        label: "First name",
+                        value: first_name(),
+                        oninput: move |e: FormEvent| first_name.set(e.value()),
+                    }
+                    Input {
+                        name: "last_name",
+                        label: "Last name",
+                        value: last_name(),
+                        oninput: move |e: FormEvent| last_name.set(e.value()),
+                    }
+                    div { class: "space-y-1",
+                        label { class: "block text-sm font-medium text-content", "Email" }
+                        div {
+                            class: "block w-full rounded-md border border-line bg-surface-2 px-3 py-2 text-sm text-content",
+                            "{email}"
+                        }
+                        p { class: "text-xs text-muted", "Managed by your MSP." }
+                    }
+                    if let Some(name) = company_name.clone() {
+                        if !name.trim().is_empty() {
+                            div { class: "space-y-1",
+                                label { class: "block text-sm font-medium text-content", "Company" }
+                                div {
+                                    class: "block w-full rounded-md border border-line bg-surface-2 px-3 py-2 text-sm text-content",
+                                    "{name}"
+                                }
+                                p { class: "text-xs text-muted", "Company scope for this portal." }
+                            }
+                        }
+                    }
+                    Select {
+                        name: "timezone",
+                        label: "Timezone",
+                        options: timezone_options(&timezone()),
+                        value: timezone(),
+                        help: "Affects timestamps rendered for you.",
+                        onchange: move |e: FormEvent| timezone.set(e.value()),
+                    }
+                    Input {
+                        name: "phone",
+                        label: "Work phone",
+                        r#type: "tel".to_string(),
+                        value: phone(),
+                        oninput: move |e: FormEvent| phone.set(e.value()),
+                    }
+                    Input {
+                        name: "mobile",
+                        label: "Mobile",
+                        r#type: "tel".to_string(),
+                        value: mobile(),
+                        oninput: move |e: FormEvent| mobile.set(e.value()),
+                    }
+                }
+
+                div { class: "flex justify-end",
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        onclick: handle_save,
+                        disabled: saving() || !can_mutate,
+                        loading: saving(),
+                        title: (!can_mutate).then(|| "Can't save changes while the server is unreachable".to_string()),
+                        "Save changes"
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{MeResponse, UpdateMeRequest};
@@ -1004,6 +1299,7 @@ mod tests {
             created_at,
             profile_completed,
             own_company_id,
+            tenant_kind,
         } = resp;
         // Nothing is widened: every field the form binds is decoded at the
         // type the server sends, so a `String` that becomes an `Option` over
@@ -1035,6 +1331,10 @@ mod tests {
             created_at,
             profile_completed,
             own_company_id,
+            // PMS-791 / MAPPS-462: the owning tenant's kind. Read off
+            // `AuthContext` where the sidebar and the switcher branch on it;
+            // this screen renders no tenant metadata.
+            tenant_kind,
         );
     }
 }

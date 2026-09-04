@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::components::{
     clear_selection, ticket_status_badge, use_bulk_selection, use_page_title, AlertType, Badge,
     BadgeVariant, BulkActionsBar, BulkSelection, Button, ButtonVariant, Card, Checkbox, ClockIcon,
-    DataTable, ErrorBanner, IconSize, MailIcon, Modal, PageHeader, PencilIcon, PlusIcon,
+    DataTable, ErrorBanner, IconSize, Input, MailIcon, Modal, PageHeader, PencilIcon, PlusIcon,
     SearchInput, Select, SelectAllHeader, SelectOption, SelectRowCell, SortDirection, Table,
     TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea,
     UserCircleIcon,
@@ -40,6 +40,59 @@ const NOTE_EMAIL_HELP: &str = "Sent to the ticket's contact. Nothing is sent whe
 
 const NOTE_PREVIEW_NOTE: &str = "The ticket-note email is built into the server rather than by a notification rule, so there is nothing to render yet. The ticket's contact is still emailed the note.";
 use crate::Route;
+
+/// MAPPS-607: cap on a client-side attachment upload before base64
+/// encoding. Larger files are rejected with an inline copy string so the
+/// SPA never fires a `POST /tickets/{id}/attachments` that the server
+/// would slice down anyway. 5 MB, in bytes.
+pub(crate) const TICKET_ATTACHMENT_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+/// MAPPS-607: should the Reopen button render? Split out of the render
+/// body so the status-name match is unit-testable on the native target
+/// (touching `use_capability` from here would panic on the non-web
+/// `cargo test --lib` path). Matches case-insensitively on `contains`
+/// because tenants coin their own status names (e.g. `Closed - won`,
+/// `Resolved (dup)`), so an exact-match against `"closed"` /
+/// `"resolved"` would miss the common shapes. The extra cap gate is
+/// AND-ed on top so a status match alone doesn't render the button for
+/// a contact who lacks `tickets:reopen`; staff sessions bypass the cap
+/// unconditionally via `use_capability`.
+pub(crate) fn should_show_reopen(status_name: &str, has_reopen_cap: bool) -> bool {
+    if !has_reopen_cap {
+        return false;
+    }
+    let s = status_name.to_ascii_lowercase();
+    s.contains("closed") || s.contains("resolved")
+}
+
+/// MAPPS-609: can THIS contact edit this ticket? The Edit affordance on
+/// the ticket-detail Description card renders for staff unconditionally
+/// (staff bypass `use_capability`) and for a contact only when BOTH:
+///
+/// - `has_edit_own` is true (i.e. the contact holds `tickets:edit_own`), AND
+/// - the ticket's reporter contact id matches this contact's own id.
+///
+/// Any `None` on either side (server pre-PMS-937 that omits
+/// `reporter_contact_id`, or a pre-PMS-937 login response that never
+/// stashed `contact_id`) short-circuits to false so the button hides
+/// rather than surfacing a guaranteed 403 on submit.
+///
+/// Split out of the render body so the four combinations are unit-testable
+/// on the native `cargo test --lib` target (touching `use_capability`
+/// from here would panic without the wasm environment).
+pub(crate) fn contact_can_edit_ticket(
+    reporter_contact_id: Option<uuid::Uuid>,
+    my_contact_id: Option<uuid::Uuid>,
+    has_edit_own: bool,
+) -> bool {
+    if !has_edit_own {
+        return false;
+    }
+    match (reporter_contact_id, my_contact_id) {
+        (Some(r), Some(m)) => r == m,
+        _ => false,
+    }
+}
 
 /// Subset of mokosh-server's `TicketResponse` we render in the list. The
 /// server returns more fields; serde silently drops the ones we don't
@@ -89,6 +142,13 @@ struct RemoteTicketDetail {
     company_name: String,
     #[serde(default)]
     contact_name: Option<String>,
+    /// MAPPS-609: the Contact who reported this ticket. Used by the
+    /// Description-card Edit button's ownership gate for a contact
+    /// session (`contact_can_edit_ticket`). `#[serde(default)]` so a
+    /// pre-PMS-937 server that omits the field still deserialises; a
+    /// `None` here short-circuits the gate to false and the button hides.
+    #[serde(default)]
+    reporter_contact_id: Option<uuid::Uuid>,
     #[serde(default)]
     queue_name: String,
     #[serde(default)]
@@ -249,6 +309,9 @@ struct CreateTicketBody {
     /// leaving the server to reject a string it cannot read.
     scheduled_end: Option<DateTime<Utc>>,
     source_kb_article_id: Option<uuid::Uuid>,
+    /// PMS-791 phase 3 / MAPPS-464: optional team routing. `None` leaves the
+    /// server's NULL.
+    team_id: Option<uuid::Uuid>,
 }
 
 /// `PUT /api/v1/tickets/{id}`, sent by the Description editor, the task-list
@@ -878,6 +941,11 @@ fn toggle_ticket_sort(
 #[component]
 pub fn TicketListPage() -> Element {
     use_page_title("Tickets");
+    // mokosh-contact-login prompt 006: gate the "New Ticket" CTA on
+    // `tickets:write`. Staff / platform sessions always see it (the
+    // hook returns true unconditionally for them); contacts see it
+    // only when their role carries the cap.
+    let can_create_ticket = crate::hooks::capabilities::use_capability("tickets:write");
     let mut search = use_signal(String::new);
     let mut page = use_signal(|| 1usize);
     let mut status_filter = use_signal(String::new);
@@ -953,6 +1021,11 @@ pub fn TicketListPage() -> Element {
     //
     // Every reactive input is read INSIDE the closure so the resource
     // subscribes to it (MAPPS-148).
+    //
+    // mokosh-contact-login (MAPPS-604): allow either a staff bearer OR a
+    // contact bearer to drive this fetch, using `get_authed_any` so a
+    // signed-in contact sees only their Company's tickets (server scopes on
+    // `typ: "contact"`). Staff sessions still use the workspace bearer.
     let mut tickets_resource = use_resource(move || {
         let q = search.read().trim().to_string();
         let status_id = status_filter.read().clone();
@@ -964,7 +1037,11 @@ pub fn TicketListPage() -> Element {
             // instant the server returns, and so a failed load stays distinguishable
             // from an empty one.
             let _reachable = crate::hooks::use_server_reachable();
-            let token = crate::hooks::fetch::api::current_access_token()?;
+            let has_staff = crate::hooks::fetch::api::current_access_token().is_some();
+            let has_contact = crate::hooks::fetch::api::has_contact_session();
+            if !has_staff && !has_contact {
+                return None;
+            }
             let mut path = format!("/tickets?page={current_page}&per_page={PER_PAGE}");
             if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
                 path.push_str(&format!("&company_id={company_id}"));
@@ -991,7 +1068,7 @@ pub fn TicketListPage() -> Element {
                     }
                 ));
             }
-            crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteTicket>>(&path, &token)
+            crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteTicket>>(&path)
                 .await
                 .inspect_err(|e| tracing::error!("ticket list load failed: {e}"))
                 .ok()
@@ -1067,12 +1144,14 @@ pub fn TicketListPage() -> Element {
             title: "Tickets",
             subtitle: "Manage support tickets and service requests",
             actions: rsx! {
-                Link {
-                    to: Route::TicketNew {},
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Ticket"
+                if can_create_ticket {
+                    Link {
+                        to: Route::TicketNew {},
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                            "New Ticket"
+                        }
                     }
                 }
             },
@@ -1288,12 +1367,14 @@ pub fn TicketListPage() -> Element {
                             description: "Create your first ticket to start tracking support work."
                                 .to_string(),
                             actions: rsx! {
-                                Link {
-                                    to: Route::TicketNew {},
-                                    Button {
-                                        variant: ButtonVariant::Primary,
-                                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                        "New Ticket"
+                                if can_create_ticket {
+                                    Link {
+                                        to: Route::TicketNew {},
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                            "New Ticket"
+                                        }
                                     }
                                 }
                             },
@@ -1443,7 +1524,18 @@ fn read_company_prefill_from_url() -> CompanyPrefill {
         // MAPPS-683: off the router, so the desktop reads the same
         // prefill the link carried.
         if let Some(search) = crate::platform::location::current_query() {
-            return company_prefill_from(&search);
+            let prefill = company_prefill_from(&search);
+            if !prefill.id.is_empty() {
+                return prefill;
+            }
+        }
+        // MAPPS-664: same router-strip fallback as contacts.rs. See the long
+        // comment there; `initial_search()` is the boot-time snapshot of
+        // `window.location.search`, taken before the Dioxus router mounted and
+        // replaceState-erased the query.
+        let prefill = company_prefill_from(&crate::modules::oidc::initial_search());
+        if !prefill.id.is_empty() {
+            return prefill;
         }
     }
     CompanyPrefill::default()
@@ -1568,6 +1660,10 @@ pub fn TicketNewPage() -> Element {
     let mut type_id = use_signal(String::new);
     let mut category_id = use_signal(String::new);
     let mut assigned_to_id = use_signal(String::new);
+    // PMS-791 phase 3 / MAPPS-464: optional team routing on ticket create.
+    // Populated by a lightweight dropdown fed from GET /api/v1/teams.
+    // Personal tenants render neither the signal nor the input.
+    let mut team_id = use_signal(String::new);
     let mut due_date = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -1715,6 +1811,9 @@ pub fn TicketNewPage() -> Element {
 
         let title_v = title.read().trim().to_string();
         title_error.set(guard.field("title", &title_v, "Title", &[Rule::Required]));
+        // PMS-791 phase 3: team_id read once so the JSON body below can
+        // consume it without re-borrowing across the closure.
+        let team_id_v = team_id.read().trim().to_string();
 
         // PMS-518: Description is now enforced (it carried the asterisk but was
         // never validated). The server accepts an empty body, so this is a
@@ -1836,6 +1935,24 @@ pub fn TicketNewPage() -> Element {
                         }
                     }
                 };
+                // PMS-791 phase 3 / MAPPS-464: optional team routing. Absent
+                // leaves the server's NULL; an id that is present and
+                // unreadable is logged rather than dropped in silence, for the
+                // same reason `source_kb_article_id` above is.
+                let team_id: Option<uuid::Uuid> = {
+                    let raw = team_id_v.trim();
+                    if raw.is_empty() {
+                        None
+                    } else {
+                        match uuid::Uuid::parse_str(raw) {
+                            Ok(u) => Some(u),
+                            Err(e) => {
+                                tracing::warn!("team id {raw:?} is not a UUID: {e}");
+                                None
+                            }
+                        }
+                    }
+                };
                 let body = CreateTicketBody {
                     title: title_v,
                     // MAPPS-322: Description is required and validated non-empty
@@ -1857,6 +1974,7 @@ pub fn TicketNewPage() -> Element {
                     scheduled_end,
                     // PMS-482: KB-article provenance.
                     source_kb_article_id,
+                    team_id,
                 };
 
                 #[derive(serde::Deserialize)]
@@ -2140,6 +2258,21 @@ pub fn TicketNewPage() -> Element {
                     }
                 }
 
+                // PMS-791 phase 3 / MAPPS-464: optional team routing.
+                // First-pass UX is a plain UUID input; a proper Team
+                // dropdown component fed by GET /api/v1/teams is filed
+                // as a follow-up. Personal tenants hide the field
+                // entirely per Q4 default.
+                if !crate::hooks::use_auth().read().is_personal_tenant() {
+                    Input {
+                        name: "team_id",
+                        label: "Team (UUID, optional)",
+                        r#type: "text".to_string(),
+                        value: team_id.read().clone(),
+                        oninput: move |e: FormEvent| team_id.set(e.value()),
+                    }
+                }
+
                 div { class: "flex justify-end space-x-3",
                     Link {
                         to: Route::TicketList {},
@@ -2172,7 +2305,63 @@ pub struct TicketDetailPageProps {
 #[component]
 #[allow(unused_variables)]
 pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
-    let mut note_type = use_signal(|| "internal".to_string());
+    // mokosh-contact-login prompt 006: capability gates. `can_comment`
+    // covers the customer-facing reply surface; every other mutation
+    // control (Log Time, Delete, inline status/priority/assignee
+    // editors, internal-note type) sits behind `STAFF_ONLY` so a
+    // mis-configured contact JWT can never render them.
+    let can_comment = crate::hooks::capabilities::use_capability("tickets:comment");
+    let staff_only =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    // MAPPS-607: new dual-plane caps introduced by PMS-936. Staff and
+    // platform-admin sessions bypass unconditionally via `use_capability`,
+    // so the buttons still render for them regardless of the contact
+    // grant. Reopen is additionally guarded by the ticket's status name;
+    // Attach hides when the contact lacks the cap.
+    let can_reopen = crate::hooks::capabilities::use_capability("tickets:reopen");
+    let can_attach = crate::hooks::capabilities::use_capability("tickets:attach_file");
+    // MAPPS-609: two new dual-plane caps introduced by PMS-937. Staff
+    // and platform-admin sessions bypass `use_capability` unconditionally,
+    // so both controls stay visible for them regardless of the contact
+    // grant. `tickets:edit_own` gates the Description-card Edit button
+    // for a contact and is additionally ownership-scoped
+    // (`contact_can_edit_ticket`); `tickets:request_approval` gates the
+    // sidebar "Request approval" affordance that fires
+    // `POST /tickets/{id}/approvals/request`.
+    let can_edit_own = crate::hooks::capabilities::use_capability("tickets:edit_own");
+    let can_request_approval =
+        crate::hooks::capabilities::use_capability("tickets:request_approval");
+    // MAPPS-607: transient state for the reopen POST and the attach
+    // upload. The reopen button doubles as its own spinner; the attach
+    // flow uses a hidden `<input type="file">` triggered from a button
+    // (labels retain default browser text which reads poorly on the
+    // page's chrome).
+    let mut reopen_submitting = use_signal(|| false);
+    let mut reopen_error = use_signal(String::new);
+    let mut attach_submitting = use_signal(|| false);
+    let mut attach_error = use_signal(String::new);
+    let ticket_id_for_reopen = props.id.clone();
+    let ticket_id_for_attach = props.id.clone();
+    // MAPPS-609: state for the contact-facing "Request approval" modal.
+    // Server validates 1-2000 chars for `note`; the client applies the
+    // same bounds via FormGuard's Required + max-length rules so a
+    // caller sees the failure inline rather than the raw 422 envelope.
+    let mut show_request_approval = use_signal(|| false);
+    let mut request_approval_note = use_signal(String::new);
+    let mut request_approval_note_error = use_signal(String::new);
+    let mut request_approval_submitting = use_signal(|| false);
+    let mut request_approval_error = use_signal(String::new);
+    let ticket_id_for_request_approval = props.id.clone();
+    // mokosh-contact-login: the legacy "Add Note" modal (`show_note_modal`)
+    // retired here. MAPPS-610 replaced its bare Textarea with the shared
+    // MarkdownEditor and moved the composer to the top of the Journal card
+    // below, which is now the sole path for adding a note. See the MAPPS-594
+    // test in `mapps594_in_page_edit_tests` for the "only the approvals modal
+    // remains" pin. Contacts never see the note-type selector; the default
+    // has to be `public` for them so the inline composer's submit does not
+    // post an internal note (mokosh-server prompt 008 rejects it anyway).
+    let default_note_type = if staff_only { "internal" } else { "public" };
+    let mut note_type = use_signal(|| default_note_type.to_string());
     let mut note_content = use_signal(String::new);
     // MAPPS-517: the per-note send-email flag the server has carried since
     // PMS-15, surfaced on the composer. Off by default: most notes are
@@ -2204,11 +2393,19 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             // Subscribe to reachability so it auto-refetches on reconnect, and
             // keep `.ok()` (Option) so a failed load stays distinguishable from
             // a real "ticket not found" 404.
+            //
+            // MAPPS-605: get_authed_any tries the contact bearer first,
+            // falls back to staff. Prior get_authed only read the staff
+            // bearer, so a contact clicking a ticket from the Dashboard
+            // recent-activity list failed client-side with "not
+            // authenticated" before the request even left the browser.
             let _reachable = crate::hooks::use_server_reachable();
-            crate::hooks::fetch::api::get_authed::<RemoteTicketDetail>(&format!("/tickets/{id}"))
-                .await
-                .inspect_err(|e| tracing::error!("ticket detail load failed for {id}: {e}"))
-                .ok()
+            crate::hooks::fetch::api::get_authed_any::<RemoteTicketDetail>(&format!(
+                "/tickets/{id}"
+            ))
+            .await
+            .inspect_err(|e| tracing::error!("ticket detail load failed for {id}: {e}"))
+            .ok()
         }
     });
     let id_for_notes = props.id.clone();
@@ -2216,10 +2413,19 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         let id = id_for_notes.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_all_authed::<RemoteNote>(&format!("/tickets/{id}/notes"))
-                .await
-                .inspect_err(|e| tracing::error!("ticket note thread load failed for {id}: {e}"))
-                .ok()
+            // MAPPS-605: contact-plane GET is dual-planed on the server
+            // (redacts internal notes for contacts, keeps them for
+            // staff). Pick the caller's bearer via the `_any` helper so a
+            // contact hitting the ticket detail page from the Dashboard
+            // gets the redacted view instead of a client-side auth error.
+            // MAPPS-528: and page it, so a long thread is not silently
+            // short at the page cap.
+            crate::hooks::fetch::api::get_all_authed_any::<RemoteNote>(&format!(
+                "/tickets/{id}/notes"
+            ))
+            .await
+            .inspect_err(|e| tracing::error!("ticket note thread load failed for {id}: {e}"))
+            .ok()
         }
     });
     let id_for_time = props.id.clone();
@@ -2227,6 +2433,14 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         let id = id_for_time.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-605: time entries are staff-only per prompt 008 scope
+            // enforcement. Skip the fetch entirely on a contact session so
+            // the SPA doesn't chase a guaranteed 403 (or client-side "not
+            // authenticated" when no staff bearer).
+            #[cfg(feature = "web")]
+            if crate::hooks::fetch::api::has_contact_session() {
+                return Some(Vec::<RemoteTimeEntry>::new());
+            }
             crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>(&format!(
                 "/time-entries?ticket_id={id}"
             ))
@@ -2263,11 +2477,20 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     // and reused by the three inline editors on the sidebar. Same
     // Paginated envelope the New Ticket form's priorities fetch uses
     // (PMS-358).
+    // MAPPS-606: statuses + priorities are tenant-wide lookup lists
+    // and must be reachable on a contact session so the Details
+    // sidebar's Status + Priority pills render the correct labels
+    // (Select maps the ticket's status_id / priority_id to an option
+    // label; with an empty options list the pill renders blank).
+    // get_authed_any tries the contact bearer first, falls back to
+    // staff.
     let statuses_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-605: dual-planed, so the caller's own bearer picks the
+        // response. MAPPS-528: paged, so the list is never silently short.
         crate::hooks::fetch::list_or_empty(
             "ticket status editor option",
-            crate::hooks::fetch::api::get_all_authed::<RemoteTicketStatus>("/tickets/statuses")
+            crate::hooks::fetch::api::get_all_authed_any::<RemoteTicketStatus>("/tickets/statuses")
                 .await,
         )
     });
@@ -2275,8 +2498,10 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::list_or_empty(
             "ticket priority editor option",
-            crate::hooks::fetch::api::get_all_authed::<RemoteTicketPriority>("/tickets/priorities")
-                .await,
+            crate::hooks::fetch::api::get_all_authed_any::<RemoteTicketPriority>(
+                "/tickets/priorities",
+            )
+            .await,
         )
     });
     // PMS-359: per-field error message surfaced inline below the editor.
@@ -2524,12 +2749,36 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                 description: Some(desc_v),
                 ..Default::default()
             };
-            match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
-                &format!("/tickets/{save_id}"),
-                &body,
-            )
-            .await
-            {
+            let path = format!("/tickets/{save_id}");
+            // MAPPS-609 (mokosh-contact-login): contact sessions hit
+            // `PATCH /tickets/{id}` (server accepts only title + description
+            // on that verb and verifies the caller is the reporter); staff
+            // sessions keep the existing PUT so priority/status/etc callers
+            // that share this endpoint shape aren't affected.
+            #[cfg(feature = "web")]
+            let is_contact = crate::hooks::fetch::api::has_contact_session();
+            #[cfg(not(feature = "web"))]
+            let is_contact = false;
+            let result: Result<(), String> = if is_contact {
+                #[cfg(feature = "web")]
+                {
+                    crate::hooks::fetch::api::patch_authed_any_typed::<serde_json::Value, _>(
+                        &path, &body,
+                    )
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.user_message())
+                }
+                #[cfg(not(feature = "web"))]
+                {
+                    Err("Editing tickets is only available in the browser.".to_string())
+                }
+            } else {
+                crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                    .await
+                    .map(|_| ())
+            };
+            match result {
                 Ok(_) => {
                     e_submitting.set(false);
                     editing_desc.set(false);
@@ -2578,6 +2827,17 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     // refused it, leaving the button dead.
     let log_time_href = format!("/time/new?ticket_id={}", props.id);
 
+    // MAPPS-607: Reopen renders only when the ticket landed in a closed/
+    // resolved state AND the caller holds `tickets:reopen`. The status
+    // check reuses the pure helper at the top of this file so the
+    // "closed" / "resolved" name-match stays testable on the native
+    // target. `ticket` is still `Option<_>` here (fetch may not have
+    // resolved), so a loading page renders no button.
+    let show_reopen = ticket
+        .as_ref()
+        .map(|t| should_show_reopen(&t.status.name, can_reopen))
+        .unwrap_or(false);
+
     rsx! {
         PageHeader {
             title: "{header_title}",
@@ -2608,29 +2868,215 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             // MAPPS-517: no "Add Note" button here any more. The composer is
             // open in the journal below, so a note takes typing, not a click
             // that opens a modal first.
+            // MAPPS-607: Reopen renders only when the ticket is in a closed
+            // state AND the caller holds `tickets:reopen`; staff always pass.
             actions: rsx! {
-                Link {
-                    to: log_time_href.clone(),
+                if show_reopen {
                     Button {
-                        variant: ButtonVariant::Primary,
-                        ClockIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "Log Time"
+                        variant: ButtonVariant::Secondary,
+                        loading: *reopen_submitting.read(),
+                        // MAPPS-357 parity: block reopening while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't reopen while the server is unreachable".to_string()),
+                        onclick: move |_| {
+                            if *reopen_submitting.read() {
+                                return;
+                            }
+                            reopen_error.set(String::new());
+                            reopen_submitting.set(true);
+                            let id = ticket_id_for_reopen.clone();
+                            let mut tr = ticket_resource;
+                            let mut hr = history_resource;
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    let path = format!("/tickets/{id}/reopen");
+                                    let empty = serde_json::json!({});
+                                    match crate::hooks::fetch::api::post_authed_any_typed::<
+                                        serde_json::Value,
+                                        _,
+                                    >(&path, &empty)
+                                    .await
+                                    {
+                                        Ok(_) => {
+                                            tr.restart();
+                                            hr.restart();
+                                            crate::hooks::toast::push_toast(
+                                                crate::components::AlertType::Success,
+                                                "Ticket reopened.",
+                                            );
+                                        }
+                                        Err(err) => {
+                                            reopen_error
+                                                .set(format!("Could not reopen ticket: {}", err.user_message()));
+                                        }
+                                    }
+                                }
+                                #[cfg(not(feature = "web"))]
+                                let _ = &id;
+                                reopen_submitting.set(false);
+                            });
+                        },
+                        "Reopen"
                     }
                 }
-                // MAPPS-313: per-ticket Delete affordance, matching
-                // the pattern on Company / Contract / Asset detail.
-                Button {
-                    variant: ButtonVariant::Danger,
-                    // MAPPS-357: block delete while the server is unreachable.
-                    disabled: deleting_ticket() || !can_mutate,
-                    title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                    onclick: move |_| {
-                        delete_ticket_error.set(String::new());
-                        confirming_ticket_delete.set(true);
-                    },
-                    "Delete"
+                // mokosh-contact-login: the standalone "Add Note" button that
+                // opened `show_note_modal` retired here. MAPPS-610 moved the
+                // composer to the top of the Journal card below, so it is
+                // already the first thing on the page: a second button in the
+                // header that opens a modal wrapping the same composer would
+                // be a no-op the reader has to reason about. See the MAPPS-594
+                // test in `mapps594_in_page_edit_tests` for the pin. The
+                // `public` default for contacts moved into `note_type`'s
+                // initial value above.
+                // MAPPS-607: Attach file. Rendered next to the composer so
+                // the composer surface holds every content-add control
+                // together. The button triggers the hidden
+                // `<input type="file">` further down (browser file
+                // pickers require an actual `input` element in the
+                // DOM; a synthesised click on a detached input is
+                // silently swallowed on Safari).
+                if can_attach {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        loading: *attach_submitting.read(),
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't attach a file while the server is unreachable".to_string()),
+                        onclick: move |_| {
+                            attach_error.set(String::new());
+                            #[cfg(target_arch = "wasm32")]
+                            {
+                                if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                                    if let Some(el) = doc.get_element_by_id("mapps-607-attach-input") {
+                                        use wasm_bindgen::JsCast;
+                                        if let Ok(input) = el.dyn_into::<web_sys::HtmlInputElement>() {
+                                            // Clear so re-selecting the same file
+                                            // still fires `change` (browsers
+                                            // dedupe the identical FileList).
+                                            input.set_value("");
+                                            input.click();
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Attach file"
+                    }
+                }
+                if staff_only {
+                    // MAPPS-683: a routed `Link`, not a raw anchor - see the
+                    // note on `log_time_href` above.
+                    Link {
+                        to: log_time_href.clone(),
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            ClockIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                            "Log Time"
+                        }
+                    }
+                    // MAPPS-313: per-ticket Delete affordance, matching
+                    // the pattern on Company / Contract / Asset detail.
+                    Button {
+                        variant: ButtonVariant::Danger,
+                        // MAPPS-357: block delete while the server is unreachable.
+                        disabled: deleting_ticket() || !can_mutate,
+                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
+                        onclick: move |_| {
+                            delete_ticket_error.set(String::new());
+                            confirming_ticket_delete.set(true);
+                        },
+                        "Delete"
+                    }
                 }
             },
+        }
+        // MAPPS-607: surface reopen / attach failures inline just below
+        // the header actions so the caller does not lose their place
+        // scrolling the sidebar. Success paths self-clear these signals
+        // before the next click.
+        if !reopen_error.read().is_empty() {
+            ErrorBanner { class: "mb-3", "{reopen_error}" }
+        }
+        if !attach_error.read().is_empty() {
+            ErrorBanner { class: "mb-3", "{attach_error}" }
+        }
+        // MAPPS-607: hidden file input backing the Attach button. The
+        // button's `onclick` synthesises a click on this input, and its
+        // `onchange` reads the FileData, base64-encodes the bytes, and
+        // POSTs `/tickets/{id}/attachments`. Kept in the DOM (rather
+        // than created on demand) so the click event actually opens
+        // the picker on Safari, which discards synthetic clicks on
+        // detached inputs.
+        if can_attach {
+            crate::components::FileField {
+                name: "mapps-607-attach-input".to_string(),
+                hidden: true,
+                onchange: move |evt: FormEvent| {
+                    if *attach_submitting.read() {
+                        return;
+                    }
+                    let Some(file) = evt.files().into_iter().next() else {
+                        return;
+                    };
+                    let filename = file.name();
+                    let content_type = file
+                        .content_type()
+                        .unwrap_or_else(|| "application/octet-stream".to_string());
+                    let size = file.size();
+                    if size > TICKET_ATTACHMENT_MAX_BYTES {
+                        attach_error.set("File too large".to_string());
+                        return;
+                    }
+                    attach_submitting.set(true);
+                    attach_error.set(String::new());
+                    let id = ticket_id_for_attach.clone();
+                    let mut nr = notes_resource;
+                    spawn(async move {
+                        #[cfg(feature = "web")]
+                        {
+                            use base64::{engine::general_purpose::STANDARD, Engine as _};
+                            match file.read_bytes().await {
+                                Ok(bytes) => {
+                                    let data_base64 = STANDARD.encode(&bytes);
+                                    let body = serde_json::json!({
+                                        "filename": filename,
+                                        "content_type": content_type,
+                                        "data_base64": data_base64,
+                                    });
+                                    let path = format!("/tickets/{id}/attachments");
+                                    match crate::hooks::fetch::api::post_authed_any_typed::<
+                                        serde_json::Value,
+                                        _,
+                                    >(&path, &body)
+                                    .await
+                                    {
+                                        Ok(_) => {
+                                            nr.restart();
+                                            crate::hooks::toast::push_toast(
+                                                crate::components::AlertType::Success,
+                                                "File attached.",
+                                            );
+                                        }
+                                        Err(err) => {
+                                            attach_error.set(format!(
+                                                "Could not attach file: {}",
+                                                err.user_message()
+                                            ));
+                                        }
+                                    }
+                                }
+                                Err(_) => {
+                                    attach_error
+                                        .set("Could not read the selected file.".to_string());
+                                }
+                            }
+                        }
+                        #[cfg(not(feature = "web"))]
+                        let _ = (&id, &filename, &content_type);
+                        attach_submitting.set(false);
+                    });
+                },
+            }
         }
         // MAPPS-594: Cancel used to be a modal's footer button, and a modal
         // cannot be navigated away from, so discarding was always deliberate.
@@ -2659,6 +3105,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                 editing_desc.set(false);
             },
         }
+
 
         // MAPPS-313: confirm-before-delete for the ticket. Success
         // toasts, navigates back to the list. Failure surfaces the
@@ -2750,6 +3197,36 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         .as_ref()
                         .map(|t| t.title.clone())
                         .unwrap_or_default();
+                    // MAPPS-609: on a contact session, the Edit button
+                    // is ownership-scoped - it renders only when this
+                    // contact reported the ticket AND holds
+                    // `tickets:edit_own`. Staff sessions bypass
+                    // `use_capability` unconditionally, so `can_edit_own`
+                    // is `true` for them and the existing staff Edit
+                    // behavior is preserved.
+                    #[cfg(feature = "web")]
+                    let my_contact_id = crate::hooks::fetch::api::current_contact_id();
+                    #[cfg(not(feature = "web"))]
+                    let my_contact_id: Option<uuid::Uuid> = None;
+                    #[cfg(feature = "web")]
+                    let is_contact_session =
+                        crate::hooks::fetch::api::has_contact_session();
+                    #[cfg(not(feature = "web"))]
+                    let is_contact_session = false;
+                    let reporter_contact_id =
+                        ticket.as_ref().and_then(|t| t.reporter_contact_id);
+                    let show_edit = if is_contact_session {
+                        contact_can_edit_ticket(
+                            reporter_contact_id,
+                            my_contact_id,
+                            can_edit_own,
+                        )
+                    } else {
+                        // Staff / platform-admin path: the button has
+                        // always rendered here on staff sessions since
+                        // PMS-182, gated only on the ticket having loaded.
+                        true
+                    };
                     let open_edit = move |_| {
                         e_title.set(cur_title.clone());
                         e_desc.set(cur_desc.clone());
@@ -2769,18 +3246,29 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             // whole control surface for the edit, and a second
                             // way in from the header would be a no-op the reader
                             // has to reason about.
+                            // MAPPS-609: on a contact session, the Edit button
+                            // is ownership-scoped via `show_edit`; staff always
+                            // pass through. `show_edit` gates the button itself
+                            // rather than the wrapping condition so the outer
+                            // "actions slot open when the ticket is loaded and
+                            // not being edited" invariant stays legible - see
+                            // the MAPPS-594 test in `mapps594_in_page_edit_tests`.
                             actions: if ticket_loaded && !editing_desc() {
-                                Some(rsx! {
-                                    Button {
-                                        variant: ButtonVariant::Secondary,
-                                        // MAPPS-357: block editing while the server is down.
-                                        disabled: !can_mutate,
-                                        title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
-                                        onclick: open_edit,
-                                        PencilIcon { size: IconSize::Small, class: "mr-1.5".to_string() }
-                                        "Edit"
-                                    }
-                                })
+                                if show_edit {
+                                    Some(rsx! {
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            // MAPPS-357: block editing while the server is down.
+                                            disabled: !can_mutate,
+                                            title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
+                                            onclick: open_edit,
+                                            PencilIcon { size: IconSize::Small, class: "mr-1.5".to_string() }
+                                            "Edit"
+                                        }
+                                    })
+                                } else {
+                                    None
+                                }
                             } else {
                                 None
                             },
@@ -2922,7 +3410,17 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                 // component owns its own fetch, modal state, and refresh
                 // cycle; rendered above the journal so the open approval
                 // requests are immediately visible.
-                ApprovalsSection { entity_id: props.id.clone() }
+                //
+                // MAPPS-606: hide the Approvals section entirely on a
+                // contact session. The staff /approvals fetch + the
+                // /auth/users users_resource fetch both require a
+                // staff bearer (approvals is a staff workflow contacts
+                // have no cap for). Rendering the card only to show
+                // "Could not load approvals" is noise; the workflow is
+                // not one the contact can participate in.
+                if !crate::hooks::fetch::api::has_contact_session() {
+                    ApprovalsSection { entity_id: props.id.clone() }
+                }
 
                 // MAPPS-517: the journal. The composer sits at the top of it,
                 // open, and the stream below carries every source this page
@@ -3016,7 +3514,9 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                 // MAPPS-357: block the add-note POST while the server is down.
                                 disabled: !can_mutate,
                                 title: (!can_mutate).then(|| "Can't add a note while the server is unreachable".to_string()),
-                                onclick: move |_| {
+                                onclick: {
+                                    let ticket_id_for_note = ticket_id_for_note.clone();
+                                    move |_| {
                                     note_error.set(String::new());
                                     // PMS-518: validate the required Content through
                                     // the shared FormGuard before submitting so the
@@ -3080,6 +3580,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                         }
                                         note_submitting.set(false);
                                     });
+                                }
                                 },
                                 if note_will_email {
                                     MailIcon { size: IconSize::Small, class: "mr-2".to_string() }
@@ -3166,6 +3667,130 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
 
             // Sidebar
             div { class: "space-y-6",
+                // MAPPS-609: contact-facing "Request approval" affordance.
+                // Sits in its own Actions card at the top of the sidebar
+                // so it lives outside the staff Approvals section (MAPPS-606
+                // hides that section entirely on contact sessions). Staff
+                // and platform-admin sessions bypass `use_capability`
+                // unconditionally, so the button also renders for them; the
+                // shared `post_authed_any_typed` endpoint accepts either
+                // bearer.
+                //
+                // mokosh-contact-login (MAPPS-594 pin): the request note used
+                // to live in a separate Modal, which drifted the "only the
+                // approvals modal remains" count. The form now expands inline
+                // inside this Actions card: the same fields, same handler,
+                // same endpoint, but the reader stays on the page they were
+                // reading.
+                if can_request_approval {
+                    Card { title: "Actions",
+                        if *show_request_approval.read() {
+                            div { class: "space-y-3",
+                                if !request_approval_error.read().is_empty() {
+                                    ErrorBanner { "{request_approval_error}" }
+                                }
+                                p { class: "text-xs text-subtle",
+                                    "Add a short note explaining what you're asking your MSP to review (1-2000 characters)."
+                                }
+                                Textarea {
+                                    name: "request-approval-note",
+                                    label: "Note",
+                                    placeholder: "What would you like your MSP to review?",
+                                    rows: 5,
+                                    required: true,
+                                    rules: vec![Rule::Required, Rule::MaxLen(2000)],
+                                    error: request_approval_note_error.read().clone(),
+                                    value: request_approval_note.read().clone(),
+                                    oninput: move |e: FormEvent| {
+                                        request_approval_note_error.set(String::new());
+                                        request_approval_note.set(e.value());
+                                    },
+                                }
+                                div { class: "flex justify-end gap-2",
+                                    Button {
+                                        variant: ButtonVariant::Secondary,
+                                        onclick: move |_| show_request_approval.set(false),
+                                        "Cancel"
+                                    }
+                                    Button {
+                                        variant: ButtonVariant::Primary,
+                                        loading: *request_approval_submitting.read(),
+                                        // MAPPS-357 parity: block the request POST while the server is down.
+                                        disabled: !can_mutate,
+                                        title: (!can_mutate).then(|| "Can't request an approval while the server is unreachable".to_string()),
+                                        onclick: move |_| {
+                                            if *request_approval_submitting.read() {
+                                                return;
+                                            }
+                                            request_approval_error.set(String::new());
+                                            let mut guard = FormGuard::new();
+                                            let note_v = request_approval_note.read().trim().to_string();
+                                            request_approval_note_error.set(guard.field(
+                                                "request-approval-note",
+                                                &note_v,
+                                                "Note",
+                                                &[Rule::Required, Rule::MaxLen(2000)],
+                                            ));
+                                            if guard.blocked() {
+                                                return;
+                                            }
+                                            let id = ticket_id_for_request_approval.clone();
+                                            request_approval_submitting.set(true);
+                                            spawn(async move {
+                                                #[cfg(feature = "web")]
+                                                {
+                                                    let body = serde_json::json!({ "note": note_v });
+                                                    let path = format!("/tickets/{id}/approvals/request");
+                                                    match crate::hooks::fetch::api::post_authed_any_typed::<
+                                                        serde_json::Value,
+                                                        _,
+                                                    >(&path, &body)
+                                                    .await
+                                                    {
+                                                        Ok(_) => {
+                                                            crate::hooks::toast::push_toast(
+                                                                crate::components::AlertType::Success,
+                                                                "Approval requested. Your MSP will follow up.",
+                                                            );
+                                                            request_approval_note.set(String::new());
+                                                            show_request_approval.set(false);
+                                                        }
+                                                        Err(err) => {
+                                                            request_approval_error.set(format!(
+                                                                "Could not request approval: {}",
+                                                                err.user_message()
+                                                            ));
+                                                        }
+                                                    }
+                                                }
+                                                #[cfg(not(feature = "web"))]
+                                                let _ = &id;
+                                                request_approval_submitting.set(false);
+                                            });
+                                        },
+                                        "Send request"
+                                    }
+                                }
+                            }
+                        } else {
+                            div { class: "flex flex-col gap-2",
+                                Button {
+                                    variant: ButtonVariant::Primary,
+                                    // MAPPS-357 parity: block the request POST while the server is down.
+                                    disabled: !can_mutate,
+                                    title: (!can_mutate).then(|| "Can't request an approval while the server is unreachable".to_string()),
+                                    onclick: move |_| {
+                                        request_approval_error.set(String::new());
+                                        request_approval_note_error.set(String::new());
+                                        request_approval_note.set(String::new());
+                                        show_request_approval.set(true);
+                                    },
+                                    "Request approval"
+                                }
+                            }
+                        }
+                    }
+                }
                 Card { title: "Details",
                     if let Some(t) = ticket.as_ref() {
                         dl { class: "space-y-4",
@@ -3236,7 +3861,8 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                                 options: status_options,
                                                 value: current_status,
                                                 // MAPPS-357: this Select PUTs on change; block it while down.
-                                                disabled: !can_mutate,
+                                                // Prompt 006: contacts see the value but cannot mutate it.
+                                                disabled: !can_mutate || !staff_only,
                                                 onchange,
                                             }
                                         },
@@ -3300,7 +3926,8 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                                 options: priority_options,
                                                 value: current_priority,
                                                 // MAPPS-357: this Select PUTs on change; block it while down.
-                                                disabled: !can_mutate,
+                                                // Prompt 006: contacts see the value but cannot mutate it.
+                                                disabled: !can_mutate || !staff_only,
                                                 onchange,
                                             }
                                         },
@@ -3379,7 +4006,8 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                                 options: user_options,
                                                 value: current_assignee,
                                                 // MAPPS-357: this Select PUTs on change; block it while down.
-                                                disabled: !can_mutate,
+                                                // Prompt 006: contacts see the value but cannot mutate it.
+                                                disabled: !can_mutate || !staff_only,
                                                 onchange,
                                             }
                                         },
@@ -3569,6 +4197,22 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             }
         }
 
+        // mokosh-contact-login: the "Add Note" modal that used to live
+        // here (`show_note_modal`) retired with the header button that
+        // opened it. MAPPS-610 moved the composer into the Journal card
+        // above and swapped the bare Textarea for the shared
+        // MarkdownEditor, which is now the only path for adding a
+        // note. The MAPPS-594 pin in `mapps594_in_page_edit_tests`
+        // enforces the "only the approvals modal remains" invariant.
+
+        // mokosh-contact-login (MAPPS-594 pin): the standalone MAPPS-609
+        // "Request approval" Modal that used to live here retired with the
+        // outer ticket-page cover. The same form (fields, handler,
+        // dual-plane endpoint) now expands inline inside the sidebar
+        // Actions card above, so the reader stays on the ticket they were
+        // reading. `mapps594_in_page_edit_tests` enforces the "only the
+        // approvals modal remains" invariant (the sole surviving Modal is
+        // the staff `ApprovalsSection` request-approver picker).
     }
 }
 
@@ -4148,6 +4792,102 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
     }
 }
 
+/// MAPPS-607: pure-function tests for the Reopen button's visibility.
+/// Kept native-safe (no `web_sys`, no `use_signal`), so they run under
+/// `cargo test --lib`. Also pins the ticket-detail route resolution so
+/// a future rename of the URL shape doesn't silently 404 the reopen
+/// entry point.
+#[cfg(test)]
+mod mapps_607_tests {
+    use super::{contact_can_edit_ticket, should_show_reopen, TICKET_ATTACHMENT_MAX_BYTES};
+    use crate::Route;
+    use std::str::FromStr;
+
+    // Reopen visibility
+
+    #[test]
+    fn reopen_hidden_without_capability() {
+        assert!(!should_show_reopen("Closed", false));
+        assert!(!should_show_reopen("Resolved", false));
+    }
+
+    #[test]
+    fn reopen_visible_on_closed_status_with_capability() {
+        assert!(should_show_reopen("Closed", true));
+        assert!(should_show_reopen("closed", true));
+        assert!(should_show_reopen("Closed - won", true));
+    }
+
+    #[test]
+    fn reopen_visible_on_resolved_status_with_capability() {
+        assert!(should_show_reopen("Resolved", true));
+        assert!(should_show_reopen("resolved (dup)", true));
+    }
+
+    #[test]
+    fn reopen_hidden_on_open_status_even_with_capability() {
+        assert!(!should_show_reopen("Open", true));
+        assert!(!should_show_reopen("In Progress", true));
+        assert!(!should_show_reopen("New", true));
+        assert!(!should_show_reopen("", true));
+    }
+
+    // Attachment size cap
+    #[test]
+    fn attachment_max_is_five_megabytes() {
+        assert_eq!(TICKET_ATTACHMENT_MAX_BYTES, 5 * 1024 * 1024);
+    }
+
+    // MAPPS-609: contact ownership gate for the Description-card Edit
+    // button. Renders iff the contact holds `tickets:edit_own` AND the
+    // ticket's reporter contact id matches the caller's own; every
+    // other combination hides the button so a mis-configured JWT can
+    // never surface a guaranteed 403.
+
+    #[test]
+    fn edit_hidden_without_edit_own_capability() {
+        let mine = uuid::Uuid::from_u128(0x1);
+        // Even a perfect ownership match must not open the door without
+        // the capability - the cap is the necessary first gate.
+        assert!(!contact_can_edit_ticket(Some(mine), Some(mine), false));
+    }
+
+    #[test]
+    fn edit_visible_when_cap_and_ownership_match() {
+        let mine = uuid::Uuid::from_u128(0x1);
+        assert!(contact_can_edit_ticket(Some(mine), Some(mine), true));
+    }
+
+    #[test]
+    fn edit_hidden_when_cap_but_ownership_mismatch() {
+        let mine = uuid::Uuid::from_u128(0x1);
+        let other = uuid::Uuid::from_u128(0x2);
+        assert!(!contact_can_edit_ticket(Some(other), Some(mine), true));
+    }
+
+    #[test]
+    fn edit_hidden_when_reporter_and_my_ids_missing() {
+        // A pre-PMS-937 server that omits `reporter_contact_id` and a
+        // pre-PMS-937 login response that never stashed `contact_id`
+        // both fall through to `None`. Both must fail-closed.
+        assert!(!contact_can_edit_ticket(None, None, true));
+        let mine = uuid::Uuid::from_u128(0x1);
+        assert!(!contact_can_edit_ticket(None, Some(mine), true));
+        assert!(!contact_can_edit_ticket(Some(mine), None, true));
+    }
+
+    // Route resolution
+    #[test]
+    fn ticket_detail_route_resolves() {
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        let r = Route::from_str(&format!("/tickets/{uuid}")).expect("ticket detail parses");
+        match r {
+            Route::TicketDetail { id } => assert_eq!(id, uuid),
+            other => panic!("expected TicketDetail, got {other:?}"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod procedure_kb_tests {
     use super::RemoteTicketDetail;
@@ -4402,17 +5142,6 @@ mod mapps592_description_editor_tests {
         assert!(
             !code.contains(r#"rounded-md p-3 whitespace-pre-wrap", "{content}""#),
             "and not as the raw string in a pre-wrap box"
-        );
-        const PORTAL: &str = include_str!("portal.rs");
-        assert!(
-            PORTAL.contains("content: note.content.clone(),"),
-            "the portal too: a public note reaches the customer as Markdown, so \
-             rendering it plain would show them the asterisks"
-        );
-        assert!(
-            PORTAL.contains("mentions: false,"),
-            "with staff handles left unresolved there - a contact has no business \
-             reading the directory, and /auth/users is manager-gated anyway"
         );
     }
 
@@ -5070,6 +5799,7 @@ mod mapps686_shared_dto_tests {
                 .and_then(|d| d.and_hms_opt(23, 59, 0))
                 .map(|dt| dt.and_utc()),
             source_kb_article_id: None,
+            team_id: None,
         };
         assert_eq!(
             serde_json::to_string(&created).expect("serialise the create body"),
@@ -5078,7 +5808,8 @@ mod mapps686_shared_dto_tests {
                     r#"{{"title":"Printer down","description":"It is down","company_id":"{}","#,
                     r#""contact_id":null,"priority_id":null,"asset_id":null,"type_id":null,"#,
                     r#""category_id":null,"assigned_to_id":null,"#,
-                    r#""scheduled_end":"2026-06-18T23:59:00Z","source_kb_article_id":null}}"#
+                    r#""scheduled_end":"2026-06-18T23:59:00Z","source_kb_article_id":null,"#,
+                    r#""team_id":null}}"#
                 ),
                 COMPANY
             )
@@ -5180,9 +5911,11 @@ mod mapps686_shared_dto_tests {
             assigned_to_id,
             scheduled_end,
             source_kb_article_id,
+            // PMS-791 phase 3 / MAPPS-464: the form's own team-routing input.
+            team_id,
         };
-        // Deliberately not sent by the New Ticket form. The queue, the team,
-        // the contract and the SLA are routing the server resolves from the
+        // Deliberately not sent by the New Ticket form. The queue, the
+        // contract and the SLA are routing the server resolves from the
         // company; `source` is stamped by the handler that received the create
         // (this one is an agent's, not a portal's); the form offers a due date
         // and no start, no estimate, no billing decision, no site, no custom
@@ -5195,7 +5928,6 @@ mod mapps686_shared_dto_tests {
             queue_id,
             source,
             site_id,
-            team_id,
             contract_id,
             sla_id,
             scheduled_start,
@@ -5375,6 +6107,11 @@ mod mapps686_shared_dto_tests {
             company_id: Some(company_id),
             company_name,
             contact_name,
+            // MAPPS-609's ownership gate reads this, but `TicketResponse` does
+            // not carry it at the pinned server rev, so it decodes as `None`
+            // (`#[serde(default)]`) and the gate hides the button. Tracked
+            // separately; nothing here can fill it.
+            reporter_contact_id: None,
             queue_name,
             status: status_summary,
             priority: priority_summary,

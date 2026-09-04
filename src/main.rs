@@ -162,6 +162,12 @@ fn App() -> Element {
     // Apply the persisted theme preference on boot and follow system
     // dark-mode changes for `Theme::System` users.
     use_apply_theme();
+    // MAPPS-621 (mokosh-branding prompt 005): repaint the brand's
+    // CSS custom properties whenever the effective-branding signal
+    // changes. Runs AFTER the theme apply so a brand primary_color
+    // wins over the user's personal accent on portal pages; the
+    // brand vars stay unset (and the theme wins) on staff pages.
+    mokosh_apps::hooks::branding::use_apply_brand();
     // MAPPS-259/PMS-410: once authenticated, reconcile the account's theme
     // prefs into localStorage (server wins) and re-apply, so the choice
     // follows the user across devices.

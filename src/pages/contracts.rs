@@ -113,7 +113,11 @@ pub fn ContractListPage() -> Element {
     // `can_manage_billing()`); the standardised UI still matters for a
     // future role downgrade or a tenant-internal grant change.
     use_page_title("Contracts");
-    if !use_can_manage_billing() {
+    // MAPPS-604: a contact with `contracts:read` reaches the list too.
+    // Staff / platform sessions bypass `use_capability` unconditionally,
+    // so the pre-pivot behaviour is preserved for every existing role.
+    let contact_can_read = crate::hooks::capabilities::use_capability("contracts:read");
+    if !use_can_manage_billing() && !contact_can_read {
         return rsx! {
             crate::components::PermissionRequired {
                 title: "Contracts".to_string(),
@@ -214,7 +218,13 @@ fn ContractListBody() -> Element {
             // MAPPS-357: subscribe to reachability so the list auto-refetches
             // on reconnect and a failed load can render ContentUnavailable.
             let _reachable = crate::hooks::use_server_reachable();
-            let token = crate::hooks::fetch::api::current_access_token()?;
+            // MAPPS-604: allow either bearer; server scopes to
+            // `contact.company_id` on the contact plane.
+            if crate::hooks::fetch::api::current_access_token().is_none()
+                && !crate::hooks::fetch::api::has_contact_session()
+            {
+                return None;
+            }
             let mut path = format!("/contracts?page={current_page}&per_page={PER_PAGE}");
             if !company.is_empty() {
                 path.push_str(&format!("&company_id={}", urlencoding_minimal(&company)));
@@ -228,7 +238,7 @@ fn ContractListBody() -> Element {
                     urlencoding_minimal(&contract_type)
                 ));
             }
-            crate::hooks::fetch::api::get_with_auth::<Paginated<ContractResponse>>(&path, &token)
+            crate::hooks::fetch::api::get_authed_any::<Paginated<ContractResponse>>(&path)
                 .await
                 .inspect_err(|e| tracing::error!("contract list load failed: {e}"))
                 .ok()

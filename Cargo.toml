@@ -64,6 +64,34 @@ ammonia = "4"
 # change over there turns this build red rather than drifting unnoticed.
 [dependencies.mokosh-types]
 git = "https://dev.a8n.run/psa-systems/mokosh-server.git"
+# MAPPS-617: follow `mokosh-contact-login` (the long-lived contact-
+# portal + branding integration branch on the server), a superset of
+# the retired `mokosh-client-login` pin. Once this whole track merges
+# to main, drop `branch = ...` and let the pin follow main again.
+#
+# Bumping the pin requires the server branch to actually contain the
+# branding types (`CompanyBranding`, `EffectiveBranding`, and the
+# `background_*` / `display_name` fields on `TenantBranding`). Until
+# MAPPS-617 lands on this branch, the client uses local shadow types
+# in `hooks/branding.rs` that mirror the wire shape byte-for-byte via
+# `serde(default)`; runtime interop works regardless of which commit
+# `Cargo.lock` resolves to. After the server merge + a
+# `cargo update -p mokosh-types` here, the shadow types can be
+# deleted in favour of `pub use mokosh_types::...`.
+# Pinned to the head of the server's own `mokosh-contact-login`, which
+# has merged server `main` and so carries both DTO sets: the
+# contact-portal + branding types this branch needs, and the fields
+# client `main` added (`CompanyResponse.default_billing_contact_id`,
+# MAPPS-701). Neither side alone compiles this client: server `main`
+# is missing `tenant_kind` and the whole contact-portal surface.
+#
+# A `rev`, not `branch = "mokosh-contact-login"`, deliberately. The
+# branch form re-resolves on every `cargo update`, so this client
+# would follow a moving server branch mid-review; the explicit rev
+# makes each catch-up a reviewed edit. Dropping the pin entirely, so
+# it follows server `main` again, is the end state once the server's
+# contact-login track merges there.
+rev = "06f0946b9230568bd056e30bcaf7f0b03b1eed25"
 
 [dependencies.dioxus]
 version = "0.7.7"
@@ -143,6 +171,9 @@ features = [
     "DomTokenList",
     "Storage",
     "Navigator",
+    # MAPPS-635 B: navigator.clipboard for the Portal Access "Copy
+    # link" button on the Company detail page.
+    "Clipboard",
     "Location",
     "UrlSearchParams",
     "MessageEvent",
@@ -240,8 +271,90 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
+# dx serve --release / `just dev-release` writes wasm builds under
+# target/wasm32-unknown-unknown/wasm-release/, a custom profile that
+# inherits from release. On a memory-constrained dev box the stock
+# [profile.release] settings (`lto = true` + `codegen-units = 1`) peak
+# rustc RSS around 4-5 GB during LTO codegen and OOM. Thin LTO with
+# codegen-units = 16 gives ~90% of the size reduction (small wasm keeps
+# wasm-bindgen happy) at roughly a third of the peak memory. Trade for
+# production: none - the [profile.release] block above is untouched, so
+# CI + deployed builds still use fat LTO. This profile is dev-only.
+[profile.wasm-release]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+
 [profile.dev]
 opt-level = 0
+# MAPPS-396 dev-box unblock: rustc peak RSS on this crate's lib compile
+# (huge Dioxus router + all pages) sits around 2.5 GB with debug=2 and
+# still trips earlyoom at debug=1 (~1.5 GB free floor on this box). `debug = 0`
+# drops the DWARF section entirely; panic messages in the browser lose
+# source-line mapping but the app still boots. Bump back once the app is
+# split into smaller crates or run on a box with more RAM headroom.
+debug = 0
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# MAPPS-396: dx (`dx serve`) writes wasm builds under `target/wasm32-.../wasm-dev`,
+# a custom cargo profile it derives from `dev`. Declaring it here lets us set
+# per-profile knobs without touching host `dev`.
+#
+# Two memory-side knobs, together sized for a dev box where earlyoom's
+# SIGTERM threshold is ~1.5 GB free:
+#
+#   `debug = 0` drops DWARF from every rustc invocation. Panic messages in
+#   the browser lose source-line mapping (WASM debugging is limited anyway)
+#   but the rustc peak drops ~500 MB.
+#
+#   `codegen-units = 1` forces rustc to serialize LLVM codegen into a single
+#   instance instead of running one per CPU (dev default is 256, capped by
+#   cpu count, so 8+ parallel LLVM instances on a modern box). Each LLVM
+#   instance holds 200-400 MB of IR; with 8 running in parallel the peak
+#   walked to ~3 GB. Serial codegen brings it under ~1.5 GB. The trade is
+#   wall time: mokosh_apps compiles ~2-3x slower (~90s -> ~200s the first
+#   time; incremental after that is fine). Worth it on this dev box; a
+#   beefier build host can override in a local `.cargo/config.toml`.
+[profile.wasm-dev]
+inherits = "dev"
+# Two problems this profile solves for a memory-constrained dev box:
+#
+# 1. rustc peak RSS on the mokosh_apps lib compile
+#    Measured on a Dioxus 132-route crate + ~56k lines of pages, stable rustc
+#    1.94.1, wasm target:
+#      stock dev  (cgu default, debug=2, assertions on) : ~3000 MB, ~85s
+#      + codegen-units = 1                              : ~2589 MB, ~510s
+#      + cgu = 256, debug = 0, assertions off, ovf off  : ~2146 MB, ~220s
+#    codegen-units = 256 lets LLVM stream small units in and out; cgu = 1
+#    (the first instinct) forced one huge unit that held every IR node at peak.
+#
+# 2. wasm-bindgen post-process OOM after cargo finished
+#    A 44 MB unstripped dev WASM expands ~30x during wasm-bindgen's parse:
+#    ~1.5 GB in wasm-bindgen + another ~1.5 GB dx holds simultaneously = OOM
+#    even after cargo succeeded. `opt-level = "s"` (dead-code + basic inlining
+#    tuned for size) drops the WASM to ~15-20 MB, so wasm-bindgen fits in
+#    ~500 MB. Trade: mokosh_apps compile is slower (opt-level ~1 for the
+#    app code) but the whole pipeline actually completes.
+#
+# Trade vs stock dev: no DWARF (browser panic messages lose source-line
+# mapping; WASM debugging is source-map-only anyway), no debug-assert /
+# overflow-check (same posture as release). None of that affects feature
+# behaviour. The opt-level = "s" DOES slow down hot-reload iteration; the
+# alternative is `just dev-release` (thin-LTO, no hot reload at all).
+opt-level = "s"
+debug = 0
+codegen-units = 256
+debug-assertions = false
+overflow-checks = false
+# `panic = "abort"` drops the unwind tables rustc otherwise generates
+# for every monomorphized function in the crate + its deps. On a
+# Dioxus 132-route crate the unwind IR is the last chunk holding
+# rustc's peak RSS over the earlyoom ceiling; abort saves ~200-400 MB
+# on the final lib link phase. Trade: a Rust panic in wasm calls
+# `wasm-unreachable` instead of unwinding through the stack, so a
+# `catch_unwind` in dev is inert. The SPA has no `catch_unwind`
+# callers, and browser panic-hook reporting (console_error_panic_hook)
+# still fires because it hooks the panic handler before abort runs.
+panic = "abort"

@@ -170,8 +170,25 @@ pub fn SavedDashboardViewPage(id: String) -> Element {
 /// `/dashboard` entrypoint. Hits `/dashboards/default` first so a user
 /// who pinned a saved layout lands on it; absence of a pinned row
 /// renders the v1 hardcoded dashboard as the fallback.
+/// MAPPS-604: a contact-plane session has no `/dashboards/*` surface
+/// (those are staff-scoped saved layouts). Dispatch to the staff body
+/// or short-circuit to the hardcoded `DashboardPage` (which itself
+/// branches to the contact-summary path) BEFORE any hook fires, so
+/// MAPPS-602 (hooks-before-return guard) stays green: the staff body
+/// lives in its own component and runs its hooks unconditionally.
 #[component]
 pub fn DefaultDashboardPage() -> Element {
+    #[cfg(feature = "web")]
+    if crate::hooks::fetch::api::has_contact_session()
+        && crate::hooks::fetch::api::current_access_token().is_none()
+    {
+        return rsx! { crate::pages::dashboard::DashboardPage {} };
+    }
+    rsx! { StaffDefaultDashboardBody {} }
+}
+
+#[component]
+fn StaffDefaultDashboardBody() -> Element {
     // MAPPS-357: the pinned-default lookup is this page's PRIMARY resource.
     // On an outage the old `.ok().flatten()` collapsed a failed fetch to
     // `None`, which silently fell through to the hardcoded dashboard and hid

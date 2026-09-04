@@ -99,6 +99,15 @@ if ! {
     emit_field oidc_issuer "${MOKOSH_OIDC_ISSUER:-}"
     emit_field oidc_client_id "${MOKOSH_OIDC_CLIENT_ID:-}"
     emit_field hub_base_url "${MOKOSH_HUB_BASE_URL:-}"
+    # MAPPS-649: the single host the portal is served from (e.g.
+    # `portal.psa.systems`). The SPA reads this to (a) decide whether
+    # the current host is the portal host (`on_portal_host()` in
+    # `src/hooks/fetch.rs`) and (b) derive the API base when the SPA
+    # is running there (same fn's `api_base()`). Empty (default) turns
+    # both off and the SPA falls back to its `msp.<tld>` agent-only
+    # derivation. Retires the per-MSP `MOKOSH_PORTAL_HOST_SUFFIX` env;
+    # see docs/dev-docs/portal-single-host-cutover.md in mokosh-server.
+    emit_field portal_host "${MOKOSH_PORTAL_HOST:-}"
     # MAPPS-453: documentation subdomain base URL (e.g. https://docs.n.niceguyit.biz).
     # Unset hides the Documentation menu entry and every contextual help link.
     emit_field docs_base_url "${MOKOSH_DOCS_URL:-}"

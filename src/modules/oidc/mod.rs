@@ -61,8 +61,8 @@ pub fn log_auth_error(msg: &str) {
 }
 
 pub use flow::{
-    classify_flow_error, classify_return_to, complete_login, current_return_to, issuer_get_authed,
-    issuer_post_authed, refresh_tokens, revoke_refresh_token, snapshot_initial_search, start_login,
-    CallbackRecovery, FlowError, ReturnTarget,
+    classify_flow_error, classify_return_to, complete_login, current_return_to, initial_search,
+    issuer_get_authed, issuer_post_authed, refresh_tokens, revoke_refresh_token,
+    snapshot_initial_search, start_login, CallbackRecovery, FlowError, ReturnTarget,
 };
 pub use tokens::{IdTokenClaims, Tokens};

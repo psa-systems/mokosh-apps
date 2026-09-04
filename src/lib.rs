@@ -22,6 +22,84 @@ pub use utils::error::{AppError, AppResult};
 // `Routable` derive expands the attribute at the enum site).
 use components::AppShell;
 
+/// MAPPS-623: return true when the given URL pathname is a surface a
+/// portal contact should NEVER reach. The sidebar already hides
+/// these NavItems (each is gated on `use_capability(STAFF_ONLY)` in
+/// `components/layout.rs`), but the routes themselves stayed
+/// unrestricted at the router level, so a contact who typed the URL
+/// or followed a stale bookmark could still hit e.g. `/companies`
+/// and see the SPA render a broken page whose fetches then 401. The
+/// AuthGuard's contact-plane branch consults this helper on every
+/// render and redirects any hit to `/dashboard`.
+///
+/// Denies by prefix on the pathname (the router's compiled `Route`
+/// enum is not something the guard can easily match without an
+/// exhaustive arm per variant). Ordering:
+/// - Individual prefixes for the top-level staff-only surfaces.
+/// - A special-case KB edit path since the read side (`/kb`,
+///   `/kb/articles/:id`) is contact-permitted.
+/// - Every `/settings/*` except a small contact-permitted allowlist.
+///
+/// Anything the pathname does not match falls through to the shared
+/// Outlet so the contact-permitted routes stay reachable.
+pub fn pathname_is_contact_forbidden(path: &str) -> bool {
+    // Strip query + trailing slash so the compare is stable
+    // regardless of how the browser hands us the URL.
+    let p = path.split('?').next().unwrap_or(path).trim_end_matches('/');
+    // Top-level staff-only prefixes. `starts_with("{prefix}/")` covers
+    // every nested route under the prefix; a bare equality catches
+    // the index route (`/companies` itself).
+    const DENIED_PREFIXES: &[&str] = &[
+        "/companies",
+        "/contacts",
+        "/calendar",
+        "/dispatch",
+        "/scheduling-templates",
+        "/rate-cards",
+        "/payments",
+        "/tax-rates",
+        "/payment-gateways",
+        "/reports",
+        "/time",
+        "/timesheets",
+        "/dashboards",
+        "/dashboard/tv",
+        "/big",
+        "/admin",
+        "/pick-tenant",
+        "/create-org",
+        "/invite",
+        "/dev",
+    ];
+    for prefix in DENIED_PREFIXES {
+        if p == *prefix || p.starts_with(&format!("{prefix}/")) {
+            return true;
+        }
+    }
+    // KB reads are contact-permitted (kb:read cap); creating +
+    // editing an article is staff-only. Match the two mutation URLs
+    // specifically so `/kb/articles/:id` (read-only detail) still
+    // resolves.
+    if p == "/kb/articles/new" {
+        return true;
+    }
+    if p.starts_with("/kb/articles/") && p.ends_with("/edit") {
+        return true;
+    }
+    // Every /settings/* except a small contact-permitted allowlist.
+    // `/settings` (hub, tile filter already scopes visibility),
+    // `/settings/portal-branding` (contact editor, has its own cap
+    // gate), and `/settings/appearance` (personal theme picker) are
+    // the only three surfaces a contact reaches under this tree.
+    if p == "/settings" || p == "/settings/portal-branding" || p == "/settings/appearance" {
+        return false;
+    }
+    if p.starts_with("/settings/") || p == "/settings" {
+        return true;
+    }
+    false
+}
+
 /// Layout component that gates all authenticated routes (declared
 /// here, before the `Route` enum, because the `Routable` derive
 /// expands the `#[layout(AuthGuard)]` reference at the enum site
@@ -37,6 +115,35 @@ use components::AppShell;
 pub fn AuthGuard() -> Element {
     let auth = hooks::use_auth();
     let nav = use_navigator();
+    // mokosh-contact-login prompt 005: cold-load bootstrap for the
+    // contact plane. Fires once on mount; if there is no in-memory
+    // contact access token but a refresh token is mirrored in
+    // localStorage, kick off `/contact/auth/refresh` in the
+    // background. This races the first render (intentionally) and
+    // mirrors the staff-bearer bootstrap in hooks/auth.rs: a hard
+    // refresh on `/dashboard` under a contact session may transiently
+    // fall through the guard's next branch, then re-render once the
+    // refresh lands.
+    #[cfg(feature = "web")]
+    use_effect(|| {
+        // MAPPS-630: skip the contact rehydrate when a staff bearer
+        // is present. The two planes are mutually exclusive within
+        // one browser origin, and blindly rehydrating a stale
+        // contact refresh token here (localStorage IS cross-tab)
+        // would resurrect a portal session inside a freshly-opened
+        // staff tab, shadowing the staff sidebar via the MAPPS-625
+        // "contact wins" precedence.
+        if crate::hooks::fetch::api::current_access_token().is_some() {
+            return;
+        }
+        if !crate::hooks::fetch::api::has_contact_session()
+            && crate::hooks::fetch::api::current_contact_refresh_token().is_some()
+        {
+            spawn(async move {
+                let _ = crate::hooks::contact_auth::refresh_contact_session().await;
+            });
+        }
+    });
     let auth_state = auth.read();
     if auth_state.is_loading {
         // Still hydrating tokens from sessionStorage. Render a
@@ -49,9 +156,143 @@ pub fn AuthGuard() -> Element {
         };
     }
     if !auth_state.is_authenticated() {
+        // MAPPS-520: platform-plane admins pass through the tenant
+        // AuthGuard when they hold a valid platform bearer in
+        // sessionStorage. The MAPPS-518 platform-admin surface
+        // (currently only `/admin/tenants`, `TenantManagementPage`)
+        // gates its own render on the same signal and issues its own
+        // fetches with the platform bearer, so a platform-only
+        // caller can reach it without the tenant `AuthContext`
+        // being populated. AppShell / Sidebar / TopBar all read the
+        // tenant user via `.as_ref().map(...).unwrap_or(false)` so
+        // they render sensibly with no tenant session; the platform
+        // admin sees a nav where every tenant-role-gated item is
+        // hidden EXCEPT the Tenants item (which gates on
+        // `platform_bearer_present()`).
+        //
+        // Every OTHER `AuthGuard` fall-through remains: no platform
+        // bearer AND no tenant auth still bounces to `/login` (or
+        // kicks the OIDC flow off), so nothing above this line
+        // silently unlocks a route that used to require tenant auth.
+        #[cfg(feature = "web")]
+        if crate::hooks::fetch::api::current_platform_access_token().is_some() {
+            return rsx! {
+                ErrorBoundary {
+                    handle_error: |errors: ErrorContext| rsx! {
+                        RouteErrorFallback { errors }
+                    },
+                    Outlet::<Route> {}
+                }
+            };
+        }
+
+        // mokosh-contact-login prompt 005: contact-plane session
+        // recognition. A contact JWT (`typ: "contact"`) is a distinct
+        // identity from the tenant staff bearer; the shared mokosh
+        // workspace routes render for either. The tenant `AuthContext`
+        // is empty in this branch (the contact identity is not a
+        // `users` row), so downstream pages that read `use_auth()` see
+        // `is_authenticated() == false` - capability gating lands in
+        // prompt 006 to hide the staff-only surfaces.
+        #[cfg(feature = "web")]
+        if crate::hooks::fetch::api::has_contact_session() {
+            // MAPPS-623: hard block on staff-only surfaces. The
+            // sidebar already hides these NavItems for contacts
+            // (each is behind `use_capability(STAFF_ONLY)`), but a
+            // contact could still reach them by typing the URL,
+            // following a stale bookmark, or getting bounced from a
+            // deep-link that was authored for a staff user. Every
+            // staff-only prefix redirects to /dashboard rather than
+            // rendering a page whose data fetches would 401/403 and
+            // read as broken. Contact-permitted routes fall through
+            // to the shared Outlet unchanged.
+            #[cfg(target_arch = "wasm32")]
+            let pathname = web_sys::window()
+                .and_then(|w| w.location().pathname().ok())
+                .unwrap_or_default();
+            #[cfg(not(target_arch = "wasm32"))]
+            let pathname = String::new();
+            if pathname_is_contact_forbidden(&pathname) {
+                nav.replace(Route::Dashboard {});
+                return rsx! {
+                    div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
+                        "Redirecting to your dashboard…"
+                    }
+                };
+            }
+            return rsx! {
+                ErrorBoundary {
+                    handle_error: |errors: ErrorContext| rsx! {
+                        RouteErrorFallback { errors }
+                    },
+                    Outlet::<Route> {}
+                }
+            };
+        }
+
+        // MAPPS-615 (prompt 014): origin cue - a stranded visitor on
+        // a `/portal/*` URL with no session gets bounced to the
+        // contact login instead of the staff `/login`.
+        //
+        // MAPPS-634: also bounce a stranded visitor with NO active
+        // session but a `contact_last_portal_id` or
+        // `contact_last_slug` hint in localStorage (they were signed
+        // in as a contact previously; their session expired while
+        // they were on `/dashboard` or another shared route). Preserve
+        // "the last plane I signed into" without needing them to be
+        // physically on a `/portal/*` URL when the session died. Prefer
+        // the Portal-ID URL shape (prompt 011 primary); fall back to
+        // the legacy slug URL; last resort is the generic step-1 page
+        // so the visitor can retype their Portal ID.
+        //
+        // Both branches run BEFORE the standalone-mode staff bounce
+        // below so a contact never falls through to the staff login.
+        #[cfg(feature = "web")]
+        {
+            #[cfg(target_arch = "wasm32")]
+            let on_portal_url = web_sys::window()
+                .and_then(|w| w.location().pathname().ok())
+                .is_some_and(|p: String| p.starts_with("/portal/") || p == "/portal");
+            #[cfg(not(target_arch = "wasm32"))]
+            let on_portal_url = false;
+            let last_portal_id = crate::hooks::fetch::api::current_contact_last_portal_id();
+            let last_slug = crate::hooks::fetch::api::current_contact_last_slug();
+            let contact_hint_present = last_portal_id.is_some() || last_slug.is_some();
+            if on_portal_url || contact_hint_present {
+                if let Some(pid) = last_portal_id {
+                    let dest = format!("/portal/{pid}/login");
+                    #[cfg(target_arch = "wasm32")]
+                    if let Some(win) = web_sys::window() {
+                        let _ = win.location().replace(&dest);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let _ = dest;
+                } else if let Some(slug) = last_slug {
+                    let dest = format!("/portal/{slug}/login");
+                    #[cfg(target_arch = "wasm32")]
+                    if let Some(win) = web_sys::window() {
+                        let _ = win.location().replace(&dest);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let _ = dest;
+                } else {
+                    nav.replace(Route::ContactGenericLogin {});
+                }
+                return rsx! {
+                    div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
+                        "Redirecting to sign in…"
+                    }
+                };
+            }
+        }
+
         // MAPPS-368: a deployment with no OIDC issuer has no bunyip OP to
         // redirect to, so send the user to the standalone username/password
         // login form instead of a dead `/oauth2/authorize`.
+        //
+        // mokosh-contact-login: the pre-pivot portal-host redirect to
+        // `Route::PortalLogin` retires with the customer-portal route
+        // family (prompt 001). Contact plane replacement in prompt 005.
         if crate::modules::oidc::is_standalone() {
             nav.replace(Route::Login {});
             return rsx! {
@@ -155,37 +396,9 @@ pub fn AuthGuard() -> Element {
     }
 }
 
-/// MAPPS-395: layout component gating the client-portal routes.
-///
-/// The portal runs on its own identity (a `contacts` row) and its own token
-/// class: mokosh-server's `portal_auth_middleware` rejects any bearer whose
-/// `typ` is not `portal_access`, so an agent session is worth exactly as much
-/// here as no session at all. Both cases redirect to `/portal/login` rather
-/// than rendering a page whose every fetch would 401.
-///
-/// Declared before the `Route` enum for the same reason [`AuthGuard`] is: the
-/// `Routable` derive expands `#[layout(PortalGuard)]` at the enum site.
-#[component]
-pub fn PortalGuard() -> Element {
-    let nav = use_navigator();
-    #[cfg(feature = "app")]
-    let signed_in = hooks::fetch::api::has_portal_session();
-    // The portal fetch helpers only exist in the `app` build, so a non-`app`
-    // build has no portal session to hold.
-    #[cfg(not(feature = "app"))]
-    let signed_in = false;
-    if !signed_in {
-        nav.replace(Route::PortalLogin {});
-        return rsx! {
-            div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
-                "Redirecting to the portal sign-in…"
-            }
-        };
-    }
-    rsx! {
-        Outlet::<Route> {}
-    }
-}
+// mokosh-contact-login: PortalGuard retired with the /portal/* route
+// family (prompt 001). Contact plane replacement in prompt 005 will
+// gate the contact-scoped surface via a different layout.
 
 /// MAPPS-318: full-screen fallback rendered when the route-level
 /// `ErrorBoundary` catches a propagated error. Sidebar / topbar live
@@ -265,8 +478,42 @@ pub enum Route {
     #[route("/")]
     Home {},
 
+    // MAPPS-520: unified `/login` for both personas.
+    //
+    // Post-MAPPS-518 the SPA had TWO visible login URLs (`/login` for
+    // the mokosh platform super-admin, `/client/login` for the MSP
+    // tenant admin/user). MAPPS-520 collapses them into ONE URL and
+    // one page: the `Login` component (see `pages::login`) tries the
+    // platform-admin credential first and falls back to the tenant
+    // credential on 401. The MAPPS-518 credential isolation stays
+    // intact underneath (`platform_admins` and `users` are still
+    // separate tables; the MAPPS-498 mirror still cannot touch
+    // `platform_admins`) — the unification is UI only.
+    //
+    // `/client/login` and `/platform/login` are retained as `#[route]`
+    // entries but render "moved" redirect stubs (see
+    // `ClientLoginLegacy` and `PlatformLoginLegacy` components
+    // below) so bookmarks from either previous URL land on the
+    // unified page without a 404.
     #[route("/login")]
     Login {},
+
+    #[route("/client/login")]
+    ClientLoginLegacy {},
+
+    #[route("/platform/login")]
+    PlatformLoginLegacy {},
+
+    // MAPPS-497 item 6: dedicated intermediate routes for the
+    // identity-first login flow. Both read cross-page state from the
+    // `PENDING_LOGIN` global signal; empty state redirects them back
+    // to /login. Same auth surface as /login (public routes; no
+    // AuthGuard gating).
+    #[route("/pick-tenant")]
+    PickTenant {},
+
+    #[route("/create-org")]
+    CreateOrg {},
 
     #[route("/auth/callback")]
     AuthCallback {},
@@ -276,6 +523,15 @@ pub enum Route {
 
     #[route("/reset-password/:token")]
     ResetPassword { token: String },
+
+    // MAPPS-552: first-time password setup for a fresh client-admin.
+    // The welcome email from `TenantService::mint_and_send_welcome`
+    // points here (not `/reset-password/:token`) so the URL bar and
+    // the page heading match what the recipient is actually doing -
+    // setting a password for a specific client portal, not resetting
+    // an existing one.
+    #[route("/set-password/:token")]
+    SetPassword { token: String },
 
     #[route("/invite/:token")]
     InviteAccept { token: String },
@@ -292,6 +548,53 @@ pub enum Route {
 
     #[route("/signup/:token")]
     SignupComplete { token: String },
+
+    // mokosh-contact-login prompt 005: contact-plane portal routes.
+    // Public (no AuthGuard, no PortalGuard). The token on the two
+    // password-write routes arrives via the MAPPS-560 query-segment
+    // shape so the component receives it as a prop rather than
+    // scraping `window.location.search`.
+    //
+    // MAPPS-589 (prompt 011): the primary three-field login page
+    // (Portal ID + email + password) mounts at `/portal/login`; the
+    // Portal-ID-scoped page shares the `/portal/:handle/login` path
+    // shape with the legacy slug login and is dispatched at render
+    // time by the `ContactHandleLogin` wrapper (shape check on the
+    // handle: 9 ASCII digits -> Portal ID, otherwise legacy slug).
+    // Collapsing the two into ONE route avoids the Dioxus route
+    // collision that having two `/portal/:X/login` shapes would
+    // create.
+    #[route("/portal/login")]
+    ContactGenericLogin {},
+
+    #[route("/portal/:handle/login")]
+    ContactHandleLogin { handle: String },
+
+    #[route("/portal/:slug/set-password?:token")]
+    ContactSetPassword { slug: String, token: String },
+
+    #[route("/portal/:slug/forgot-password")]
+    ContactForgotPassword { slug: String },
+
+    #[route("/portal/:slug/reset-password?:token")]
+    ContactResetPassword { slug: String, token: String },
+
+    // MAPPS-572 (prompt 010): magic-link finder + Company picker.
+    // Both public (no AuthGuard). Finder accepts an optional
+    // `?email=` query segment so the picker's "Request a new sign-in
+    // link" button, and the password-login page's "sign in without a
+    // password" affordance, can pre-fill the field on hop.
+    //
+    // MAPPS-589 (prompt 011): moved from `/portal/login` to
+    // `/portal/find?:email` so the shorter path can host the primary
+    // three-field password page. The finder path change is contained
+    // to the router: every in-code Link/nav.replace still uses the
+    // `Route::ContactMagicLinkLogin` variant.
+    #[route("/portal/find?:email")]
+    ContactMagicLinkLogin { email: String },
+
+    #[route("/portal/pick?:token")]
+    ContactPicker { token: String },
 
     // ======================================================================
     // Authenticated routes. The `AuthGuard` layout below renders nothing
@@ -412,6 +715,14 @@ pub enum Route {
 
     #[route("/companies/:id/edit")]
     CompanyEdit { id: String },
+
+    // MAPPS-590 (mokosh-contact-login prompt 012): Company-scoped
+    // portal role editor. `:id == "new"` creates a Company-scoped
+    // role; any UUID edits an existing scoped role. The list of
+    // scoped roles for a Company lives on the CompanyRolesCard
+    // rendered inside `CompanyDetailPage`.
+    #[route("/companies/:company_id/roles/:id")]
+    CompanyRoleEdit { company_id: String, id: String },
 
     #[route("/contacts")]
     ContactList {},
@@ -560,6 +871,24 @@ pub enum Route {
     // nav items and buttons keep working (chosen "keep old + add Settings").
     #[route("/settings")]
     SettingsHome {},
+    /// MAPPS-622 (mokosh-branding prompt 003 sibling): staff-side
+    /// tenant branding editor at `/settings/branding`. Sets the MSP
+    /// defaults every Company inherits from. Per-Company overrides
+    /// still edit on the Company detail page (MAPPS-619). Page gates
+    /// on `role.is_admin()`; non-admins get `ContentUnavailable`.
+    #[route("/settings/branding")]
+    SettingsBranding {},
+    /// MAPPS-620 (mokosh-branding prompt 004): contact-plane portal
+    /// branding editor. The page's first-render gate checks
+    /// `use_capability("settings:manage_company_branding")`; a
+    /// contact without the capability sees a `ContentUnavailable`
+    /// splash. Staff hitting this URL land on the same page but the
+    /// contact-only endpoint (`/contact/companies/self/branding`)
+    /// returns 401 for them, which the page surfaces as an error;
+    /// staff editing a per-Company brand goes through the Company
+    /// detail page instead (MAPPS-619).
+    #[route("/settings/portal-branding")]
+    ContactPortalBranding {},
     // MAPPS-258: per-group landing routes. The index lists these four
     // groups; each landing lists only its own leaf surfaces. The leaf
     // routes below stay flat so existing deep links keep resolving.
@@ -633,6 +962,14 @@ pub enum Route {
     // MAPPS-364: admin-only tenant data import/export (server PMS-646).
     #[route("/settings/import-export")]
     SettingsImportExport {},
+    // mokosh-contact-login prompt 007: MSP portal-role management. List
+    // + edit live under `/settings/contact-roles*`. The card on a
+    // contact detail (`ContactPortalCard`, prompt 003) points admins
+    // here to create / rename / retire portal roles.
+    #[route("/settings/contact-roles")]
+    ContactRolesList {},
+    #[route("/settings/contact-roles/:id")]
+    ContactRoleEdit { id: String },
     // MAPPS-426: admin-only rename of this tenant. The name is not an
     // internal label - it goes out in the request-form email subject and the
     // invitation email, and a fresh tenant is seeded "My workspace".
@@ -670,86 +1007,34 @@ pub enum Route {
     FormsBuilder {},
     #[route("/admin/sla")]
     SlaManagement {},
+    // PMS-791 phase 2: retired the old "team" nav name; the page was
+    // always invitations. `/admin/team` still routes here for one release
+    // via TeamLegacyRedirect below so bookmarks do not break.
+    #[route("/admin/invitations")]
+    Invitations {},
     #[route("/admin/team")]
-    Team {},
-
-    // Admin (multi-tenant only)
+    TeamLegacyRedirect {},
+    // PMS-791 phase 2: the actual teams management page (list + create +
+    // edit + membership).
     #[cfg(feature = "multi-tenant")]
-    #[route("/admin/tenants")]
-    TenantManagement {},
+    #[route("/admin/teams")]
+    Teams {},
+
+    // mokosh-contact-login: /admin/tenants (Clients tab / TenantManagement)
+    // retired on this branch (prompt 001).
 
     // MAPPS-366: close the AppShell layout. Every route above (from Dashboard
     // down) renders inside the persistent shell; the chromeless routes at the
     // top of the AuthGuard block and the portal routes below do not.
     #[end_layout]
 
-    // End of AuthGuard scope. Portal routes have their own layout and
-    // auth model (client portal vs internal tools); the catch-all 404
-    // is intentionally public so logged-out users see a real 404 page.
-    #[end_layout]
-
-    // Client Portal Routes (separate layout)
+    // End of AuthGuard scope.
     //
-    // The two public entry points come first: both are reachable without a
-    // portal session by construction, so they sit outside `PortalGuard`.
-
-    // MAPPS-395: portal sign-in. Issues the `typ: "portal_access"` token the
-    // guarded routes below need.
-    #[route("/portal/login")]
-    PortalLogin {},
-
-    // MAPPS-396: the destination of the portal setup email mokosh-server
-    // sends on a portal-access grant. Public by construction: the emailed
-    // single-use token in `?token=` is the only credential the visitor has.
-    #[route("/portal/set-password")]
-    PortalSetPassword {},
-
-    // PMS-832: the destination of the portal password-reset email PMS-820
-    // added. Public for the same reason as its sibling above: the emailed
-    // single-use token in `?token=` is the only credential the visitor has, and
-    // a visitor who has forgotten their password has no portal session to
-    // satisfy `PortalGuard` with.
-    #[route("/portal/reset-password")]
-    PortalResetPassword {},
-
-    // PMS-832: where a customer asks for that email. Public by construction:
-    // someone who has forgotten their password has no portal session, so a
-    // `PortalGuard` above this route would bounce the only people who need it.
-    #[route("/portal/forgot-password")]
-    PortalForgotPassword {},
-
-    // MAPPS-395: everything below needs a portal session. Without the guard a
-    // signed-out visitor (or an agent, whose bearer is the wrong token class)
-    // renders the page and collects a 401 from every fetch.
-    #[layout(PortalGuard)]
-    #[route("/portal")]
-    PortalHome {},
-
-    #[route("/portal/tickets")]
-    PortalTicketList {},
-
-    #[route("/portal/tickets/new")]
-    PortalTicketNew {},
-
-    #[route("/portal/tickets/:id")]
-    PortalTicketDetail { id: String },
-
-    #[route("/portal/quotes")]
-    PortalQuoteList {},
-
-    #[route("/portal/quotes/:id")]
-    PortalQuoteDetail { id: String },
-
-    #[route("/portal/invoices")]
-    PortalInvoiceList {},
-
-    #[route("/portal/invoices/:id")]
-    PortalInvoiceDetail { id: String },
-
-    #[route("/portal/kb")]
-    PortalKB {},
-
-    // End of PortalGuard scope.
+    // mokosh-contact-login: the whole /portal/* customer-portal route
+    // tree retired on this branch (prompt 001). The contact plane
+    // lands under /portal/{slug}/* in prompt 005 with a different
+    // shape - random slug per Company, no PortalGuard layout, same
+    // mokosh workspace routes with capability gating.
     #[end_layout]
 
     // Catch-all 404
@@ -794,6 +1079,11 @@ fn HubRedirect(target: String, label: &'static str) -> Element {
 
 #[component]
 fn Home() -> Element {
+    // mokosh-contact-login: the on_portal_host branch retired with the
+    // customer-portal route family (prompt 001). Home renders the
+    // agent-side marketing page unconditionally now. Contact plane
+    // lands under /portal/{slug}/login in prompt 005 (a separate,
+    // routed page, not a host-branch on Home).
     rsx! { home::HomePage {} }
 }
 
@@ -807,8 +1097,49 @@ fn Home() -> Element {
 /// hits a protected route. The pre-cutover behaviour (HubRedirect to bunyip's
 /// `/login` directly) skipped the OIDC handshake entirely, which is why the
 /// user landed on bunyip's dashboard with no way back to msp.
+// MAPPS-520: legacy-URL redirect stubs. Post-unification the only
+// public login URL is `/login`; the two previous URLs (`/client/login`
+// and `/platform/login`) render a tiny redirect component so bookmarks
+// from before the unification land on the new URL without a 404. Kept
+// separate from the unified `Login` route wrapper below so a
+// bookmarked visitor sees a moved-page hint rather than the
+// unification landing silently. Public (no AuthGuard).
+#[component]
+fn ClientLoginLegacy() -> Element {
+    let nav = use_navigator();
+    use_hook(move || {
+        nav.replace(Route::Login {});
+    });
+    rsx! {
+        div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
+            "Sign-in has moved to /login. Redirecting…"
+        }
+    }
+}
+
+#[component]
+fn PlatformLoginLegacy() -> Element {
+    let nav = use_navigator();
+    use_hook(move || {
+        nav.replace(Route::Login {});
+    });
+    rsx! {
+        div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
+            "Sign-in has moved to /login. Redirecting…"
+        }
+    }
+}
+
 #[component]
 fn Login() -> Element {
+    let _nav = use_navigator();
+    // MAPPS-554: on a tenant subdomain the mokosh-workspace login is
+    // NOT reachable. Portal admins have no users row (post-554
+    // provisioning creates a contacts row only), so `StandaloneLogin`
+    // mokosh-contact-login: PortalLogin redirect retired with the
+    // /portal/* route family (prompt 001). Contact login lands under
+    // /portal/{slug}/login in prompt 005.
+
     // MAPPS-368: no OIDC issuer configured -> present the standalone
     // username/password form instead of the bunyip redirect. `is_standalone`
     // is stable for the session (config is memoized), so the effect below is
@@ -840,14 +1171,58 @@ fn AuthCallback() -> Element {
     rsx! { auth_callback::AuthCallbackPage {} }
 }
 
+// MAPPS-497 item 6: route wrappers so the standalone login's
+// picker + create-org steps have their own URLs (better back-button
+// + deep-link behavior than the previous inline shape).
+#[component]
+fn PickTenant() -> Element {
+    rsx! { crate::pages::pick_tenant::PickTenantPage {} }
+}
+
+#[component]
+fn CreateOrg() -> Element {
+    rsx! { crate::pages::create_org::CreateOrgPage {} }
+}
+
 #[component]
 fn ForgotPassword() -> Element {
+    // MAPPS-510: standalone deploys have no bunyip hub to redirect to;
+    // render the local form and POST to mokosh-server directly.
+    if crate::modules::oidc::is_standalone() {
+        return rsx! { crate::pages::forgot_password::StandaloneForgotPassword {} };
+    }
     rsx! { HubRedirect { target: "/forgot-password".to_string(), label: "password reset" } }
 }
 
 #[component]
 fn ResetPassword(token: String) -> Element {
+    // MAPPS-510: standalone deploys own the reset flow locally (the
+    // token was minted by mokosh-server's `AuthService::reset_password`
+    // path, and no bunyip is running to redeem it).
+    if crate::modules::oidc::is_standalone() {
+        return rsx! { crate::pages::reset_password::StandaloneResetPassword { token } };
+    }
     rsx! { HubRedirect { target: format!("/reset-password/{token}"), label: "password reset" } }
+}
+
+// MAPPS-552: first-time password setup for a fresh client-admin.
+// Landing page for the welcome-email link. Post MAPPS-551 the setup
+// token redeems through the same `POST /auth/reset-password` handler
+// as forgot-password, so the URL split is UI-only: a distinct page
+// with copy that names the specific client portal ("Set your password
+// for [Client Name]"), instead of the confusing "Reset password" the
+// welcome recipient used to see.
+#[component]
+fn SetPassword(token: String) -> Element {
+    // Standalone deploys own the setup flow locally, same posture as
+    // ResetPassword above. HubRedirect for bunyip-configured deploys
+    // keeps the token in the URL so bunyip's own set-password surface
+    // (when one exists) can pick it up; today it falls back to the
+    // same /reset-password shape until a hub-side companion lands.
+    if crate::modules::oidc::is_standalone() {
+        return rsx! { crate::pages::set_password::SetPasswordPage { token } };
+    }
+    rsx! { HubRedirect { target: format!("/set-password/{token}"), label: "password setup" } }
 }
 
 #[component]
@@ -1052,6 +1427,19 @@ fn CompanyEdit(id: String) -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             contacts::CompanyEditPage { id }
+        }
+    }
+}
+
+// MAPPS-590 (mokosh-contact-login prompt 012): thin wrapper so the
+// `Routable` derive resolves `Route::CompanyRoleEdit { company_id, id }`
+// to the CompanyRoleEditPage component. Two positional path params
+// (company_id + id) are forwarded verbatim.
+#[component]
+fn CompanyRoleEdit(company_id: String, id: String) -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            company_role_edit::CompanyRoleEditPage { company_id, id }
         }
     }
 }
@@ -1443,6 +1831,28 @@ fn SettingsHome() -> Element {
     }
 }
 
+/// MAPPS-620 (mokosh-branding prompt 004): wire the contact-plane
+/// portal branding editor into the AppShell-scoped router. Page owns
+/// its own capability gate + load state.
+#[component]
+fn ContactPortalBranding() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::contact_portal::portal_branding::ContactPortalBrandingPage {}
+        }
+    }
+}
+
+/// MAPPS-622: staff-side tenant branding editor.
+#[component]
+fn SettingsBranding() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_branding::SettingsBrandingPage {}
+        }
+    }
+}
+
 // MAPPS-258 per-group landing pages.
 #[component]
 fn SettingsGroupServiceTypes() -> Element {
@@ -1642,6 +2052,27 @@ fn SettingsOrganization() -> Element {
     }
 }
 
+// mokosh-contact-login prompt 007: Settings > Contact Roles list +
+// edit. Two wrappers so the routing derive sees the correct component
+// names for `/settings/contact-roles` and `/settings/contact-roles/:id`.
+#[component]
+fn ContactRolesList() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings_contact_roles::ContactRolesListPage {}
+        }
+    }
+}
+
+#[component]
+fn ContactRoleEdit(id: String) -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings_contact_roles::ContactRoleEditPage { id }
+        }
+    }
+}
+
 // MAPPS-172 ticket lookup editors.
 #[component]
 fn SettingsTicketStatuses() -> Element {
@@ -1762,92 +2193,118 @@ fn SlaManagement() -> Element {
 }
 
 #[component]
-fn Team() -> Element {
+fn Invitations() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
-            team::TeamPage {}
+            invitations::InvitationsPage {}
+        }
+    }
+}
+
+/// PMS-791 phase 2: legacy bookmarks for `/admin/team` land here and
+/// bounce to the new `/admin/invitations` route. Delete after the
+/// release after this one; the redirect is only there so a customer with
+/// a saved link does not hit a 404 the day this ships.
+#[component]
+fn TeamLegacyRedirect() -> Element {
+    #[cfg(feature = "web")]
+    {
+        let nav = use_navigator();
+        nav.replace(Route::Invitations {});
+    }
+    rsx! {
+        div { class: "max-w-7xl mx-auto min-h-screen flex items-center justify-center text-sm text-muted",
+            "Redirecting to Invitations…"
         }
     }
 }
 
 #[cfg(feature = "multi-tenant")]
 #[component]
-fn TenantManagement() -> Element {
+fn Teams() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
-            admin::TenantManagementPage {}
+            teams::TeamsPage {}
         }
     }
 }
 
+// mokosh-contact-login: TenantManagement wrapper retired with the
+// Clients tab (prompt 001). admin::TenantManagementPage stays in the
+// admin.rs file as dead code for a follow-up cleanup.
+
+// mokosh-contact-login: all pre-pivot Portal* route wrapper components
+// retired with the customer-portal /portal/* routes (prompt 001). The
+// contact-plane replacements below land per prompt 005 under a new
+// route family (`ContactLogin` etc.) with no PortalGuard layout.
+
+// MAPPS-589 (prompt 011): the two new public login routes.
+//
+// - `ContactGenericLogin` at `/portal/login` renders the three-field
+//   Portal ID + email + password form.
+// - `ContactHandleLogin` at `/portal/:handle/login` collapses the
+//   legacy `/portal/:slug/login` and the new
+//   `/portal/:portal_id/login` into ONE route so we do not ship two
+//   `/portal/:X/login` shapes (Dioxus would not be able to
+//   deterministically pick between them). The wrapper inspects the
+//   `handle` at render time: a 9-digit numeric handle mounts the
+//   `ContactLoginByPortalIdPage`; anything else falls through to the
+//   legacy `ContactLoginPage`, which itself fires the slug ->
+//   portal_id resolve-and-redirect on mount (see
+//   `src/pages/contact_portal/login.rs`). Live invitation emails
+//   built against a slug URL continue to work through this path.
 #[component]
-fn PortalHome() -> Element {
-    rsx! { portal::PortalHomePage {} }
+fn ContactGenericLogin() -> Element {
+    rsx! { contact_portal::generic_login::ContactGenericLoginPage {} }
 }
 
 #[component]
-fn PortalLogin() -> Element {
-    rsx! { portal_login::PortalLoginPage {} }
+fn ContactHandleLogin(handle: String) -> Element {
+    if contact_portal::generic_login::handle_is_portal_id_shape(&handle) {
+        rsx! { contact_portal::portal_id_login::ContactLoginByPortalIdPage { portal_id: handle } }
+    } else {
+        rsx! { contact_portal::login::ContactLoginPage { slug: handle } }
+    }
 }
 
 #[component]
-fn PortalSetPassword() -> Element {
-    rsx! { portal_set_password::PortalSetPasswordPage {} }
+fn ContactSetPassword(slug: String, token: String) -> Element {
+    rsx! { contact_portal::set_password::ContactSetPasswordPage { slug, token } }
 }
 
 #[component]
-fn PortalForgotPassword() -> Element {
-    rsx! { portal_forgot_password::PortalForgotPasswordPage {} }
+fn ContactForgotPassword(slug: String) -> Element {
+    rsx! { contact_portal::forgot_password::ContactForgotPasswordPage { slug } }
 }
 
 #[component]
-fn PortalResetPassword() -> Element {
-    rsx! { portal_reset_password::PortalResetPasswordPage {} }
+fn ContactResetPassword(slug: String, token: String) -> Element {
+    rsx! { contact_portal::reset_password::ContactResetPasswordPage { slug, token } }
 }
+
+// MAPPS-572 (prompt 010): the slug-less magic-link finder + the
+// picker/redemption landing page. Both public (no AuthGuard). The
+// finder's `?:email` query segment is optional; when absent the router
+// hands the wrapper an empty string, which the page treats as "no
+// pre-fill".
+#[component]
+fn ContactMagicLinkLogin(email: String) -> Element {
+    rsx! { contact_portal::magic_link_login::ContactMagicLinkLoginPage { email } }
+}
+
+#[component]
+fn ContactPicker(token: String) -> Element {
+    rsx! { contact_portal::picker::ContactPickerPage { token } }
+}
+
+// mokosh-contact-login: PortalForgotPassword / PortalResetPassword
+// wrappers retired with the customer-portal route family (prompt 001).
+// Contact-plane replacements live under ContactForgotPassword /
+// ContactResetPassword above.
 
 #[component]
 fn RequestForm(token: String) -> Element {
     rsx! { request_form::RequestFormPage { token } }
-}
-
-#[component]
-fn PortalTicketList() -> Element {
-    rsx! { portal::PortalTicketListPage {} }
-}
-
-#[component]
-fn PortalTicketNew() -> Element {
-    rsx! { portal::PortalTicketNewPage {} }
-}
-
-#[component]
-fn PortalTicketDetail(id: String) -> Element {
-    rsx! { portal::PortalTicketDetailPage { id } }
-}
-
-#[component]
-fn PortalQuoteList() -> Element {
-    rsx! { portal::PortalQuoteListPage {} }
-}
-
-#[component]
-fn PortalQuoteDetail(id: String) -> Element {
-    rsx! { portal::PortalQuoteDetailPage { id } }
-}
-
-#[component]
-fn PortalInvoiceList() -> Element {
-    rsx! { portal::PortalInvoiceListPage {} }
-}
-
-#[component]
-fn PortalInvoiceDetail(id: String) -> Element {
-    rsx! { portal::PortalInvoiceDetailPage { id } }
-}
-
-#[component]
-fn PortalKB() -> Element {
-    rsx! { portal::PortalKBPage {} }
 }
 
 #[component]
@@ -1872,31 +2329,15 @@ mod emailed_link_routes {
     /// (server emitter, path as the customer receives it). Path parameters
     /// carry a representative value; the query string is dropped because the
     /// router matches on the path.
+    // mokosh-contact-login: /portal/set-password + /portal/quotes/{id}
+    // links were emitted by retired portal + quote-sign-off flows
+    // (prompt 001). Contact-plane replacement lands in prompt 005.
     const EMAILED_LINKS: &[(&str, &str)] = &[
-        // src/modules/contacts/service.rs: portal-access grant setup link.
-        ("contacts::send_setup_email", "/portal/set-password"),
-        // src/modules/portal/service.rs: portal password-reset link (PMS-820).
-        // The page behind it is PMS-832 / MAPPS-538; before that this emitter
-        // was the one deliberate omission from this list, because listing a
-        // link with no route behind it fails the very test the list feeds.
-        ("portal::send_reset_email", "/portal/reset-password"),
         // src/modules/forms/request_links.rs: client request-form link
         // (PMS-730). The token is `{token_id}.{secret}`.
         (
             "forms::issue_request_link",
             "/request-forms/2f1c2f1e-0000-4000-8000-00000000abcd.Zt4kQ1p9Zt4kQ1p9Zt4kQ1p9Zt4kQ1p9",
-        ),
-        // src/modules/quotes/service.rs: client quote sign-off link.
-        (
-            "quotes::send_quote_ready",
-            "/portal/quotes/2f1c2f1e-0000-4000-8000-00000000abcd",
-        ),
-        // src/modules/billing/service.rs: invoice "Pay Now" link, sent to the
-        // billing contact on the send transition (PMS-711). The page it lands
-        // on got its Pay control in MAPPS-523.
-        (
-            "billing::notify_invoice_pay_now",
-            "/portal/invoices/2f1c2f1e-0000-4000-8000-00000000abcd",
         ),
         // src/modules/auth/service.rs: password reset + staff welcome links.
         (
@@ -1921,56 +2362,294 @@ mod emailed_link_routes {
     }
 }
 
-/// MAPPS-395: the portal sign-in route exists and is public. `/portal/login`
-/// is where `PortalGuard` sends a visitor with no portal session, so a typo in
-/// the route (or a stray `#[layout(PortalGuard)]` above it) would bounce the
-/// redirect back into itself.
+// mokosh-contact-login: portal_login_route test retired with the
+// /portal/* route family (prompt 001). Contact-plane replacements
+// below (prompt 005) pin the four new route shapes end-to-end so a
+// magic link built server-side round-trips through the router without
+// stripping the slug or the token.
 #[cfg(test)]
-mod portal_login_route {
+mod contact_route_gate {
+    use super::pathname_is_contact_forbidden as f;
+
+    #[test]
+    fn crm_paths_are_blocked() {
+        for p in [
+            "/companies",
+            "/companies/",
+            "/companies/new",
+            "/companies/abcd-1234",
+            "/companies/abcd-1234/edit",
+            "/contacts",
+            "/contacts/new",
+            "/contacts/abcd/edit",
+        ] {
+            assert!(f(p), "{p} should be forbidden");
+        }
+    }
+
+    #[test]
+    fn scheduling_and_ops_are_blocked() {
+        for p in [
+            "/calendar",
+            "/dispatch",
+            "/scheduling-templates",
+            "/rate-cards",
+            "/rate-cards/new",
+            "/payments",
+            "/reports",
+            "/reports/timesheet",
+            "/time",
+            "/time/new",
+            "/timesheets",
+            "/timesheets/approvals",
+        ] {
+            assert!(f(p), "{p} should be forbidden");
+        }
+    }
+
+    #[test]
+    fn admin_and_platform_are_blocked() {
+        for p in [
+            "/admin",
+            "/admin/audit",
+            "/admin/team",
+            "/dashboards",
+            "/dashboards/x/view",
+            "/dashboard/tv",
+            "/big/tickets",
+        ] {
+            assert!(f(p), "{p} should be forbidden");
+        }
+    }
+
+    #[test]
+    fn settings_hub_and_contact_surfaces_pass() {
+        for p in [
+            "/dashboard",
+            "/tickets",
+            "/tickets/new",
+            "/tickets/xyz",
+            "/invoices",
+            "/invoices/xyz",
+            "/quotes",
+            "/contracts",
+            "/assets",
+            "/assets/xyz",
+            "/projects",
+            "/kb",
+            "/kb/articles",
+            "/kb/articles/xyz",
+            "/settings",
+            "/settings/portal-branding",
+            "/settings/appearance",
+            "/profile",
+            "/system-status",
+            "/notifications",
+        ] {
+            assert!(!f(p), "{p} should be allowed for contacts");
+        }
+    }
+
+    #[test]
+    fn settings_staff_subroutes_are_blocked() {
+        for p in [
+            "/settings/branding",
+            "/settings/work-types",
+            "/settings/sla",
+            "/settings/scheduling",
+            "/settings/rate-cards",
+            "/settings/tax-rates",
+            "/settings/import-export",
+            "/settings/contact-roles",
+            "/settings/contact-roles/abc",
+            "/settings/group/service-types",
+        ] {
+            assert!(f(p), "{p} should be forbidden");
+        }
+    }
+
+    #[test]
+    fn kb_edit_is_blocked_but_read_is_open() {
+        assert!(f("/kb/articles/new"));
+        assert!(f("/kb/articles/abc/edit"));
+        assert!(!f("/kb/articles/abc"));
+        assert!(!f("/kb"));
+    }
+
+    #[test]
+    fn timesheets_does_not_leak_via_time_prefix() {
+        // Naive prefix matching would fold "/timesheets" into the
+        // "/time" entry; the entries are distinct on purpose.
+        assert!(f("/timesheets"));
+        assert!(f("/time"));
+        assert!(f("/time/new"));
+    }
+
+    #[test]
+    fn query_strings_and_trailing_slashes_are_normalised() {
+        assert!(f("/companies?filter=abc"));
+        assert!(f("/companies/"));
+        assert!(!f("/settings?tab=personalization"));
+    }
+}
+
+#[cfg(test)]
+mod contact_portal_routes {
     use super::Route;
     use std::str::FromStr;
 
+    // MAPPS-589 (prompt 011): the legacy slug route
+    // `/portal/:slug/login` and the new portal_id route
+    // `/portal/:portal_id/login` share the same `/portal/:X/login`
+    // shape and are collapsed into ONE `ContactHandleLogin` route.
+    // Both legacy Crockford-slug URLs and 9-digit-numeric Portal ID
+    // URLs resolve here; the wrapper (`src/lib.rs
+    // ContactHandleLogin`) dispatches at render time based on the
+    // handle shape.
     #[test]
-    fn portal_login_resolves_to_its_own_route() {
-        let route = Route::from_str("/portal/login").expect("/portal/login parses");
-        assert!(
-            matches!(route, Route::PortalLogin {}),
-            "/portal/login must resolve to PortalLogin, got {route:?}"
-        );
+    fn login_with_legacy_slug_resolves_to_handle_route() {
+        let route =
+            Route::from_str("/portal/K3F9M7N2Q8XR5J4W/login").expect("legacy slug login parses");
+        match route {
+            Route::ContactHandleLogin { handle } => {
+                assert_eq!(handle, "K3F9M7N2Q8XR5J4W");
+            }
+            other => panic!("expected ContactHandleLogin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn login_with_portal_id_resolves_to_handle_route() {
+        let route = Route::from_str("/portal/555556666/login").expect("portal-id login parses");
+        match route {
+            Route::ContactHandleLogin { handle } => {
+                assert_eq!(handle, "555556666");
+            }
+            other => panic!("expected ContactHandleLogin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn generic_login_resolves() {
+        let route = Route::from_str("/portal/login").expect("generic login parses");
+        match route {
+            Route::ContactGenericLogin {} => {}
+            other => panic!("expected ContactGenericLogin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_password_carries_slug_and_token() {
+        let route =
+            Route::from_str("/portal/abc/set-password?token=xyz").expect("set-password parses");
+        match route {
+            Route::ContactSetPassword { slug, token } => {
+                assert_eq!(slug, "abc");
+                assert_eq!(token, "xyz");
+            }
+            other => panic!("expected ContactSetPassword, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn forgot_password_resolves_with_slug() {
+        let route = Route::from_str("/portal/abc/forgot-password").expect("forgot-password parses");
+        match route {
+            Route::ContactForgotPassword { slug } => assert_eq!(slug, "abc"),
+            other => panic!("expected ContactForgotPassword, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reset_password_carries_slug_and_token() {
+        let route =
+            Route::from_str("/portal/abc/reset-password?token=xyz").expect("reset-password parses");
+        match route {
+            Route::ContactResetPassword { slug, token } => {
+                assert_eq!(slug, "abc");
+                assert_eq!(token, "xyz");
+            }
+            other => panic!("expected ContactResetPassword, got {other:?}"),
+        }
+    }
+
+    // MAPPS-572 (prompt 010): pin the two slug-less magic-link routes.
+    // Same shape as the four routes above (query-segment `?:token` /
+    // `?:email` per MAPPS-560) so the emailed magic link a server
+    // builds under a bare `/portal/pick?token=...` URL round-trips
+    // through the router without stripping the token.
+    //
+    // MAPPS-589 (prompt 011): the finder path moved from
+    // `/portal/login` to `/portal/find?:email` so the shorter path
+    // can host the primary three-field password page. The picker's
+    // token-carrying URL is unchanged.
+    #[test]
+    fn magic_link_login_resolves() {
+        let route = Route::from_str("/portal/find").expect("magic-link login parses");
+        match route {
+            Route::ContactMagicLinkLogin { email } => assert_eq!(email, ""),
+            other => panic!("expected ContactMagicLinkLogin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn magic_link_login_carries_email() {
+        let route = Route::from_str("/portal/find?email=alice%40example.com")
+            .expect("magic-link login with email parses");
+        match route {
+            Route::ContactMagicLinkLogin { email } => {
+                assert_eq!(email, "alice@example.com");
+            }
+            other => panic!("expected ContactMagicLinkLogin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn picker_carries_token() {
+        let route = Route::from_str("/portal/pick?token=xyz").expect("picker parses");
+        match route {
+            Route::ContactPicker { token } => assert_eq!(token, "xyz"),
+            other => panic!("expected ContactPicker, got {other:?}"),
+        }
     }
 
     /// PMS-832 / MAPPS-538: the password-reset pair resolves, and resolves to
-    /// the PORTAL pages.
+    /// the PORTAL (now contact-plane) pages, NOT the platform ones.
     ///
     /// The emailed link landing on the 404 catch-all is the defect this work
-    /// fixes, and `emailed_link_routes` above now covers that. What it cannot
-    /// see is the other half: `/reset-password/{token}` is the PLATFORM page,
-    /// which posts to `/api/v1/auth/reset-password` and resolves the token
-    /// against `users`. A portal customer reaching that page resets a staff
-    /// login, which is the PMS-820 defect exactly. These paths differ by one
-    /// prefix, so the two are asserted apart rather than assumed.
+    /// fixes. What the two individual-shape tests above cannot see is the
+    /// other half: `/reset-password/{token}` is the PLATFORM page, which
+    /// posts to `/api/v1/auth/reset-password` and resolves the token against
+    /// `users`. A portal customer reaching that page resets a staff login,
+    /// which is the PMS-820 defect exactly. These paths differ by one prefix,
+    /// so the two are asserted apart rather than assumed.
+    ///
+    /// mokosh-contact-login (prompt 001): the emailed portal reset link is
+    /// slug-scoped now (`/portal/:slug/reset-password?token=...`), so the
+    /// URLs asserted here follow that shape. The platform-vs-portal
+    /// separation is what still matters.
     #[test]
     fn the_portal_reset_pages_resolve_and_are_not_the_platform_one() {
-        let reset =
-            Route::from_str("/portal/reset-password").expect("/portal/reset-password parses");
+        let reset = Route::from_str("/portal/acme/reset-password?token=Zt4kQ1p9Zt4kQ1p9Zt4k")
+            .expect("/portal/:slug/reset-password parses");
         assert!(
-            matches!(reset, Route::PortalResetPassword {}),
-            "the emailed portal link must land on the portal page, got {reset:?}"
+            matches!(reset, Route::ContactResetPassword { .. }),
+            "the emailed portal link must land on the contact-plane reset page, got {reset:?}"
         );
 
-        let forgot =
-            Route::from_str("/portal/forgot-password").expect("/portal/forgot-password parses");
+        let forgot = Route::from_str("/portal/acme/forgot-password")
+            .expect("/portal/:slug/forgot-password parses");
         assert!(
-            matches!(forgot, Route::PortalForgotPassword {}),
-            "/portal/forgot-password must resolve to PortalForgotPassword, got {forgot:?}"
+            matches!(forgot, Route::ContactForgotPassword { .. }),
+            "/portal/:slug/forgot-password must resolve to ContactForgotPassword, got {forgot:?}"
         );
 
         // The platform page is still its own route, one prefix away.
         let platform = Route::from_str("/reset-password/Zt4kQ1p9Zt4kQ1p9Zt4kQ1p9Zt4kQ1p9")
             .expect("the platform reset route parses");
         assert!(
-            !matches!(platform, Route::PortalResetPassword {}),
-            "the platform reset link must not resolve to the portal page: it posts to \
+            !matches!(platform, Route::ContactResetPassword { .. }),
+            "the platform reset link must not resolve to the contact-plane page: it posts to \
              /api/v1/auth/reset-password, which resolves the token against `users`"
         );
     }
@@ -1992,6 +2671,12 @@ mod admin_route_role_gates {
 
     /// (route path, page source path, page source). One entry per `/admin/*`
     /// route in the `Route` enum, `#[cfg]`-gated ones included.
+    ///
+    /// `mokosh-contact-login`: `/admin/tenants` retired with the Clients tab
+    /// (prompt 001), so its `src/pages/admin.rs` entry is gone. `/admin/team`
+    /// still routes here as a legacy redirect to `/admin/invitations`, so it
+    /// points at `invitations.rs` (the target of the redirect and where the
+    /// role gate actually lives).
     const ADMIN_ROUTE_PAGES: &[(&str, &str, &str)] = &[
         (
             "/admin/audit",
@@ -2009,14 +2694,19 @@ mod admin_route_role_gates {
             include_str!("pages/sla.rs"),
         ),
         (
-            "/admin/team",
-            "src/pages/team.rs",
-            include_str!("pages/team.rs"),
+            "/admin/invitations",
+            "src/pages/invitations.rs",
+            include_str!("pages/invitations.rs"),
         ),
         (
-            "/admin/tenants",
-            "src/pages/admin.rs",
-            include_str!("pages/admin.rs"),
+            "/admin/team",
+            "src/pages/invitations.rs",
+            include_str!("pages/invitations.rs"),
+        ),
+        (
+            "/admin/teams",
+            "src/pages/teams.rs",
+            include_str!("pages/teams.rs"),
         ),
     ];
 

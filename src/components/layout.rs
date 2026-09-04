@@ -4,7 +4,31 @@ use dioxus::prelude::*;
 
 use super::global_search::GlobalSearch;
 use super::icons::*;
+use super::tenant_switcher::TenantSwitcher;
 use super::theme_picker::ThemePickerButton;
+/// MAPPS-518: the sessionStorage key where `/platform/login` stashes
+/// the platform-admin bearer (mirrors
+/// `pages::platform_login::PLATFORM_TOKEN_KEY`).
+#[cfg(target_arch = "wasm32")]
+const PLATFORM_TOKEN_KEY: &str = "mokosh:platform_token";
+
+/// MAPPS-518: is the platform-admin bearer present in sessionStorage?
+/// Used to gate the Tenants nav item (and any other UI that requires
+/// a platform-admin session, distinct from a tenant admin session).
+fn platform_bearer_present() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        if let Some(win) = web_sys::window() {
+            if let Ok(Some(store)) = win.session_storage() {
+                if let Ok(Some(token)) = store.get_item(PLATFORM_TOKEN_KEY) {
+                    return !token.trim().is_empty();
+                }
+            }
+        }
+    }
+    false
+}
+
 use crate::modules::theme::SectionColor;
 use crate::Route;
 
@@ -68,6 +92,47 @@ pub fn use_page_title(title: impl Into<String>) {
 #[component]
 pub fn AppShell() -> Element {
     let mut sidebar_open = use_signal(|| false);
+
+    // MAPPS-635 D8: staff users signed into their own MSP tenant get
+    // the tenant's brand favicon + wordmark on the admin console
+    // too, matching contact-plane painting. Fetch `/tenants/current`
+    // ONCE per staff session mount and stuff the branding block
+    // into `EFFECTIVE_BRANDING`; `use_apply_brand` then paints the
+    // favicon + tab title + CSS custom properties from it.
+    //
+    // Runs only when a staff bearer is held AND no brand has been
+    // populated yet (contact-plane paths seed the signal from
+    // /contact/auth/me + refresh; the two never race in a real
+    // browser session because MAPPS-630 makes the planes mutually
+    // exclusive per origin).
+    #[cfg(feature = "web")]
+    use_effect(|| {
+        if crate::hooks::fetch::api::current_access_token().is_none() {
+            return;
+        }
+        // If the signal is already populated (e.g. by a prior tenant
+        // switch), skip; the switch handler is responsible for
+        // repainting.
+        if crate::hooks::branding::EFFECTIVE_BRANDING
+            .read()
+            .display_name
+            .is_some()
+        {
+            return;
+        }
+        spawn(async move {
+            #[derive(serde::Deserialize)]
+            struct TenantSnippet {
+                #[serde(default)]
+                branding: crate::hooks::branding::EffectiveBranding,
+            }
+            if let Ok(t) =
+                crate::hooks::fetch::api::get_authed::<TenantSnippet>("/tenants/current").await
+            {
+                crate::hooks::branding::set_effective_branding(t.branding);
+            }
+        });
+    });
 
     rsx! {
         div { class: "h-screen flex flex-col bg-app overflow-hidden",
@@ -280,6 +345,93 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
         .as_ref()
         .map(|u| u.role.can_manage_users())
         .unwrap_or(false);
+    // MAPPS-447 (revised for MAPPS-518): the Tenants nav opens the
+    // platform-admin console. Post MAPPS-518 the server gates
+    // `POST /api/v1/tenants` (and the other tenant-management
+    // endpoints) on `RequirePlatformAdmin` (a `typ="platform"` JWT
+    // from /platform/login), NOT on `users.role = 'super_admin'`.
+    // Gate the nav item on the presence of the platform bearer in
+    // sessionStorage so the item only appears once the operator has
+    // signed in on the platform plane.
+    let is_platform_admin = platform_bearer_present();
+    // PMS-791 phase 2 / MAPPS-463: Teams nav is org-tenants-only per Q4
+    // default. Personal tenants (`kind='personal'`, single owner) hide
+    // the item entirely; a personal tenant hitting /admin/teams directly
+    // sees a ContentUnavailable page.
+    let is_org_tenant = auth.read().is_org_tenant();
+
+    // mokosh-contact-login prompt 006: capability gates for the
+    // sidebar. Each `use_capability` returns true unconditionally
+    // for a staff or platform-admin session, so the pre-pivot nav
+    // shape for those personas is preserved; only a contact
+    // session gets a trimmed sidebar based on their `caps` claim.
+    // `STAFF_ONLY` is the client-side sentinel for entries no
+    // contact ever sees (see `hooks::capabilities`).
+    let show_dashboard = crate::hooks::capabilities::use_any_capability(&[
+        "tickets:read",
+        "invoices:read",
+        "quotes:read",
+    ]);
+    let show_tickets = crate::hooks::capabilities::use_capability("tickets:read");
+    let show_time_entries =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    let show_timesheets =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    let show_projects = crate::hooks::capabilities::use_capability("projects:read");
+    let show_companies =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    let show_contacts =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    let show_calendar =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    let show_dispatch =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    let show_scheduling_templates =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    let show_contracts = crate::hooks::capabilities::use_capability("contracts:read");
+    let show_quotes = crate::hooks::capabilities::use_capability("quotes:read");
+    let show_rate_cards =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    let show_invoices = crate::hooks::capabilities::use_capability("invoices:read");
+    let show_payments =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    let show_assets = crate::hooks::capabilities::use_capability("assets:read");
+    let show_kb = crate::hooks::capabilities::use_capability("kb:read");
+    let show_reports =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    // MAPPS-620: contact-plane sidebar entry for the portal branding
+    // editor. `use_capability` staff-bypasses to true, but staff have
+    // their own edit surface (Settings > Portal Branding for the
+    // tenant defaults, Company detail > Portal branding for a
+    // specific Company) and hitting the contact-only endpoint would
+    // fail closed for them, so combine the cap check with a
+    // has-contact-session guard so this entry only surfaces for a
+    // portal admin.
+    let branding_link_visible = {
+        #[cfg(feature = "web")]
+        {
+            crate::hooks::fetch::api::has_contact_session()
+                && crate::hooks::capabilities::use_capability("settings:manage_company_branding")
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            false
+        }
+    };
+    // Any Service Desk / Projects / CRM / Operations section header
+    // vanishes when every item under it is gated out for a contact.
+    // Precomputed so the `if` right around the `NavSection` renders
+    // no header for a contact whose caps are empty for that group.
+    let show_service_desk_section =
+        show_tickets || show_time_entries || show_timesheets || can_manage;
+    let show_projects_section = show_projects;
+    let show_crm_section = show_companies || show_contacts;
+    let show_operations_section = show_calendar || show_dispatch || show_scheduling_templates;
+    let show_billing_section =
+        show_contracts || show_quotes || show_rate_cards || show_invoices || show_payments;
+    let show_assets_section = show_assets;
+    let show_knowledge_section = show_kb;
+    let show_analytics_section = show_reports;
 
     // MAPPS-638: the Credit Notes entry matches the server's finance gate
     // (super_admin / admin / finance). Its Invoices and Payments siblings are
@@ -339,7 +491,24 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                         }
                     }
                 },
-                NavItem { to: Route::Dashboard {}, icon: rsx!(HomeIcon {}), label: "Dashboard", collapsed }
+                if show_dashboard {
+                    NavItem { to: Route::Dashboard {}, icon: rsx!(HomeIcon {}), label: "Dashboard", collapsed }
+                }
+                // MAPPS-620: direct sidebar entry for the contact-plane
+                // portal branding editor. Rendered ABOVE the
+                // `show_full_nav` gate so it stays reachable during
+                // a network wobble, and OUTSIDE the admin-only Admin
+                // section (contacts never see that block). The
+                // `branding_link_visible` predicate combines the
+                // `settings:manage_company_branding` capability with
+                // `has_contact_session()` so staff (whose
+                // `use_capability` staff-bypasses to true) do NOT
+                // see the entry - they have their own Settings >
+                // Portal Branding tile for tenant defaults + the
+                // Company detail card for per-Company overrides.
+                if branding_link_visible {
+                    NavItem { to: Route::ContactPortalBranding {}, icon: rsx!(PhotoIcon {}), label: "Portal Branding", collapsed }
+                }
 
                 // MAPPS-453: surface the docs subdomain in the main menu, not
                 // buried under Applications. External link (new tab), shown
@@ -354,66 +523,158 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
             // marks the server reachable again.
             if show_full_nav {
 
-            NavSection { title: "Service Desk", rail_collapsed: collapsed, color: SectionColor::Blue,
-                NavItem { to: Route::TicketList {}, icon: rsx!(TicketIcon {}), label: "Tickets", collapsed }
-                NavItem { to: Route::TimeEntryList {}, icon: rsx!(ClockIcon {}), label: "Time Entries", collapsed }
-                NavItem { to: Route::Timesheets {}, icon: rsx!(TableCellsIcon {}), label: "Timesheets", collapsed }
-                if can_manage {
-                    NavItem { to: Route::TimesheetApprovals {}, icon: rsx!(DocumentCheckIcon {}), label: "Timesheet Approvals", collapsed }
-                }
-            }
-
-            NavSection { title: "Projects", rail_collapsed: collapsed, color: SectionColor::Indigo,
-                NavItem { to: Route::ProjectList {}, icon: rsx!(FolderIcon {}), label: "Projects", collapsed }
-            }
-
-            NavSection { title: "CRM", rail_collapsed: collapsed, color: SectionColor::Cyan,
-                NavItem { to: Route::CompanyList {}, icon: rsx!(BuildingIcon {}), label: "Companies", collapsed }
-                NavItem { to: Route::ContactList {}, icon: rsx!(UsersIcon {}), label: "Contacts", collapsed }
-            }
-
-            NavSection { title: "Operations", rail_collapsed: collapsed, color: SectionColor::Emerald,
-                NavItem { to: Route::Calendar {}, icon: rsx!(CalendarIcon {}), label: "Calendar", collapsed }
-                NavItem { to: Route::DispatchBoard {}, icon: rsx!(TruckIcon {}), label: "Dispatch", collapsed }
-                NavItem { to: Route::SchedulingTemplates {}, icon: rsx!(SwatchIcon {}), label: "Scheduling Templates", collapsed }
-            }
-
-            NavSection { title: "Contracts & Billing", rail_collapsed: collapsed, color: SectionColor::Amber,
-                NavItem { to: Route::ContractList {}, icon: rsx!(ScaleIcon {}), label: "Contracts", collapsed }
-                NavItem { to: Route::QuoteList {}, icon: rsx!(DocumentIcon {}), label: "Quotes", collapsed }
-                NavItem { to: Route::RateCardList {}, icon: rsx!(TagIcon {}), label: "Rate Cards", collapsed }
-                NavItem { to: Route::InvoiceList {}, icon: rsx!(CurrencyIcon {}), label: "Invoices", collapsed }
-                NavItem { to: Route::PaymentList {}, icon: rsx!(CreditCardIcon {}), label: "Payments", collapsed }
-                if has_finance {
-                    NavItem { to: Route::CreditNoteList {}, icon: rsx!(ReceiptRefundIcon {}), label: "Credit Notes", collapsed }
-                    NavItem { to: Route::Statement {}, icon: rsx!(DocumentTextIcon {}), label: "Statements", collapsed }
-                }
-            }
-
-            NavSection { title: "Assets", rail_collapsed: collapsed, color: SectionColor::Teal,
-                NavItem { to: Route::AssetList {}, icon: rsx!(ServerIcon {}), label: "Assets", collapsed }
-            }
-
-            NavSection { title: "Knowledge", rail_collapsed: collapsed, color: SectionColor::Fuchsia,
-                NavItem { to: Route::KBHome {}, icon: rsx!(BookIcon {}), label: "Knowledge Base", collapsed }
-            }
-
-            NavSection { title: "Analytics", rail_collapsed: collapsed, color: SectionColor::Rose,
-                NavItem { to: Route::Reports {}, icon: rsx!(ChartIcon {}), label: "Reports", collapsed }
-            }
-
-            if is_admin {
-                NavSection { title: "Admin", rail_collapsed: collapsed, color: SectionColor::Violet,
-                    // MAPPS-329: Team nav is hidden by default and only
-                    // renders when the operator sets
-                    // `MOKOSH_TEAM_ENABLED=true` (or `=1`) on the
-                    // mokosh-www container. `Route::Team`, the page, and
-                    // its API are intentionally left intact - typing
-                    // `/team` still works - so flipping the flag is a
-                    // zero-code unlock when the feature is ready.
-                    if crate::modules::runtime_config::flag_enabled("team_enabled") {
-                        NavItem { to: Route::Team {}, icon: rsx!(UserGroupIcon {}), label: "Team", collapsed }
+            if show_service_desk_section {
+                NavSection { title: "Service Desk", rail_collapsed: collapsed, color: SectionColor::Blue,
+                    if show_tickets {
+                        NavItem { to: Route::TicketList {}, icon: rsx!(TicketIcon {}), label: "Tickets", collapsed }
                     }
+                    if show_time_entries {
+                        NavItem { to: Route::TimeEntryList {}, icon: rsx!(ClockIcon {}), label: "Time Entries", collapsed }
+                    }
+                    if show_timesheets {
+                        NavItem { to: Route::Timesheets {}, icon: rsx!(TableCellsIcon {}), label: "Timesheets", collapsed }
+                    }
+                    if can_manage {
+                        NavItem { to: Route::TimesheetApprovals {}, icon: rsx!(DocumentCheckIcon {}), label: "Timesheet Approvals", collapsed }
+                    }
+                }
+            }
+
+            if show_projects_section {
+                NavSection { title: "Projects", rail_collapsed: collapsed, color: SectionColor::Indigo,
+                    if show_projects {
+                        NavItem { to: Route::ProjectList {}, icon: rsx!(FolderIcon {}), label: "Projects", collapsed }
+                    }
+                }
+            }
+
+            if show_crm_section {
+                NavSection { title: "CRM", rail_collapsed: collapsed, color: SectionColor::Cyan,
+                    if show_companies {
+                        NavItem { to: Route::CompanyList {}, icon: rsx!(BuildingIcon {}), label: "Companies", collapsed }
+                    }
+                    if show_contacts {
+                        NavItem { to: Route::ContactList {}, icon: rsx!(UsersIcon {}), label: "Contacts", collapsed }
+                    }
+                }
+            }
+
+            if show_operations_section {
+                NavSection { title: "Operations", rail_collapsed: collapsed, color: SectionColor::Emerald,
+                    if show_calendar {
+                        NavItem { to: Route::Calendar {}, icon: rsx!(CalendarIcon {}), label: "Calendar", collapsed }
+                    }
+                    if show_dispatch {
+                        NavItem { to: Route::DispatchBoard {}, icon: rsx!(TruckIcon {}), label: "Dispatch", collapsed }
+                    }
+                    if show_scheduling_templates {
+                        NavItem { to: Route::SchedulingTemplates {}, icon: rsx!(SwatchIcon {}), label: "Scheduling Templates", collapsed }
+                    }
+                }
+            }
+
+            if show_billing_section {
+                NavSection { title: "Contracts & Billing", rail_collapsed: collapsed, color: SectionColor::Amber,
+                    if show_contracts {
+                        NavItem { to: Route::ContractList {}, icon: rsx!(ScaleIcon {}), label: "Contracts", collapsed }
+                    }
+                    if show_quotes {
+                        NavItem { to: Route::QuoteList {}, icon: rsx!(DocumentIcon {}), label: "Quotes", collapsed }
+                    }
+                    if show_rate_cards {
+                        NavItem { to: Route::RateCardList {}, icon: rsx!(TagIcon {}), label: "Rate Cards", collapsed }
+                    }
+                    if show_invoices {
+                        NavItem { to: Route::InvoiceList {}, icon: rsx!(CurrencyIcon {}), label: "Invoices", collapsed }
+                    }
+                    if show_payments {
+                        NavItem { to: Route::PaymentList {}, icon: rsx!(CreditCardIcon {}), label: "Payments", collapsed }
+                    }
+                    // MAPPS-638: PMS-953 Credit Notes + PMS-954 Statements are
+                    // both finance-only reads, so gate them on the same
+                    // has_finance check the server enforces (super_admin /
+                    // admin / finance). Merged from origin/main; the
+                    // surrounding cap-driven `show_*` structure is the
+                    // contact-login-side layout.
+                    if has_finance {
+                        NavItem { to: Route::CreditNoteList {}, icon: rsx!(ReceiptRefundIcon {}), label: "Credit Notes", collapsed }
+                        NavItem { to: Route::Statement {}, icon: rsx!(DocumentTextIcon {}), label: "Statements", collapsed }
+                    }
+                }
+            }
+
+            if show_assets_section {
+                NavSection { title: "Assets", rail_collapsed: collapsed, color: SectionColor::Teal,
+                    if show_assets {
+                        NavItem { to: Route::AssetList {}, icon: rsx!(ServerIcon {}), label: "Assets", collapsed }
+                    }
+                }
+            }
+
+            if show_knowledge_section {
+                NavSection { title: "Knowledge", rail_collapsed: collapsed, color: SectionColor::Fuchsia,
+                    if show_kb {
+                        NavItem { to: Route::KBHome {}, icon: rsx!(BookIcon {}), label: "Knowledge Base", collapsed }
+                    }
+                }
+            }
+
+            if show_analytics_section {
+                NavSection { title: "Analytics", rail_collapsed: collapsed, color: SectionColor::Rose,
+                    if show_reports {
+                        NavItem { to: Route::Reports {}, icon: rsx!(ChartIcon {}), label: "Reports", collapsed }
+                    }
+                }
+            }
+
+            // MAPPS-520 walkthrough: the platform super-admin has its
+            // OWN nav section (Tenants) that renders whenever a
+            // mokosh-contact-login: the "Platform" sidebar section
+            // retired. Its sole child was `TenantsNavItem`, which the
+            // Clients-tab retirement earlier in this branch had
+            // already stubbed to a no-op (`rsx!{}`), leaving an empty
+            // "PLATFORM" section header rendering for a platform-
+            // admin visitor. The tenant management surface itself is
+            // gone with the Clients-tab retirement; a platform admin
+            // uses the Admin section widening on the block below
+            // (`is_admin || is_platform_admin`) to reach Teams /
+            // Invitations / Audit Log / Request Forms / SLA /
+            // Settings, which is the whole persona-scoped surface
+            // they still own.
+
+            // Tenant-scoped admin surface (Teams, Invitations, Audit
+            // Log, Request Forms, SLA, Settings). Renders when
+            // EITHER the signed-in `users` row carries an admin-ish
+            // role OR the caller holds a platform bearer.
+            //
+            // Pre-MAPPS-518 the mokosh super-admin was a
+            // `users.role='super_admin'` row and these items were
+            // part of their nav; post-518 the persona moved into
+            // `platform_admins` and the super-admin's tenant users
+            // row was deleted by migration 133, which hid the whole
+            // section for a pure platform admin. Adding the
+            // platform-admin gate here restores that visibility so
+            // the operator sees the full super-admin surface they
+            // had before the split.
+            //
+            // Individual items behind here still call tenant-scoped
+            // endpoints that authenticate against the tenant
+            // `AuthContext`, not the platform bearer. A pure platform
+            // admin who does not also hold a tenant admin users row
+            // will see the items but may hit an "auth required"
+            // screen after navigating. Teaching each admin route to
+            // accept a platform bearer (mirroring the MAPPS-518
+            // `TenantOrPlatformCaller` pattern already on the 5
+            // dual-check tenant handlers) is tracked separately.
+            if is_admin || is_platform_admin {
+                NavSection { title: "Admin", rail_collapsed: collapsed, color: SectionColor::Violet,
+                    // PMS-791 phase 2: Teams (was "Team", which was
+                    // actually the invitations page — see the
+                    // Invitations item below). Org tenants only per Q4
+                    // default = A. The `team_enabled` runtime flag was
+                    // retired: Teams is now core, not a preview.
+                    TeamsNavItem { visible: is_org_tenant, collapsed }
+                    NavItem { to: Route::Invitations {}, icon: rsx!(MailIcon {}), label: "Invitations", collapsed }
                     NavItem { to: Route::AuditLog {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Audit Log", collapsed }
                     NavItem { to: Route::FormsBuilder {}, icon: rsx!(InboxArrowDownIcon {}), label: "Request Forms", collapsed }
                     NavItem { to: Route::SlaManagement {}, icon: rsx!(ShieldCheckIcon {}), label: "SLA Management", collapsed }
@@ -648,6 +909,40 @@ fn NavItem(props: NavItemProps) -> Element {
     }
 }
 
+// mokosh-contact-login: MAPPS-447's `TenantsNavItem` (and its
+// `TenantsNavItemProps`) retired alongside the "Platform" sidebar
+// section above. It was already a no-op after the Clients-tab
+// retirement (prompt 001) and had no live callers on this branch.
+
+/// PMS-791 phase 2 / MAPPS-463: Teams nav item. Cfg-gated on
+/// `multi-tenant` so a `single-tenant` build does not need to know
+/// Route::Teams exists (the retired `TenantsNavItem` used the same
+/// pattern before it went away with the Platform section).
+#[derive(Props, Clone, PartialEq)]
+struct TeamsNavItemProps {
+    visible: bool,
+    collapsed: bool,
+}
+
+#[cfg(feature = "multi-tenant")]
+#[component]
+fn TeamsNavItem(props: TeamsNavItemProps) -> Element {
+    let TeamsNavItemProps { visible, collapsed } = props;
+    if !visible {
+        return rsx! {};
+    }
+    rsx! {
+        NavItem { to: Route::Teams {}, icon: rsx!(UserGroupIcon {}), label: "Teams", collapsed }
+    }
+}
+
+#[cfg(not(feature = "multi-tenant"))]
+#[component]
+fn TeamsNavItem(props: TeamsNavItemProps) -> Element {
+    let _ = props;
+    rsx! {}
+}
+
 /// MAPPS-453: the sidebar's Documentation entry. `NavItem` is an internal
 /// router `Link`; this is its visual twin for an off-site link (the docs
 /// subdomain), so it opens in a new tab and carries no active state.
@@ -784,6 +1079,11 @@ pub fn TopBar(props: TopBarProps) -> Element {
                 // links to the standalone /approvals queue.
                 ApprovalsBadge {}
 
+                // MAPPS-494 (MAPPS-474 phase 5): tenant switcher.
+                // Dropdown listing every membership the identity holds
+                // + a "Create new organization" action.
+                TenantSwitcher {}
+
                 // User menu (P3-26 avatar dropdown)
                 UserMenu {}
             }
@@ -838,6 +1138,57 @@ fn UserMenu() -> Element {
     // stays sync; every step is awaited before it navigates away.
     let logout = move |_| {
         open.set(false);
+        // MAPPS-605: a contact-plane session goes through its own
+        // logout endpoint + destination. Route BEFORE touching the
+        // staff/OIDC path so the two never cross: a staff session's
+        // localStorage should not leak into the contact bounce and
+        // vice versa.
+        #[cfg(feature = "web")]
+        if crate::hooks::fetch::api::has_contact_session() {
+            let refresh = crate::hooks::fetch::api::current_contact_refresh_token();
+            if let Some(rt) = refresh {
+                // Fire-and-forget: server revokes the contact_sessions
+                // row. Failure leaves the row live until natural TTL,
+                // but the local clear below still signs the user out
+                // client-side.
+                spawn(async move {
+                    let body = serde_json::json!({ "refresh_token": rt });
+                    let _ = crate::hooks::fetch::api::post_typed_no_content(
+                        "/contact/auth/logout",
+                        &body,
+                    )
+                    .await;
+                });
+            }
+            crate::hooks::fetch::api::clear_contact_session();
+            // Route back to a contact-flavoured login page. Prefer the
+            // 9-digit portal_id (prompt 011 primary URL) when we
+            // captured it on the way in; fall back to the legacy slug
+            // shape from prompt 005 for a mid-transition returning
+            // visitor; last resort is the generic three-field entry
+            // page (prompt 011 secondary URL) which the visitor can
+            // sign into by re-typing all three fields.
+            let dest = if let Some(pid) = crate::hooks::fetch::api::current_contact_last_portal_id()
+            {
+                format!("/portal/{pid}/login")
+            } else if let Some(slug) = crate::hooks::fetch::api::current_contact_last_slug() {
+                format!("/portal/{slug}/login")
+            } else {
+                "/portal/login".to_string()
+            };
+            #[cfg(target_arch = "wasm32")]
+            if let Some(win) = web_sys::window() {
+                let _ = win.location().replace(&dest);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = dest;
+            return;
+        }
+        // Staff sign-out: the whole sequence lives in
+        // `modules::auth::sign_out::sign_out` (revoke mokosh session,
+        // revoke OP refresh-token family, clear local storage, redirect
+        // off origin - MAPPS-522). Runs on a task so the closure stays
+        // sync.
         spawn(async move {
             crate::modules::auth::sign_out::sign_out().await;
         });
@@ -911,6 +1262,22 @@ fn UserMenu() -> Element {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
                         onclick: move |_| open.set(false),
                         "System Status"
+                    }
+                    div { class: "border-t border-line my-1" }
+                    // MAPPS-497 item 1: create-org lives here too so a
+                    // single-membership identity (switcher trigger
+                    // hidden) can still start a new org from the top
+                    // bar. Same global signal the switcher dropdown
+                    // uses; the modal itself is mounted inside
+                    // TenantSwitcher and reacts to the signal.
+                    button {
+                        r#type: "button",
+                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
+                        onclick: move |_| {
+                            *crate::components::tenant_switcher::SHOW_CREATE_ORG.write() = true;
+                            open.set(false);
+                        },
+                        "Create new organization"
                     }
                     div { class: "border-t border-line my-1" }
                     button {
@@ -1132,165 +1499,9 @@ fn NotificationRow(item: NotificationItem, on_read: EventHandler<()>) -> Element
     }
 }
 
-/// Portal layout (simpler, for client portal)
-#[derive(Props, Clone, PartialEq)]
-pub struct PortalLayoutProps {
-    children: Element,
-    #[props(default)]
-    title: String,
-}
-
-#[component]
-pub fn PortalLayout(props: PortalLayoutProps) -> Element {
-    let brand = crate::branding::product_name();
-    rsx! {
-        div { class: "min-h-screen bg-app",
-            // Portal header
-            header { class: "bg-surface shadow",
-                div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
-                    div { class: "flex items-center justify-between h-16",
-                        // Logo
-                        Link {
-                            to: Route::PortalHome {},
-                            class: "flex items-center",
-                            span { class: "text-xl font-bold text-accent",
-                                "Client Portal"
-                            }
-                        }
-
-                        // Navigation
-                        nav { class: "hidden md:flex space-x-8",
-                            Link {
-                                to: Route::PortalTicketList {},
-                                class: "text-content hover:text-accent",
-                                "Tickets"
-                            }
-                            Link {
-                                to: Route::PortalInvoiceList {},
-                                class: "text-content hover:text-accent",
-                                "Invoices"
-                            }
-                            Link {
-                                to: Route::PortalKB {},
-                                class: "text-content hover:text-accent",
-                                "Knowledge Base"
-                            }
-                        }
-
-                        // User menu
-                        div { class: "flex items-center",
-                            PortalUserMenu {}
-                        }
-                    }
-                }
-            }
-
-            // Main content
-            main { class: "py-10",
-                div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
-                    if !props.title.is_empty() {
-                        h1 { class: "text-2xl font-bold text-content mb-6",
-                            "{props.title}"
-                        }
-                    }
-                    {props.children}
-                }
-            }
-
-            // Portal footer
-            footer { class: "bg-surface border-t border-line",
-                div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6",
-                    p { class: "text-sm text-muted text-center",
-                        "Powered by {brand}"
-                    }
-                    VersionFooter {}
-                }
-            }
-        }
-    }
-}
-
-/// Portal top-bar user menu: avatar button + dropdown. The portal header
-/// previously rendered a bare avatar icon with no way to reach account
-/// settings or sign out (MAPPS-140); this mirrors the app-side
-/// [`UserMenu`] with the entries that apply to a portal (client) user.
-#[component]
-fn PortalUserMenu() -> Element {
-    let mut open = use_signal(|| false);
-    // MAPPS-384: dismiss on navigation, same as the app-side `UserMenu`. The
-    // portal chrome is likewise persistent, so a route change does not re-mount
-    // this component.
-    let route: Route = use_route();
-    use_effect(use_reactive!(|route| {
-        let _ = &route;
-        if *open.peek() {
-            open.set(false);
-        }
-    }));
-    let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
-    // Account Settings lives on the bunyip hub (cross-origin identity:
-    // email, password, MFA), so it is a top-level `<a>` rather than an
-    // in-SPA `Link`.
-    let hub_account_settings = cfg.hub_url("/settings");
-    // MAPPS-522 routed this through the shared sign-out module; MAPPS-532
-    // pointed it at the portal sequence inside that module. The agent one
-    // revoked nothing here (a contact holds no agent bearer and no OIDC
-    // refresh token) and handed the customer to bunyip's sign-in page, which
-    // is for an account they do not have.
-    let logout = move |_| {
-        open.set(false);
-        spawn(async move {
-            crate::modules::auth::sign_out::sign_out_portal().await;
-        });
-    };
-
-    rsx! {
-        div { class: "relative",
-            // MAPPS-384: same hover-highlight + tooltip treatment as the
-            // app-side `UserMenu`, matching the sibling top-bar icons.
-            button {
-                r#type: "button",
-                class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2 focus:outline-none",
-                aria_label: "User menu",
-                title: "User menu",
-                aria_expanded: if open() { "true" } else { "false" },
-                aria_haspopup: "menu",
-                onclick: move |_| {
-                    let next = !*open.read();
-                    open.set(next);
-                },
-                // No color class on the icon: it inherits `currentColor` from
-                // the button (`text-subtle`, `hover:text-content`) so it
-                // brightens on hover like the sibling top-bar icons. Pinning
-                // `text-subtle` here would override the button's hover color and
-                // leave the icon looking dead on hover (MAPPS-384 follow-up).
-                UserCircleIcon { size: IconSize::Large }
-            }
-            if *open.read() {
-                // MAPPS-384: outside-click backdrop (see `UserMenu`).
-                div {
-                    class: "fixed inset-0 z-10",
-                    onclick: move |_| open.set(false),
-                }
-                div {
-                    class: "dropdown-panel absolute right-0 mt-2 w-52 z-20 p-1",
-                    role: "menu",
-                    a {
-                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
-                        href: "{hub_account_settings}",
-                        "Account Settings"
-                    }
-                    div { class: "border-t border-line my-1" }
-                    button {
-                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-surface-2",
-                        onclick: logout,
-                        "Logout"
-                    }
-                }
-            }
-        }
-    }
-}
+// mokosh-contact-login: PortalLayout + PortalUserMenu retired with the
+// customer-portal /portal/* route family (prompt 001). Contact-plane
+// pages under `src/pages/contact_portal/` use their own layout.
 
 /// Auth layout (login, signup, password reset)
 #[derive(Props, Clone, PartialEq)]
@@ -1306,21 +1517,56 @@ pub struct AuthLayoutProps {
 
 #[component]
 pub fn AuthLayout(props: AuthLayoutProps) -> Element {
+    // MAPPS-621 (mokosh-branding prompt 005): paint the logo +
+    // wordmark from `EFFECTIVE_BRANDING`. Falls back to the coded
+    // default when both tenant + Company sides are `None` (pre-brand
+    // instance, unauthenticated pages that have not yet fetched a
+    // `/host` snippet). Colors + background picture come with the
+    // full CSS-custom-property pipeline in a follow-up commit.
     let width = format!("sm:mx-auto sm:w-full {}", props.max_w);
-    let brand = crate::branding::product_name();
-    let logo = crate::branding::logo_src();
+    let brand = crate::hooks::branding::EFFECTIVE_BRANDING.read();
+    let wordmark = brand
+        .display_name
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| brand.company_name.clone().filter(|s| !s.is_empty()))
+        .unwrap_or_else(crate::branding::product_name);
+    let logo_url = brand
+        .logo_url
+        .clone()
+        .filter(|s| !s.is_empty())
+        // MAPPS-635 A: version the URL so a fresh upload evicts the
+        // 1h-cached bytes on the very next render, not an hour later.
+        .map(|u| crate::hooks::branding::versioned_asset_url(&u, &brand));
+    let support_email = brand.support_email.clone().filter(|s| !s.is_empty());
+    let support_phone = brand.support_phone.clone().filter(|s| !s.is_empty());
+    let support_contact = brand.support_contact_name.clone().filter(|s| !s.is_empty());
     rsx! {
         div { class: "min-h-screen flex flex-col justify-center py-12 sm:px-6 lg:px-8 bg-app",
             div { class: "{width}",
                 // Logo
                 div { class: "flex flex-col items-center gap-3",
-                    img {
-                        src: "{logo}",
-                        alt: "{brand}",
-                        class: "h-16 w-16",
+                    if let Some(url) = logo_url.clone() {
+                        img {
+                            src: "{url}",
+                            alt: "{wordmark}",
+                            class: "h-16 w-16 object-contain",
+                        }
+                    } else {
+                        // MAPPS-509 recurrence guard: route the fallback through
+                        // the branding helper so an operator swapping in their
+                        // own asset via `MOKOSH_BRAND_LOGO_URL` reaches this
+                        // site too, and the built-in `asset!()` reference
+                        // stays single-sourced inside `branding.rs`. See the
+                        // `every_render_site_reads_the_helper` test.
+                        img {
+                            src: "{crate::branding::logo_src()}",
+                            alt: "{wordmark}",
+                            class: "h-16 w-16",
+                        }
                     }
                     span { class: "text-3xl font-bold text-accent",
-                        "{brand}"
+                        "{wordmark}"
                     }
                 }
             }
@@ -1328,6 +1574,36 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
             div { class: "mt-8 {width}",
                 div { class: "bg-surface py-8 px-4 shadow sm:rounded-lg sm:px-10",
                     {props.children}
+                }
+            }
+
+            // MAPPS-621: support-contact block. Renders under the
+            // form on every login / set-password / reset-password
+            // page so the visitor knows who to call when the flow
+            // dead-ends.
+            if support_email.is_some() || support_phone.is_some() {
+                div { class: "mt-6 {width} text-center text-xs text-muted space-y-1",
+                    if let Some(name) = support_contact.clone() {
+                        p { "Need help? Contact {name}." }
+                    } else {
+                        p { "Need help? Contact your support team." }
+                    }
+                    if let Some(email) = support_email {
+                        a { href: "mailto:{email}", class: "text-accent hover:underline", "{email}" }
+                    }
+                    if let Some(phone) = support_phone {
+                        // MAPPS-635 D3: tel: link so the phone is
+                        // tappable on mobile. `tel:` accepts most
+                        // free-form phone strings and strips the
+                        // formatting characters itself.
+                        div {
+                            a {
+                                href: "tel:{phone}",
+                                class: "text-accent hover:underline",
+                                "{phone}"
+                            }
+                        }
+                    }
                 }
             }
 

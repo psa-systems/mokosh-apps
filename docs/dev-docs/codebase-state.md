@@ -1,9 +1,20 @@
 # Codebase audit, 2026-05-06 - mokosh-apps
 
-**This is a record of one walk through the client on 2026-05-06, not a
-description of the client now.** Read it for what that walk found and
-for the `F1..F19` ids that source comments and YouTrack issues still
-cite. Do not read it to learn what a page currently does.
+> **STALE - snapshot from 2026-05-06.** This is a record of one walk
+> through the client on 2026-05-06, not a description of the client
+> now. Read it for what that walk found and for the `F1..F19` ids that
+> source comments and YouTrack issues still cite. Do not read it to
+> learn what a page currently does.
+>
+> The client-portal SPA the walk documented has since been retired on
+> the `mokosh-contact-login` line: the `/portal/*` rows and every
+> "GET-leak P0" reference describe pages that no longer exist. Traffic
+> at those URLs now reaches the contact-plane pages under
+> `src/pages/contact_portal/*` (see `docs/mokosh-client-login/remaining.md`
+> for the current punch list). The agent-side rows are also drifting: a
+> lot of "501" / "stub" / "mock" entries below have shipped since. A
+> re-audit is a follow-up; do not use this as an authoritative map of
+> what does or doesn't work today.
 
 The method was to walk every route in the router via Chrome (MCP
 browser automation), clicking every button, link, row, input and
@@ -485,7 +496,7 @@ once, instead of the duplication.
 ### F8. PortalTicketNewPage form is fully decorative
 
 **File:**
-[`src/pages/portal.rs`](../../src/pages/portal.rs).
+`src/pages/portal.rs`.
 
 This is the **P0 critical bug**. The form has no `onsubmit`, so
 the browser falls back to a native GET submit, leaking values to the
@@ -620,7 +631,7 @@ handles `value:` / `onchange` plumbing.
 [`assets.rs`](../../src/pages/assets.rs) (AssetNew),
 [`knowledge_base.rs`](../../src/pages/knowledge_base.rs)
 (KBArticleNew),
-[`portal.rs`](../../src/pages/portal.rs)
+`portal.rs`
 (PortalInvoiceDetail).
 
 These show literal "X creation form would go here" text. Until the
@@ -701,7 +712,7 @@ real Routes / `mailto:` / external URLs:
   (3x Related Articles)
 - [`src/pages/settings.rs`](../../src/pages/settings.rs)
   (5x Email Templates)
-- [`src/pages/portal.rs`](../../src/pages/portal.rs)
+- `src/pages/portal.rs`
   (PortalArticleItem - 5 entries)
 
 ### F16. Add `data-testid` to core components
@@ -762,7 +773,7 @@ ticket detail by `props.number` / `id`.
 ### F19. Portal new-ticket attachment zone is decorative
 
 **File:**
-[`src/pages/portal.rs`](../../src/pages/portal.rs).
+`src/pages/portal.rs`.
 
 The "Drag and drop files here" div has no `<input type="file">`.
 Either remove the zone (until attachments are supported by the API)

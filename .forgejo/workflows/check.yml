@@ -296,6 +296,16 @@ jobs:
           bash scripts/check-ci-parity.sh --self-test
           bash scripts/check-ci-parity.sh
 
+      # MAPPS-650 / PMS-946: David asked the user-facing identifier read
+      # "Company ID", not "Portal ID". Grep the contact-plane pages for
+      # a regression: if a fresh string lands under
+      # src/pages/contact_portal/ that says "Portal ID", fail the PR.
+      # Scope is narrow on purpose - `portal_id` is the wire/schema
+      # field name and legitimately appears in comments elsewhere in
+      # src/. Only the customer-facing surface is guarded.
+      - name: Company ID copy guard
+        run: bash scripts/check-company-id-copy.sh
+
       - name: Check formatting
         run: cargo fmt --all --check
 

@@ -41,6 +41,16 @@ services:
       # to fall through to compile-time defaults.
       MOKOSH_HUB_BASE_URL: https://example.com
 
+      # MAPPS-649: the single host the client portal is served from
+      # (typically `portal.<apex>`). The visitor addresses their
+      # Company from the URL path (`/portal/{portal_id}/*`), so a
+      # DNS wildcard is no longer required - one A/AAAA record for
+      # the bare host is enough, and the TLS cert covers just that
+      # single host. Retires the pre-649 `MOKOSH_PORTAL_HOST_SUFFIX`
+      # (per-MSP subdomain) shape; see mokosh-server's
+      # docs/dev-docs/portal-single-host-cutover.md.
+      # MOKOSH_PORTAL_HOST: portal.example.com
+
       # Branding. All optional: leave them unset and the SPA keeps its
       # built-in name and artwork. See
       # docs/deployment-branding.md for the static files (favicons,

@@ -23,8 +23,10 @@
 //! organisation name every client sees on request-form and invitation email,
 //! which otherwise stays "My workspace" until someone finds Settings. Saving
 //! calls `PUT /api/v1/tenants/current` (PMS-751), then
-//! `POST /api/v1/auth/me/complete-onboarding` to stamp the profile. Contact
-//! name and phone are MAPPS-429: they need somewhere to be written first.
+//! `POST /api/v1/auth/me/complete-onboarding` to stamp the profile (server-side
+//! guarded by `WHERE profile_completed_at IS NULL` so a replay cannot overwrite
+//! a later bunyip refresh). Contact name and phone are MAPPS-429: they need
+//! somewhere to be written first.
 //!
 //! MAPPS-524: the organisation half of that is asked only of admins.
 //! `PUT /tenants/current` is admin-gated on mokosh-server (PMS-751: the name

@@ -242,9 +242,15 @@ pub fn InvoiceListPage() -> Element {
         .as_ref()
         .map(|u| u.role.can_manage_billing())
         .unwrap_or(false);
+    // mokosh-contact-login prompt 006: a contact with `invoices:read`
+    // reaches the list too. `use_capability` returns true for staff
+    // and platform sessions unconditionally, so this predicate stays
+    // true for the pre-pivot personas and additionally lets the
+    // capable contact through.
+    let contact_can_read = crate::hooks::capabilities::use_capability("invoices:read");
 
     use_page_title("Invoices");
-    if !has_finance {
+    if !has_finance && !contact_can_read {
         return rsx! { NoFinancePermission { title: "Invoices" } };
     }
 
@@ -253,6 +259,11 @@ pub fn InvoiceListPage() -> Element {
 
 #[component]
 fn InvoiceListBody() -> Element {
+    // mokosh-contact-login prompt 006: staff-only list actions
+    // (New / Tax rates / Gateways). Contact-facing "Pay now" does
+    // not exist in the codebase today; skipped gracefully.
+    let staff_only =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
     // MAPPS-249: seed the company filter from `?company_id=<uuid>` so a context
     // card's "View All" lands here scoped to that company.
     let mut company_filter =
@@ -272,16 +283,21 @@ fn InvoiceListBody() -> Element {
         "All companies",
     );
 
-    let status_options = vec![
-        SelectOption::new("", "All Statuses"),
-        SelectOption::new("draft", "Draft"),
+    // MAPPS-670 (mokosh-invoices P1e): the server hides drafts from a
+    // Contact caller, so the dropdown drops the option too - offering
+    // it would let the portal filter to an always-empty list.
+    let mut status_options = vec![SelectOption::new("", "All Statuses")];
+    if staff_only {
+        status_options.push(SelectOption::new("draft", "Draft"));
+    }
+    status_options.extend([
         SelectOption::new("pending", "Pending"),
         SelectOption::new("sent", "Sent"),
         SelectOption::new("partially_paid", "Partially Paid"),
         SelectOption::new("paid", "Paid"),
         SelectOption::new("void", "Void"),
         SelectOption::new("written_off", "Written Off"),
-    ];
+    ]);
 
     let company_text = company_filter.read().trim().to_string();
     let status_text = status_filter.read().clone();
@@ -297,7 +313,16 @@ fn InvoiceListBody() -> Element {
             // MAPPS-357: subscribe to reachability so the list auto-refetches
             // the instant the server comes back (paired with the recovery poll).
             let _reachable = crate::hooks::use_server_reachable();
-            let token = crate::hooks::fetch::api::current_access_token()?;
+            // MAPPS-604: allow either staff or contact bearer; the server
+            // `RequireCallerContext` filters `company_id` to
+            // `contact.company_scope()` when the caller is a Contact,
+            // so a contact sees only their own invoices without touching
+            // this fetch path.
+            if crate::hooks::fetch::api::current_access_token().is_none()
+                && !crate::hooks::fetch::api::has_contact_session()
+            {
+                return None;
+            }
             let mut path = format!("/invoices?page={current_page}&per_page={PER_PAGE}");
             // `company` is a UUID filter (`InvoiceFilter.company_id`). Only
             // send it when it parses, otherwise the server 422s.
@@ -307,7 +332,7 @@ fn InvoiceListBody() -> Element {
             if !status.is_empty() {
                 path.push_str(&format!("&status={status}"));
             }
-            crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteInvoice>>(&path, &token)
+            crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteInvoice>>(&path)
                 .await
                 .inspect_err(|e| tracing::error!("invoice list load failed: {e}"))
                 .ok()
@@ -340,20 +365,22 @@ fn InvoiceListBody() -> Element {
             title: "Invoices",
             subtitle: "Manage customer invoices and billing",
             actions: rsx! {
-                Link {
-                    to: Route::TaxRateList {},
-                    Button { variant: ButtonVariant::Secondary, "Tax Rates" }
-                }
-                Link {
-                    to: Route::PaymentGatewayConfig {},
-                    Button { variant: ButtonVariant::Secondary, "Gateways" }
-                }
-                Link {
-                    to: Route::InvoiceNew {},
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Invoice"
+                if staff_only {
+                    Link {
+                        to: Route::TaxRateList {},
+                        Button { variant: ButtonVariant::Secondary, "Tax Rates" }
+                    }
+                    Link {
+                        to: Route::PaymentGatewayConfig {},
+                        Button { variant: ButtonVariant::Secondary, "Gateways" }
+                    }
+                    Link {
+                        to: Route::InvoiceNew {},
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                            "New Invoice"
+                        }
                     }
                 }
             },
@@ -439,12 +466,14 @@ fn InvoiceListBody() -> Element {
                         title: "No invoices yet".to_string(),
                         description: "Create your first invoice to start billing customers.".to_string(),
                         actions: rsx! {
-                            Link {
-                                to: Route::InvoiceNew {},
-                                Button {
-                                    variant: ButtonVariant::Primary,
-                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                    "New Invoice"
+                            if staff_only {
+                                Link {
+                                    to: Route::InvoiceNew {},
+                                    Button {
+                                        variant: ButtonVariant::Primary,
+                                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                        "New Invoice"
+                                    }
                                 }
                             }
                         },
@@ -771,17 +800,120 @@ pub struct InvoiceDetailPageProps {
     pub id: String,
 }
 
+/// MAPPS-666 (mokosh-invoices P1a): SPA shadow of the server's
+/// `InvoicePaymentReadinessResponse`. Serde defaults everywhere so a
+/// server that predates P1a decodes to an all-off shape and the Pay
+/// button stays hidden.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct PaymentReadiness {
+    #[serde(default)]
+    gateway_ready: bool,
+    #[serde(default)]
+    button_label: Option<String>,
+    #[serde(default)]
+    invoice_payable: bool,
+    #[serde(default)]
+    balance_due_display: String,
+}
+
+/// MAPPS-668 (mokosh-invoices P1c): body sent to POST /invoices/{id}/pay.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+struct PayInvoiceBody {
+    success_url: String,
+    cancel_url: String,
+}
+
+/// MAPPS-668: what the server returns from POST /invoices/{id}/pay.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct PayInvoiceResp {
+    #[serde(default)]
+    checkout_url: String,
+}
+
 #[component]
 pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
+    // mokosh-contact-login prompt 006: Edit / Send / Void / Record
+    // Payment are staff-only. Contact-facing "Pay now" does not
+    // exist in the codebase today; skipped gracefully.
+    let staff_only =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    // MAPPS-607: PMS-936 exposes `GET /invoices/{id}/pdf` behind the
+    // `invoices:download_pdf` cap. Staff / platform sessions bypass
+    // unconditionally via `use_capability`, so this button renders for
+    // them without a role grant.
+    let can_download_pdf = crate::hooks::capabilities::use_capability("invoices:download_pdf");
+    // MAPPS-668 (P1c): the Pay Now cap. Any caller with this can pay a
+    // payable invoice; the button also gates on the readiness fetch
+    // and the invoice status, so a contact without the cap sees nothing
+    // and a contact with the cap on a Draft sees an inline note instead
+    // of a button.
+    // MAPPS-707: Pay Now is contact-plane only. `use_capability` bypasses
+    // the cap check for staff/platform sessions (so admins can see every
+    // read affordance), which is right for Download PDF and wrong for Pay
+    // Now - clicking it as a staff caller would mint a hosted-checkout
+    // session for the admin's own browser. Require BOTH a live contact
+    // session AND the cap so the button only renders on the portal plane.
+    let can_pay = crate::hooks::capabilities::use_is_contact_session()
+        && crate::hooks::capabilities::use_capability("invoices:pay");
+    let _pdf_downloading = use_signal(|| false);
+    let pdf_error = use_signal(String::new);
+    let _id_for_pdf = props.id.clone();
     let id_for_resource = props.id.clone();
+    // MAPPS-669 (P1d): post-checkout splash flag. Read `?paid=1` off
+    // the boot-time search snapshot (the MAPPS-664 fix: the Dioxus
+    // router strips the query on mount, so live window.location.search
+    // is empty by the time this component renders).
+    let is_paid_landing = {
+        #[cfg(feature = "app")]
+        {
+            let search = crate::modules::oidc::initial_search();
+            let params = crate::utils::url::QueryString::parse(&search);
+            params.get("paid").as_deref() == Some("1")
+        }
+        #[cfg(not(feature = "app"))]
+        {
+            false
+        }
+    };
+    // MAPPS-669: polling state. When `is_paid_landing`, restart the
+    // invoice resource every 2s until status = 'paid' or the 30s
+    // budget elapses.
+    let mut poll_tick = use_signal(|| 0u32);
+    let id_for_readiness = props.id.clone();
+    let readiness_resource = use_resource(move || {
+        let id = id_for_readiness.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
+            crate::hooks::fetch::api::get_authed_any::<PaymentReadiness>(&format!(
+                "/invoices/{id}/payment-readiness"
+            ))
+            .await
+            .inspect_err(|e| tracing::error!("payment readiness load failed for invoice {id}: {e}"))
+            .ok()
+        }
+    });
     let mut invoice_resource = use_resource(move || {
         let id = id_for_resource.clone();
+        // MAPPS-669: read the tick so a poll_tick write restarts this
+        // resource. The value itself is unused; the read is the
+        // subscribe.
+        let _tick = poll_tick();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             // MAPPS-357: subscribe to reachability so the invoice auto-refetches
             // the instant the server comes back (paired with the recovery poll).
             let _reachable = crate::hooks::use_server_reachable();
-            crate::hooks::fetch::api::get_authed::<InvoiceDetail>(&format!("/invoices/{id}"))
+            // MAPPS-665: pair with the invoice-list fetch at line 329
+            // which already uses `get_authed_any` (contact-preferred
+            // bearer). The detail fetch had stayed on the staff-only
+            // `get_authed`, so a portal contact clicking through from
+            // their list got a bearerless 401 and the "Could not load
+            // invoice" card. The server's dual-plane get_invoice at
+            // src/modules/billing/routes.rs:410 already gates the
+            // contact branch on `invoices:read` + Company-scope 404,
+            // so contact-first bearer selection is safe.
+            crate::hooks::fetch::api::get_authed_any::<InvoiceDetail>(&format!("/invoices/{id}"))
                 .await
                 .inspect_err(|e| tracing::error!("invoice detail load failed for {id}: {e}"))
                 .ok()
@@ -812,6 +944,29 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     let mut show_credit_note = use_signal(|| false);
     let mut busy = use_signal(|| false);
     let mut action_error = use_signal(String::new);
+    // MAPPS-668 (P1c): Pay Now click state. `pay_saving` gates the button
+    // while the checkout-session round trip is in flight; `pay_error`
+    // surfaces a failure inline the way `action_error` and `pdf_error`
+    // do.
+    let mut pay_saving = use_signal(|| false);
+    let mut pay_error = use_signal(String::new);
+    let id_for_pay = props.id.clone();
+
+    // MAPPS-669 (P1d): drive the post-checkout poll. When the browser
+    // lands with `?paid=1` and the invoice still reads as unpaid,
+    // increment `poll_tick` every 2s for up to 30s so the invoice
+    // resource restarts until the Stripe webhook has landed the
+    // payment. The loop always runs; it no-ops when `is_paid_landing`
+    // is false so the hook count stays stable.
+    use_future(move || async move {
+        if !is_paid_landing {
+            return;
+        }
+        for _ in 0..15 {
+            crate::platform::timer::sleep_ms(2_000).await;
+            poll_tick.with_mut(|t| *t += 1);
+        }
+    });
 
     let snap = invoice_resource.read_unchecked();
     let invoice = match &*snap {
@@ -1029,6 +1184,26 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
             crate::components::ContentUnavailable { title: "Invoice".to_string() }
         };
     }
+    // MAPPS-668 (P1c): snapshot the readiness fetch into locals so the
+    // button, its tooltip, and the empty-state note read one consistent
+    // shape. Anything failing (server predates P1a, network hiccup,
+    // JSON decode) collapses to the all-off default via serde defaults
+    // on `PaymentReadiness`; the button then hides rather than
+    // pretending to be ready.
+    let readiness_snap = readiness_resource.read_unchecked();
+    let readiness = match &*readiness_snap {
+        Some(Some(r)) => Some(r.clone()),
+        _ => None,
+    };
+    let gateway_ready = readiness.as_ref().is_some_and(|r| r.gateway_ready);
+    let invoice_payable = readiness.as_ref().is_some_and(|r| r.invoice_payable);
+    let pay_button_label = readiness
+        .as_ref()
+        .and_then(|r| r.button_label.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Pay Now".to_string());
+    let pay_err = pay_error.read().clone();
+    let is_paid = status == "paid";
 
     rsx! {
         crate::components::ConfirmDialog {
@@ -1069,25 +1244,117 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                 }
             },
             actions: rsx! {
+                // MAPPS-668 (P1c): Pay Now, contact-plane only via the
+                // `invoices:pay` cap. Gated to render on invoices whose
+                // status can still receive a payment (mirrors the
+                // server's InvoiceStatus refusal set on
+                // `POST /invoices/{id}/pay`). Enabled only when the
+                // readiness fetch confirms a live gateway; disabled
+                // with a tooltip otherwise so the empty state is
+                // legible rather than mystifying. A cap holder on a
+                // Draft (still no `invoice_payable`) sees no button at
+                // all: those don't have "pay this" as an option, only
+                // "wait for a real invoice". P1d spawns the polling
+                // loop and the splash below.
+                if can_pay && !is_paid {
+                    if invoice_payable {
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            loading: *pay_saving.read(),
+                            disabled: !can_mutate || !gateway_ready || *pay_saving.read(),
+                            title: if !can_mutate {
+                                Some("Can't start a payment while the server is unreachable".to_string())
+                            } else if !gateway_ready {
+                                Some("Your MSP has not connected an online payment provider yet. Contact them to arrange payment.".to_string())
+                            } else {
+                                None
+                            },
+                            onclick: move |_| {
+                                if *pay_saving.read() {
+                                    return;
+                                }
+                                pay_error.set(String::new());
+                                pay_saving.set(true);
+                                let id = id_for_pay.clone();
+                                spawn(async move {
+                                    #[cfg(feature = "app")]
+                                    {
+                                        let origin = crate::platform::location::origin().unwrap_or_default();
+                                        let body = PayInvoiceBody {
+                                            success_url: format!("{origin}/portal/invoices/{id}?paid=1"),
+                                            cancel_url: format!("{origin}/portal/invoices/{id}"),
+                                        };
+                                        match crate::hooks::fetch::api::post_authed_any_typed::<PayInvoiceResp, _>(
+                                            &format!("/invoices/{id}/pay"),
+                                            &body,
+                                        ).await {
+                                            Ok(resp) if !resp.checkout_url.is_empty() => {
+                                                #[cfg(target_arch = "wasm32")]
+                                                {
+                                                    if let Some(win) = web_sys::window() {
+                                                        let _ = win.location().replace(&resp.checkout_url);
+                                                        return;
+                                                    }
+                                                }
+                                                #[cfg(not(target_arch = "wasm32"))]
+                                                {
+                                                    // Desktop shell has no
+                                                    // location redirect; the
+                                                    // provider checkout is
+                                                    // browser-only, so a
+                                                    // portal contact on the
+                                                    // desktop app hits this
+                                                    // path and is told to open
+                                                    // the portal in a browser.
+                                                    let _ = &resp;
+                                                }
+                                                pay_error.set(
+                                                    "Payment checkout is only available in the web portal. Open your portal in a browser to pay.".to_string(),
+                                                );
+                                            }
+                                            Ok(_) => {
+                                                pay_error.set(
+                                                    "Payment provider returned an empty response. Try again.".to_string(),
+                                                );
+                                            }
+                                            Err(err) => {
+                                                pay_error.set(format!(
+                                                    "Could not start payment: {}",
+                                                    err.user_message()
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    pay_saving.set(false);
+                                });
+                            },
+                            "{pay_button_label}"
+                        }
+                    }
+                }
                 // MAPPS-641: the document. A sent invoice's PDF is the bytes
                 // stored when it was sent (PMS-959), carrying the identity of
                 // that day (PMS-911); a draft renders live and is a preview.
                 // The two must not read the same, or a draft PDF becomes a
-                // record in somebody's mind.
-                if let Some(inv) = invoice.as_ref() {
-                    crate::components::DownloadButton {
-                        path: format!("/invoices/{}/pdf", props.id),
-                        fallback_name: format!("{}.pdf", inv.invoice_number),
-                        what: "the invoice PDF".to_string(),
-                        label: if editable { "Preview PDF".to_string() } else { "Download PDF".to_string() },
-                        title: if editable {
-                            "Renders this draft as it would look now. Nothing is stored until the invoice is sent, so this is a preview, not a record.".to_string()
-                        } else {
-                            "The invoice as it was sent to the client. Stored at that moment; rebranding since does not change it.".to_string()
-                        },
+                // record in somebody's mind. `can_download_pdf` gates the
+                // contact plane; staff+platform pass through `use_capability`
+                // unconditionally.
+                if can_download_pdf {
+                    if let Some(inv) = invoice.as_ref() {
+                        crate::components::DownloadButton {
+                            path: format!("/invoices/{}/pdf", props.id),
+                            fallback_name: format!("{}.pdf", inv.invoice_number),
+                            what: "the invoice PDF".to_string(),
+                            label: if editable { "Preview PDF".to_string() } else { "Download PDF".to_string() },
+                            title: if editable {
+                                "Renders this draft as it would look now. Nothing is stored until the invoice is sent, so this is a preview, not a record.".to_string()
+                            } else {
+                                "The invoice as it was sent to the client. Stored at that moment; rebranding since does not change it.".to_string()
+                            },
+                        }
                     }
                 }
-                if editable {
+                if editable && staff_only {
                     Button {
                         variant: ButtonVariant::Secondary,
                         // MAPPS-357: block edits while the server is down.
@@ -1196,7 +1463,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         }),
                     }
                 }
-                if collectible {
+                if collectible && staff_only {
                     Button {
                         variant: ButtonVariant::Secondary,
                         // MAPPS-357: block recording a payment while down.
@@ -1209,7 +1476,10 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         "Record Payment"
                     }
                 }
-                if creditable {
+                // PMS-953 (MAPPS-638): a credit note is the correction path
+                // for a frozen invoice. Staff-only per the contact-login
+                // stance; contact plane never issues a credit note.
+                if creditable && staff_only {
                     Button {
                         variant: ButtonVariant::Secondary,
                         // MAPPS-357: block raising a credit note while down.
@@ -1222,7 +1492,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         "Create Credit Note"
                     }
                 }
-                if editable {
+                if editable && staff_only {
                     Button {
                         variant: ButtonVariant::Danger,
                         loading: *busy.read(),
@@ -1263,6 +1533,19 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
 
         if !act_err.is_empty() {
             ErrorBanner { class: "mb-3", "{act_err}" }
+        }
+        // MAPPS-607: PDF download failures land inline just like the
+        // action errors above. Kept separate so a lifecycle-action
+        // toast and a PDF fetch failure do not fight for the same
+        // banner slot.
+        if !pdf_error.read().is_empty() {
+            ErrorBanner { class: "mb-3", "{pdf_error}" }
+        }
+        // MAPPS-668 (P1c): checkout-session failures surface on the
+        // same page the button lives on. Kept separate from the two
+        // above for the same reason.
+        if !pay_err.is_empty() {
+            ErrorBanner { class: "mb-3", "{pay_err}" }
         }
 
         // PMS-1004: the server refused Send because there is nobody to email.
@@ -1317,6 +1600,26 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                             to: Route::InvoiceList {},
                             class: "text-sm text-accent hover:opacity-90",
                             "Back to invoices"
+                        }
+                    }
+                }
+            },
+            Some(Some(inv)) if is_paid_landing && inv.status != "paid" => rsx! {
+                // MAPPS-669 (P1d): post-checkout splash. The Stripe /
+                // PayPal webhook writes the payment; until the tick
+                // catches up we keep the invoice body hidden so the
+                // customer sees "processing", not "still unpaid, click
+                // Pay Now again". `use_future` above increments
+                // `poll_tick` every 2s for 30s, which restarts the
+                // invoice resource; once its status flips to `paid`
+                // this arm stops matching and the paid invoice body
+                // renders.
+                Card {
+                    div { class: "py-10 text-center",
+                        div { class: "mx-auto mb-3 h-6 w-6 rounded-full border-2 border-accent border-t-transparent animate-spin" }
+                        p { class: "text-sm font-medium text-content mb-1", "Processing your payment…" }
+                        p { class: "text-xs text-muted",
+                            "This usually takes a few seconds. You'll see the paid receipt as soon as your provider confirms."
                         }
                     }
                 }
@@ -4053,6 +4356,11 @@ struct RemoteGateway {
     is_test_mode: bool,
     #[serde(default)]
     configured: bool,
+    /// MAPPS-671 (mokosh-invoices P2a): admin-set override for the Pay
+    /// Now button label. `None` = fall back to the provider default in
+    /// `get_invoice_payment_readiness`.
+    #[serde(default)]
+    client_display_name: Option<String>,
 }
 
 /// Payment-gateway config view. GET `/payment-gateways` (paginated) and
@@ -4254,6 +4562,10 @@ struct GatewayFormState {
     /// "Configured" badge and lets the key field be left blank on edit to keep
     /// the existing secret.
     configured: bool,
+    /// MAPPS-671 (mokosh-invoices P2a): admin-set override for the Pay
+    /// Now button label. Empty string = clear the override (falls back
+    /// to the provider default).
+    client_display_name: String,
 }
 
 impl GatewayFormState {
@@ -4264,6 +4576,7 @@ impl GatewayFormState {
             is_active: false,
             is_test_mode: true,
             configured: false,
+            client_display_name: String::new(),
         }
     }
 
@@ -4274,6 +4587,7 @@ impl GatewayFormState {
             is_active: g.is_active,
             is_test_mode: g.is_test_mode,
             configured: g.configured,
+            client_display_name: g.client_display_name.clone().unwrap_or_default(),
         }
     }
 }
@@ -4305,6 +4619,12 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
     // never returns the stored secret); a blank value on save keeps the
     // existing key.
     let mut api_key = use_signal(String::new);
+    // MAPPS-671 (mokosh-invoices P2a): the admin's Pay Now button label.
+    // Seeded from the existing row so an edit keeps whatever was set;
+    // blank = clear the override on save (server treats empty-string as
+    // clear-to-provider-default).
+    let mut client_display_name = use_signal(|| initial.client_display_name.clone());
+    let mut client_display_name_err = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -4328,6 +4648,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
         }
         error.set(String::new());
         key_err.set(String::new());
+        client_display_name_err.set(String::new());
 
         // MAPPS-363: the key is write-only. Send `config` only when the admin
         // typed a key; a blank field keeps the existing secret (PMS-342
@@ -4339,11 +4660,24 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
             key_err.set("An API key is required to configure this gateway.".to_string());
             return;
         }
+        // MAPPS-671: 64-char cap mirrors the server's validator; catching it
+        // here gives a field-level error rather than a form-level 422.
+        let cdn = client_display_name.read().clone();
+        if cdn.chars().count() > 64 {
+            client_display_name_err.set("Button label must be 64 characters or fewer.".to_string());
+            return;
+        }
         saving.set(true);
         let mut body = serde_json::json!({
             "provider": provider.read().clone(),
             "is_active": *is_active.read(),
             "is_test_mode": *is_test_mode.read(),
+            // MAPPS-671: always send the current value. A trimmed empty
+            // string clears the override on the server; a non-empty
+            // value sets it. Omitting the field would preserve whatever
+            // was previously set, which contradicts the visible form
+            // state (the input is empty).
+            "client_display_name": cdn.trim(),
         });
         if !key.is_empty() {
             body["config"] = serde_json::json!({ "api_key": key });
@@ -4495,6 +4829,22 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                             api_key.set(e.value());
                         },
                     }
+                }
+                // MAPPS-671 (mokosh-invoices P2a): admin-set override for
+                // the Pay Now button label the portal contact sees on
+                // their invoice.
+                crate::components::Input {
+                    name: "gateway_client_display_name",
+                    label: "Button label (optional)".to_string(),
+                    placeholder: "Pay with card".to_string(),
+                    help: "What the customer sees on the Pay Now button on their invoice. Leave blank to use the provider default.",
+                    maxlength: 64_i64,
+                    error: client_display_name_err(),
+                    value: client_display_name.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        client_display_name_err.set(String::new());
+                        client_display_name.set(e.value());
+                    },
                 }
             }
         }

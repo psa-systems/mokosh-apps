@@ -52,12 +52,8 @@ pub fn NotFoundPage(props: NotFoundPageProps) -> Element {
                             "Go to Home"
                         }
                     }
-                    Link {
-                        to: Route::PortalHome {},
-                        Button { variant: ButtonVariant::Secondary,
-                            "Go to Client Portal"
-                        }
-                    }
+                    // mokosh-contact-login: "Go to Client Portal" link retired
+                    // with the /portal/* route family (prompt 001).
                 }
 
                 // Help text

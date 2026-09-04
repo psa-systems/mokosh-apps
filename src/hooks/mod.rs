@@ -7,6 +7,9 @@
 //! - Pagination
 
 pub mod auth;
+pub mod branding;
+pub mod capabilities;
+pub mod contact_auth;
 // `fetch` is `pub` (not `mod`) because its inner `api` submodule is
 // referenced from places outside hooks/* (oidc callback, login handler)
 // to set/clear the global access-token holder. Keep this `pub` form
@@ -15,6 +18,9 @@ pub mod dropdown_nav;
 pub mod edit_queue;
 pub mod fetch;
 pub mod mentions;
+pub mod pending_login;
+// mokosh-contact-login: portal_* hooks retired on this branch (prompt
+// 001). Contact plane hooks land in prompts 004-006.
 pub mod remote_data;
 pub mod server_status;
 mod sidebar;

@@ -127,7 +127,13 @@ fn permission_required() -> Element {
 #[component]
 pub fn QuoteListPage() -> Element {
     use_page_title("Quotes");
-    if !use_can_manage_billing() {
+    // MAPPS-604: a contact with `quotes:read` reaches the list too.
+    // `use_capability` returns true for staff and platform sessions
+    // unconditionally, so the pre-pivot behaviour is preserved: only
+    // roles WITHOUT `quotes:read` (a non-finance staff role, no contact
+    // cap) still land on the `PermissionRequired` splash.
+    let contact_can_read = crate::hooks::capabilities::use_capability("quotes:read");
+    if !use_can_manage_billing() && !contact_can_read {
         return permission_required();
     }
 
@@ -139,6 +145,11 @@ pub fn QuoteListPage() -> Element {
 
 #[component]
 fn QuoteListBody() -> Element {
+    // mokosh-contact-login prompt 006: the "New Quote" CTA is
+    // staff-only. Contact-facing accept/decline lives in the detail
+    // body, not this list.
+    let staff_only =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
     let mut company_filter =
         use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     let mut status_filter = use_signal(String::new);
@@ -208,7 +219,13 @@ fn QuoteListBody() -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let _reachable = crate::hooks::use_server_reachable();
-            let token = crate::hooks::fetch::api::current_access_token()?;
+            // MAPPS-604: allow either staff or contact bearer; server
+            // scopes to `contact.company_id` for the contact plane.
+            if crate::hooks::fetch::api::current_access_token().is_none()
+                && !crate::hooks::fetch::api::has_contact_session()
+            {
+                return None;
+            }
             let mut path = format!("/quotes?page={current_page}&per_page={PER_PAGE}");
             if !company.is_empty() {
                 path.push_str(&format!("&company_id={}", urlencoding_minimal(&company)));
@@ -216,7 +233,7 @@ fn QuoteListBody() -> Element {
             if !status.is_empty() {
                 path.push_str(&format!("&status={}", urlencoding_minimal(&status)));
             }
-            crate::hooks::fetch::api::get_with_auth::<Paginated<QuoteResponse>>(&path, &token)
+            crate::hooks::fetch::api::get_authed_any::<Paginated<QuoteResponse>>(&path)
                 .await
                 .inspect_err(|e| tracing::error!("quote list load failed: {e}"))
                 .ok()
@@ -244,12 +261,14 @@ fn QuoteListBody() -> Element {
             title: "Quotes",
             subtitle: "Scope and price work, get it signed off, turn it into a project",
             actions: rsx! {
-                Link {
-                    to: Route::QuoteNew {},
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Quote"
+                if staff_only {
+                    Link {
+                        to: Route::QuoteNew {},
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                            "New Quote"
+                        }
                     }
                 }
             },
@@ -329,12 +348,14 @@ fn QuoteListBody() -> Element {
                             description: "Create a quote to scope and price work before it starts."
                                 .to_string(),
                             actions: rsx! {
-                                Link {
-                                    to: Route::QuoteNew {},
-                                    Button {
-                                        variant: ButtonVariant::Primary,
-                                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                        "New Quote"
+                                if staff_only {
+                                    Link {
+                                        to: Route::QuoteNew {},
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                            "New Quote"
+                                        }
                                     }
                                 }
                             },
@@ -435,6 +456,19 @@ pub fn QuoteDetailPage(id: String) -> Element {
 
 #[component]
 fn QuoteDetailBody(id: String) -> Element {
+    // mokosh-contact-login prompt 006: all quote lifecycle controls
+    // on this detail (Submit/Approve/Reject/Send/Convert/Cancel/Edit)
+    // are staff-only. The customer-facing Accept/Decline UI is not
+    // in this codebase today; skipped gracefully.
+    let staff_only =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    // MAPPS-607: PMS-936 exposes `GET /quotes/{id}/pdf` behind the
+    // `quotes:download_pdf` cap. Staff / platform bypass unconditionally
+    // through `use_capability`.
+    let can_download_pdf = crate::hooks::capabilities::use_capability("quotes:download_pdf");
+    let mut pdf_downloading = use_signal(|| false);
+    let mut pdf_error = use_signal(String::new);
+    let id_for_pdf = id.clone();
     let mut version = use_signal(|| 0u32);
     // Not `mut` locally: these are handed by value to the action helpers,
     // which take their own mutable binding.
@@ -505,7 +539,61 @@ fn QuoteDetailBody(id: String) -> Element {
                             }
                         },
                         actions: rsx! {
-                            if can_edit {
+                            if can_download_pdf {
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    loading: *pdf_downloading.read(),
+                                    onclick: {
+                                        let id_for_pdf = id_for_pdf.clone();
+                                        move |_| {
+                                            if *pdf_downloading.read() {
+                                                return;
+                                            }
+                                            pdf_error.set(String::new());
+                                            pdf_downloading.set(true);
+                                            let id = id_for_pdf.clone();
+                                            spawn(async move {
+                                                #[cfg(feature = "web")]
+                                                {
+                                                    let path = format!("/quotes/{id}/pdf");
+                                                    match crate::hooks::fetch::api::get_authed_any_bytes(&path).await {
+                                                        Ok((bytes, filename)) => {
+                                                            let name = filename
+                                                                .unwrap_or_else(|| format!("quote-{id}.pdf"));
+                                                            if let Err(e) =
+                                                                crate::utils::download::save_bytes_as_file(&bytes, &name)
+                                                            {
+                                                                pdf_error.set(format!(
+                                                                    "Fetched the PDF but could not save it: {e}"
+                                                                ));
+                                                            }
+                                                        }
+                                                        Err(crate::hooks::fetch::api::ApiError::Status {
+                                                            code: 501,
+                                                            ..
+                                                        }) => {
+                                                            pdf_error.set(
+                                                                "PDF generation not available yet".to_string(),
+                                                            );
+                                                        }
+                                                        Err(err) => {
+                                                            pdf_error.set(format!(
+                                                                "Could not download PDF: {}",
+                                                                err.user_message()
+                                                            ));
+                                                        }
+                                                    }
+                                                }
+                                                #[cfg(not(feature = "web"))]
+                                                let _ = &id;
+                                                pdf_downloading.set(false);
+                                            });
+                                        }
+                                    },
+                                    "Download PDF"
+                                }
+                            }
+                            if can_edit && staff_only {
                                 Link {
                                     to: Route::QuoteEdit { id: quote_id.clone() },
                                     Button { variant: ButtonVariant::Secondary, "Edit" }
@@ -516,6 +604,9 @@ fn QuoteDetailBody(id: String) -> Element {
 
                     if !action_error.read().is_empty() {
                         ErrorBanner { class: "mb-3", "{action_error}" }
+                    }
+                    if !pdf_error.read().is_empty() {
+                        ErrorBanner { class: "mb-3", "{pdf_error}" }
                     }
 
                     div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
@@ -618,6 +709,7 @@ fn QuoteDetailBody(id: String) -> Element {
                                 }
                             }
 
+                            if staff_only {
                             Card { title: "Actions",
                                 div { class: "flex flex-col gap-2",
                                     if status::can_submit(&st) {
@@ -731,6 +823,7 @@ fn QuoteDetailBody(id: String) -> Element {
                                         }
                                     }
                                 }
+                            }
                             }
                         }
                     }

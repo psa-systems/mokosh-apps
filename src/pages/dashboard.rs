@@ -1,6 +1,6 @@
 //! Dashboard page, wired to the reports + list APIs.
 
-use chrono::{Datelike, Duration, NaiveDate, Utc, Weekday};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc, Weekday};
 use dioxus::prelude::*;
 use serde::Deserialize;
 
@@ -89,9 +89,285 @@ fn priority_badge(name: &str) -> BadgeVariant {
     }
 }
 
-/// Main dashboard page component
+// ============================================================================
+// MAPPS-604: contact-plane dashboard body.
+// ============================================================================
+
+/// Wire shape returned by mokosh-server's `GET
+/// /api/v1/contact/dashboard/summary` (PMS-935). Every count is scoped
+/// to the caller's `company_id` by `RequireContactAuth` on the server;
+/// the client only renders whatever the endpoint hands back and never
+/// aggregates rows itself.
+#[derive(Clone, Debug, Default, Deserialize)]
+struct ContactDashboardSummaryWire {
+    #[serde(default)]
+    open_tickets: i64,
+    #[serde(default)]
+    unpaid_invoices: i64,
+    #[serde(default)]
+    active_quotes: i64,
+    #[serde(default)]
+    active_contracts: i64,
+    #[serde(default)]
+    recent_activity: Vec<ActivityItemWire>,
+}
+
+/// One row of the "Recent activity" list beneath the tile grid.
+#[derive(Clone, Debug, Deserialize)]
+struct ActivityItemWire {
+    #[serde(default)]
+    kind: String,
+    #[allow(dead_code)]
+    id: uuid::Uuid,
+    #[serde(default)]
+    summary: String,
+    #[serde(default = "epoch_now")]
+    occurred_at: DateTime<Utc>,
+}
+
+fn epoch_now() -> DateTime<Utc> {
+    DateTime::<Utc>::from_timestamp(0, 0).unwrap_or_else(Utc::now)
+}
+
+/// Where a "recent activity" row's kind links to. Kept pure so the
+/// route resolution can be unit-tested; the actual `Link { to: ... }`
+/// consumes the returned `Route`. Unknown kinds route back to the
+/// dashboard so the click still lands on a real page rather than the
+/// 404 catch-all.
+fn activity_route(kind: &str, id: &uuid::Uuid) -> Route {
+    let id_s = id.to_string();
+    match kind {
+        "ticket" => Route::TicketDetail { id: id_s },
+        "invoice" => Route::InvoiceDetail { id: id_s },
+        "quote" => Route::QuoteDetail { id: id_s },
+        "contract" => Route::ContractDetail { id: id_s },
+        _ => Route::Dashboard {},
+    }
+}
+
+/// Human label for one activity kind.
+fn activity_kind_label(kind: &str) -> &'static str {
+    match kind {
+        "ticket" => "Ticket",
+        "invoice" => "Invoice",
+        "quote" => "Quote",
+        "contract" => "Contract",
+        _ => "Event",
+    }
+}
+
+/// Contact-plane dashboard body. Renders four stat tiles fed by the
+/// `/contact/dashboard/summary` DTO and a "Recent activity" list. Every
+/// tile carries the honest empty-state copy ("No open tickets", etc.)
+/// rather than a demo count. This body is only mounted when
+/// [`has_contact_session`] returns true; the staff dashboard body sits
+/// below and is unchanged.
+#[component]
+fn ContactDashboardBody() -> Element {
+    let summary_resource = use_resource(|| async {
+        #[cfg(feature = "web")]
+        {
+            crate::hooks::fetch::api::get_contact_authed::<ContactDashboardSummaryWire>(
+                "/contact/dashboard/summary",
+            )
+            .await
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            Err::<ContactDashboardSummaryWire, crate::hooks::fetch::api::ApiError>(
+                crate::hooks::fetch::api::ApiError::Network("non-web build".into()),
+            )
+        }
+    });
+
+    use_page_title("Dashboard");
+
+    let snap = summary_resource.read_unchecked();
+    let is_loading = snap.is_none();
+    let summary: ContactDashboardSummaryWire = match &*snap {
+        Some(Ok(s)) => s.clone(),
+        _ => ContactDashboardSummaryWire::default(),
+    };
+    let load_error = matches!(&*snap, Some(Err(_)));
+    let open_label = summary.open_tickets.to_string();
+    let unpaid_label = summary.unpaid_invoices.to_string();
+    let quotes_label = summary.active_quotes.to_string();
+    let contracts_label = summary.active_contracts.to_string();
+
+    // MAPPS-705: per-tile capability gates. Each tile links to a page
+    // the caller may not open; render only the tiles whose read cap the
+    // caller holds. A tile whose cap is missing would otherwise send
+    // the visitor into a 403 loop.
+    let can_read_tickets = crate::hooks::capabilities::use_capability("tickets:read");
+    let can_read_invoices = crate::hooks::capabilities::use_capability("invoices:read");
+    let can_read_quotes = crate::hooks::capabilities::use_capability("quotes:read");
+    let can_read_contracts = crate::hooks::capabilities::use_capability("contracts:read");
+    // MAPPS-705: empty-state landing. A contact whose JWT carries no
+    // caps has no tab to open; render a self-describing card instead
+    // of the 4-tile grid + empty activity list. Skipped when the load
+    // hasn't returned yet so an incoming caps snapshot doesn't flicker
+    // the empty state.
+    if !is_loading && crate::hooks::capabilities::contact_has_no_capabilities() {
+        return rsx! {
+            PageHeader {
+                title: "Dashboard",
+                subtitle: "Signed in, waiting on access.",
+            }
+            Card {
+                div { class: "py-10 text-center space-y-3",
+                    p { class: "text-base font-medium text-content",
+                        "You're signed in, but your MSP hasn't granted you access to any tab yet."
+                    }
+                    p { class: "text-sm text-muted",
+                        "Contact your MSP if that's not what you expected."
+                    }
+                }
+            }
+        };
+    }
+
+    rsx! {
+        PageHeader {
+            title: "Dashboard",
+            subtitle: "Your open work at a glance.",
+        }
+
+        if is_loading {
+            div { class: "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 mb-8",
+                for _ in 0..4 {
+                    div { class: "rounded-lg border border-line bg-surface p-6 space-y-4",
+                        div { class: "h-4 w-1/2 bg-surface-2 rounded animate-pulse" }
+                        div { class: "h-6 w-1/3 bg-surface-2 rounded animate-pulse" }
+                    }
+                }
+            }
+        } else {
+            if load_error {
+                Card {
+                    div { class: "py-6 text-center text-sm text-red-600 dark:text-red-300",
+                        "Could not load your dashboard. Refresh to retry."
+                    }
+                }
+            }
+            div { class: "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 mb-8",
+                if can_read_tickets {
+                    Link {
+                        to: Route::TicketList {},
+                        class: "block",
+                        StatCard {
+                            label: "Open Tickets",
+                            value: "{open_label}",
+                            icon: rsx!(TicketIcon { class: "h-6 w-6".to_string() }),
+                        }
+                    }
+                }
+                if can_read_invoices {
+                    Link {
+                        to: Route::InvoiceList {},
+                        class: "block",
+                        StatCard {
+                            label: "Unpaid Invoices",
+                            value: "{unpaid_label}",
+                            icon_tone: StatCardTone::Danger,
+                            icon: rsx!(TicketIcon { class: "h-6 w-6".to_string() }),
+                        }
+                    }
+                }
+                if can_read_quotes {
+                    Link {
+                        to: Route::QuoteList {},
+                        class: "block",
+                        StatCard {
+                            label: "Active Quotes",
+                            value: "{quotes_label}",
+                            icon: rsx!(FolderIcon { class: "h-6 w-6".to_string() }),
+                        }
+                    }
+                }
+                if can_read_contracts {
+                    Link {
+                        to: Route::ContractList {},
+                        class: "block",
+                        StatCard {
+                            label: "Active Contracts",
+                            value: "{contracts_label}",
+                            icon: rsx!(ClockIcon { class: "h-6 w-6".to_string() }),
+                        }
+                    }
+                }
+            }
+
+            Card {
+                title: "Recent activity",
+                padding: false,
+                if summary.recent_activity.is_empty() {
+                    div { class: "py-6 text-center text-sm text-subtle italic",
+                        "No recent activity."
+                    }
+                } else {
+                    ul { class: "divide-y divide-line",
+                        for item in summary.recent_activity.iter() {
+                            {
+                                let route = activity_route(&item.kind, &item.id);
+                                let kind_label = activity_kind_label(&item.kind);
+                                let when = item.occurred_at.format("%b %-d, %Y %H:%M").to_string();
+                                let summary_text = if item.summary.trim().is_empty() {
+                                    format!("{kind_label} updated")
+                                } else {
+                                    item.summary.clone()
+                                };
+                                let key = item.id.to_string();
+                                rsx! {
+                                    li { key: "{key}", class: "px-4 py-3",
+                                        Link {
+                                            to: route,
+                                            class: "flex items-start justify-between gap-3 text-sm hover:opacity-90",
+                                            div { class: "min-w-0",
+                                                p { class: "font-medium text-content truncate",
+                                                    "{summary_text}"
+                                                }
+                                                p { class: "text-xs text-muted mt-0.5",
+                                                    "{kind_label}"
+                                                }
+                                            }
+                                            span { class: "text-xs text-muted whitespace-nowrap",
+                                                "{when}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Main dashboard page component. MAPPS-604: a signed-in contact sees
+/// a Company-scoped summary body, NOT the staff dashboard. Choosing
+/// which body to render happens BEFORE any hook fires (this component
+/// owns none) so MAPPS-602 (hooks-before-return guard) stays green:
+/// the two bodies live in their own components and each runs its own
+/// hooks unconditionally.
 #[component]
 pub fn DashboardPage() -> Element {
+    #[cfg(feature = "web")]
+    if crate::hooks::fetch::api::has_contact_session()
+        && crate::hooks::fetch::api::current_access_token().is_none()
+    {
+        return rsx! { ContactDashboardBody {} };
+    }
+    rsx! { StaffDashboardBody {} }
+}
+
+/// Staff-plane dashboard body: the original DashboardPage body,
+/// promoted to its own component so DashboardPage can early-return the
+/// contact body without violating the hooks-before-return rule. Every
+/// hook here fires unconditionally on the staff plane.
+#[component]
+fn StaffDashboardBody() -> Element {
     // MAPPS-351: the dashboard report is this page's PRIMARY resource. All
     // four loads go through `use_remote_resource`, which (a) preserves a
     // failed fetch instead of swallowing it to an empty default, and (b)
@@ -748,4 +1024,59 @@ pub fn DashboardTvPage() -> Element {
 /// First 8 chars of a uuid string (already a string in the pref).
 fn short_id_str(id: &str) -> String {
     id.chars().take(8).collect()
+}
+
+// ============================================================================
+// MAPPS-604: pure-function tests for the contact-dashboard classifiers.
+// ============================================================================
+
+#[cfg(test)]
+mod contact_dashboard_tests {
+    use super::{activity_kind_label, activity_route};
+    use crate::Route;
+
+    #[test]
+    fn activity_kind_label_covers_known_kinds() {
+        assert_eq!(activity_kind_label("ticket"), "Ticket");
+        assert_eq!(activity_kind_label("invoice"), "Invoice");
+        assert_eq!(activity_kind_label("quote"), "Quote");
+        assert_eq!(activity_kind_label("contract"), "Contract");
+    }
+
+    #[test]
+    fn activity_kind_label_unknown_falls_back_to_event() {
+        assert_eq!(activity_kind_label("weird_kind"), "Event");
+        assert_eq!(activity_kind_label(""), "Event");
+    }
+
+    #[test]
+    fn activity_route_maps_known_kinds_to_detail_routes() {
+        let id = uuid::Uuid::from_u128(0x1234);
+        let id_s = id.to_string();
+        assert!(matches!(
+            activity_route("ticket", &id),
+            Route::TicketDetail { ref id } if *id == id_s
+        ));
+        assert!(matches!(
+            activity_route("invoice", &id),
+            Route::InvoiceDetail { ref id } if *id == id_s
+        ));
+        assert!(matches!(
+            activity_route("quote", &id),
+            Route::QuoteDetail { ref id } if *id == id_s
+        ));
+        assert!(matches!(
+            activity_route("contract", &id),
+            Route::ContractDetail { ref id } if *id == id_s
+        ));
+    }
+
+    #[test]
+    fn activity_route_unknown_falls_back_to_dashboard() {
+        let id = uuid::Uuid::from_u128(0x9999);
+        assert!(matches!(
+            activity_route("something_new", &id),
+            Route::Dashboard {}
+        ));
+    }
 }

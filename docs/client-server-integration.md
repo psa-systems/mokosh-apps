@@ -133,6 +133,13 @@ rest existed; the helpers request `MAX_PER_PAGE` (re-exported from the
 server's own constant) and keep going until a short page arrives,
 failing loudly rather than returning a silently short list (MAPPS-528).
 
+There is one per bearer: `get_all_authed` on the staff token,
+`get_all_portal_authed` on the portal token, and `get_all_authed_any`
+on whichever the caller holds (contact first, staff second), for the
+dual-planed paths a contact and a staff member both reach. Reaching for
+the single-page `get_authed_any` on one of those is what left a long
+contact-side note thread silently short at the page cap.
+
 ## DTO sharing
 
 The shared-crate option is now live for part of the tree. MAPPS-383

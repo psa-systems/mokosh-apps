@@ -286,6 +286,21 @@ dev:
     print $"Binding dx serve to ($host_ip):4301 as ($user_name) \(uid ($uid):($gid)\)"
     with-env { HOST_IP: $host_ip, HOST_UID: $uid, HOST_GID: $gid, USER: $user_name } { docker compose up --build }
 
+# Same as `just dev` but runs dx serve in --release mode. Slower rebuilds but
+# necessary on hosts where dx's debug-mode post-processing chokes on the giant
+# unstripped WASM (`Failed to write executable: No such file or directory`).
+[group: 'dev']
+dev-release:
+    #!/usr/bin/env nu
+    let candidates = (sys net | where name =~ '^(en|eth|br|wlan)' | get ip | flatten | where protocol == 'ipv4' and loop == false)
+    let private = ($candidates | where (($it.address | str starts-with '10.') or ($it.address =~ '^172\.(1[6-9]|2[0-9]|3[01])\.') or ($it.address | str starts-with '192.168.')))
+    let host_ip = (if ($private | is-empty) { '127.0.0.1' } else { $private | get 0.address })
+    let uid = (^id --user | str trim)
+    let gid = (^id --group | str trim)
+    let user_name = (^whoami | str trim)
+    print $"Binding dx serve --release to ($host_ip):4301 as ($user_name) \(uid ($uid):($gid)\)"
+    with-env { HOST_IP: $host_ip, HOST_UID: $uid, HOST_GID: $gid, USER: $user_name, DX_SERVE_ARGS: "--release" } { docker compose up --build }
+
 # Per-developer Traefik-routed instance for SSO testing.
 #   App: https://{USER}-mokosh.a8n.run
 # Run `just dev-sso` here AND in mokosh-server. The overlay requires

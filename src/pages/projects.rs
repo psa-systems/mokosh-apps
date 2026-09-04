@@ -437,7 +437,9 @@ pub fn ProjectListPage() -> Element {
                     crate::utils::url::encode_uri_component(&q)
                 ));
             }
-            crate::hooks::fetch::api::get_authed::<Paginated<RemoteProject>>(&path).await
+            // MAPPS-604: contact-first bearer selection so a signed-in
+            // contact sees only their Company's projects.
+            crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteProject>>(&path).await
         }
     });
     // MAPPS-546: the stat cards are tenant-wide totals, so they come from the

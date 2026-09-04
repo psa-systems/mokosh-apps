@@ -258,33 +258,14 @@ mod tests {
         );
     }
 
-    /// MAPPS-532: which menu calls which sequence is the whole fix, and
-    /// `layout.rs` holds both menus, so the file-level scan above cannot see
-    /// it. This one reads the portal menu's own body.
-    ///
-    /// The agent sequence is not merely wrong here, it is inert: a `contacts`
-    /// identity holds no agent bearer to revoke and no OIDC refresh token to
-    /// revoke, so every step of it no-ops and the customer is handed to an
-    /// identity provider they have no account with.
-    #[test]
-    fn the_portal_menu_runs_the_portal_sequence() {
-        const LAYOUT: &str = include_str!("../../components/layout.rs");
-        let start = LAYOUT
-            .find("fn PortalUserMenu(")
-            .expect("layout.rs defines PortalUserMenu");
-        let rest = &LAYOUT[start..];
-        let body = &rest[..rest.find("\n#[component]").unwrap_or(rest.len())];
-
-        assert!(
-            body.contains("sign_out::sign_out_portal()"),
-            "PortalUserMenu must run the portal sign-out sequence"
-        );
-        assert!(
-            !body.contains("sign_out::sign_out()"),
-            "PortalUserMenu runs the agent sign-out, which revokes nothing for a \
-             portal identity and lands the customer on the OP"
-        );
-    }
+    // mokosh-contact-login (prompt 001): the MAPPS-532 test that pinned
+    // `PortalUserMenu` to `sign_out_portal()` retired with the menu itself
+    // when the customer-portal `/portal/*` route family was dropped. See
+    // `src/components/layout.rs` above line 1483: "PortalLayout +
+    // PortalUserMenu retired with the customer-portal /portal/* route
+    // family (prompt 001)". Contact-plane pages under
+    // `src/pages/contact_portal/` render their own layout and their own
+    // sign-out wiring; a new pin over that surface belongs there.
 
     /// The fallback matters as much as the happy path: a host with no
     /// `window` (the desktop build) must still get an origin-relative portal

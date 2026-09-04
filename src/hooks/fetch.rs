@@ -36,6 +36,40 @@ pub fn active_tenant_generation() -> u64 {
     0
 }
 
+/// MAPPS-635 F: per-contact portal-role assignment generation. Bumped
+/// on every successful "Update roles" / "Grant + send email" write so
+/// every `use_resource` that reads it re-fetches, matching the
+/// [`TENANT_GENERATION`] pattern. Fixes the report that the Portal
+/// Access card's role badges kept showing the old set after a
+/// successful role edit - `ContactRoleBadges` fetched its own list
+/// via `use_resource` with no dep on the write path, so nothing
+/// forced a refetch.
+#[cfg(feature = "web")]
+pub static PORTAL_ROLES_GENERATION: GlobalSignal<u64> = Signal::global(|| 0);
+
+/// Read the portal-roles generation counter. Same shape as
+/// [`active_tenant_generation`]: call INSIDE a `use_resource` closure
+/// so Dioxus subscribes the resource to it.
+#[cfg(feature = "web")]
+pub fn active_portal_roles_generation() -> u64 {
+    *PORTAL_ROLES_GENERATION.read()
+}
+
+/// Bump the portal-roles generation counter. Call from every
+/// successful role-write handler (grant + role-edit + revoke).
+#[cfg(feature = "web")]
+pub fn bump_portal_roles_generation() {
+    *PORTAL_ROLES_GENERATION.write() += 1;
+}
+
+#[cfg(not(feature = "web"))]
+pub fn active_portal_roles_generation() -> u64 {
+    0
+}
+
+#[cfg(not(feature = "web"))]
+pub fn bump_portal_roles_generation() {}
+
 /// MAPPS-695: fall back to an empty list, saying which outcome happened.
 ///
 /// A dropdown's option list, a badge that hides itself, a related-records
@@ -192,17 +226,22 @@ pub mod api {
     #[cfg(feature = "app")]
     use serde::{de::DeserializeOwned, Serialize};
 
-    /// Derive the Mokosh API base URL.
+    /// MAPPS-649: derive the Mokosh API base URL.
     ///
     /// Resolution order:
     ///   1. `window.__MOKOSH_CONFIG__.api_base` if set by the prod
     ///      container's entrypoint. Self-hosters on a custom hostname
     ///      override here without rebuilding the image.
-    ///   2. Host-prefix derivation for the canonical `msp.<tld>`
-    ///      deploys (e.g. `msp.a8n.systems` SPA → `api.msp.a8n.systems`
-    ///      API).
-    ///   3. Same-origin `/api/v1` for dev (localhost, IP address, or
-    ///      any host that doesn't start with `msp.`) so the Dioxus dev
+    ///   2. Portal-host derivation (MAPPS-649): when the current host equals
+    ///      the configured `portal_host` (e.g. `portal.psa.systems`), point
+    ///      at `api.<apex>/api/v1` where `<apex>` is the portal host minus
+    ///      its leading label (`psa.systems`). Dev's bare
+    ///      `portal.localhost:PORT` collapses to same-origin `/api/v1` so
+    ///      the Dioxus dev proxy reaches mokosh-server.
+    ///   3. Host-prefix derivation for the canonical `msp.<tld>` staff
+    ///      deploys (`msp.a8n.systems` -> `api.msp.a8n.systems`).
+    ///   4. Same-origin `/api/v1` for dev (localhost, IP address, or any
+    ///      host that doesn't match the cases above) so the Dioxus dev
     ///      server can proxy to a local backend.
     #[cfg(feature = "app")]
     pub fn api_base() -> String {
@@ -210,6 +249,22 @@ pub mod api {
             return normalize_api_base(&injected);
         }
         if let Some(host) = crate::platform::location::host() {
+            if let Some(portal_host) = crate::modules::runtime_config::portal_host() {
+                let host_no_port = host.split(':').next().unwrap_or(&host);
+                if host_no_port.eq_ignore_ascii_case(&portal_host) {
+                    // Dev's `portal.localhost` collapses to same-origin.
+                    let portal_lower = portal_host.to_ascii_lowercase();
+                    if portal_lower.ends_with(".localhost") || portal_lower == "localhost" {
+                        return "/api/v1".to_string();
+                    }
+                    // Prod: strip the leading label to get the apex.
+                    if let Some((_leading, apex)) = portal_lower.split_once('.') {
+                        if !apex.is_empty() {
+                            return format!("https://api.{apex}/api/v1");
+                        }
+                    }
+                }
+            }
             if let Some(rest) = host.strip_prefix("msp.") {
                 return format!("https://api.msp.{rest}/api/v1");
             }
@@ -279,6 +334,53 @@ pub mod api {
         base.trim_end_matches('/').to_string()
     }
 
+    /// MAPPS-649: `true` iff the SPA is currently served on the configured
+    /// portal host. Used by the portal login page to decide whether to hide
+    /// the identifier input and paint the MSP branding block. Port-agnostic,
+    /// case-insensitive host compare against `runtime_config::portal_host`.
+    ///
+    /// The non-web stub returns `false` so downstream call sites compile
+    /// under a plain `cargo check`.
+    #[cfg(feature = "web")]
+    pub fn on_portal_host() -> bool {
+        let Some(portal_host) = crate::modules::runtime_config::portal_host() else {
+            return false;
+        };
+        let Some(host) = crate::platform::location::host() else {
+            return false;
+        };
+        let host_no_port = host.split(':').next().unwrap_or(&host);
+        host_no_port.eq_ignore_ascii_case(&portal_host)
+    }
+
+    #[cfg(not(feature = "web"))]
+    pub fn on_portal_host() -> bool {
+        false
+    }
+
+    /// PMS-729: the current browser-visible host (`window.location.host`,
+    /// including port). Attached as `X-Forwarded-Host` on every portal-side
+    /// fetch below so the mokosh-server host-to-tenant extractor sees the
+    /// real `{slug}.client.<apex>` value even when a dev reverse proxy
+    /// rewrites the `Host` header (Dioxus 0.7.7's `[[web.proxy]]` reaches
+    /// the backend as `Host: server:8080`, which would otherwise defeat the
+    /// extractor). In production, Traefik resets `X-Forwarded-Host` from
+    /// the browser's Host on every forwarded request, so the header the SPA
+    /// sets is either overwritten by the reverse proxy (prod) or the sole
+    /// source of the original host (dev). Safe either way: the extractor
+    /// fails closed on any slug/tenant miss, so a spoofed value cannot
+    /// escalate.
+    ///
+    /// Gated on `app` (not `web`) so the desktop build's callers on
+    /// `post_typed` / `get_typed` / `post_typed_no_content` compile. The
+    /// desktop platform's `location::host()` returns `None`, so the header
+    /// is omitted there and the desktop request goes out plain (no dev
+    /// reverse proxy sits in front of a native binary).
+    #[cfg(feature = "app")]
+    fn current_forwarded_host() -> Option<String> {
+        crate::platform::location::host().filter(|s| !s.is_empty())
+    }
+
     // Single-threaded global access-token holder. WASM is strictly
     // single-threaded so a `RefCell` is safe; we don't need a mutex.
     // The token lives only in memory: it is wiped on logout and never
@@ -326,6 +428,17 @@ pub mod api {
     #[cfg(feature = "app")]
     pub fn current_access_token() -> Option<String> {
         ACCESS_TOKEN.with(|t| t.borrow().clone())
+    }
+
+    /// Test-only setter that seeds the staff `ACCESS_TOKEN` holder WITHOUT
+    /// bumping the `TENANT_GENERATION` `GlobalSignal`. The production
+    /// [`set_access_token`] writes that signal, which panics outside a
+    /// Dioxus runtime; unit tests that only need to observe
+    /// `current_access_token().is_some()` (the capability-hook staff
+    /// bypass) go through this helper instead.
+    #[cfg(all(test, feature = "web"))]
+    pub(crate) fn set_access_token_for_test(token: Option<String>) {
+        ACCESS_TOKEN.with(|t| *t.borrow_mut() = token);
     }
 
     // --- Access-token renewal on the request path (MAPPS-435) ------------
@@ -620,9 +733,10 @@ pub mod api {
         // clears `AuthContext`, which is what the route guard reads.
         // Either way the user ends up on the login screen; what must not
         // happen is the session ending with nothing on screen changing.
+        // MAPPS-518 URL swap: tenant login lives at /client/login now.
         #[cfg(target_arch = "wasm32")]
-        if let Err(e) = crate::platform::location::set_href("/login") {
-            tracing::warn!("could not redirect to /login after signing out: {e}");
+        if let Err(e) = crate::platform::location::set_href("/client/login") {
+            tracing::warn!("could not redirect to /client/login after signing out: {e}");
         }
         #[cfg(not(target_arch = "wasm32"))]
         super::note_session_ended();
@@ -640,6 +754,9 @@ pub mod api {
     #[cfg(feature = "app")]
     thread_local! {
         static PORTAL_ACCESS_TOKEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+        // PMS-729 phase 2 H2: refresh token holder. Memory-only, sibling of
+        // the access-token slot. Rotation replaces it; logout clears it.
+        static PORTAL_REFRESH_TOKEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
     }
 
     /// Set the portal session token. Called from the portal login page on a
@@ -670,6 +787,412 @@ pub mod api {
     #[cfg(feature = "app")]
     pub fn has_portal_session() -> bool {
         PORTAL_ACCESS_TOKEN.with(|t| t.borrow().is_some())
+    }
+
+    /// MAPPS-563: `localStorage` key under which the portal refresh token
+    /// is persisted so it survives a hard refresh / deep-link cold-load.
+    /// Distinct from the platform-admin `mokosh:platform_token`
+    /// (`sessionStorage`) and the standalone-agent session keys so a
+    /// stale value from another plane cannot cross-populate this one.
+    ///
+    /// XSS trade-off: the refresh token becomes readable by scripts
+    /// running on the portal origin. That is strictly worse than the
+    /// pre-563 in-memory-only shape, but a full HttpOnly-cookie
+    /// implementation crosses tenant subdomain <-> API subdomain and
+    /// requires CORS + Domain=.<apex> cookie work that we don't have
+    /// today. The follow-up ticket to move this to a cookie is filed
+    /// as a note in `docs/mokosh-client-login/dashboard-overhaul-1.md`
+    /// under B2.
+    #[cfg(target_arch = "wasm32")]
+    const PORTAL_REFRESH_STORAGE_KEY: &str = "mokosh:portal_refresh_token";
+
+    /// PMS-729 phase 2 H2 / MAPPS-563: set the portal refresh token.
+    /// Called from the login page on `POST /portal/auth/login` and from
+    /// the auto-refresh hook after `POST /portal/auth/refresh`. `None`
+    /// clears both the in-memory slot and the localStorage mirror so a
+    /// hard refresh after logout lands the visitor at /portal/login
+    /// rather than silently re-authenticating.
+    #[cfg(feature = "app")]
+    pub fn set_portal_refresh_token(token: Option<String>) {
+        PORTAL_REFRESH_TOKEN.with(|t| *t.borrow_mut() = token.clone());
+        // Persist to localStorage so a cold-load can re-mint the access
+        // token via /portal/auth/refresh before PortalGuard bounces.
+        // Any storage access can throw (private-mode browsers, disabled
+        // site data), so degrade to in-memory-only on failure.
+        #[cfg(target_arch = "wasm32")]
+        if let Some(win) = web_sys::window() {
+            if let Ok(Some(storage)) = win.local_storage() {
+                match token.as_deref() {
+                    Some(value) => {
+                        let _ = storage.set_item(PORTAL_REFRESH_STORAGE_KEY, value);
+                    }
+                    None => {
+                        let _ = storage.remove_item(PORTAL_REFRESH_STORAGE_KEY);
+                    }
+                }
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = token;
+    }
+
+    /// PMS-729 phase 2 H2 / MAPPS-563: read the portal refresh token.
+    /// Only the refresh flow and the logout flow call this.
+    ///
+    /// MAPPS-563: when the in-memory slot is empty (cold-load after a
+    /// hard refresh / deep-link), fall back to the localStorage mirror.
+    /// The first successful `POST /portal/auth/refresh` rotates the
+    /// token and calls `set_portal_refresh_token(Some(new))`, which
+    /// updates both places. If the localStorage read succeeds we also
+    /// prime the in-memory slot so subsequent reads in the same
+    /// browser session skip the storage round-trip.
+    #[cfg(feature = "app")]
+    pub fn current_portal_refresh_token() -> Option<String> {
+        let in_memory = PORTAL_REFRESH_TOKEN.with(|t| t.borrow().clone());
+        if in_memory.is_some() {
+            return in_memory;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let win = web_sys::window()?;
+            let storage = win.local_storage().ok().flatten()?;
+            let stored = storage
+                .get_item(PORTAL_REFRESH_STORAGE_KEY)
+                .ok()
+                .flatten()?;
+            if stored.is_empty() {
+                return None;
+            }
+            // Prime the in-memory slot so the next caller skips storage.
+            PORTAL_REFRESH_TOKEN.with(|t| *t.borrow_mut() = Some(stored.clone()));
+            Some(stored)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        None
+    }
+
+    // --- Contact-plane session holders (mokosh-contact-login, prompt 005) ---
+    //
+    // The `/api/v1/contact/*` tree runs on the contact JWT (`typ:
+    // "contact"`) minted at `POST /contact/auth/login`. Kept in a
+    // dedicated slot so a visitor holding both a staff bearer AND a
+    // contact bearer (rare, but the mokosh workspace routes render for
+    // either identity) does not accidentally cross the two: the
+    // `_contact_authed` helpers read ONLY this slot, and the staff
+    // helpers read ONLY `ACCESS_TOKEN`. Refresh mirror lives in
+    // localStorage under `CONTACT_REFRESH_STORAGE_KEY` so a hard
+    // refresh / deep-link cold-load can re-mint via
+    // `POST /contact/auth/refresh` before AuthGuard bounces.
+    #[cfg(feature = "app")]
+    thread_local! {
+        static CONTACT_ACCESS_TOKEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+        static CONTACT_REFRESH_TOKEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+        /// MAPPS-604: the Company UUID the current contact session is
+        /// scoped to. Populated from the `contact.company_id` field on
+        /// every /contact/auth/{login,refresh,login-link/select}
+        /// response (PMS-935 extends the wire shape with this id). Pages
+        /// read it via [`current_contact_company_id`] to build scoped
+        /// URLs (e.g. the Cross-Company probe check) without re-parsing
+        /// the current route.
+        static CONTACT_COMPANY_ID: std::cell::RefCell<Option<uuid::Uuid>> = const { std::cell::RefCell::new(None) };
+        /// MAPPS-609: the UUID of the Contact behind the current session.
+        /// Populated from the `contact.contact_id` field on every
+        /// /contact/auth/{login,refresh,login-link/select} response
+        /// (PMS-937 extends the wire shape). Pages read it via
+        /// [`current_contact_id`] to gate ownership-scoped controls -
+        /// specifically the "edit ticket" Edit affordance on
+        /// ticket detail (rendered only for the ticket's reporter).
+        /// Optional so a pre-PMS-937 server that omits the field still
+        /// deserialises; the store is left at `None` and any ownership
+        /// gate that requires the id falls closed.
+        static CONTACT_ID: std::cell::RefCell<Option<uuid::Uuid>> = const { std::cell::RefCell::new(None) };
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    const CONTACT_REFRESH_STORAGE_KEY: &str = "mokosh:contact_refresh_token";
+
+    /// `localStorage` key that remembers "this browser last signed in
+    /// as a contact on slug X" so the AuthGuard bounce for an expired
+    /// session can send them to `/portal/{slug}/login` rather than the
+    /// staff `/login`. Written by the contact-login page on success;
+    /// cleared alongside the refresh token on logout.
+    ///
+    /// DEPRECATED post MAPPS-589 (prompt 011): kept for one release
+    /// cycle so a cold-load on old client code still finds a value.
+    /// New writes flow through both this key and
+    /// [`CONTACT_LAST_PORTAL_ID_STORAGE_KEY`]; bootstrap prefers the
+    /// portal-id key when present.
+    #[cfg(target_arch = "wasm32")]
+    pub const CONTACT_LAST_SLUG_STORAGE_KEY: &str = "mokosh:contact_last_slug";
+
+    /// MAPPS-589 (prompt 011): `localStorage` key that remembers "this
+    /// browser last signed in as a contact on Portal ID N" so the
+    /// AuthGuard bounce for an expired session can send them to
+    /// `/portal/{portal_id}/login` (the new URL shape) rather than the
+    /// slug-based path. Written by every contact login flow that gets
+    /// a Portal ID (either from the URL handle or from the server
+    /// response's `contact.portal_id` field, once PMS-928 lands).
+    /// Cleared alongside the refresh token on logout.
+    #[cfg(target_arch = "wasm32")]
+    pub const CONTACT_LAST_PORTAL_ID_STORAGE_KEY: &str = "mokosh:contact_last_portal_id";
+
+    /// Set the contact access token. `None` clears the in-memory slot.
+    /// Does NOT bump [`super::TENANT_GENERATION`]: the contact plane
+    /// has its own tenant scope and the pages it mounts fresh after
+    /// login navigation anyway.
+    #[cfg(feature = "app")]
+    pub fn set_contact_access_token(token: Option<String>) {
+        CONTACT_ACCESS_TOKEN.with(|t| *t.borrow_mut() = token);
+    }
+
+    /// Read the contact access token. `None` until a contact signs in.
+    #[cfg(feature = "app")]
+    pub fn current_contact_access_token() -> Option<String> {
+        CONTACT_ACCESS_TOKEN.with(|t| t.borrow().clone())
+    }
+
+    /// Whether a contact session is held. Cheap predicate for gates
+    /// (AuthGuard) that don't need to touch the token itself.
+    #[cfg(feature = "app")]
+    pub fn has_contact_session() -> bool {
+        CONTACT_ACCESS_TOKEN.with(|t| t.borrow().is_some())
+    }
+
+    /// Set the contact refresh token. Also mirrors to localStorage so
+    /// a cold-load can bootstrap via `/contact/auth/refresh`. Passing
+    /// `None` clears both the in-memory slot and the storage mirror.
+    #[cfg(feature = "app")]
+    pub fn set_contact_refresh_token(token: Option<String>) {
+        CONTACT_REFRESH_TOKEN.with(|t| *t.borrow_mut() = token.clone());
+        #[cfg(target_arch = "wasm32")]
+        if let Some(win) = web_sys::window() {
+            if let Ok(Some(storage)) = win.local_storage() {
+                match token.as_deref() {
+                    Some(value) => {
+                        let _ = storage.set_item(CONTACT_REFRESH_STORAGE_KEY, value);
+                    }
+                    None => {
+                        let _ = storage.remove_item(CONTACT_REFRESH_STORAGE_KEY);
+                    }
+                }
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = token;
+    }
+
+    /// Read the contact refresh token. Falls back to the localStorage
+    /// mirror on a cold-load; primes the in-memory slot so subsequent
+    /// reads skip the storage round-trip.
+    #[cfg(feature = "app")]
+    pub fn current_contact_refresh_token() -> Option<String> {
+        let in_memory = CONTACT_REFRESH_TOKEN.with(|t| t.borrow().clone());
+        if in_memory.is_some() {
+            return in_memory;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let win = web_sys::window()?;
+            let storage = win.local_storage().ok().flatten()?;
+            let stored = storage
+                .get_item(CONTACT_REFRESH_STORAGE_KEY)
+                .ok()
+                .flatten()?;
+            if stored.is_empty() {
+                return None;
+            }
+            CONTACT_REFRESH_TOKEN.with(|t| *t.borrow_mut() = Some(stored.clone()));
+            Some(stored)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        None
+    }
+
+    /// Remember the last slug this browser signed in on. Used by the
+    /// AuthGuard bounce on expired sessions to route the visitor back
+    /// to the same portal they came from.
+    #[cfg(feature = "app")]
+    pub fn set_contact_last_slug(slug: &str) {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(win) = web_sys::window() {
+            if let Ok(Some(storage)) = win.local_storage() {
+                let _ = storage.set_item(CONTACT_LAST_SLUG_STORAGE_KEY, slug);
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = slug;
+    }
+
+    /// Read the last-known slug the browser signed in on. `None` when
+    /// no contact login has ever happened on this browser.
+    #[cfg(feature = "app")]
+    pub fn current_contact_last_slug() -> Option<String> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let win = web_sys::window()?;
+            let storage = win.local_storage().ok().flatten()?;
+            let stored = storage
+                .get_item(CONTACT_LAST_SLUG_STORAGE_KEY)
+                .ok()
+                .flatten()?;
+            if stored.is_empty() {
+                None
+            } else {
+                Some(stored)
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        None
+    }
+
+    /// MAPPS-589 (prompt 011): remember the last Portal ID this
+    /// browser signed in on. Written by every contact login flow that
+    /// receives a numeric Portal ID; preferred by the AuthGuard
+    /// cold-load bootstrap over the legacy slug key.
+    #[cfg(feature = "app")]
+    pub fn set_contact_last_portal_id(value: &str) {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(win) = web_sys::window() {
+            if let Ok(Some(storage)) = win.local_storage() {
+                let _ = storage.set_item(CONTACT_LAST_PORTAL_ID_STORAGE_KEY, value);
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = value;
+    }
+
+    /// MAPPS-615 (prompt 014): drop the last-Portal-ID hint so a
+    /// visitor who explicitly says "not my portal" on the step 2 page
+    /// does not immediately bounce back to `/portal/{that}/login` via
+    /// the AuthGuard cold-load or last-slug-remember paths. Called
+    /// from `ContactLoginByPortalIdPage`'s "Choose a different portal"
+    /// button.
+    #[cfg(feature = "app")]
+    pub fn clear_contact_last_portal_id() {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(win) = web_sys::window() {
+            if let Ok(Some(storage)) = win.local_storage() {
+                let _ = storage.remove_item(CONTACT_LAST_PORTAL_ID_STORAGE_KEY);
+            }
+        }
+    }
+
+    /// MAPPS-589 (prompt 011): read the last-known Portal ID this
+    /// browser signed in on. `None` when no contact login carrying a
+    /// Portal ID has happened yet (the legacy slug-only flow leaves
+    /// this key unset).
+    #[cfg(feature = "app")]
+    pub fn current_contact_last_portal_id() -> Option<String> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let win = web_sys::window()?;
+            let storage = win.local_storage().ok().flatten()?;
+            let stored = storage
+                .get_item(CONTACT_LAST_PORTAL_ID_STORAGE_KEY)
+                .ok()
+                .flatten()?;
+            if stored.is_empty() {
+                None
+            } else {
+                Some(stored)
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        None
+    }
+
+    /// MAPPS-604: overwrite the Company UUID this contact session is
+    /// scoped to. `None` clears it (called on logout / session drop).
+    #[cfg(feature = "app")]
+    pub fn set_contact_company_id(id: Option<uuid::Uuid>) {
+        CONTACT_COMPANY_ID.with(|slot| *slot.borrow_mut() = id);
+    }
+
+    /// MAPPS-604: read the Company UUID this contact session is scoped
+    /// to. `None` before the first `/contact/auth/*` response that
+    /// carries `company_id` (pre-PMS-935 servers omit the field, so a
+    /// contact signed in against an older mokosh sees `None` and
+    /// callers fall back to whatever URL-derived id they have).
+    #[cfg(feature = "app")]
+    pub fn current_contact_company_id() -> Option<uuid::Uuid> {
+        CONTACT_COMPANY_ID.with(|slot| *slot.borrow())
+    }
+
+    /// MAPPS-609: overwrite the contact UUID this session belongs to.
+    /// `None` clears it (called on logout / session drop).
+    #[cfg(feature = "app")]
+    pub fn set_contact_id(id: Option<uuid::Uuid>) {
+        CONTACT_ID.with(|slot| *slot.borrow_mut() = id);
+    }
+
+    /// MAPPS-609: read the contact UUID the current session belongs to.
+    /// `None` before the first `/contact/auth/*` response that carries
+    /// `contact_id` (pre-PMS-937 servers omit the field, so a contact
+    /// signed in against an older mokosh sees `None`; callers that need
+    /// ownership must treat that as "unknown" and fall closed).
+    #[cfg(feature = "app")]
+    pub fn current_contact_id() -> Option<uuid::Uuid> {
+        CONTACT_ID.with(|slot| *slot.borrow())
+    }
+
+    /// Clear the entire contact session. Setting the refresh token to
+    /// `None` clears its localStorage mirror as well; both last-*
+    /// keys are wiped so a follow-up cold-load starts blank rather
+    /// than latching onto a stale hint.
+    #[cfg(feature = "app")]
+    pub fn clear_contact_session() {
+        set_contact_access_token(None);
+        set_contact_refresh_token(None);
+        set_contact_company_id(None);
+        set_contact_id(None);
+        #[cfg(target_arch = "wasm32")]
+        if let Some(win) = web_sys::window() {
+            if let Ok(Some(storage)) = win.local_storage() {
+                let _ = storage.remove_item(CONTACT_LAST_SLUG_STORAGE_KEY);
+                let _ = storage.remove_item(CONTACT_LAST_PORTAL_ID_STORAGE_KEY);
+            }
+        }
+    }
+
+    /// MAPPS-630: clear every remnant of the STAFF session. Called on
+    /// contact sign-in so the two planes stay mutually exclusive
+    /// within one browser origin. Mirrors what a full staff logout
+    /// clears: the in-memory access token, both OIDC + standalone
+    /// stored bundles in sessionStorage, and the platform-admin
+    /// bearer that sits alongside them.
+    #[cfg(feature = "app")]
+    pub fn clear_staff_session_for_plane_switch() {
+        set_access_token(None);
+        crate::modules::oidc::storage::clear_auth();
+        #[cfg(target_arch = "wasm32")]
+        if let Some(win) = web_sys::window() {
+            if let Ok(Some(session)) = win.session_storage() {
+                // Kept in sync with the `PLATFORM_TOKEN_KEY` const in
+                // hooks/capabilities.rs + pages/platform_login.rs.
+                let _ = session.remove_item("mokosh:platform_token");
+            }
+        }
+    }
+
+    /// MAPPS-630: cross-plane isolation on sign-in. Call at every
+    /// path that lands a fresh STAFF access token (standalone login
+    /// success, OIDC callback exchange, platform-login success). No
+    /// return value; the effect is entirely in the token holders.
+    #[cfg(feature = "app")]
+    pub fn on_staff_signin_clear_contact_side() {
+        clear_contact_session();
+        crate::hooks::capabilities::clear_contact_capabilities();
+        crate::hooks::branding::clear_effective_branding();
+    }
+
+    /// MAPPS-630: cross-plane isolation on sign-in. Call at every
+    /// path that lands a fresh CONTACT access token (portal password
+    /// login success, magic-link redeem success, contact set-password
+    /// -then-auto-login).
+    #[cfg(feature = "app")]
+    pub fn on_contact_signin_clear_staff_side() {
+        clear_staff_session_for_plane_switch();
+        crate::hooks::branding::clear_effective_branding();
     }
 
     // The app-only API helpers below are grouped under this `api`
@@ -768,6 +1291,18 @@ pub mod api {
                         .map(|f| f.message.clone())
                         .collect::<Vec<_>>()
                         .join("; ")
+                } else if is_generic_auth_message(status, &env.error.message) {
+                    // MAPPS-624: the server ships a generic
+                    // "Authentication required" / "Access denied"
+                    // message on 401/403. Surfacing it verbatim
+                    // reads to a signed-in caller as "your session
+                    // is gone" when the real cause is "you don't
+                    // have permission for this endpoint" (portal
+                    // contact hitting a staff URL, staff missing a
+                    // capability, etc.). Replace it with the
+                    // plane-aware permission message so the copy
+                    // matches what actually happened.
+                    permission_message()
                 } else if !env.error.message.is_empty() {
                     env.error.message
                 } else {
@@ -787,12 +1322,58 @@ pub mod api {
     /// migrated to the `_typed` variants already get the field-level
     /// `ApiError::user_message` treatment; this brings the legacy callers
     /// to at least non-developer-facing parity.
+    /// MAPPS-624: "Your session has expired" reads as an incorrect
+    /// signal when the caller is authenticated and only lacks
+    /// permission for the specific endpoint (e.g. a portal contact
+    /// hitting a staff-only URL). Treat 401 the same as 403 whenever
+    /// we hold any session; only bounce to the "sign in again" copy
+    /// when the browser has no session at all, which is the true
+    /// "session expired" case a returning visitor would hit.
+    ///
+    /// MAPPS-624: recognise the server's generic 401/403 envelope
+    /// messages so we override them with the plane-aware
+    /// [`permission_message`]. Anything else (e.g. "This organization
+    /// is not active" for a suspended tenant, MFA-required copy)
+    /// stays verbatim so users still see the specific reason.
+    #[cfg(feature = "app")]
+    fn is_generic_auth_message(status: u16, msg: &str) -> bool {
+        if !(status == 401 || status == 403) {
+            return false;
+        }
+        let m = msg.trim();
+        matches!(
+            m,
+            "" | "Authentication required"
+                | "Access denied"
+                | "Access denied: Access denied"
+                | "Forbidden"
+                | "Unauthorized"
+        )
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn permission_message() -> String {
+        let has_any_session =
+            current_access_token().is_some() || current_contact_access_token().is_some();
+        if has_any_session {
+            "You don't have permission to perform this action. Contact your administrator or support team if you think you should.".into()
+        } else {
+            "Your session has ended. Please sign in again.".into()
+        }
+    }
+
+    /// Non-web fallback so callers compile under `cargo check` without
+    /// pulling in the plane-aware permission logic.
+    #[cfg(all(feature = "app", not(target_arch = "wasm32")))]
+    fn permission_message() -> String {
+        "You don't have permission to perform this action.".into()
+    }
+
     #[cfg(feature = "app")]
     fn user_friendly_status(status: u16) -> String {
         match status {
             400 => "The request was rejected. Please check the form and try again.".into(),
-            401 => "Your session has expired. Please sign in again.".into(),
-            403 => "You do not have permission to do that.".into(),
+            401 | 403 => permission_message(),
             404 => "The requested resource was not found.".into(),
             409 => "The change conflicts with another update. Please refresh and retry.".into(),
             422 => "Validation failed. Please check the form fields.".into(),
@@ -1234,20 +1815,6 @@ pub mod api {
         post_with_auth(path, body, &t).await
     }
 
-    /// Portal sibling of [`post_authed_no_content`], for `/portal/*` endpoints
-    /// that answer 204 (MAPPS-532: `POST /portal/auth/logout`).
-    ///
-    /// No `ensure_fresh_access_token` on the way in, unlike the agent one: the
-    /// portal token is memory-only with no refresh token behind it, so there
-    /// is nothing to renew. `post_no_content_with_auth` sees a bearer that is
-    /// not the agent holder's and passes it straight through, which is what
-    /// keeps a portal 401 out of the agent sign-out path.
-    #[cfg(feature = "app")]
-    pub async fn post_portal_authed_no_content(path: &str) -> Result<(), String> {
-        let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
-        post_no_content_with_auth(path, &t).await
-    }
-
     /// Typed sibling of [`post_portal_authed`], for the portal call sites that
     /// need the status code (the ticket reply form).
     #[cfg(feature = "app")]
@@ -1259,6 +1826,8 @@ pub mod api {
             code: 401,
             message: String::new(),
             fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::post(&url)
@@ -1270,6 +1839,835 @@ pub mod api {
             .await
             .map_err(network_err)?;
         handle_response(resp).await
+    }
+
+    /// PMS-729 phase 2 §7 slice B / I2: portal-authed multipart POST for
+    /// attaching a file to one of the customer's own ticket notes. The
+    /// browser sets the `Content-Type: multipart/form-data; boundary=...`
+    /// header itself from the `FormData` body, so this helper deliberately
+    /// omits it - overriding it here would strip the boundary and the
+    /// server would 400.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn post_portal_authed_multipart<T: DeserializeOwned>(
+        path: &str,
+        form: &web_sys::FormData,
+    ) -> Result<T, ApiError> {
+        let t = current_portal_access_token().ok_or_else(|| ApiError::Status {
+            code: 401,
+            message: String::new(),
+            fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
+        })?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::post(&url)
+            .header("Authorization", &format!("Bearer {t}"))
+            .body(form)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    /// MAPPS-618 phase B: staff-authed PUT with a multipart body.
+    /// Powers the Company-scoped logo / favicon / background upload
+    /// (`PUT /api/v1/companies/{id}/{asset}`). Deliberately omits the
+    /// `Content-Type` header - the browser sets it (with the
+    /// `boundary=...` parameter) from the `FormData` body itself.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn put_authed_multipart<T: DeserializeOwned>(
+        path: &str,
+        form: &web_sys::FormData,
+    ) -> Result<T, ApiError> {
+        let t = current_access_token().ok_or_else(|| ApiError::Status {
+            code: 401,
+            message: String::new(),
+            fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
+        })?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::put(&url)
+            .header("Authorization", &format!("Bearer {t}"))
+            .body(form)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    /// MAPPS-618 phase B: contact-authed PUT with a multipart body.
+    /// Powers the same asset uploads on the contact plane
+    /// (`PUT /api/v1/contact/companies/self/{asset}`), gated on the
+    /// caller holding `settings:manage_company_branding`.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn put_contact_authed_multipart<T: DeserializeOwned>(
+        path: &str,
+        form: &web_sys::FormData,
+    ) -> Result<T, ApiError> {
+        let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::put(&url)
+            .header("Authorization", &format!("Bearer {t}"))
+            .body(form)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    /// PMS-729 follow-up: portal-authed PUT with a JSON body that returns 204.
+    /// Used by change-password. Surfaces `ApiError` so the caller can key on
+    /// specific status codes (401 = current password wrong, 400 = new
+    /// password fails policy) with typed `.message` for the server text.
+    #[cfg(feature = "app")]
+    pub async fn put_portal_authed_json_no_content<B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<(), ApiError> {
+        let t = current_portal_access_token().ok_or_else(|| ApiError::Status {
+            code: 401,
+            message: String::new(),
+            fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
+        })?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::put(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        let status = resp.status();
+        super::note_response_status(status);
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+        // Reuse the standard 4xx envelope parse: `crate::utils::error::ErrorResponse`
+        // is the shape mokosh-server ships for every validation / auth failure.
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
+        let body_text = resp.text().await.unwrap_or_default();
+        let (message, fields, envelope_code, envelope_body) =
+            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
+                Ok(env) => {
+                    let code = env.error.code.clone();
+                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
+                    (
+                        env.error.message,
+                        env.error.errors.unwrap_or_default(),
+                        code,
+                        raw,
+                    )
+                }
+                Err(_) => (
+                    body_text.chars().take(200).collect(),
+                    Vec::new(),
+                    String::new(),
+                    None,
+                ),
+            };
+        Err(ApiError::Status {
+            code: status,
+            message,
+            fields,
+            envelope_code,
+            envelope_body,
+        })
+    }
+
+    /// Portal-authed PATCH with a JSON body that returns 204. Mirrors
+    /// [`put_portal_authed_json_no_content`] for the profile self-edit
+    /// path (`PATCH /portal/auth/me`).
+    #[cfg(feature = "app")]
+    pub async fn patch_portal_authed_json_no_content<B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<(), ApiError> {
+        let t = current_portal_access_token().ok_or_else(|| ApiError::Status {
+            code: 401,
+            message: String::new(),
+            fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
+        })?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::patch(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        let status = resp.status();
+        super::note_response_status(status);
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
+        let body_text = resp.text().await.unwrap_or_default();
+        let (message, fields, envelope_code, envelope_body) =
+            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
+                Ok(env) => {
+                    let code = env.error.code.clone();
+                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
+                    (
+                        env.error.message,
+                        env.error.errors.unwrap_or_default(),
+                        code,
+                        raw,
+                    )
+                }
+                Err(_) => (
+                    body_text.chars().take(200).collect(),
+                    Vec::new(),
+                    String::new(),
+                    None,
+                ),
+            };
+        Err(ApiError::Status {
+            code: status,
+            message,
+            fields,
+            envelope_code,
+            envelope_body,
+        })
+    }
+
+    /// Portal-authed POST that discards the response body. Used by
+    /// mutating endpoints that respond 204 (`/portal/company/contacts/
+    /// {id}/resend-invite`, ...). Surfaces `ApiError` so the caller
+    /// can branch on the envelope code without a second parse.
+    #[cfg(feature = "app")]
+    pub async fn post_portal_authed_no_content(path: &str) -> Result<(), ApiError> {
+        let t = current_portal_access_token().ok_or_else(|| ApiError::Status {
+            code: 401,
+            message: String::new(),
+            fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
+        })?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::post(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .send()
+            .await
+            .map_err(network_err)?;
+        let status = resp.status();
+        super::note_response_status(status);
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
+        let body_text = resp.text().await.unwrap_or_default();
+        let (message, fields, envelope_code, envelope_body) =
+            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
+                Ok(env) => {
+                    let code = env.error.code.clone();
+                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
+                    (
+                        env.error.message,
+                        env.error.errors.unwrap_or_default(),
+                        code,
+                        raw,
+                    )
+                }
+                Err(_) => (
+                    body_text.chars().take(200).collect(),
+                    Vec::new(),
+                    String::new(),
+                    None,
+                ),
+            };
+        Err(ApiError::Status {
+            code: status,
+            message,
+            fields,
+            envelope_code,
+            envelope_body,
+        })
+    }
+
+    /// PMS-729 phase 2 §7 slice B / I12: portal-authed empty-body PUT.
+    /// Used by the inbox mark-read call (`PUT
+    /// /portal/notifications/{id}/read` responds 204 with no payload).
+    /// Only checks the status; a 4xx surfaces through the standard
+    /// `status_error` string.
+    #[cfg(feature = "app")]
+    pub async fn put_portal_authed_no_content(path: &str) -> Result<(), String> {
+        let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::put(&url)
+            .header("Authorization", &format!("Bearer {t}"))
+            .send()
+            .await
+            .map_err(|e| {
+                super::note_transport_error();
+                e.to_string()
+            })?;
+        super::note_response_status(resp.status());
+        if resp.ok() {
+            Ok(())
+        } else {
+            Err(status_error(resp).await)
+        }
+    }
+
+    /// PMS-729 phase 2 §7 slice D / I18: portal-authed DELETE that
+    /// discards the response body. Used by the delegation revoke path
+    /// (`DELETE /portal/company/delegations/{id}` responds 204). Only
+    /// checks the status; a 4xx surfaces through `status_error`.
+    #[cfg(feature = "app")]
+    pub async fn delete_portal_authed_no_content(path: &str) -> Result<(), String> {
+        let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::delete(&url)
+            .header("Authorization", &format!("Bearer {t}"))
+            .send()
+            .await
+            .map_err(|e| {
+                super::note_transport_error();
+                e.to_string()
+            })?;
+        super::note_response_status(resp.status());
+        if resp.ok() {
+            Ok(())
+        } else {
+            Err(status_error(resp).await)
+        }
+    }
+
+    /// PMS-729 phase 2 §7 slice B / I2: portal-authed download of a raw
+    /// response body plus the server's `Content-Disposition` filename. The
+    /// SPA holds the portal bearer in WASM memory so an attachment cannot
+    /// be reached via a plain `<a href>`; this helper is what the
+    /// `PortalAttachmentLink` handler pipes into a Blob URL.
+    #[cfg(feature = "app")]
+    pub async fn get_portal_authed_bytes(path: &str) -> Result<(Vec<u8>, Option<String>), String> {
+        let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::get(&url)
+            .header("Authorization", &format!("Bearer {t}"))
+            .send()
+            .await
+            .map_err(|e| {
+                super::note_transport_error();
+                e.to_string()
+            })?;
+        super::note_response_status(resp.status());
+        if !resp.ok() {
+            return Err(status_error(resp).await);
+        }
+        let filename = resp
+            .headers()
+            .get("content-disposition")
+            .as_deref()
+            .and_then(content_disposition_filename);
+        let bytes = resp.binary().await.map_err(|e| e.to_string())?;
+        Ok((bytes, filename))
+    }
+
+    // --- Contact-authed wrappers (mokosh-contact-login, prompt 005) ------
+    //
+    // Contact JWT (`typ: "contact"`) minted at
+    // `POST /api/v1/contact/auth/login`. Every `/api/v1/contact/*`
+    // extractor (`RequireContactAuth`) rejects any bearer whose typ is
+    // not "contact", so these helpers read ONLY `CONTACT_ACCESS_TOKEN`
+    // and fail fast with a 401 when no contact session is held, rather
+    // than falling back to the staff bearer or firing an anonymous
+    // request.
+
+    #[cfg(feature = "app")]
+    fn contact_not_signed_in_api() -> ApiError {
+        ApiError::Status {
+            code: 401,
+            message: "not signed in to the contact portal".to_string(),
+            fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
+        }
+    }
+
+    #[cfg(feature = "app")]
+    pub async fn get_contact_authed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
+        let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::get(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    #[cfg(feature = "app")]
+    pub async fn post_contact_authed_typed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::post(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    #[cfg(feature = "app")]
+    pub async fn post_contact_authed_no_content(path: &str) -> Result<(), ApiError> {
+        let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::post(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .send()
+            .await
+            .map_err(network_err)?;
+        let status = resp.status();
+        super::note_response_status(status);
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
+        let body_text = resp.text().await.unwrap_or_default();
+        let (message, fields, envelope_code, envelope_body) =
+            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
+                Ok(env) => {
+                    let code = env.error.code.clone();
+                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
+                    (
+                        env.error.message,
+                        env.error.errors.unwrap_or_default(),
+                        code,
+                        raw,
+                    )
+                }
+                Err(_) => (
+                    body_text.chars().take(200).collect(),
+                    Vec::new(),
+                    String::new(),
+                    None,
+                ),
+            };
+        Err(ApiError::Status {
+            code: status,
+            message,
+            fields,
+            envelope_code,
+            envelope_body,
+        })
+    }
+
+    #[cfg(feature = "app")]
+    pub async fn put_contact_authed_typed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::put(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    /// MAPPS-620 (mokosh-branding prompt 004): contact-plane PATCH.
+    /// Powers `PATCH /contact/companies/self/branding` (JSONB merge
+    /// subset of the caller's own Company branding). Same shape as
+    /// [`put_contact_authed_typed`]; separate verb because the server
+    /// gates PATCH separately from PUT.
+    #[cfg(feature = "app")]
+    pub async fn patch_contact_authed_typed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::patch(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    #[cfg(feature = "app")]
+    pub async fn delete_contact_authed_no_content(path: &str) -> Result<(), ApiError> {
+        let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::delete(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .send()
+            .await
+            .map_err(network_err)?;
+        let status = resp.status();
+        super::note_response_status(status);
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
+        let body_text = resp.text().await.unwrap_or_default();
+        let (message, fields, envelope_code, envelope_body) =
+            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
+                Ok(env) => {
+                    let code = env.error.code.clone();
+                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
+                    (
+                        env.error.message,
+                        env.error.errors.unwrap_or_default(),
+                        code,
+                        raw,
+                    )
+                }
+                Err(_) => (
+                    body_text.chars().take(200).collect(),
+                    Vec::new(),
+                    String::new(),
+                    None,
+                ),
+            };
+        Err(ApiError::Status {
+            code: status,
+            message,
+            fields,
+            envelope_code,
+            envelope_body,
+        })
+    }
+
+    // --- Session-agnostic authed helpers (MAPPS-604) -------------------
+    //
+    // The prompt 013 pages (dashboard, tickets, billing, quotes,
+    // contracts, assets, projects) share ONE URL space between the staff
+    // workspace and the contact portal: `RequireCallerContext` on the
+    // server accepts either bearer and scopes the response accordingly.
+    // These wrappers pick the RIGHT bearer for the caller: contact
+    // session first when held (so the server sees `typ: "contact"` and
+    // filters to `company_id = contact.company_id`), else staff bearer,
+    // else unauth (mirrors `get_authed`'s legacy anon fall-through so a
+    // no-session caller does not spuriously 401 the whole page).
+
+    /// GET the same path with whichever bearer the caller holds today.
+    /// Prefers the contact bearer over the staff bearer so a contact
+    /// session on a URL that ALSO renders for staff routes through the
+    /// contact identity and lands on the contact-scoped filter path.
+    #[cfg(feature = "app")]
+    pub async fn get_authed_any<T: DeserializeOwned>(path: &str) -> Result<T, String> {
+        if let Some(t) = current_contact_access_token() {
+            return get_with_auth(path, &t).await;
+        }
+        match current_access_token() {
+            Some(t) => get_with_auth(path, &t).await,
+            None => get(path).await,
+        }
+    }
+
+    /// Paging sibling of [`get_authed_any`]: reads a whole list on
+    /// whichever bearer the caller holds, paging until a short page.
+    ///
+    /// The pair matters. [`get_authed_any`] picks the right bearer but
+    /// hands back one page, and [`get_all_authed`] pages but only ever
+    /// on the staff bearer, so a dual-plane list had to give up one of
+    /// the two (MAPPS-528 paging, or the contact-scoped response). A
+    /// contact reading a long note thread through the single-page
+    /// helper saw a list silently short at the page cap.
+    ///
+    /// `path` carries the endpoint's own filters and must NOT spell
+    /// `page` or `per_page`; both are appended per request.
+    #[cfg(feature = "app")]
+    pub async fn get_all_authed_any<T: DeserializeOwned>(path: &str) -> Result<Vec<T>, String> {
+        if let Some(t) = current_contact_access_token() {
+            return get_all_with_auth(path, &t).await;
+        }
+        let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
+        get_all_with_auth(path, &t).await
+    }
+
+    /// Typed sibling of [`get_authed_any`]. Same contact-first bearer
+    /// selection; surfaces `ApiError::Status` so a page can branch on
+    /// 401 / 403 / 404 without re-parsing the envelope.
+    #[cfg(feature = "app")]
+    pub async fn get_authed_any_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
+        let url = format!("{}{}", api_base(), path);
+        let mut req = Request::get(&url).header("Content-Type", "application/json");
+        let bearer = current_contact_access_token().or_else(current_access_token);
+        if let Some(t) = bearer {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let resp = req.send().await.map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    /// MAPPS-607: typed POST that picks the caller's bearer (contact
+    /// first, staff second, anon otherwise) the same way
+    /// [`get_authed_any_typed`] does. Used by the ticket detail's
+    /// Reopen and Attach controls and the asset detail's Report an
+    /// Issue, all of which sit on dual-plane routes gated per-cap on
+    /// the server. Surfaces `ApiError::Status` so a caller can branch
+    /// on 403 (missing cap) or 501 (not implemented yet) without
+    /// re-parsing the envelope.
+    #[cfg(feature = "app")]
+    pub async fn post_authed_any_typed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let url = format!("{}{}", api_base(), path);
+        let mut req = Request::post(&url).header("Content-Type", "application/json");
+        let bearer = current_contact_access_token().or_else(current_access_token);
+        if let Some(t) = bearer {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let resp = req
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    /// MAPPS-609: typed PATCH that picks the caller's bearer (contact
+    /// first, staff second, anon otherwise) the same way
+    /// [`post_authed_any_typed`] does. Used by the ticket detail's
+    /// contact-visible Edit button, which fires `PATCH /tickets/{id}`
+    /// with `{ title, description }` on a dual-plane route gated
+    /// per-cap on the server. Surfaces `ApiError::Status` so a caller
+    /// can branch on 403 (missing cap / not-owner) without re-parsing
+    /// the envelope.
+    #[cfg(feature = "app")]
+    pub async fn patch_authed_any_typed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let url = format!("{}{}", api_base(), path);
+        let mut req = Request::patch(&url).header("Content-Type", "application/json");
+        let bearer = current_contact_access_token().or_else(current_access_token);
+        if let Some(t) = bearer {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let resp = req
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    /// MAPPS-607: bytes GET that picks the caller's bearer (contact
+    /// first, staff second, anon otherwise) - shape identical to
+    /// [`get_authed_bytes`] except for the two-bearer selection. Used
+    /// by the invoice and quote detail Download PDF controls, both on
+    /// dual-plane routes. Surfaces the raw response body plus the
+    /// server's `Content-Disposition` filename, or `ApiError::Status`
+    /// so a caller can branch on 501 (PDF generation stubbed out) and
+    /// render the fallback copy inline.
+    #[cfg(feature = "app")]
+    pub async fn get_authed_any_bytes(path: &str) -> Result<(Vec<u8>, Option<String>), ApiError> {
+        let url = format!("{}{}", api_base(), path);
+        let mut req = Request::get(&url);
+        let bearer = current_contact_access_token().or_else(current_access_token);
+        if let Some(t) = bearer {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let resp = req.send().await.map_err(network_err)?;
+        let status = resp.status();
+        super::note_response_status(status);
+        if !(200..300).contains(&status) {
+            // fetch-error-logging-allow: the request already failed and its status
+            // is what gets reported; an unreadable body only costs the server's own
+            // message, and the status-class fallback is used in its place.
+            let body = resp.text().await.unwrap_or_default();
+            let (message, fields, envelope_code, envelope_body) =
+                match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
+                    Ok(env) => {
+                        let code = env.error.code.clone();
+                        let raw = serde_json::from_str::<serde_json::Value>(&body).ok();
+                        (
+                            env.error.message,
+                            env.error.errors.unwrap_or_default(),
+                            code,
+                            raw,
+                        )
+                    }
+                    Err(_) => (
+                        body.chars().take(200).collect(),
+                        Vec::new(),
+                        String::new(),
+                        None,
+                    ),
+                };
+            return Err(ApiError::Status {
+                code: status,
+                message,
+                fields,
+                envelope_code,
+                envelope_body,
+            });
+        }
+        let filename = resp
+            .headers()
+            .get("content-disposition")
+            .as_deref()
+            .and_then(content_disposition_filename);
+        let bytes = resp
+            .binary()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
+        Ok((bytes, filename))
+    }
+
+    // --- Platform-authed wrappers (MAPPS-518) ---------------------------
+    //
+    // MAPPS-518: the platform super-admin persona lives in
+    // `platform_admins` on the server, with its own JWT typ
+    // (`"platform"`) and its own bearer minted at
+    // `POST /api/v1/platform/login`. The client stashes that bearer
+    // under `PLATFORM_TOKEN_KEY` in `sessionStorage` (see
+    // `pages::platform_login`); the tenant `ACCESS_TOKEN` holder is
+    // untouched. Every tenant-management endpoint that used to be
+    // `RequireSuperAdmin` (list/create tenants, suspend/activate,
+    // get/update tenant admin, resend welcome) is now
+    // `RequirePlatformAdmin`, so the SPA MUST send the platform
+    // bearer instead of the tenant bearer on those calls or the
+    // server returns 401.
+    //
+    // These wrappers read ONLY the platform-token slot in
+    // sessionStorage; they never fall back to the tenant bearer
+    // (mirroring the portal-authed helpers above).
+
+    /// MAPPS-518: the sessionStorage key `/platform/login` writes to.
+    /// Kept in sync with `pages::platform_login::PLATFORM_TOKEN_KEY`.
+    #[cfg(target_arch = "wasm32")]
+    const PLATFORM_TOKEN_KEY: &str = "mokosh:platform_token";
+
+    /// MAPPS-518: read the current platform-admin bearer from
+    /// sessionStorage. `None` when the operator has not signed in on
+    /// `/platform/login` (or the browser blocks sessionStorage).
+    #[cfg(feature = "app")]
+    pub fn current_platform_access_token() -> Option<String> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let win = web_sys::window()?;
+            let store = win.session_storage().ok()??;
+            let token = store.get_item(PLATFORM_TOKEN_KEY).ok()??;
+            if token.trim().is_empty() {
+                None
+            } else {
+                Some(token)
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        None
+    }
+
+    #[cfg(feature = "app")]
+    fn platform_not_signed_in() -> String {
+        "not signed in as a platform admin".to_string()
+    }
+
+    #[cfg(feature = "app")]
+    fn platform_not_signed_in_api() -> ApiError {
+        ApiError::Status {
+            code: 401,
+            message: platform_not_signed_in(),
+            fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
+        }
+    }
+
+    #[cfg(feature = "app")]
+    pub async fn get_platform_authed<T: DeserializeOwned>(path: &str) -> Result<T, String> {
+        let t = current_platform_access_token().ok_or_else(platform_not_signed_in)?;
+        get_with_auth(path, &t).await
+    }
+
+    #[cfg(feature = "app")]
+    pub async fn get_platform_authed_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
+        let t = current_platform_access_token().ok_or_else(platform_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::get(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    #[cfg(feature = "app")]
+    pub async fn post_platform_authed_typed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let t = current_platform_access_token().ok_or_else(platform_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::post(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    #[cfg(feature = "app")]
+    pub async fn put_platform_authed_typed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let t = current_platform_access_token().ok_or_else(platform_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::put(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    #[cfg(feature = "app")]
+    pub async fn post_platform_authed_no_content(path: &str) -> Result<(), String> {
+        let t = current_platform_access_token().ok_or_else(platform_not_signed_in)?;
+        post_no_content_with_auth(path, &t).await
     }
 
     // --- Typed error layer ----------------------------------------------
@@ -1300,6 +2698,17 @@ pub mod api {
             code: u16,
             message: String,
             fields: Vec<crate::utils::error::FieldError>,
+            /// Server envelope's `error.code` (the string identifier), when
+            /// present. Distinct from the HTTP `code` (the numeric status)
+            /// above so callers can branch on the domain-level signal
+            /// (`CAPTCHA_REQUIRED`, `ACCOUNT_DELETED`, ...) without
+            /// pattern-matching on human-facing message text.
+            envelope_code: String,
+            /// Raw JSON body of the error response, preserved when the
+            /// caller needs a subfield the typed shape does not carry
+            /// (e.g. the portal-login CAPTCHA `error.captcha.site_key`).
+            /// Empty when the body did not parse as JSON.
+            envelope_body: Option<serde_json::Value>,
         },
         /// Response was 2xx but the body could not be decoded into the
         /// target type.
@@ -1316,9 +2725,20 @@ pub mod api {
                     code,
                     message,
                     fields,
+                    ..
                 } => match *code {
-                    401 => "Your session has expired. Please sign in again.".into(),
-                    403 => "You do not have permission to do that.".into(),
+                    // Server sometimes ships a specific message on
+                    // 401/403 that the user must see verbatim (e.g.
+                    // suspended tenant -> "This organization is not
+                    // active", account deactivated, MFA required
+                    // mid-session). Keep those. Replace the generic
+                    // "Authentication required" / "Access denied"
+                    // envelope with the plane-aware permission
+                    // message so a signed-in caller stops seeing
+                    // "your session has expired" for a plain
+                    // permission miss (MAPPS-624).
+                    401 | 403 if !is_generic_auth_message(*code, message) => message.clone(),
+                    401 | 403 => permission_message(),
                     404 => "The requested resource was not found.".into(),
                     409 if !message.is_empty() => message.clone(),
                     // Surface the field-level validation messages when the
@@ -1405,7 +2825,7 @@ pub mod api {
         // is what gets reported; an unreadable body only costs the server's own
         // message, and the status-class fallback is used in its place.
         let body = response.text().await.unwrap_or_default();
-        let (message, fields) =
+        let (message, fields, envelope_code, envelope_body) =
             match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
                 Ok(env) => {
                     // MAPPS-348: mirror `status_error`'s terminal-state
@@ -1414,16 +2834,34 @@ pub mod api {
                     if status == 410 && env.error.code == "ACCOUNT_DELETED" {
                         super::note_account_deleted();
                     }
-                    (env.error.message, env.error.errors.unwrap_or_default())
+                    let code = env.error.code.clone();
+                    // Keep the raw parse around so callers who need a
+                    // sub-object (`error.captcha.site_key` on the portal
+                    // login CAPTCHA challenge) can pluck it out without
+                    // a second parse.
+                    let raw = serde_json::from_str::<serde_json::Value>(&body).ok();
+                    (
+                        env.error.message,
+                        env.error.errors.unwrap_or_default(),
+                        code,
+                        raw,
+                    )
                 }
                 // Fall back to the raw body, capped so a runaway HTML
                 // 500 page doesn't end up in a toast.
-                Err(_) => (body.chars().take(200).collect(), Vec::new()),
+                Err(_) => (
+                    body.chars().take(200).collect(),
+                    Vec::new(),
+                    String::new(),
+                    None,
+                ),
             };
         Err(ApiError::Status {
             code: status,
             message,
             fields,
+            envelope_code,
+            envelope_body,
         })
     }
 
@@ -1505,15 +2943,31 @@ pub mod api {
             // is what gets reported; an unreadable body only costs the server's own
             // message, and the status-class fallback is used in its place.
             let body = resp.text().await.unwrap_or_default();
-            let (message, fields) =
+            let (message, fields, envelope_code, envelope_body) =
                 match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
-                    Ok(env) => (env.error.message, env.error.errors.unwrap_or_default()),
-                    Err(_) => (body.chars().take(200).collect(), Vec::new()),
+                    Ok(env) => {
+                        let code = env.error.code.clone();
+                        let raw = serde_json::from_str::<serde_json::Value>(&body).ok();
+                        (
+                            env.error.message,
+                            env.error.errors.unwrap_or_default(),
+                            code,
+                            raw,
+                        )
+                    }
+                    Err(_) => (
+                        body.chars().take(200).collect(),
+                        Vec::new(),
+                        String::new(),
+                        None,
+                    ),
                 };
             return Err(ApiError::Status {
                 code: status,
                 message,
                 fields,
+                envelope_code,
+                envelope_body,
             });
         }
         let filename = resp
@@ -1582,8 +3036,11 @@ pub mod api {
         body: &B,
     ) -> Result<T, ApiError> {
         let url = format!("{}{}", api_base(), path);
-        let resp = Request::post(&url)
-            .header("Content-Type", "application/json")
+        let mut req = Request::post(&url).header("Content-Type", "application/json");
+        if let Some(host) = current_forwarded_host() {
+            req = req.header("X-Forwarded-Host", &host);
+        }
+        let resp = req
             .json(body)
             .map_err(|e| ApiError::Network(e.to_string()))?
             .send()
@@ -1600,11 +3057,11 @@ pub mod api {
     #[cfg(feature = "app")]
     pub async fn get_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
         let url = format!("{}{}", api_base(), path);
-        let resp = Request::get(&url)
-            .header("Content-Type", "application/json")
-            .send()
-            .await
-            .map_err(network_err)?;
+        let mut req = Request::get(&url).header("Content-Type", "application/json");
+        if let Some(host) = current_forwarded_host() {
+            req = req.header("X-Forwarded-Host", &host);
+        }
+        let resp = req.send().await.map_err(network_err)?;
         handle_response(resp).await
     }
 
@@ -1613,11 +3070,23 @@ pub mod api {
     /// decode the empty payload, so this variant only inspects the status and
     /// keeps the typed error so the caller can tell 410 (replayed link) from
     /// 400 (expired / unknown link).
-    #[cfg(feature = "app")]
+    ///
+    /// MAPPS-554 fix (2026-08-24 operator report: "Forget password in
+    /// client portal doesn't actually work"): attach `X-Forwarded-Host`
+    /// to match `post_typed` / `get_typed`. Without it, the portal's
+    /// `POST /portal/auth/forgot-password` sees `Host: server:8080`
+    /// (the Dioxus dev proxy rewrite) instead of the real
+    /// `{slug}.client.<apex>` the browser is visiting; `lookup_host_tenant`
+    /// then fails silently and the handler returns 204 with no
+    /// email dispatched. Same reason `post_typed` already attaches it.
+    #[cfg(feature = "web")]
     pub async fn post_typed_no_content<B: Serialize>(path: &str, body: &B) -> Result<(), ApiError> {
         let url = format!("{}{}", api_base(), path);
-        let resp = Request::post(&url)
-            .header("Content-Type", "application/json")
+        let mut req = Request::post(&url).header("Content-Type", "application/json");
+        if let Some(host) = current_forwarded_host() {
+            req = req.header("X-Forwarded-Host", &host);
+        }
+        let resp = req
             .json(body)
             .map_err(|e| ApiError::Network(e.to_string()))?
             .send()
@@ -1632,15 +3101,31 @@ pub mod api {
         // is what gets reported; an unreadable body only costs the server's own
         // message, and the status-class fallback is used in its place.
         let body = resp.text().await.unwrap_or_default();
-        let (message, fields) =
+        let (message, fields, envelope_code, envelope_body) =
             match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
-                Ok(env) => (env.error.message, env.error.errors.unwrap_or_default()),
-                Err(_) => (body.chars().take(200).collect(), Vec::new()),
+                Ok(env) => {
+                    let code = env.error.code.clone();
+                    let raw = serde_json::from_str::<serde_json::Value>(&body).ok();
+                    (
+                        env.error.message,
+                        env.error.errors.unwrap_or_default(),
+                        code,
+                        raw,
+                    )
+                }
+                Err(_) => (
+                    body.chars().take(200).collect(),
+                    Vec::new(),
+                    String::new(),
+                    None,
+                ),
             };
         Err(ApiError::Status {
             code: status,
             message,
             fields,
+            envelope_code,
+            envelope_body,
         })
     }
 
@@ -1654,6 +3139,8 @@ pub mod api {
             code: 401,
             message: String::new(),
             fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::put(&url)
@@ -1684,6 +3171,8 @@ pub mod api {
             code: 401,
             message: String::new(),
             fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::patch(&url)
@@ -1707,6 +3196,8 @@ pub mod api {
             code: 401,
             message: String::new(),
             fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::delete(&url)
@@ -1727,25 +3218,49 @@ pub mod api {
             // is what gets reported; an unreadable body only costs the server's own
             // message, and the status-class fallback is used in its place.
             let body = resp.text().await.unwrap_or_default();
-            let (message, fields) =
+            let (message, fields, envelope_code, envelope_body) =
                 match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
-                    Ok(env) => (env.error.message, env.error.errors.unwrap_or_default()),
-                    Err(_) => (body.chars().take(200).collect(), Vec::new()),
+                    Ok(env) => {
+                        let code = env.error.code.clone();
+                        let raw = serde_json::from_str::<serde_json::Value>(&body).ok();
+                        (
+                            env.error.message,
+                            env.error.errors.unwrap_or_default(),
+                            code,
+                            raw,
+                        )
+                    }
+                    Err(_) => (
+                        body.chars().take(200).collect(),
+                        Vec::new(),
+                        String::new(),
+                        None,
+                    ),
                 };
             Err(ApiError::Status {
                 code: status,
                 message,
                 fields,
+                envelope_code,
+                envelope_body,
             })
         }
     }
 }
 
-/// MAPPS-395 recurrence gates: keep the agent bearer and the portal session
-/// token in separate lanes. Both tests are source scans plus a holder check,
-/// because the request helpers themselves need a browser to run.
-#[cfg(test)]
-mod tests {
+/// mokosh-contact-login: MAPPS-395 portal-lane tests removed with
+/// prompt 001 (`src/pages/portal.rs` retired; the `include_str!` below
+/// would fail at compile time otherwise). Contact-plane replacement
+/// lands in prompt 004.
+///
+/// Left in the tree under an always-false `any()` cfg so the shape is
+/// visible to whoever writes the contact-plane replacement, without
+/// participating in `cargo test`. The `strip_api_version` /
+/// `normalize_api_base` unit tests main added live in the pure helpers
+/// where they belong (still compiled), so nothing on the main side is
+/// lost.
+#[cfg(all(test, any()))]
+mod tests_RETIRED {
     use super::api::{normalize_api_base, strip_api_version};
 
     const FETCH_SRC: &str = include_str!("fetch.rs");
@@ -1760,7 +3275,13 @@ mod tests {
         "get_all_portal_authed",
         "post_portal_authed",
         "post_portal_authed_typed",
+        "post_portal_authed_multipart",
+        "get_portal_authed_bytes",
+        "put_portal_authed_no_content",
+        "put_portal_authed_json_no_content",
+        "patch_portal_authed_json_no_content",
         "post_portal_authed_no_content",
+        "delete_portal_authed_no_content",
     ];
 
     /// Agent-token helpers. None of them may appear in the portal page: a
@@ -2091,5 +3612,68 @@ mod tests {
             "the loop must be bounded, so an endpoint that ignores `page` \
              fails loudly instead of spinning: {body}"
         );
+    }
+}
+
+/// mokosh-contact-login prompt 005: unit tests for the contact-plane
+/// session holders. Covers only the in-memory holder round-trip and
+/// the isolation from the staff `ACCESS_TOKEN`. The refresh-token
+/// setter mirrors to `localStorage` via `web_sys::window()`, which
+/// panics on the native test target (`cannot access imported statics
+/// on non-wasm targets`); those paths are exercised in the browser
+/// end-to-end run described in prompt 005's Verify section rather
+/// than in `cargo test --lib`.
+#[cfg(all(test, feature = "web"))]
+mod contact_session_tests {
+    use super::api::{
+        current_access_token, current_contact_access_token, has_contact_session,
+        set_contact_access_token,
+    };
+
+    #[test]
+    fn contact_access_token_roundtrip() {
+        set_contact_access_token(Some("contact-access".to_string()));
+        assert_eq!(
+            current_contact_access_token().as_deref(),
+            Some("contact-access")
+        );
+        assert!(has_contact_session());
+        // Staff bearer is untouched by a contact sign-in: separate cells.
+        assert_eq!(
+            current_access_token(),
+            None,
+            "a contact sign-in must not populate the staff access token"
+        );
+        set_contact_access_token(None);
+        assert_eq!(current_contact_access_token(), None);
+        assert!(!has_contact_session());
+    }
+
+    /// MAPPS-604: the Company UUID slot round-trips independently from
+    /// the token holders; setting `None` clears it. Verifies the state
+    /// wiring in `set_contact_company_id` /
+    /// `current_contact_company_id`.
+    #[test]
+    fn contact_company_id_roundtrip() {
+        use super::api::{current_contact_company_id, set_contact_company_id};
+        let id = uuid::Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888);
+        set_contact_company_id(Some(id));
+        assert_eq!(current_contact_company_id(), Some(id));
+        set_contact_company_id(None);
+        assert_eq!(current_contact_company_id(), None);
+    }
+
+    /// MAPPS-609: the contact UUID slot round-trips independently from
+    /// the token holders; setting `None` clears it. Verifies the state
+    /// wiring in `set_contact_id` / `current_contact_id`, mirroring the
+    /// company-id round-trip above.
+    #[test]
+    fn contact_id_roundtrip() {
+        use super::api::{current_contact_id, set_contact_id};
+        let id = uuid::Uuid::from_u128(0xaabb_ccdd_eeff_0011_2233_4455_6677_8899);
+        set_contact_id(Some(id));
+        assert_eq!(current_contact_id(), Some(id));
+        set_contact_id(None);
+        assert_eq!(current_contact_id(), None);
     }
 }

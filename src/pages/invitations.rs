@@ -49,13 +49,16 @@ const ROLE_ASSIGNMENT_ENABLED: bool = false;
 const INVITE_PREVIEW_NOTE: &str = "The invitation email is built into the server rather than by a notification rule, so there is nothing to render yet. An invitation email is still sent.";
 
 #[component]
-pub fn TeamPage() -> Element {
-    use_page_title("Team");
+pub fn InvitationsPage() -> Element {
+    use_page_title("Invitations");
     let auth = use_auth();
-    let is_admin = {
-        let a = auth.read();
-        a.has_role(UserRole::Admin) || a.has_role(UserRole::SuperAdmin)
-    };
+    // MAPPS-518: the platform super-admin persona lives in
+    // `platform_admins`, not on the tenant `users` row, so
+    // `has_role(SuperAdmin)` here was checking a role that no longer
+    // grants any privilege (and, post migration 133, no users row
+    // ever carries it). Invitation-sending is a tenant-scoped
+    // operation, so gate it on the tenant `admin` role alone.
+    let is_admin = auth.read().has_role(UserRole::Admin);
 
     let mut email = use_signal(String::new);
     let mut role = use_signal(|| "technician".to_string());

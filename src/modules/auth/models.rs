@@ -149,6 +149,7 @@ mod tests {
             theme_base_mode: None,
             theme_accent_id: None,
             own_company_id: None,
+            tenant_kind: String::new(),
         };
         let tenant_id = user.tenant_id;
 
@@ -174,6 +175,7 @@ mod tests {
             theme_base_mode: None,
             theme_accent_id: None,
             own_company_id: None,
+            tenant_kind: String::new(),
         };
         let tenant_id = user.tenant_id;
         let state = AuthState::authenticated(user, tenant_id);
@@ -199,6 +201,7 @@ mod tests {
             theme_base_mode: None,
             theme_accent_id: None,
             own_company_id: None,
+            tenant_kind: String::new(),
         };
 
         assert_eq!(user.full_name(), "John Doe");
@@ -220,6 +223,7 @@ mod tests {
             theme_base_mode: None,
             theme_accent_id: None,
             own_company_id: None,
+            tenant_kind: String::new(),
         };
 
         assert_eq!(user.initials(), "JD");
@@ -244,6 +248,7 @@ mod tests {
             theme_base_mode: None,
             theme_accent_id: None,
             own_company_id: None,
+            tenant_kind: String::new(),
         };
         let tenant_id = user.tenant_id;
         let auth_state = AuthState::authenticated(user, tenant_id);
@@ -269,10 +274,16 @@ mod tests {
             theme_base_mode: None,
             theme_accent_id: None,
             own_company_id: None,
+            tenant_kind: String::new(),
         };
         let tenant_id = user.tenant_id;
         let auth_state = AuthState::authenticated(user, tenant_id);
         assert!(auth_state.require_tenant().is_ok());
         assert_eq!(auth_state.require_tenant().unwrap(), tenant_id);
     }
+
+    // PMS-791 / MAPPS-462: is_org_tenant / is_personal_tenant now live on
+    // `AuthContext` in `hooks/auth.rs` (the actual signal readers), not on
+    // `AuthState` (which is `pub use mokosh_types::auth::*;` since MAPPS-536).
+    // The behavioural tests moved there.
 }

@@ -107,6 +107,34 @@ impl AuthContext {
         self.user.as_ref().is_some_and(|u| u.role == role)
     }
 
+    /// PMS-791 / MAPPS-462: shorthand for "current user has admin
+    /// privileges" (admin OR super_admin). Mirrors the pattern used by
+    /// every existing admin-gated page (audit_log.rs, sla.rs, settings.rs)
+    /// that manually walks `.user.as_ref().map(|u| u.role.is_admin())`.
+    pub fn is_admin(&self) -> bool {
+        self.user.as_ref().is_some_and(|u| u.role.is_admin())
+    }
+
+    /// PMS-791 / MAPPS-462: true when the caller's tenant is a
+    /// multi-user org tenant. Empty tenant_kind (older server) reads as
+    /// org (fail-open UI; server still gates the actual endpoints).
+    pub fn is_org_tenant(&self) -> bool {
+        let kind = self
+            .user
+            .as_ref()
+            .map(|u| u.tenant_kind.as_str())
+            .unwrap_or("");
+        matches!(kind, "org" | "")
+    }
+
+    /// PMS-791 / MAPPS-462: strict "personal tenant" check — only true
+    /// when tenant_kind is explicitly "personal".
+    pub fn is_personal_tenant(&self) -> bool {
+        self.user
+            .as_ref()
+            .is_some_and(|u| u.tenant_kind == "personal")
+    }
+
     /// Return the membership matching `active_tenant_id` so callers can
     /// pull a display-ready tenant name or role for the current scope
     /// without re-walking the membership list. None before sign-in or
@@ -326,6 +354,10 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
             // The id_token has no own-company claim; the post-rehydrate
             // /me fetch (use_current_user_loader) fills it in within a tick.
             own_company_id: None,
+            // PMS-791 / MAPPS-462: no tenant_kind claim in the id_token
+            // either; the post-rehydrate /me fetch fills it. Default
+            // empty; is_org_tenant() treats "" as org (fail-open).
+            tenant_kind: String::new(),
         }),
         // MAPPS-661: the app's existing loading state IS the render gate.
         // `AuthGuard` shows it before it reads `is_authenticated`, so a
@@ -516,30 +548,25 @@ fn mirror_rotated_bundle(auth: &mut Signal<AuthContext>) {
     }
 }
 
-/// Load the organisation the user acts under, from mokosh, after sign-in.
+/// Load `/api/v1/auth/memberships` from mokosh into AuthContext after
+/// sign-in. Watches the auth signal and re-fetches whenever the user
+/// transitions from "no membership list" to "have a session" (login,
+/// or a page reload that rehydrates from sessionStorage). Cheap GET,
+/// runs at most a few times per session. Mount once at the app root.
 ///
-/// MAPPS-427: this used to GET bunyip's `/v1/auth/memberships`, and that call
-/// could never succeed. bunyip-api's `/v1/*` family is a Resource Server whose
-/// verifier enforces `aud == OIDC_RS_AUDIENCE` (BUNYIP-252), and the token this
-/// SPA holds is minted for mokosh's audience, so bunyip correctly answered 401
-/// on every page load. The failure path then seeded a synthetic membership
-/// whose name was the user's EMAIL ADDRESS, which is what the top bar and the
-/// board view have been displaying as an organisation name.
+/// MAPPS-497 item 3: this hook used to hit bunyip's endpoint and fall
+/// back to a synthetic single-tenant row when bunyip was unreachable.
+/// Phase 2 (MAPPS-491) landed a mokosh-side `/api/v1/auth/memberships`
+/// that returns the real multi-tenant list from `tenant_memberships`,
+/// which is now the canonical source. The bunyip call + the synthetic
+/// fallback are gone; a failed fetch leaves `memberships` empty, which
+/// the switcher UI handles (hides the trigger, shows "Create new"
+/// through the user menu instead).
 ///
-/// Even authorised it would not have helped: bunyip's handler is a stub that
-/// returns one hardcoded row whose `tenant_name` is also the user's email,
-/// pending its phase-04 multi-tenant work.
-///
-/// So the name now comes from mokosh's own `/tenants/current` (PMS-751), which
-/// is the exact column every client-facing email is composed from. One row,
-/// because mokosh is single-tenant-per-user (PMS-447) and the switcher itself
-/// lives in bunyip's hub; this list exists to name the current org, not to
-/// choose between orgs.
-///
-/// A failure leaves the list empty rather than inventing a row. Callers already
-/// handle "no org name" (`active_org_name()` returns `None`), and a missing
-/// name is a better answer than a wrong one.
-pub fn use_active_org_loader() {
+/// Exposed under the historical `use_active_org_loader` name as well
+/// (see the `pub use` further down) so mid-merge callers keep
+/// compiling.
+pub fn use_memberships_loader() {
     let mut auth = use_auth();
     use_effect(move || {
         let needs_load = {
@@ -550,43 +577,85 @@ pub fn use_active_org_loader() {
             return;
         }
         spawn(async move {
-            #[derive(serde::Deserialize)]
-            struct TenantView {
-                #[serde(default)]
-                id: String,
-                #[serde(default)]
-                name: String,
-            }
-
-            let fetched =
-                crate::hooks::fetch::api::get_authed::<TenantView>("/tenants/current").await;
-
-            let mut a = auth.write();
-            // Set first and unconditionally: a failed load must not re-fire on
-            // every render, which is what forced the fabricated row before.
-            a.memberships_loaded = true;
-            match fetched {
-                Ok(t) if !t.name.trim().is_empty() => {
-                    // The authoritative id, replacing whatever the id_token
-                    // claim did or did not carry (PMS-751: it carries nothing
-                    // today, so this was the nil uuid).
-                    if let Ok(id) = t.id.parse::<uuid::Uuid>() {
-                        a.active_tenant_id = Some(id);
+            #[cfg(feature = "web")]
+            {
+                // MAPPS-491: primary source is mokosh's own multi-tenant list.
+                // A populated response wins outright.
+                match crate::hooks::fetch::api::get_authed_typed::<Vec<MembershipView>>(
+                    "/auth/memberships",
+                )
+                .await
+                {
+                    Ok(list) if !list.is_empty() => {
+                        let mut a = auth.write();
+                        a.memberships = list;
+                        a.memberships_loaded = true;
+                        return;
                     }
-                    a.memberships = vec![MembershipView {
-                        tenant_id: t.id,
-                        tenant_name: t.name,
-                    }];
+                    Ok(_) => {
+                        tracing::debug!(
+                            "mokosh /auth/memberships returned no rows; \
+                                         falling back to /tenants/current"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "mokosh /auth/memberships load failed: {e}; \
+                                        falling back to /tenants/current"
+                        );
+                    }
                 }
-                Ok(_) => {
-                    tracing::warn!("organisation load returned no name; leaving it unset");
+                // MAPPS-427 recurrence guard: the org name must come from
+                // mokosh's own tenant row, not the OIDC issuer's
+                // `/v1/auth/memberships` (which 401s for this SPA's token by
+                // design, BUNYIP-252) and not from a fabricated fallback (the
+                // synthesised row this hook used to seed was displaying the
+                // user's email address as an organisation name). Reading
+                // `/tenants/current` here uses the exact column client-facing
+                // emails compose from (MAPPS-541), so the top bar, the board
+                // view and the message a client receives cannot disagree.
+                #[derive(serde::Deserialize)]
+                struct TenantView {
+                    #[serde(default)]
+                    id: String,
+                    #[serde(default)]
+                    name: String,
                 }
-                Err(e) => {
-                    tracing::warn!("organisation load failed, leaving it unset: {e}");
+                match crate::hooks::fetch::api::get_authed::<TenantView>("/tenants/current").await {
+                    Ok(t) if !t.name.trim().is_empty() => {
+                        let mut a = auth.write();
+                        if let Ok(id) = t.id.parse::<uuid::Uuid>() {
+                            a.active_tenant_id = Some(id);
+                        }
+                        a.memberships = vec![MembershipView {
+                            tenant_id: t.id,
+                            tenant_name: t.name,
+                        }];
+                        a.memberships_loaded = true;
+                    }
+                    Ok(_) => {
+                        tracing::warn!("organisation load returned no name; leaving it unset");
+                        auth.write().memberships_loaded = true;
+                    }
+                    Err(e) => {
+                        tracing::warn!("organisation load failed, leaving it unset: {e}");
+                        auth.write().memberships_loaded = true;
+                    }
                 }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                auth.write().memberships_loaded = true;
             }
         });
     });
+}
+
+/// Historical name used by `src/main.rs` and older doc comments. Kept as an
+/// alias so the mid-merge boot path keeps compiling; delegates straight to
+/// [`use_memberships_loader`].
+pub fn use_active_org_loader() {
+    use_memberships_loader();
 }
 
 /// Background token-refresh loop. Mount once near the root of the app
@@ -951,9 +1020,12 @@ fn tab_is_hidden() -> bool {
 /// with it. MAPPS-504: a desktop window has no document to replace, and
 /// the cleared context is what moves it.
 fn redirect_to_login() {
+    // MAPPS-518 URL swap: tenant login lives at /client/login now; /login is
+    // the platform-admin page and would be the wrong destination for a
+    // forced tenant sign-out.
     #[cfg(target_arch = "wasm32")]
-    if let Err(e) = crate::platform::location::set_href("/login") {
-        tracing::warn!("redirect to /login after sign-out failed: {e}");
+    if let Err(e) = crate::platform::location::set_href("/client/login") {
+        tracing::warn!("redirect to /client/login after sign-out failed: {e}");
     }
 }
 
@@ -990,6 +1062,12 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
         // General / overhead time entry. `None` on a pre-backfill tenant.
         #[serde(default)]
         own_company_id: Option<uuid::Uuid>,
+        // PMS-791 / MAPPS-462: owning tenant's `kind` column
+        // ("org" | "personal"). Empty string on older server responses
+        // that predate the field; AuthState::is_org_tenant() treats
+        // empty as org (fail-open UI).
+        #[serde(default)]
+        tenant_kind: String,
     }
     fn default_true_me() -> bool {
         true
@@ -1059,6 +1137,9 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
         u.profile_completed = me.profile_completed;
         u.date_format_string = me.date_format_string;
         u.own_company_id = me.own_company_id;
+        // PMS-791 / MAPPS-462: reconcile tenant_kind from /me so Teams
+        // nav visibility flips off within a tick on personal tenants.
+        u.tenant_kind = me.tenant_kind;
     }
     // MAPPS-317: flip the gate so AuthGuard's onboarding-redirect
     // check now trusts profile_completed. Must run AFTER the user
@@ -1477,6 +1558,9 @@ mod tests {
             theme_base_mode: None,
             theme_accent_id: None,
             own_company_id: None,
+            // Irrelevant to the confirmation gate under test; the same empty
+            // default the auth models use.
+            tenant_kind: String::new(),
         }
     }
 

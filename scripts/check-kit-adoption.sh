@@ -39,7 +39,7 @@ if [ "${1:-}" = "--self-test" ]; then
       printf '    div { class: "min-h-screen bg-app", "shell" }\n' \
         > "$fixtures/src/pages/$page.rs"
     done
-    for page in login onboarding portal_login portal_set_password request_form; do
+    for page in login onboarding request_form; do
       printf '    AuthLayout {\n        "form"\n    }\n' \
         > "$fixtures/src/pages/$page.rs"
     done
@@ -50,6 +50,9 @@ if [ "${1:-}" = "--self-test" ]; then
     } > "$fixtures/src/components/layout.rs"
     {
       printf '    class: "file:mr-3 file:rounded-md",\n'
+      printf '    r#type: "file",\n'
+      # Hidden-picker branch (MAPPS-607): a second `r#type: "file"` in the
+      # same file, no `file:` recipe on it.
       printf '    r#type: "file",\n'
     } > "$fixtures/src/components/form.rs"
   }
@@ -126,7 +129,10 @@ for needle in 'branding::product_name()' 'VersionFooter'; do
   fi
 done
 
-auth_pages="$root/pages/login.rs $root/pages/onboarding.rs $root/pages/portal_login.rs $root/pages/portal_set_password.rs $root/pages/request_form.rs"
+# mokosh-contact-login: /portal/* pages (portal_login.rs, portal_set_password.rs)
+# retired with the customer-portal route family. Contact-plane pages under
+# src/pages/contact_portal/ carry their own layout and are not on this list.
+auth_pages="$root/pages/login.rs $root/pages/onboarding.rs $root/pages/request_form.rs"
 for page in $auth_pages; do
   if ! grep -q 'AuthLayout {' "$page"; then
     echo "auth-shell guard: FAIL ($page does not render AuthLayout)"
@@ -149,7 +155,12 @@ if [ "$recipe" -ne 1 ]; then
 fi
 
 file_sites=$(grep -rc 'r#type: "file"' "$root" --include='*.rs' | grep -v ':0$' || true)
-if [ "$file_sites" != "$root/components/form.rs:1" ]; then
+# `FileField` renders the raw input in two shapes: the visible field and the
+# hidden-picker mode (MAPPS-607, one <input> for a caller that opens the
+# picker with a synthesised click on a sibling button, which Safari discards
+# for a detached input). Both live in components/form.rs, so a healthy tree
+# has exactly two matches - both in that one file.
+if [ "$file_sites" != "$root/components/form.rs:2" ]; then
   echo "file-field guard: FAIL (raw \`r#type: \"file\"\` outside FileField)"
   printf '%s\n' "$file_sites"
   status=1

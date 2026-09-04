@@ -42,7 +42,8 @@ fn restart_login(underlying: &str) -> Result<(), String> {
     log_auth_error(&format!(
         "auth callback: restarting the login flow (attempt {attempt} of {MAX_CALLBACK_RETRIES}): {underlying}"
     ));
-    crate::platform::location::set_href("/login")
+    // MAPPS-518 URL swap: tenant login lives at /client/login now.
+    crate::platform::location::set_href("/client/login")
 }
 
 #[component]
@@ -103,6 +104,13 @@ pub fn AuthCallbackPage() -> Element {
                 // Technician default and let the post-login /me fetch reconcile
                 // it within a tick.
                 let role = UserRole::default();
+                // MAPPS-630: cross-plane isolation. Clear any
+                // contact session (in-memory + localStorage refresh
+                // + caps + brand) BEFORE we write the fresh staff
+                // bearer, so the tab reads as staff from this point
+                // on and the AuthGuard cold-load bootstrap can not
+                // resurrect a stale portal session.
+                crate::hooks::fetch::api::on_staff_signin_clear_contact_side();
                 // Make the access token available to api::*_authed
                 // helpers across the app. Stored in the same in-memory
                 // holder used by every authed fetch call; no localStorage.
@@ -163,6 +171,11 @@ pub fn AuthCallbackPage() -> Element {
                         // The id_token carries no own-company claim; the
                         // post-login /me fetch fills it within a tick.
                         own_company_id: None,
+                        // PMS-791 / MAPPS-462: no tenant_kind claim on
+                        // the id_token; /me reconciles within a tick.
+                        // Empty default reads as org via
+                        // AuthState::is_org_tenant (fail-open UI).
+                        tenant_kind: String::new(),
                     });
                     a.is_loading = false;
                     a.error = None;

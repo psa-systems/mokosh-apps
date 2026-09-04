@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::components::{
     asset_status_badge, clear_on_edit, contract_status_badge, invoice_status_badge,
     project_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant,
-    Card, CollapsibleCard, DataTable, ErrorBanner, IconSize, Modal, PageHeader, PlusIcon,
+    Card, Checkbox, CollapsibleCard, DataTable, ErrorBanner, IconSize, Modal, PageHeader, PlusIcon,
     SearchInput, Select, SelectOption, SortDirection, Table, TableBody, TableCell, TableEmpty,
     TableHead, TableHeader, TableLoading, TableRow,
 };
@@ -321,6 +321,12 @@ struct RemoteContact {
     // still shown on the contact detail page, which decodes its own struct.
     #[serde(default)]
     contact_type: Option<String>,
+    /// MAPPS-456: whether the contact can sign in to the client portal.
+    /// Server always sends this on `ContactResponse` (mokosh-types
+    /// contacts::ContactResponse). Default false keeps decoding safe if
+    /// an older server variant ever omits it.
+    #[serde(default)]
+    is_portal_user: bool,
     // MAPPS-481: `#[serde(default)]` so a server that predates PMS-806 still
     // deserializes; the `phone` / `company_id` mirrors above cover that case.
     #[serde(default)]
@@ -366,15 +372,37 @@ struct CompanyFormBody {
 }
 
 /// The one-field `PUT /contacts/companies/{id}` writes: Archive on the delete
-/// dialog (MAPPS-575) and the billing-contact picker (MAPPS-644). A field the
-/// control that fired did not set is omitted rather than sent as null, which is
-/// what the `json!` literals these replaced sent.
+/// dialog (MAPPS-575), the billing-contact picker (MAPPS-644), the tier-2
+/// portal toggle (MAPPS-651) and the per-Company branding patch (MAPPS-619). A
+/// field the control that fired did not set is omitted rather than sent as
+/// null, which is what the `json!` literals these replaced sent.
 #[derive(Debug, Default, Serialize)]
 struct UpdateCompanyBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     status: Option<CompanyStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     default_billing_contact_id: Option<uuid::Uuid>,
+    /// MAPPS-651 / MAPPS-648: tier-2 of the portal enablement chain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    portal_enabled: Option<bool>,
+    /// MAPPS-619: a PATCH document, not a whole branding block, for the same
+    /// reason `UpdateTenantRequest.branding` is (PMS-758): more than one caller
+    /// writes this column, and sending the whole struct would delete the other
+    /// caller's keys. `CompanyBranding` skips its `None`s for exactly that, so
+    /// the typed value IS the merge document the DTO's raw JSON expects.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branding: Option<crate::hooks::branding::CompanyBranding>,
+}
+
+/// `POST /contacts/contacts/{id}/grant-portal-access`, sent by both role
+/// pickers (the contact card's and the company roster's).
+///
+/// mokosh-types exports no request DTO for this route at the pinned server
+/// rev, so there is nothing to gate this against yet; the shape is pinned here
+/// alone. Tracked separately.
+#[derive(Debug, Serialize)]
+struct GrantPortalAccessBody {
+    role_ids: Vec<uuid::Uuid>,
 }
 
 /// `POST /contacts/companies` sent by the contact page's "Create this company"
@@ -405,6 +433,12 @@ struct ContactFormBody {
     company_name: String,
     /// MAPPS-614: always a string, never null. See `clearable_string`.
     notes: String,
+    /// MAPPS-396 / PMS-729: opt-in single-shot "create + grant portal access".
+    /// Only on Create - `UpdateContactRequest` declares no such field, and the
+    /// detail page's Portal Access card owns the grant / revoke after that - so
+    /// it is omitted rather than sent as `false` on the PUT.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    create_portal_access: Option<bool>,
 }
 
 /// One entry of [`ContactFormBody::phones`], mirroring `ContactPhoneInput`.
@@ -526,18 +560,32 @@ pub fn CompanyListPage() -> Element {
             if let Some((field, dir)) = sort {
                 path.push_str(&format!("&sort={field}&sort_dir={dir}"));
             }
-            crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>(&path, &token)
-                .await
-                .inspect_err(|e| tracing::error!("company list load failed: {e}"))
-                .ok()
+            // Surface the actual server error (`Result<_, String>` from
+            // get_with_auth already carries the mapped copy: 403 hydrates
+            // from the server envelope message, 401 says "session expired",
+            // etc.) so the operator sees WHY the load failed instead of the
+            // generic "Could not load companies" banner. Previously this
+            // was `.ok()` which threw the reason away.
+            match crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>(&path, &token).await
+            {
+                Ok(payload) => Some(Ok(payload)),
+                Err(msg) => {
+                    tracing::error!("company list load failed: {msg}");
+                    Some(Err(msg))
+                }
+            }
         }
     });
 
     let resource_snapshot = companies_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
-    let fetch_failed = matches!(*resource_snapshot, Some(None));
+    let fetch_error: Option<String> = match &*resource_snapshot {
+        Some(Some(Err(msg))) => Some(msg.clone()),
+        _ => None,
+    };
+    let fetch_failed = fetch_error.is_some();
     let (page_rows, total): (Vec<RemoteCompany>, u64) = match &*resource_snapshot {
-        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        Some(Some(Ok(resp))) => (resp.data.clone(), resp.meta.total),
         _ => (Vec::new(), 0),
     };
     // The status filter counts as a filter only when it is NOT the default:
@@ -614,8 +662,8 @@ pub fn CompanyListPage() -> Element {
             }
         }
 
-        if fetch_failed {
-            ErrorBanner { class: "mb-3", "Could not load companies. Refresh the page to retry." }
+        if let Some(msg) = fetch_error.as_deref() {
+            ErrorBanner { class: "mb-3", "Could not load companies: {msg}" }
         }
 
         // Companies table
@@ -2173,6 +2221,24 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         }
     });
 
+    // MAPPS-619: tenant branding defaults so the per-Company branding
+    // card can render "Inherits from MSP default: X" hints per field.
+    // The response is the full Tenant DTO; we only need the `branding`
+    // block off it, so a lightweight local decode is enough.
+    let tenant_branding_resource = use_resource(move || async move {
+        #[derive(serde::Deserialize, Default, Clone)]
+        struct TenantSnippet {
+            #[serde(default)]
+            branding: crate::hooks::branding::TenantBranding,
+        }
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<TenantSnippet>("/tenants/current")
+            .await
+            .inspect_err(|e| tracing::error!("tenant branding load failed: {e}"))
+            .ok()
+            .map(|t| t.branding)
+    });
+
     // Statistics counts pulled from each list envelope's `meta.total`.
     let contract_count = paginated_total(&contracts_resource);
     let project_count = paginated_total(&projects_resource);
@@ -2588,6 +2654,29 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                     },
                                 }
                             }
+                            // MAPPS-456: company-level entry point for
+                            // enabling portal access on multiple contacts
+                            // from one screen (previously required drilling
+                            // into each contact detail page). Fetches its
+                            // own uncapped list so the roster reflects
+                            // every contact, not just the first 5 the
+                            // Contacts card shows.
+                            CompanyPortalAccessCard {
+                                company_id: company_id_str.clone(),
+                                portal_id: company.portal_id,
+                                portal_slug: company.portal_slug.clone(),
+                                portal_enabled: company.portal_enabled,
+                                company_resource,
+                            }
+                            // MAPPS-590 (prompt 012): Company-scoped
+                            // portal roles. Sits right after the
+                            // Contacts + Portal Access cards since
+                            // roles are what portal-access grants;
+                            // tenant-wide roles stay on Settings >
+                            // Contact Roles.
+                            CompanyRolesCard {
+                                company_id: company_id_str.clone(),
+                            }
                             // Sites
                             CompanySitesCard {
                                 company_id: company_id_str.clone(),
@@ -2627,6 +2716,17 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                 company_id: company_id_str.clone(),
                                 assets_resource,
                                 asset_types_resource,
+                            }
+                            // MAPPS-619: per-Company branding overrides.
+                            // Reads current values off the Company detail
+                            // response + tenant defaults for the "Inherits
+                            // from MSP default: X" hints. Save PUTs the
+                            // Company with a JSONB-merge branding patch.
+                            CompanyBrandingCard {
+                                company_id: company_id_str.clone(),
+                                current: company.branding.clone(),
+                                tenant_defaults_resource: tenant_branding_resource,
+                                company_resource,
                             }
                             // MAPPS-614: near the bottom of the record, which
                             // is where David asked for it. Rendered through
@@ -2852,6 +2952,27 @@ struct CompanyDetail {
     site_count: Option<i64>,
     #[serde(default)]
     open_ticket_count: Option<i64>,
+    /// MAPPS-619: per-Company branding overrides. Populated by the
+    /// server since MAPPS-617 lands; missing on a legacy response
+    /// deserializes to `CompanyBranding::default()` (all `None`) via
+    /// the `#[serde(default)]` on every field of the client-side
+    /// `CompanyBranding` type.
+    #[serde(default)]
+    branding: crate::hooks::branding::CompanyBranding,
+    /// MAPPS-635 B: portal identifiers exposed on the wire since the
+    /// same-numbered server change. `None` until the Company has
+    /// been through at least one grant.
+    #[serde(default)]
+    portal_id: Option<i64>,
+    #[serde(default)]
+    portal_slug: Option<String>,
+    /// MAPPS-651 / MAPPS-648 (PMS-915): tier-2 of the portal
+    /// enablement chain. `false` here means grants on this Company
+    /// will be refused by the server; the toggle in
+    /// `CompanyPortalAccessCard` mutates this via
+    /// `PUT /contacts/companies/{id}`.
+    #[serde(default)]
+    portal_enabled: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -3059,6 +3180,38 @@ fn CompanyContactsCard(
     // query-param navigation in this file; a raw anchor is inert in the
     // desktop webview.
     let view_all_href = format!("/contacts?company_id={}", urlencoding_minimal(&company_id));
+    // Direct "create a new contact scoped to this Company" affordance
+    // that skips the picker modal. The modal still hosts the
+    // attach-existing flow and its own "create instead" fallback link;
+    // this is a first-class button so the create path is one click,
+    // not two.
+    //
+    // Uses `window.location.set_href` on click instead of a bare
+    // `<a href>` because the Dioxus router intercepts anchor clicks
+    // on same-origin URLs and dispatches them through its
+    // typed-route matcher; `/contacts/new` matches `Route::ContactNew`
+    // but the router does not thread the `?company_id=X&company_name=Y`
+    // query segments through the destination component's mount, which
+    // meant the created contact silently lost its Company link. A
+    // hard nav via `set_href` forces a full page load so
+    // `window.location.search` on the ContactNewPage mount reflects
+    // the query, and `read_company_prefill_from_url` picks it up.
+    let new_contact_href = format!(
+        "/contacts/new?company_id={}&company_name={}",
+        urlencoding_minimal(&company_id),
+        urlencoding_minimal(&company_name),
+    );
+    let go_new_contact = {
+        let href = new_contact_href.clone();
+        move |_| {
+            #[cfg(target_arch = "wasm32")]
+            if let Some(win) = web_sys::window() {
+                let _ = win.location().set_href(&href);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = &href;
+        }
+    };
     rsx! {
         CollapsibleCard {
             title: "Contacts",
@@ -3066,8 +3219,13 @@ fn CompanyContactsCard(
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Link,
+                    onclick: go_new_contact,
+                    "+ New Contact"
+                }
+                Button {
+                    variant: ButtonVariant::Link,
                     onclick: move |_| show_add.set(true),
-                    "Add Contact"
+                    "Attach Existing"
                 }
                 Link {
                     to: view_all_href.clone(),
@@ -3162,6 +3320,881 @@ fn CompanyContactsCard(
             }
         }
     }
+}
+
+/// MAPPS-456: company-level entry point for granting / revoking client-portal
+/// access. Lists every contact under the company with a per-row toggle so an
+/// admin onboarding a customer with several employees does not need to drill
+/// into each contact detail page in turn. Both grant and revoke fire the same
+/// `PUT /contacts/contacts/{id}` the per-contact card at
+/// [`ContactPortalCard`] uses (`{"is_portal_user": bool}`); no new endpoints.
+///
+/// Fetches its own uncapped roster (per_page=200) rather than sharing the
+/// [`CompanyContactsCard`] resource, which is capped at 5 for preview purposes.
+/// Companies with more than ~20 contacts are rare; the ceiling is a soft cap
+/// to keep the roster inline.
+#[component]
+fn CompanyPortalAccessCard(
+    company_id: String,
+    #[props(default)] portal_id: Option<i64>,
+    #[props(default)] portal_slug: Option<String>,
+    #[props(default)] portal_enabled: bool,
+    company_resource: Resource<Option<CompanyDetail>>,
+) -> Element {
+    let id_for_resource = company_id.clone();
+    // MAPPS-528 / per_page-cap guard: walk the whole roster through the
+    // shared pager rather than passing `per_page=200` (server clamps to
+    // 100 and returns a truncated page, so the operator would see only
+    // the first hundred contacts of a large Company without knowing).
+    let mut roster = use_resource(move || {
+        let id = id_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
+            #[cfg(feature = "app")]
+            {
+                crate::hooks::fetch::api::get_all_authed::<RemoteContact>(&format!(
+                    "/contacts/companies/{id}/contacts"
+                ))
+                .await
+                .inspect_err(|e| {
+                    tracing::error!("company contact roster load failed for {id}: {e}")
+                })
+                .ok()
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = id;
+                None::<Vec<RemoteContact>>
+            }
+        }
+    });
+    // MAPPS-608: tenant portal-role lookup used to translate the per-
+    // contact role_id lists into readable role names. Fetched once for
+    // the whole card. Uses the double-nested URL prompt 003 shipped
+    // (matches server route `.route("/contacts/portal-roles")` inside
+    // contact_routes nested at `/api/v1/contacts`).
+    let all_roles = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::list_or_empty(
+            "portal role",
+            crate::hooks::fetch::api::get_authed::<Vec<PortalRoleSummaryWire>>(
+                "/contacts/contacts/portal-roles",
+            )
+            .await,
+        )
+    });
+    let can_mutate = crate::hooks::use_can_mutate();
+    // Per-row spinner tracking: whichever contact is mid-toggle disables its
+    // own button rather than freezing the whole card. Uuid keys the map.
+    let mut toggling: Signal<std::collections::HashSet<uuid::Uuid>> =
+        use_signal(std::collections::HashSet::new);
+    let snap = roster.read_unchecked();
+    let all_roles_snap: Vec<PortalRoleSummaryWire> =
+        all_roles.read_unchecked().clone().unwrap_or_default();
+    let count = match &*snap {
+        Some(Some(rows)) => Some(rows.len() as u64),
+        _ => None,
+    };
+    // MAPPS-635 B: Portal ID + copy-link affordance rendered whenever
+    // the Company has been through at least one grant. Before this
+    // fix, staff could only see the Portal ID + setup URL on the
+    // response to a fresh grant/roles-edit mutation - a routine
+    // "what's their portal URL?" question required re-issuing the
+    // setup email. Sourced from the CompanyResponse (server-side
+    // MAPPS-635) so it stays visible after any page reload.
+    let portal_login_path = portal_id
+        .map(|pid| format!("/portal/{pid}/login"))
+        .or_else(|| {
+            portal_slug
+                .clone()
+                .map(|slug| format!("/portal/{slug}/login"))
+        });
+    let portal_login_absolute = portal_login_path.as_ref().and_then(|p| {
+        #[cfg(target_arch = "wasm32")]
+        {
+            web_sys::window()
+                .and_then(|w| w.location().origin().ok())
+                .map(|origin| format!("{}{}", origin.trim_end_matches('/'), p))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = p;
+            None::<String>
+        }
+    });
+    let portal_login_for_copy = portal_login_absolute.clone();
+
+    // MAPPS-651 / MAPPS-648 (PMS-915): tier-2 toggle. PATCHes
+    // `portal_enabled` on this Company and refetches so the toggle
+    // reflects server truth. The server refuses tier-2 = TRUE while
+    // tier-1 is FALSE (400 with an actionable message); we surface
+    // that message inline so an operator hitting the button from a
+    // stale UI state understands the ordering constraint.
+    let company_id_for_toggle = company_id.clone();
+    let mut tier2_saving = use_signal(|| false);
+    let mut tier2_error: Signal<String> = use_signal(String::new);
+    let mut on_toggle_tier2 = move |next: bool| {
+        if tier2_saving() {
+            return;
+        }
+        tier2_saving.set(true);
+        tier2_error.set(String::new());
+        let id = company_id_for_toggle.clone();
+        spawn(async move {
+            let path = format!("/contacts/companies/{id}");
+            let body = UpdateCompanyBody {
+                portal_enabled: Some(next),
+                ..UpdateCompanyBody::default()
+            };
+            match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await {
+                Ok(_) => {
+                    crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Success,
+                        if next {
+                            "Portal enabled for this Company.".to_string()
+                        } else {
+                            "Portal disabled for this Company. Live sessions end on next request."
+                                .to_string()
+                        },
+                    );
+                    company_resource.restart();
+                }
+                Err(e) => {
+                    tier2_error.set(e.to_string());
+                }
+            }
+            tier2_saving.set(false);
+        });
+    };
+
+    rsx! {
+        CollapsibleCard {
+            title: "Portal Access",
+            count,
+            padding: false,
+            // MAPPS-651: tier-2 toggle sits above the Company ID +
+            // grant-per-contact rows since it gates whether any of
+            // those affordances mean anything at all.
+            div { class: "px-6 py-3 border-b border-line",
+                Checkbox {
+                    name: format!("portal_enabled_{company_id}"),
+                    label: "Portal enabled for this Company",
+                    checked: portal_enabled,
+                    help: if portal_enabled {
+                        "Turning this off signs out every portal user for this Company on their next request."
+                    } else {
+                        "Turn this on so contacts under this Company can be granted portal access. Enable the portal module for this tenant first if the toggle refuses."
+                    },
+                    disabled: !can_mutate || tier2_saving(),
+                    onchange: move |e: FormEvent| on_toggle_tier2(e.checked()),
+                }
+                if !tier2_error().is_empty() {
+                    p { role: "alert", class: "mt-2 text-sm text-red-600 dark:text-red-400", "{tier2_error}" }
+                }
+            }
+            if let Some(pid) = portal_id {
+                div { class: "px-6 py-3 border-b border-line flex items-center justify-between gap-4 text-sm",
+                    div {
+                        span { class: "text-muted", "Company ID: " }
+                        span { class: "font-mono font-medium text-content", "{pid}" }
+                    }
+                    if let Some(url) = portal_login_absolute {
+                        div { class: "flex items-center gap-3",
+                            a {
+                                href: "{url}",
+                                target: "_blank",
+                                rel: "noopener",
+                                class: "text-accent hover:underline",
+                                "Open portal login"
+                            }
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                onclick: move |_| {
+                                    let u = portal_login_for_copy.clone().unwrap_or_default();
+                                    #[cfg(target_arch = "wasm32")]
+                                    if let Some(win) = web_sys::window() {
+                                        let _ = win
+                                            .navigator()
+                                            .clipboard()
+                                            .write_text(&u);
+                                        crate::hooks::toast::push_toast(
+                                            crate::components::AlertType::Success,
+                                            "Portal login URL copied to clipboard.".to_string(),
+                                        );
+                                    }
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    let _ = u;
+                                },
+                                "Copy link"
+                            }
+                        }
+                    }
+                }
+            }
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Contact" }
+                        TableHeader { "Email" }
+                        TableHeader { "Status" }
+                        // MAPPS-608: assigned portal roles per contact
+                        // so the operator can see who holds Billing /
+                        // Support / Read-Only / any Company-scoped
+                        // custom role without opening the contact
+                        // detail.
+                        TableHeader { "Roles" }
+                        TableHeader { span { class: "sr-only", "Action" } }
+                    }
+                }
+                match &*snap {
+                    None => rsx! { TableLoading { columns: 5, rows: 3 } },
+                    Some(None) => rsx! { TableEmpty { columns: 5, message: "Could not load contacts.".to_string() } },
+                    Some(Some(rows)) if rows.is_empty() => rsx! {
+                        TableEmpty { columns: 5, message: "No contacts at this company yet. Add one to grant portal access.".to_string() }
+                    },
+                    Some(Some(page_rows)) => {
+                        let rows: Vec<_> = page_rows.to_vec();
+                        rsx! {
+                            TableBody {
+                                for contact in rows.into_iter() {
+                                    {
+                                        let contact_id = contact.id;
+                                        let contact_id_str = contact_id.to_string();
+                                        let name = format!("{} {}", contact.first_name, contact.last_name).trim().to_string();
+                                        let email = contact.email.clone().unwrap_or_default();
+                                        let has_email = !email.trim().is_empty();
+                                        let is_portal_user = contact.is_portal_user;
+                                        let is_toggling = toggling.read().contains(&contact_id);
+                                        rsx! {
+                                            TableRow { key: "{contact_id_str}",
+                                                TableCell {
+                                                    Link {
+                                                        to: Route::ContactDetail { id: contact_id_str.clone() },
+                                                        class: "font-medium text-accent hover:opacity-90",
+                                                        "{name}"
+                                                    }
+                                                }
+                                                TableCell { "{email}" }
+                                                TableCell {
+                                                    if is_portal_user {
+                                                        Badge { variant: BadgeVariant::Green, "Granted" }
+                                                    } else {
+                                                        Badge { variant: BadgeVariant::Gray, "Not granted" }
+                                                    }
+                                                }
+                                                TableCell {
+                                                    if is_portal_user {
+                                                        ContactRoleBadges {
+                                                            contact_id: contact_id_str.clone(),
+                                                            all_roles: all_roles_snap.clone(),
+                                                        }
+                                                    } else {
+                                                        span { class: "text-xs text-muted", "-" }
+                                                    }
+                                                }
+                                                TableCell { class: "text-right w-56",
+                                                    if is_portal_user {
+                                                        div { class: "flex justify-end gap-2",
+                                                            EditPortalRolesButton {
+                                                                contact_id: contact_id_str.clone(),
+                                                                all_roles: all_roles_snap.clone(),
+                                                                disabled: is_toggling || !can_mutate,
+                                                                on_saved: move |_| {
+                                                                    crate::hooks::fetch::bump_portal_roles_generation();
+                                                                    roster.restart();
+                                                                },
+                                                            }
+                                                            Button {
+                                                                variant: ButtonVariant::Secondary,
+                                                                loading: is_toggling,
+                                                                disabled: is_toggling || !can_mutate,
+                                                                onclick: move |_| {
+                                                                    let path = format!("/contacts/contacts/{contact_id_str}");
+                                                                    toggling.write().insert(contact_id);
+                                                                    spawn(async move {
+                                                                        let body = UpdateContactBody {
+                                                                            is_portal_user: Some(false),
+                                                                            ..UpdateContactBody::default()
+                                                                        };
+                                                                        match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await {
+                                                                            Ok(_) => {
+                                                                                crate::hooks::toast::push_toast(
+                                                                                    crate::components::AlertType::Success,
+                                                                                    "Portal access revoked.",
+                                                                                );
+                                                                                crate::hooks::fetch::bump_portal_roles_generation();
+                                                                                roster.restart();
+                                                                            }
+                                                                            Err(err) => crate::hooks::toast::push_toast(
+                                                                                crate::components::AlertType::Error,
+                                                                                format!("Could not revoke portal access: {err}"),
+                                                                            ),
+                                                                        }
+                                                                        toggling.write().remove(&contact_id);
+                                                                    });
+                                                                },
+                                                                "Revoke"
+                                                            }
+                                                        }
+                                                    } else if !has_email {
+                                                        // Mirror the per-contact card's guard: no email = no
+                                                        // portal grant, because the setup link has nowhere to go.
+                                                        Button {
+                                                            variant: ButtonVariant::Secondary,
+                                                            disabled: true,
+                                                            "Grant"
+                                                        }
+                                                    } else {
+                                                        Button {
+                                                            variant: ButtonVariant::Primary,
+                                                            loading: is_toggling,
+                                                            disabled: is_toggling || !can_mutate,
+                                                            onclick: move |_| {
+                                                                let path = format!("/contacts/contacts/{contact_id_str}");
+                                                                toggling.write().insert(contact_id);
+                                                                spawn(async move {
+                                                                    let body = UpdateContactBody {
+                                                                        is_portal_user: Some(true),
+                                                                        ..UpdateContactBody::default()
+                                                                    };
+                                                                    match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await {
+                                                                        Ok(_) => {
+                                                                            crate::hooks::toast::push_toast(
+                                                                                crate::components::AlertType::Success,
+                                                                                "Portal access granted. A setup email is on its way.",
+                                                                            );
+                                                                            roster.restart();
+                                                                        }
+                                                                        Err(err) => crate::hooks::toast::push_toast(
+                                                                            crate::components::AlertType::Error,
+                                                                            format!("Could not grant portal access: {err}"),
+                                                                        ),
+                                                                    }
+                                                                    toggling.write().remove(&contact_id);
+                                                                });
+                                                            },
+                                                            "Grant"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// MAPPS-706: per-row "Edit roles" affordance on the Company Portal
+/// Access card. Opens a modal seeded with the contact's currently
+/// assigned role_ids and POSTs the new set to
+/// `/contacts/contacts/{id}/grant-portal-access`. Server's grant path
+/// fast-forwards through the token / setup-email work when the contact
+/// is already credentialled and just rewrites `contact_role_assignments`
+/// (MAPPS-635 C), so a role-only edit never re-emails.
+#[component]
+fn EditPortalRolesButton(
+    contact_id: String,
+    all_roles: Vec<PortalRoleSummaryWire>,
+    disabled: bool,
+    on_saved: EventHandler<()>,
+) -> Element {
+    let mut open = use_signal(|| false);
+    let mut picked: Signal<Vec<uuid::Uuid>> = use_signal(Vec::new);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let assigned_id = contact_id.clone();
+    let assigned = use_resource(move || {
+        let id = assigned_id.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _roles_gen = crate::hooks::fetch::active_portal_roles_generation();
+            crate::hooks::fetch::list_or_empty(
+                "assigned portal role",
+                crate::hooks::fetch::api::get_authed::<Vec<uuid::Uuid>>(&format!(
+                    "/contacts/contacts/{id}/portal-roles"
+                ))
+                .await,
+            )
+        }
+    });
+    let assigned_snap: Vec<uuid::Uuid> = assigned.read_unchecked().clone().unwrap_or_default();
+
+    let assigned_for_seed = assigned_snap.clone();
+    let open_modal = move |_| {
+        picked.set(assigned_for_seed.clone());
+        error.set(String::new());
+        open.set(true);
+    };
+
+    let submit_id = contact_id.clone();
+    let submit = move |_| {
+        if saving() {
+            return;
+        }
+        let ids = picked.read().clone();
+        if ids.is_empty() {
+            error.set("Pick at least one role.".to_string());
+            return;
+        }
+        let id = submit_id.clone();
+        saving.set(true);
+        error.set(String::new());
+        spawn(async move {
+            let path = format!("/contacts/contacts/{id}/grant-portal-access");
+            let body = GrantPortalAccessBody { role_ids: ids };
+            match crate::hooks::fetch::api::post_authed_typed::<PortalGrantOutcomeWire, _>(
+                &path, &body,
+            )
+            .await
+            {
+                Ok(_) => {
+                    crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Success,
+                        "Portal roles updated.".to_string(),
+                    );
+                    crate::hooks::fetch::bump_portal_roles_generation();
+                    open.set(false);
+                    on_saved.call(());
+                }
+                Err(err) => error.set(format!("{err}")),
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        Button {
+            variant: ButtonVariant::Secondary,
+            disabled,
+            onclick: open_modal,
+            "Edit roles"
+        }
+        if open() {
+            div {
+                class: "fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4",
+                onclick: move |_| { if !saving() { open.set(false); } },
+                div {
+                    class: "bg-surface rounded-lg shadow-lg max-w-md w-full p-6 space-y-4",
+                    onclick: move |evt: Event<MouseData>| { evt.stop_propagation(); },
+                    h3 { class: "text-lg font-semibold text-content", "Edit portal roles" }
+                    p { class: "text-xs text-muted",
+                        "Pick every role this contact should hold. Effective capabilities are the union across all picked roles."
+                    }
+                    if all_roles.is_empty() {
+                        p { class: "text-sm text-muted",
+                            "No portal roles configured yet. Open Settings, then Service & Asset Types, then Contact Roles to create one."
+                        }
+                    } else {
+                        div { class: "space-y-2 max-h-64 overflow-y-auto",
+                            for role in all_roles.iter().cloned() {
+                                {
+                                    let role_id = role.id;
+                                    let checked = picked.read().iter().any(|p| p == &role_id);
+                                    rsx! {
+                                        label { key: "{role.id}", class: "flex items-start gap-2 cursor-pointer",
+                                            input {
+                                                r#type: "checkbox",
+                                                checked,
+                                                class: "mt-1",
+                                                onchange: move |evt: Event<FormData>| {
+                                                    let want = evt.value() == "true" || evt.value() == "on";
+                                                    let mut current = picked.read().clone();
+                                                    if want {
+                                                        if !current.iter().any(|c| c == &role_id) {
+                                                            current.push(role_id);
+                                                        }
+                                                    } else {
+                                                        current.retain(|c| c != &role_id);
+                                                    }
+                                                    picked.set(current);
+                                                },
+                                            }
+                                            span { class: "text-sm text-content",
+                                                span { class: "font-medium", "{role.name}" }
+                                                if role.is_builtin {
+                                                    span { class: "ml-2 text-xs text-muted", "(built-in)" }
+                                                }
+                                                if role.company_id.is_some() {
+                                                    span { class: "ml-2 text-xs text-muted", "(Company only)" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !error.read().is_empty() {
+                        p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
+                    }
+                    div { class: "flex justify-end gap-2 pt-2",
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            disabled: saving(),
+                            onclick: move |_| open.set(false),
+                            "Cancel"
+                        }
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            disabled: saving(),
+                            loading: saving(),
+                            onclick: submit,
+                            "Save"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// MAPPS-608: render the assigned portal roles for one contact as a
+/// row of small blue badges. Fetches the contact's role_ids inline via
+/// `GET /contacts/contacts/{id}/portal-roles`, translates them against
+/// the parent's tenant-role snapshot (name lookup by id). Rendering "-"
+/// when the fetch is still loading, has failed, or has resolved to
+/// zero assignments keeps the column concise for the "granted but no
+/// roles yet" corner case.
+#[component]
+fn ContactRoleBadges(contact_id: String, all_roles: Vec<PortalRoleSummaryWire>) -> Element {
+    let contact_id_for_resource = contact_id.clone();
+    let assigned = use_resource(move || {
+        let id = contact_id_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-635 F: subscribe to the per-role-write generation
+            // so a successful "Update roles" / "Grant + send email"
+            // / "Revoke" forces this badge row to refetch. Without
+            // it, the resource ran once on mount and never repainted.
+            let _roles_gen = crate::hooks::fetch::active_portal_roles_generation();
+            crate::hooks::fetch::list_or_empty(
+                "assigned portal role badge",
+                crate::hooks::fetch::api::get_authed::<Vec<uuid::Uuid>>(&format!(
+                    "/contacts/contacts/{id}/portal-roles"
+                ))
+                .await,
+            )
+        }
+    });
+    let assigned_snap: Vec<uuid::Uuid> = assigned.read_unchecked().clone().unwrap_or_default();
+    let names: Vec<String> = assigned_snap
+        .iter()
+        .filter_map(|role_id| {
+            all_roles
+                .iter()
+                .find(|r| r.id == *role_id)
+                .map(|r| r.name.clone())
+        })
+        .collect();
+    rsx! {
+        if names.is_empty() {
+            span { class: "text-xs text-muted", "-" }
+        } else {
+            div { class: "flex flex-wrap gap-1",
+                for name in names.iter() {
+                    Badge {
+                        key: "{name}",
+                        variant: BadgeVariant::Blue,
+                        "{name}"
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// MAPPS-590 (prompt 012): Company detail page's Roles section.
+///
+/// Reads `GET /api/v1/contacts/companies/{company_id}/portal-roles`
+/// (the union of tenant-wide + this Company's scoped roles), then
+/// client-side-filters to `company_id.is_some()` so the card only
+/// lists roles this Company owns. Tenant-wide rows returned in the
+/// same envelope are still visible in Settings > Contact Roles
+/// (unchanged) and in the ContactPortalCard picker's union view.
+///
+/// Delete gate mirrors the Settings > Contact Roles list:
+///   - `contacts_count > 0` disables the button with a tooltip naming
+///     the count of assignments to remove first (server also returns
+///     409 with the same message; the tooltip is the pre-emptive UX).
+///   - a defensive `is_builtin` guard is kept even though a scoped
+///     built-in should not occur - the seeded trio stays tenant-wide.
+#[component]
+fn CompanyRolesCard(company_id: String) -> Element {
+    let id_for_resource = company_id.clone();
+    let mut resource = use_resource(move || {
+        let id = id_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
+            #[cfg(feature = "web")]
+            {
+                let path = format!("/contacts/companies/{id}/portal-roles");
+                crate::hooks::fetch::api::get_authed_typed::<Vec<PortalRoleSummaryWire>>(&path)
+                    .await
+                    .inspect_err(|e| {
+                        tracing::error!("company portal role list load failed for {id}: {e}")
+                    })
+                    .ok()
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                let _ = id;
+                None::<Vec<PortalRoleSummaryWire>>
+            }
+        }
+    });
+
+    let snap = resource.read_unchecked();
+    let all_rows: Vec<PortalRoleSummaryWire> =
+        snap.as_ref().and_then(|s| s.clone()).unwrap_or_default();
+    // Client-side filter: the union endpoint returns tenant-wide rows
+    // too, but this card only lists roles this Company owns. Tenant-wide
+    // rows are managed under Settings > Contact Roles.
+    let (_, scoped) = crate::pages::company_role_edit::partition_roles_by_scope(&all_rows);
+    let count = Some(scoped.len() as u64);
+    let can_mutate = crate::hooks::use_can_mutate();
+
+    let new_href = format!("/companies/{company_id}/roles/new");
+
+    rsx! {
+        CollapsibleCard {
+            title: "Roles",
+            count,
+            actions: rsx! {
+                a {
+                    href: "{new_href}",
+                    class: "text-sm text-accent hover:opacity-90",
+                    "+ New Role"
+                }
+            },
+            padding: false,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Name" }
+                        TableHeader { "Capabilities" }
+                        TableHeader { class: "text-right", "Contacts" }
+                        TableHeader { class: "text-right", "Actions" }
+                    }
+                }
+                match &*snap {
+                    None => rsx! { TableLoading { columns: 4, rows: 3 } },
+                    Some(None) => rsx! { TableEmpty { columns: 4, message: "Could not load roles.".to_string() } },
+                    Some(Some(_)) if scoped.is_empty() => rsx! {
+                        TableEmpty {
+                            columns: 4,
+                            message: "No Company-specific roles yet. Contacts of this Company can still hold tenant-wide roles from Settings.".to_string(),
+                        }
+                    },
+                    Some(Some(_)) => {
+                        let rows = scoped.clone();
+                        let company_id = company_id.clone();
+                        rsx! {
+                            TableBody {
+                                for row in rows.into_iter() {
+                                    CompanyRoleRow {
+                                        key: "{row.id}",
+                                        company_id: company_id.clone(),
+                                        row: row.clone(),
+                                        can_mutate,
+                                        on_deleted: move |_| resource.restart(),
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct CompanyRoleRowProps {
+    company_id: String,
+    row: PortalRoleSummaryWire,
+    can_mutate: bool,
+    on_deleted: EventHandler<()>,
+}
+
+/// One row of the CompanyRolesCard. Pulled out into its own component
+/// so the per-row delete state (loading spinner) has its own signal
+/// lifecycle instead of one shared signal for the whole table (same
+/// shape as `settings_contact_roles::ContactRoleRow`).
+#[component]
+fn CompanyRoleRow(props: CompanyRoleRowProps) -> Element {
+    let row = props.row.clone();
+    let can_mutate = props.can_mutate;
+    let on_deleted = props.on_deleted;
+    let id_str = row.id.to_string();
+    let company_id = props.company_id.clone();
+
+    let mut deleting = use_signal(|| false);
+    // MAPPS-436: destructive-confirm guard requires the DELETE to fire
+    // from a ConfirmDialog's `onconfirm`, never from a bare `onclick`.
+    let mut confirming = use_signal(|| false);
+    let mut delete_error = use_signal(String::new);
+
+    // Delete gate: still-in-use is the common case for a scoped role;
+    // a defensive built-in guard is included even though a scoped
+    // built-in should not occur (the seeded trio stays tenant-wide).
+    let is_builtin = row.is_builtin;
+    let contacts_count = row.contacts_count.unwrap_or(0);
+    let in_use = contacts_count > 0;
+    let disabled_reason: Option<String> = if is_builtin {
+        Some("Built-in roles cannot be deleted.".to_string())
+    } else if in_use {
+        Some(format!(
+            "{contacts_count} contact{plural} hold this role; remove those assignments first.",
+            plural = if contacts_count == 1 { "" } else { "s" }
+        ))
+    } else if !can_mutate {
+        Some("Can't delete while the server is unreachable.".to_string())
+    } else {
+        None
+    };
+    let can_delete = disabled_reason.is_none();
+
+    // Comma-list of capability keys, truncated to ~60 characters so
+    // the row stays one line at typical grid widths. Matches the
+    // shape used by Settings > Contact Roles (kept local so this
+    // module does not reach across into `settings_contact_roles`).
+    let caps_display = truncate_capability_list_for_row(&row.capabilities);
+    let contacts_display = match row.contacts_count {
+        Some(n) => n.to_string(),
+        None => "-".to_string(),
+    };
+
+    let edit_href = format!("/companies/{company_id}/roles/{id_str}");
+    let delete_company_id = company_id.clone();
+    let delete_id = id_str.clone();
+    let role_display_name = row.name.clone();
+    let on_confirm_delete = move |_: ()| {
+        if *deleting.read() {
+            return;
+        }
+        let cid = delete_company_id.clone();
+        let id = delete_id.clone();
+        deleting.set(true);
+        delete_error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let path = format!("/contacts/companies/{cid}/portal-roles/{id}");
+                match crate::hooks::fetch::api::delete_authed_typed(&path).await {
+                    Ok(()) => {
+                        crate::hooks::toast::push_toast(
+                            crate::components::AlertType::Success,
+                            "Role deleted.".to_string(),
+                        );
+                        confirming.set(false);
+                        on_deleted.call(());
+                    }
+                    Err(err) => {
+                        // 409 (in-use) carries a server-side count message;
+                        // surface it inside the still-open dialog so the
+                        // operator sees the refusal next to the button that
+                        // produced it.
+                        delete_error.set(err.user_message());
+                    }
+                }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                let _ = (cid, id);
+            }
+            deleting.set(false);
+        });
+    };
+
+    rsx! {
+        TableRow {
+            TableCell {
+                span { class: "font-medium text-content", "{row.name}" }
+            }
+            TableCell {
+                span {
+                    class: "text-sm text-muted",
+                    title: row.capabilities.join(", "),
+                    if caps_display.is_empty() {
+                        "-"
+                    } else {
+                        "{caps_display}"
+                    }
+                }
+            }
+            TableCell { class: "text-right", "{contacts_display}" }
+            TableCell { class: "text-right",
+                div { class: "flex justify-end gap-2",
+                    a {
+                        href: "{edit_href}",
+                        class: "inline-flex items-center justify-center rounded-md bg-surface-2 text-content border border-line px-2.5 py-1.5 text-xs font-medium hover:opacity-90",
+                        "Edit"
+                    }
+                    Button {
+                        variant: ButtonVariant::Danger,
+                        size: crate::components::ButtonSize::Small,
+                        disabled: !can_delete,
+                        loading: *deleting.read(),
+                        title: disabled_reason.clone(),
+                        onclick: move |_| {
+                            if can_delete {
+                                delete_error.set(String::new());
+                                confirming.set(true);
+                            }
+                        },
+                        "Delete"
+                    }
+                }
+            }
+        }
+        crate::components::ConfirmDialog {
+            open: confirming(),
+            title: format!("Delete role \"{role_display_name}\""),
+            message: "This cannot be undone.".to_string(),
+            confirm_text: "Delete".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            error: delete_error.read().clone(),
+            loading: deleting(),
+            onconfirm: on_confirm_delete,
+            oncancel: move |_| {
+                if !deleting() {
+                    confirming.set(false);
+                    delete_error.set(String::new());
+                }
+            },
+        }
+    }
+}
+
+/// Capability-list truncation for the CompanyRolesCard's "Capabilities"
+/// column. Local (not shared with `settings_contact_roles`) so a future
+/// tweak here does not affect the Settings list, and so this module
+/// does not depend on a private helper across the module boundary.
+fn truncate_capability_list_for_row(caps: &[String]) -> String {
+    const CAP_TRUNCATE: usize = 60;
+    let joined = caps.join(", ");
+    if joined.chars().count() <= CAP_TRUNCATE {
+        return joined;
+    }
+    let mut out = String::new();
+    for c in joined.chars() {
+        if out.chars().count() >= CAP_TRUNCATE {
+            break;
+        }
+        out.push(c);
+    }
+    out.push_str("...");
+    out
 }
 
 /// MAPPS-207: "Add Contact" modal for a company. Lets the user search and
@@ -3409,9 +4442,31 @@ fn AddContactModal(
                     "Search for a contact to attach to this company. Attaching moves the contact to this company."
                 }
                 div { class: "border-t border-line pt-3",
+                    // MAPPS-632: a routed `Link`, not a raw `<a href>` - the
+                    // desktop webview refuses an internal navigation, so the
+                    // link would silently do nothing there.
+                    //
+                    // The wasm arm of the `onclick` below keeps MAPPS-664's
+                    // hard nav on the web: the Dioxus 0.7 router
+                    // `history.replaceState()`s the query away on mount for a
+                    // route whose pattern declares none, so only a full page
+                    // load leaves `?company_id=` where the destination can read
+                    // it. On desktop that arm compiles out and the `Link` does
+                    // the navigation, query included.
                     Link {
                         to: new_href.clone(),
                         class: "text-sm text-accent hover:opacity-90",
+                        onclick: {
+                            let href = new_href.clone();
+                            move |_| {
+                                #[cfg(target_arch = "wasm32")]
+                                if let Some(win) = web_sys::window() {
+                                    let _ = win.location().set_href(&href);
+                                }
+                                #[cfg(not(target_arch = "wasm32"))]
+                                let _ = &href;
+                            }
+                        },
                         "+ Create a new contact instead"
                     }
                 }
@@ -4553,6 +5608,83 @@ fn CompanyAssetsCard(
     }
 }
 
+/// MAPPS-619 (mokosh-branding prompt 003): per-Company branding
+/// editor rendered as a card on the Company detail page. Loads the
+/// tenant defaults so the shared `BrandingEditor` can render the
+/// "Inherits from MSP default: X" hints per field. Save PUTs the
+/// Company with a JSONB-merge branding patch; existing tenant-level
+/// mutation gates apply (staff `role.is_admin()` on the server).
+#[component]
+fn CompanyBrandingCard(
+    company_id: String,
+    current: crate::hooks::branding::CompanyBranding,
+    tenant_defaults_resource: Resource<Option<crate::hooks::branding::TenantBranding>>,
+    mut company_resource: Resource<Option<CompanyDetail>>,
+) -> Element {
+    use crate::hooks::branding::CompanyBranding;
+    let can_mutate = crate::hooks::use_can_mutate();
+    let mut saving = use_signal(|| false);
+    let mut error: Signal<String> = use_signal(String::new);
+    let tenant_snap = tenant_defaults_resource.read_unchecked();
+    let tenant_defaults = tenant_snap.clone().flatten().unwrap_or_default();
+    let id = company_id.clone();
+    let on_save = move |block: CompanyBranding| {
+        if saving() {
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let id = id.clone();
+        spawn(async move {
+            let patch = UpdateCompanyBody {
+                branding: Some(block),
+                ..UpdateCompanyBody::default()
+            };
+            match crate::hooks::fetch::api::put_authed_typed::<serde_json::Value, _>(
+                &format!("/contacts/companies/{id}"),
+                &patch,
+            )
+            .await
+            {
+                Ok(_) => {
+                    // MAPPS-635 G: shared toast infra.
+                    crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Success,
+                        "Branding saved.".to_string(),
+                    );
+                    company_resource.restart();
+                }
+                Err(e) => {
+                    error.set(format!("Save failed: {e}"));
+                }
+            }
+            saving.set(false);
+        });
+    };
+    let id_for_asset = company_id.clone();
+    rsx! {
+        div { class: "space-y-3",
+            crate::components::BrandingEditor {
+                current,
+                tenant_defaults,
+                plane: crate::components::BrandingPlane::Staff { company_id: id_for_asset },
+                disabled: !can_mutate || saving(),
+                on_save,
+                on_asset_saved: move |_| {
+                    company_resource.restart();
+                    crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Success,
+                        "Asset saved.".to_string(),
+                    );
+                },
+            }
+            if !error().is_empty() {
+                p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
+            }
+        }
+    }
+}
+
 /// Contact list page
 #[component]
 pub fn ContactListPage() -> Element {
@@ -4976,7 +6108,22 @@ fn read_company_prefill_from_url() -> CompanyPrefill {
         // MAPPS-683: off the router, so the desktop reads the same
         // prefill the link carried.
         if let Some(search) = crate::platform::location::current_query() {
-            return company_prefill_from(&search);
+            let prefill = company_prefill_from(&search);
+            if !prefill.id.is_empty() {
+                return prefill;
+            }
+        }
+        // MAPPS-664: on the web the live location can already be empty. The
+        // Dioxus 0.7 router calls `history.replaceState()` on mount for routes
+        // whose `#[route(...)]` pattern declares no query params
+        // (`Route::ContactNew` is `#[route("/contacts/new")]`), which erases
+        // `?company_id=X&company_name=Y` before this component renders. The
+        // OIDC flow captures `window.location.search` once in `main()` for the
+        // same reason (see `flow::snapshot_initial_search`); reuse that
+        // snapshot so the prefill survives the strip.
+        let prefill = company_prefill_from(&crate::modules::oidc::initial_search());
+        if !prefill.id.is_empty() {
+            return prefill;
         }
     }
     CompanyPrefill::default()
@@ -5384,6 +6531,15 @@ fn ContactForm(props: ContactFormProps) -> Element {
             initial.contact_type.clone()
         }
     });
+    let _company_name = use_signal(|| initial.company_name.clone());
+    // MAPPS-396 / PMS-729: single-shot "create contact + grant portal
+    // access" checkbox. Only wired in Create mode (Edit uses the
+    // dedicated ContactPortalCard toggle on the detail page, which the
+    // server already mints a setup token from on the false->true
+    // transition). When ticked, the POST body carries
+    // `create_portal_access: true` and the server mints the setup token
+    // and dispatches the auth.welcome email in the same transaction.
+    let mut create_portal_access = use_signal(|| false);
     // MAPPS-481: the two child collections. Row order is the order the server
     // stores (it derives `sort_order` from the array index).
     let mut phones = use_signal(|| initial.phones.clone());
@@ -5536,6 +6692,12 @@ fn ContactForm(props: ContactFormProps) -> Element {
         is_submitting.set(true);
 
         let has_links = !company_entries.is_empty();
+        // MAPPS-396 / PMS-729: opt-in single-shot "create + grant portal
+        // access". Only sent on Create (the PUT's DTO has no such field; the
+        // detail page's Portal Access card owns the grant / revoke there).
+        let create_portal_access = (matches!(mode, ContactFormMode::Create)
+            && *create_portal_access.read())
+        .then_some(true);
         let body = ContactFormBody {
             first_name: first_name.read().trim().to_string(),
             last_name: last_name.read().trim().to_string(),
@@ -5554,6 +6716,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
                 freeform_name.clone()
             },
             notes: clearable_string(&notes.read()),
+            create_portal_access,
         };
         let mode = mode.clone();
         let mode_for_toast = mode.clone();
@@ -5955,6 +7118,33 @@ fn ContactForm(props: ContactFormProps) -> Element {
                                     {LINK_COMPANY_TOGGLE_LABEL}
                                 } else {
                                     {FREEFORM_TOGGLE_LABEL}
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // MAPPS-396 / PMS-729: single-shot portal-grant option. Only
+                // rendered on Create; Edit uses the ContactPortalCard on the
+                // detail page (which already fires the same setup-email
+                // dispatch on the false->true transition).
+                if matches!(&props.mode, ContactFormMode::Create) {
+                    div { class: "space-y-2 rounded-md border border-line bg-surface p-4",
+                        label { class: "flex items-start gap-3 cursor-pointer",
+                            input {
+                                r#type: "checkbox",
+                                class: "mt-1 h-4 w-4 rounded border-line text-accent focus:ring-accent",
+                                checked: *create_portal_access.read(),
+                                oninput: move |e: FormEvent| {
+                                    create_portal_access.set(e.value() == "true");
+                                },
+                            }
+                            div {
+                                span { class: "block text-sm font-medium text-content",
+                                    "Grant portal access"
+                                }
+                                p { class: "mt-1 text-xs text-muted",
+                                    "Emails this contact a link to set a password and sign in to the Client Portal. Requires an email address above."
                                 }
                             }
                         }
@@ -6475,6 +7665,13 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
 
                             ContactPortalCard {
                                 contact_id: portal_id,
+                                // MAPPS-590 (prompt 012): thread the
+                                // contact's Company id so the role
+                                // picker fetches the scope-aware
+                                // union endpoint. `None` on an
+                                // unaffiliated contact falls back to
+                                // the tenant-wide list.
+                                company_id: company_id.clone(),
                                 is_portal_user,
                                 toggling: portal_toggling,
                                 on_change: move |_| { contact.restart(); },
@@ -6740,20 +7937,289 @@ fn ContactNotesCard(notes_resource: Resource<Result<Vec<ContactNote>, String>>) 
 #[derive(Props, Clone, PartialEq)]
 struct ContactPortalCardProps {
     contact_id: String,
+    /// MAPPS-590 (prompt 012): the contact's owning Company id, used
+    /// to fetch the scope-aware union of portal roles
+    /// (`/contacts/companies/{company_id}/portal-roles`) so the picker
+    /// sees tenant-wide + this Company's own scoped roles. `None` for
+    /// an unaffiliated contact (`ContactResponse.company_id = null`);
+    /// the picker falls back to the pre-PMS-929 tenant-wide endpoint
+    /// so the operator still sees the built-in roles even though an
+    /// unaffiliated contact cannot hold a Company-scoped role.
+    company_id: Option<String>,
     is_portal_user: bool,
     toggling: Signal<bool>,
     on_change: EventHandler<()>,
+}
+
+/// mokosh-contact-login prompt 003: response shape from POST
+/// /contacts/contacts/{id}/grant-portal-access. Mirrors the server's
+/// `PortalGrantOutcome`.
+///
+/// MAPPS-589 (prompt 011): `portal_id` is an `Option<i64>` so the
+/// deserialiser accepts both a pre-PMS-928 body (field absent) and a
+/// post-PMS-928 body carrying the 9-digit numeric Portal ID assigned
+/// to the Company by `ensure_portal_id`. When `None`, the card falls
+/// back to the legacy slug-based setup URL.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct PortalGrantOutcomeWire {
+    portal_slug: String,
+    setup_link: String,
+    #[serde(default)]
+    portal_id: Option<i64>,
+}
+
+/// mokosh-contact-login prompt 003: one row of GET
+/// /contacts/portal-roles (prompt 003) or, since prompt 012, of GET
+/// /contacts/companies/{company_id}/portal-roles. Mirrors the server's
+/// `PortalRoleSummary`.
+///
+/// MAPPS-590 (prompt 012): `company_id` distinguishes tenant-wide rows
+/// (`None`) from Company-scoped rows (`Some(<uuid>)`). Absent from
+/// pre-PMS-929 server responses; `#[serde(default)]` handles the
+/// transition. `contacts_count` is likewise optional so the
+/// CompanyRolesCard renders a "-" when the server has not shipped
+/// the field yet.
+///
+/// `pub(crate)` so `pages::company_role_edit` (the partition helper +
+/// its tests) can consume the same shape without a second wire copy.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct PortalRoleSummaryWire {
+    pub(crate) id: uuid::Uuid,
+    pub(crate) name: String,
+    pub(crate) capabilities: Vec<String>,
+    pub(crate) is_builtin: bool,
+    #[serde(default)]
+    pub(crate) company_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    pub(crate) contacts_count: Option<u32>,
 }
 
 #[component]
 fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
     let contact_id = props.contact_id.clone();
     let is_portal_user = props.is_portal_user;
-    let mut toggling = props.toggling;
+    let mut mutating = props.toggling;
     let on_change = props.on_change;
-    // MAPPS-357: block the portal grant / revoke writes while the server is
-    // unreachable. Reactive: re-enables on reconnect.
     let can_mutate = crate::hooks::use_can_mutate();
+
+    // mokosh-contact-login prompt 003: fetch the tenant's portal_roles
+    // + the contact's current assigned role_ids so the modal below can
+    // pre-check the correct boxes.
+    //
+    // MAPPS-590 (prompt 012): the fetch now targets the scope-aware
+    // union endpoint (`/contacts/companies/{company_id}/portal-roles`)
+    // so a contact of Company X sees every role available to Company X
+    // (tenant-wide + Company-X-scoped). For an unaffiliated contact
+    // (`props.company_id == None`) the pre-PMS-929 tenant-wide endpoint
+    // is used as a fallback: an unaffiliated contact cannot be granted
+    // a Company-scoped role anyway (the server would reject it), so
+    // showing the built-in tenant-wide trio is the useful outcome.
+    //
+    // Preserves the Err arm (previously `.unwrap_or_default()`) so a
+    // 401/403/500 renders as "Could not load portal roles: {msg}" in
+    // the modal instead of the misleading "No portal roles configured
+    // yet" empty-list copy.
+    let roles_company_id = props.company_id.clone();
+    let roles_resource = use_resource(move || {
+        let company_id = roles_company_id.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let path = match company_id.as_deref() {
+                Some(cid) if !cid.is_empty() => {
+                    format!("/contacts/companies/{cid}/portal-roles")
+                }
+                // Note the double `/contacts/`: contacts routes nest at
+                // /api/v1/contacts and the tenant-wide portal-roles read
+                // was registered as `.route("/contacts/portal-roles",
+                // ...)` inside that nest (prompt 003), so the URL is
+                // `/api/v1/contacts/contacts/portal-roles`. Missing that
+                // double `contacts` was the fallback path's 404 on
+                // unaffiliated contacts (contact has no company_id ->
+                // scoped branch skipped -> this fallback -> single
+                // contacts -> unmatched route -> 404).
+                _ => "/contacts/contacts/portal-roles".to_string(),
+            };
+            crate::hooks::fetch::api::get_authed::<Vec<PortalRoleSummaryWire>>(&path).await
+        }
+    });
+    let assigned_id = contact_id.clone();
+    let assigned_resource = use_resource(move || {
+        let id = assigned_id.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::list_or_empty(
+                "assigned portal role",
+                crate::hooks::fetch::api::get_authed::<Vec<uuid::Uuid>>(&format!(
+                    "/contacts/contacts/{id}/portal-roles"
+                ))
+                .await,
+            )
+        }
+    });
+    let roles_snap = roles_resource.read_unchecked().clone();
+    let roles: Vec<PortalRoleSummaryWire> = match &roles_snap {
+        Some(Ok(v)) => v.clone(),
+        _ => Vec::new(),
+    };
+    let roles_fetch_error: Option<String> = match &roles_snap {
+        Some(Err(e)) => Some(e.to_string()),
+        _ => None,
+    };
+    let assigned = assigned_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+
+    // Local UI state
+    let mut modal_open = use_signal(|| false);
+    let mut picked: Signal<Vec<uuid::Uuid>> = use_signal(Vec::new);
+    let mut error = use_signal(String::new);
+    let mut last_setup_link = use_signal(String::new);
+    // MAPPS-589 (prompt 011): captured from the grant response so the
+    // card can render "Company ID: 555556666" alongside the setup link
+    // once PMS-928 lands. `None` when the server response pre-dates
+    // the field (the card falls back to showing the slug-based setup
+    // link on its own).
+    let mut last_portal_id: Signal<Option<i64>> = use_signal(|| None);
+
+    // Every time we open the modal, seed `picked` with the current
+    // assignment set so the operator sees pre-checked boxes.
+    let assigned_for_seed = assigned.clone();
+    let open_modal = move |_| {
+        picked.set(assigned_for_seed.clone());
+        error.set(String::new());
+        modal_open.set(true);
+    };
+
+    let submit_id = contact_id.clone();
+    let submit_grant = move |_| {
+        if *mutating.read() {
+            return;
+        }
+        let ids = picked.read().clone();
+        if ids.is_empty() {
+            error.set("Pick at least one role.".to_string());
+            return;
+        }
+        let id = submit_id.clone();
+        mutating.set(true);
+        error.set(String::new());
+        spawn(async move {
+            let path = format!("/contacts/contacts/{id}/grant-portal-access");
+            let body = GrantPortalAccessBody { role_ids: ids };
+            match crate::hooks::fetch::api::post_authed_typed::<PortalGrantOutcomeWire, _>(
+                &path, &body,
+            )
+            .await
+            {
+                Ok(outcome) => {
+                    // MAPPS-635 C: the server now short-circuits the
+                    // token + setup-email work when the contact is
+                    // already credentialled (already granted, has a
+                    // password). It signals that state by returning
+                    // an empty `setup_link` string. Distinguish the
+                    // two paths in the toast so a role edit never
+                    // reads as "we just sent them a new setup email".
+                    let is_role_only_edit = outcome.setup_link.trim().is_empty();
+                    last_setup_link.set(outcome.setup_link.clone());
+                    last_portal_id.set(outcome.portal_id);
+                    let toast_msg = if is_role_only_edit {
+                        "Portal roles updated.".to_string()
+                    } else {
+                        "Portal access granted. Setup email queued.".to_string()
+                    };
+                    crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Success,
+                        toast_msg,
+                    );
+                    // MAPPS-635 F: bump the roles generation so the
+                    // Portal Access card's ContactRoleBadges rows
+                    // (each fetching per-contact role assignments)
+                    // refresh with the new set on the very next
+                    // render.
+                    crate::hooks::fetch::bump_portal_roles_generation();
+                    modal_open.set(false);
+                    on_change.call(());
+                }
+                Err(err) => error.set(format!("{err}")),
+            }
+            mutating.set(false);
+        });
+    };
+
+    let resend_id = contact_id.clone();
+    let resend_invite = move |_| {
+        if *mutating.read() {
+            return;
+        }
+        let id = resend_id.clone();
+        mutating.set(true);
+        spawn(async move {
+            let path = format!("/contacts/contacts/{id}/resend-portal-invite");
+            match crate::hooks::fetch::api::post_authed_no_content(&path).await {
+                Ok(()) => crate::hooks::toast::push_toast(
+                    crate::components::AlertType::Success,
+                    "Setup email resent.".to_string(),
+                ),
+                Err(err) => crate::hooks::toast::push_toast(
+                    crate::components::AlertType::Error,
+                    format!("Could not resend invite: {err}"),
+                ),
+            }
+            mutating.set(false);
+        });
+    };
+
+    let revoke_id = contact_id.clone();
+    let revoke_access = move |_| {
+        if *mutating.read() {
+            return;
+        }
+        #[cfg(target_arch = "wasm32")]
+        let confirmed = web_sys::window()
+            .and_then(|w| {
+                w.confirm_with_message(
+                    "Revoke portal access? Any live sessions this contact holds will die on the next request. \
+                     Their password stays on file; a future re-grant reuses it.",
+                )
+                .ok()
+            })
+            .unwrap_or(false);
+        #[cfg(not(target_arch = "wasm32"))]
+        let confirmed = false;
+        if !confirmed {
+            return;
+        }
+        let id = revoke_id.clone();
+        mutating.set(true);
+        spawn(async move {
+            let path = format!("/contacts/contacts/{id}/revoke-portal-access");
+            match crate::hooks::fetch::api::post_authed_no_content(&path).await {
+                Ok(()) => {
+                    crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Success,
+                        "Portal access revoked.".to_string(),
+                    );
+                    // MAPPS-635 F: repaint role badges on the same
+                    // render as the toast.
+                    crate::hooks::fetch::bump_portal_roles_generation();
+                    on_change.call(());
+                }
+                Err(err) => crate::hooks::toast::push_toast(
+                    crate::components::AlertType::Error,
+                    format!("Could not revoke: {err}"),
+                ),
+            }
+            mutating.set(false);
+        });
+    };
+
+    let assigned_role_names: Vec<String> = roles
+        .iter()
+        .filter(|r| assigned.iter().any(|a| a == &r.id))
+        .map(|r| r.name.clone())
+        .collect();
+
     rsx! {
         Card { title: "Portal Access",
             if is_portal_user {
@@ -6762,35 +8228,62 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                         span { class: "text-sm text-muted", "Status" }
                         Badge { variant: BadgeVariant::Green, "Granted" }
                     }
-                    p { class: "text-xs text-muted",
-                        "This contact can sign in to the Client Portal once a password has been issued from Settings > Portal Users."
-                    }
-                    Button {
-                        variant: ButtonVariant::Secondary,
-                        loading: *toggling.read(),
-                        // MAPPS-357: block revoke while the server is down.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't change portal access while the server is unreachable".to_string()),
-                        onclick: move |_| {
-                            let id = contact_id.clone();
-                            toggling.set(true);
-                            spawn(async move {
-                                let path = format!("/contacts/contacts/{id}");
-                                let body = UpdateContactBody {
-                                    is_portal_user: Some(false),
-                                    ..UpdateContactBody::default()
-                                };
-                                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await {
-                                    Ok(_) => on_change.call(()),
-                                    Err(err) => crate::hooks::toast::push_toast(
-                                        crate::components::AlertType::Error,
-                                        format!("Could not revoke portal access: {err}"),
-                                    ),
+                    if !assigned_role_names.is_empty() {
+                        div {
+                            span { class: "text-xs text-muted block mb-1", "Roles" }
+                            div { class: "flex flex-wrap gap-1",
+                                for name in assigned_role_names.iter() {
+                                    Badge { key: "{name}", variant: BadgeVariant::Blue, "{name}" }
                                 }
-                                toggling.set(false);
-                            });
-                        },
-                        "Revoke portal access"
+                            }
+                        }
+                    }
+                    // MAPPS-589 (prompt 011): render the Portal ID
+                    // beside the setup link so the operator can read
+                    // it back to the customer over the phone. Only
+                    // shown when the grant response carried a
+                    // `portal_id` (post-PMS-928); pre-PMS-928
+                    // responses fall through to the setup-link-only
+                    // shape below.
+                    if let Some(pid) = *last_portal_id.read() {
+                        p { class: "text-xs text-muted",
+                            span { class: "font-medium text-content", "Company ID: " }
+                            code { class: "text-xs", "{pid}" }
+                        }
+                    }
+                    if !last_setup_link.read().is_empty() {
+                        p { class: "text-xs text-muted break-all",
+                            span { class: "font-medium text-content", "Setup link (also emailed): " }
+                            code { class: "text-xs", "{last_setup_link}" }
+                        }
+                    }
+                    p { class: "text-xs text-muted",
+                        "This contact can sign in to their client portal. The setup link is a 72h magic link; use Resend if the customer never received the email."
+                    }
+                    div { class: "flex flex-wrap gap-2",
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            disabled: !can_mutate || *mutating.read(),
+                            title: (!can_mutate).then(|| "Can't change portal access while the server is unreachable".to_string()),
+                            onclick: open_modal,
+                            "Change roles"
+                        }
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            disabled: !can_mutate || *mutating.read(),
+                            title: (!can_mutate).then(|| "Can't change portal access while the server is unreachable".to_string()),
+                            loading: *mutating.read(),
+                            onclick: resend_invite,
+                            "Resend setup email"
+                        }
+                        Button {
+                            variant: ButtonVariant::Danger,
+                            disabled: !can_mutate || *mutating.read(),
+                            title: (!can_mutate).then(|| "Can't change portal access while the server is unreachable".to_string()),
+                            loading: *mutating.read(),
+                            onclick: revoke_access,
+                            "Revoke access"
+                        }
                     }
                 }
             } else {
@@ -6800,34 +8293,102 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                         Badge { variant: BadgeVariant::Gray, "Not granted" }
                     }
                     p { class: "text-xs text-muted",
-                        "Granting access flips the portal flag. A password still has to be issued separately from Settings > Portal Users before the contact can sign in."
+                        "Granting portal access mints a random Company slug (if this Company has none yet), assigns one or more portal roles, and emails the contact a magic-link setup URL. Contact must have an email + be linked to a Company."
                     }
                     Button {
                         variant: ButtonVariant::Primary,
-                        loading: *toggling.read(),
-                        // MAPPS-357: block grant while the server is down.
-                        disabled: !can_mutate,
+                        disabled: !can_mutate || *mutating.read(),
+                        // MAPPS-357: say why the button is dead, rather than
+                        // leaving the operator with a control that ignores them.
                         title: (!can_mutate).then(|| "Can't change portal access while the server is unreachable".to_string()),
-                        onclick: move |_| {
-                            let id = contact_id.clone();
-                            toggling.set(true);
-                            spawn(async move {
-                                let path = format!("/contacts/contacts/{id}");
-                                let body = UpdateContactBody {
-                                    is_portal_user: Some(true),
-                                    ..UpdateContactBody::default()
-                                };
-                                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await {
-                                    Ok(_) => on_change.call(()),
-                                    Err(err) => crate::hooks::toast::push_toast(
-                                        crate::components::AlertType::Error,
-                                        format!("Could not grant portal access: {err}"),
-                                    ),
-                                }
-                                toggling.set(false);
-                            });
-                        },
+                        onclick: open_modal,
                         "Grant portal access"
+                    }
+                }
+            }
+
+            // Role picker modal.
+            if modal_open() {
+                div {
+                    class: "fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4",
+                    onclick: move |_| modal_open.set(false),
+                    div {
+                        class: "bg-surface rounded-lg shadow-lg max-w-md w-full p-6 space-y-4",
+                        onclick: move |evt: Event<MouseData>| { evt.stop_propagation(); },
+                        h3 { class: "text-lg font-semibold text-content", "Assign portal roles" }
+                        p { class: "text-xs text-muted",
+                            "Pick every role this contact should hold. Effective capabilities are the union across all picked roles."
+                        }
+                        if let Some(err_msg) = roles_fetch_error.as_deref() {
+                            p { role: "alert", class: "text-sm text-red-600 dark:text-red-400",
+                                "Could not load portal roles: {err_msg}"
+                            }
+                        } else if roles.is_empty() {
+                            p { class: "text-sm text-muted",
+                                "No portal roles configured yet. Open Settings, then Service & Asset Types, then Contact Roles to create one."
+                            }
+                        } else {
+                            div { class: "space-y-2 max-h-64 overflow-y-auto",
+                                for role in roles.iter().cloned() {
+                                    {
+                                        let role_id = role.id;
+                                        let checked = picked.read().iter().any(|p| p == &role_id);
+                                        rsx! {
+                                            label { key: "{role.id}", class: "flex items-start gap-2 cursor-pointer",
+                                                input {
+                                                    r#type: "checkbox",
+                                                    checked,
+                                                    class: "mt-1",
+                                                    onchange: move |evt: Event<FormData>| {
+                                                        let want = evt.value() == "true" || evt.value() == "on";
+                                                        let mut current = picked.read().clone();
+                                                        if want {
+                                                            if !current.iter().any(|c| c == &role_id) {
+                                                                current.push(role_id);
+                                                            }
+                                                        } else {
+                                                            current.retain(|c| c != &role_id);
+                                                        }
+                                                        picked.set(current);
+                                                    },
+                                                }
+                                                span { class: "text-sm text-content",
+                                                    span { class: "font-medium", "{role.name}" }
+                                                    if role.is_builtin {
+                                                        span { class: "ml-2 text-xs text-muted", "(built-in)" }
+                                                    }
+                                                    // MAPPS-590 (prompt 012): label
+                                                    // Company-scoped rows so the
+                                                    // operator can tell them apart
+                                                    // from tenant-wide rows in the
+                                                    // union picker.
+                                                    if role.company_id.is_some() {
+                                                        span { class: "ml-2 text-xs text-muted", "(Company only)" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if !error.read().is_empty() {
+                            p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
+                        }
+                        div { class: "flex justify-end gap-2 pt-2",
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                onclick: move |_| modal_open.set(false),
+                                "Cancel"
+                            }
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                disabled: !can_mutate || *mutating.read(),
+                                loading: *mutating.read(),
+                                onclick: submit_grant,
+                                if is_portal_user { "Update roles" } else { "Grant + send email" }
+                            }
+                        }
                     }
                 }
             }
@@ -8503,6 +10064,7 @@ mod shared_dto_tests {
             tags,
             notes,
             portal_enabled,
+            branding,
         } = req;
         // The form's PUT sends the whole record, the same bytes as its POST, so
         // the fields the update DTO wraps in `Option` are unwrapped back to the
@@ -8517,11 +10079,24 @@ mod shared_dto_tests {
             address: address.unwrap_or_default(),
             notes: notes.unwrap_or_default(),
         };
-        // The one-field PUTs: Archive (MAPPS-575) and the billing-contact
-        // picker (MAPPS-644).
+        // The one-field PUTs: Archive (MAPPS-575), the billing-contact picker
+        // (MAPPS-644), the tier-2 portal toggle (MAPPS-651) and the branding
+        // patch (MAPPS-619).
         let _ = UpdateCompanyBody {
             status,
             default_billing_contact_id,
+            portal_enabled,
+            // MAPPS-619 / PMS-758: the DTO's half is a raw merge document, so
+            // the annotation below is what pins its type; the typed value this
+            // page actually sends omits its `None`s to the same effect.
+            branding: None,
+        };
+        let _branding: Option<serde_json::Value> = branding;
+        // MAPPS-635: `role_ids` on the grant route. mokosh-types exports no
+        // request DTO for it at the pinned server rev, so this names the shape
+        // without gating it. Tracked separately.
+        let _ = GrantPortalAccessBody {
+            role_ids: Vec::new(),
         };
         // Deliberately not sent, for the reasons on the create request above.
         // `default_technical_contact_id` and `default_contract_id` have no
@@ -8540,7 +10115,6 @@ mod shared_dto_tests {
             tax_exempt,
             custom_fields,
             tags,
-            portal_enabled,
         );
     }
 
@@ -8567,6 +10141,9 @@ mod shared_dto_tests {
             tags,
             notes,
             portal_enabled,
+            portal_id,
+            portal_slug,
+            branding,
             created_at,
             updated_at,
         } = resp;
@@ -8605,20 +10182,27 @@ mod shared_dto_tests {
             contact_count,
             site_count,
             open_ticket_count,
+            portal_enabled,
+            portal_id,
+            portal_slug,
+            // MAPPS-619: the page's own mirror of the wire shape, held in
+            // `hooks::branding` while the client still shadows these types.
+            branding: crate::hooks::branding::CompanyBranding::default(),
         };
+        let _branding: mokosh_types::contacts::CompanyBranding = branding;
         // The id of the company the "Create this company" recovery just made.
         let _ = CreatedCompanyRef { id };
         // Carried by the response and not rendered here: the company hierarchy,
         // the account manager's and SLA's ids (the joined name is what the page
         // shows), the default contract (a billing surface), the tag list (no
-        // editor yet), the portal flag (managed per contact) and the timestamps.
+        // editor yet) and the timestamps. The portal trio and the branding
+        // ARE read, on `CompanyDetail` above.
         let _ = (
             parent_company_id,
             account_manager_id,
             sla_id,
             default_contract_id,
             tags,
-            portal_enabled,
             created_at,
             updated_at,
         );
@@ -8666,14 +10250,17 @@ mod shared_dto_tests {
             // linked, so it clears a name an earlier save stored.
             company_name: company_name.unwrap_or_default(),
             notes: notes.unwrap_or_default(),
+            // MAPPS-396: the form's create-time portal-access checkbox. Sent
+            // only when it is on, hence the `Option` where the DTO has a
+            // `#[serde(default)]` `bool`.
+            create_portal_access: create_portal_access.then_some(true),
         };
         let _phones: Option<Vec<mokosh_types::contacts::ContactPhoneInput>> = phones;
         let _companies: Option<Vec<mokosh_types::contacts::ContactCompanyLinkInput>> = companies;
         // Deliberately not sent by this form: `company_id` is the pre-PMS-806
         // single-company mirror and `companies` above is authoritative, the
-        // scalar `phone` / `mobile` / `fax` are the mirrors of `phones`, portal
-        // access is granted from the contact's own Portal Access card rather
-        // than at create time, and the rest has no editor on this page.
+        // scalar `phone` / `mobile` / `fax` are the mirrors of `phones`, and
+        // the rest has no editor on this page.
         let _ = (
             company_id,
             phone,
@@ -8683,7 +10270,6 @@ mod shared_dto_tests {
             timezone,
             custom_fields,
             tags,
-            create_portal_access,
         );
     }
 
@@ -8727,6 +10313,9 @@ mod shared_dto_tests {
             companies: Vec::new(),
             company_name: company_name.unwrap_or_default(),
             notes: notes.unwrap_or_default(),
+            // `UpdateContactRequest` declares no such field, so the PUT omits
+            // it. See `ContactFormBody::create_portal_access`.
+            create_portal_access: None,
         };
         let _phones: Option<Vec<mokosh_types::contacts::ContactPhoneInput>> = phones;
         let _companies: Option<Vec<mokosh_types::contacts::ContactCompanyLinkInput>> = companies;
@@ -8828,6 +10417,9 @@ mod shared_dto_tests {
             // Widened: the DTO always carries a type, and the list holds it as
             // a tag so an unknown one renders rather than failing the decode.
             contact_type: Some(contact_type.as_str().to_string()),
+            // MAPPS-456: the list's Portal Access column reads the same flag
+            // the detail page's card does.
+            is_portal_user,
             phones: Vec::new(),
             companies: Vec::new(),
         };
@@ -9106,6 +10698,13 @@ mod shared_dto_guard_tests {
     /// placeholder here compiles clean and silently puts the Billing Contact
     /// card (MAPPS-644) back to reading "not set" for every company, which is
     /// exactly the defect that survived unnoticed until the gate was written.
+    ///
+    /// It WAS a placeholder for one commit: `CompanyResponse` did not declare
+    /// the field at the server revision this branch pinned before the server's
+    /// own merge of `main` into `mokosh-contact-login`. The exhaustive
+    /// destructuring in that gate is what forced it back the moment the pin
+    /// moved, which is the whole reason the gate destructures rather than
+    /// reading the fields it wants.
     #[test]
     fn the_company_read_gate_binds_the_billing_contact() {
         let start = SRC
