@@ -154,7 +154,7 @@ pub fn SettingsBrandingPage() -> Element {
                 }
             }
             if loading {
-                p { class: "text-sm text-muted", "Loading branding..." }
+                p { class: "text-sm text-muted", "Loading branding…" }
             } else {
                 // MAPPS-651 / MAPPS-648: tier-1 toggle sits above the
                 // branding editor since it gates whether the whole

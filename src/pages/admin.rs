@@ -162,7 +162,7 @@ pub fn TenantManagementPage() -> Element {
             });
             return rsx! {
                 div { class: "p-6 text-sm text-content",
-                    "Redirecting to sign-in..."
+                    "Redirecting to sign-in…"
                 }
             };
         }

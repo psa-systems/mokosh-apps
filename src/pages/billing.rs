@@ -1591,7 +1591,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                 Card {
                     div { class: "py-10 text-center",
                         div { class: "mx-auto mb-3 h-6 w-6 rounded-full border-2 border-accent border-t-transparent animate-spin" }
-                        p { class: "text-sm font-medium text-content mb-1", "Processing your payment..." }
+                        p { class: "text-sm font-medium text-content mb-1", "Processing your payment…" }
                         p { class: "text-xs text-muted",
                             "This usually takes a few seconds. You'll see the paid receipt as soon as your provider confirms."
                         }

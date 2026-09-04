@@ -118,7 +118,7 @@ pub fn ContactPortalBrandingPage() -> Element {
                 }
             }
             if loading {
-                p { class: "text-sm text-muted", "Loading branding..." }
+                p { class: "text-sm text-muted", "Loading branding…" }
             } else {
                 BrandingEditor {
                     current,
