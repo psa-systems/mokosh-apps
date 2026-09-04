@@ -496,7 +496,7 @@ once, instead of the duplication.
 ### F8. PortalTicketNewPage form is fully decorative
 
 **File:**
-[`src/pages/portal.rs`](../../src/pages/portal.rs).
+`src/pages/portal.rs`.
 
 This is the **P0 critical bug**. The form has no `onsubmit`, so
 the browser falls back to a native GET submit, leaking values to the
@@ -631,7 +631,7 @@ handles `value:` / `onchange` plumbing.
 [`assets.rs`](../../src/pages/assets.rs) (AssetNew),
 [`knowledge_base.rs`](../../src/pages/knowledge_base.rs)
 (KBArticleNew),
-[`portal.rs`](../../src/pages/portal.rs)
+`portal.rs`
 (PortalInvoiceDetail).
 
 These show literal "X creation form would go here" text. Until the
@@ -712,7 +712,7 @@ real Routes / `mailto:` / external URLs:
   (3x Related Articles)
 - [`src/pages/settings.rs`](../../src/pages/settings.rs)
   (5x Email Templates)
-- [`src/pages/portal.rs`](../../src/pages/portal.rs)
+- `src/pages/portal.rs`
   (PortalArticleItem - 5 entries)
 
 ### F16. Add `data-testid` to core components
@@ -773,7 +773,7 @@ ticket detail by `props.number` / `id`.
 ### F19. Portal new-ticket attachment zone is decorative
 
 **File:**
-[`src/pages/portal.rs`](../../src/pages/portal.rs).
+`src/pages/portal.rs`.
 
 The "Drag and drop files here" div has no `<input type="file">`.
 Either remove the zone (until attachments are supported by the API)
