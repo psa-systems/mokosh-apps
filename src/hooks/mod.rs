@@ -27,7 +27,7 @@ pub mod update_check;
 pub mod version_cache;
 
 pub use auth::*;
-pub use dropdown_nav::{use_dropdown_nav, DropdownNav, NavAction};
+pub use dropdown_nav::{use_dropdown_nav, DropdownNav, NavAction, NavRows};
 pub use edit_queue::{use_replay_pending_edits, PendingEdit};
 pub use fetch::*;
 pub use mentions::{mention_people, use_mention_directory};

@@ -497,6 +497,17 @@ pub enum Route {
     #[route("/payment-gateways")]
     PaymentGatewayConfig {},
 
+    // MAPPS-638: credit notes, the correction path for a sent invoice.
+    #[route("/credit-notes")]
+    CreditNoteList {},
+
+    #[route("/credit-notes/:id")]
+    CreditNoteDetail { id: String },
+
+    // MAPPS-639: a company's account over a period, computed and not stored.
+    #[route("/statements")]
+    Statement {},
+
     // Assets
     #[route("/assets")]
     AssetList {},
@@ -598,6 +609,9 @@ pub enum Route {
     // MAPPS-170: invoice payment-terms lookup editor (server CRUD from PMS-333).
     #[route("/settings/payment-terms")]
     SettingsPaymentTerms {},
+    // MAPPS-640: the product catalog (server CRUD from PMS-955).
+    #[route("/settings/products")]
+    SettingsProducts {},
     // MAPPS-172: ticket lookup editors (server CRUD from PMS-321).
     #[route("/settings/ticket-statuses")]
     SettingsTicketStatuses {},
@@ -897,6 +911,9 @@ fn TicketList() -> Element {
     }
 }
 
+// MAPPS-693: keeps its `max-w-7xl mx-auto` wrapper, deliberately. The new
+// ticket form is a stack of short inputs, and full width there stretches a
+// Title field across the monitor rather than giving anything back.
 #[component]
 fn TicketNew() -> Element {
     rsx! {
@@ -906,13 +923,16 @@ fn TicketNew() -> Element {
     }
 }
 
+// MAPPS-693: no `max-w-7xl mx-auto` wrapper, deliberately, for the reason
+// `KBArticleEdit` gives below. The page hosts three Markdown editors (the
+// description, the journal note composer and the note edit in the timeline),
+// and `mx-auto` spent every pixel over 1280px on two margins instead of the
+// writing area. The details column beside them sits on a fixed 20rem track in
+// `src/pages/tickets.rs`, so the reclaimed width lands on the editors rather
+// than on a third of a wide monitor's worth of dropdowns.
 #[component]
 fn TicketDetail(id: String) -> Element {
-    rsx! {
-        div { class: "max-w-7xl mx-auto",
-            tickets::TicketDetailPage { id }
-        }
-    }
+    rsx! { tickets::TicketDetailPage { id } }
 }
 
 #[component]
@@ -1005,6 +1025,9 @@ fn CompanyList() -> Element {
     }
 }
 
+// MAPPS-693: keeps its cap, deliberately. `CompanyForm` is short inputs with
+// one Notes editor at the bottom; widening the form to widen that one field is
+// a bad trade.
 #[component]
 fn CompanyNew() -> Element {
     rsx! {
@@ -1023,6 +1046,7 @@ fn CompanyDetail(id: String) -> Element {
     }
 }
 
+// MAPPS-693: keeps its cap, deliberately, for the same reason as `CompanyNew`.
 #[component]
 fn CompanyEdit(id: String) -> Element {
     rsx! {
@@ -1041,6 +1065,8 @@ fn ContactList() -> Element {
     }
 }
 
+// MAPPS-693: keeps its cap, deliberately. `ContactForm` is short inputs too,
+// and a full-width Name field is not an improvement on the margin it removes.
 #[component]
 fn ContactNew() -> Element {
     rsx! {
@@ -1059,6 +1085,7 @@ fn ContactDetail(id: String) -> Element {
     }
 }
 
+// MAPPS-693: keeps its cap, deliberately, for the same reason as `ContactNew`.
 #[component]
 fn ContactEdit(id: String) -> Element {
     rsx! {
@@ -1265,6 +1292,33 @@ fn PaymentGatewayConfig() -> Element {
 }
 
 #[component]
+fn CreditNoteList() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            credit_notes::CreditNoteListPage {}
+        }
+    }
+}
+
+#[component]
+fn CreditNoteDetail(id: String) -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            credit_notes::CreditNoteDetailPage { id }
+        }
+    }
+}
+
+#[component]
+fn Statement() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            statements::StatementPage {}
+        }
+    }
+}
+
+#[component]
 fn AssetList() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
@@ -1309,13 +1363,11 @@ fn KBArticleList(q: String, tag: String, category: String) -> Element {
     }
 }
 
+// MAPPS-652: no `max-w-7xl mx-auto` wrapper, deliberately, and the same
+// reasoning as `KBArticleEdit` below. See the comment there.
 #[component]
 fn KBArticleNew() -> Element {
-    rsx! {
-        div { class: "max-w-7xl mx-auto",
-            knowledge_base::KBArticleNewPage {}
-        }
-    }
+    rsx! { knowledge_base::KBArticleNewPage {} }
 }
 
 // MAPPS-624: no `max-w-7xl mx-auto` wrapper, deliberately. The reading view
@@ -1327,13 +1379,17 @@ fn KBArticleDetail(id: String) -> Element {
     rsx! { knowledge_base::KBArticleDetailPage { id } }
 }
 
+// MAPPS-652: no `max-w-7xl mx-auto` wrapper, deliberately. `mx-auto` splits
+// whatever `main` has over 1280px into two equal margins, so the editor's
+// edges were a function of the SHELL's width: collapsing the sidebar handed
+// back 12rem and the centred column just slid 6rem right instead of growing.
+// Without the cap the panel's edges are `main`'s own content box, which starts
+// where the sidebar ends, so collapsing the rail widens the writing area by
+// exactly what it gave back. `main` keeps `px-4 sm:px-6 lg:px-8`, which is the
+// only inset left.
 #[component]
 fn KBArticleEdit(id: String) -> Element {
-    rsx! {
-        div { class: "max-w-7xl mx-auto",
-            knowledge_base::KBArticleEditPage { id }
-        }
-    }
+    rsx! { knowledge_base::KBArticleEditPage { id } }
 }
 
 #[component]
@@ -1483,6 +1539,15 @@ fn SettingsPaymentTerms() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             settings::PaymentTermsSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsProducts() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            products::ProductsSettingsPage {}
         }
     }
 }
@@ -2010,6 +2075,161 @@ mod admin_route_role_gates {
                 ROLE_REFUSALS.iter().any(|pat| source.contains(pat)),
                 "{route} renders {path}, which reads the user's role but never refuses on it. \
                  Return the access-denied view for a non-admin, as src/pages/audit_log.rs does."
+            );
+        }
+    }
+}
+
+/// MAPPS-652: the editing surface at a wide, a medium and a narrow viewport.
+///
+/// There is no browser in this suite, so each tier is asserted as the class
+/// ladder that decides the layout at that width, in the same source-scan shape
+/// `admin_route_role_gates` above uses. The layout spans four files - the shell
+/// supplies the padding, `src/lib.rs` decides the width, the page states the
+/// panel height and `MarkdownEditor` lays the panes out - and a change to any
+/// one of them can undo the other three, which is why they are checked
+/// together rather than one test per file.
+///
+/// `scripts/check-page-width.sh` is the other half: it fails if either editing
+/// route takes the `max-w-7xl mx-auto` cap back, which is the regression these
+/// tests would otherwise only catch through the `no cap` assertion below.
+///
+/// MAPPS-693 added the ticket record, where dropping the cap is only half the
+/// job: the details column beside the editors has to stop growing with the
+/// window, or the width the cap released goes to dropdowns instead.
+#[cfg(test)]
+mod editing_surface_width {
+    const LIB: &str = include_str!("lib.rs");
+    const LAYOUT: &str = include_str!("components/layout.rs");
+    const KB: &str = include_str!("pages/knowledge_base.rs");
+    const TICKETS: &str = include_str!("pages/tickets.rs");
+    const EDITOR: &str = include_str!("components/markdown_editor.rs");
+    const TOOLBAR: &str = include_str!("components/markdown_toolbar.rs");
+
+    /// The ticket detail grid: one flexible column for the editors, one fixed
+    /// track for the details beside them.
+    const TICKET_GRID: &str =
+        r#"div { class: "grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]","#;
+
+    /// The routes whose whole job is editing a document.
+    const EDITING_ROUTES: &[&str] = &["KBArticleNew", "KBArticleEdit", "TicketDetail"];
+
+    /// A route component's body, from its signature to the closing brace. The
+    /// comments ABOVE it are excluded on purpose: they name the classes the
+    /// route does not carry, and reading those as the code would pass a route
+    /// that never dropped the cap.
+    fn route_body(name: &str) -> &'static str {
+        let head = format!("\nfn {name}(");
+        let start = LIB
+            .find(&head)
+            .unwrap_or_else(|| panic!("{name} is a route component in src/lib.rs"))
+            + 1;
+        let rest = &LIB[start..];
+        let end = rest
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("{name}'s component never closes"));
+        &rest[..end]
+    }
+
+    /// Wide: the editor gets the window, not a 1280px column centred in it.
+    ///
+    /// `max-w-7xl mx-auto` is what put dead margins either side of the writing
+    /// area on a monitor with room for twice that.
+    #[test]
+    fn wide_gives_the_editor_the_window_rather_than_a_centred_column() {
+        for name in EDITING_ROUTES {
+            let body = route_body(name);
+            assert!(
+                !body.contains("max-w-"),
+                "{name} is an editing surface and must not cap its width: {body}"
+            );
+            assert!(
+                !body.contains("mx-auto"),
+                "{name} must not centre itself either: auto margins are what turn \
+                 spare width into dead space instead of writing area: {body}"
+            );
+        }
+        assert!(
+            EDITOR.contains("grid gap-4 grid-cols-1 grid-rows-2 lg:grid-cols-2 lg:grid-rows-1"),
+            "and at `lg` the spare width buys a second pane side by side, which is \
+             the whole reason Split is worth having on a wide screen"
+        );
+        assert!(
+            TICKETS.contains(TICKET_GRID),
+            "the ticket record's editors need the grid to hand them every pixel the \
+             fixed details track does not take, or dropping the cap just widens the \
+             dropdowns beside them"
+        );
+    }
+
+    /// Medium: the ladder steps down rather than switching off. The shell's
+    /// padding tightens and the metadata row is still multi-column.
+    #[test]
+    fn medium_steps_the_padding_down_and_keeps_the_metadata_row_in_columns() {
+        assert!(
+            LAYOUT.contains("px-4 sm:px-6 lg:px-8"),
+            "`main` owns the only inset the editor has left, and it is a ladder: \
+             a single fixed value here is the dead margin coming back"
+        );
+        assert!(
+            KB.contains(r#"div { class: "grid grid-cols-1 gap-6 sm:grid-cols-3","#),
+            "Category, Visibility and Status stay three-up from `sm`, so the \
+             details block does not push the body down a screen at tablet width"
+        );
+        assert!(
+            KB.contains(r#"panel_class: "h-[calc(100vh-16rem)] min-h-[26rem]".to_string()"#),
+            "and the panel's height is still the window's minus the chrome beside \
+             it, with a floor for a short one"
+        );
+        assert!(
+            !TICKETS.contains("lg:grid-cols-3") && !TICKETS.contains("lg:col-span-2"),
+            "and the ticket record's details column is a fixed track, not a third of \
+             whatever the window happens to be: a proportional split turns a 2560px \
+             monitor into 800px of dropdowns"
+        );
+    }
+
+    /// Narrow: everything collapses to one column and nothing is unreachable.
+    #[test]
+    fn narrow_stacks_into_one_column_and_the_toolbar_wraps() {
+        assert!(
+            EDITOR.contains("grid-cols-1 grid-rows-2 lg:"),
+            "below `lg` Split stacks the panes instead of halving a phone's width"
+        );
+        assert!(
+            KB.contains("grid grid-cols-1 gap-6 sm:grid-cols-3"),
+            "and the metadata row is one column before `sm`"
+        );
+        assert!(
+            TOOLBAR.contains("flex flex-wrap items-center"),
+            "the toolbar wraps rather than scrolling its later groups off the edge"
+        );
+        assert!(
+            TICKETS.contains(TICKET_GRID),
+            "and the ticket record stacks to one column below `lg`, so the 20rem \
+             details track never squeezes the editors on a phone"
+        );
+    }
+
+    /// AC3/AC4. The rail and the editor are flex siblings, so the 12rem a
+    /// collapse gives back lands in `main`. With `mx-auto` still on the page it
+    /// landed in the two margins instead, and collapsing the sidebar moved the
+    /// editor sideways without widening it by a pixel.
+    #[test]
+    fn collapsing_the_sidebar_widens_the_editor_instead_of_its_margins() {
+        assert!(
+            LAYOUT
+                .contains(r#"let desktop_width = if collapsed { "lg:w-16" } else { "lg:w-64" };"#),
+            "the rail's width is the only thing the collapse changes"
+        );
+        assert!(
+            LAYOUT.contains(r#"main { class: "flex-1 overflow-y-auto overscroll-contain py-6"#),
+            "and `main` takes whatever it releases"
+        );
+        for name in EDITING_ROUTES {
+            assert!(
+                !route_body(name).contains("mx-auto"),
+                "{name} would hand it straight back as margin"
             );
         }
     }

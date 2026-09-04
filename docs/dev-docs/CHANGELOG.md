@@ -29,4 +29,4 @@ Cross-cutting themes (duplicated helpers, parallel paginated-envelope types, the
 
 ## 2026-05 - Milestone 1: foundation (distilled)
 
-Milestone 1 stood up mokosh-apps as the cross-platform Dioxus client for the Mokosh platform, served as a static WASM bundle behind Caddy, talking to mokosh-server over `/api/v1`. Several pages began as stub/demo lists and were progressively wired to the live backend; per-page status and the running fix list (`F1..F19`) are tracked in `docs/dev-docs/codebase-state.md`.
+Milestone 1 stood up mokosh-apps as the cross-platform Dioxus client for the Mokosh platform, served as a static WASM bundle behind Caddy, talking to mokosh-server over `/api/v1`. Several pages began as stub/demo lists and were progressively wired to the live backend; `docs/dev-docs/codebase-state.md` records the per-page state as it stood on 2026-05-06, along with the `F1..F19` fix ids that source comments and issues still cite, and is not maintained past that day.

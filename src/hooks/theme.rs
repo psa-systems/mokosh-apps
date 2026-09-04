@@ -87,8 +87,9 @@ fn resolved_is_dark(theme: Theme) -> bool {
     }
 }
 
-/// MAPPS-504: `prefers-color-scheme` in the browser, the window's tao
-/// theme on the desktop.
+/// MAPPS-504: `prefers-color-scheme` in the browser. The desktop reads
+/// the same query out of its webview once MAPPS-511's listener has
+/// reported one, and the window's tao theme until then.
 fn system_prefers_dark() -> bool {
     crate::platform::dom::system_prefers_dark()
 }
@@ -140,16 +141,25 @@ fn apply_accent(is_dark: bool) {
 /// boot and subscribes to OS-level dark-mode changes so `Theme::System`
 /// users follow the system in real time.
 ///
-/// MAPPS-504: the subscription is browser-only. tao delivers the desktop
-/// equivalent as a `ThemeChanged` window event, which needs the event
-/// handler MAPPS-511 adds; until then a desktop user on `Theme::System`
-/// picks up an OS theme change the next time the app starts.
+/// MAPPS-504 / MAPPS-511: both hosts subscribe to the same
+/// `prefers-color-scheme` media query. The browser attaches the listener
+/// itself; the desktop has its webview attach one and post each change
+/// back over the `eval` channel, which
+/// [`crate::platform::dom::watch_system_theme`] owns.
 pub fn use_apply_theme() {
     use dioxus::prelude::*;
     use_effect(move || {
         apply_now();
         #[cfg(target_arch = "wasm32")]
         subscribe_to_system_theme();
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::platform::dom::watch_system_theme(|| {
+            // Only the System branch reacts to OS changes; the explicit
+            // settings already wrote the right class via `set`.
+            if matches!(current(), Theme::System) {
+                apply_now();
+            }
+        });
     });
 }
 
@@ -186,4 +196,35 @@ fn subscribe_to_system_theme() {
     }
     // Listener lives for the app's lifetime; nothing else removes it.
     cb.forget();
+}
+
+/// MAPPS-511: both hosts follow the OS light/dark preference.
+///
+/// A source scan: the subscription needs a document (or a webview) and no
+/// host test has either. What is pinned is that the desktop has a branch at
+/// all - it had none, and a `Theme::System` user there stayed on whatever the
+/// OS said when the app started, which reads as "the setting does nothing".
+#[cfg(test)]
+mod system_theme_tests {
+    const SRC: &str = include_str!("theme.rs");
+
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod system_theme_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn every_host_subscribes_to_the_os_preference() {
+        let code = code_only();
+        assert!(
+            code.contains("#[cfg(target_arch = \"wasm32\")] subscribe_to_system_theme();"),
+            "the browser attaches its own media-query listener"
+        );
+        assert!(
+            code.contains("crate::platform::dom::watch_system_theme(|| {"),
+            "and the desktop subscribes through the platform layer"
+        );
+    }
 }

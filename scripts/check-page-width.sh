@@ -21,7 +21,18 @@ CAP='max-w-7xl mx-auto'
 # Routes that deliberately fill the window. Adding a name here is the record of
 # that decision; the guard fails if a listed route carries the cap anyway, so
 # the list cannot drift into a stale comment.
-FULL_WIDTH='KBArticleDetail'
+#
+# MAPPS-652 added the two KB article editor routes. An editing surface is the
+# one place where the content, not the chrome, should get the width, and the
+# cap was also what made collapsing the sidebar useless there: `mx-auto` turns
+# the reclaimed 12rem into two 6rem margins instead of writing area.
+#
+# MAPPS-693 added the ticket record, which hosts three of the same editors. It
+# pairs the opt-out with a fixed 20rem details track in `src/pages/tickets.rs`,
+# so the width lands on the editors rather than on the column of dropdowns
+# beside them. The short-input forms (TicketNew, the company and contact forms)
+# stay capped on purpose; the comment on each route component says so.
+FULL_WIDTH='KBArticleDetail KBArticleNew KBArticleEdit TicketDetail'
 
 # The route component names between `#[layout(AppShell)]` and its `#[end_layout]`.
 appshell_routes() {

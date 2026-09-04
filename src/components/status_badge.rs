@@ -110,6 +110,17 @@ pub fn invoice_status_badge(raw: &str) -> (BadgeVariant, String) {
     }
 }
 
+/// (badge variant, label) for a credit note (MAPPS-638). Two states and no
+/// editing: issued counts against its invoice, void is kept on record and
+/// counts for nothing, so it takes the same Red as a void invoice.
+pub fn credit_note_status_badge(raw: &str) -> (BadgeVariant, String) {
+    match raw {
+        "issued" => (BadgeVariant::Green, "Issued".to_string()),
+        "void" => (BadgeVariant::Red, "Void".to_string()),
+        other => (BadgeVariant::Gray, humanize_token(other)),
+    }
+}
+
 /// (badge variant, label) for a knowledge-base article status. Previously
 /// `status_variant` in `knowledge_base.rs` (which returned only the variant and
 /// left each call site to title-case the label by hand).
@@ -125,6 +136,22 @@ pub fn kb_article_status_badge(raw: &str) -> (BadgeVariant, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credit_note_status_maps_both_states_and_humanizes_the_rest() {
+        assert_eq!(
+            credit_note_status_badge("issued"),
+            (BadgeVariant::Green, "Issued".to_string())
+        );
+        assert_eq!(
+            credit_note_status_badge("void"),
+            (BadgeVariant::Red, "Void".to_string())
+        );
+        assert_eq!(
+            credit_note_status_badge("something_new"),
+            (BadgeVariant::Gray, "Something New".to_string())
+        );
+    }
 
     #[test]
     fn humanize_token_title_cases_snake_case() {

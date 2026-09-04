@@ -34,7 +34,7 @@ use crate::components::{
     use_page_title, Badge, BadgeVariant, BannerTone, BreadcrumbItem, Breadcrumbs, Button,
     ButtonVariant, Card, Checkbox, DataTable, ErrorBanner, FileField, IconSize, Input, PageHeader,
     PlusIcon, SearchInput, Select, SelectOption, SettingFormModal, StatusBanner, Table, TableBody,
-    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, ThemePicker,
+    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, ThemePicker,
 };
 use crate::utils::money::format_money_str;
 use crate::utils::Paginated;
@@ -386,6 +386,14 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Billing,
         advanced: false,
     },
+    // MAPPS-640: the price list. Finance-gated on its page like Tax Rates.
+    SettingsSurface {
+        route: Route::SettingsProducts {},
+        title: "Products",
+        description: "The price list picked onto invoice lines and contract items.",
+        group: SettingsGroupKey::Billing,
+        advanced: false,
+    },
     SettingsSurface {
         route: Route::SettingsTicketStatuses {},
         title: "Ticket Statuses",
@@ -623,7 +631,7 @@ fn group_grid_class(prominent: bool) -> &'static str {
 /// Breadcrumb trail for a leaf settings page, derived from the taxonomy:
 /// Settings > {Group} > {Leaf}, with every ancestor a clickable `Link`.
 #[component]
-fn SettingsBreadcrumb(current: Route) -> Element {
+pub(crate) fn SettingsBreadcrumb(current: Route) -> Element {
     let mut items = vec![BreadcrumbItem {
         label: "Settings".to_string(),
         route: Some(Route::SettingsHome {}),
@@ -809,11 +817,213 @@ struct BrandingView {
     support_email: Option<String>,
     #[serde(default)]
     support_phone: Option<String>,
+    /// PMS-911: the invoice identity. The registered entity, where it differs
+    /// from the trading name; the identifier the MSP's jurisdiction wants on an
+    /// invoice; and the address the invoice is issued from.
+    #[serde(default)]
+    legal_name: Option<String>,
+    #[serde(default)]
+    tax_id: Option<String>,
+    #[serde(default)]
+    postal_address: Option<String>,
     /// Read to render the current logo. Never sent: the upload and the delete
     /// own this key, and PMS-758 is what happens when one writer overwrites
     /// another's half of the document.
     #[serde(default, skip_serializing)]
     logo_url: Option<String>,
+}
+
+/// PMS-911 bounds, mirrored from `validate_branding_value_as` on mokosh-server
+/// so an over-long value is refused in the field rather than by a 422.
+const MAX_LEGAL_NAME: i64 = 120;
+const MAX_TAX_ID: i64 = 60;
+const MAX_POSTAL_ADDRESS: i64 = 300;
+const MAX_POSTAL_ADDRESS_LINES: usize = 6;
+
+/// The one bound `maxlength` cannot express: the server holds a postal address
+/// to six lines as well as 300 characters. `\r` is folded away there, so it is
+/// not counted here either.
+fn address_lines_error(raw: &str) -> Option<String> {
+    let lines = raw.replace('\r', "").lines().count();
+    (lines > MAX_POSTAL_ADDRESS_LINES)
+        .then(|| format!("Use {MAX_POSTAL_ADDRESS_LINES} lines or fewer; this has {lines}."))
+}
+
+// ============================================================================
+// Request bodies (MAPPS-688)
+//
+// Every write on this page whose producing DTO lives in `mokosh-types` builds
+// one of these instead of a `serde_json::json!` literal. The shared requests
+// derive only `Deserialize` - they are the server's input types - so they
+// cannot be built here; these structs stand in for them, field for field and
+// type for type, and the `*_fields_are_all_considered` functions in the tests
+// module at the end of this file are what tie each one to its DTO. A field
+// added, removed, renamed or retyped on mokosh-server is then a compile error
+// here instead of a 422 in front of a user. Same pattern as `src/pages/time.rs`
+// (MAPPS-627); the audit is in `docs/client-server-integration.md`.
+//
+// The wire bytes are unchanged from the literals these replaced, which is why
+// an omitted key stays omitted (`skip_serializing_if`) and a key the literal
+// sent as an explicit `null` is still an `Option` that is always serialized.
+//
+// The other writes on this page have no shared DTO and keep their `json!`
+// literals: the per-key `/settings/...` rows, the `/data/import` CSV, the
+// `/data/seed-demo` trigger, the three `/rmm/*` editors, and the
+// `/asset-types`, `/task-statuses`, `/project-types` and `/payment-terms`
+// lookups. mokosh-types declares no request type for any of them, so there is
+// nothing for a body struct here to be checked against. They still parse what
+// they send, though: MAPPS-700 put the three lookups carrying a Sort order on
+// `parse_sort_order` below and the RMM sync interval on `parse_sync_interval`,
+// so an unparseable value is reported on the field instead of quietly becoming
+// a default.
+// ============================================================================
+
+/// `PUT /api/v1/tenants/current`, for
+/// `mokosh_types::tenants::UpdateTenantRequest`.
+#[derive(Debug, Serialize)]
+struct UpdateTenantBody {
+    name: Option<String>,
+    /// The shared DTO types this as a raw `serde_json::Value` on purpose
+    /// (PMS-758: a merge document with three writers). This page owns exactly
+    /// the [`BrandingView`] keys, so it sends those; the destructuring function
+    /// is where the DTO's own type for the field is pinned.
+    branding: BrandingView,
+}
+
+/// `POST /api/v1/work-types` and `PUT /api/v1/work-types/{id}`, for
+/// `mokosh_types::time_tracking::UpsertWorkTypeRequest`.
+#[derive(Debug, Serialize)]
+struct UpsertWorkTypeBody {
+    name: String,
+    description: Option<String>,
+    default_billable: bool,
+    /// `rust_decimal` serializes a `Decimal` as a JSON string, which is the
+    /// shape the literal this replaced sent and the shape the list read back.
+    default_rate: Option<rust_decimal::Decimal>,
+    is_active: bool,
+    sort_order: i32,
+}
+
+/// `POST /api/v1/contacts/company-industries` and
+/// `PUT /api/v1/contacts/company-industries/{id}`, for
+/// `mokosh_types::contacts::UpsertCompanyIndustryRequest`.
+#[derive(Debug, Serialize)]
+struct UpsertCompanyIndustryBody {
+    name: String,
+    is_active: bool,
+}
+
+/// `POST /api/v1/tickets/statuses` and `PUT /api/v1/tickets/statuses/{id}`, for
+/// `mokosh_types::tickets::UpsertTicketStatusRequest`.
+#[derive(Debug, Serialize)]
+struct UpsertTicketStatusBody {
+    name: String,
+    color: String,
+    is_closed: bool,
+    is_default: bool,
+    sort_order: i32,
+}
+
+/// `POST /api/v1/tickets/priorities` and
+/// `PUT /api/v1/tickets/priorities/{id}`, for
+/// `mokosh_types::tickets::UpsertTicketPriorityRequest`.
+#[derive(Debug, Serialize)]
+struct UpsertTicketPriorityBody {
+    name: String,
+    color: String,
+    icon: Option<String>,
+    sla_multiplier: f64,
+    is_default: bool,
+    sort_order: i32,
+}
+
+/// `POST /api/v1/tickets/types` and `PUT /api/v1/tickets/types/{id}`, for
+/// `mokosh_types::tickets::UpsertTicketTypeRequest`.
+#[derive(Debug, Serialize)]
+struct UpsertTicketTypeBody {
+    name: String,
+    description: Option<String>,
+    icon: Option<String>,
+    is_active: bool,
+    sort_order: i32,
+}
+
+/// `POST /api/v1/tickets/queues` and `PUT /api/v1/tickets/queues/{id}`, for
+/// `mokosh_types::tickets::UpsertTicketQueueRequest`.
+#[derive(Debug, Serialize)]
+struct UpsertTicketQueueBody {
+    name: String,
+    description: Option<String>,
+    /// Optional on the shared DTO, always sent here: the colour swatch falls
+    /// back to a neutral grey rather than to no value (`non_empty_color`).
+    color: Option<String>,
+    icon: Option<String>,
+    is_default: bool,
+    sort_order: i32,
+}
+
+/// `POST /api/v1/tickets/categories` and
+/// `PUT /api/v1/tickets/categories/{id}`, for
+/// `mokosh_types::tickets::UpsertTicketCategoryRequest`.
+#[derive(Debug, Serialize)]
+struct UpsertTicketCategoryBody {
+    name: String,
+    description: Option<String>,
+    parent_id: Option<Uuid>,
+    is_active: bool,
+    sort_order: i32,
+}
+
+/// Parse a sort-order field into the `i32` every `Upsert*` request declares.
+///
+/// Blank is `0`, which is the server's own `#[serde(default)]` and what an
+/// untouched field has always meant here. Anything else that is not an `i32` is
+/// reported on the field and logged: it used to become `0` silently, so a typo
+/// reordered the list and said nothing (MAPPS-688).
+fn parse_sort_order(raw: &str) -> Result<i32, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(0);
+    }
+    trimmed.parse::<i32>().map_err(|e| {
+        tracing::warn!("sort order {trimmed:?} is not a 32-bit integer: {e}");
+        "Enter a whole number between 0 and 2147483647.".to_string()
+    })
+}
+
+/// Parse a rate field into the `Decimal` `UpsertWorkTypeRequest` declares.
+/// Blank clears the rate; anything unparseable is reported on the field rather
+/// than sent for the server to refuse (MAPPS-688).
+fn parse_rate(raw: &str) -> Result<Option<rust_decimal::Decimal>, String> {
+    use std::str::FromStr;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match rust_decimal::Decimal::from_str(trimmed) {
+        Ok(d) => Ok(Some(d)),
+        Err(e) => {
+            tracing::warn!("default rate {trimmed:?} is not a decimal: {e}");
+            Err("Enter an amount like 150.00, or leave it blank.".to_string())
+        }
+    }
+}
+
+/// Parse the parent picker's value into the `Uuid` the category request
+/// declares. Blank is "top level"; a value that is not a UUID is reported on
+/// the picker rather than sent (MAPPS-688).
+fn parse_parent_id(raw: &str) -> Result<Option<Uuid>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match Uuid::parse_str(trimmed) {
+        Ok(id) => Ok(Some(id)),
+        Err(e) => {
+            tracing::warn!("category parent {trimmed:?} is not a UUID: {e}");
+            Err("Pick a parent category from the list.".to_string())
+        }
+    }
 }
 
 /// `/settings/organization` (MAPPS-426). Admin-only rename of this tenant.
@@ -838,9 +1048,9 @@ struct BrandingView {
 /// Two reasons for the fetch survive that correction:
 ///
 /// - The page edits the branding document as well as the name (support contact,
-///   email, phone, logo), and `MembershipView` carries only `tenant_id` and
-///   `tenant_name`. Auth context could supply at most one of this form's five
-///   fields, so the round-trip happens either way.
+///   email, phone, logo, and the PMS-911 invoice identity), and `MembershipView`
+///   carries only `tenant_id` and `tenant_name`. Auth context could supply at
+///   most one of this form's fields, so the round-trip happens either way.
 /// - `active_org_name()` is `None` when the org load failed, deliberately:
 ///   MAPPS-427 leaves the list empty rather than inventing a row. Seeding the
 ///   form from it would leave an admin unable to see or fix the name on exactly
@@ -873,6 +1083,11 @@ fn OrganizationSettingsBody() -> Element {
     let mut contact_name = use_signal(String::new);
     let mut contact_phone = use_signal(String::new);
     let mut contact_email = use_signal(String::new);
+    // PMS-911: the invoice identity, as opposed to the support contact above.
+    let mut legal_name = use_signal(String::new);
+    let mut tax_id = use_signal(String::new);
+    let mut postal_address = use_signal(String::new);
+    let mut postal_address_error = use_signal(String::new);
     let mut logo_url = use_signal(|| None::<String>);
     let mut logo_busy = use_signal(|| false);
     // PMS-758: reported next to the file input rather than in the form banner
@@ -897,6 +1112,7 @@ fn OrganizationSettingsBody() -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_authed::<TenantView>(TENANT_PATH)
             .await
+            .inspect_err(|e| tracing::error!("org settings load failed: {e}"))
             .ok()
     });
 
@@ -913,6 +1129,9 @@ fn OrganizationSettingsBody() -> Element {
             contact_name.set(t.branding.support_contact_name.clone().unwrap_or_default());
             contact_phone.set(t.branding.support_phone.clone().unwrap_or_default());
             contact_email.set(t.branding.support_email.clone().unwrap_or_default());
+            legal_name.set(t.branding.legal_name.clone().unwrap_or_default());
+            tax_id.set(t.branding.tax_id.clone().unwrap_or_default());
+            postal_address.set(t.branding.postal_address.clone().unwrap_or_default());
             logo_url.set(t.branding.logo_url.clone());
         }
         seeded.set(true);
@@ -932,6 +1151,7 @@ fn OrganizationSettingsBody() -> Element {
         }
         error.set(String::new());
         name_error.set(String::new());
+        postal_address_error.set(String::new());
 
         let trimmed = name.read().trim().to_string();
         // The server enforces 1..=255; checking here keeps a blank submit from
@@ -945,6 +1165,10 @@ fn OrganizationSettingsBody() -> Element {
             name_error.set("Use 255 characters or fewer.".to_string());
             return;
         }
+        if let Some(message) = address_lines_error(&postal_address.read()) {
+            postal_address_error.set(message);
+            return;
+        }
 
         saving.set(true);
         spawn(async move {
@@ -955,19 +1179,22 @@ fn OrganizationSettingsBody() -> Element {
                 // later Save is a file input people forget to save.
                 match crate::hooks::fetch::api::put_authed_typed::<TenantView, _>(
                     TENANT_PATH,
-                    &serde_json::json!({
-                        "name": trimmed,
+                    &UpdateTenantBody {
+                        name: Some(trimmed),
                         // PMS-758: the server MERGES this into the branding
                         // document, so an emptied field has to be sent as an
                         // explicit null to clear, and a key this page does not
                         // own (the logo) is simply not sent.
-                        "branding": BrandingView {
+                        branding: BrandingView {
                             support_contact_name: optional_text(&contact_name.read()),
                             support_email: optional_text(&contact_email.read()),
                             support_phone: optional_text(&contact_phone.read()),
+                            legal_name: optional_text(&legal_name.read()),
+                            tax_id: optional_text(&tax_id.read()),
+                            postal_address: optional_text(&postal_address.read()),
                             logo_url: None,
                         },
-                    }),
+                    },
                 )
                 .await
                 {
@@ -985,9 +1212,16 @@ fn OrganizationSettingsBody() -> Element {
                     }
                     Err(err) => {
                         crate::hooks::push_api_error(&err);
-                        match err.field_message("name") {
-                            Some(m) => name_error.set(m),
-                            None => error.set(err.user_message()),
+                        // The server names a rejected branding key
+                        // `branding.{key}`; hang the address message on the
+                        // field rather than only in the banner at the top.
+                        match (
+                            err.field_message("name"),
+                            err.field_message("branding.postal_address"),
+                        ) {
+                            (Some(m), _) => name_error.set(m),
+                            (None, Some(m)) => postal_address_error.set(m),
+                            (None, None) => error.set(err.user_message()),
                         }
                     }
                 }
@@ -1001,8 +1235,9 @@ fn OrganizationSettingsBody() -> Element {
             title: "Organization",
             // PMS-755: the page held one field when this said "the name". It now
             // carries the contact and logo a client sees too, so it describes
-            // the set rather than its first member.
-            subtitle: "What clients see when you send them a request form: your name, who to ask, and your logo",
+            // the set rather than its first member. PMS-911 added the invoice
+            // identity, which a client sees on a document rather than a form.
+            subtitle: "What clients see on the request forms and invoices you send them: your name, who to ask, your logo, and the entity that bills them",
             breadcrumbs: rsx! {
                 SettingsBreadcrumb { current: Route::SettingsOrganization {} }
             },
@@ -1058,6 +1293,44 @@ fn OrganizationSettingsBody() -> Element {
                     disabled: is_loading || saving(),
                     help: "Optional. Offered alongside the phone number, and usually the one a client reaches for first.".to_string(),
                     oninput: move |e: FormEvent| contact_email.set(e.value()),
+                }
+
+                // PMS-911: what an invoice has to carry beyond a trading name.
+                // Written through the same branding merge as the fields above,
+                // so an emptied one clears rather than storing "".
+                Input {
+                    name: "legal_name",
+                    label: "Legal name",
+                    value: legal_name(),
+                    maxlength: MAX_LEGAL_NAME,
+                    disabled: is_loading || saving(),
+                    help: "Optional. The registered entity your invoices are issued by, if that is not the name above. Left empty, an invoice uses the organization name.".to_string(),
+                    oninput: move |e: FormEvent| legal_name.set(e.value()),
+                }
+
+                Input {
+                    name: "tax_id",
+                    label: "Tax identifier",
+                    value: tax_id(),
+                    maxlength: MAX_TAX_ID,
+                    disabled: is_loading || saving(),
+                    help: "Optional. The VAT number, ABN, EIN or registration number your invoices must show. Printed as you enter it.".to_string(),
+                    oninput: move |e: FormEvent| tax_id.set(e.value()),
+                }
+
+                Textarea {
+                    name: "postal_address",
+                    label: "Postal address",
+                    value: postal_address(),
+                    rows: MAX_POSTAL_ADDRESS_LINES as u32,
+                    maxlength: MAX_POSTAL_ADDRESS,
+                    disabled: is_loading || saving(),
+                    error: postal_address_error(),
+                    help: "Optional. The address your invoices are issued from, one line each, up to 6 lines.".to_string(),
+                    oninput: move |e: FormEvent| {
+                        postal_address_error.set(String::new());
+                        postal_address.set(e.value());
+                    },
                 }
 
                 // MAPPS-429: the logo uploads on selection rather than on Save.
@@ -1218,6 +1491,8 @@ pub fn ImportExportSettingsPage() -> Element {
     let tenant = use_resource(move || async move {
         crate::hooks::fetch::api::get_authed::<TenantView>(TENANT_PATH)
             .await
+            // Best-effort: import/export falls back to the generic file name.
+            .inspect_err(|e| tracing::warn!("org name load failed for the export name: {e}"))
             .ok()
     });
     if !use_is_admin() {
@@ -1631,6 +1906,19 @@ struct SettingValueRow {
     value: serde_json::Value,
 }
 
+/// Read the whole number a per-key setting row stores.
+///
+/// A missing row (404) is the unconfigured state and each caller handles it
+/// separately. A row that exists holding something that is not a whole number
+/// is a stored-data fault nobody can see from the form, so it is logged before
+/// `default` stands in rather than substituted in silence (MAPPS-700).
+fn setting_u64(value: &serde_json::Value, path: &str, default: u64) -> u64 {
+    value.as_u64().unwrap_or_else(|| {
+        tracing::warn!("setting {path} holds {value}, not a whole number; reading it as {default}");
+        default
+    })
+}
+
 const DEFAULT_DUE_SETTING_PATH: &str = "/settings/scheduling/default_due_business_days";
 const MAX_DUE_BUSINESS_DAYS: u32 = 365;
 
@@ -1667,9 +1955,7 @@ fn SchedulingSettingsBody() -> Element {
             .await
             {
                 Ok(row) => Some(
-                    row.value
-                        .as_u64()
-                        .unwrap_or(0)
+                    setting_u64(&row.value, DEFAULT_DUE_SETTING_PATH, 0)
                         .min(u64::from(MAX_DUE_BUSINESS_DAYS)) as u32,
                 ),
                 Err(e) if e.status_code() == Some(404) => Some(0u32),
@@ -1863,10 +2149,12 @@ fn MaxHoursPerDaySettingsBody() -> Element {
             .await
             {
                 Ok(row) => Some(
-                    row.value
-                        .as_u64()
-                        .unwrap_or(u64::from(DEFAULT_MAX_HOURS_PER_DAY))
-                        .clamp(1, u64::from(MAX_HOURS_PER_DAY_CEILING)) as u32,
+                    setting_u64(
+                        &row.value,
+                        MAX_HOURS_PER_DAY_SETTING_PATH,
+                        u64::from(DEFAULT_MAX_HOURS_PER_DAY),
+                    )
+                    .clamp(1, u64::from(MAX_HOURS_PER_DAY_CEILING)) as u32,
                 ),
                 Err(e) if e.status_code() == Some(404) => Some(DEFAULT_MAX_HOURS_PER_DAY),
                 Err(_) => None,
@@ -2060,6 +2348,7 @@ fn WorkTypesSettingsBody() -> Element {
         let path = format!("/work-types?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("work type settings load failed: {e}"))
             .ok()
     });
 
@@ -2259,6 +2548,10 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-688: the two fields this page now parses, each reported in its own
+    // inline slot rather than in the modal's banner.
+    let mut rate_error = use_signal(String::new);
+    let mut sort_order_error = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -2268,23 +2561,36 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        rate_error.set(String::new());
+        sort_order_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
         }
+        let rate = match parse_rate(&default_rate.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                rate_error.set(message);
+                return;
+            }
+        };
+        let sort = match parse_sort_order(&sort_order.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sort_order_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
-        let desc = description.read().trim().to_string();
-        let rate = default_rate.read().trim().to_string();
-        let body = serde_json::json!({
-            "name": name.read().trim(),
-            "description": opt_str(&desc),
-            "default_billable": *default_billable.read(),
-            // Server parses the rate string into `rust_decimal::Decimal`.
-            "default_rate": opt_str(&rate),
-            "is_active": *is_active.read(),
-            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
-        });
+        let body = UpsertWorkTypeBody {
+            name: name.read().trim().to_string(),
+            description: optional_text(&description.read()),
+            default_billable: *default_billable.read(),
+            default_rate: rate,
+            is_active: *is_active.read(),
+            sort_order: sort,
+        };
         let id = save_id.clone();
         spawn(async move {
             #[cfg(feature = "app")]
@@ -2353,7 +2659,11 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
                 min: "0".to_string(),
                 placeholder: "e.g. 150.00",
                 value: default_rate.read().clone(),
-                oninput: move |e: FormEvent| default_rate.set(e.value()),
+                error: rate_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    rate_error.set(String::new());
+                    default_rate.set(e.value());
+                },
             }
             crate::components::Input {
                 name: "work_type_sort_order",
@@ -2362,7 +2672,11 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
                 min: "0".to_string(),
                 max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
-                oninput: move |e: FormEvent| sort_order.set(e.value()),
+                error: sort_order_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sort_order_error.set(String::new());
+                    sort_order.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "work_type_billable",
@@ -2427,6 +2741,7 @@ fn TaskStatusesSettingsBody() -> Element {
         let path = format!("/task-statuses?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TaskStatusRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("task status settings load failed: {e}"))
             .ok()
     });
 
@@ -2613,6 +2928,9 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-700: the sort order is reported in its own inline slot, as on the
+    // shared-DTO editors, rather than becoming a silent `0`.
+    let mut sort_order_error = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -2622,6 +2940,7 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        sort_order_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
@@ -2631,13 +2950,20 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
             error.set("Color is required.".to_string());
             return;
         }
+        let sort = match parse_sort_order(&sort_order.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sort_order_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
         let body = serde_json::json!({
             "name": name.read().trim(),
             "color": color_val,
             "is_completed": *is_completed.read(),
-            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
+            "sort_order": sort,
         });
         let id = save_id.clone();
         spawn(async move {
@@ -2706,7 +3032,11 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
                 min: "0".to_string(),
                 max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
-                oninput: move |e: FormEvent| sort_order.set(e.value()),
+                error: sort_order_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sort_order_error.set(String::new());
+                    sort_order.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "task_status_completed",
@@ -2766,6 +3096,7 @@ fn AssetTypesSettingsBody() -> Element {
         let path = format!("/asset-types?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<AssetTypeRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("asset type settings load failed: {e}"))
             .ok()
     });
 
@@ -3104,6 +3435,7 @@ fn CompanyIndustriesSettingsBody() -> Element {
         let path = format!("/contacts/company-industries?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<CompanyIndustryRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("company industry settings load failed: {e}"))
             .ok()
     });
 
@@ -3284,10 +3616,10 @@ fn CompanyIndustryFormModal(props: CompanyIndustryFormModalProps) -> Element {
         }
         saving.set(true);
         error.set(String::new());
-        let body = serde_json::json!({
-            "name": name.read().trim(),
-            "is_active": *is_active.read(),
-        });
+        let body = UpsertCompanyIndustryBody {
+            name: name.read().trim().to_string(),
+            is_active: *is_active.read(),
+        };
         let id = save_id.clone();
         spawn(async move {
             #[cfg(feature = "app")]
@@ -3404,6 +3736,7 @@ fn ProjectTypesSettingsBody() -> Element {
         let path = format!("/project-types?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<ProjectTypeRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("project type settings load failed: {e}"))
             .ok()
     });
 
@@ -3594,6 +3927,9 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-700: the sort order is reported in its own inline slot, as on the
+    // shared-DTO editors, rather than becoming a silent `0`.
+    let mut sort_order_error = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -3603,10 +3939,18 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        sort_order_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
         }
+        let sort = match parse_sort_order(&sort_order.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sort_order_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
         // `is_system` is server-owned and not sent.
@@ -3614,7 +3958,7 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
             "name": name.read().trim(),
             "is_default": *is_default.read(),
             "is_active": *is_active.read(),
-            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
+            "sort_order": sort,
         });
         let id = save_id.clone();
         spawn(async move {
@@ -3684,7 +4028,11 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
                 min: "0".to_string(),
                 max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
-                oninput: move |e: FormEvent| sort_order.set(e.value()),
+                error: sort_order_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sort_order_error.set(String::new());
+                    sort_order.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "project_type_default",
@@ -3726,6 +4074,10 @@ struct PaymentTermRow {
     is_active: bool,
     #[serde(default)]
     sort_order: i64,
+    /// MAPPS-662: what the term means in days (PMS-990). `None` for a term
+    /// that names no count.
+    #[serde(default)]
+    net_days: Option<i64>,
 }
 
 #[component]
@@ -3752,6 +4104,7 @@ fn PaymentTermsSettingsBody() -> Element {
         let path = format!("/payment-terms?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<PaymentTermRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("payment term settings load failed: {e}"))
             .ok()
     });
 
@@ -3804,21 +4157,22 @@ fn PaymentTermsSettingsBody() -> Element {
             total_items: total as usize,
             current_page,
             per_page: PER_PAGE,
-            columns: 3,
+            columns: 4,
             onpagechange: move |p| page.set(p),
             Table {
                 TableHead {
                     TableRow {
                         TableHeader { "Name" }
+                        TableHeader { class: "text-right", "Net days" }
                         TableHeader { "Default" }
                         TableHeader { "Active" }
                     }
                 }
                 if is_loading {
-                    TableLoading { columns: 3, rows: 4 }
+                    TableLoading { columns: 4, rows: 4 }
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
-                        columns: 3,
+                        columns: 4,
                         title: "No payment terms yet".to_string(),
                         description: "Payment terms fill the terms dropdown when you build an invoice.".to_string(),
                         actions: rsx! {
@@ -3842,6 +4196,7 @@ fn PaymentTermsSettingsBody() -> Element {
                                 let name = row.name.clone();
                                 let default = row.is_default;
                                 let active = row.is_active;
+                                let net_days = row.net_days;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
                                         onclick: {
@@ -3853,6 +4208,13 @@ fn PaymentTermsSettingsBody() -> Element {
                                             // route to link to; this cell is the keyboard path instead.
                                             onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
+                                        }
+                                        TableCell { class: "text-right",
+                                            if let Some(days) = net_days {
+                                                "{days}"
+                                            } else {
+                                                span { class: "text-subtle", title: "No fixed count", "-" }
+                                            }
                                         }
                                         TableCell {
                                             if default {
@@ -3889,6 +4251,8 @@ struct PaymentTermFormState {
     is_default: bool,
     is_active: bool,
     sort_order: String,
+    /// MAPPS-662: blank means the term names no count.
+    net_days: String,
 }
 
 impl PaymentTermFormState {
@@ -3899,6 +4263,7 @@ impl PaymentTermFormState {
             is_default: false,
             is_active: true,
             sort_order: "0".to_string(),
+            net_days: String::new(),
         }
     }
 
@@ -3909,7 +4274,22 @@ impl PaymentTermFormState {
             is_default: r.is_default,
             is_active: r.is_active,
             sort_order: r.sort_order.to_string(),
+            net_days: r.net_days.map(|d| d.to_string()).unwrap_or_default(),
         }
+    }
+}
+
+/// MAPPS-662: the `net_days` value a term form sends. Blank is `null`, which
+/// the server keeps as "no fixed count"; anything else must be a whole
+/// number of days from 0 to 3650, the server's own cap.
+fn net_days_json(raw: &str) -> Result<serde_json::Value, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    match trimmed.parse::<i64>() {
+        Ok(days) if (0..=3650).contains(&days) => Ok(serde_json::Value::from(days)),
+        _ => Err("Net days must be a whole number from 0 to 3650, or blank.".to_string()),
     }
 }
 
@@ -3929,9 +4309,14 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
     let mut is_default = use_signal(|| initial.is_default);
     let mut is_active = use_signal(|| initial.is_active);
     let mut sort_order = use_signal(|| initial.sort_order.clone());
+    let mut net_days = use_signal(|| initial.net_days.clone());
+    let mut net_days_err = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-700: the sort order is reported in its own inline slot, as on the
+    // shared-DTO editors, rather than becoming a silent `0`.
+    let mut sort_order_error = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -3941,17 +4326,33 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        sort_order_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
         }
+        let net_days_value = match net_days_json(&net_days.read()) {
+            Ok(v) => v,
+            Err(msg) => {
+                net_days_err.set(msg);
+                return;
+            }
+        };
+        let sort = match parse_sort_order(&sort_order.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sort_order_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
         let body = serde_json::json!({
             "name": name.read().trim(),
             "is_default": *is_default.read(),
             "is_active": *is_active.read(),
-            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
+            "sort_order": sort,
+            "net_days": net_days_value,
         });
         let id = save_id.clone();
         spawn(async move {
@@ -4007,13 +4408,33 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
                 oninput: move |e: FormEvent| name.set(e.value()),
             }
             crate::components::Input {
+                name: "payment_term_net_days",
+                label: "Net days",
+                r#type: "number",
+                min: "0".to_string(),
+                max: "3650".to_string(),
+                step: "1".to_string(),
+                placeholder: "e.g. 30",
+                help: "Days from the invoice date to the due date. An invoice created without a due date takes the invoice date plus this. Leave blank for a term with no fixed count, such as On approval; the server then uses thirty days.",
+                error: net_days_err(),
+                value: net_days.read().clone(),
+                oninput: move |e: FormEvent| {
+                    net_days_err.set(String::new());
+                    net_days.set(e.value());
+                },
+            }
+            crate::components::Input {
                 name: "payment_term_sort_order",
                 label: "Sort order",
                 r#type: "number",
                 min: "0".to_string(),
                 max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
-                oninput: move |e: FormEvent| sort_order.set(e.value()),
+                error: sort_order_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sort_order_error.set(String::new());
+                    sort_order.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "payment_term_default",
@@ -4081,6 +4502,7 @@ fn TicketStatusesSettingsBody() -> Element {
         let path = format!("/tickets/statuses?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketStatusRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("ticket status settings load failed: {e}"))
             .ok()
     });
 
@@ -4274,6 +4696,8 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-688: the parsed field reports in its own inline slot.
+    let mut sort_order_error = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -4283,19 +4707,27 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        sort_order_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
         }
+        let sort = match parse_sort_order(&sort_order.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sort_order_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
-        let body = serde_json::json!({
-            "name": name.read().trim(),
-            "color": color.read().trim(),
-            "is_closed": *is_closed.read(),
-            "is_default": *is_default.read(),
-            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
-        });
+        let body = UpsertTicketStatusBody {
+            name: name.read().trim().to_string(),
+            color: color.read().trim().to_string(),
+            is_closed: *is_closed.read(),
+            is_default: *is_default.read(),
+            sort_order: sort,
+        };
         let id = save_id.clone();
         spawn(async move {
             #[cfg(feature = "app")]
@@ -4364,7 +4796,11 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
                 min: "0".to_string(),
                 max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
-                oninput: move |e: FormEvent| sort_order.set(e.value()),
+                error: sort_order_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sort_order_error.set(String::new());
+                    sort_order.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "ticket_status_closed",
@@ -4435,6 +4871,7 @@ fn TicketPrioritiesSettingsBody() -> Element {
         let path = format!("/tickets/priorities?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketPriorityRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("ticket priority settings load failed: {e}"))
             .ok()
     });
 
@@ -4626,6 +5063,8 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-688: the parsed field reports in its own inline slot.
+    let mut sort_order_error = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -4635,6 +5074,7 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        sort_order_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
@@ -4649,17 +5089,23 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
                 return;
             }
         };
+        let sort = match parse_sort_order(&sort_order.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sort_order_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
-        let icon_val = icon.read().trim().to_string();
-        let body = serde_json::json!({
-            "name": name.read().trim(),
-            "color": color.read().trim(),
-            "icon": opt_str(&icon_val),
-            "sla_multiplier": sla,
-            "is_default": *is_default.read(),
-            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
-        });
+        let body = UpsertTicketPriorityBody {
+            name: name.read().trim().to_string(),
+            color: color.read().trim().to_string(),
+            icon: optional_text(&icon.read()),
+            sla_multiplier: sla,
+            is_default: *is_default.read(),
+            sort_order: sort,
+        };
         let id = save_id.clone();
         spawn(async move {
             #[cfg(feature = "app")]
@@ -4745,7 +5191,11 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
                 min: "0".to_string(),
                 max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
-                oninput: move |e: FormEvent| sort_order.set(e.value()),
+                error: sort_order_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sort_order_error.set(String::new());
+                    sort_order.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "ticket_priority_default",
@@ -4804,6 +5254,7 @@ fn TicketTypesSettingsBody() -> Element {
         let path = format!("/tickets/types?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketTypeRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("ticket type settings load failed: {e}"))
             .ok()
     });
 
@@ -4986,6 +5437,8 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-688: the parsed field reports in its own inline slot.
+    let mut sort_order_error = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -4995,21 +5448,27 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        sort_order_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
         }
+        let sort = match parse_sort_order(&sort_order.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sort_order_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
-        let desc = description.read().trim().to_string();
-        let icon_val = icon.read().trim().to_string();
-        let body = serde_json::json!({
-            "name": name.read().trim(),
-            "description": opt_str(&desc),
-            "icon": opt_str(&icon_val),
-            "is_active": *is_active.read(),
-            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
-        });
+        let body = UpsertTicketTypeBody {
+            name: name.read().trim().to_string(),
+            description: optional_text(&description.read()),
+            icon: optional_text(&icon.read()),
+            is_active: *is_active.read(),
+            sort_order: sort,
+        };
         let id = save_id.clone();
         spawn(async move {
             #[cfg(feature = "app")]
@@ -5084,7 +5543,11 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
                 min: "0".to_string(),
                 max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
-                oninput: move |e: FormEvent| sort_order.set(e.value()),
+                error: sort_order_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sort_order_error.set(String::new());
+                    sort_order.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "ticket_type_active",
@@ -5144,6 +5607,7 @@ fn TicketQueuesSettingsBody() -> Element {
         let path = format!("/tickets/queues?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketQueueRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("ticket queue settings load failed: {e}"))
             .ok()
     });
 
@@ -5338,6 +5802,8 @@ fn TicketQueueFormModal(props: TicketQueueFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-688: the parsed field reports in its own inline slot.
+    let mut sort_order_error = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -5347,22 +5813,28 @@ fn TicketQueueFormModal(props: TicketQueueFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        sort_order_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
         }
+        let sort = match parse_sort_order(&sort_order.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sort_order_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
-        let desc = description.read().trim().to_string();
-        let icon_val = icon.read().trim().to_string();
-        let body = serde_json::json!({
-            "name": name.read().trim(),
-            "description": opt_str(&desc),
-            "color": color.read().trim(),
-            "icon": opt_str(&icon_val),
-            "is_default": *is_default.read(),
-            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
-        });
+        let body = UpsertTicketQueueBody {
+            name: name.read().trim().to_string(),
+            description: optional_text(&description.read()),
+            color: Some(color.read().trim().to_string()),
+            icon: optional_text(&icon.read()),
+            is_default: *is_default.read(),
+            sort_order: sort,
+        };
         let id = save_id.clone();
         spawn(async move {
             #[cfg(feature = "app")]
@@ -5444,7 +5916,11 @@ fn TicketQueueFormModal(props: TicketQueueFormModalProps) -> Element {
                 min: "0".to_string(),
                 max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
-                oninput: move |e: FormEvent| sort_order.set(e.value()),
+                error: sort_order_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sort_order_error.set(String::new());
+                    sort_order.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "ticket_queue_default",
@@ -5503,6 +5979,7 @@ fn TicketCategoriesSettingsBody() -> Element {
         let path = format!("/tickets/categories?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketCategoryRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("ticket category settings load failed: {e}"))
             .ok()
     });
 
@@ -5724,6 +6201,9 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-688: the two parsed fields report in their own inline slots.
+    let mut parent_error = use_signal(String::new);
+    let mut sort_order_error = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -5753,21 +6233,35 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        parent_error.set(String::new());
+        sort_order_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
         }
+        let parent = match parse_parent_id(&parent_id.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                parent_error.set(message);
+                return;
+            }
+        };
+        let sort = match parse_sort_order(&sort_order.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sort_order_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
-        let desc = description.read().trim().to_string();
-        let parent = parent_id.read().trim().to_string();
-        let body = serde_json::json!({
-            "name": name.read().trim(),
-            "description": opt_str(&desc),
-            "parent_id": opt_str(&parent),
-            "is_active": *is_active.read(),
-            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
-        });
+        let body = UpsertTicketCategoryBody {
+            name: name.read().trim().to_string(),
+            description: optional_text(&description.read()),
+            parent_id: parent,
+            is_active: *is_active.read(),
+            sort_order: sort,
+        };
         let id = save_id.clone();
         spawn(async move {
             #[cfg(feature = "app")]
@@ -5833,7 +6327,11 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
                 label: "Parent category",
                 options: parent_options,
                 value: parent_id.read().clone(),
-                onchange: move |e: FormEvent| parent_id.set(e.value()),
+                error: parent_error.read().clone(),
+                onchange: move |e: FormEvent| {
+                    parent_error.set(String::new());
+                    parent_id.set(e.value());
+                },
             }
             crate::components::Input {
                 name: "ticket_category_sort_order",
@@ -5842,7 +6340,11 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
                 min: "0".to_string(),
                 max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
-                oninput: move |e: FormEvent| sort_order.set(e.value()),
+                error: sort_order_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sort_order_error.set(String::new());
+                    sort_order.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "ticket_category_active",
@@ -5965,6 +6467,7 @@ fn RmmConnectionsSettingsBody() -> Element {
         let path = format!("/rmm/connections?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<RmmConnectionRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("RMM connection settings load failed: {e}"))
             .ok()
     });
 
@@ -6121,7 +6624,7 @@ impl RmmConnectionFormState {
             provider: RMM_PROVIDERS[0].0.to_string(),
             api_url: String::new(),
             is_active: true,
-            sync_interval_minutes: "60".to_string(),
+            sync_interval_minutes: DEFAULT_RMM_SYNC_INTERVAL_MINUTES.to_string(),
         }
     }
 
@@ -6135,6 +6638,26 @@ impl RmmConnectionFormState {
             sync_interval_minutes: r.sync_interval_minutes.to_string(),
         }
     }
+}
+
+/// Minutes a new connection starts on, and what a cleared field keeps meaning.
+const DEFAULT_RMM_SYNC_INTERVAL_MINUTES: i32 = 60;
+
+/// Parse the sync-interval field into the minutes the connection body sends.
+///
+/// Blank is [`DEFAULT_RMM_SYNC_INTERVAL_MINUTES`], which is what the field is
+/// seeded with and what an untouched form has always sent. Anything else that
+/// is not an `i32` is reported on the field and logged: it used to become 60
+/// silently, so a typo changed the sync cadence and said nothing (MAPPS-700).
+fn parse_sync_interval(raw: &str) -> Result<i32, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(DEFAULT_RMM_SYNC_INTERVAL_MINUTES);
+    }
+    trimmed.parse::<i32>().map_err(|e| {
+        tracing::warn!("sync interval {trimmed:?} is not a 32-bit integer: {e}");
+        "Enter a whole number of minutes, such as 60.".to_string()
+    })
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -6159,6 +6682,9 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-700: a sync interval that will not parse is reported here, on the
+    // field itself, rather than becoming the default cadence unannounced.
+    let mut sync_interval_error = use_signal(String::new);
     let mut testing = use_signal(|| false);
     // (reachable, message) of the most recent test, or None when untested.
     let mut test_result = use_signal(|| None::<(bool, String)>);
@@ -6179,6 +6705,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        sync_interval_error.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
@@ -6195,9 +6722,15 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
             error.set("API key is required.".to_string());
             return;
         }
+        let interval = match parse_sync_interval(&sync_interval.read()) {
+            Ok(v) => v,
+            Err(message) => {
+                sync_interval_error.set(message);
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
-        let interval = sync_interval.read().trim().parse::<i32>().unwrap_or(60);
         let secret = api_secret.read().trim().to_string();
         let id = save_id.clone();
         let provider_v = provider.read().clone();
@@ -6395,7 +6928,11 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
                 min: "1".to_string(),
                 step: "1".to_string(),
                 value: sync_interval.read().clone(),
-                oninput: move |e: FormEvent| sync_interval.set(e.value()),
+                error: sync_interval_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    sync_interval_error.set(String::new());
+                    sync_interval.set(e.value());
+                },
             }
             crate::components::Checkbox {
                 name: "rmm_conn_active",
@@ -6482,9 +7019,21 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
         // dropdown; subscribe so it repopulates on reconnect. It degrades to an
         // empty set on failure - the primary resource drives the outage view.
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_all_authed::<RmmConnectionRow>("/rmm/connections")
-            .await
-            .ok()
+        match crate::hooks::fetch::api::get_all_authed::<RmmConnectionRow>("/rmm/connections").await
+        {
+            Ok(rows) => {
+                if rows.is_empty() {
+                    tracing::info!("device mapping connection load succeeded and this tenant has no connections");
+                }
+                Some(rows)
+            }
+            Err(e) => {
+                tracing::error!(
+                    "device mapping connection load failed, the dropdown will be empty: {e}"
+                );
+                None
+            }
+        }
     });
     let connections: Vec<RmmConnectionRow> = conns_resource
         .read_unchecked()
@@ -6500,6 +7049,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
         let path = format!("/rmm/device-mappings?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<RmmDeviceMappingRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("RMM device mapping settings load failed: {e}"))
             .ok()
     });
 
@@ -6941,9 +7491,23 @@ fn RmmAlertRulesSettingsBody() -> Element {
         // dropdown; subscribe so it repopulates on reconnect. It degrades to an
         // empty set on failure - the primary resource drives the outage view.
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_all_authed::<RmmConnectionRow>("/rmm/connections")
-            .await
-            .ok()
+        match crate::hooks::fetch::api::get_all_authed::<RmmConnectionRow>("/rmm/connections").await
+        {
+            Ok(rows) => {
+                if rows.is_empty() {
+                    tracing::info!(
+                        "alert rule connection load succeeded and this tenant has no connections"
+                    );
+                }
+                Some(rows)
+            }
+            Err(e) => {
+                tracing::error!(
+                    "alert rule connection load failed, the dropdown will be empty: {e}"
+                );
+                None
+            }
+        }
     });
     let connections: Vec<RmmConnectionRow> = conns_resource
         .read_unchecked()
@@ -6959,6 +7523,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
         let path = format!("/rmm/alert-rules?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<RmmAlertRuleRow>>(&path)
             .await
+            .inspect_err(|e| tracing::error!("RMM alert rule settings load failed: {e}"))
             .ok()
     });
 
@@ -7392,11 +7957,15 @@ fn non_empty_color(c: &str) -> String {
 
 /// POST (create) or PUT (update) a lookup row. `base` is the collection
 /// path (e.g. `/tickets/statuses`); update targets `{base}/{id}`.
+///
+/// MAPPS-688: generic over the body so the lookups with a shared request DTO
+/// can pass their `Serialize` body struct; the ones without keep passing a
+/// `serde_json::Value`.
 #[cfg(feature = "app")]
-async fn save_lookup(
+async fn save_lookup<B: serde::Serialize>(
     id: Option<String>,
     base: &str,
-    body: &serde_json::Value,
+    body: &B,
 ) -> Result<(), String> {
     match id {
         None => crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(base, body)
@@ -7424,3 +7993,517 @@ async fn delete_lookup(id: &str, base: &str) -> Result<bool, String> {
 // `SettingFormModal` (the shared create/edit modal chrome) now lives in
 // `crate::components` so both these editors and the rate-card editor can
 // reuse it (MAPPS-160).
+
+#[cfg(test)]
+mod net_days_tests {
+    use super::net_days_json;
+
+    /// Blank is null (no fixed count), a whole number within the server's
+    /// cap is sent as a number, and anything else is refused on the field.
+    #[test]
+    fn blank_is_null_and_the_cap_is_the_servers() {
+        assert!(net_days_json("").unwrap().is_null());
+        assert!(net_days_json("   ").unwrap().is_null());
+        assert_eq!(net_days_json(" 30 ").unwrap(), serde_json::json!(30));
+        assert_eq!(net_days_json("0").unwrap(), serde_json::json!(0));
+        assert_eq!(net_days_json("3650").unwrap(), serde_json::json!(3650));
+        assert!(net_days_json("3651").is_err());
+        assert!(net_days_json("-1").is_err());
+        assert!(net_days_json("30.5").is_err());
+        assert!(net_days_json("thirty").is_err());
+    }
+}
+
+#[cfg(test)]
+mod postal_address_tests {
+    use super::{address_lines_error, optional_text};
+
+    /// PMS-911: the server holds a postal address to six lines, which
+    /// `maxlength` cannot express, so the field checks it rather than spending
+    /// a save to learn it. `\r` is folded away there, so `\r\n` is one break.
+    #[test]
+    fn six_lines_pass_and_a_seventh_is_refused() {
+        assert!(address_lines_error("").is_none());
+        assert!(address_lines_error("12 Example St\nSydney NSW 2000").is_none());
+        assert!(address_lines_error("12 Example St\r\nSydney NSW 2000").is_none());
+        assert!(address_lines_error(&"line\n".repeat(6)).is_none());
+        assert!(address_lines_error(&"line\n".repeat(7)).is_some());
+        assert!(address_lines_error(&"line\r\n".repeat(7)).is_some());
+    }
+
+    /// An emptied field clears the key: it is sent as an explicit `null`, which
+    /// the branding merge removes, rather than as `""`.
+    #[test]
+    fn an_emptied_field_clears_rather_than_storing_empty() {
+        assert_eq!(optional_text("   "), None);
+        assert_eq!(
+            optional_text(" 12 Example St\nSydney NSW 2000 "),
+            Some("12 Example St\nSydney NSW 2000".to_string())
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A blank sort order still means 0, and a value that is not an `i32` is a
+    /// refusal rather than a silent 0 (MAPPS-688).
+    #[test]
+    fn a_bad_sort_order_is_refused_rather_than_defaulted() {
+        assert_eq!(parse_sort_order(""), Ok(0));
+        assert_eq!(parse_sort_order("  "), Ok(0));
+        assert_eq!(parse_sort_order(" 12 "), Ok(12));
+        assert_eq!(parse_sort_order("-3"), Ok(-3));
+        assert!(parse_sort_order("2147483648").is_err());
+        assert!(parse_sort_order("1.5").is_err());
+        assert!(parse_sort_order("first").is_err());
+    }
+
+    /// A blank rate clears it; anything unparseable is refused on the field
+    /// rather than sent for the server to reject (MAPPS-688).
+    #[test]
+    fn a_bad_rate_is_refused_rather_than_sent() {
+        assert_eq!(parse_rate("   "), Ok(None));
+        assert_eq!(
+            parse_rate(" 150.00 "),
+            Ok(Some(
+                rust_decimal::Decimal::from_str_exact("150.00").unwrap()
+            ))
+        );
+        assert!(parse_rate("$150").is_err());
+        assert!(parse_rate("free").is_err());
+    }
+
+    /// A blank sync interval still means the 60-minute default the field is
+    /// seeded with, and anything that is not an `i32` is a refusal rather than a
+    /// silent 60 (MAPPS-700).
+    #[test]
+    fn a_bad_sync_interval_is_refused_rather_than_defaulted() {
+        assert_eq!(parse_sync_interval(""), Ok(60));
+        assert_eq!(parse_sync_interval("  "), Ok(60));
+        assert_eq!(parse_sync_interval(" 15 "), Ok(15));
+        assert!(parse_sync_interval("2147483648").is_err());
+        assert!(parse_sync_interval("1.5").is_err());
+        assert!(parse_sync_interval("hourly").is_err());
+    }
+
+    /// A stored setting that is not a whole number falls back to the default,
+    /// but only after saying so; a real number is read as itself (MAPPS-700).
+    #[test]
+    fn a_non_numeric_setting_value_falls_back_to_the_default() {
+        assert_eq!(setting_u64(&serde_json::json!(7), "/settings/x", 3), 7);
+        assert_eq!(setting_u64(&serde_json::json!("7"), "/settings/x", 3), 3);
+        assert_eq!(setting_u64(&serde_json::json!(null), "/settings/x", 3), 3);
+        assert_eq!(setting_u64(&serde_json::json!(-1), "/settings/x", 3), 3);
+    }
+
+    /// The parent picker's value is a UUID or nothing; anything else is refused
+    /// on the picker (MAPPS-688).
+    #[test]
+    fn a_bad_parent_is_refused_rather_than_sent() {
+        assert_eq!(parse_parent_id(" "), Ok(None));
+        let id = Uuid::nil();
+        assert_eq!(parse_parent_id(&format!(" {id} ")), Ok(Some(id)));
+        assert!(parse_parent_id("top-level").is_err());
+    }
+
+    // ---- MAPPS-688: the shared-DTO contract ------------------------------
+    //
+    // `mokosh-types` derives `Deserialize` on the request DTOs and `Serialize`
+    // on the response DTOs, which is the server's half of the wire and the
+    // opposite of what a client needs, so this page cannot use either side
+    // directly. These functions are the substitute: each destructures the
+    // shared DTO exhaustively and feeds the bindings into the struct this page
+    // actually sends or decodes, so a field added, removed, renamed or retyped
+    // on mokosh-server fails this build instead of drifting silently. They are
+    // never called; compiling them is the whole check. Same shape as MAPPS-627
+    // in `src/pages/time.rs`.
+
+    #[allow(dead_code)]
+    fn update_tenant_request_fields_are_all_considered(
+        req: mokosh_types::tenants::UpdateTenantRequest,
+    ) {
+        let mokosh_types::tenants::UpdateTenantRequest {
+            name,
+            billing_email,
+            billing_contact_name,
+            settings,
+            branding,
+        } = req;
+        let _ = UpdateTenantBody {
+            name,
+            branding: BrandingView::default(),
+        };
+        // `branding` IS sent, as the typed `BrandingView` above rather than as
+        // the shared DTO's raw merge document (PMS-758), so the annotation is
+        // what pins the DTO's own type for the field.
+        let _branding: Option<serde_json::Value> = branding;
+        // Deliberately not sent: the billing contact and address belong to the
+        // billing surfaces, and `settings` is written per key by the settings
+        // rows rather than as a whole document from this form.
+        let _ = (billing_email, billing_contact_name, settings);
+    }
+
+    #[allow(dead_code)]
+    fn tenant_response_fields_this_page_reads(resp: mokosh_types::tenants::TenantResponse) {
+        let mokosh_types::tenants::TenantResponse {
+            id,
+            name,
+            slug,
+            status,
+            billing_email,
+            billing_contact_name,
+            subscription_plan,
+            subscription_status,
+            trial_ends_at,
+            branding,
+            created_at,
+        } = resp;
+        let mokosh_types::tenants::TenantBranding {
+            logo_url,
+            logo_mime,
+            favicon_url,
+            primary_color,
+            secondary_color,
+            company_name,
+            support_email,
+            support_phone,
+            support_contact_name,
+            website,
+            portal_domain,
+            legal_name,
+            tax_id,
+            postal_address,
+        } = branding;
+        let _ = TenantView {
+            name,
+            branding: BrandingView {
+                support_contact_name,
+                support_email,
+                support_phone,
+                legal_name,
+                tax_id,
+                postal_address,
+                logo_url,
+            },
+        };
+        // Carried by the response but not rendered here: the tenant's identity
+        // and lifecycle belong to the super-admin list (`admin.rs`), the
+        // billing contact to the billing surfaces, and the branding keys below
+        // are unread by any surface today (see `BrandingView`). `logo_mime` is
+        // the upload's half of the document, never this form's.
+        let _ = (
+            id,
+            slug,
+            status,
+            billing_email,
+            billing_contact_name,
+            subscription_plan,
+            subscription_status,
+            trial_ends_at,
+            created_at,
+            logo_mime,
+            favicon_url,
+            primary_color,
+            secondary_color,
+            company_name,
+            website,
+            portal_domain,
+        );
+    }
+
+    #[allow(dead_code)]
+    fn upsert_work_type_request_fields_are_all_considered(
+        req: mokosh_types::time_tracking::UpsertWorkTypeRequest,
+    ) {
+        let mokosh_types::time_tracking::UpsertWorkTypeRequest {
+            name,
+            description,
+            default_billable,
+            default_rate,
+            is_active,
+            sort_order,
+        } = req;
+        let _ = UpsertWorkTypeBody {
+            name,
+            description,
+            default_billable,
+            default_rate,
+            is_active,
+            sort_order,
+        };
+    }
+
+    #[allow(dead_code)]
+    fn work_type_response_fields_this_page_reads(
+        resp: mokosh_types::time_tracking::WorkTypeResponse,
+    ) {
+        let mokosh_types::time_tracking::WorkTypeResponse {
+            id,
+            name,
+            description,
+            default_billable,
+            default_rate,
+            is_active,
+            sort_order,
+        } = resp;
+        let _ = WorkTypeRow {
+            id,
+            name,
+            description,
+            default_billable,
+            // The server serializes the `Decimal` as a JSON string and this
+            // page only formats it, so it is read back as one.
+            default_rate: default_rate.map(|d| d.to_string()),
+            is_active,
+            // The server types every sort order as `i32`; the rows widen to
+            // `i64`. Annotated so the widening is checked rather than assumed.
+            sort_order: i64::from(sort_order),
+        };
+    }
+
+    #[allow(dead_code)]
+    fn upsert_company_industry_request_fields_are_all_considered(
+        req: mokosh_types::contacts::UpsertCompanyIndustryRequest,
+    ) {
+        let mokosh_types::contacts::UpsertCompanyIndustryRequest { name, is_active } = req;
+        let _ = UpsertCompanyIndustryBody { name, is_active };
+    }
+
+    #[allow(dead_code)]
+    fn company_industry_response_fields_this_page_reads(
+        resp: mokosh_types::contacts::CompanyIndustryResponse,
+    ) {
+        let mokosh_types::contacts::CompanyIndustryResponse {
+            id,
+            name,
+            is_active,
+        } = resp;
+        let _ = CompanyIndustryRow {
+            id,
+            name,
+            is_active,
+        };
+    }
+
+    #[allow(dead_code)]
+    fn upsert_ticket_status_request_fields_are_all_considered(
+        req: mokosh_types::tickets::UpsertTicketStatusRequest,
+    ) {
+        let mokosh_types::tickets::UpsertTicketStatusRequest {
+            name,
+            color,
+            is_closed,
+            is_default,
+            sort_order,
+        } = req;
+        let _ = UpsertTicketStatusBody {
+            name,
+            color,
+            is_closed,
+            is_default,
+            sort_order,
+        };
+    }
+
+    #[allow(dead_code)]
+    fn ticket_status_fields_this_page_reads(row: mokosh_types::tickets::TicketStatus) {
+        let mokosh_types::tickets::TicketStatus {
+            id,
+            tenant_id,
+            name,
+            color,
+            is_closed,
+            is_default,
+            sort_order,
+        } = row;
+        let _ = TicketStatusRow {
+            id,
+            name,
+            color,
+            is_closed,
+            is_default,
+            sort_order: i64::from(sort_order),
+        };
+        // Every row is already scoped to the caller's tenant, so the column is
+        // read by nothing here. Same for the four taxonomy rows below.
+        let _ = tenant_id;
+    }
+
+    #[allow(dead_code)]
+    fn upsert_ticket_priority_request_fields_are_all_considered(
+        req: mokosh_types::tickets::UpsertTicketPriorityRequest,
+    ) {
+        let mokosh_types::tickets::UpsertTicketPriorityRequest {
+            name,
+            color,
+            icon,
+            sla_multiplier,
+            sort_order,
+            is_default,
+        } = req;
+        let _ = UpsertTicketPriorityBody {
+            name,
+            color,
+            icon,
+            sla_multiplier,
+            is_default,
+            sort_order,
+        };
+    }
+
+    #[allow(dead_code)]
+    fn ticket_priority_fields_this_page_reads(row: mokosh_types::tickets::TicketPriority) {
+        let mokosh_types::tickets::TicketPriority {
+            id,
+            tenant_id,
+            name,
+            color,
+            icon,
+            sla_multiplier,
+            sort_order,
+            is_default,
+        } = row;
+        let _ = TicketPriorityRow {
+            id,
+            name,
+            color,
+            icon,
+            sla_multiplier,
+            is_default,
+            sort_order: i64::from(sort_order),
+        };
+        let _ = tenant_id;
+    }
+
+    #[allow(dead_code)]
+    fn upsert_ticket_type_request_fields_are_all_considered(
+        req: mokosh_types::tickets::UpsertTicketTypeRequest,
+    ) {
+        let mokosh_types::tickets::UpsertTicketTypeRequest {
+            name,
+            description,
+            icon,
+            is_active,
+            sort_order,
+        } = req;
+        let _ = UpsertTicketTypeBody {
+            name,
+            description,
+            icon,
+            is_active,
+            sort_order,
+        };
+    }
+
+    #[allow(dead_code)]
+    fn ticket_type_fields_this_page_reads(row: mokosh_types::tickets::TicketType) {
+        let mokosh_types::tickets::TicketType {
+            id,
+            tenant_id,
+            name,
+            description,
+            icon,
+            is_active,
+            sort_order,
+        } = row;
+        let _ = TicketTypeRow {
+            id,
+            name,
+            description,
+            icon,
+            is_active,
+            sort_order: i64::from(sort_order),
+        };
+        let _ = tenant_id;
+    }
+
+    #[allow(dead_code)]
+    fn upsert_ticket_queue_request_fields_are_all_considered(
+        req: mokosh_types::tickets::UpsertTicketQueueRequest,
+    ) {
+        let mokosh_types::tickets::UpsertTicketQueueRequest {
+            name,
+            description,
+            color,
+            icon,
+            is_default,
+            sort_order,
+        } = req;
+        let _ = UpsertTicketQueueBody {
+            name,
+            description,
+            color,
+            icon,
+            is_default,
+            sort_order,
+        };
+    }
+
+    #[allow(dead_code)]
+    fn ticket_queue_fields_this_page_reads(row: mokosh_types::tickets::TicketQueue) {
+        let mokosh_types::tickets::TicketQueue {
+            id,
+            tenant_id,
+            name,
+            description,
+            color,
+            icon,
+            is_default,
+            sort_order,
+        } = row;
+        let _ = TicketQueueRow {
+            id,
+            name,
+            description,
+            color,
+            icon,
+            is_default,
+            sort_order: i64::from(sort_order),
+        };
+        let _ = tenant_id;
+    }
+
+    #[allow(dead_code)]
+    fn upsert_ticket_category_request_fields_are_all_considered(
+        req: mokosh_types::tickets::UpsertTicketCategoryRequest,
+    ) {
+        let mokosh_types::tickets::UpsertTicketCategoryRequest {
+            name,
+            description,
+            parent_id,
+            is_active,
+            sort_order,
+        } = req;
+        let _ = UpsertTicketCategoryBody {
+            name,
+            description,
+            parent_id,
+            is_active,
+            sort_order,
+        };
+    }
+
+    #[allow(dead_code)]
+    fn ticket_category_response_fields_this_page_reads(
+        resp: mokosh_types::tickets::TicketCategoryResponse,
+    ) {
+        let mokosh_types::tickets::TicketCategoryResponse {
+            id,
+            parent_id,
+            name,
+            description,
+            is_active,
+            sort_order,
+        } = resp;
+        let _ = TicketCategoryRow {
+            id,
+            parent_id,
+            name,
+            description,
+            is_active,
+            sort_order: i64::from(sort_order),
+        };
+    }
+}

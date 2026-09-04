@@ -1,7 +1,7 @@
 //! Contact and company pages
 
 use dioxus::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::components::{
     asset_status_badge, clear_on_edit, contract_status_badge, invoice_status_badge,
@@ -10,7 +10,7 @@ use crate::components::{
     SearchInput, Select, SelectOption, SortDirection, Table, TableBody, TableCell, TableEmpty,
     TableHead, TableHeader, TableLoading, TableRow,
 };
-use crate::modules::contacts::Address;
+use crate::modules::contacts::{Address, CompanyStatus, CompanyType, ContactType, PhoneType};
 use crate::utils::money::format_money_str;
 use crate::utils::sort_keys::TICKETS_RECENT_SORT;
 use crate::utils::url::{safe_href, urlencoding_minimal};
@@ -336,6 +336,123 @@ struct PaginatedContacts {
     meta: PaginationMeta,
 }
 
+// ---- MAPPS-687: the bodies this page sends -------------------------------
+//
+// `mokosh-types` derives `Deserialize` on the request DTOs, which is the
+// server's half of the wire, so this page cannot post one of them. These
+// structs are the substitute: each mirrors the shared request DTO field for
+// field, typed as that DTO types it, and the destructuring functions in the
+// tests module below turn a field added, removed, renamed or retyped on
+// mokosh-server into a compile error here. Same pattern as `src/pages/time.rs`
+// (MAPPS-627).
+
+/// `POST /contacts/companies` and `PUT /contacts/companies/{id}`, both sent by
+/// the company form, which writes the whole record either way. One struct for
+/// the pair because the two requests carry the same bytes: `CreateCompanyRequest`
+/// types every field of it, and `UpdateCompanyRequest` is the same fields
+/// wrapped in `Option`.
+#[derive(Debug, Serialize)]
+struct CompanyFormBody {
+    name: String,
+    company_type: CompanyType,
+    status: CompanyStatus,
+    industry: Option<String>,
+    website: Option<String>,
+    phone: Option<String>,
+    address: Address,
+    /// MAPPS-614: always a string, never null, which is why this is a `String`
+    /// where the DTO has `Option<String>`. See `clearable_string`.
+    notes: String,
+}
+
+/// The one-field `PUT /contacts/companies/{id}` writes: Archive on the delete
+/// dialog (MAPPS-575) and the billing-contact picker (MAPPS-644). A field the
+/// control that fired did not set is omitted rather than sent as null, which is
+/// what the `json!` literals these replaced sent.
+#[derive(Debug, Default, Serialize)]
+struct UpdateCompanyBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<CompanyStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_billing_contact_id: Option<uuid::Uuid>,
+}
+
+/// `POST /contacts/companies` sent by the contact page's "Create this company"
+/// recovery (MAPPS-484), which has a typed name and nothing else.
+#[derive(Debug, Serialize)]
+struct CreateCompanyFromNameBody {
+    name: String,
+}
+
+/// `POST /contacts/contacts` and `PUT /contacts/contacts/{id}`, both sent by
+/// the contact form. One struct for the pair, for the same reason as
+/// [`CompanyFormBody`].
+#[derive(Debug, Serialize)]
+struct ContactFormBody {
+    first_name: String,
+    last_name: String,
+    email: Option<String>,
+    title: Option<String>,
+    department: Option<String>,
+    contact_type: ContactType,
+    /// PMS-806: both lists are authoritative when present, and both are always
+    /// sent, so removing the last row really unlinks.
+    phones: Vec<ContactPhoneBody>,
+    companies: Vec<ContactCompanyLinkBody>,
+    /// MAPPS-251: the freeform typed name is the no-linked-company case. Sent
+    /// as `""` whenever a company is linked, so it is a `String` where the DTO
+    /// has `Option<String>`.
+    company_name: String,
+    /// MAPPS-614: always a string, never null. See `clearable_string`.
+    notes: String,
+}
+
+/// One entry of [`ContactFormBody::phones`], mirroring `ContactPhoneInput`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct ContactPhoneBody {
+    phone_type: PhoneType,
+    /// The DTO's `Option` is a `validate(required)` slot so a missing number
+    /// names its own entry in the 422. A row with none is dropped before it
+    /// reaches here, so this side is never null.
+    number: String,
+    extension: Option<String>,
+    is_primary: bool,
+}
+
+/// One entry of [`ContactFormBody::companies`], mirroring
+/// `ContactCompanyLinkInput`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct ContactCompanyLinkBody {
+    company_id: uuid::Uuid,
+    title: Option<String>,
+    is_primary: bool,
+}
+
+/// The one-field `PUT /contacts/contacts/{id}` writes: the company attach on
+/// company detail, the link half of "Create this company" (MAPPS-484), and the
+/// portal grant / revoke. Omitted rather than null, as the literals were.
+#[derive(Debug, Default, Serialize)]
+struct UpdateContactBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    company_id: Option<uuid::Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_portal_user: Option<bool>,
+}
+
+/// `POST /contacts/sites` and `PUT /contacts/sites/{id}`, both sent by the site
+/// modal. Only `CreateSiteRequest` reads `company_id`; the PUT has carried it
+/// since the modal was written and the server ignores it there, so it stays
+/// rather than changing the bytes of a write that works.
+#[derive(Debug, Serialize)]
+struct SiteFormBody {
+    company_id: uuid::Uuid,
+    name: String,
+    address: Address,
+    phone: Option<String>,
+    is_primary: bool,
+    timezone: Option<String>,
+}
+
 /// Company list page
 #[component]
 pub fn CompanyListPage() -> Element {
@@ -411,6 +528,7 @@ pub fn CompanyListPage() -> Element {
             }
             crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>(&path, &token)
                 .await
+                .inspect_err(|e| tracing::error!("company list load failed: {e}"))
                 .ok()
         }
     });
@@ -679,6 +797,7 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
                 "/contacts/companies/{id}"
             ))
             .await
+            .inspect_err(|e| tracing::error!("company edit load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -849,6 +968,9 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let mut error = use_signal(String::new);
     // Per-field inline validation errors (MAPPS-177, MAPPS-213, MAPPS-265).
     let mut name_err = use_signal(String::new);
+    // MAPPS-687: the two selects whose value is an enum on the request DTO.
+    let mut type_err = use_signal(String::new);
+    let mut status_err = use_signal(String::new);
     let mut website_err = use_signal(String::new);
     let mut phone_err = use_signal(String::new);
     let mut postal_err = use_signal(String::new);
@@ -987,10 +1109,10 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             return;
         }
         let normalized = match validate_website_field(&typed) {
-            Ok(serde_json::Value::String(url)) => url,
+            Ok(Some(url)) => url,
             // Blank returns above, so this arm is unreachable; it exists so
             // the match is total rather than discarding the value.
-            Ok(_) => return,
+            Ok(None) => return,
             // Nothing to probe, and the message is shown now rather than
             // dropped and re-derived at submit. `oninput` clears it again as
             // soon as the user resumes typing.
@@ -1041,6 +1163,8 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         e.prevent_default();
         error.set(String::new());
         name_err.set(String::new());
+        type_err.set(String::new());
+        status_err.set(String::new());
         website_err.set(String::new());
         phone_err.set(String::new());
         postal_err.set(String::new());
@@ -1058,6 +1182,20 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         if let Err(msg) = &name_res {
             name_err.set(msg.clone());
             guard.note_invalid(Some("name"));
+        }
+        // MAPPS-687: the request DTO types these as enums, so the select's
+        // string is read here rather than sent for the server to reject.
+        let type_res = parse_company_type(&company_type.read());
+        if let Err(msg) = &type_res {
+            tracing::warn!("company type \"{}\" is unknown here", company_type.read());
+            type_err.set(msg.clone());
+            guard.note_invalid(Some("type"));
+        }
+        let status_res = parse_company_status(&status.read());
+        if let Err(msg) = &status_res {
+            tracing::warn!("company status \"{}\" is unknown here", status.read());
+            status_err.set(msg.clone());
+            guard.note_invalid(Some("status"));
         }
         let website_res = validate_website_field(&website.read());
         if let Err(msg) = &website_res {
@@ -1092,6 +1230,8 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             return;
         }
         let name_value = name_res.expect("name validated above");
+        let type_value = type_res.expect("company type validated above");
+        let status_value = status_res.expect("status validated above");
         let website_value = website_res.expect("website validated above");
         let phone_value = phone_res.expect("phone validated above");
         let postal_value = postal_res.expect("postal validated above");
@@ -1106,24 +1246,23 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             }
         };
         is_submitting.set(true);
-        let body = serde_json::json!({
-            "name": name_value,
-            "company_type": company_type.read().clone(),
-            "status": status.read().clone(),
-            "industry": optional_string(&industry.read()),
-            "website": website_value,
-            "phone": phone_value,
-            "address": {
-                "line1": optional_string(&line1.read()),
-                "line2": optional_string(&line2.read()),
-                "city": optional_string(&city.read()),
-                "state": optional_string(&state.read()),
-                "postal_code": postal_value,
-                "country": country_value,
+        let body = CompanyFormBody {
+            name: name_value,
+            company_type: type_value,
+            status: status_value,
+            industry: optional_string(&industry.read()),
+            website: website_value,
+            phone: phone_value,
+            address: Address {
+                line1: optional_string(&line1.read()),
+                line2: optional_string(&line2.read()),
+                city: optional_string(&city.read()),
+                state: optional_string(&state.read()),
+                postal_code: postal_value,
+                country: Some(country_value),
             },
-            // MAPPS-614: always a string, never null. See `clearable_string`.
-            "notes": clearable_string(&notes.read()),
-        });
+            notes: clearable_string(&notes.read()),
+        };
         let mode = mode.clone();
         // MAPPS-293: clone the mode again for the post-success toast so the
         // outer `mode` is still available in case of an Err branch.
@@ -1245,19 +1384,27 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         label: "Company Type",
                         options: type_options,
                         value: company_type.read().clone(),
-                        onchange: move |e: FormEvent| company_type.set(e.value()),
+                        error: type_err(),
+                        onchange: move |e: FormEvent| {
+                            type_err.set(String::new());
+                            company_type.set(e.value());
+                        },
                     }
                     Select {
                         name: "status",
                         label: "Status",
                         options: status_options,
+                        error: status_err(),
                         // MAPPS-575: say what archiving DOES, because the
                         // alternative the user was reaching for is Delete, and
                         // the difference that matters to them is whether the
                         // company's history survives.
                         help: "Inactive archives the company: its history is kept and it drops out of the default lists and pickers.",
                         value: status.read().clone(),
-                        onchange: move |e: FormEvent| status.set(e.value()),
+                        onchange: move |e: FormEvent| {
+                            status_err.set(String::new());
+                            status.set(e.value());
+                        },
                     }
                     crate::components::SuggestInput {
                         name: "industry",
@@ -1398,17 +1545,46 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
 ///
 /// The same reasoning already governs `company_name`, which this form sends as
 /// `""` when a company is linked.
-fn clearable_string(value: &str) -> serde_json::Value {
-    serde_json::Value::String(value.trim().to_string())
+fn clearable_string(value: &str) -> String {
+    value.trim().to_string()
 }
 
-fn optional_string(value: &str) -> serde_json::Value {
+fn optional_string(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        serde_json::Value::Null
+        None
     } else {
-        serde_json::Value::String(trimmed.to_string())
+        Some(trimmed.to_string())
     }
+}
+
+// ---- MAPPS-687: the form values the request DTOs do not type as strings ----
+//
+// Each select below offers the wire values and, where a record can carry one
+// outside them, the value the server sent for this record (MAPPS-383,
+// MAPPS-575). A parse failure therefore means the server grew a variant this
+// client does not know, which is worth saying on the field rather than sending
+// for the server to reject.
+
+/// The Company Type select's value, as `Create`/`UpdateCompanyRequest` type it.
+fn parse_company_type(raw: &str) -> Result<CompanyType, String> {
+    let trimmed = raw.trim();
+    CompanyType::from_str(trimmed)
+        .ok_or_else(|| format!("\"{trimmed}\" is not a company type this app can save."))
+}
+
+/// The Status select's value, as `Create`/`UpdateCompanyRequest` type it.
+fn parse_company_status(raw: &str) -> Result<CompanyStatus, String> {
+    let trimmed = raw.trim();
+    CompanyStatus::from_str(trimmed)
+        .ok_or_else(|| format!("\"{trimmed}\" is not a status this app can save."))
+}
+
+/// The contact form's Type select, as `Create`/`UpdateContactRequest` type it.
+fn parse_contact_type(raw: &str) -> Result<ContactType, String> {
+    let trimmed = raw.trim();
+    ContactType::from_str(trimmed)
+        .ok_or_else(|| format!("\"{trimmed}\" is not a contact type this app can save."))
 }
 
 // ---- MAPPS-177: client-side field validation, mirroring the PMS-325 server
@@ -1471,7 +1647,7 @@ pub fn format_phone(raw: &str) -> String {
     }
 }
 
-fn validate_phone_field(raw: &str, label: &str) -> Result<serde_json::Value, String> {
+fn validate_phone_field(raw: &str, label: &str) -> Result<Option<String>, String> {
     // MAPPS-582: `clean_strict` removes the characters that render as nothing
     // (U+200B, U+FEFF, the soft hyphen, the bidi marks) and folds every exotic
     // space onto a plain one. The strip set below then drops whitespace via
@@ -1484,7 +1660,7 @@ fn validate_phone_field(raw: &str, label: &str) -> Result<serde_json::Value, Str
         .filter(|c| !c.is_whitespace() && !matches!(c, '-' | '(' | ')' | '.'))
         .collect();
     if normalized.is_empty() {
-        return Ok(serde_json::Value::Null);
+        return Ok(None);
     }
     let digits = normalized.strip_prefix('+').unwrap_or(&normalized);
     let valid = (2..=15).contains(&digits.len())
@@ -1494,7 +1670,7 @@ fn validate_phone_field(raw: &str, label: &str) -> Result<serde_json::Value, Str
             .first()
             .is_some_and(|&b| (b'1'..=b'9').contains(&b));
     if valid {
-        Ok(serde_json::Value::String(normalized))
+        Ok(Some(normalized))
     } else {
         Err(format!(
             "{label} must be a valid phone number (e.g. +14155551234)."
@@ -1515,13 +1691,11 @@ const PHONE_TYPES: &[(&str, &str)] = &[
 ];
 
 /// Coerce a form value onto one of the wire values. Anything unrecognized
-/// becomes `other`, which is the server's own default for the column.
-fn normalize_phone_type(raw: &str) -> &'static str {
-    PHONE_TYPES
-        .iter()
-        .find(|(value, _)| *value == raw)
-        .map(|(value, _)| *value)
-        .unwrap_or("other")
+/// becomes `other`, which is the server's own default for the column, and is
+/// why this coercion is not a refusal like the other MAPPS-687 parses: the
+/// select's own options are `PHONE_TYPES` and `PhoneType::default()` is `Other`.
+fn normalize_phone_type(raw: &str) -> PhoneType {
+    PhoneType::from_str(raw).unwrap_or_default()
 }
 
 /// Label a stored `phone_type` for the read surfaces. An unknown value (a
@@ -1594,15 +1768,15 @@ fn extra_company_suffix(total: usize) -> String {
 /// Validate an optional ISO 3166-1 alpha-2 country code. Blank -> `Ok(None)`.
 /// Requires exactly two ASCII letters (normalized to uppercase). The server
 /// (PMS-325) checks membership against the official set.
-fn validate_country_field(raw: &str) -> Result<serde_json::Value, String> {
+fn validate_country_field(raw: &str) -> Result<Option<String>, String> {
     // MAPPS-582: a country code admits no invisible character anywhere.
     let cleaned = crate::utils::text::clean_strict(raw);
     let trimmed = cleaned.as_str();
     if trimmed.is_empty() {
-        return Ok(serde_json::Value::Null);
+        return Ok(None);
     }
     if trimmed.len() == 2 && trimmed.bytes().all(|b| b.is_ascii_alphabetic()) {
-        Ok(serde_json::Value::String(trimmed.to_ascii_uppercase()))
+        Ok(Some(trimmed.to_ascii_uppercase()))
     } else {
         Err("Country must be a 2-letter ISO code (e.g. US).".to_string())
     }
@@ -1632,20 +1806,20 @@ fn validate_address_text(raw: &str, label: &str, max: usize) -> Result<(), Strin
 
 /// Validate an optional postal code. Blank -> `Ok(None)`. Otherwise 2-12
 /// characters of letters, digits, spaces, or hyphens.
-fn validate_postal_field(raw: &str) -> Result<serde_json::Value, String> {
+fn validate_postal_field(raw: &str) -> Result<Option<String>, String> {
     // MAPPS-582: the charset below is ASCII-only, so an invisible character
     // rejected the code with a message naming characters the user cannot see.
     let cleaned = crate::utils::text::clean_strict(raw);
     let trimmed = cleaned.as_str();
     if trimmed.is_empty() {
-        return Ok(serde_json::Value::Null);
+        return Ok(None);
     }
     let len_ok = (2..=12).contains(&trimmed.chars().count());
     let charset_ok = trimmed
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-');
     if len_ok && charset_ok {
-        Ok(serde_json::Value::String(trimmed.to_string()))
+        Ok(Some(trimmed.to_string()))
     } else {
         Err("Postal code must be 2-12 letters, digits, spaces, or hyphens.".to_string())
     }
@@ -1661,13 +1835,13 @@ fn validate_postal_field(raw: &str) -> Result<serde_json::Value, String> {
 /// instead of hitting an opaque server 422 (MAPPS-213). The scheme check
 /// reuses `utils::url::scheme_of`, the same whitespace-collapsing detection
 /// `safe_href` applies at render time, so `java\tscript:` cannot slip through.
-fn validate_website_field(raw: &str) -> Result<serde_json::Value, String> {
+fn validate_website_field(raw: &str) -> Result<Option<String>, String> {
     // MAPPS-582: an invisible character never belongs in a URL either, and it
     // is one more way a scheme can disguise itself from the check below.
     let cleaned = crate::utils::text::clean_strict(raw);
     let trimmed = cleaned.as_str();
     if trimmed.is_empty() {
-        return Ok(serde_json::Value::Null);
+        return Ok(None);
     }
     const MSG: &str =
         "Website must be a domain or http(s) URL (e.g. example.com or https://example.com).";
@@ -1693,7 +1867,7 @@ fn validate_website_field(raw: &str) -> Result<serde_json::Value, String> {
             if host.is_empty() {
                 return Err(MSG.to_string());
             }
-            Ok(serde_json::Value::String(trimmed.to_string()))
+            Ok(Some(trimmed.to_string()))
         }
         // Any other explicit scheme stays rejected.
         Some(_) => Err(MSG.to_string()),
@@ -1704,7 +1878,7 @@ fn validate_website_field(raw: &str) -> Result<serde_json::Value, String> {
             if !is_host_like(authority) {
                 return Err(MSG.to_string());
             }
-            Ok(serde_json::Value::String(format!("https://{trimmed}")))
+            Ok(Some(format!("https://{trimmed}")))
         }
     }
 }
@@ -1821,16 +1995,16 @@ fn website_unreachable_note(normalized: &str, reason: &str) -> String {
 /// Validate an optional IANA time zone. Blank -> `Ok(None)`. A light client
 /// check (must look like `Area/Location` with no spaces) that catches the
 /// common `America/New York` mistake; the server (PMS-325) is authoritative.
-fn validate_timezone_field(raw: &str) -> Result<serde_json::Value, String> {
+fn validate_timezone_field(raw: &str) -> Result<Option<String>, String> {
     // MAPPS-582: an IANA name is ASCII, so strip the invisibles before the
     // "no spaces, has a slash" shape check.
     let cleaned = crate::utils::text::clean_strict(raw);
     let trimmed = cleaned.as_str();
     if trimmed.is_empty() {
-        return Ok(serde_json::Value::Null);
+        return Ok(None);
     }
     if !trimmed.contains(' ') && trimmed.contains('/') {
-        Ok(serde_json::Value::String(trimmed.to_string()))
+        Ok(Some(trimmed.to_string()))
     } else {
         Err("Time zone must be an IANA name (e.g. America/New_York).".to_string())
     }
@@ -1860,7 +2034,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     // (the child-list resources below are secondary and keep degrading to
     // their own empty/error cards). Subscribe to reachability so it
     // auto-refetches on reconnect.
-    let company_resource = use_resource(move || {
+    let mut company_resource = use_resource(move || {
         let id = company_id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -1869,10 +2043,11 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 "/contacts/companies/{id}"
             ))
             .await
+            .inspect_err(|e| tracing::error!("company detail load failed for {id}: {e}"))
             .ok()
         }
     });
-    let contacts_resource = use_resource(move || {
+    let mut contacts_resource = use_resource(move || {
         let id = company_id_for_contacts.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -1888,6 +2063,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 "/contacts/companies/{id}/contacts?per_page=5"
             ))
             .await
+            .inspect_err(|e| tracing::error!("company contacts preview load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -1908,6 +2084,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 "/contacts/companies/{id}/sites"
             ))
             .await
+            .inspect_err(|e| tracing::error!("company sites load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -1919,6 +2096,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 "/tickets?company_id={id}&per_page=5&{TICKETS_RECENT_SORT}"
             ))
             .await
+            .inspect_err(|e| tracing::error!("company tickets load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -1935,6 +2113,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 "/contracts?company_id={id}&per_page=5"
             ))
             .await
+            .inspect_err(|e| tracing::error!("company contracts load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -1946,6 +2125,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 "/projects?company_id={id}&per_page=5"
             ))
             .await
+            .inspect_err(|e| tracing::error!("company projects load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -1957,6 +2137,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 "/invoices?company_id={id}&per_page=5"
             ))
             .await
+            .inspect_err(|e| tracing::error!("company invoices load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -1968,6 +2149,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 "/assets?company_id={id}&per_page=5"
             ))
             .await
+            .inspect_err(|e| tracing::error!("company assets load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -1975,9 +2157,20 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     // a human-readable type name in the Assets card.
     let asset_types_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<AssetTypeOption>("/asset-types")
-            .await
-            .ok()
+        // An empty type list and a failed read look identical on screen (no
+        // type name on any asset row), so the log is what tells them apart.
+        match crate::hooks::fetch::api::get_all_authed::<AssetTypeOption>("/asset-types").await {
+            Ok(types) => {
+                if types.is_empty() {
+                    tracing::info!("asset-type load succeeded and this tenant has no asset types");
+                }
+                Some(types)
+            }
+            Err(e) => {
+                tracing::error!("asset-type load failed, asset rows will show no type: {e}");
+                None
+            }
+        }
     });
 
     // Statistics counts pulled from each list envelope's `meta.total`.
@@ -2023,6 +2216,9 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 "/contacts/companies/{id}/deletion-preview"
             ))
             .await
+            // Best-effort: the dialog falls back to its generic warning and the
+            // delete still goes to the server, which refuses it if it must.
+            .inspect_err(|e| tracing::warn!("deletion preview load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -2033,6 +2229,24 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     let mut delete_error = use_signal(String::new);
     // MAPPS-577: the archive alternative offered when a delete is refused.
     let mut archiving = use_signal(|| false);
+    // MAPPS-644: the billing contact, read on its own. The Contacts card
+    // preview is capped, so the billing contact need not be in it. The
+    // company is read INSIDE the closure so the fetch re-runs once the
+    // company has loaded and again after a change.
+    let billing_contact_resource = use_resource(move || async move {
+        let id = company_resource
+            .read_unchecked()
+            .clone()
+            .flatten()
+            .and_then(|c| c.default_billing_contact_id)?;
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<RemoteContact>(&format!("/contacts/contacts/{id}"))
+            .await
+            // Best-effort: the billing contact's row is simply omitted.
+            .inspect_err(|e| tracing::warn!("billing contact load failed for {id}: {e}"))
+            .ok()
+    });
+    let mut show_set_billing = use_signal(|| false);
     // MAPPS-357: gate the destructive Delete while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
     let on_confirm_delete = move |_: ()| {
@@ -2204,7 +2418,10 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                     #[cfg(feature = "app")]
                                     {
                                         let path = format!("/contacts/companies/{id}");
-                                        let body = serde_json::json!({ "status": "inactive" });
+                                        let body = UpdateCompanyBody {
+                                            status: Some(CompanyStatus::Inactive),
+                                            ..UpdateCompanyBody::default()
+                                        };
                                         match crate::hooks::fetch::api::put_authed_typed::<
                                             serde_json::Value,
                                             _,
@@ -2338,6 +2555,8 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 let phone = company.phone.clone();
                 let industry = company.industry.clone();
                 let am_name = company.account_manager_name.clone();
+                // MAPPS-644: the billing contact's row, once its read lands.
+                let billing_contact_row = billing_contact_resource.read_unchecked().clone().flatten();
                 let notes = company.notes.clone().unwrap_or_default();
                 let open_tickets = company.open_ticket_count.unwrap_or(0).max(0);
                 let contact_count = company.contact_count.unwrap_or(0).max(0);
@@ -2349,7 +2568,25 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                             CompanyContactsCard {
                                 company_id: company_id_str.clone(),
                                 company_name: company.name.clone(),
+                                billing_contact_id: company.default_billing_contact_id,
                                 contacts_resource,
+                            }
+                            // MAPPS-644: set or change the billing contact.
+                            if show_set_billing() {
+                                SetBillingContactModal {
+                                    company_id: company_id_str.clone(),
+                                    current_id: company.default_billing_contact_id.map(|c| c.to_string()),
+                                    current_name: billing_contact_row
+                                        .as_ref()
+                                        .map(|r| format!("{} {}", r.first_name, r.last_name).trim().to_string())
+                                        .unwrap_or_default(),
+                                    onclose: move |_| show_set_billing.set(false),
+                                    onsaved: move |_| {
+                                        show_set_billing.set(false);
+                                        company_resource.restart();
+                                        contacts_resource.restart();
+                                    },
+                                }
                             }
                             // Sites
                             CompanySitesCard {
@@ -2474,6 +2711,62 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                             }
                                         }
                                     }
+                                    // MAPPS-644: who invoices go to. Always
+                                    // rendered, because "not set" is the state
+                                    // that has to be visible: a send is refused
+                                    // until there is one (PMS-992).
+                                    div { class: "flex justify-between gap-4",
+                                        dt { class: "text-sm text-muted shrink-0", "Billing Contact" }
+                                        dd { class: "text-sm text-right min-w-0",
+                                            match (company.default_billing_contact_id, billing_contact_row.clone()) {
+                                                (None, _) => rsx! {
+                                                    p { class: "text-amber-700 dark:text-amber-300", "Not set" }
+                                                    p { class: "text-xs text-muted", "Invoices cannot be sent until one is set." }
+                                                    Button {
+                                                        variant: ButtonVariant::Link,
+                                                        size: ButtonSize::Small,
+                                                        onclick: move |_| show_set_billing.set(true),
+                                                        "Set billing contact"
+                                                    }
+                                                },
+                                                (Some(id), Some(row)) => {
+                                                    let name = format!("{} {}", row.first_name, row.last_name).trim().to_string();
+                                                    let email = row.email.clone().unwrap_or_default();
+                                                    rsx! {
+                                                        Link {
+                                                            to: Route::ContactDetail { id: id.to_string() },
+                                                            class: "text-accent hover:opacity-90",
+                                                            "{name}"
+                                                        }
+                                                        if email.is_empty() {
+                                                            p { class: "text-xs text-amber-700 dark:text-amber-300", "No email address on file, so invoices cannot be sent." }
+                                                        } else {
+                                                            p { class: "text-xs text-muted break-all", "{email}" }
+                                                        }
+                                                        Button {
+                                                            variant: ButtonVariant::Link,
+                                                            size: ButtonSize::Small,
+                                                            onclick: move |_| show_set_billing.set(true),
+                                                            "Change"
+                                                        }
+                                                    }
+                                                }
+                                                (Some(id), None) => rsx! {
+                                                    Link {
+                                                        to: Route::ContactDetail { id: id.to_string() },
+                                                        class: "text-accent hover:opacity-90",
+                                                        "View contact"
+                                                    }
+                                                    Button {
+                                                        variant: ButtonVariant::Link,
+                                                        size: ButtonSize::Small,
+                                                        onclick: move |_| show_set_billing.set(true),
+                                                        "Change"
+                                                    }
+                                                },
+                                            }
+                                        }
+                                    }
                                     if !address_parts.is_empty() {
                                         div {
                                             dt { class: "text-sm text-muted mb-1", "Address" }
@@ -2532,6 +2825,10 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
 #[derive(Clone, Debug, Deserialize)]
 struct CompanyDetail {
     name: String,
+    /// MAPPS-644: who invoices are emailed to when the invoice names no
+    /// contact of its own (PMS-992).
+    #[serde(default)]
+    default_billing_contact_id: Option<uuid::Uuid>,
     #[serde(default)]
     company_type: String,
     #[serde(default)]
@@ -2741,6 +3038,8 @@ fn RowActions(
 fn CompanyContactsCard(
     company_id: String,
     company_name: String,
+    /// MAPPS-644: the company's billing contact, marked in its row.
+    billing_contact_id: Option<uuid::Uuid>,
     mut contacts_resource: Resource<Option<PaginatedContacts>>,
 ) -> Element {
     let snap = contacts_resource.read_unchecked();
@@ -2756,8 +3055,9 @@ fn CompanyContactsCard(
     let mut show_add = use_signal(|| false);
     let navigator = use_navigator();
     // MAPPS-249: "View All" stays inside this company by carrying its id to the
-    // scoped contact list (a plain anchor, matching the file's existing
-    // query-param navigation pattern).
+    // scoped contact list. MAPPS-683: a routed `Link`, like every other
+    // query-param navigation in this file; a raw anchor is inert in the
+    // desktop webview.
     let view_all_href = format!("/contacts?company_id={}", urlencoding_minimal(&company_id));
     rsx! {
         CollapsibleCard {
@@ -2769,8 +3069,8 @@ fn CompanyContactsCard(
                     onclick: move |_| show_add.set(true),
                     "Add Contact"
                 }
-                a {
-                    href: "{view_all_href}",
+                Link {
+                    to: view_all_href.clone(),
                     class: "text-sm text-accent hover:opacity-90",
                     "View All"
                 }
@@ -2814,6 +3114,7 @@ fn CompanyContactsCard(
                                         let role = humanize_contact_type(
                                             contact.contact_type.as_deref().unwrap_or_default(),
                                         );
+                                        let is_billing = billing_contact_id == Some(contact.id);
                                         rsx! {
                                             TableRow { key: "{id}", class: "group",
                                                 TableCell {
@@ -2821,6 +3122,10 @@ fn CompanyContactsCard(
                                                         to: Route::ContactDetail { id: id.clone() },
                                                         class: "font-medium text-accent hover:opacity-90",
                                                         "{name}"
+                                                    }
+                                                    // MAPPS-644: where this company's invoices go.
+                                                    if is_billing {
+                                                        Badge { variant: BadgeVariant::Blue, class: "ml-2", "Billing" }
                                                     }
                                                 }
                                                 TableCell { "{email}" }
@@ -2863,6 +3168,126 @@ fn CompanyContactsCard(
 /// select an existing contact (attaching it to this company via a PUT that
 /// sets `company_id`), or fall through to the full new-contact form with
 /// the company pre-filled.
+/// MAPPS-644: set or change the company's billing contact, the fallback
+/// recipient for every invoice that names no contact of its own (PMS-992).
+///
+/// Scoped to the company's contacts, because a billing contact at another
+/// company would be a foreign address on this company's invoices. No clear:
+/// the server leaves an absent value unchanged, and "no billing contact" is
+/// the state this page exists to make visible rather than easy to return to.
+#[component]
+fn SetBillingContactModal(
+    company_id: String,
+    current_id: Option<String>,
+    current_name: String,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+) -> Element {
+    let mut selected_id = use_signal(|| current_id.clone().unwrap_or_default());
+    let mut selected_name = use_signal(|| current_name.clone());
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+    let can_mutate = crate::hooks::use_can_mutate();
+
+    let picker_selected_id: Option<String> =
+        if uuid::Uuid::parse_str(selected_id.read().as_str()).is_ok() {
+            Some(selected_id.read().clone())
+        } else {
+            None
+        };
+    let unchanged = current_id.as_deref() == Some(selected_id.read().as_str());
+
+    let company_id_for_save = company_id.clone();
+    let on_save = move |_| {
+        let Ok(contact_uuid) = uuid::Uuid::parse_str(selected_id.read().as_str()) else {
+            error.set("Pick a contact.".to_string());
+            return;
+        };
+        if saving() {
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let path = format!("/contacts/companies/{company_id_for_save}");
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                // `UpdateCompanyRequest` is all-optional; a one-field PUT
+                // writes only this column.
+                let body = UpdateCompanyBody {
+                    default_billing_contact_id: Some(contact_uuid),
+                    ..UpdateCompanyBody::default()
+                };
+                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                    .await
+                {
+                    Ok(_) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not set the billing contact: {err}")),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = (path, contact_uuid);
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        Modal {
+            open: true,
+            title: "Billing contact".to_string(),
+            onclose: move |_| {
+                if !saving() {
+                    onclose.call(());
+                }
+            },
+            footer: rsx! {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| {
+                        if !saving() {
+                            onclose.call(());
+                        }
+                    },
+                    "Cancel"
+                }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    loading: saving(),
+                    disabled: !can_mutate || unchanged || picker_selected_id.is_none(),
+                    title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
+                    onclick: on_save,
+                    "Save"
+                }
+            },
+            div { class: "space-y-4",
+                if !error.read().is_empty() {
+                    p { class: "text-sm text-red-600 dark:text-red-400", "{error}" }
+                }
+                crate::components::ContactPicker {
+                    value: selected_name.read().clone(),
+                    selected_id: picker_selected_id,
+                    label: "Billing contact".to_string(),
+                    required: true,
+                    company_filter: Some(company_id.clone()),
+                    onselect: move |(id, name): (String, String)| {
+                        selected_id.set(id);
+                        selected_name.set(name);
+                    },
+                    onclear: move |_| {
+                        selected_id.set(String::new());
+                        selected_name.set(String::new());
+                    },
+                }
+                p { class: "text-xs text-muted",
+                    "Invoices for this company are emailed to this contact unless the invoice names its own. Only contacts at this company are offered, and the contact needs an email address for a send to go through."
+                }
+            }
+        }
+    }
+}
+
 #[component]
 fn AddContactModal(
     company_id: String,
@@ -2911,7 +3336,10 @@ fn AddContactModal(
                 // The server's `UpdateContactRequest` accepts a bare
                 // `company_id`; every other field is optional, so a
                 // single-field PUT re-points the contact at this company.
-                let body = serde_json::json!({ "company_id": company_uuid });
+                let body = UpdateContactBody {
+                    company_id: Some(company_uuid),
+                    ..UpdateContactBody::default()
+                };
                 let path = format!("/contacts/contacts/{contact_uuid}");
                 #[derive(serde::Deserialize)]
                 struct ContactId {
@@ -2981,8 +3409,8 @@ fn AddContactModal(
                     "Search for a contact to attach to this company. Attaching moves the contact to this company."
                 }
                 div { class: "border-t border-line pt-3",
-                    a {
-                        href: "{new_href}",
+                    Link {
+                        to: new_href.clone(),
                         class: "text-sm text-accent hover:opacity-90",
                         "+ Create a new contact instead"
                     }
@@ -3263,6 +3691,21 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
             error.set("Site name is required.".to_string());
             guard.note_invalid(Some("site_name"));
         }
+        // MAPPS-687: `CreateSiteRequest::company_id` is a `Uuid`. The value is
+        // this modal's own route parameter rather than a field, so a failure
+        // has no inline slot and goes to the banner.
+        let company_res = uuid::Uuid::parse_str(&save_state.company_id);
+        if let Err(e) = &company_res {
+            tracing::warn!(
+                "site company id {} is not a uuid: {e}",
+                save_state.company_id
+            );
+            error.set(
+                "The company this site belongs to could not be read, so nothing was saved."
+                    .to_string(),
+            );
+            guard.note_invalid(Some("site_name"));
+        }
         let phone_res = validate_phone_field(&phone.read(), "Phone");
         if let Err(msg) = &phone_res {
             phone_err.set(msg.clone());
@@ -3286,26 +3729,27 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
         if guard.blocked() {
             return;
         }
+        let company_value = company_res.expect("company id parsed above");
         let phone_value = phone_res.expect("phone validated above");
         let tz_value = tz_res.expect("timezone validated above");
         let postal_value = postal_res.expect("postal validated above");
         let country_value = country_res.expect("country validated above");
         saving.set(true);
-        let body = serde_json::json!({
-            "company_id": save_state.company_id,
-            "name": name.read().trim(),
-            "address": {
-                "line1": optional_string(&line1.read()),
-                "line2": optional_string(&line2.read()),
-                "city": optional_string(&city.read()),
-                "state": optional_string(&state.read()),
-                "postal_code": postal_value,
-                "country": country_value,
+        let body = SiteFormBody {
+            company_id: company_value,
+            name: name.read().trim().to_string(),
+            address: Address {
+                line1: optional_string(&line1.read()),
+                line2: optional_string(&line2.read()),
+                city: optional_string(&city.read()),
+                state: optional_string(&state.read()),
+                postal_code: postal_value,
+                country: country_value,
             },
-            "phone": phone_value,
-            "is_primary": *is_primary.read(),
-            "timezone": tz_value,
-        });
+            phone: phone_value,
+            is_primary: *is_primary.read(),
+            timezone: tz_value,
+        };
         let site_id = save_state.site_id.clone();
         spawn(async move {
             #[cfg(feature = "app")]
@@ -3534,13 +3978,13 @@ fn CompanyTicketsCard(
             title: "Recent Tickets",
             count,
             actions: rsx! {
-                a {
-                    href: "{new_ticket_href}",
+                Link {
+                    to: new_ticket_href.clone(),
                     class: "text-sm text-accent hover:opacity-90",
                     "New Ticket"
                 }
-                a {
-                    href: "{view_all_href}",
+                Link {
+                    to: view_all_href.clone(),
                     class: "text-sm text-accent hover:opacity-90",
                     "View All"
                 }
@@ -3728,13 +4172,13 @@ fn CompanyContractsCard(
             title: "Contracts",
             count,
             actions: rsx! {
-                a {
-                    href: "{new_contract_href}",
+                Link {
+                    to: new_contract_href.clone(),
                     class: "text-sm text-accent hover:opacity-90",
                     "New Contract"
                 }
-                a {
-                    href: "{view_all_href}",
+                Link {
+                    to: view_all_href.clone(),
                     class: "text-sm text-accent hover:opacity-90",
                     "View All"
                 }
@@ -3822,13 +4266,13 @@ fn CompanyProjectsCard(
             title: "Projects",
             count,
             actions: rsx! {
-                a {
-                    href: "{new_project_href}",
+                Link {
+                    to: new_project_href.clone(),
                     class: "text-sm text-accent hover:opacity-90",
                     "New Project"
                 }
-                a {
-                    href: "{view_all_href}",
+                Link {
+                    to: view_all_href.clone(),
                     class: "text-sm text-accent hover:opacity-90",
                     "View All"
                 }
@@ -3911,18 +4355,29 @@ fn CompanyInvoicesCard(
         "/invoices/new?company_id={}",
         urlencoding_minimal(&company_id)
     );
+    // MAPPS-639: the company's account over a period, seeded with this
+    // company the same way View All is.
+    let statement_href = format!(
+        "/statements?company_id={}",
+        urlencoding_minimal(&company_id)
+    );
     rsx! {
         CollapsibleCard {
             title: "Invoices",
             count,
             actions: rsx! {
-                a {
-                    href: "{new_invoice_href}",
+                Link {
+                    to: new_invoice_href.clone(),
                     class: "text-sm text-accent hover:opacity-90",
                     "New Invoice"
                 }
-                a {
-                    href: "{view_all_href}",
+                Link {
+                    to: statement_href.clone(),
+                    class: "text-sm text-accent hover:opacity-90",
+                    "Statement"
+                }
+                Link {
+                    to: view_all_href.clone(),
                     class: "text-sm text-accent hover:opacity-90",
                     "View All"
                 }
@@ -4026,13 +4481,13 @@ fn CompanyAssetsCard(
             title: "Assets",
             count,
             actions: rsx! {
-                a {
-                    href: "{new_asset_href}",
+                Link {
+                    to: new_asset_href.clone(),
                     class: "text-sm text-accent hover:opacity-90",
                     "New Asset"
                 }
-                a {
-                    href: "{view_all_href}",
+                Link {
+                    to: view_all_href.clone(),
                     class: "text-sm text-accent hover:opacity-90",
                     "View All"
                 }
@@ -4165,6 +4620,7 @@ pub fn ContactListPage() -> Element {
             }
             crate::hooks::fetch::api::get_with_auth::<PaginatedContacts>(&path, &token)
                 .await
+                .inspect_err(|e| tracing::error!("contact list load failed: {e}"))
                 .ok()
         }
     });
@@ -4517,16 +4973,24 @@ struct CompanyPrefill {
 fn read_company_prefill_from_url() -> CompanyPrefill {
     #[cfg(feature = "app")]
     {
-        if let Some(search) = crate::platform::location::search() {
-            {
-                let params = crate::utils::url::QueryString::parse(&search);
-                let id = params.get("company_id").unwrap_or_default();
-                let name = params.get("company_name").unwrap_or_default();
-                if uuid::Uuid::parse_str(&id).is_ok() {
-                    return CompanyPrefill { id, name };
-                }
-            }
+        // MAPPS-683: off the router, so the desktop reads the same
+        // prefill the link carried.
+        if let Some(search) = crate::platform::location::current_query() {
+            return company_prefill_from(&search);
         }
+    }
+    CompanyPrefill::default()
+}
+
+/// Pure core of [`read_company_prefill_from_url`], so the rule is testable
+/// without a location.
+#[cfg_attr(not(feature = "app"), allow(dead_code))]
+fn company_prefill_from(search: &str) -> CompanyPrefill {
+    let params = crate::utils::url::QueryString::parse(search);
+    let id = params.get("company_id").unwrap_or_default();
+    let name = params.get("company_name").unwrap_or_default();
+    if uuid::Uuid::parse_str(&id).is_ok() {
+        return CompanyPrefill { id, name };
     }
     CompanyPrefill::default()
 }
@@ -4551,6 +5015,7 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
                 "/contacts/contacts/{id}"
             ))
             .await
+            .inspect_err(|e| tracing::error!("contact edit load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -4720,7 +5185,7 @@ fn phone_rows_from_remote(
         return phones
             .iter()
             .map(|p| PhoneRow {
-                phone_type: normalize_phone_type(&p.phone_type).to_string(),
+                phone_type: normalize_phone_type(&p.phone_type).as_str().to_string(),
                 number: p.number.clone(),
                 extension: p.extension.clone().unwrap_or_default(),
                 is_primary: p.is_primary,
@@ -4786,9 +5251,9 @@ fn company_rows_from_remote(
 /// The surviving entries keep their form order, which is the `sort_order`
 /// PMS-806 derives from the array index, and exactly one carries
 /// `is_primary` - the flagged row, or the first when none is flagged.
-fn validate_phone_rows(rows: &[PhoneRow]) -> Result<Vec<serde_json::Value>, Vec<String>> {
+fn validate_phone_rows(rows: &[PhoneRow]) -> Result<Vec<ContactPhoneBody>, Vec<String>> {
     let mut errors = vec![String::new(); rows.len()];
-    let mut entries: Vec<serde_json::Value> = Vec::new();
+    let mut entries: Vec<ContactPhoneBody> = Vec::new();
     let mut primary_at: Option<usize> = None;
 
     for (index, row) in rows.iter().enumerate() {
@@ -4797,17 +5262,17 @@ fn validate_phone_rows(rows: &[PhoneRow]) -> Result<Vec<serde_json::Value>, Vec<
         match validate_phone_field(&row.number, "Number") {
             Err(message) => errors[index] = message,
             // Blank row: nothing to send.
-            Ok(serde_json::Value::Null) => {}
-            Ok(number) => {
+            Ok(None) => {}
+            Ok(Some(number)) => {
                 if row.is_primary && primary_at.is_none() {
                     primary_at = Some(entries.len());
                 }
-                entries.push(serde_json::json!({
-                    "phone_type": normalize_phone_type(&row.phone_type),
-                    "number": number,
-                    "extension": optional_string(&row.extension),
-                    "is_primary": false,
-                }));
+                entries.push(ContactPhoneBody {
+                    phone_type: normalize_phone_type(&row.phone_type),
+                    number,
+                    extension: optional_string(&row.extension),
+                    is_primary: false,
+                });
             }
         }
     }
@@ -4818,31 +5283,43 @@ fn validate_phone_rows(rows: &[PhoneRow]) -> Result<Vec<serde_json::Value>, Vec<
     // Send the promotion explicitly instead of leaning on the server's
     // promote-the-first rule, so the saved primary is the one the form shows.
     if let Some(index) = primary_at.or(if entries.is_empty() { None } else { Some(0) }) {
-        entries[index]["is_primary"] = serde_json::json!(true);
+        entries[index].is_primary = true;
     }
     Ok(entries)
 }
 
 /// MAPPS-481: build the request's `companies` array from the form's rows,
-/// applying the same single-primary rule as [`validate_phone_rows`]. Rows
-/// carry an already-picked company id, so there is nothing left to validate.
-fn company_link_entries(rows: &[CompanyRow]) -> Vec<serde_json::Value> {
-    let mut entries: Vec<serde_json::Value> = Vec::new();
+/// applying the same single-primary rule as [`validate_phone_rows`]. Rows carry
+/// an already-picked company id, so the only thing left to check is that it
+/// reads as the `Uuid` `ContactCompanyLinkInput` declares (MAPPS-687). The
+/// picker cannot produce anything else, so a failure names the row for the
+/// banner rather than getting a slot of its own.
+fn company_link_entries(rows: &[CompanyRow]) -> Result<Vec<ContactCompanyLinkBody>, String> {
+    let mut entries: Vec<ContactCompanyLinkBody> = Vec::new();
     let mut primary_at: Option<usize> = None;
     for row in rows {
+        let company_id = uuid::Uuid::parse_str(row.company_id.trim()).map_err(|e| {
+            tracing::warn!("linked company id {:?} is not a uuid: {e}", row.company_id);
+            let label = if row.company_name.trim().is_empty() {
+                "A linked company".to_string()
+            } else {
+                row.company_name.trim().to_string()
+            };
+            format!("{label} could not be read, so nothing was saved.")
+        })?;
         if row.is_primary && primary_at.is_none() {
             primary_at = Some(entries.len());
         }
-        entries.push(serde_json::json!({
-            "company_id": row.company_id,
-            "title": optional_string(&row.title),
-            "is_primary": false,
-        }));
+        entries.push(ContactCompanyLinkBody {
+            company_id,
+            title: optional_string(&row.title),
+            is_primary: false,
+        });
     }
     if let Some(index) = primary_at.or(if entries.is_empty() { None } else { Some(0) }) {
-        entries[index]["is_primary"] = serde_json::json!(true);
+        entries[index].is_primary = true;
     }
-    entries
+    Ok(entries)
 }
 
 /// MAPPS-484: the contact form's two company paths, each named for what it
@@ -4936,6 +5413,8 @@ fn ContactForm(props: ContactFormProps) -> Element {
     let mut first_name_err = use_signal(String::new);
     let mut last_name_err = use_signal(String::new);
     let mut email_err = use_signal(String::new);
+    // MAPPS-687: the select whose value is an enum on the request DTO.
+    let mut contact_type_err = use_signal(String::new);
 
     let type_options = vec![
         SelectOption::new("primary", "Primary"),
@@ -4968,6 +5447,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
         first_name_err.set(String::new());
         last_name_err.set(String::new());
         email_err.set(String::new());
+        contact_type_err.set(String::new());
         // MAPPS-481: clear every phone row's own slot, same as the fixed
         // fields it replaced.
         for row in phones.write().iter_mut() {
@@ -4994,6 +5474,16 @@ fn ContactForm(props: ContactFormProps) -> Element {
         if last_name.read().trim().is_empty() {
             last_name_err.set("Last name is required.".to_string());
             guard.note_invalid(Some("last_name"));
+        }
+
+        // MAPPS-687: the request DTO types this as `ContactType`, so the
+        // select's string is read here rather than sent for the server to
+        // reject.
+        let type_res = parse_contact_type(&contact_type.read());
+        if let Err(msg) = &type_res {
+            tracing::warn!("contact type \"{}\" is unknown here", contact_type.read());
+            contact_type_err.set(msg.clone());
+            guard.note_invalid(Some("contact_type"));
         }
 
         // MAPPS-251 / MAPPS-481: company is optional - any number of linked CRM
@@ -5025,33 +5515,46 @@ fn ContactForm(props: ContactFormProps) -> Element {
             }
         };
 
+        // MAPPS-687: the picked company ids, read as the `Uuid` the DTO
+        // declares. The failure has no slot of its own, so it goes to the
+        // banner alongside the XOR message above.
+        let company_entries = match company_link_entries(&company_rows) {
+            Ok(entries) => Some(entries),
+            Err(message) => {
+                error.set(message);
+                guard.note_invalid(Some("company_name_freeform"));
+                None
+            }
+        };
+
         if guard.blocked() {
             return;
         }
         let phone_entries = phone_entries.expect("phone rows validated above");
-        let company_entries = company_link_entries(&company_rows);
+        let company_entries = company_entries.expect("company rows read above");
+        let type_value = type_res.expect("contact type validated above");
         is_submitting.set(true);
 
         let has_links = !company_entries.is_empty();
-        let body = serde_json::json!({
-            "first_name": first_name.read().trim(),
-            "last_name": last_name.read().trim(),
-            "email": optional_string(&email.read()),
-            "title": optional_string(&title.read()),
-            "department": optional_string(&department.read()),
-            "contact_type": contact_type.read().clone(),
-            // PMS-806: both lists are authoritative when present, and both are
-            // always sent, so removing the last row really unlinks.
-            "phones": phone_entries,
-            "companies": company_entries,
+        let body = ContactFormBody {
+            first_name: first_name.read().trim().to_string(),
+            last_name: last_name.read().trim().to_string(),
+            email: optional_string(&email.read()),
+            title: optional_string(&title.read()),
+            department: optional_string(&department.read()),
+            contact_type: type_value,
+            phones: phone_entries,
+            companies: company_entries,
             // MAPPS-251: the freeform typed name is the no-linked-company case.
             // Sent as `""` whenever a company is linked, which clears any name
             // stored by an earlier save (a link plus a name is a 422).
-            "company_name": if has_links { "" } else { freeform_name.as_str() },
-            // MAPPS-614: always a string, never null, for the same reason
-            // `company_name` above is. See `clearable_string`.
-            "notes": clearable_string(&notes.read()),
-        });
+            company_name: if has_links {
+                String::new()
+            } else {
+                freeform_name.clone()
+            },
+            notes: clearable_string(&notes.read()),
+        };
         let mode = mode.clone();
         let mode_for_toast = mode.clone();
         spawn(async move {
@@ -5188,7 +5691,11 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         label: "Type",
                         options: type_options,
                         value: contact_type.read().clone(),
-                        onchange: move |e: FormEvent| contact_type.set(e.value()),
+                        error: contact_type_err(),
+                        onchange: move |e: FormEvent| {
+                            contact_type_err.set(String::new());
+                            contact_type.set(e.value());
+                        },
                     }
                 }
 
@@ -5509,6 +6016,8 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     let contact_id_str = props.id.clone();
     let id_for_resource = contact_id_str.clone();
     let id_for_tickets = contact_id_str.clone();
+    // MAPPS-568: the id the ticket-notes feed is read for.
+    let id_for_notes = contact_id_str.clone();
     let id_for_edit = contact_id_str.clone();
     let id_for_delete = contact_id_str.clone();
     let id_for_portal = contact_id_str.clone();
@@ -5528,6 +6037,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                 "/contacts/contacts/{id}"
             ))
             .await
+            .inspect_err(|e| tracing::error!("contact detail load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -5539,7 +6049,22 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                 "/tickets?contact_id={id}&per_page=5&{TICKETS_RECENT_SORT}"
             ))
             .await
+            .inspect_err(|e| tracing::error!("contact tickets load failed for {id}: {e}"))
             .ok()
+        }
+    });
+    // MAPPS-568: the notes written on this contact's tickets (PMS-468's agent
+    // feed). Secondary like the tickets list above, but the `Result` is kept
+    // rather than `.ok()`-ed so the card can report a failed read instead of
+    // rendering it as an empty history.
+    let notes_resource = use_resource(move || {
+        let id = id_for_notes.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_all_authed::<ContactNote>(&format!(
+                "/contacts/{id}/notes"
+            ))
+            .await
         }
     });
 
@@ -5565,8 +6090,10 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     let mut creating_company = use_signal(|| false);
     let mut create_company_error = use_signal(String::new);
     // Holds the company created by a first attempt whose link then failed, so
-    // the retry links that row instead of creating a duplicate.
-    let mut created_company_id = use_signal(String::new);
+    // the retry links that row instead of creating a duplicate. MAPPS-687:
+    // held as the `Uuid` the link request declares, so the id is never a string
+    // that has to be re-read on the way back out.
+    let mut created_company_id = use_signal(|| None::<uuid::Uuid>);
     let edit_id = id_for_edit.clone();
     let delete_id = id_for_delete.clone();
     let mut confirming_delete = use_signal(|| false);
@@ -5719,35 +6246,38 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                             // A retry after a failed link must link the company
                             // the first attempt created, not create a second one
                             // under the same name.
-                            let already_created = created_company_id.read().clone();
-                            let company_id = if already_created.is_empty() {
-                                let body = serde_json::json!({ "name": name });
-                                match crate::hooks::fetch::api::post_authed::<CreatedCompanyRef, _>(
-                                    "/contacts/companies",
-                                    &body,
-                                )
-                                .await
-                                {
-                                    Ok(created) => {
-                                        let id = created.id.to_string();
-                                        created_company_id.set(id.clone());
-                                        id
-                                    }
-                                    Err(err) => {
-                                        tracing::warn!(
-                                            "creating company \"{name}\" from contact {contact_id} failed: {err}"
-                                        );
-                                        create_company_error
-                                            .set(format!("Could not create {name}: {err}"));
-                                        creating_company.set(false);
-                                        return;
+                            let already_created = *created_company_id.read();
+                            let company_id = match already_created {
+                                Some(id) => id,
+                                None => {
+                                    let body = CreateCompanyFromNameBody { name: name.clone() };
+                                    match crate::hooks::fetch::api::post_authed::<
+                                        CreatedCompanyRef,
+                                        _,
+                                    >("/contacts/companies", &body)
+                                    .await
+                                    {
+                                        Ok(created) => {
+                                            created_company_id.set(Some(created.id));
+                                            created.id
+                                        }
+                                        Err(err) => {
+                                            tracing::warn!(
+                                                "creating company \"{name}\" from contact {contact_id} failed: {err}"
+                                            );
+                                            create_company_error
+                                                .set(format!("Could not create {name}: {err}"));
+                                            creating_company.set(false);
+                                            return;
+                                        }
                                     }
                                 }
-                            } else {
-                                already_created
                             };
                             let path = format!("/contacts/contacts/{contact_id}");
-                            let link_body = serde_json::json!({ "company_id": company_id });
+                            let link_body = UpdateContactBody {
+                                company_id: Some(company_id),
+                                ..UpdateContactBody::default()
+                            };
                             match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
                                 &path, &link_body,
                             )
@@ -5777,6 +6307,10 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                     div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
                         div { class: "lg:col-span-2 space-y-6",
                             ContactTicketsCard { tickets_resource: tickets }
+                            // MAPPS-568: beside Recent Tickets, because the two
+                            // answer different questions - which tickets exist,
+                            // and what was said on them.
+                            ContactNotesCard { notes_resource }
                             // MAPPS-614: near the bottom of the record, the
                             // Google Contacts placement David described.
                             // Hidden when empty, like the company card.
@@ -6072,6 +6606,137 @@ fn ContactTicketsCard(tickets_resource: Resource<Option<PaginatedTicketSummaries
     }
 }
 
+/// MAPPS-568: one note off `GET /contacts/{id}/notes`, the agent-side "all
+/// comments from this contact" feed PMS-468 added.
+///
+/// Read-only on this page: a note belongs to a ticket, so there is no
+/// `POST /contacts/{id}/notes` and writing one still happens on ticket detail.
+/// The server sends more of `TicketNoteResponse` than this decodes; serde drops
+/// the rest.
+#[derive(Clone, Debug, Deserialize)]
+struct ContactNote {
+    id: uuid::Uuid,
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    created_by_name: String,
+    /// PMS-449 phase 2: set when a portal contact wrote it. `is_some()` is the
+    /// Customer / Agent distinction, the same one the portal conversation
+    /// draws, rather than a name-equality guess.
+    #[serde(default)]
+    created_by_contact_id: Option<uuid::Uuid>,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Newest first. The server already orders `created_at DESC`, but the card
+/// renders the order it states rather than inheriting one.
+fn notes_newest_first(mut notes: Vec<ContactNote>) -> Vec<ContactNote> {
+    notes.sort_by_key(|n| std::cmp::Reverse(n.created_at));
+    notes
+}
+
+/// Who a note came from, per row.
+///
+/// Today's server returns only notes the contact themself wrote
+/// (`list_notes_by_contact` filters on `created_by_contact_id` and
+/// `note_type='public'`), so every row reads Customer; the Agent branch is what
+/// keeps the labelling right if that feed widens.
+fn note_origin_label(note: &ContactNote) -> &'static str {
+    if note.created_by_contact_id.is_some() {
+        "Customer"
+    } else {
+        "Agent"
+    }
+}
+
+/// The author's name, or the origin label when the server sent none, so a row
+/// never renders a blank byline.
+fn note_author_name(note: &ContactNote) -> String {
+    let name = note.created_by_name.trim();
+    if name.is_empty() {
+        note_origin_label(note).to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// Absolute timestamp for a note line, honouring the per-user format pref the
+/// same way the ticket journal's `fmt_datetime` does.
+fn fmt_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
+    let pref = crate::utils::datetime::user_format_pref();
+    crate::utils::datetime::format_user_datetime(
+        dt,
+        pref.as_deref().filter(|s| !s.trim().is_empty()),
+    )
+}
+
+/// MAPPS-568: the notes written on this contact's tickets, so an agent reads
+/// the conversation history without opening each ticket.
+///
+/// The resource keeps its `Result` rather than `.ok()`-ing it: a failed fetch
+/// renders the server's reason, because "no notes" and "could not read the
+/// notes" are different facts.
+#[component]
+fn ContactNotesCard(notes_resource: Resource<Result<Vec<ContactNote>, String>>) -> Element {
+    let snap = notes_resource.read_unchecked();
+    rsx! {
+        Card { title: "Ticket Notes",
+            match &*snap {
+                None => rsx! {
+                    p { class: "text-sm text-muted", "Loading notes…" }
+                },
+                Some(Err(err)) => rsx! {
+                    p { class: "text-sm text-red-600 dark:text-red-300",
+                        "Could not load notes for this contact: {err}"
+                    }
+                },
+                Some(Ok(rows)) if rows.is_empty() => rsx! {
+                    p { class: "text-sm text-muted", "No notes from this contact's tickets yet." }
+                },
+                Some(Ok(rows)) => {
+                    let rows = notes_newest_first(rows.clone());
+                    rsx! {
+                        ul { class: "space-y-4",
+                            for note in rows.into_iter() {
+                                {
+                                    let key = note.id.to_string();
+                                    let author = note_author_name(&note);
+                                    let label = note_origin_label(&note);
+                                    let variant = if note.created_by_contact_id.is_some() {
+                                        BadgeVariant::Blue
+                                    } else {
+                                        BadgeVariant::Gray
+                                    };
+                                    let when = fmt_datetime(note.created_at);
+                                    // MAPPS-409: machine-readable form for the `<time>` wrapper.
+                                    let when_iso = note.created_at.to_rfc3339();
+                                    rsx! {
+                                        li { key: "{key}", class: "rounded-md border border-line bg-surface-2 p-4",
+                                            div { class: "flex items-center justify-between mb-2 gap-2",
+                                                div { class: "flex items-center gap-2",
+                                                    span { class: "font-medium text-content text-sm", "{author}" }
+                                                    Badge { variant, "{label}" }
+                                                }
+                                                span { class: "text-xs text-muted",
+                                                    time { datetime: "{when_iso}", "{when}" }
+                                                }
+                                            }
+                                            // Notes are authored with the Markdown
+                                            // composer on ticket detail, so they are
+                                            // rendered, not shown as raw asterisks.
+                                            crate::components::Markdown { content: note.content.clone() }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+        }
+    }
+}
+
 #[derive(Props, Clone, PartialEq)]
 struct ContactPortalCardProps {
     contact_id: String,
@@ -6111,7 +6776,10 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                             toggling.set(true);
                             spawn(async move {
                                 let path = format!("/contacts/contacts/{id}");
-                                let body = serde_json::json!({ "is_portal_user": false });
+                                let body = UpdateContactBody {
+                                    is_portal_user: Some(false),
+                                    ..UpdateContactBody::default()
+                                };
                                 match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await {
                                     Ok(_) => on_change.call(()),
                                     Err(err) => crate::hooks::toast::push_toast(
@@ -6145,7 +6813,10 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                             toggling.set(true);
                             spawn(async move {
                                 let path = format!("/contacts/contacts/{id}");
-                                let body = serde_json::json!({ "is_portal_user": true });
+                                let body = UpdateContactBody {
+                                    is_portal_user: Some(true),
+                                    ..UpdateContactBody::default()
+                                };
                                 match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await {
                                     Ok(_) => on_change.call(()),
                                     Err(err) => crate::hooks::toast::push_toast(
@@ -6213,7 +6884,6 @@ mod validation_tests {
         validate_postal_field, validate_timezone_field, validate_website_field, website_probe_note,
         WebsiteProbe,
     };
-    use serde_json::Value;
 
     /// A reachable probe of `canonical`, with every optional signal off.
     fn reached(canonical: &str) -> WebsiteProbe {
@@ -6242,15 +6912,15 @@ mod validation_tests {
     #[test]
     fn website_requires_http_scheme_and_rejects_dangerous() {
         // Blank -> null (Website is optional).
-        assert_eq!(validate_website_field("  ").unwrap(), Value::Null);
+        assert_eq!(validate_website_field("  ").unwrap(), None);
         // Valid http/https pass through unchanged.
         assert_eq!(
             validate_website_field("https://example.com").unwrap(),
-            Value::String("https://example.com".into())
+            Some("https://example.com".to_string())
         );
         assert_eq!(
             validate_website_field("http://example.com/path?q=1").unwrap(),
-            Value::String("http://example.com/path?q=1".into())
+            Some("http://example.com/path?q=1".to_string())
         );
         // Dangerous schemes are rejected before any request.
         assert!(validate_website_field("javascript:alert(1)").is_err());
@@ -6262,7 +6932,7 @@ mod validation_tests {
         assert!(validate_website_field("mailto:a@example.com").is_err());
         assert_eq!(
             validate_website_field("example.com").unwrap(),
-            Value::String("https://example.com".into())
+            Some("https://example.com".to_string())
         );
         // Malformed http(s) URLs are rejected.
         assert!(validate_website_field("http://").is_err());
@@ -6277,21 +6947,21 @@ mod validation_tests {
         // MAPPS-480: a bare domain gets the scheme the product wants.
         assert_eq!(
             validate_website_field("DentalArtsPractice.com").unwrap(),
-            Value::String("https://DentalArtsPractice.com".into())
+            Some("https://DentalArtsPractice.com".to_string())
         );
         // Path, query and fragment survive normalization.
         assert_eq!(
             validate_website_field("example.com/path?q=1").unwrap(),
-            Value::String("https://example.com/path?q=1".into())
+            Some("https://example.com/path?q=1".to_string())
         );
         assert_eq!(
             validate_website_field("example.com/a#frag").unwrap(),
-            Value::String("https://example.com/a#frag".into())
+            Some("https://example.com/a#frag".to_string())
         );
         // Trimmed before normalization, so surrounding space is not baked in.
         assert_eq!(
             validate_website_field("  example.com  ").unwrap(),
-            Value::String("https://example.com".into())
+            Some("https://example.com".to_string())
         );
         // A single-label host is not a public website address.
         assert!(validate_website_field("localhost").is_err());
@@ -6384,11 +7054,11 @@ mod validation_tests {
     #[test]
     fn phone_normalizes_and_validates() {
         // Blank -> null.
-        assert_eq!(validate_phone_field("  ", "Phone").unwrap(), Value::Null);
+        assert_eq!(validate_phone_field("  ", "Phone").unwrap(), None);
         // Formatted -> normalized E.164.
         assert_eq!(
             validate_phone_field("+1 (415) 555-1234", "Phone").unwrap(),
-            Value::String("+14155551234".into())
+            Some("+14155551234".to_string())
         );
         // Garbage / leading zero rejected.
         assert!(validate_phone_field("not-a-phone", "Phone").is_err());
@@ -6403,16 +7073,16 @@ mod validation_tests {
     fn reported_us_phone_is_valid() {
         assert_eq!(
             validate_phone_field("919-397-4144", "Phone").unwrap(),
-            Value::String("9193974144".into())
+            Some("9193974144".to_string())
         );
     }
 
     #[test]
     fn country_requires_two_letters() {
-        assert_eq!(validate_country_field("").unwrap(), Value::Null);
+        assert_eq!(validate_country_field("").unwrap(), None);
         assert_eq!(
             validate_country_field("us").unwrap(),
-            Value::String("US".into())
+            Some("US".to_string())
         );
         assert!(validate_country_field("USA").is_err());
         assert!(validate_country_field("United States").is_err());
@@ -6420,7 +7090,7 @@ mod validation_tests {
 
     #[test]
     fn postal_permissive_rule() {
-        assert_eq!(validate_postal_field("").unwrap(), Value::Null);
+        assert_eq!(validate_postal_field("").unwrap(), None);
         assert!(validate_postal_field("K1A 0B1").is_ok());
         assert!(validate_postal_field("90210-1234").is_ok());
         assert!(validate_postal_field("X".repeat(13).as_str()).is_err());
@@ -6429,7 +7099,7 @@ mod validation_tests {
 
     #[test]
     fn timezone_light_check() {
-        assert_eq!(validate_timezone_field("").unwrap(), Value::Null);
+        assert_eq!(validate_timezone_field("").unwrap(), None);
         assert!(validate_timezone_field("America/New_York").is_ok());
         assert!(validate_timezone_field("America/New York").is_err());
         assert!(validate_timezone_field("notazone").is_err());
@@ -6466,7 +7136,7 @@ mod validation_tests {
             let raw = format!("919-397-4144{suffix}");
             assert_eq!(
                 validate_phone_field(&raw, "Phone"),
-                Ok(serde_json::Value::String("9193974144".to_string())),
+                Ok(Some("9193974144".to_string())),
                 "U+{:04X} must not reject a valid number",
                 suffix.chars().next().unwrap() as u32
             );
@@ -6474,7 +7144,7 @@ mod validation_tests {
         // An interior one is stripped too, not just a trailing one.
         assert_eq!(
             validate_phone_field("919-397\u{200B}-4144", "Phone"),
-            Ok(serde_json::Value::String("9193974144".to_string()))
+            Ok(Some("9193974144".to_string()))
         );
     }
 
@@ -6531,19 +7201,19 @@ mod validation_tests {
     fn the_structured_fields_strip_invisible_characters() {
         assert_eq!(
             validate_country_field("US\u{200B}"),
-            Ok(serde_json::Value::String("US".to_string()))
+            Ok(Some("US".to_string()))
         );
         assert_eq!(
             validate_postal_field("27519\u{FEFF}"),
-            Ok(serde_json::Value::String("27519".to_string()))
+            Ok(Some("27519".to_string()))
         );
         assert_eq!(
             validate_timezone_field("America/New_York\u{200E}"),
-            Ok(serde_json::Value::String("America/New_York".to_string()))
+            Ok(Some("America/New_York".to_string()))
         );
         assert_eq!(
             validate_website_field("https://example.com\u{00AD}"),
-            Ok(serde_json::Value::String("https://example.com".to_string()))
+            Ok(Some("https://example.com".to_string()))
         );
     }
 
@@ -6634,7 +7304,7 @@ mod contact_child_row_tests {
     use super::{
         add_company_label, company_link_entries, company_rows_from_remote, extra_company_suffix,
         humanize_phone_type, normalize_phone_type, phone_row_index, phone_rows_from_remote,
-        primary_phone_label, validate_phone_rows, CompanyRow, ContactDetail, PhoneRow,
+        primary_phone_label, validate_phone_rows, CompanyRow, ContactDetail, PhoneRow, PhoneType,
         RemoteCompanyLink, RemoteContact, RemotePhone,
     };
 
@@ -6681,16 +7351,16 @@ mod contact_child_row_tests {
             row("mobile", "+14155559999", true),
         ])
         .expect("valid");
-        assert_eq!(entries[0]["is_primary"], serde_json::json!(false));
-        assert_eq!(entries[1]["is_primary"], serde_json::json!(true));
+        assert!(!entries[0].is_primary);
+        assert!(entries[1].is_primary);
 
         let promoted = validate_phone_rows(&[
             row("work", "+14155551234", false),
             row("mobile", "+14155559999", false),
         ])
         .expect("valid");
-        assert_eq!(promoted[0]["is_primary"], serde_json::json!(true));
-        assert_eq!(promoted[1]["is_primary"], serde_json::json!(false));
+        assert!(promoted[0].is_primary);
+        assert!(!promoted[1].is_primary);
     }
 
     /// Row order is the payload order, which is the `sort_order` PMS-806
@@ -6708,20 +7378,20 @@ mod contact_child_row_tests {
             row("pager", "+14155559999", false),
         ];
         let entries = validate_phone_rows(&rows).expect("valid");
-        assert_eq!(entries[0]["phone_type"], serde_json::json!("work"));
+        assert_eq!(entries[0].phone_type, PhoneType::Work);
         // `validate_phone_field` strips the separators and keeps what was typed.
-        assert_eq!(entries[0]["number"], serde_json::json!("4155551234"));
-        assert_eq!(entries[0]["extension"], serde_json::json!("220"));
+        assert_eq!(entries[0].number, "4155551234");
+        assert_eq!(entries[0].extension.as_deref(), Some("220"));
         // An unknown type falls back to the server's own default.
-        assert_eq!(entries[1]["phone_type"], serde_json::json!("other"));
-        assert_eq!(entries[1]["extension"], serde_json::Value::Null);
+        assert_eq!(entries[1].phone_type, PhoneType::Other);
+        assert_eq!(entries[1].extension, None);
     }
 
     #[test]
     fn phone_types_normalize_and_humanize() {
-        assert_eq!(normalize_phone_type("fax"), "fax");
-        assert_eq!(normalize_phone_type("pager"), "other");
-        assert_eq!(normalize_phone_type(""), "other");
+        assert_eq!(normalize_phone_type("fax"), PhoneType::Fax);
+        assert_eq!(normalize_phone_type("pager"), PhoneType::Other);
+        assert_eq!(normalize_phone_type(""), PhoneType::Other);
         assert_eq!(humanize_phone_type("mobile"), "Mobile");
         // Unknown values pass through rather than vanishing.
         assert_eq!(humanize_phone_type("pager"), "pager");
@@ -6800,26 +7470,47 @@ mod contact_child_row_tests {
 
     #[test]
     fn company_entries_promote_exactly_one_primary() {
+        let acme = uuid::Uuid::nil();
+        let globex = uuid::Uuid::max();
         let rows = [
             CompanyRow {
-                company_id: "a".to_string(),
+                company_id: acme.to_string(),
                 company_name: "Acme".to_string(),
                 title: "  ".to_string(),
                 is_primary: false,
             },
             CompanyRow {
-                company_id: "b".to_string(),
+                company_id: globex.to_string(),
                 company_name: "Globex".to_string(),
                 title: "Consultant".to_string(),
                 is_primary: true,
             },
         ];
-        let entries = company_link_entries(&rows);
-        assert_eq!(entries[0]["is_primary"], serde_json::json!(false));
-        assert_eq!(entries[0]["title"], serde_json::Value::Null);
-        assert_eq!(entries[1]["is_primary"], serde_json::json!(true));
-        assert_eq!(entries[1]["title"], serde_json::json!("Consultant"));
-        assert!(company_link_entries(&[]).is_empty());
+        let entries = company_link_entries(&rows).expect("both ids are uuids");
+        assert_eq!(entries[0].company_id, acme);
+        assert!(!entries[0].is_primary);
+        assert_eq!(entries[0].title, None);
+        assert!(entries[1].is_primary);
+        assert_eq!(entries[1].title.as_deref(), Some("Consultant"));
+        assert!(company_link_entries(&[]).expect("no rows").is_empty());
+    }
+
+    /// MAPPS-687: `ContactCompanyLinkInput::company_id` is a `Uuid`, so a row
+    /// that does not carry one is refused here rather than sent as a string
+    /// the server has to reject.
+    #[test]
+    fn a_company_row_that_is_not_a_uuid_is_refused() {
+        let rows = [CompanyRow {
+            company_id: "not-a-uuid".to_string(),
+            company_name: "Globex".to_string(),
+            title: String::new(),
+            is_primary: true,
+        }];
+        let message = company_link_entries(&rows).expect_err("refused");
+        assert!(
+            message.contains("Globex"),
+            "the message names the row it is about: {message}"
+        );
     }
 
     /// The list Phone cell names the type, and the Company cell counts the
@@ -6910,34 +7601,48 @@ mod contact_child_row_tests {
 mod contact_round_trip_tests {
     use super::{
         company_link_entries, company_rows_from_remote, phone_rows_from_remote,
-        validate_phone_rows, CompanyRow, PhoneRow, RemoteCompanyLink, RemotePhone,
+        validate_phone_rows, CompanyRow, ContactCompanyLinkBody, ContactPhoneBody, PhoneRow,
+        RemoteCompanyLink, RemotePhone,
     };
 
     /// Turn the request entries back into the response shape the server sends
     /// for the same contact, so the reload starts from real wire values.
-    fn echo_phones(entries: &[serde_json::Value]) -> Vec<RemotePhone> {
+    ///
+    /// MAPPS-687: routed through the entry's own `Serialize`, so the round trip
+    /// also pins that the keys the body writes are the keys the read structs
+    /// look for.
+    fn echo_phones(entries: &[ContactPhoneBody]) -> Vec<RemotePhone> {
         entries
             .iter()
-            .map(|e| RemotePhone {
-                phone_type: e["phone_type"].as_str().unwrap_or_default().to_string(),
-                number: e["number"].as_str().unwrap_or_default().to_string(),
-                extension: e["extension"].as_str().map(str::to_string),
-                is_primary: e["is_primary"].as_bool().unwrap_or_default(),
+            .map(|entry| {
+                let e = serde_json::to_value(entry).expect("the phone entry serializes");
+                RemotePhone {
+                    phone_type: e["phone_type"].as_str().unwrap_or_default().to_string(),
+                    number: e["number"].as_str().unwrap_or_default().to_string(),
+                    extension: e["extension"].as_str().map(str::to_string),
+                    is_primary: e["is_primary"].as_bool().unwrap_or_default(),
+                }
             })
             .collect()
     }
 
-    fn echo_companies(entries: &[serde_json::Value], names: &[&str]) -> Vec<RemoteCompanyLink> {
+    fn echo_companies(
+        entries: &[ContactCompanyLinkBody],
+        names: &[&str],
+    ) -> Vec<RemoteCompanyLink> {
         entries
             .iter()
             .zip(names)
-            .map(|(e, name)| RemoteCompanyLink {
-                company_id: e["company_id"]
-                    .as_str()
-                    .and_then(|id| uuid::Uuid::parse_str(id).ok()),
-                company_name: Some((*name).to_string()),
-                title: e["title"].as_str().map(str::to_string),
-                is_primary: e["is_primary"].as_bool().unwrap_or_default(),
+            .map(|(entry, name)| {
+                let e = serde_json::to_value(entry).expect("the company entry serializes");
+                RemoteCompanyLink {
+                    company_id: e["company_id"]
+                        .as_str()
+                        .and_then(|id| uuid::Uuid::parse_str(id).ok()),
+                    company_name: Some((*name).to_string()),
+                    title: e["title"].as_str().map(str::to_string),
+                    is_primary: e["is_primary"].as_bool().unwrap_or_default(),
+                }
             })
             .collect()
     }
@@ -6985,7 +7690,7 @@ mod contact_round_trip_tests {
         ];
 
         let phone_entries = validate_phone_rows(&saved_phones).expect("valid");
-        let company_entries = company_link_entries(&saved_companies);
+        let company_entries = company_link_entries(&saved_companies).expect("valid");
         assert_eq!(phone_entries.len(), 3);
         assert_eq!(company_entries.len(), 2);
 
@@ -7249,7 +7954,7 @@ mod delete_dialog_tests {
     fn a_blocked_delete_offers_archiving_in_place() {
         let code = code_only();
         assert!(
-            code.contains(r#""status": "inactive""#),
+            code.contains("status: Some(CompanyStatus::Inactive),"),
             "the alternative performs the archive itself"
         );
         assert!(
@@ -7373,18 +8078,23 @@ mod mapps614_notes_as_markdown_tests {
     /// success toast and find the old text still on the record.
     #[test]
     fn an_emptied_note_clears_the_record_rather_than_being_ignored() {
-        assert_eq!(clearable_string(""), serde_json::json!(""));
-        assert_eq!(clearable_string("   "), serde_json::json!(""));
-        assert!(
-            optional_string("").is_null(),
+        assert_eq!(clearable_string(""), "");
+        assert_eq!(clearable_string("   "), "");
+        assert_eq!(
+            optional_string(""),
+            None,
             "the contrast is the point: the general helper sends null, which \
              the server reads as no change"
         );
         // A real value is trimmed and sent as itself, so nothing else changes.
+        assert_eq!(clearable_string("  Renews in March.  "), "Renews in March.");
+        // MAPPS-687: and the two still land as the JSON they always did, which
+        // is the fact the body structs must not have changed.
         assert_eq!(
-            clearable_string("  Renews in March.  "),
-            serde_json::json!("Renews in March.")
+            serde_json::to_value(clearable_string("")).unwrap(),
+            serde_json::json!("")
         );
+        assert!(serde_json::to_value(optional_string("")).unwrap().is_null());
     }
 
     /// Both records edit the note in the shared editor, so the toolbar, the
@@ -7442,14 +8152,977 @@ mod mapps614_notes_as_markdown_tests {
     fn neither_form_sends_the_note_as_a_null() {
         let code = code_only();
         assert_eq!(
-            code.matches("\"notes\": clearable_string(&notes.read()),")
+            code.matches("notes: clearable_string(&notes.read()),")
                 .count(),
             2,
             "the company body and the contact body"
         );
         assert!(
-            !code.contains("\"notes\": optional_string("),
+            !code.contains("notes: optional_string("),
             "optional_string would send null for an emptied field"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mapps568_contact_notes_tests {
+    use super::*;
+
+    const SRC: &str = include_str!("contacts.rs");
+
+    /// The shipping code with runs of whitespace collapsed, excluding this
+    /// module: every assertion quotes the pattern it looks for, so a scan
+    /// including its own source would match itself and pass regardless.
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod mapps568_contact_notes_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    fn note(seconds: i64, author: &str, from_contact: bool) -> ContactNote {
+        ContactNote {
+            id: uuid::Uuid::from_u128(seconds as u128 + 1),
+            content: format!("note at {seconds}"),
+            created_by_name: author.to_string(),
+            created_by_contact_id: from_contact.then(|| uuid::Uuid::from_u128(99)),
+            created_at: chrono::DateTime::from_timestamp(seconds, 0)
+                .expect("a valid test timestamp"),
+        }
+    }
+
+    /// Newest first, whatever order the pages arrived in. The feed is a
+    /// conversation history, and a history that opens on the oldest line makes
+    /// the reader scroll to find out what happened last.
+    #[test]
+    fn notes_render_newest_first() {
+        let rows = vec![
+            note(200, "Middle", true),
+            note(100, "Oldest", true),
+            note(300, "Newest", true),
+        ];
+        let sorted = notes_newest_first(rows);
+        let names: Vec<&str> = sorted
+            .iter()
+            .map(|n| n.created_by_name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["Newest", "Middle", "Oldest"]);
+    }
+
+    /// Each row says whether the customer or an agent wrote it, taken from the
+    /// field the server sets rather than from comparing display names.
+    #[test]
+    fn each_note_is_labelled_customer_or_agent() {
+        assert_eq!(note_origin_label(&note(1, "Dana Reed", true)), "Customer");
+        assert_eq!(note_origin_label(&note(1, "Sam Agent", false)), "Agent");
+    }
+
+    /// A note whose `created_by_name` came back empty still names something, so
+    /// no row renders a blank byline next to its badge.
+    #[test]
+    fn a_nameless_note_falls_back_to_its_origin() {
+        assert_eq!(note_author_name(&note(1, "Dana Reed", true)), "Dana Reed");
+        assert_eq!(note_author_name(&note(1, "  ", true)), "Customer");
+        assert_eq!(note_author_name(&note(1, "", false)), "Agent");
+    }
+
+    /// The card is fed by the contact-scoped feed, through the paging helper,
+    /// and it is mounted on the detail page. Without the mount the component
+    /// compiles and renders nowhere.
+    #[test]
+    fn the_detail_page_reads_the_contact_notes_endpoint() {
+        let code = code_only();
+        assert!(
+            code.contains("get_all_authed::<ContactNote>"),
+            "the whole feed is read through the paging helper"
+        );
+        assert!(
+            code.contains("\"/contacts/{id}/notes\""),
+            "the contact-scoped notes path, not the ticket one"
+        );
+        assert!(
+            code.contains("ContactNotesCard { notes_resource }"),
+            "the card is mounted on ContactDetailPage"
+        );
+    }
+
+    /// A failed read says so. `.ok()` here would render a server error as an
+    /// empty history, which reads to an agent as "this contact has said
+    /// nothing" - a different and unfalsifiable claim.
+    #[test]
+    fn a_failed_read_is_reported_and_not_flattened_into_emptiness() {
+        let code = code_only();
+        let start = code
+            .find("get_all_authed::<ContactNote>")
+            .expect("the notes read is in this file");
+        let window: String = code[start..].chars().take(160).collect();
+        assert!(
+            !window.contains(".ok()"),
+            "the notes resource keeps its Result: {window}"
+        );
+        assert!(
+            code.contains("\"Could not load notes for this contact: {err}\""),
+            "the failure renders the server's reason inline"
+        );
+        assert!(
+            code.contains("\"No notes from this contact's tickets yet.\""),
+            "an empty feed has its own wording, distinct from the error"
+        );
+    }
+
+    /// Read-only, as the endpoint is: a note belongs to a ticket, and the
+    /// server offers no `POST /contacts/{id}/notes`. A composer here would be
+    /// a control that cannot work.
+    #[test]
+    fn the_notes_card_never_writes_a_note() {
+        let code = code_only();
+        for helper in ["post_authed", "put_authed", "patch_authed", "delete_authed"] {
+            for (idx, _) in code.match_indices(helper) {
+                let window: String = code[idx..].chars().take(200).collect();
+                assert!(
+                    !window.contains("/notes"),
+                    "{helper} must never address a notes path: {window}"
+                );
+            }
+        }
+    }
+}
+
+/// MAPPS-692: a fetch that fails says why, in the log, before the `Option` that
+/// drives the empty state replaces it.
+#[cfg(test)]
+mod mapps692_fetch_error_logging_tests {
+    const SRC: &str = include_str!("contacts.rs");
+
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod mapps692_fetch_error_logging_tests")
+            .expect("this module is part of this file");
+        SRC[..end]
+            .lines()
+            .map(|l| match l.find("//") {
+                Some(i) => &l[..i],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// The guard, so the pattern cannot come back one resource at a time. A
+    /// `.ok()` applied straight to an awaited fetch throws the server's reason
+    /// away at the same statement that decides what the card renders: a 401, a
+    /// 500 and a decode mismatch all arrive as the same `None` with nothing in
+    /// the console to separate them.
+    #[test]
+    fn no_awaited_fetch_result_is_discarded_without_logging() {
+        let code = code_only();
+        let mut offenders = Vec::new();
+        let mut cursor = 0;
+        while let Some(found) = code[cursor..].find(".ok()") {
+            let at = cursor + found;
+            cursor = at + ".ok()".len();
+            // Only an `.ok()` in the same statement as an `.await` is in
+            // scope; `parse().ok()` and friends carry no server reason to
+            // report, and their nearest `.await` is far away.
+            let Some(awaited) = code[..at].rfind(".await") else {
+                continue;
+            };
+            let between = &code[awaited + ".await".len()..at];
+            if between.len() > 200 {
+                continue;
+            }
+            if !between.contains("inspect_err") {
+                offenders.push(format!(".await{between}.ok()"));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these fetches drop the error instead of logging it first: {offenders:#?}"
+        );
+    }
+
+    /// The asset-type list is the one place where the substituted value is
+    /// indistinguishable on screen from a legitimate answer: no options at all
+    /// is what a tenant with no asset types looks like too. Both outcomes are
+    /// therefore stated in the log, not just the failure.
+    #[test]
+    fn the_asset_type_read_separates_a_failure_from_an_empty_tenant() {
+        let code = code_only();
+        let at = code
+            .find("get_all_authed::<AssetTypeOption>")
+            .expect("the asset-type read is in this file");
+        let window: String = code[at..].chars().take(600).collect();
+        assert!(
+            window.contains("tracing::error!(\"asset-type load failed"),
+            "a failed read is logged as an error: {window}"
+        );
+        assert!(
+            window.contains("types.is_empty()")
+                && window.contains("tracing::info!(\"asset-type load succeeded"),
+            "a genuinely empty list says so under its own message: {window}"
+        );
+    }
+}
+
+/// MAPPS-683: the New Contact prefill resolves its query string on the
+/// desktop too, so this covers the parse against what the router hands back.
+#[cfg(test)]
+mod prefill_tests {
+    use super::company_prefill_from;
+
+    const COMPANY: &str = "11111111-1111-4111-8111-111111111111";
+
+    #[test]
+    fn company_prefill_comes_off_the_query_the_link_carried() {
+        let p = company_prefill_from(&format!(
+            "?company_id={COMPANY}&company_name=Acme%20%26%20Co"
+        ));
+        assert_eq!(p.id, COMPANY);
+        assert_eq!(p.name, "Acme & Co");
+    }
+
+    #[test]
+    fn company_prefill_is_default_without_a_usable_id() {
+        assert_eq!(company_prefill_from(""), super::CompanyPrefill::default());
+        assert_eq!(
+            company_prefill_from("?company_id=not-a-uuid&company_name=Acme"),
+            super::CompanyPrefill::default()
+        );
+    }
+}
+
+/// MAPPS-687: the shared-DTO contract for this page's company, contact and
+/// site traffic.
+///
+/// `mokosh-types` derives `Deserialize` on the request DTOs and `Serialize` on
+/// the response DTOs, which is the server's half of the wire and the opposite
+/// of what a client needs, so neither side can cross to this one. These
+/// functions are the substitute: each destructures the shared DTO exhaustively
+/// and feeds the bindings into the struct this page actually sends or decodes,
+/// so a field added, removed, renamed or retyped on mokosh-server fails this
+/// build instead of drifting silently into a 422 in front of a user. They are
+/// never called; compiling them is the whole check. Same shape as MAPPS-627 in
+/// `src/pages/time.rs`.
+///
+/// The ticket-summary and company-industry decodes on this page are picker
+/// subsets (a key and a label) and stay ungated by the audit's own rule; see
+/// `docs/client-server-integration.md`.
+#[cfg(test)]
+mod shared_dto_tests {
+    use super::*;
+
+    #[allow(dead_code)]
+    fn create_company_request_fields_are_all_considered(
+        req: mokosh_types::contacts::CreateCompanyRequest,
+    ) {
+        let mokosh_types::contacts::CreateCompanyRequest {
+            name,
+            parent_company_id,
+            company_type,
+            status,
+            industry,
+            website,
+            phone,
+            fax,
+            address,
+            billing_address,
+            tax_id,
+            account_number,
+            account_manager_id,
+            sla_id,
+            payment_terms,
+            tax_exempt,
+            custom_fields,
+            tags,
+            notes,
+            portal_enabled,
+        } = req;
+        let _ = CompanyFormBody {
+            name: name.clone(),
+            company_type,
+            status,
+            industry,
+            website,
+            phone,
+            address: address.unwrap_or_default(),
+            // MAPPS-614: sent as a string so an emptied note clears the record.
+            notes: notes.unwrap_or_default(),
+        };
+        // The "Create this company" recovery on contact detail (MAPPS-484),
+        // which has a typed name and nothing else.
+        let _ = CreateCompanyFromNameBody { name };
+        // Deliberately not sent by this form: the company hierarchy, the fax
+        // and billing address, the tax and account identifiers, the account
+        // manager, SLA and payment terms all belong to surfaces this page does
+        // not own, `custom_fields` and `tags` have no editor anywhere yet, and
+        // `portal_enabled` is managed per contact from the Portal Access card.
+        let _ = (
+            parent_company_id,
+            fax,
+            billing_address,
+            tax_id,
+            account_number,
+            account_manager_id,
+            sla_id,
+            payment_terms,
+            tax_exempt,
+            custom_fields,
+            tags,
+            portal_enabled,
+        );
+    }
+
+    #[allow(dead_code)]
+    fn update_company_request_fields_are_all_considered(
+        req: mokosh_types::contacts::UpdateCompanyRequest,
+    ) {
+        let mokosh_types::contacts::UpdateCompanyRequest {
+            name,
+            parent_company_id,
+            company_type,
+            status,
+            industry,
+            website,
+            phone,
+            fax,
+            address,
+            billing_address,
+            tax_id,
+            account_number,
+            default_billing_contact_id,
+            default_technical_contact_id,
+            account_manager_id,
+            sla_id,
+            default_contract_id,
+            payment_terms,
+            tax_exempt,
+            custom_fields,
+            tags,
+            notes,
+            portal_enabled,
+        } = req;
+        // The form's PUT sends the whole record, the same bytes as its POST, so
+        // the fields the update DTO wraps in `Option` are unwrapped back to the
+        // create DTO's shape here.
+        let _ = CompanyFormBody {
+            name: name.unwrap_or_default(),
+            company_type: company_type.unwrap_or_default(),
+            status: status.unwrap_or_default(),
+            industry,
+            website,
+            phone,
+            address: address.unwrap_or_default(),
+            notes: notes.unwrap_or_default(),
+        };
+        // The one-field PUTs: Archive (MAPPS-575) and the billing-contact
+        // picker (MAPPS-644).
+        let _ = UpdateCompanyBody {
+            status,
+            default_billing_contact_id,
+        };
+        // Deliberately not sent, for the reasons on the create request above.
+        // `default_technical_contact_id` and `default_contract_id` have no
+        // editor on this page either; the contract default is set from billing.
+        let _ = (
+            parent_company_id,
+            fax,
+            billing_address,
+            tax_id,
+            account_number,
+            default_technical_contact_id,
+            account_manager_id,
+            sla_id,
+            default_contract_id,
+            payment_terms,
+            tax_exempt,
+            custom_fields,
+            tags,
+            portal_enabled,
+        );
+    }
+
+    #[allow(dead_code)]
+    fn company_response_fields_this_page_reads(resp: mokosh_types::contacts::CompanyResponse) {
+        let mokosh_types::contacts::CompanyResponse {
+            id,
+            name,
+            parent_company_id,
+            company_type,
+            status,
+            industry,
+            website,
+            phone,
+            address,
+            account_manager_id,
+            account_manager_name,
+            default_billing_contact_id,
+            sla_id,
+            default_contract_id,
+            contact_count,
+            site_count,
+            open_ticket_count,
+            tags,
+            notes,
+            portal_enabled,
+            created_at,
+            updated_at,
+        } = resp;
+        let _ = RemoteCompany {
+            id,
+            name: name.clone(),
+            // The list renders the tag, and an unknown one passes through
+            // rather than failing the decode, so it is held as a `String` and
+            // labelled by `humanize_company_type`.
+            company_type: company_type.as_str().to_string(),
+            status: status.as_str().to_string(),
+            account_manager_name: account_manager_name.clone(),
+            open_ticket_count,
+        };
+        let _ = CompanyEditPayload {
+            name: name.clone(),
+            company_type: company_type.as_str().to_string(),
+            status: status.as_str().to_string(),
+            industry: industry.clone(),
+            website: website.clone(),
+            phone: phone.clone(),
+            address: address.clone(),
+            notes: notes.clone(),
+        };
+        let _ = CompanyDetail {
+            name,
+            default_billing_contact_id,
+            company_type: company_type.as_str().to_string(),
+            status: status.as_str().to_string(),
+            industry,
+            website,
+            phone,
+            address,
+            account_manager_name,
+            notes,
+            contact_count,
+            site_count,
+            open_ticket_count,
+        };
+        // The id of the company the "Create this company" recovery just made.
+        let _ = CreatedCompanyRef { id };
+        // Carried by the response and not rendered here: the company hierarchy,
+        // the account manager's and SLA's ids (the joined name is what the page
+        // shows), the default contract (a billing surface), the tag list (no
+        // editor yet), the portal flag (managed per contact) and the timestamps.
+        let _ = (
+            parent_company_id,
+            account_manager_id,
+            sla_id,
+            default_contract_id,
+            tags,
+            portal_enabled,
+            created_at,
+            updated_at,
+        );
+    }
+
+    #[allow(dead_code)]
+    fn create_contact_request_fields_are_all_considered(
+        req: mokosh_types::contacts::CreateContactRequest,
+    ) {
+        let mokosh_types::contacts::CreateContactRequest {
+            company_id,
+            company_name,
+            first_name,
+            last_name,
+            email,
+            phone,
+            mobile,
+            fax,
+            title,
+            department,
+            contact_type,
+            preferred_contact_method,
+            timezone,
+            custom_fields,
+            tags,
+            notes,
+            create_portal_access,
+            phones,
+            companies,
+        } = req;
+        let _ = ContactFormBody {
+            first_name,
+            last_name,
+            email,
+            title,
+            department,
+            contact_type,
+            // Both lists are sent, built from the form's own rows. The
+            // annotations below are what pin the DTO's element types, because
+            // `ContactPhoneBody` and `ContactCompanyLinkBody` are pinned by
+            // their own functions rather than through this one.
+            phones: Vec::new(),
+            companies: Vec::new(),
+            // MAPPS-251: sent as `""` rather than null when a company is
+            // linked, so it clears a name an earlier save stored.
+            company_name: company_name.unwrap_or_default(),
+            notes: notes.unwrap_or_default(),
+        };
+        let _phones: Option<Vec<mokosh_types::contacts::ContactPhoneInput>> = phones;
+        let _companies: Option<Vec<mokosh_types::contacts::ContactCompanyLinkInput>> = companies;
+        // Deliberately not sent by this form: `company_id` is the pre-PMS-806
+        // single-company mirror and `companies` above is authoritative, the
+        // scalar `phone` / `mobile` / `fax` are the mirrors of `phones`, portal
+        // access is granted from the contact's own Portal Access card rather
+        // than at create time, and the rest has no editor on this page.
+        let _ = (
+            company_id,
+            phone,
+            mobile,
+            fax,
+            preferred_contact_method,
+            timezone,
+            custom_fields,
+            tags,
+            create_portal_access,
+        );
+    }
+
+    #[allow(dead_code)]
+    fn update_contact_request_fields_are_all_considered(
+        req: mokosh_types::contacts::UpdateContactRequest,
+    ) {
+        let mokosh_types::contacts::UpdateContactRequest {
+            company_id,
+            company_name,
+            first_name,
+            last_name,
+            email,
+            phone,
+            mobile,
+            fax,
+            title,
+            department,
+            contact_type,
+            preferred_contact_method,
+            timezone,
+            custom_fields,
+            tags,
+            notes,
+            status,
+            is_portal_user,
+            phones,
+            companies,
+        } = req;
+        // As with the company form, the PUT sends the whole record.
+        let _ = ContactFormBody {
+            first_name: first_name.unwrap_or_default(),
+            last_name: last_name.unwrap_or_default(),
+            email,
+            title,
+            department,
+            contact_type: contact_type.unwrap_or_default(),
+            // See the create request above for why these are annotated rather
+            // than fed.
+            phones: Vec::new(),
+            companies: Vec::new(),
+            company_name: company_name.unwrap_or_default(),
+            notes: notes.unwrap_or_default(),
+        };
+        let _phones: Option<Vec<mokosh_types::contacts::ContactPhoneInput>> = phones;
+        let _companies: Option<Vec<mokosh_types::contacts::ContactCompanyLinkInput>> = companies;
+        // The one-field PUTs: the company attach on company detail, the link
+        // half of "Create this company" (MAPPS-484), and the portal grant /
+        // revoke. Neither field is a double `Option` on the shared DTO, and
+        // neither control sends an explicit null, so absent is the only "leave
+        // it alone" this page needs.
+        let _ = UpdateContactBody {
+            company_id,
+            is_portal_user,
+        };
+        // Deliberately not sent, for the reasons on the create request above.
+        // `status` has no control on this page: a contact is archived from
+        // nowhere yet, and the list filter reads it rather than writing it.
+        let _ = (
+            phone,
+            mobile,
+            fax,
+            preferred_contact_method,
+            timezone,
+            custom_fields,
+            tags,
+            status,
+        );
+    }
+
+    #[allow(dead_code)]
+    fn contact_phone_input_fields_are_all_considered(
+        req: mokosh_types::contacts::ContactPhoneInput,
+    ) {
+        let mokosh_types::contacts::ContactPhoneInput {
+            phone_type,
+            number,
+            extension,
+            is_primary,
+        } = req;
+        let _ = ContactPhoneBody {
+            phone_type,
+            // The DTO's `Option` is the `validate(required)` slot that names
+            // the offending entry in a 422; a row with no number is dropped
+            // before it reaches the body.
+            number: number.unwrap_or_default(),
+            extension,
+            is_primary,
+        };
+    }
+
+    #[allow(dead_code)]
+    fn contact_company_link_input_fields_are_all_considered(
+        req: mokosh_types::contacts::ContactCompanyLinkInput,
+    ) {
+        let mokosh_types::contacts::ContactCompanyLinkInput {
+            company_id,
+            title,
+            is_primary,
+        } = req;
+        let _ = ContactCompanyLinkBody {
+            company_id,
+            title,
+            is_primary,
+        };
+    }
+
+    #[allow(dead_code)]
+    fn contact_response_fields_this_page_reads(resp: mokosh_types::contacts::ContactResponse) {
+        let mokosh_types::contacts::ContactResponse {
+            id,
+            company_id,
+            company_name,
+            first_name,
+            last_name,
+            full_name,
+            email,
+            phone,
+            mobile,
+            title,
+            department,
+            contact_type,
+            is_portal_user,
+            preferred_contact_method,
+            timezone,
+            tags,
+            notes,
+            avatar_url,
+            status,
+            phones,
+            companies,
+            created_at,
+        } = resp;
+        let _ = RemoteContact {
+            id,
+            first_name: first_name.clone(),
+            last_name: last_name.clone(),
+            company_id,
+            company_name: company_name.clone(),
+            email: email.clone(),
+            phone: phone.clone(),
+            // Widened: the DTO always carries a type, and the list holds it as
+            // a tag so an unknown one renders rather than failing the decode.
+            contact_type: Some(contact_type.as_str().to_string()),
+            phones: Vec::new(),
+            companies: Vec::new(),
+        };
+        let _ = ContactEditPayload {
+            first_name: first_name.clone(),
+            last_name: last_name.clone(),
+            email: email.clone(),
+            phone: phone.clone(),
+            mobile: mobile.clone(),
+            title: title.clone(),
+            department: department.clone(),
+            contact_type: contact_type.as_str().to_string(),
+            notes: notes.clone(),
+            company_id,
+            company_name: company_name.clone(),
+            phones: Vec::new(),
+            companies: Vec::new(),
+        };
+        let _ = ContactDetail {
+            first_name,
+            last_name,
+            email,
+            phone,
+            mobile,
+            title,
+            department,
+            contact_type: contact_type.as_str().to_string(),
+            notes,
+            is_portal_user,
+            company_id,
+            company_name,
+            phones: Vec::new(),
+            companies: Vec::new(),
+        };
+        // Carried by the response and not read here: the joined full name (the
+        // page formats its own from the two halves), the preferred method,
+        // time zone, tags and avatar have no surface on this page, `status` is
+        // read through the list's own filter, and the timestamp is unused.
+        let _ = (
+            full_name,
+            preferred_contact_method,
+            timezone,
+            tags,
+            avatar_url,
+            status,
+            created_at,
+        );
+        // The two child lists above are decoded by their own structs; the
+        // annotations pin the DTO's element types for the fields.
+        let _phones: Vec<mokosh_types::contacts::ContactPhone> = phones;
+        let _companies: Vec<mokosh_types::contacts::ContactCompanyLink> = companies;
+    }
+
+    #[allow(dead_code)]
+    fn contact_phone_fields_this_page_reads(resp: mokosh_types::contacts::ContactPhone) {
+        let mokosh_types::contacts::ContactPhone {
+            id,
+            phone_type,
+            number,
+            extension,
+            is_primary,
+            sort_order,
+        } = resp;
+        let _ = RemotePhone {
+            phone_type: phone_type.as_str().to_string(),
+            number,
+            extension,
+            is_primary,
+        };
+        // The array already arrives in `sort_order`, so the page keeps the
+        // server's order rather than re-deriving it, and the row's own id is
+        // never sent back: PMS-806 replaces the list wholesale.
+        let _ = (id, sort_order);
+    }
+
+    #[allow(dead_code)]
+    fn contact_company_link_fields_this_page_reads(
+        resp: mokosh_types::contacts::ContactCompanyLink,
+    ) {
+        let mokosh_types::contacts::ContactCompanyLink {
+            company_id,
+            company_name,
+            title,
+            is_primary,
+        } = resp;
+        let _ = RemoteCompanyLink {
+            // Widened: a link always names a company, and the form drops a row
+            // whose id it cannot read rather than failing the whole decode.
+            company_id: Some(company_id),
+            company_name,
+            title,
+            is_primary,
+        };
+    }
+
+    #[allow(dead_code)]
+    fn create_site_request_fields_are_all_considered(
+        req: mokosh_types::contacts::CreateSiteRequest,
+    ) {
+        let mokosh_types::contacts::CreateSiteRequest {
+            company_id,
+            name,
+            address,
+            phone,
+            is_primary,
+            timezone,
+            notes,
+            latitude,
+            longitude,
+        } = req;
+        let _ = SiteFormBody {
+            company_id,
+            name,
+            address: address.unwrap_or_default(),
+            phone,
+            is_primary,
+            timezone,
+        };
+        // Deliberately not sent: the site modal has no note field and no map,
+        // and a null latitude/longitude would clear coordinates the server may
+        // have geocoded.
+        let _ = (notes, latitude, longitude);
+    }
+
+    #[allow(dead_code)]
+    fn update_site_request_fields_are_all_considered(
+        req: mokosh_types::contacts::UpdateSiteRequest,
+        company_id: uuid::Uuid,
+    ) {
+        let mokosh_types::contacts::UpdateSiteRequest {
+            name,
+            address,
+            phone,
+            is_primary,
+            timezone,
+            notes,
+            latitude,
+            longitude,
+        } = req;
+        // `UpdateSiteRequest` has no `company_id`; the modal sends one anyway
+        // because the same body serves its POST, and the server ignores it on
+        // the PUT. It is a parameter here rather than a binding for exactly
+        // that reason, which is also why the create request above is what pins
+        // its type.
+        let _ = SiteFormBody {
+            company_id,
+            name: name.unwrap_or_default(),
+            address: address.unwrap_or_default(),
+            phone,
+            is_primary: is_primary.unwrap_or_default(),
+            timezone,
+        };
+        let _ = (notes, latitude, longitude);
+    }
+
+    #[allow(dead_code)]
+    fn site_response_fields_this_page_reads(resp: mokosh_types::contacts::SiteResponse) {
+        let mokosh_types::contacts::SiteResponse {
+            id,
+            company_id,
+            company_name,
+            name,
+            address,
+            phone,
+            is_primary,
+            timezone,
+            created_at,
+        } = resp;
+        let _ = SiteSummary {
+            id,
+            name,
+            address,
+            is_primary,
+            phone,
+            // Widened: the DTO always carries a zone, and a server that sends
+            // none still decodes into the modal's blank field.
+            timezone: Some(timezone),
+        };
+        // The card is already scoped to one company, and the row carries no
+        // created date.
+        let _ = (company_id, company_name, created_at);
+    }
+
+    #[allow(dead_code)]
+    fn address_fields_are_all_considered(address: Address) {
+        let Address {
+            line1,
+            line2,
+            city,
+            state,
+            postal_code,
+            country,
+        } = address;
+        // The shared `Address` is what both write paths and both read paths
+        // use, so this states the six keys the form owns rather than mapping
+        // them onto a copy.
+        let _ = Address {
+            line1,
+            line2,
+            city,
+            state,
+            postal_code,
+            country,
+        };
+    }
+}
+
+/// MAPPS-687: the two facts the gate rests on, enforced rather than reviewed.
+///
+/// A source scan for the same reason the other suites on this page use one:
+/// every write here runs inside a `#[cfg(feature = "app")]` block that no host
+/// test can reach, so what is being pinned is the shape of the code rather than
+/// a rendered result.
+#[cfg(test)]
+mod shared_dto_guard_tests {
+    const SRC: &str = include_str!("contacts.rs");
+
+    /// The shipping half of this file: everything before the first test module.
+    /// Excluding the tests is the point, since they legitimately build `json!`
+    /// fixtures and name every body struct. Matched on the module, not on the
+    /// bare attribute, which also sits on a `#[cfg(test)] const` in shipping
+    /// code well above the first suite.
+    fn shipping_code() -> &'static str {
+        let end = SRC
+            .find("#[cfg(test)]\nmod ")
+            .expect("this file carries test modules");
+        &SRC[..end]
+    }
+
+    /// Nothing this page sends is a hand-built JSON literal any more. A body
+    /// built that way compiles clean against any DTO, which is the whole defect
+    /// MAPPS-685 exists to close, so its return is a failure rather than a
+    /// review note.
+    #[test]
+    fn no_request_body_is_a_json_literal() {
+        let hits: Vec<&str> = shipping_code()
+            .lines()
+            .filter(|l| l.contains("serde_json::json!"))
+            .collect();
+        assert!(
+            hits.is_empty(),
+            "a request body is being built as a JSON literal again: {hits:?}"
+        );
+    }
+
+    /// Every `*Body` struct this page declares is named by a destructuring
+    /// function, so a new write cannot be added ungated.
+    #[test]
+    fn every_body_struct_is_destructured_against_its_dto() {
+        let contract = {
+            let start = SRC
+                .find("mod shared_dto_tests {")
+                .expect("the contract module is part of this file");
+            &SRC[start..]
+        };
+        let declared: Vec<&str> = shipping_code()
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("struct "))
+            .filter_map(|l| l.split_whitespace().next())
+            .filter(|name| name.ends_with("Body"))
+            .collect();
+        assert!(
+            declared.len() >= 8,
+            "expected every request body on this page; found {declared:?}"
+        );
+        for name in declared {
+            assert!(
+                contract.contains(&format!("let _ = {name} {{")),
+                "{name} is sent but no function feeds it from a shared DTO"
+            );
+        }
+    }
+
+    /// MAPPS-701: the company read gate binds `default_billing_contact_id` off
+    /// the response rather than feeding the detail struct a literal. A
+    /// placeholder here compiles clean and silently puts the Billing Contact
+    /// card (MAPPS-644) back to reading "not set" for every company, which is
+    /// exactly the defect that survived unnoticed until the gate was written.
+    #[test]
+    fn the_company_read_gate_binds_the_billing_contact() {
+        let start = SRC
+            .find("fn company_response_fields_this_page_reads(")
+            .expect("the company read gate is part of this file");
+        let gate = &SRC[start..];
+        let end = gate
+            .find("\n    #[allow(dead_code)]")
+            .expect("another gate follows it");
+        let gate = &gate[..end];
+        assert!(
+            gate.contains("\n            default_billing_contact_id,\n"),
+            "the company read gate no longer binds default_billing_contact_id from the response"
+        );
+        assert!(
+            !gate.contains("default_billing_contact_id:"),
+            "the company read gate is feeding default_billing_contact_id a literal again"
         );
     }
 }

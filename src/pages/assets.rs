@@ -405,22 +405,23 @@ pub fn AssetListPage() -> Element {
             }
             crate::hooks::fetch::api::get_authed::<Paginated<RemoteAsset>>(&path)
                 .await
+                .inspect_err(|e| tracing::error!("asset list load failed: {e}"))
                 .ok()
         }
     });
     let types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<AssetTypeOpt>("/asset-types")
-            .await
-            .ok()
-            .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "asset type filter option",
+            crate::hooks::fetch::api::get_all_authed::<AssetTypeOpt>("/asset-types").await,
+        )
     });
     let companies_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<CompanyOpt>("/contacts/companies")
-            .await
-            .ok()
-            .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "asset company filter option",
+            crate::hooks::fetch::api::get_all_authed::<CompanyOpt>("/contacts/companies").await,
+        )
     });
 
     let snapshot = assets_resource.read_unchecked().clone();
@@ -942,10 +943,10 @@ pub fn AssetNewPage() -> Element {
 
     let types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<AssetTypeOpt>("/asset-types")
-            .await
-            .ok()
-            .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "asset type option",
+            crate::hooks::fetch::api::get_all_authed::<AssetTypeOpt>("/asset-types").await,
+        )
     });
     // PMS-352 AC3: company is now chosen via CompanyPicker (which fetches and
     // filters its own company list with an inline-create affordance), so the
@@ -1276,6 +1277,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<RemoteAsset>(&format!("/assets/{id}"))
                 .await
+                .inspect_err(|e| tracing::error!("asset detail load failed for {id}: {e}"))
                 .ok()
         }
     });
@@ -1284,12 +1286,13 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         let id = id_for_rel.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_all_authed::<RemoteRelationship>(&format!(
-                "/assets/{id}/relationships"
-            ))
-            .await
-            .ok()
-            .unwrap_or_default()
+            crate::hooks::fetch::list_or_empty(
+                "asset relationship",
+                crate::hooks::fetch::api::get_all_authed::<RemoteRelationship>(&format!(
+                    "/assets/{id}/relationships"
+                ))
+                .await,
+            )
         }
     });
     let id_for_cfg = props.id.clone();
@@ -1297,12 +1300,13 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         let id = id_for_cfg.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_all_authed::<ConfigSummary>(&format!(
-                "/assets/{id}/configuration-items"
-            ))
-            .await
-            .ok()
-            .unwrap_or_default()
+            crate::hooks::fetch::list_or_empty(
+                "asset configuration item",
+                crate::hooks::fetch::api::get_all_authed::<ConfigSummary>(&format!(
+                    "/assets/{id}/configuration-items"
+                ))
+                .await,
+            )
         }
     });
     let id_for_cred = props.id.clone();
@@ -1310,12 +1314,13 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         let id = id_for_cred.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_all_authed::<CredSummary>(&format!(
-                "/assets/{id}/credentials"
-            ))
-            .await
-            .ok()
-            .unwrap_or_default()
+            crate::hooks::fetch::list_or_empty(
+                "asset credential",
+                crate::hooks::fetch::api::get_all_authed::<CredSummary>(&format!(
+                    "/assets/{id}/credentials"
+                ))
+                .await,
+            )
         }
     });
     let id_for_audit = props.id.clone();
@@ -1349,37 +1354,40 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         let id = id_for_tickets.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<RelatedTicket>>(&format!(
-                "/tickets?asset_id={id}&per_page=50"
-            ))
-            .await
-            .ok()
-            .map(|p| p.data)
-            .unwrap_or_default()
+            crate::hooks::fetch::list_or_empty(
+                "asset related ticket",
+                crate::hooks::fetch::api::get_authed::<Paginated<RelatedTicket>>(&format!(
+                    "/tickets?asset_id={id}&per_page=50"
+                ))
+                .await
+                .map(|p| p.data),
+            )
         }
     });
     let types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<AssetTypeOpt>>("/asset-types")
-            .await
-            .ok()
-            .map(|p| p.data)
-            .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "asset type option",
+            crate::hooks::fetch::api::get_authed::<Paginated<AssetTypeOpt>>("/asset-types")
+                .await
+                .map(|p| p.data),
+        )
     });
     let companies_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOpt>>("/contacts/companies")
-            .await
-            .ok()
-            .map(|p| p.data)
-            .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "asset company option",
+            crate::hooks::fetch::api::get_authed::<Paginated<CompanyOpt>>("/contacts/companies")
+                .await
+                .map(|p| p.data),
+        )
     });
     let users_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<UserOpt>("/auth/users")
-            .await
-            .ok()
-            .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "asset user option",
+            crate::hooks::fetch::api::get_all_authed::<UserOpt>("/auth/users").await,
+        )
     });
 
     // On-demand audited reveals, keyed by item id.

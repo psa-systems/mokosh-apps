@@ -20,6 +20,7 @@ use uuid::Uuid;
 use crate::components::{
     use_page_title, AlertType, Badge, BadgeVariant, Button, ButtonVariant, Card, PageHeader,
 };
+use crate::Route;
 
 /// Polymorphic approval row as `/approvals/pending` returns it
 /// (PMS-470 widened the schema). Every field tolerates a missing key
@@ -119,6 +120,7 @@ pub fn ApprovalsPage() -> Element {
         let _v = version.read();
         crate::hooks::fetch::api::get_authed::<Vec<PendingApproval>>("/approvals/pending")
             .await
+            .inspect_err(|e| tracing::error!("approval queue load failed: {e}"))
             .ok()
     });
 
@@ -263,10 +265,12 @@ pub fn ApprovalsPage() -> Element {
                         // ticket and we have an id. The other three
                         // targets render unlinked - there are still no
                         // client routes for them.
+                        // MAPPS-632: routed `Link`, not a raw `<a href>` - the
+                        // desktop webview refuses an internal navigation.
                         let entity_chip = match (target.as_str(), entity) {
                             ("ticket", Some(t)) => rsx! {
-                                a {
-                                    href: "/tickets/{t}",
+                                Link {
+                                    to: Route::TicketDetail { id: t.to_string() },
                                     class: "text-sm text-accent hover:opacity-90 inline-flex items-baseline gap-2",
                                     {subject}
                                 }

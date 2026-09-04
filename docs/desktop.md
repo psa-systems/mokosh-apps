@@ -144,7 +144,7 @@ Everything the app needs from its host lives in `src/platform/`, split on
 | `store` | `sessionStorage` | in-process map, session-lifetime |
 | `prefs` | `localStorage` | JSON file in the config directory |
 | `config` | `window.__MOKOSH_CONFIG__` | `config.json` + `MOKOSH_*` env |
-| `location` | `window.location` | no URL; readers answer `None` |
+| `location` | `window.location` | no URL bar; readers answer `None`, except `current_query`, which answers from the router |
 | `loopback` | not used (the document redirects) | RFC 8252 listener for OIDC sign-in |
 | `dom` | `web-sys` on the document | JavaScript evaluated in the webview |
 | `log` | `console.error` | `tracing` |
@@ -152,6 +152,13 @@ Everything the app needs from its host lives in `src/platform/`, split on
 | `timer` | `gloo-timers` | `tokio::time` |
 | `tz` | `Intl.DateTimeFormat` | `iana-time-zone` |
 | `clock` | `chrono` (`wasmbind`) | `chrono` |
+
+Internal navigation goes through a router `Link` or the `Navigator`, never a raw
+`a { href: "/..." }`. The webview's navigation handler refuses every
+`dioxus://` target after the first load, and a relative `href` resolves to one,
+so a raw anchor is a dead control here while it works in a browser (MAPPS-632,
+MAPPS-683). A `Link` whose target carries a query keeps it verbatim, and
+`location::current_query` reads it back off the router.
 
 `web-sys`, `js-sys`, `gloo-net`, `gloo-timers` and `wasm-bindgen` are declared
 only under `[target.'cfg(target_arch = "wasm32")'.dependencies]`. A browser call
@@ -175,7 +182,50 @@ These behave differently on the desktop on purpose, not by omission:
 - **Exports report their path.** The browser has a download shelf; here the app
   picks the destination, so it says where the file went.
 
-## Known gaps
+## Reading from the webview
 
-- Sidebar scroll memory, modal focus return, markdown task-list toggling, and
-  live OS theme switching are inert: MAPPS-511.
+Writes into the document are one-way `eval` calls and need nothing back. Six
+behaviours needed something back, and each of them was inert here until
+MAPPS-511 (sidebar scroll memory, modal focus return, markdown task-list
+toggling, live OS theme switching) and MAPPS-699 (pasting an image into an
+editor, and the markdown editor's linked scroll panes).
+
+`dioxus::document::eval` is bidirectional, so they all go through the same
+channel rather than one mechanism each (`src/platform/dom.rs`):
+
+- **A value out of the webview** is an `async` read. `scroll_top_async` returns
+  what the script returns, and the caller awaits it from the handler it already
+  runs inside. The browser answers from the document it is already in.
+- **An event into Rust** is the injected script attaching the listener and
+  `dioxus.send`ing each occurrence, with a spawned task looping on `recv()`.
+  That carries the markdown checkbox clicks (they live inside
+  `dangerous_inner_html`, so they cannot carry a Dioxus handler), the OS
+  light/dark switch, and each image pasted into an editor
+  (`src/platform/clipboard.rs`, base64 over the channel because a JSON number
+  per byte costs about four times the transfer for a screenshot).
+- **Neither** is needed when the whole exchange fits in the webview.
+  `scroll_sync::link` is one injected script: both scroll listeners, the
+  proportional mapping and the echo guard read and write the same document the
+  script runs in, so nothing comes back to Rust at all.
+
+Focus is the exception: nothing is read. An async read of
+`document.activeElement` would resolve after the dialog had already taken
+focus, so `capture_focus` has the script park the element in the webview under
+a token and `restore` focuses whatever is parked there.
+
+The OS theme comes from the webview's own `prefers-color-scheme`, not from
+tao's `WindowEvent::ThemeChanged`. tao 0.34 emits that event on macOS and
+Windows only (`platform_impl/{macos,windows}`, verified in the vendored
+source), so a Linux window would go on ignoring theme changes; the media query
+is also exactly what the browser build listens to. The window's tao theme is
+still what resolves `Theme::System` at boot, until the listener reports.
+
+The caret is the other push (MAPPS-699). A `<textarea>`'s `selectionStart` can
+only be read asynchronously here, and every caller of
+`dom::textarea_selection` is a click handler that has to answer at once, so
+`dom::watch_textarea_selection` has the script post the selection on every
+event that can move it and the read answers from the last value reported.
+`scroll_sync::link` installs it for the split view's source pane, which is what
+lets "Sync to cursor" land on the block the caret is in rather than the first
+one. An element nobody watches still answers "the caret is at the end", so a
+toolbar transform outside the split view appends as it always did.

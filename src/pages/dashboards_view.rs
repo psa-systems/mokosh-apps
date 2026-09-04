@@ -527,8 +527,13 @@ struct ReportBucket {
 fn WidgetTicketsByStatus() -> Element {
     let report = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // A default (all-zero) report is what a quiet tenant renders too, so
+        // the failure says it is one.
         crate::hooks::fetch::api::get_authed::<DashboardReportLite>("/reports/dashboard")
             .await
+            .inspect_err(|e| {
+                tracing::error!("dashboard widget report load failed, the tile will read zero: {e}")
+            })
             .ok()
             .unwrap_or_default()
     });
@@ -566,12 +571,13 @@ fn WidgetTimeThisWeek() -> Element {
     let entries = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let week_start = monday_of_week(Utc::now().date_naive());
-        crate::hooks::fetch::api::get_all_authed::<TimeEntryLite>(&format!(
-            "/time-entries?date_from={week_start}"
-        ))
-        .await
-        .ok()
-        .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "this week's time entry",
+            crate::hooks::fetch::api::get_all_authed::<TimeEntryLite>(&format!(
+                "/time-entries?date_from={week_start}"
+            ))
+            .await,
+        )
     });
     let rows = entries.read_unchecked().clone().unwrap_or_default();
     let week_start = monday_of_week(Utc::now().date_naive());
@@ -591,8 +597,13 @@ fn WidgetTimeThisWeek() -> Element {
 fn WidgetSlaAtRisk() -> Element {
     let report = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // A default (all-zero) report is what a quiet tenant renders too, so
+        // the failure says it is one.
         crate::hooks::fetch::api::get_authed::<DashboardReportLite>("/reports/dashboard")
             .await
+            .inspect_err(|e| {
+                tracing::error!("dashboard widget report load failed, the tile will read zero: {e}")
+            })
             .ok()
             .unwrap_or_default()
     });
@@ -619,13 +630,14 @@ struct InvoiceLite {
 fn WidgetOpenInvoices() -> Element {
     let invoices = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<InvoiceLite>>(
-            "/invoices?status=sent&per_page=50",
+        crate::hooks::fetch::list_or_empty(
+            "open invoice widget row",
+            crate::hooks::fetch::api::get_authed::<Paginated<InvoiceLite>>(
+                "/invoices?status=sent&per_page=50",
+            )
+            .await
+            .map(|p| p.data),
         )
-        .await
-        .ok()
-        .map(|p| p.data)
-        .unwrap_or_default()
     });
     let rows = invoices.read_unchecked().clone().unwrap_or_default();
     let total: rust_decimal::Decimal = rows
@@ -651,13 +663,14 @@ struct AuditEntryLite {
 fn WidgetRecentAuditLog() -> Element {
     let entries = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<AuditEntryLite>>(
-            "/audit-log?page=1&per_page=5",
+        crate::hooks::fetch::list_or_empty(
+            "recent audit log widget row",
+            crate::hooks::fetch::api::get_authed::<Paginated<AuditEntryLite>>(
+                "/audit-log?page=1&per_page=5",
+            )
+            .await
+            .map(|p| p.data),
         )
-        .await
-        .ok()
-        .map(|p| p.data)
-        .unwrap_or_default()
     });
     let rows = entries.read_unchecked().clone().unwrap_or_default();
     if rows.is_empty() {

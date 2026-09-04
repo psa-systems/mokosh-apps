@@ -18,10 +18,11 @@
 use dioxus::prelude::*;
 use serde::Deserialize;
 
+use crate::components::form::submit_on_enter;
 use crate::components::{
     Button, ButtonSize, ButtonVariant, ErrorBanner, IconSize, Input, Modal, ModalSize, PlusIcon,
 };
-use crate::hooks::use_dropdown_nav;
+use crate::hooks::{use_dropdown_nav, NavRows};
 use crate::utils::url::urlencoding_minimal;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -122,7 +123,9 @@ impl CreatedContact {
 pub fn ContactPicker(props: ContactPickerProps) -> Element {
     let mut query = use_signal(String::new);
     // MAPPS-503: open / highlight state and the shared keyboard contract.
-    let mut nav = use_dropdown_nav("contact-picker");
+    // MAPPS-653: the field has to end up holding a contact, so Enter takes the
+    // first match when the user has not arrowed onto one.
+    let mut nav = use_dropdown_nav("contact-picker").enter_takes_first_match();
     let mut editing = use_signal(|| false);
     // MAPPS-276: inline-create modal state. Same shape as the
     // CompanyPicker's. `new_first`/`new_last` seed the form when opened
@@ -137,7 +140,22 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
     let mut create_error = use_signal(String::new);
 
     let company_filter = props.company_filter.clone();
-    let company_filter_for_create = props.company_filter.clone();
+    // MAPPS-694: resolve the create scope to a Copy value out here, so the
+    // create closure captures nothing but Copy state and both the Create button
+    // and the modal's Enter key can hold one. A filter that is not a UUID says
+    // so rather than silently creating an unattached contact.
+    let company_uuid_for_create = props
+        .company_filter
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .and_then(|c| {
+            uuid::Uuid::parse_str(c)
+                .inspect_err(|e| {
+                    tracing::warn!("contact picker company filter {c:?} is not a uuid: {e}")
+                })
+                .ok()
+        });
     // Read the query signal INSIDE the use_resource closure so Dioxus
     // subscribes the resource to it and re-fetches on every keystroke
     // (same pattern as the Company/Asset pickers).
@@ -213,12 +231,9 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
         _ => Vec::new(),
     };
     let loaded = matches!(&*snap, Some(Ok(_)));
-    let create_index = if allow_inline_create && loaded {
-        Some(rows.len())
-    } else {
-        None
-    };
-    let nav_len = rows.len() + usize::from(create_index.is_some());
+    // MAPPS-653: with nothing matching the typed text, the create action is
+    // row 0, which is what makes Enter on a no-match query start a new contact.
+    let list = NavRows::new(rows.len(), allow_inline_create && loaded);
     let rows_for_keys = rows.clone();
     let query_for_keys = query_text.clone();
     rsx! {
@@ -236,7 +251,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                 onkeydown: move |e: KeyboardEvent| {
                     let rows = rows_for_keys.clone();
                     let seed = query_for_keys.clone();
-                    nav.keydown(&e, nav_len, move |index| {
+                    nav.keydown(&e, list.len, move |index| {
                         match rows.get(index) {
                             Some(row) => {
                                 let name = row.display_name();
@@ -366,7 +381,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                             // into Create.
                             // MAPPS-503: it is the last navigable row, reachable
                             // by Down and committed by Enter / Tab.
-                            if let Some(index) = create_index {
+                            if let Some(index) = list.create_index {
                                 {
                                     let query_for_seed = query_text.clone();
                                     rsx! {
@@ -409,8 +424,10 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
             if allow_inline_create {
                 {
                     let mut results_resource = results;
-                    let company_filter_for_create = company_filter_for_create.clone();
-                    let on_create = move |_| {
+                    // MAPPS-694: takes `()` rather than the click event, so the
+                    // Create button and the modal's Enter key run the same
+                    // action. Every capture is Copy, so both handlers get one.
+                    let mut on_create = move |_: ()| {
                         let first = new_first.read().trim().to_string();
                         let last = new_last.read().trim().to_string();
                         if first.is_empty() || last.is_empty() {
@@ -423,7 +440,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                         creating.set(true);
                         create_error.set(String::new());
                         let email_v = new_email.read().trim().to_string();
-                        let cid = company_filter_for_create.clone();
+                        let cid = company_uuid_for_create;
                         spawn(async move {
                             #[cfg(feature = "app")]
                             {
@@ -438,10 +455,8 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                                 // scopes contacts to the picked company), so
                                 // the new contact lands attached to that
                                 // company without an extra step.
-                                if let Some(cid) = cid.filter(|c| !c.is_empty()) {
-                                    if let Ok(uuid) = uuid::Uuid::parse_str(&cid) {
-                                        body.insert("company_id".into(), serde_json::json!(uuid));
-                                    }
+                                if let Some(uuid) = cid {
+                                    body.insert("company_id".into(), serde_json::json!(uuid));
                                 }
                                 let body = serde_json::Value::Object(body);
                                 match crate::hooks::fetch::api::post_authed::<CreatedContact, _>(
@@ -494,11 +509,16 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                                 Button {
                                     variant: ButtonVariant::Primary,
                                     loading: creating(),
-                                    onclick: on_create,
+                                    onclick: move |_| on_create(()),
                                     "Create"
                                 }
                             },
-                            div { class: "space-y-3",
+                            div {
+                                class: "space-y-3",
+                                // MAPPS-694: Enter from any field in the modal
+                                // creates, so the name typed into the picker is
+                                // committed without tabbing to the button.
+                                onkeydown: submit_on_enter(move || on_create(())),
                                 if !create_error.read().is_empty() {
                                     p { class: "text-sm text-red-600 dark:text-red-400",
                                         "{create_error}"
@@ -509,6 +529,11 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                                         name: "new_contact_first",
                                         label: "First name",
                                         required: true,
+                                        // MAPPS-694: the modal opens with this
+                                        // already prefilled from the typed
+                                        // query, so it is where the caret
+                                        // belongs.
+                                        autofocus: true,
                                         value: new_first.read().clone(),
                                         oninput: move |e: FormEvent| new_first.set(e.value()),
                                     }
@@ -555,5 +580,81 @@ fn seed_create_form(query: &str, first: &mut Signal<String>, last: &mut Signal<S
     } else {
         first.set(trimmed.to_string());
         last.set(String::new());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// This file up to the test module, so a needle below cannot match itself.
+    fn component_source() -> &'static str {
+        include_str!("contact_picker.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap()
+    }
+
+    /// MAPPS-694: Enter in the create modal runs the SAME action as the Create
+    /// button, so the name typed into the picker is committed without tab
+    /// counting. What the handler does with the key is covered by
+    /// `submit_on_enter` in `form.rs`; what is decided here is that both
+    /// controls call one `on_create`, and that the handler sits on the modal
+    /// body rather than on a single field, so Enter commits from the first,
+    /// last or email field alike. The modal only exists inside a mounted
+    /// picker with a live search resource, which the host test harness cannot
+    /// render, so the wiring is asserted where it is written.
+    #[test]
+    fn the_create_button_and_enter_run_one_create_action() {
+        let src = component_source();
+        assert_eq!(
+            src.matches("on_create(())").count(),
+            2,
+            "exactly two callers: the Create button and the modal's Enter key"
+        );
+        assert!(
+            src.contains("onclick: move |_| on_create(()),"),
+            "the Create button runs it"
+        );
+        assert!(
+            src.contains("onkeydown: submit_on_enter(move || on_create(())),"),
+            "and so does Enter, through the shared handler"
+        );
+
+        let body = src
+            .find(r#"class: "space-y-3","#)
+            .expect("the modal body is the `space-y-3` div");
+        let keydown = src
+            .find("onkeydown: submit_on_enter")
+            .expect("the Enter handler is wired");
+        let email = src
+            .find(r#"name: "new_contact_email","#)
+            .expect("the modal's last field");
+        assert!(
+            body < keydown && keydown < email,
+            "the handler belongs to the modal BODY, so Enter commits from any \
+             field in it, not only the one it was attached to"
+        );
+    }
+
+    /// And the field the modal opens on is the first prefilled one, so the
+    /// caret lands on the name rather than on the dialog panel.
+    #[test]
+    fn the_prefilled_first_name_field_is_the_one_that_takes_focus() {
+        let src = component_source();
+        assert_eq!(
+            src.matches("autofocus: true,").count(),
+            1,
+            "one field takes focus, and it is the prefilled first name"
+        );
+        let field = src
+            .find(r#"name: "new_contact_first","#)
+            .expect("the modal's first field");
+        let focus = src.find("autofocus: true,").expect("it autofocuses");
+        let next = src
+            .find(r#"value: new_first.read().clone(),"#)
+            .expect("the field binds the seeded name");
+        assert!(
+            field < focus && focus < next,
+            "the autofocus belongs to new_contact_first"
+        );
     }
 }

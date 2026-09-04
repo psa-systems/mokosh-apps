@@ -52,12 +52,14 @@ default:
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width
+check: check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging
 
-# Check web/WASM compilation
+# MAPPS-682: clippy, not check, and `-D warnings`, so the browser target fails
+# on a finding instead of printing it. Mirrors check-clippy and check.yml.
+[doc("Lint the web/WASM build, failing on any warning (MAPPS-682).")]
 [group: 'check']
 check-web:
-    cargo check --target wasm32-unknown-unknown
+    cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings
 
 # MAPPS-504: check the native desktop build. `--no-default-features` drops the
 # `web` renderer so dioxus links the desktop renderer alone; `desktop` pulls in
@@ -71,6 +73,13 @@ check-desktop:
 check-theme-tokens:
     bash scripts/check-theme-tokens.sh --self-test
     bash scripts/check-theme-tokens.sh
+
+# MAPPS-659: the first-paint applier in assets/theme-init.js must read the same localStorage key src/hooks/theme.rs writes. It read `localStorage.theme` while the app wrote `mokosh_theme`, so an explicit theme choice lost the first frame on every load. --self-test first, so a guard that stopped guarding fails loudly.
+[doc("Fail if the theme applier and the app name different localStorage keys (MAPPS-659).")]
+[group: 'check']
+check-theme-storage-key:
+    bash scripts/check-theme-storage-key.sh --self-test
+    bash scripts/check-theme-storage-key.sh
 
 # MAPPS-585: keep a shared form field's value on the `value:` attribute. As a textarea CHILD it is only the default value, so every toolbar transform died on the first keystroke. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']
@@ -92,6 +101,13 @@ check-hooks-before-return:
     bash scripts/check-hooks-before-return.sh --self-test
     bash scripts/check-hooks-before-return.sh
 
+# MAPPS-695: an awaited fetch collapsed with `.ok()` threw the server's reason away at the statement that decides what the page renders, so a 401, a 500, a decode mismatch and an empty tenant all arrived as the same `None`. --self-test first, so a guard that stopped guarding fails loudly.
+[doc("Fail if an awaited fetch drops its error instead of logging it first (MAPPS-695).")]
+[group: 'check']
+check-fetch-error-logging:
+    bash scripts/check-fetch-error-logging.sh --self-test
+    bash scripts/check-fetch-error-logging.sh
+
 # MAPPS-584: keep the Markdown corrections in a cascade layer that outranks @tailwindcss/typography. In `@layer components` they lost to the plugin and shipped inert. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']
 check-prose-layer:
@@ -108,6 +124,12 @@ check-defined-colors:
 [group: 'check']
 check-runner-labels:
     bash scripts/check-runner-labels.sh
+
+# MAPPS-680: a literal parenthesis inside a Nushell `$"..."` string is a subexpression, so `(MAPPS-421)` ran as an external command and killed the publish job after the image was already pushed. `nu --ide-check` parses it clean, because the failure is at run time. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-nu-interpolation:
+    bash scripts/check-nu-interpolation.sh --self-test
+    bash scripts/check-nu-interpolation.sh
 
 # MAPPS-423: keep shared create/edit forms cancelling to the record, and keep the pointer-cursor base rule in input.css
 [group: 'check']

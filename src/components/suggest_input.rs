@@ -49,6 +49,9 @@ pub struct SuggestInputProps {
 #[component]
 pub fn SuggestInput(props: SuggestInputProps) -> Element {
     // MAPPS-503: open / highlight state and the shared keyboard contract.
+    // MAPPS-653: deliberately WITHOUT `enter_takes_first_match`. This field's
+    // value is whatever was typed and a suggestion is optional, so Enter taking
+    // an unhighlighted suggestion would overwrite the user's own text.
     let mut nav = use_dropdown_nav("suggest-input");
     // Mirror the current text for the server fetch. Read INSIDE the resource
     // closure so Dioxus subscribes the resource to keystrokes (CompanyPicker

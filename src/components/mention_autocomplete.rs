@@ -46,6 +46,9 @@ fn caret_of(target_id: &str, value: &str) -> u32 {
 
 #[component]
 pub fn MentionAutocomplete(props: MentionAutocompleteProps) -> Element {
+    // MAPPS-653: deliberately WITHOUT `enter_takes_first_match`. The popover
+    // sits over a textarea where Enter is the newline key, so it only takes a
+    // mention the user has highlighted.
     let mut nav = use_dropdown_nav("mention-ac");
     // The fragment being completed, recomputed on every input by the host.
     let active: Option<ActiveMention> = if props.people.is_empty() {

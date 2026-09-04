@@ -174,6 +174,7 @@ fn SlaPoliciesTab(tab: Signal<SlaTab>) -> Element {
         let _token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_all_authed::<SlaPolicy>("/sla/policies")
             .await
+            .inspect_err(|e| tracing::error!("SLA policy load failed: {e}"))
             .ok()
     });
 
@@ -376,9 +377,25 @@ fn PolicyFormModal(props: PolicyFormModalProps) -> Element {
     let bh_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_all_authed::<BusinessHours>("/sla/business-hours")
-            .await
-            .ok()
+        // An empty business-hours dropdown is what a tenant that has defined
+        // none looks like too, so each outcome says which it is.
+        match crate::hooks::fetch::api::get_all_authed::<BusinessHours>("/sla/business-hours").await
+        {
+            Ok(rows) => {
+                if rows.is_empty() {
+                    tracing::info!(
+                        "SLA business-hours option load succeeded and this tenant has none"
+                    );
+                }
+                Some(rows)
+            }
+            Err(e) => {
+                tracing::error!(
+                    "SLA business-hours option load failed, the dropdown will be empty: {e}"
+                );
+                None
+            }
+        }
     });
     let bh_options: Vec<(String, String)> = match &*bh_resource.read_unchecked() {
         Some(Some(rows)) => rows
@@ -551,6 +568,7 @@ fn TargetsModal(props: TargetsModalProps) -> Element {
                 let path = format!("/sla/policies/{pid}/targets");
                 crate::hooks::fetch::api::get_all_authed::<SlaTarget>(&path)
                     .await
+                    .inspect_err(|e| tracing::error!("SLA target load failed for {pid}: {e}"))
                     .ok()
             }
             #[cfg(not(feature = "app"))]
@@ -568,6 +586,11 @@ fn TargetsModal(props: TargetsModalProps) -> Element {
         {
             crate::hooks::fetch::api::get_all_authed::<TicketPriorityOption>("/tickets/priorities")
                 .await
+                .inspect_err(|e| {
+                    tracing::error!(
+                        "SLA target priority load failed, no editor row will render: {e}"
+                    )
+                })
                 .ok()
         }
         #[cfg(not(feature = "app"))]
@@ -931,6 +954,7 @@ fn BusinessHoursTab(tab: Signal<SlaTab>) -> Element {
             let _token = crate::hooks::fetch::api::current_access_token()?;
             crate::hooks::fetch::api::get_all_authed::<BusinessHours>("/sla/business-hours")
                 .await
+                .inspect_err(|e| tracing::error!("SLA business-hours load failed: {e}"))
                 .ok()
         }
         #[cfg(not(feature = "app"))]
@@ -1301,6 +1325,7 @@ fn HolidayCalendarsTab(tab: Signal<SlaTab>) -> Element {
             let _token = crate::hooks::fetch::api::current_access_token()?;
             crate::hooks::fetch::api::get_all_authed::<HolidayCalendar>("/sla/holiday-calendars")
                 .await
+                .inspect_err(|e| tracing::error!("SLA holiday calendar load failed: {e}"))
                 .ok()
         }
         #[cfg(not(feature = "app"))]

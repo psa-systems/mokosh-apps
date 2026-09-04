@@ -88,6 +88,10 @@ pub fn ContextFilterBanner(props: ContextFilterBannerProps) -> Element {
                 "/contacts/companies/{id}"
             ))
             .await
+            // Best-effort: the banner falls back to the bare filter chip.
+            .inspect_err(|e| {
+                tracing::warn!("context filter company name load failed for {id}: {e}")
+            })
             .ok()
             .map(|r| r.name)
         }
