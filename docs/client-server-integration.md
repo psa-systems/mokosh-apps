@@ -411,13 +411,17 @@ does not declare and the server ignores, so `SiteFormBody` keeps the
 field and the update destructuring function takes it as a parameter
 rather than dropping a key from a write that works.
 
-The gate found one real drift on this page. `GET /contacts/companies/{id}`
-answers `CompanyResponse`, which carries no `default_billing_contact_id`,
-so MAPPS-644's Billing Contact card has been reading `None` for every
-company since it shipped: the picker's PUT stores the value against
-`UpdateCompanyRequest` and nothing ever reads it back. There is no
-binding to feed, so the destructuring function says so where the field
-is set to `None`. The fix is a mokosh-server change and is MAPPS-701.
+The gate found one real drift on this page, and it is the clearest case
+for the pattern paying for itself. `GET /contacts/companies/{id}`
+answers `CompanyResponse`, which carried no `default_billing_contact_id`,
+so MAPPS-644's Billing Contact card read `None` for every company from
+the day it shipped: the picker's PUT stored the value against
+`UpdateCompanyRequest` and nothing ever read it back. The destructuring
+function could not bind a field the response did not have, which is what
+made a silent write-only field visible at all. mokosh-server added the
+field to `CompanyResponse` and to its `From<Company>` under PMS-993, and
+the pin bump that brought it over is what let the destructuring function
+bind it and feed the card (MAPPS-701).
 
 Every page MAPPS-685 listed is now gated; the "to gate" table it carried
 is gone with the last row in it.
