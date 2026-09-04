@@ -71,24 +71,13 @@ struct AddTeamMemberBody {
 /// Main teams roster page.
 #[component]
 pub fn TeamsPage() -> Element {
+    // MAPPS-602: every hook fires BEFORE the personal-tenant early
+    // return so the render that takes the exit does not leave the
+    // component a hook short.
     use_page_title("Teams");
     let auth = crate::hooks::use_auth();
-    let is_admin = auth.read().is_admin();
-    let is_org_tenant = auth.read().is_org_tenant();
-
-    // Personal tenant: bounce (nav should hide too but a direct URL hit
-    // deserves an honest message rather than a broken create button).
-    if !is_org_tenant {
-        return rsx! {
-            crate::components::ContentUnavailable {
-                title: "Teams".to_string(),
-            }
-        };
-    }
-
     let mut show_create = use_signal(|| false);
     let mut edit_target: Signal<Option<RemoteTeam>> = use_signal(|| None);
-
     let mut teams_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
@@ -104,6 +93,19 @@ pub fn TeamsPage() -> Element {
             None
         }
     });
+    let can_mutate = crate::hooks::use_can_mutate();
+    let is_admin = auth.read().is_admin();
+    let is_org_tenant = auth.read().is_org_tenant();
+
+    // Personal tenant: bounce (nav should hide too but a direct URL hit
+    // deserves an honest message rather than a broken create button).
+    if !is_org_tenant {
+        return rsx! {
+            crate::components::ContentUnavailable {
+                title: "Teams".to_string(),
+            }
+        };
+    }
 
     let snap = teams_resource.read_unchecked();
     let is_loading = snap.is_none();
@@ -111,7 +113,6 @@ pub fn TeamsPage() -> Element {
         Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
-    let can_mutate = crate::hooks::use_can_mutate();
 
     rsx! {
         PageHeader {

@@ -26,9 +26,10 @@ const CAP: &str = "settings:manage_company_branding";
 
 #[component]
 pub fn ContactPortalBrandingPage() -> Element {
-    if !crate::hooks::capabilities::use_capability(CAP) {
-        return rsx! { NoAccessPanel {} };
-    }
+    // MAPPS-602: every hook fires BEFORE the no-cap early return so
+    // the render that takes the exit does not leave the component a
+    // hook short.
+    let has_cap = crate::hooks::capabilities::use_capability(CAP);
     // Track the fetch outcome as `Result` (not the `.ok()`-flattened
     // `Option`) so we can tell "still loading" from "load declined".
     // If the server rejects the request for any reason we render the
@@ -46,6 +47,9 @@ pub fn ContactPortalBrandingPage() -> Element {
     let mut error: Signal<String> = use_signal(String::new);
     let mut toast: Signal<String> = use_signal(String::new);
     let mut saving = use_signal(|| false);
+    if !has_cap {
+        return rsx! { NoAccessPanel {} };
+    }
 
     let snap = resource.read_unchecked();
     let (current, defaults, effective_for_paint): (
@@ -154,10 +158,7 @@ fn NoAccessPanel() -> Element {
     let brand = crate::hooks::branding::EFFECTIVE_BRANDING.read();
     let support_email = brand.support_email.clone().filter(|s| !s.is_empty());
     let support_phone = brand.support_phone.clone().filter(|s| !s.is_empty());
-    let support_contact = brand
-        .support_contact_name
-        .clone()
-        .filter(|s| !s.is_empty());
+    let support_contact = brand.support_contact_name.clone().filter(|s| !s.is_empty());
     let has_any_contact = support_email.is_some() || support_phone.is_some();
     let contact_lead = support_contact
         .clone()

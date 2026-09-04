@@ -345,22 +345,29 @@ fn ContactDashboardBody() -> Element {
     }
 }
 
-/// Main dashboard page component
+/// Main dashboard page component. MAPPS-604: a signed-in contact sees
+/// a Company-scoped summary body, NOT the staff dashboard. Choosing
+/// which body to render happens BEFORE any hook fires (this component
+/// owns none) so MAPPS-602 (hooks-before-return guard) stays green:
+/// the two bodies live in their own components and each runs its own
+/// hooks unconditionally.
 #[component]
 pub fn DashboardPage() -> Element {
-    // MAPPS-604: a signed-in contact sees a Company-scoped summary body,
-    // NOT the staff dashboard. The branch mounts an entirely separate
-    // subtree so no staff-only fetch fires under a contact JWT (all
-    // `/reports/*` and `/time-entries` etc. would 403 on the contact
-    // plane). Staff sessions fall through to the original body below,
-    // unchanged.
     #[cfg(feature = "web")]
     if crate::hooks::fetch::api::has_contact_session()
         && crate::hooks::fetch::api::current_access_token().is_none()
     {
         return rsx! { ContactDashboardBody {} };
     }
+    rsx! { StaffDashboardBody {} }
+}
 
+/// Staff-plane dashboard body: the original DashboardPage body,
+/// promoted to its own component so DashboardPage can early-return the
+/// contact body without violating the hooks-before-return rule. Every
+/// hook here fires unconditionally on the staff plane.
+#[component]
+fn StaffDashboardBody() -> Element {
     // MAPPS-351: the dashboard report is this page's PRIMARY resource. All
     // four loads go through `use_remote_resource`, which (a) preserves a
     // failed fetch instead of swallowing it to an empty default, and (b)

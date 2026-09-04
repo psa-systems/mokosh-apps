@@ -220,22 +220,26 @@ fn timezone_options(current: &str) -> Vec<SelectOption> {
 const PREF_TIME_FORMAT: &str = "mokosh_time_format";
 const PREF_FIRST_DAY: &str = "mokosh_first_day_of_week";
 
+/// MAPPS-604: a contact-plane session sees a different profile body
+/// (fetches `/contact/auth/me`, PUTs the same route, email is
+/// read-only). Staff sessions fall through to the workspace body.
+/// The dispatch happens BEFORE any hook fires (this component owns
+/// none) so MAPPS-602 (hooks-before-return guard) stays green: the
+/// two bodies live in their own components and each runs its own
+/// hooks unconditionally.
 #[component]
 pub fn ProfilePage() -> Element {
-    // MAPPS-604: a contact-plane session sees a different profile body
-    // (fetches `/contact/auth/me`, PUTs the same route, email is
-    // read-only). Staff sessions fall through to the workspace body
-    // below, unchanged. The gate re-checks `settings:manage_own` so a
-    // contact role without the capability sees the same
-    // `PermissionRequired` splash the sidebar entry already hides
-    // behind.
     #[cfg(feature = "web")]
     if crate::hooks::fetch::api::has_contact_session()
         && crate::hooks::fetch::api::current_access_token().is_none()
     {
         return rsx! { ContactProfilePage {} };
     }
+    rsx! { StaffProfilePage {} }
+}
 
+#[component]
+fn StaffProfilePage() -> Element {
     use_page_title("Profile");
     // MAPPS-331: keep the actual `/auth/me` failure mode on the resource
     // (status + server message) instead of collapsing every fault into a
@@ -960,18 +964,11 @@ fn PreferencesCard() -> Element {
 /// entry already hides behind.
 #[component]
 fn ContactProfilePage() -> Element {
+    // MAPPS-602: every hook fires BEFORE the not-permitted early
+    // return so the render that takes the exit does not leave the
+    // component a hook short.
     use_page_title("Profile");
-
     let can_manage_own = crate::hooks::capabilities::use_capability("settings:manage_own");
-    if !can_manage_own {
-        return rsx! {
-            crate::components::PermissionRequired {
-                title: "Profile".to_string(),
-                body: "Ask your MSP to grant you the settings:manage_own capability.".to_string(),
-            }
-        };
-    }
-
     let me_resource = use_resource(|| async {
         #[cfg(feature = "web")]
         {
@@ -985,6 +982,14 @@ fn ContactProfilePage() -> Element {
             )
         }
     });
+    if !can_manage_own {
+        return rsx! {
+            crate::components::PermissionRequired {
+                title: "Profile".to_string(),
+                body: "Ask your MSP to grant you the settings:manage_own capability.".to_string(),
+            }
+        };
+    }
 
     let snap = me_resource.read_unchecked();
 

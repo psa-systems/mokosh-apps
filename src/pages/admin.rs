@@ -197,6 +197,11 @@ pub fn TenantManagementPage() -> Element {
         .and_then(|o| o.clone())
         .unwrap_or_default();
 
+    // MAPPS-357 / MAPPS-602: block create / edit writes while the
+    // server is unreachable. Hoisted above the outage early return so
+    // every hook fires unconditionally in the fixed order.
+    let can_mutate = crate::hooks::use_can_mutate();
+
     // MAPPS-351: a failed load while the server is flagged DOWN is an outage,
     // not an empty roster - show the honest unavailable state instead of an
     // empty table. A reachable no-token / 4xx keeps the inline error banner
@@ -235,9 +240,6 @@ pub fn TenantManagementPage() -> Element {
     let total_tenants_label = stat(total_tenants);
     let active_label = stat(active_count);
     let trial_label = stat(trial_count);
-    // MAPPS-357: block create / edit writes while the server is
-    // unreachable. Reactive: re-enables on reconnect.
-    let can_mutate = crate::hooks::use_can_mutate();
 
     rsx! {
         PageHeader {

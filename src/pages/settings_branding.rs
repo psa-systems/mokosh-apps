@@ -37,7 +37,22 @@ struct TenantSnippet {
 
 #[component]
 pub fn SettingsBrandingPage() -> Element {
+    // MAPPS-602: every hook fires BEFORE the not-admin early return.
+    // Otherwise the render that takes the exit leaves the component a
+    // hook short and the next render panics dioxus-core.
     let auth = crate::hooks::auth::use_auth();
+    let mut resource = use_resource(|| async {
+        let _reachable = crate::hooks::use_server_reachable();
+        crate::hooks::fetch::api::get_authed::<TenantSnippet>("/tenants/current")
+            .await
+            .ok()
+    });
+    let mut error: Signal<String> = use_signal(String::new);
+    let mut saving = use_signal(|| false);
+    // MAPPS-651 / MAPPS-648: tier-1 toggle-save signals. Hoisted above
+    // the not-admin early return with the rest of the hooks.
+    let mut toggle_saving = use_signal(|| false);
+    let mut toggle_error: Signal<String> = use_signal(String::new);
     let is_admin = auth.read().is_admin();
     if !is_admin {
         return rsx! {
@@ -47,14 +62,6 @@ pub fn SettingsBrandingPage() -> Element {
             }
         };
     }
-    let mut resource = use_resource(|| async {
-        let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_authed::<TenantSnippet>("/tenants/current")
-            .await
-            .ok()
-    });
-    let mut error: Signal<String> = use_signal(String::new);
-    let mut saving = use_signal(|| false);
 
     let snap = resource.read_unchecked();
     let current: CompanyBranding = match &*snap {
@@ -70,9 +77,9 @@ pub fn SettingsBrandingPage() -> Element {
     // pattern the branding save uses. Refetches on success so the
     // toggle re-hydrates from server state (and the toggle-off case
     // that immediately evicts every portal session gets its state
-    // reflected authoritatively).
-    let mut toggle_saving = use_signal(|| false);
-    let mut toggle_error: Signal<String> = use_signal(String::new);
+    // reflected authoritatively). `toggle_saving` + `toggle_error`
+    // hooks are declared above the not-admin early return; the closure
+    // below just captures them.
     let mut on_toggle_module = move |next: bool| {
         if toggle_saving() {
             return;
