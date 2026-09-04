@@ -78,11 +78,20 @@ git = "https://dev.a8n.run/psa-systems/mokosh-server.git"
 # `Cargo.lock` resolves to. After the server merge + a
 # `cargo update -p mokosh-types` here, the shadow types can be
 # deleted in favour of `pub use mokosh_types::...`.
-# Pinned to the server's chore/merge-main-into-contact-login scratch
-# branch head so client + server merges land in lockstep. Replace with
-# `branch = "mokosh-contact-login"` when both scratch branches merge
-# to their respective mokosh-contact-login refs.
-rev = "f97e387854404331fcf498269572ac797bf24f3b"
+# Pinned to the head of the server's own `mokosh-contact-login`, which
+# has merged server `main` and so carries both DTO sets: the
+# contact-portal + branding types this branch needs, and the fields
+# client `main` added (`CompanyResponse.default_billing_contact_id`,
+# MAPPS-701). Neither side alone compiles this client: server `main`
+# is missing `tenant_kind` and the whole contact-portal surface.
+#
+# A `rev`, not `branch = "mokosh-contact-login"`, deliberately. The
+# branch form re-resolves on every `cargo update`, so this client
+# would follow a moving server branch mid-review; the explicit rev
+# makes each catch-up a reviewed edit. Dropping the pin entirely, so
+# it follows server `main` again, is the end state once the server's
+# contact-login track merges there.
+rev = "06f0946b9230568bd056e30bcaf7f0b03b1eed25"
 
 [dependencies.dioxus]
 version = "0.7.7"

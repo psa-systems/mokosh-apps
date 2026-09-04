@@ -10132,6 +10132,7 @@ mod shared_dto_tests {
             address,
             account_manager_id,
             account_manager_name,
+            default_billing_contact_id,
             sla_id,
             default_contract_id,
             contact_count,
@@ -10169,12 +10170,7 @@ mod shared_dto_tests {
         };
         let _ = CompanyDetail {
             name,
-            // MAPPS-644 reads this, but `CompanyResponse` does not declare it
-            // at the pinned server rev, so it decodes as `None`
-            // (`#[serde(default)]`) and the billing-contact row renders empty
-            // until the pin catches up. The WRITE is unaffected:
-            // `UpdateCompanyRequest` does carry the field here.
-            default_billing_contact_id: None,
+            default_billing_contact_id,
             company_type: company_type.as_str().to_string(),
             status: status.as_str().to_string(),
             industry,
@@ -10699,25 +10695,18 @@ mod shared_dto_guard_tests {
 
     /// MAPPS-701: the company read gate binds `default_billing_contact_id` off
     /// the response rather than feeding the detail struct a literal. A
-    /// placeholder there compiles clean and silently puts the Billing Contact
+    /// placeholder here compiles clean and silently puts the Billing Contact
     /// card (MAPPS-644) back to reading "not set" for every company, which is
     /// exactly the defect that survived unnoticed until the gate was written.
     ///
-    /// It is a placeholder right now, deliberately: `CompanyResponse` does not
-    /// declare the field at the server revision this branch pins (see the
-    /// `mokosh-types` block in Cargo.toml), so there is nothing to bind and the
-    /// card reads "not set" for every company until the pin catches up. The
-    /// WRITE is unaffected - `UpdateCompanyRequest` does carry the field here.
-    ///
-    /// The tripwire stays armed, in the other direction. The read gate
-    /// destructures `CompanyResponse` exhaustively, so the moment the pin moves
-    /// to a revision that declares the field, that gate fails to compile
-    /// ("pattern does not mention field `default_billing_contact_id`") and
-    /// whoever bumps the pin has to restore the binding. What this test guards
-    /// meanwhile is that the placeholder keeps saying why it is one, rather
-    /// than settling in as the way the gate looks.
+    /// It WAS a placeholder for one commit: `CompanyResponse` did not declare
+    /// the field at the server revision this branch pinned before the server's
+    /// own merge of `main` into `mokosh-contact-login`. The exhaustive
+    /// destructuring in that gate is what forced it back the moment the pin
+    /// moved, which is the whole reason the gate destructures rather than
+    /// reading the fields it wants.
     #[test]
-    fn the_company_read_gate_explains_its_billing_contact_placeholder() {
+    fn the_company_read_gate_binds_the_billing_contact() {
         let start = SRC
             .find("fn company_response_fields_this_page_reads(")
             .expect("the company read gate is part of this file");
@@ -10726,22 +10715,13 @@ mod shared_dto_guard_tests {
             .find("\n    #[allow(dead_code)]")
             .expect("another gate follows it");
         let gate = &gate[..end];
-        if gate.contains("\n            default_billing_contact_id,\n") {
-            assert!(
-                !gate.contains("default_billing_contact_id:"),
-                "the company read gate is feeding default_billing_contact_id a literal again"
-            );
-            return;
-        }
         assert!(
-            gate.contains("default_billing_contact_id: None"),
-            "the company read gate neither binds default_billing_contact_id nor \
-             places the documented `None` placeholder"
+            gate.contains("\n            default_billing_contact_id,\n"),
+            "the company read gate no longer binds default_billing_contact_id from the response"
         );
         assert!(
-            gate.contains("does not declare it"),
-            "the default_billing_contact_id placeholder lost the note saying the \
-             pinned CompanyResponse does not carry the field"
+            !gate.contains("default_billing_contact_id:"),
+            "the company read gate is feeding default_billing_contact_id a literal again"
         );
     }
 }
