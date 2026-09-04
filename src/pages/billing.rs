@@ -5124,3 +5124,98 @@ mod derived_due_date_tests {
         assert_eq!(derived_due_date("not a date", Some(30)), None);
     }
 }
+
+#[cfg(test)]
+mod invoice_tax_tests {
+    use super::{
+        computed_tax_amount, tax_body_fields, tax_label, unset_tax_rate_label, RemoteTaxRate,
+        TaxBody,
+    };
+    use serde_json::Value;
+
+    fn rate(id: &str, name: &str, pct: &str, is_default: bool, is_active: bool) -> RemoteTaxRate {
+        RemoteTaxRate {
+            id: uuid::Uuid::parse_str(id).unwrap(),
+            name: name.to_string(),
+            rate: pct.to_string(),
+            is_default,
+            is_active,
+        }
+    }
+
+    const HST: &str = "11111111-1111-4111-8111-111111111111";
+    const GST: &str = "22222222-2222-4222-8222-222222222222";
+
+    /// The body names the rate or the override, never both (MAPPS-712): a
+    /// typed override sends `tax_amount` alone, a picked rate sends
+    /// `tax_rate_id` alone, nothing picked sends neither so the server's
+    /// default applies, and a blanked override goes back to the rate.
+    #[test]
+    fn the_body_names_a_rate_or_an_override_never_both() {
+        assert_eq!(
+            tax_body_fields(HST, None),
+            TaxBody {
+                rate_id: Value::String(HST.to_string()),
+                amount: Value::Null,
+            }
+        );
+        assert_eq!(
+            tax_body_fields(HST, Some("7.00")),
+            TaxBody {
+                rate_id: Value::Null,
+                amount: Value::String("7.00".to_string()),
+            }
+        );
+        assert_eq!(
+            tax_body_fields("", Some(" 0 ")),
+            TaxBody {
+                rate_id: Value::Null,
+                amount: Value::String("0".to_string()),
+            }
+        );
+        assert_eq!(
+            tax_body_fields("", None),
+            TaxBody {
+                rate_id: Value::Null,
+                amount: Value::Null,
+            }
+        );
+        assert_eq!(
+            tax_body_fields(HST, Some("  ")),
+            TaxBody {
+                rate_id: Value::String(HST.to_string()),
+                amount: Value::Null,
+            }
+        );
+    }
+
+    /// The preview follows the server's rule: the picked rate, else the
+    /// tenant's active default, else nothing; an inactive default is not one.
+    #[test]
+    fn the_preview_falls_back_to_the_active_default_rate() {
+        let rates = vec![
+            rate(HST, "HST", "13.0000", true, true),
+            rate(GST, "GST", "5", false, true),
+        ];
+        assert_eq!(computed_tax_amount(&rates, GST, "100"), "5");
+        assert_eq!(computed_tax_amount(&rates, "", "100.50"), "13.07");
+        assert_eq!(computed_tax_amount(&rates, "", "0"), "0");
+        assert_eq!(unset_tax_rate_label(&rates), "Default: HST (13.0000%)");
+
+        let retired = vec![rate(HST, "HST", "13", true, false)];
+        assert_eq!(computed_tax_amount(&retired, "", "100"), "");
+        assert_eq!(unset_tax_rate_label(&retired), "No tax");
+        assert_eq!(computed_tax_amount(&[], "", "100"), "");
+    }
+
+    /// The totals row prints the recorded percent without trailing zeros,
+    /// and a bare `Tax` when the invoice carries no rate.
+    #[test]
+    fn the_label_carries_the_recorded_rate() {
+        assert_eq!(tax_label(Some("13.0000")), "Tax (13%)");
+        assert_eq!(tax_label(Some("7.25")), "Tax (7.25%)");
+        assert_eq!(tax_label(Some("")), "Tax");
+        assert_eq!(tax_label(None), "Tax");
+        assert_eq!(tax_label(Some("n/a")), "Tax");
+    }
+}
