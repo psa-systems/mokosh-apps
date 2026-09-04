@@ -84,6 +84,7 @@ pub fn InvitationsPage() -> Element {
             crate::hooks::fetch::api::get_authed::<PaginatedInvitations>("/invitations")
                 .await
                 .map(|p| p.data)
+                .inspect_err(|e| tracing::error!("team roster load failed: {e}"))
                 .ok()
         }
         #[cfg(not(feature = "app"))]

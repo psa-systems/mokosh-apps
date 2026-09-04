@@ -24,9 +24,9 @@ to reproduce and nothing else in the tree records what it found.
 
 What has changed since is not tracked here, and this file is not
 updated when it does. Most of it is wrong by now. The client made no
-API calls at all on the day of the audit; 25 of the 36 files in
-`src/pages/` call an authed fetch helper today. Anything below that
-reads as present tense is 2026-05-06 present tense.
+API calls at all on the day of the audit; most pages call an authed
+fetch helper today. Anything below that reads as present tense is
+2026-05-06 present tense.
 
 Line-number citations have been removed rather than corrected
 (MAPPS-540). A `file.rs:line` pointer into a tree that has moved on by
@@ -826,7 +826,10 @@ Roughly in increasing complexity / decreasing impact:
 18. **F17** - PaymentList row interactivity.
 19. **F19** - Portal attachment zone (real input or remove).
 
-Server-dependent fixes are deliberately not on this list. They are
-in
-[`client-server-integration.md`](../client-server-integration.md)
-under "Suggested next implementation pass".
+Server-dependent fixes are deliberately not on this list. The
+implementation order they were ranked in described 2026-05-06 and has
+been retired along with the rest of the status content; for how this
+client reaches the server now, read
+[`client-server-integration.md`](../client-server-integration.md),
+and for whether an endpoint exists, mokosh-server's `CLAUDE.md` under
+"Routing model".

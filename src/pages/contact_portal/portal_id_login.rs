@@ -120,6 +120,7 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
                 let path = format!("/contact/portal/{pid}/host");
                 crate::hooks::fetch::api::get_typed::<HostHint>(&path)
                     .await
+                    .inspect_err(|e| tracing::warn!("portal host hint load failed for {pid}: {e}"))
                     .ok()
             }
             #[cfg(not(feature = "web"))]

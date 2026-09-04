@@ -241,8 +241,10 @@ pub fn AuthCallbackPage() -> Element {
                 if let Some(err) = error_msg.read().as_ref() {
                     h1 { class: "text-2xl font-semibold text-content", "Sign-in failed" }
                     p { class: "text-content", "{err}" }
-                    // MAPPS-518 URL swap: tenant login is /client/login.
-                    a { href: "/client/login", class: "text-accent underline", "Try again" }
+                    // MAPPS-632: routed `Link`, not a raw `<a href>` - the desktop
+                    // webview refuses an internal navigation, so the only way out
+                    // of a failed sign-in would silently do nothing.
+                    Link { to: Route::Login {}, class: "text-accent underline", "Try again" }
                 } else {
                     h1 { class: "text-2xl font-semibold text-content", "Signing you in…" }
                 }

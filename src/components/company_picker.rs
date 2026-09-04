@@ -15,10 +15,11 @@
 use dioxus::prelude::*;
 use serde::Deserialize;
 
+use crate::components::form::submit_on_enter;
 use crate::components::{
     Button, ButtonSize, ButtonVariant, ErrorBanner, IconSize, Input, Modal, ModalSize, PlusIcon,
 };
-use crate::hooks::use_dropdown_nav;
+use crate::hooks::{use_dropdown_nav, NavRows};
 use crate::utils::url::urlencoding_minimal;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -89,7 +90,9 @@ struct CreatedCompany {
 pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
     let mut query = use_signal(String::new);
     // MAPPS-503: open / highlight state and the shared keyboard contract.
-    let mut nav = use_dropdown_nav("company-picker");
+    // MAPPS-653: the field has to end up holding a company, so Enter takes the
+    // first match when the user has not arrowed onto one.
+    let mut nav = use_dropdown_nav("company-picker").enter_takes_first_match();
     // PMS-352: inline create-company modal state. `new_name` carries
     // whatever was typed into the picker input when the modal opened so
     // the user doesn't have to re-type the company name they were
@@ -184,12 +187,9 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
         _ => Vec::new(),
     };
     let loaded = matches!(&*snap, Some(Ok(_)));
-    let create_index = if allow_inline_create && loaded {
-        Some(rows.len())
-    } else {
-        None
-    };
-    let nav_len = rows.len() + usize::from(create_index.is_some());
+    // MAPPS-653: with nothing matching the typed text, the create action is
+    // row 0, which is what makes Enter on a no-match query start a new company.
+    let list = NavRows::new(rows.len(), allow_inline_create && loaded);
     // The button sits beside the input, so it drops by the height of the
     // label when the picker renders one.
     let create_button_class = if props.label.is_empty() {
@@ -219,7 +219,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                     onkeydown: move |e: KeyboardEvent| {
                         let rows = rows_for_keys.clone();
                         let seed = query_for_keys.clone();
-                        nav.keydown(&e, nav_len, move |index| {
+                        nav.keydown(&e, list.len, move |index| {
                             match rows.get(index) {
                                 Some(row) => {
                                     let name = row.name.clone();
@@ -354,7 +354,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                             // into Create.
                             // MAPPS-503: it is the last navigable row, reachable
                             // by Down and committed by Enter / Tab.
-                            if let Some(index) = create_index {
+                            if let Some(index) = list.create_index {
                                 {
                                     let query_for_seed = query_text.clone();
                                     rsx! {
@@ -401,7 +401,10 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                     // row's id + name so the calling form (e.g. New Ticket)
                     // lands with the new company already picked.
                     let mut results_resource = results;
-                    let on_create = move |_| {
+                    // MAPPS-694: takes `()` rather than the click event, so the
+                    // Create button and the modal's Enter key run the same
+                    // action. Every capture is Copy, so both handlers get one.
+                    let mut on_create = move |_: ()| {
                         let name_v = new_name.read().trim().to_string();
                         if name_v.is_empty() {
                             create_error.set("Enter a company name.".to_string());
@@ -467,11 +470,16 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                                 Button {
                                     variant: ButtonVariant::Primary,
                                     loading: creating(),
-                                    onclick: on_create,
+                                    onclick: move |_| on_create(()),
                                     "Create"
                                 }
                             },
-                            div { class: "space-y-3",
+                            div {
+                                class: "space-y-3",
+                                // MAPPS-694: Enter from any field in the modal
+                                // creates, so the name typed into the picker is
+                                // committed without tabbing to the button.
+                                onkeydown: submit_on_enter(move || on_create(())),
                                 if !create_error.read().is_empty() {
                                     p { class: "text-sm text-red-600 dark:text-red-400",
                                         "{create_error}"
@@ -482,6 +490,10 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                                     label: "Company name",
                                     placeholder: "Acme Corp",
                                     required: true,
+                                    // MAPPS-694: the modal opens with this
+                                    // already prefilled, so it is where the
+                                    // caret belongs.
+                                    autofocus: true,
                                     value: new_name.read().clone(),
                                     oninput: move |e: FormEvent| new_name.set(e.value()),
                                 }
@@ -494,5 +506,81 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// This file up to the test module, so a needle below cannot match itself.
+    fn component_source() -> &'static str {
+        include_str!("company_picker.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap()
+    }
+
+    /// MAPPS-694: Enter in the create modal runs the SAME action as the Create
+    /// button, so the name typed into the picker is committed without tab
+    /// counting. What the handler does with the key is covered by
+    /// `submit_on_enter` in `form.rs`; what is decided here is that both
+    /// controls call one `on_create`, and that the handler sits on the modal
+    /// body rather than on a single field, so Enter commits from anywhere in
+    /// the modal. The modal only exists inside a mounted picker with a live
+    /// search resource, which the host test harness cannot render, so the
+    /// wiring is asserted where it is written.
+    #[test]
+    fn the_create_button_and_enter_run_one_create_action() {
+        let src = component_source();
+        assert_eq!(
+            src.matches("on_create(())").count(),
+            2,
+            "exactly two callers: the Create button and the modal's Enter key"
+        );
+        assert!(
+            src.contains("onclick: move |_| on_create(()),"),
+            "the Create button runs it"
+        );
+        assert!(
+            src.contains("onkeydown: submit_on_enter(move || on_create(())),"),
+            "and so does Enter, through the shared handler"
+        );
+
+        let body = src
+            .find(r#"class: "space-y-3","#)
+            .expect("the modal body is the `space-y-3` div");
+        let keydown = src
+            .find("onkeydown: submit_on_enter")
+            .expect("the Enter handler is wired");
+        let first_field = src
+            .find(r#"name: "new_company_name","#)
+            .expect("the modal's first field");
+        assert!(
+            body < keydown && keydown < first_field,
+            "the handler belongs to the modal BODY, so Enter commits from any \
+             field in it, not only the one it was attached to"
+        );
+    }
+
+    /// And the field the modal opens on is the prefilled one, so the caret
+    /// lands on the name rather than on the dialog panel.
+    #[test]
+    fn the_prefilled_name_field_is_the_one_that_takes_focus() {
+        let src = component_source();
+        assert_eq!(
+            src.matches("autofocus: true,").count(),
+            1,
+            "one field takes focus, and it is the prefilled name"
+        );
+        let field = src
+            .find(r#"name: "new_company_name","#)
+            .expect("the modal's first field");
+        let focus = src.find("autofocus: true,").expect("it autofocuses");
+        let next = src
+            .find(r#"value: new_name.read().clone(),"#)
+            .expect("the field binds the seeded name");
+        assert!(
+            field < focus && focus < next,
+            "the autofocus belongs to new_company_name"
+        );
     }
 }

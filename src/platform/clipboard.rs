@@ -113,21 +113,91 @@ fn first_image(evt: &web_sys::ClipboardEvent) -> Option<web_sys::File> {
 async fn read_bytes(file: &web_sys::File) -> Option<Vec<u8>> {
     let buffer = wasm_bindgen_futures::JsFuture::from(file.array_buffer())
         .await
+        // A `None` here silently drops the pasted image: nothing is uploaded
+        // and nothing is said, so the reason has to reach the console.
+        .inspect_err(|e| tracing::warn!("pasted image could not be read: {e:?}"))
         .ok()?;
     // `Uint8Array::new` takes the buffer as a `JsValue`, which is what the
     // promise already resolved to; there is nothing to downcast.
     Some(js_sys::Uint8Array::new(&buffer).to_vec())
 }
 
-/// The desktop renderer runs the UI in a webview, so there is no clipboard to
-/// read from in this address space. Pasting text still works; pasting an image
-/// does nothing, the same way MAPPS-511 leaves the markdown checkboxes inert
-/// there.
+/// One pasted image, as the injected script posts it back.
+///
+/// Base64 rather than an array of bytes: a screenshot is megabytes, and a JSON
+/// number per byte would cost about four times the transfer for the same image.
+/// `FileReader` produces the standard alphabet, which is what decodes it below.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn on_paste_image(
-    _id: &str,
-    _on_file: dioxus::prelude::EventHandler<(String, String, Vec<u8>)>,
-) {
+#[derive(serde::Deserialize)]
+struct PastedImage {
+    name: String,
+    mime: String,
+    data: String,
+}
+
+/// The desktop renderer runs the UI in a webview, so there is no clipboard to
+/// read from in this address space. MAPPS-699: the script attaches the listener
+/// from inside the webview instead and `dioxus.send`s each image back over the
+/// `eval` channel, exactly as MAPPS-511 does for the markdown checkboxes; the
+/// task below decodes it and calls the same handler the browser calls.
+///
+/// Both rules in the module header hold here too, in JavaScript. The callback
+/// is still an [`EventHandler`], which is what pushes a dioxus scope before the
+/// app's code runs (MAPPS-586), and `preventDefault` is called only once an
+/// image has been found, so pasting text is left to the webview.
+///
+/// The install-once marker is the same `data-paste-listener` attribute, read
+/// through `dataset` because the listener is created in the webview and cannot
+/// be removed from here either.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn on_paste_image(id: &str, on_file: dioxus::prelude::EventHandler<(String, String, Vec<u8>)>) {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    if !crate::platform::dom::in_runtime() {
+        return;
+    }
+    let mut eval = dioxus::document::eval(&format!(
+        "const el = document.getElementById({}); \
+         if (!el) return 'missing'; \
+         if (el.dataset.pasteListener) return 'installed'; \
+         el.dataset.pasteListener = '1'; \
+         el.addEventListener('paste', (e) => {{ \
+            const items = (e.clipboardData && e.clipboardData.items) || []; \
+            let file = null; \
+            for (let i = 0; i < items.length; i++) {{ \
+               const item = items[i]; \
+               if (item.kind !== 'file' || !item.type.startsWith('image/')) continue; \
+               const candidate = item.getAsFile(); \
+               if (candidate) {{ file = candidate; break; }} \
+            }} \
+            if (!file) return; \
+            e.preventDefault(); \
+            const reader = new FileReader(); \
+            reader.onload = () => dioxus.send({{ name: file.name || 'pasted-image', mime: file.type, data: String(reader.result).split(',')[1] || '' }}); \
+            reader.onerror = () => console.error('the pasted image could not be read', reader.error); \
+            reader.readAsDataURL(file); \
+         }}); \
+         return 'installed';",
+        crate::platform::dom::js_string(id)
+    ));
+    dioxus::prelude::spawn(async move {
+        loop {
+            match eval.recv::<PastedImage>().await {
+                Ok(image) => match STANDARD.decode(&image.data) {
+                    Ok(bytes) => on_file.call((image.name, image.mime, bytes)),
+                    // Nothing else would say why: the paste was intercepted, so
+                    // the author sees neither their image nor their text.
+                    Err(e) => tracing::error!("a pasted image arrived undecodable: {e}"),
+                },
+                Err(e) => {
+                    // Pasting an image would silently do nothing again, which
+                    // reads as the feature being broken rather than absent.
+                    tracing::error!("stopped listening for pasted images: {e}");
+                    return;
+                }
+            }
+        }
+    });
 }
 
 /// MAPPS-588: the three decisions in this module that no host test can drive.
@@ -219,6 +289,65 @@ mod tests {
         assert!(
             code.contains("el.set_attribute(INSTALLED_ATTR"),
             "and must mark the element so the check above can see it"
+        );
+    }
+
+    /// MAPPS-699: the desktop half, pinned in source the way
+    /// `platform::dom::desktop_wiring_tests` pins the rest of the channel.
+    ///
+    /// It needs a webview to evaluate JavaScript in, so no host test can drive
+    /// it. What can regress is the wiring, and this went missing once already
+    /// as an empty function that said nothing about it.
+    #[test]
+    fn the_desktop_reads_the_paste_inside_the_webview() {
+        let code = code_only();
+        assert_eq!(
+            code.matches("pub fn on_paste_image(").count(),
+            2,
+            "one implementation per target, and neither is an empty body"
+        );
+        assert!(
+            code.contains("el.addEventListener('paste', (e) =>"),
+            "the desktop cannot attach a listener from Rust, so the injected \
+             script attaches it"
+        );
+        assert!(
+            code.contains("reader.readAsDataURL(file);"),
+            "and reads the image as base64, because a JSON number per byte \
+             costs about four times the transfer"
+        );
+        assert!(
+            code.contains("eval.recv::<PastedImage>().await"),
+            "a spawned task loops on the channel, the MAPPS-511 shape"
+        );
+        assert!(
+            code.contains("STANDARD.decode(&image.data)"),
+            "and decodes it back to the bytes the shared upload path takes"
+        );
+    }
+
+    /// The text-paste rule, in the desktop script as well as the browser one.
+    ///
+    /// `preventDefault` runs only after an image has been found here too.
+    /// Intercepting every paste in the webview would break pasting text into
+    /// the body, which is the far more common action.
+    #[test]
+    fn the_desktop_script_intercepts_only_an_image() {
+        let code = code_only();
+        let at_guard = code
+            .find("if (!file) return;")
+            .expect("the script looks for an image first");
+        let at_prevent = code
+            .find("e.preventDefault();")
+            .expect("and prevents the default for one");
+        assert!(
+            at_guard < at_prevent,
+            "a paste with no image must return before the default is prevented"
+        );
+        assert_eq!(
+            code.matches("e.preventDefault();").count(),
+            1,
+            "exactly one place in the script decides to intercept"
         );
     }
 }

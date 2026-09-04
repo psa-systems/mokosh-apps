@@ -42,6 +42,9 @@ pub fn ContactPortalBrandingPage() -> Element {
             "/contact/companies/self/branding",
         )
         .await
+        // The panel deliberately says nothing about the cause (see above), so
+        // the log is the only place the reason survives.
+        .inspect_err(|e| tracing::error!("contact company branding load failed: {e}"))
         .ok()
     });
     let mut error: Signal<String> = use_signal(String::new);

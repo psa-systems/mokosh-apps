@@ -46,6 +46,9 @@ pub fn use_mention_directory(enabled: bool) -> Resource<Option<Vec<Mention>>> {
             let rows =
                 crate::hooks::fetch::api::get_all_authed::<DirectoryEntry>("/auth/directory")
                     .await
+                    // Best-effort: the autocomplete offers no names and the
+                    // typed handle is submitted as written.
+                    .inspect_err(|e| tracing::warn!("mention directory load failed: {e}"))
                     .ok()?;
             Some(
                 rows.into_iter()

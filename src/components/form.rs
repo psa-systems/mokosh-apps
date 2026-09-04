@@ -87,6 +87,24 @@ pub fn clear_on_edit(
     }
 }
 
+/// MAPPS-694: Enter commits an inline-create modal.
+///
+/// Attach to the modal BODY, never to [`Input`] - MAPPS-347 keeps handlers off
+/// the shared field, and a handler on the body means Enter commits from any
+/// field in the modal rather than only the one it was wired to.
+/// `prevent_default` runs first, so the key never reaches the form the modal
+/// opened on top of. Opt-in per call site: a modal that does not attach this
+/// keeps Enter doing nothing, which is what a destructive `ConfirmDialog`
+/// wants.
+pub fn submit_on_enter(mut action: impl FnMut() + 'static) -> impl FnMut(KeyboardEvent) + 'static {
+    move |e: KeyboardEvent| {
+        if e.key() == Key::Enter {
+            e.prevent_default();
+            action();
+        }
+    }
+}
+
 /// Text input component props
 #[derive(Props, Clone, PartialEq)]
 pub struct InputProps {
@@ -166,6 +184,17 @@ pub struct InputProps {
     /// `<label for>` keeps doing the work for the common case.
     #[props(default)]
     aria_label: String,
+    /// MAPPS-694: focus this field as soon as it mounts, for a modal that
+    /// opens mid-keystroke with the value already prefilled. Default false, so
+    /// every existing call site is unchanged and nothing else in the app gains
+    /// a focus grab.
+    ///
+    /// It carries the field into the DOM twice on purpose. The HTML attribute
+    /// names the initial focus target for assistive tech, and browsers ignore
+    /// it on an element inserted after load, which is every modal field here;
+    /// the `onmounted` focus is what actually moves the caret.
+    #[props(default = false)]
+    autofocus: bool,
 }
 
 /// Text input component
@@ -196,6 +225,9 @@ pub fn Input(props: InputProps) -> Element {
     // MAPPS-582: read the field type once, out here, so the `oninput` closure
     // captures a bool rather than the prop.
     let sanitize = sanitizes(&props.r#type);
+    // MAPPS-694: same reason - the mount handler captures these, not the props.
+    let autofocus = props.autofocus;
+    let focus_name = props.name.clone();
 
     rsx! {
         div { class: "space-y-1",
@@ -232,7 +264,23 @@ pub fn Input(props: InputProps) -> Element {
                 aria_required: if props.required { "true" } else { "false" },
                 aria_label: if props.aria_label.is_empty() { None } else { Some(props.aria_label.clone()) },
                 disabled: props.disabled,
+                autofocus: autofocus,
                 "data-testid": props.data_testid.as_deref(),
+                // MAPPS-694: the focus a dynamically-inserted field actually
+                // gets. Same mechanism the modal panel uses to take focus on
+                // mount (`modal.rs`), so the field wins the race by mounting
+                // after the panel that would otherwise keep it.
+                onmounted: move |e: MountedEvent| {
+                    if !autofocus {
+                        return;
+                    }
+                    let name = focus_name.clone();
+                    spawn(async move {
+                        if let Err(err) = e.set_focus(true).await {
+                            tracing::warn!("could not focus {name}: {err}");
+                        }
+                    });
+                },
                 oninput: move |e: FormEvent| {
                     props.oninput.call(if sanitize { sanitized(e) } else { e })
                 },
@@ -799,6 +847,9 @@ pub fn SearchInput(props: SearchInputProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dioxus::events::HasKeyboardData;
+    use dioxus::prelude::{Code, Location, Modifiers, ModifiersInteraction};
+    use std::cell::Cell;
 
     /// The shape a browser hands `oninput`: a value plus the form's named
     /// values. Enough to drive [`sanitized`] end to end.
@@ -948,6 +999,150 @@ mod tests {
             src.matches("props.oninput.call(sanitized(e))").count(),
             2,
             "Textarea and SearchInput must both sanitize"
+        );
+    }
+
+    // -- MAPPS-694: the inline-create modal keyboard path ------------------
+
+    /// A keydown as the browser delivers one, so [`submit_on_enter`] is driven
+    /// rather than read.
+    struct StubKey(Key);
+
+    impl ModifiersInteraction for StubKey {
+        fn modifiers(&self) -> Modifiers {
+            Modifiers::empty()
+        }
+    }
+
+    impl HasKeyboardData for StubKey {
+        fn key(&self) -> Key {
+            self.0.clone()
+        }
+
+        fn code(&self) -> Code {
+            Code::Unidentified
+        }
+
+        fn location(&self) -> Location {
+            Location::Standard
+        }
+
+        fn is_auto_repeating(&self) -> bool {
+            false
+        }
+
+        fn is_composing(&self) -> bool {
+            false
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    fn keydown(key: Key) -> KeyboardEvent {
+        KeyboardEvent::new(Rc::new(KeyboardData::new(StubKey(key))), true)
+    }
+
+    /// Counts the create action, so a handler can be checked for having run it
+    /// exactly once.
+    fn counting_handler() -> (Rc<Cell<usize>>, impl FnMut(KeyboardEvent)) {
+        let runs = Rc::new(Cell::new(0usize));
+        let counter = runs.clone();
+        (
+            runs,
+            submit_on_enter(move || counter.set(counter.get() + 1)),
+        )
+    }
+
+    /// MAPPS-694: Enter in an inline-create modal runs the create action, and
+    /// the key stops there. Without the `prevent_default` the same Enter is
+    /// also the implicit submit of the form the modal opened on top of, so one
+    /// keystroke would create the company AND submit the half-filled ticket
+    /// behind it.
+    #[test]
+    fn enter_runs_the_action_and_never_reaches_the_form_behind() {
+        let (runs, mut handler) = counting_handler();
+        let e = keydown(Key::Enter);
+        handler(e.clone());
+
+        assert_eq!(runs.get(), 1, "Enter runs the create action");
+        assert!(
+            !e.default_action_enabled(),
+            "and is consumed, so it does not submit the form behind the modal"
+        );
+    }
+
+    /// Every other key is left exactly as it was. Escape matters most: the
+    /// modal's own cancel is `ModalChrome`'s `onkeydown`, and it only still
+    /// works because this handler neither runs the create nor consumes the key.
+    #[test]
+    fn every_other_key_is_left_alone() {
+        for key in [
+            Key::Escape,
+            Key::Tab,
+            Key::ArrowDown,
+            Key::Character(" ".to_string()),
+            Key::Character("a".to_string()),
+        ] {
+            let (runs, mut handler) = counting_handler();
+            let e = keydown(key.clone());
+            handler(e.clone());
+
+            assert_eq!(runs.get(), 0, "{key:?} must not create anything");
+            assert!(
+                e.default_action_enabled(),
+                "{key:?} must keep its default action"
+            );
+        }
+    }
+
+    fn render(app: fn() -> Element) -> String {
+        let mut dom = VirtualDom::new(app);
+        dom.rebuild_in_place();
+        dioxus_ssr::render(&dom)
+    }
+
+    #[component]
+    fn FocusedField() -> Element {
+        rsx! {
+            Input { name: "new_company_name", label: "Company name", autofocus: true }
+        }
+    }
+
+    #[component]
+    fn PlainField() -> Element {
+        rsx! {
+            Input { name: "company_search", label: "Company" }
+        }
+    }
+
+    /// MAPPS-694: the field a modal opens on says so in the markup, and every
+    /// other field in the app is unchanged because the prop defaults off.
+    #[test]
+    fn autofocus_marks_only_the_field_that_asked_for_it() {
+        let focused = render(FocusedField);
+        assert!(
+            focused.contains("autofocus"),
+            "an autofocus field names itself as the initial focus target; got: {focused}"
+        );
+
+        let plain = render(PlainField);
+        assert!(
+            !plain.contains("autofocus"),
+            "and the default is off, so no other field grabs focus; got: {plain}"
+        );
+    }
+
+    /// The attribute alone does nothing here: a browser ignores `autofocus` on
+    /// an element inserted after load, which is every field in a modal. The
+    /// focus that actually moves the caret happens on mount.
+    #[test]
+    fn autofocus_moves_the_caret_on_mount() {
+        let src = component_source();
+        assert!(
+            src.contains("e.set_focus(true).await"),
+            "Input must focus the field when it mounts, not only mark it"
         );
     }
 }

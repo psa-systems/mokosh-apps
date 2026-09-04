@@ -27,11 +27,11 @@ it", not "port everything at once":
    redirect-URI registration on the Bunyip OP, which is somebody else's change
    in somebody else's repo, and the desktop target should not wait on it.
 3. [MAPPS-511](https://niceguyit.myjetbrains.com/youtrack/issue/MAPPS-511) - the DOM-dependent UI
-   behaviours that are inert on the desktop because reading a value back out of
-   a webview is asynchronous. Sidebar scroll memory, modal focus return,
-   markdown task-list toggling, live OS theme switching. Separate because it
-   needs a second mechanism (a bidirectional `eval` channel) that nothing else
-   in the desktop target depends on.
+   behaviours: sidebar scroll memory, modal focus return, markdown task-list
+   toggling, live OS theme switching. Reading a value back out of a webview is
+   asynchronous, and a listener cannot be attached to it from Rust at all, so
+   these need a second mechanism (a bidirectional `eval` channel) that nothing
+   else in the desktop target depends on. Hence a step of its own.
 4. [MAPPS-506](https://niceguyit.myjetbrains.com/youtrack/issue/MAPPS-506) - confirm unsaved
    changes when the window is closed, the desktop counterpart to the browser's
    `beforeunload` prompt.

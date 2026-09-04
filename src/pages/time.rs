@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc, Weekday};
 use dioxus::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::components::{
     use_page_title, Badge, BadgeVariant, BannerTone, Button, ButtonSize, ButtonVariant, Card,
@@ -20,6 +20,14 @@ use mokosh_types::tickets::BillingStatus;
 /// A time entry (`GET /api/v1/time-entries`). The work-item names (ticket
 /// number/title, project name, task title) are joined server-side (PMS-332),
 /// so the list shows real names via `work_item_label` rather than bare ids.
+///
+/// MAPPS-627: deliberately narrower and more tolerant than the server's
+/// `TimeEntryResponse`. Every field is `#[serde(default)]` so a server that
+/// predates a field still decodes, and the fields the server always sends are
+/// widened to `Option` here for the same reason. That tolerance is a read-path
+/// choice, not an accident: `time_entry_response_fields_this_page_reads` in
+/// the tests below states it field by field and fails the build when the
+/// shared DTO's own shape moves underneath it.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RemoteTimeEntry {
     id: uuid::Uuid,
@@ -71,6 +79,64 @@ struct RemoteTimeEntry {
     created_at: Option<DateTime<Utc>>,
     #[serde(default)]
     updated_at: Option<DateTime<Utc>>,
+}
+
+// ============================================================================
+// Request bodies (MAPPS-627)
+//
+// The write path has no tolerance argument: a field the server no longer
+// accepts, or one whose type moved, should fail THIS build rather than reach
+// a running server as JSON it will reject or silently drop. These structs
+// stand in for `mokosh_types::time_tracking::CreateTimeEntryRequest`,
+// `UpdateTimeEntryRequest` and `RejectTimesheetRequest`, which derive only
+// `Deserialize` (they are the server's input types) and so cannot be
+// serialized here until mokosh-types derives both. The `*_fields_are_all_*`
+// functions in the tests below are what tie each one to its shared DTO: they
+// destructure the shared request exhaustively and feed the bindings into the
+// body struct, so an added, removed, renamed or retyped field is a compile
+// error. This is the shape `src/pages/login.rs` already uses (MAPPS-397).
+// ============================================================================
+
+/// `POST /api/v1/time-entries`.
+#[derive(Debug, Serialize)]
+struct CreateTimeEntryBody {
+    user_id: uuid::Uuid,
+    date: NaiveDate,
+    duration_minutes: Option<i32>,
+    work_type_id: uuid::Uuid,
+    // Omitted rather than sent as null, which is what the `json!` literal this
+    // replaced also did: the server reads their presence, so the wire bytes
+    // have to stay the same.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ticket_id: Option<uuid::Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_id: Option<uuid::Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_id: Option<uuid::Uuid>,
+    work_category: Option<String>,
+    company_id: Option<uuid::Uuid>,
+    notes: Option<String>,
+    is_billable: bool,
+}
+
+/// `PUT /api/v1/time-entries/{id}`.
+#[derive(Debug, Serialize)]
+struct UpdateTimeEntryBody {
+    date: Option<NaiveDate>,
+    duration_minutes: Option<i32>,
+    work_type_id: Option<uuid::Uuid>,
+    notes: Option<String>,
+    is_billable: Option<bool>,
+    // Sent even when null: the server direct-sets both (no COALESCE), so
+    // omitting them would not preserve the entry's work item.
+    ticket_id: Option<uuid::Uuid>,
+    project_id: Option<uuid::Uuid>,
+}
+
+/// `POST /api/v1/timesheets/{user}/{week}/reject`.
+#[derive(Debug, Serialize)]
+struct RejectTimesheetBody {
+    reason: String,
 }
 
 /// Per-key tenant setting response (`GET /settings/...`). Only `value` is
@@ -241,6 +307,7 @@ pub fn TimeEntryListPage() -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>("/time-entries")
             .await
+            .inspect_err(|e| tracing::error!("time entry list load failed: {e}"))
             .ok()
     });
     // MAPPS-166: click-to-edit a time entry via the modal below.
@@ -473,27 +540,35 @@ fn short_id(id: uuid::Uuid) -> String {
 /// links here so the work-item picker opens with that ticket preselected,
 /// instead of dropping the user into an empty form they have to re-search.
 /// Returns the `work_item` select value (`ticket:<uuid>`) or empty.
+///
+/// MAPPS-683: read off the router rather than the browser URL, so the
+/// desktop build gets the prefill the `Link` actually carried.
 fn read_ticket_prefill_from_url() -> String {
     #[cfg(feature = "app")]
     {
-        if let Some(search) = crate::platform::location::search() {
-            {
-                let params = crate::utils::url::QueryString::parse(&search);
-                let id = params.get("ticket_id").unwrap_or_default();
-                if uuid::Uuid::parse_str(&id).is_ok() {
-                    return format!("ticket:{id}");
-                }
-                // MAPPS-275: also honour `?project_id=` so the
-                // project-detail "Log Time" affordance can pre-select
-                // that project in the work-item picker. Mirrors the
-                // existing ticket prefill (the picker value is the
-                // `project:<uuid>` / `ticket:<uuid>` discriminator).
-                let pid = params.get("project_id").unwrap_or_default();
-                if uuid::Uuid::parse_str(&pid).is_ok() {
-                    return format!("project:{pid}");
-                }
-            }
+        if let Some(search) = crate::platform::location::current_query() {
+            return ticket_prefill_from(&search);
         }
+    }
+    String::new()
+}
+
+/// Pure core of [`read_ticket_prefill_from_url`], so the rule is testable
+/// without a location.
+#[cfg_attr(not(feature = "app"), allow(dead_code))]
+fn ticket_prefill_from(search: &str) -> String {
+    let params = crate::utils::url::QueryString::parse(search);
+    let id = params.get("ticket_id").unwrap_or_default();
+    if uuid::Uuid::parse_str(&id).is_ok() {
+        return format!("ticket:{id}");
+    }
+    // MAPPS-275: also honour `?project_id=` so the project-detail "Log
+    // Time" affordance can pre-select that project in the work-item
+    // picker. Mirrors the existing ticket prefill (the picker value is
+    // the `project:<uuid>` / `ticket:<uuid>` discriminator).
+    let pid = params.get("project_id").unwrap_or_default();
+    if uuid::Uuid::parse_str(&pid).is_ok() {
+        return format!("project:{pid}");
     }
     String::new()
 }
@@ -528,15 +603,21 @@ pub fn TimeEntryNewPage() -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_all_authed::<TicketOption>("/tickets")
             .await
-            .ok()
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                // Best-effort: the work-item select falls back to whatever
+                // other source loaded, so log why the tickets are missing.
+                tracing::warn!("ticket option load failed: {e}");
+                Vec::new()
+            })
     });
     let projects_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_all_authed::<ProjectPick>("/projects")
             .await
-            .ok()
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                tracing::warn!("project option load failed: {e}");
+                Vec::new()
+            })
     });
     let work_types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -561,8 +642,12 @@ pub fn TimeEntryNewPage() -> Element {
                     "/projects/{pid}/tasks"
                 ))
                 .await
-                .ok()
-                .unwrap_or_default()
+                .unwrap_or_else(|e| {
+                    // Best-effort: the task select is optional, but an empty
+                    // one must not look like a project with no tasks.
+                    tracing::warn!("task load failed for project {pid}: {e}");
+                    Vec::new()
+                })
             } else {
                 Vec::new()
             }
@@ -587,7 +672,17 @@ pub fn TimeEntryNewPage() -> Element {
                     .filter(|h| (1..=24).contains(h))
                     .map(|h| h * 60)
                     .unwrap_or(DEFAULT_MAX_MINUTES_PER_DAY),
-                Err(_) => DEFAULT_MAX_MINUTES_PER_DAY,
+                // A 404 is the documented "cap not configured" case, so it
+                // stays at debug; anything else is a real settings failure
+                // and the 24h fallback hides it unless it is logged.
+                Err(e) if e.status_code() == Some(404) => {
+                    tracing::debug!("no per-day cap configured, using the 24h default: {e}");
+                    DEFAULT_MAX_MINUTES_PER_DAY
+                }
+                Err(e) => {
+                    tracing::warn!("per-day cap load failed, using the 24h default: {e}");
+                    DEFAULT_MAX_MINUTES_PER_DAY
+                }
             }
         }
         #[cfg(not(feature = "app"))]
@@ -607,10 +702,18 @@ pub fn TimeEntryNewPage() -> Element {
         // to 100 by the server, so a busy day undercounted its own total and
         // the cap check silently passed.
         let path = format!("/time-entries?user_id={user_id}&date_from={today}&date_to={today}");
-        crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>(&path)
-            .await
-            .ok()
-            .map(|rows| rows.iter().map(|e| e.duration_minutes).sum::<i64>())
+        match crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>(&path).await {
+            Ok(rows) => Some(rows.iter().map(|e| e.duration_minutes).sum::<i64>()),
+            Err(e) => {
+                // `None` here is also what "still loading" looks like, so the
+                // log is the only thing that says the cap pre-flight was
+                // skipped because the read failed rather than not finishing.
+                tracing::error!(
+                    "today's logged total failed to load, skipping the per-day cap pre-flight: {e}"
+                );
+                None
+            }
+        }
     });
 
     let tickets = tickets_resource
@@ -799,7 +902,7 @@ pub fn TimeEntryNewPage() -> Element {
                         } else if let Some(tid) = wi.strip_prefix("ticket:") {
                             match tickets_for_submit.iter().find(|t| t.id.to_string() == tid) {
                                 Some(t) => {
-                                    (Some(tid.to_string()), None, None, Some(t.company_id), "ticketed")
+                                    (Some(t.id), None, None, Some(t.company_id), "ticketed")
                                 }
                                 None => {
                                     error.set("Could not resolve the ticket.".to_string());
@@ -810,9 +913,28 @@ pub fn TimeEntryNewPage() -> Element {
                             match projects_for_submit.iter().find(|p| p.id.to_string() == pid) {
                                 Some(p) => match p.company_id {
                                     Some(cid) => {
-                                        let tk = task.read().clone();
-                                        let tk = if tk.is_empty() { None } else { Some(tk) };
-                                        (None, Some(pid.to_string()), tk, Some(cid), "project")
+                                        // MAPPS-627: the picker's values are
+                                        // `TaskPick::id`, so an unparseable one
+                                        // is a bug here, not bad user input.
+                                        // Say so rather than posting a string
+                                        // the server will reject.
+                                        let tk = task.read().trim().to_string();
+                                        let tk = if tk.is_empty() {
+                                            None
+                                        } else {
+                                            match uuid::Uuid::parse_str(&tk) {
+                                                Ok(id) => Some(id),
+                                                Err(e) => {
+                                                    tracing::error!("task option is not a uuid ({tk:?}): {e}");
+                                                    error.set(
+                                                        "Could not resolve the task; reload the page and try again."
+                                                            .to_string(),
+                                                    );
+                                                    return;
+                                                }
+                                            }
+                                        };
+                                        (None, Some(p.id), tk, Some(cid), "project")
                                     }
                                     None => {
                                         error.set(
@@ -838,44 +960,56 @@ pub fn TimeEntryNewPage() -> Element {
                             return;
                         }
                     };
+                    // MAPPS-627: the Work Type select's values are
+                    // `WorkTypeOption::id`, so this only fails when the option
+                    // list itself is wrong. The old `json!` body posted the raw
+                    // string and let the server answer 422.
+                    let work_type_id = match uuid::Uuid::parse_str(&wtid) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            tracing::error!("work-type option is not a uuid ({wtid:?}): {e}");
+                            work_type_error.set(
+                                "Pick a work type from the list; reload the page if it is empty."
+                                    .to_string(),
+                            );
+                            return;
+                        }
+                    };
                     // MAPPS-626: match the server rather than send it something
                     // it will drop. PMS-942 makes employee time non-billable
                     // whatever the request says, and General is employee time.
                     let billable = billable && !work_item_is_own_time(&wi);
-                    let date = Utc::now().date_naive().to_string();
+                    let date = Utc::now().date_naive();
+                    // Bounded to 1..=MAX_SINGLE_ENTRY_MINUTES by the parse above,
+                    // so the narrowing to the server's `i32` cannot lose a digit.
+                    let duration_minutes = duration_minutes as i32;
 
                     is_submitting.set(true);
                     spawn(async move {
                         #[cfg(feature = "app")]
                         {
-                            let mut body = serde_json::json!({
-                                "user_id": user_id,
-                                "date": date,
-                                "duration_minutes": duration_minutes,
-                                "work_type_id": wtid,
-                                // MAPPS-626: null on a tenant with no internal
-                                // company. PMS-942 made that a legal employee
-                                // entry rather than a 400.
-                                "company_id": company_id,
+                            let body = CreateTimeEntryBody {
+                                user_id,
+                                date,
+                                duration_minutes: Some(duration_minutes),
+                                work_type_id,
+                                ticket_id,
+                                project_id,
+                                task_id,
                                 // MAPPS-243 / PMS-394: classify the entry so
                                 // reports split overhead ("general") from
                                 // client-attributable work. "ticketed" with
                                 // a ticket and "project" with a project both
                                 // pass the server's derive_work_category
                                 // consistency check.
-                                "work_category": work_category,
-                                "notes": desc,
-                                "is_billable": billable,
-                            });
-                            if let Some(t) = ticket_id {
-                                body["ticket_id"] = serde_json::json!(t);
-                            }
-                            if let Some(p) = project_id {
-                                body["project_id"] = serde_json::json!(p);
-                            }
-                            if let Some(tk) = task_id {
-                                body["task_id"] = serde_json::json!(tk);
-                            }
+                                work_category: Some(work_category.to_string()),
+                                // MAPPS-626: null on a tenant with no internal
+                                // company. PMS-942 made that a legal employee
+                                // entry rather than a 400.
+                                company_id,
+                                notes: Some(desc),
+                                is_billable: billable,
+                            };
                             match crate::hooks::fetch::api::post_authed_typed::<serde_json::Value, _>(
                                 "/time-entries",
                                 &body,
@@ -1055,6 +1189,7 @@ pub fn TimesheetsPage() -> Element {
         let path = format!("/time-entries?user_id={user_id}&date_from={start}&date_to={end}");
         crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>(&path)
             .await
+            .inspect_err(|e| tracing::error!("timesheet week load failed for {user_id}: {e}"))
             .ok()
     });
 
@@ -1067,8 +1202,11 @@ pub fn TimesheetsPage() -> Element {
         // week and takes the first match, so the server's default page size
         // cannot truncate anything that would be rendered.
         let path = format!("/timesheets?user_id={user_id}&week={start}");
+        // A failed read lands on the same `None` as "this week was never
+        // submitted", which the badge renders as "Not submitted", so log it.
         crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimesheet>>(&path)
             .await
+            .map_err(|e| tracing::warn!("week approval status load failed: {e}"))
             .ok()
             .and_then(|p| p.data.into_iter().next())
     });
@@ -1078,15 +1216,20 @@ pub fn TimesheetsPage() -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_all_authed::<TicketOption>("/tickets")
             .await
-            .ok()
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                // Best-effort: rows fall back to the bare "Ticket <id>" label.
+                tracing::warn!("timesheet ticket label load failed: {e}");
+                Vec::new()
+            })
     });
     let projects_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_all_authed::<ProjectOption>("/projects")
             .await
-            .ok()
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                tracing::warn!("timesheet project label load failed: {e}");
+                Vec::new()
+            })
     });
     let tickets = tickets_resource
         .read_unchecked()
@@ -1858,6 +2001,7 @@ pub fn TimesheetApprovalsPage() -> Element {
         // to the end. The old `per_page=200` was clamped to 100.
         crate::hooks::fetch::api::get_all_authed::<ApprovalSummary>(&path)
             .await
+            .inspect_err(|e| tracing::error!("timesheet approval queue load failed: {e}"))
             .ok()
     });
 
@@ -2307,7 +2451,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                         let path = format!("/timesheets/{uid}/{week}/reject");
                         match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
                             &path,
-                            &serde_json::json!({ "reason": reason }),
+                            &RejectTimesheetBody { reason },
                         )
                         .await
                         {
@@ -2429,6 +2573,7 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
         let path = format!("/time-entries?user_id={uid}&date_from={week}&date_to={end}");
         crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>(&path)
             .await
+            .inspect_err(|e| tracing::error!("timesheet history load failed for {uid}: {e}"))
             .ok()
     });
 
@@ -2440,6 +2585,9 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
             "/settings/time_tracking/max_hours_per_day",
         )
         .await
+        // A missing setting (404) and a broken settings read both omit the
+        // line, so the log is the only thing that tells them apart.
+        .map_err(|e| tracing::warn!("history cap load failed, omitting the cap line: {e}"))
         .ok()
         .and_then(|row| row.value.as_i64())
         .filter(|h| (1..=24).contains(h))
@@ -2453,10 +2601,21 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
         let rows =
             crate::hooks::fetch::api::get_all_authed::<serde_json::Value>("/time-rounding-rules")
                 .await
+                .map_err(|e| tracing::warn!("rounding-rule load failed, omitting the rules: {e}"))
                 .ok()?;
         Some(
             rows.into_iter()
-                .filter_map(|item| serde_json::from_value::<RoundingRuleRow>(item).ok())
+                .filter_map(
+                    |item| match serde_json::from_value::<RoundingRuleRow>(item) {
+                        Ok(rule) => Some(rule),
+                        Err(e) => {
+                            // One undecodable row must not fail the list, but a
+                            // silently dropped rule is invisible in the panel.
+                            tracing::warn!("skipping an undecodable rounding rule: {e}");
+                            None
+                        }
+                    },
+                )
                 .collect::<Vec<_>>(),
         )
     });
@@ -2733,6 +2892,30 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
         let Some(duration_minutes) = duration_minutes else {
             return;
         };
+        // MAPPS-627: parse both ids into the shapes the server's
+        // `UpdateTimeEntryRequest` declares, so a bad value stops here with a
+        // message on its own field instead of being posted as a raw string.
+        let date_value = match NaiveDate::parse_from_str(&d, "%Y-%m-%d") {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("unparseable date {d:?}: {e}");
+                date_error.set("Enter the date as YYYY-MM-DD.".to_string());
+                return;
+            }
+        };
+        let work_type_id = match uuid::Uuid::parse_str(&wtid) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::error!("work-type option is not a uuid ({wtid:?}): {e}");
+                work_type_error.set(
+                    "Pick a work type from the list; reload the page if it is empty.".to_string(),
+                );
+                return;
+            }
+        };
+        // Bounded to 1..=1440 by the parse above, so the narrowing to the
+        // server's `i32` cannot lose a digit.
+        let duration_minutes = duration_minutes as i32;
         saving.set(true);
         let desc = description.read().clone();
         let billable = *is_billable.read();
@@ -2743,15 +2926,15 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                 // `task_id` is intentionally omitted: the response does not
                 // carry it, so we cannot echo the current value; PMS-328 makes
                 // the server preserve task_id when it is absent (COALESCE).
-                let body = serde_json::json!({
-                    "date": d,
-                    "duration_minutes": duration_minutes,
-                    "work_type_id": wtid,
-                    "notes": desc,
-                    "is_billable": billable && !own_time,
-                    "ticket_id": ticket_id,
-                    "project_id": project_id,
-                });
+                let body = UpdateTimeEntryBody {
+                    date: Some(date_value),
+                    duration_minutes: Some(duration_minutes),
+                    work_type_id: Some(work_type_id),
+                    notes: Some(desc),
+                    is_billable: Some(billable && !own_time),
+                    ticket_id,
+                    project_id,
+                };
                 match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
                     &format!("/time-entries/{eid}"),
                     &body,
@@ -2926,6 +3109,27 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ticket_prefill_comes_off_the_query_the_link_carried() {
+        // MAPPS-683: the string the router hands back on the desktop for
+        // `Link { to: "/time/new?ticket_id=..." }`.
+        assert_eq!(
+            ticket_prefill_from("?ticket_id=11111111-1111-1111-1111-111111111111"),
+            "ticket:11111111-1111-1111-1111-111111111111"
+        );
+        assert_eq!(
+            ticket_prefill_from("?project_id=22222222-2222-2222-2222-222222222222"),
+            "project:22222222-2222-2222-2222-222222222222"
+        );
+    }
+
+    #[test]
+    fn ticket_prefill_is_empty_without_a_usable_id() {
+        assert_eq!(ticket_prefill_from(""), "");
+        assert_eq!(ticket_prefill_from("?ticket_id=not-a-uuid"), "");
+        assert_eq!(ticket_prefill_from("?other=1"), "");
+    }
 
     /// A bare entry with everything unset; each test overrides only the
     /// fields it exercises so `work_item_label`'s branch under test is clear.
@@ -3242,5 +3446,324 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    // ---- MAPPS-627: the shared-DTO contract ------------------------------
+    //
+    // `mokosh_types::time_tracking` derives `Deserialize` on the request types
+    // and `Serialize` on the response types, which is the server's half of the
+    // wire and the opposite of what a client needs, so this page cannot use
+    // them directly. These functions are the substitute: each destructures the
+    // shared DTO exhaustively and feeds the bindings into the struct this page
+    // actually sends or decodes, so a field added, removed, renamed or retyped
+    // on mokosh-server fails this build instead of drifting silently. They are
+    // never called; compiling them is the whole check. Same shape as the
+    // MAPPS-397 gate in `src/pages/login.rs`.
+
+    #[allow(dead_code)]
+    fn create_request_fields_are_all_considered(
+        req: mokosh_types::time_tracking::CreateTimeEntryRequest,
+    ) {
+        let mokosh_types::time_tracking::CreateTimeEntryRequest {
+            user_id,
+            date,
+            start_time,
+            end_time,
+            duration_minutes,
+            worked_minutes,
+            billable_minutes,
+            work_type_id,
+            ticket_id,
+            project_id,
+            work_category,
+            task_id,
+            entry_kind,
+            company_id,
+            notes,
+            is_billable,
+            hourly_rate,
+        } = req;
+        let _ = CreateTimeEntryBody {
+            user_id,
+            date,
+            duration_minutes,
+            work_type_id,
+            ticket_id,
+            project_id,
+            task_id,
+            work_category,
+            company_id,
+            notes,
+            is_billable,
+        };
+        // Deliberately not sent by the Log Time form: it posts a duration
+        // rather than a (start, end) pair, leaves the worked / billed split
+        // and the rate to the server's rounding rules, and lets PMS-942 derive
+        // `entry_kind` from the company and the work item (MAPPS-626).
+        let _ = (
+            start_time,
+            end_time,
+            worked_minutes,
+            billable_minutes,
+            entry_kind,
+            hourly_rate,
+        );
+    }
+
+    #[allow(dead_code)]
+    fn update_request_fields_are_all_considered(
+        req: mokosh_types::time_tracking::UpdateTimeEntryRequest,
+    ) {
+        let mokosh_types::time_tracking::UpdateTimeEntryRequest {
+            date,
+            start_time,
+            end_time,
+            duration_minutes,
+            worked_minutes,
+            billable_minutes,
+            work_type_id,
+            ticket_id,
+            project_id,
+            work_category,
+            task_id,
+            notes,
+            is_billable,
+            hourly_rate,
+        } = req;
+        let _ = UpdateTimeEntryBody {
+            date,
+            duration_minutes,
+            work_type_id,
+            notes,
+            is_billable,
+            ticket_id,
+            project_id,
+        };
+        // Deliberately not sent by the edit modal: the work item is not
+        // changeable there, so `work_category` must not be re-derived; the
+        // response carries no `task_id` to echo and PMS-328 preserves it when
+        // absent; the rest is the server's rounding and rate work.
+        let _ = (
+            start_time,
+            end_time,
+            worked_minutes,
+            billable_minutes,
+            work_category,
+            task_id,
+            hourly_rate,
+        );
+    }
+
+    #[allow(dead_code)]
+    fn reject_request_fields_are_all_considered(
+        req: mokosh_types::time_tracking::RejectTimesheetRequest,
+    ) {
+        let mokosh_types::time_tracking::RejectTimesheetRequest { reason } = req;
+        let _ = RejectTimesheetBody { reason };
+    }
+
+    #[allow(dead_code)]
+    fn time_entry_response_fields_this_page_reads(
+        resp: mokosh_types::time_tracking::TimeEntryResponse,
+    ) {
+        let mokosh_types::time_tracking::TimeEntryResponse {
+            id,
+            user_id,
+            date,
+            start_time,
+            end_time,
+            duration_minutes,
+            worked_minutes,
+            billable_minutes,
+            work_type_id,
+            ticket_id,
+            project_id,
+            work_category,
+            task_id,
+            entry_kind,
+            company_id,
+            notes,
+            is_billable,
+            billing_status,
+            hourly_rate,
+            total_amount,
+            approval_status,
+            created_at,
+            updated_at,
+            ticket_number,
+            ticket_title,
+            project_name,
+            task_title,
+        } = resp;
+        // The one widening: the server types minutes as `i32` and this page
+        // sums a day's and a week's worth as `i64`. Annotated so the widening
+        // is checked rather than assumed.
+        let minutes: i32 = duration_minutes;
+        // Every `Some(...)` below is a field the server always sends that this
+        // page still decodes as optional. That is the stated read-path
+        // tolerance: a server that predates the field degrades one column to
+        // empty instead of failing the whole list to decode.
+        let _ = RemoteTimeEntry {
+            id,
+            date,
+            duration_minutes: i64::from(minutes),
+            work_type_id: Some(work_type_id),
+            ticket_id,
+            project_id,
+            work_category,
+            ticket_number,
+            ticket_title,
+            project_name,
+            task_title,
+            notes,
+            is_billable,
+            entry_kind: Some(entry_kind),
+            billing_status,
+            created_at: Some(created_at),
+            updated_at: Some(updated_at),
+        };
+        // Carried by the response but not rendered by this page: the row shows
+        // one user's own time, the worked / billed split and the money are
+        // reporting and invoicing concerns, and the approval state is read
+        // from the timesheet rollup rather than per entry.
+        let _ = (
+            user_id,
+            start_time,
+            end_time,
+            worked_minutes,
+            billable_minutes,
+            task_id,
+            company_id,
+            hourly_rate,
+            total_amount,
+            approval_status,
+        );
+    }
+
+    #[allow(dead_code)]
+    fn timesheet_summary_fields_this_page_reads(
+        resp: mokosh_types::time_tracking::TimesheetSummaryResponse,
+    ) {
+        let mokosh_types::time_tracking::TimesheetSummaryResponse {
+            user_id,
+            week_start,
+            total_minutes,
+            billable_minutes,
+            entry_count,
+            approval_status,
+            decided_by_id,
+            decided_at,
+            rejection_reason,
+        } = resp;
+        // The badge-only decode on the timesheet grid.
+        let _ = RemoteTimesheet {
+            approval_status: approval_status.clone(),
+        };
+        let _ = ApprovalSummary {
+            user_id,
+            week_start: Some(week_start),
+            total_minutes,
+            billable_minutes,
+            entry_count,
+            approval_status,
+            decided_by_id,
+            decided_at,
+            rejection_reason,
+        };
+    }
+
+    #[allow(dead_code)]
+    fn work_type_fields_this_page_reads(resp: mokosh_types::time_tracking::WorkTypeResponse) {
+        let mokosh_types::time_tracking::WorkTypeResponse {
+            id,
+            name,
+            description,
+            default_billable,
+            default_rate,
+            is_active,
+            sort_order,
+        } = resp;
+        let _ = WorkTypeOption { id, name };
+        // The Work Type select needs a value and a label; the rest is the
+        // Settings page's business.
+        let _ = (
+            description,
+            default_billable,
+            default_rate,
+            is_active,
+            sort_order,
+        );
+    }
+
+    #[allow(dead_code)]
+    fn rounding_rule_fields_this_page_reads(
+        resp: mokosh_types::time_tracking::TimeRoundingRuleResponse,
+    ) {
+        let mokosh_types::time_tracking::TimeRoundingRuleResponse {
+            id,
+            name,
+            increment_minutes,
+            rounding_method,
+            minimum_minutes,
+            is_default,
+        } = resp;
+        let _ = RoundingRuleRow {
+            name,
+            increment_minutes,
+            rounding_method,
+            minimum_minutes,
+            is_default,
+        };
+        // The rules are listed, never linked to or edited from here.
+        let _ = id;
+    }
+
+    /// MAPPS-627 AC2: the tolerance the assertion above states, exercised.
+    /// A response from a server that predates `entry_kind` (PMS-942) and the
+    /// MAPPS-340 timestamps still decodes; the missing fields read as `None`
+    /// rather than failing the whole list.
+    #[test]
+    fn an_older_servers_entry_still_decodes_with_the_new_fields_absent() {
+        let decoded: RemoteTimeEntry = serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::nil(),
+            "date": "2026-06-18",
+            "duration_minutes": 60,
+            "is_billable": true,
+        }))
+        .expect("an older server's entry decodes");
+        assert_eq!(decoded.entry_kind, None);
+        assert_eq!(decoded.created_at, None);
+        assert_eq!(decoded.updated_at, None);
+        assert_eq!(decoded.work_type_id, None);
+        assert_eq!(decoded.duration_minutes, 60);
+    }
+
+    /// The write path has the opposite rule: what goes on the wire is exactly
+    /// the shape `CreateTimeEntryRequest` declares. The work-item ids are
+    /// omitted rather than nulled so the server's `derive_work_category`
+    /// consistency check sees a general entry as general.
+    #[test]
+    fn a_general_entry_posts_no_work_item_keys() {
+        let body = CreateTimeEntryBody {
+            user_id: uuid::Uuid::nil(),
+            date: NaiveDate::from_ymd_opt(2026, 6, 18).expect("valid date"),
+            duration_minutes: Some(60),
+            work_type_id: uuid::Uuid::nil(),
+            ticket_id: None,
+            project_id: None,
+            task_id: None,
+            work_category: Some("general".to_string()),
+            company_id: None,
+            notes: Some("Overhead".to_string()),
+            is_billable: false,
+        };
+        let json = serde_json::to_value(&body).expect("body serializes");
+        assert!(json.get("ticket_id").is_none());
+        assert!(json.get("project_id").is_none());
+        assert!(json.get("task_id").is_none());
+        // A tenant with no internal company sends an explicit null, which
+        // PMS-942 accepts as employee time (MAPPS-626).
+        assert_eq!(json["company_id"], serde_json::Value::Null);
+        assert_eq!(json["date"], "2026-06-18");
     }
 }

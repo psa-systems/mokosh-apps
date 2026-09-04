@@ -287,8 +287,12 @@ pub fn Sidebar(props: SidebarProps) -> Element {
 const SIDEBAR_NAV_ID: &str = "mokosh-sidebar-nav";
 
 /// Read the current scroll offset of the sidebar nav from the DOM.
-fn read_sidebar_scroll() -> Option<i32> {
-    crate::platform::dom::scroll_top(SIDEBAR_NAV_ID)
+///
+/// MAPPS-511: `async` because the desktop has to ask its webview for the
+/// value and wait for the answer. The browser answers from the document
+/// it is already in, so nothing suspends there.
+async fn read_sidebar_scroll() -> Option<i32> {
+    crate::platform::dom::scroll_top_async(SIDEBAR_NAV_ID).await
 }
 
 /// Restore a previously recorded scroll offset onto the sidebar nav.
@@ -480,9 +484,9 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     }
                 },
                 // Record every scroll so the next re-mount can restore it.
-                onscroll: move |_| {
+                onscroll: move |_| async move {
                     if persist_scroll {
-                        if let Some(top) = read_sidebar_scroll() {
+                        if let Some(top) = read_sidebar_scroll().await {
                             sidebar_scroll.set(crate::hooks::SidebarScroll(top));
                         }
                     }
@@ -1342,8 +1346,18 @@ fn NotificationBell() -> Element {
         // refetches when the user switches org (notifications are
         // tenant-scoped), matching the dashboard/list pages.
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // An empty bell is what a failed read looks like too, so both
+        // outcomes say which one they are.
         crate::hooks::fetch::api::get_authed::<NotificationPage>("/notifications")
             .await
+            .inspect(|page| {
+                if page.data.is_empty() {
+                    tracing::info!("notification load succeeded and the inbox is empty");
+                }
+            })
+            .inspect_err(|e| {
+                tracing::error!("notification load failed, the bell will read empty: {e}")
+            })
             .ok()
             .map(|page| page.data)
             .unwrap_or_default()
@@ -1413,8 +1427,18 @@ fn NotificationBell() -> Element {
 fn ApprovalsBadge() -> Element {
     let inbox = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // The badge collapses to nothing on an empty queue AND on a failed
+        // read, so the log is the only thing that separates them.
         crate::hooks::fetch::api::get_authed::<Vec<serde_json::Value>>("/approvals/pending")
             .await
+            .inspect(|rows| {
+                if rows.is_empty() {
+                    tracing::info!("pending approval load succeeded and the queue is empty");
+                }
+            })
+            .inspect_err(|e| {
+                tracing::error!("pending approval load failed, the badge will stay hidden: {e}")
+            })
             .ok()
             .unwrap_or_default()
     });
@@ -1998,6 +2022,38 @@ mod page_title_tests {
             *OBSERVED.lock().unwrap(),
             "Tickets",
             "a page's use_page_title must reach the shared PageTitle signal that TopBar reads"
+        );
+    }
+}
+
+/// MAPPS-511: the sidebar records its scroll offset on both hosts.
+///
+/// A source scan: the offset comes out of a live document (or, on the
+/// desktop, out of a webview), and a host test renders to a string. What is
+/// pinned is that the record awaits the platform read instead of taking a
+/// synchronous answer, which is what the desktop could not give and why the
+/// nav jumped back to the top on every click there.
+#[cfg(test)]
+mod sidebar_scroll_tests {
+    const SRC: &str = include_str!("layout.rs");
+
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod sidebar_scroll_tests")
+            .expect("this module is part of this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn the_scroll_offset_is_recorded_from_an_awaited_read() {
+        let code = code_only();
+        assert!(
+            code.contains("async fn read_sidebar_scroll() -> Option<i32>"),
+            "the read is async, because one host has to ask its webview"
+        );
+        assert!(
+            code.contains("if let Some(top) = read_sidebar_scroll().await {"),
+            "and the scroll handler awaits it"
         );
     }
 }

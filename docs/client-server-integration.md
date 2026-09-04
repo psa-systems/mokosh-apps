@@ -1,26 +1,144 @@
-# Shared DTOs between mokosh-apps and mokosh-server
+# How mokosh-apps talks to mokosh-server
 
-What the two repositories share on the wire, and how much of it the
-compiler is actually checking.
+Two things: the path a request takes out of this client, and what the
+two repositories share on the wire with a compiler checking it.
 
-This file used to be a client/server status document: a per-section
-table of which endpoints were real and which returned 501, a priority
-ranking, and a recommended order in which to wire the UI to the
-backend. All of it described 2026-05-06. It said the client made
-"zero `/api/v1/*` requests in normal operation" while 25 of the 36
-files in `src/pages/` call an authed fetch helper, and it sent readers
-to `stub_routes()`, which does not exist in mokosh-server.
-
-mokosh-server retired its own copy of that document for the same
-reason (PMS-848): it was a status table end to end, and duplicated
-status in prose is exactly what goes stale. The status content is
-gone from here too. What is left is the part that is a contract
-rather than a snapshot.
+This file used to be a client/server status document instead: a
+per-section table of which endpoints were real and which returned 501,
+a priority ranking, and a recommended order in which to wire the UI to
+the backend, all of it describing one day in 2026 and none of it
+maintained. mokosh-server retired its own copy for the same reason
+(PMS-848): duplicated status in prose is exactly what goes stale. The
+status content is gone from here too, along with the counts and
+checklists that were the parts that rotted. What is left is the part
+that is a contract rather than a snapshot.
 
 **"Is there an endpoint I can call yet?"** is answered by
 mokosh-server's `CLAUDE.md`, under "Routing model", which names every
 top-level nest under `/api/v1` and what authenticates a request to
 each one. That file is maintained; a table here would not be.
+
+## The request path
+
+`crate::hooks::fetch::api` (`src/hooks/fetch.rs`) is the single entry
+point. A page calls a helper on it and passes a path; no page under
+`src/pages/` names a transport crate or holds a token of its own, so a
+change to how this client reaches the server is a change to that module
+and nowhere else. Two things do reach past the helpers, both
+deliberately: a page that calls a `_with_auth` variant reads the bearer
+with `api::current_access_token()` first, and the audit-log CSV export
+builds an `<a href>` from `api::api_base()` because the download is a
+real browser navigation rather than a fetch.
+
+`crate::platform::http` (`src/platform/http.rs`) is the transport under
+it, and the split is on `target_arch`, not on a cargo feature: the
+browser build uses `gloo-net` verbatim, the desktop build maps the same
+builder surface (`Request::get(url)`, `.header()`, `.json()`, `.send()`,
+then `status()` / `ok()` / `text()` / `json()` / `binary()`) onto
+`reqwest`. `multipart_file` is the one method `gloo-net` does not have,
+added for the tenant-logo `PUT` (MAPPS-429).
+
+### Where the requests go
+
+`api::api_base()` resolves the base once per call, in this order:
+
+1. Whatever the operator supplied, read through
+   `crate::modules::runtime_config` and so through
+   `crate::platform::config`: `window.__MOKOSH_CONFIG__.api_base` in the
+   browser, which is how a self-hoster on a custom hostname overrides
+   without rebuilding the image, and `MOKOSH_API_BASE` or `config.json`
+   on the desktop (see [`desktop.md`](desktop.md)).
+2. Host-prefix derivation for the canonical deploys: an SPA on
+   `msp.<tld>` calls `https://api.msp.<tld>/api/v1`. Browser only, since
+   a desktop window has no origin to derive from.
+3. Otherwise the per-host default. In a browser that is the same-origin
+   `/api/v1`, which the `dx` dev server and Caddy both proxy. On the
+   desktop it is `option_env!("MOKOSH_API_BASE")` if the build baked one
+   in and `http://localhost:8080/api/v1` if not, which is right for
+   development and wrong everywhere else: a real desktop install is
+   expected to have answered at step 1.
+
+Two related helpers exist because the base is not the origin.
+`normalize_api_base` strips a trailing slash, since every call site
+joins with `format!("{}{}", api_base(), path)` and staging is configured
+with one (PMS-751). `api_origin` drops the `/api/v1` suffix, for the
+values the server hands back that are already paths from the origin,
+`branding.logo_url` being the one that broke (PMS-758).
+
+### The bearer, and renewing it
+
+The access token lives in a thread-local `ACCESS_TOKEN` inside `api`. It
+is held in memory only and never written to `localStorage`; where the
+OIDC bundle it comes from is stored, and why, is
+[`oidc-token-storage.md`](oidc-token-storage.md).
+
+The client portal runs on a second identity (a `contacts` row, token
+`typ: "portal_access"`) with its own holder, and the two lanes never
+cross-populate (MAPPS-395). `src/hooks/fetch.rs` carries source-scanning
+tests that hold that boundary, because the request helpers themselves
+need a browser to run.
+
+Renewal is on the request path, not only in the 30-second loop in
+`crate::hooks::auth` (MAPPS-435): a tab the browser discarded and
+re-created fires its first fetches before any loop has evaluated
+anything. So an agent-lane helper calls `ensure_fresh_access_token`
+before the send, which renews when the held token is inside
+`REFRESH_WINDOW_SECS` of expiry, and a 401 that comes back anyway runs
+`note_agent_unauthorized` for one recovery attempt. Renewal is
+single-flight and shared with the auth loops, so a loop tick and a
+request-time renewal spend one refresh token between them instead of
+racing into a reuse detection, and a completed renewal answers for the
+401s still in flight for `RENEWAL_DEBOUNCE_SECS` so a 401 no renewal can
+fix cannot spend a refresh token per request forever. When renewal
+cannot help, `end_agent_session` clears the session and puts the user on
+the login screen: a hard redirect in the browser, and the
+`SESSION_ENDED` signal on the desktop, which has no reload (MAPPS-504).
+
+Only the agent lane reaches any of that. A `/portal/*` 401 belongs to
+the other identity and a `POST /auth/login` 401 means the password was
+wrong; neither may sign an agent out.
+
+### How a failure reaches the user
+
+mokosh-server answers a non-2xx with
+`{"error":{"code","message","errors":[...]}}`, decoded here as
+`crate::utils::error::ErrorResponse`. Both halves of the fetch layer
+parse it:
+
+- The `_typed` helpers return `ApiError` (`Network`, `Status { code,
+  message, fields }`, `Decode`). Pages render `ApiError::user_message()`
+  into a toast, and `field_message` routes a 422's per-field message
+  next to the input that caused it instead of showing the envelope's
+  generic one (MAPPS-210).
+- The older `String`-returning helpers get the same envelope flattened
+  by `status_error`, falling back to a user-facing message keyed on the
+  status class rather than "Request failed with status: 422"
+  (MAPPS-282).
+
+Three conditions are wider than one call and are classified centrally
+rather than at each call site. Any response at all proves the server is
+answering and a 5xx or a transport failure does not, which drives the
+`SERVER_REACHABLE` signal behind the outage banner (MAPPS-333). A `410`
+carrying `error.code == "ACCOUNT_DELETED"` is terminal and one-way
+(MAPPS-348). And every token change bumps a generation counter that
+pages read inside their `use_resource` closure, so an org switch
+re-fetches instead of leaving the previous tenant's rows on screen.
+
+### Reading a whole collection
+
+`get_all_authed` and its siblings are the only correct way to read a
+list in full. mokosh-server clamps an over-large `per_page` instead of
+rejecting it, so a page that asked for 200 got the cap and no sign the
+rest existed; the helpers request `MAX_PER_PAGE` (re-exported from the
+server's own constant) and keep going until a short page arrives,
+failing loudly rather than returning a silently short list (MAPPS-528).
+
+There is one per bearer: `get_all_authed` on the staff token,
+`get_all_portal_authed` on the portal token, and `get_all_authed_any`
+on whichever the caller holds (contact first, staff second), for the
+dual-planed paths a contact and a staff member both reach. Reaching for
+the single-page `get_authed_any` on one of those is what left a long
+contact-side note thread silently short at the page cap.
 
 ## DTO sharing
 
@@ -52,14 +170,17 @@ against those modules later inherits the live shape. It did not change
 what the running SPA deserialises.
 
 **Where the copies that matter actually live: `src/pages/`.** There are
-170 `Deserialize` derives across 29 page files, and five of those
-files mention `mokosh_types` at all. `src/pages/tickets.rs` is the
-pattern: its own ticket struct, deserialised straight off the server's
-`TicketResponse`, carrying `procedure_kb_article_id` and
+far more `Deserialize` derives than there are page files that mention
+`mokosh_types` at all (`grep -c 'derive(.*Deserialize' src/pages/*.rs`
+against `grep -l mokosh_types src/pages/*.rs`). `src/pages/tickets.rs`
+was the pattern: its own ticket struct, deserialised straight off the
+server's `TicketResponse`, carrying `procedure_kb_article_id` and
 `asset_name` and a dozen more, with a comment explaining which field it
 deliberately dropped. Narrowing a payload to what a page renders is a
 defensible client design, and it is also a hand copy that no compiler
-compares against the producer. Nothing tracks that yet.
+compares against the producer. MAPPS-686 kept that page's narrow
+structs and put the compiler behind them instead; the audit at the end
+of this file is where each of these pages has its decision.
 
 Where a module still carries handler / service files copied from the
 server (`tenants`, `billing`), they sit behind a `server` cargo
@@ -160,10 +281,182 @@ arrived here as `check-types-pin` failing on a real crate change and
 then a test in `src/modules/tickets/models.rs` failing on the bumped
 pin, with nobody diffing anything.
 
-The pages are not. `src/pages/` deserialises server payloads into
-structs declared per page, narrowed to what each page renders. That is
-a defensible client design, and it is also a hand copy no compiler
-compares against the producer. Nothing tracks it.
+The pages are not, by default. `src/pages/` deserialises server
+payloads into structs declared per page, narrowed to what each page
+renders. That is a defensible client design, and it is also a hand copy
+no compiler compares against the producer. MAPPS-627 measured what that
+costs and what to do about it, page by page; the rest of this section
+is that answer.
+
+MAPPS-627 was found while doing MAPPS-626, which bumped the pin for
+PMS-942. That server change made `CreateTimeEntryRequest.company_id`
+an `Option<Uuid>` instead of a `Uuid` and added `entry_kind` to both
+the request and the response. `check-types-pin.sh` went red and named
+the commit, exactly as designed. Bumping the pin and running
+`cargo check --all-targets` was then clean with no source change at
+all, because the page that owns
+time tracking named none of those types: it declared its own private
+decode struct and built its POST and PUT bodies as `serde_json::json!`
+literals. The guard can say a DTO moved. Only the compiler can say
+whether a page cares, and it was not being asked.
+
+### The gate
+
+The fix is one small pattern, not a migration. A page that sends a body
+declares a `Serialize` struct for it and builds that instead of a
+`json!` literal, and a `#[cfg(test)]` function destructures the shared
+DTO exhaustively and feeds the bindings into the local struct:
+
+```rust
+#[allow(dead_code)]
+fn create_request_fields_are_all_considered(req: CreateTimeEntryRequest) {
+    let CreateTimeEntryRequest { user_id, date, /* ...every field... */ } = req;
+    let _ = CreateTimeEntryBody { user_id, date, /* ...the ones we send... */ };
+    let _ = (start_time, end_time, /* ...the ones we deliberately do not... */);
+}
+```
+
+It never runs; compiling it is the whole check. A field added, removed,
+renamed or retyped on mokosh-server fails this build, and the tuple of
+unused bindings is a written record of what the page chooses not to
+send. `src/pages/login.rs` has had this since MAPPS-397,
+`src/pages/time.rs` since MAPPS-627 and `src/pages/tickets.rs` since
+MAPPS-686.
+
+Using the shared type directly is better where it is available, and it
+usually is not. `mokosh-types` derives `Deserialize` on request DTOs
+and `Serialize` on response DTOs, which is the server's half of the
+wire and the opposite of what a client needs, so neither can cross to
+this side. `forms` is the exception: PMS-898 derived both on
+`CreateFormDefinitionRequest` and its siblings, which is why
+`src/pages/forms.rs` can build one and post it with no local struct at
+all. Everything else needs the derive added on mokosh-server first.
+
+### The audit
+
+Every page that decodes or posts a payload whose producing DTO lives in
+`mokosh-types`, and what was decided for it. Pages not listed touch no
+shared-DTO endpoint (`approvals`, `team`, `portal*`, `reports`,
+`credit_notes`, `products`, `dashboards`, `system_status`, and the
+rest). Re-derive the set with:
+
+```sh
+grep -ohE '"/(time-entries|timesheets|work-types|tickets|companies|contacts|sites|auth/users|auth/me|tenants|forms|mileage)[a-z/-]*' src/pages/*.rs
+```
+
+Gated, with the destructuring function above:
+
+| Page | Shared DTOs | Issue |
+| --- | --- | --- |
+| `login.rs` | `LoginRequest`, `LoginResponse` | MAPPS-397 |
+| `request_form.rs`, `forms.rs` | `forms::*` used directly | MAPPS-535 |
+| `time.rs` | `Create`/`Update`/`RejectTimesheet` requests, `TimeEntry`/`TimesheetSummary`/`WorkType`/`TimeRoundingRule` responses | MAPPS-627 |
+| `tickets.rs` | `Create`/`UpdateTicketRequest`, `Create`/`UpdateNoteRequest`, `TicketResponse`/`TicketNoteResponse`, `TimeEntryResponse` | MAPPS-686, MAPPS-698 |
+| `profile.rs` | `UpdateUserRequest`, `UserResponse` | MAPPS-689 |
+| `settings.rs` | `Upsert{TicketStatus,TicketPriority,TicketType,TicketQueue,TicketCategory}Request`, `UpsertWorkTypeRequest`, `UpsertCompanyIndustryRequest`, `UpdateTenantRequest`, and the `TicketStatus`/`TicketPriority`/`TicketType`/`TicketQueue`/`TicketCategoryResponse`/`WorkTypeResponse`/`CompanyIndustryResponse`/`TenantResponse` reads behind them | MAPPS-688 |
+| `contacts.rs` | `Create`/`UpdateCompanyRequest`, `Create`/`UpdateContactRequest`, `Create`/`UpdateSiteRequest`, `ContactPhoneInput`, `ContactCompanyLinkInput`, `Address`, and the `CompanyResponse`/`ContactResponse`/`ContactPhone`/`ContactCompanyLink`/`SiteResponse` reads behind them | MAPPS-687 |
+
+`tickets.rs` is the one worth reading for what a page pays to be typed
+rather than only for the destructuring functions. Six of its nine write
+paths PUT one field each (the inline Status, Priority, Assignee and
+Asset editors, the description card, the task-list checkboxes), so they
+share a single `UpdateTicketBody` whose every field is
+`skip_serializing_if = "Option::is_none"`, and `assigned_to_id` is a
+double `Option` there even though the shared DTO's is not: absent has to
+stay distinguishable from the `null` that unassigns. Two form values
+also stopped being strings at the boundary, which is where the type
+buys something a `json!` literal never did: the Due Date is parsed into
+the `DateTime<Utc>` the request declares, and the composer's note type
+into `NoteType`. Each reports a parse failure in its own inline slot,
+because a value the client cannot read must not become a 422 the user
+has to interpret.
+
+`settings.rs` is the widest of them: eight write paths across the ticket
+taxonomy, the work types, the company industries and the tenant record,
+each with its own `Upsert*Body` and each of the reads behind them
+destructured too, because this page edits those rows rather than picking
+from them. Three form values stopped being strings at the boundary and
+report a parse failure in their own inline slot: the sort order, which
+used to become `0` on any unparseable input and silently reorder the
+list; the work type's default rate, into the `Decimal` the request
+declares; and the category's parent, into a `Uuid`. `UpdateTenantBody`
+is the one place the local struct is deliberately narrower than the
+shared DTO: `UpdateTenantRequest::branding` is a raw
+`serde_json::Value` merge document (PMS-758) and this page owns exactly
+the `BrandingView` keys, so it sends those and the destructuring
+function pins the DTO's own type for the field.
+
+`OrganizationProfileRequest` was listed against this page while it was
+ungated, and that was wrong: no caller in this client posts
+`/tenants/current/organization`
+(`grep -rn "current/organization" src/` returns nothing). The onboarding
+screen, which the DTO's own doc comment names, sends
+`PUT /tenants/current` and so is an `UpdateTenantRequest` caller like
+the organisation settings form.
+
+`contacts.rs` is the widest write surface of the three, and the one that
+shows what the pattern costs when a page owns a record's children as
+well as the record. Its company and contact forms each send the whole
+record on both the POST and the PUT, so one body struct serves the pair
+and both destructuring functions feed it; the six one-field PUTs behind
+Archive, the billing-contact picker, the company attach and the portal
+grant / revoke share an `UpdateCompanyBody` and an `UpdateContactBody`
+whose every field is `skip_serializing_if = "Option::is_none"`. The
+contact's `phones` and `companies` arrays became `ContactPhoneBody` and
+`ContactCompanyLinkBody` against PMS-806's own input types rather than
+`json!` objects built in a loop, and `Address` is used directly, since
+`mokosh-types` derives both halves on it. Five form values stopped being
+strings at the boundary and report a parse failure in their own inline
+slot: the company Type and Status selects into `CompanyType` and
+`CompanyStatus`, the contact Type select into `ContactType`, each linked
+company's id into the `Uuid` the link input declares, and the site
+modal's company id into `CreateSiteRequest`'s.
+
+The site modal is where the wire won over the shape: it sends
+`company_id` on its PUT as well as its POST, which `UpdateSiteRequest`
+does not declare and the server ignores, so `SiteFormBody` keeps the
+field and the update destructuring function takes it as a parameter
+rather than dropping a key from a write that works.
+
+The gate found one real drift on this page, and it is the clearest case
+for the pattern paying for itself. `GET /contacts/companies/{id}`
+answers `CompanyResponse`, which carried no `default_billing_contact_id`,
+so MAPPS-644's Billing Contact card read `None` for every company from
+the day it shipped: the picker's PUT stored the value against
+`UpdateCompanyRequest` and nothing ever read it back. The destructuring
+function could not bind a field the response did not have, which is what
+made a silent write-only field visible at all. mokosh-server added the
+field to `CompanyResponse` and to its `From<Company>` under PMS-993, and
+the pin bump that brought it over is what let the destructuring function
+bind it and feed the card (MAPPS-701).
+
+Every page MAPPS-685 listed is now gated; the "to gate" table it carried
+is gone with the last row in it.
+
+Deliberately not gated, and this is the decision that keeps the pattern
+from becoming a tax. These pages decode a **picker subset** off a
+shared-DTO endpoint: a primary key plus a display label, sometimes a
+number or a company id, feeding a `<select>` or a name column. The key
+and the label are the two fields that do not move, the page renders
+nothing else, and a destructuring function per picker would be dozens
+of assertions about `id` and `name` carrying no signal. If one of these
+grows a write path or starts rendering a business field, it moves to
+the table above.
+
+`assets.rs`, `audit_log.rs`, `big_view.rs`, `billing.rs`, `calendar.rs`,
+`contracts.rs`, `dashboard.rs`, `dashboards_view.rs`,
+`knowledge_base.rs`, `projects.rs`, `quotes.rs`, `request_links.rs`,
+`sla.rs`, `statements.rs`, and the ticket / project / task / user
+pickers inside `time.rs` and `tickets.rs`. A few of these declare their
+picker struct under `src/modules/` rather than in the page: `sla.rs`
+reads `/tickets/priorities` into `TicketPriorityOption` in
+`src/modules/sla/models.rs`, an id and a name. The decision is the same
+wherever the struct sits.
+
+Two sit just outside that rule and stay ungated for their own reason.
+`admin.rs` narrows `TenantResponse` to six fields for a read-only
+super-admin list and sends no body. `onboarding.rs` reads a single
+completion flag.
 
 ## Not only DTOs
 

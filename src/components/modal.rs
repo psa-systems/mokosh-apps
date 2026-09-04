@@ -96,7 +96,9 @@ fn ModalDialog(
 ) -> Element {
     // Restore focus to the control that opened the modal. Capture the active
     // element on the first render, before the dialog steals focus on mount, and
-    // restore it when this component unmounts (any close path).
+    // restore it when this component unmounts (any close path). MAPPS-511: both
+    // hosts do this now - the desktop parks the element in its webview under
+    // the token rather than reading it back into Rust.
     let trigger = use_hook(crate::platform::dom::capture_focus);
     use_drop(move || trigger.restore());
 
@@ -109,10 +111,11 @@ fn ModalDialog(
 /// scrolling body, pinned footer.
 ///
 /// Split out of [`ModalDialog`] so the layout can be rendered in a host test.
-/// `ModalDialog` reads the focused element to restore focus on close, which
-/// only the browser build can do, so the dialog as a whole is not what the
-/// host test renders. The structure is what PMS-763 was about, so the
-/// structure is what the tests get to see - the real one, not a copy of it.
+/// `ModalDialog` records the focused element to restore focus on close, which
+/// needs a document to record from and a host test has none, so the dialog as a
+/// whole is not what the host test renders. The structure is what PMS-763 was
+/// about, so the structure is what the tests get to see - the real one, not a
+/// copy of it.
 #[component]
 fn ModalChrome(
     children: Element,

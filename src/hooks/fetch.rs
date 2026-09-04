@@ -70,6 +70,31 @@ pub fn active_portal_roles_generation() -> u64 {
 #[cfg(not(feature = "web"))]
 pub fn bump_portal_roles_generation() {}
 
+/// MAPPS-695: fall back to an empty list, saying which outcome happened.
+///
+/// A dropdown's option list, a badge that hides itself, a related-records
+/// card: on all of them a failed read and a tenant that genuinely has none
+/// render identically, so `.ok().unwrap_or_default()` left the console with
+/// nothing to separate a 500 from an empty tenant. Both outcomes are stated
+/// here under distinct messages, the failure at `error` because the empty
+/// list it substitutes is what the page then renders as fact.
+///
+/// `what` names the read, singular and lowercase: `"asset type option"`.
+pub fn list_or_empty<T, E: std::fmt::Display>(what: &str, result: Result<Vec<T>, E>) -> Vec<T> {
+    match result {
+        Ok(rows) => {
+            if rows.is_empty() {
+                tracing::info!("{what} load succeeded and this tenant has none");
+            }
+            rows
+        }
+        Err(e) => {
+            tracing::error!("{what} load failed, falling back to an empty list: {e}");
+            Vec::new()
+        }
+    }
+}
+
 /// App-wide "is mokosh-server reachable" flag (MAPPS-333). `true`
 /// (reachable) on boot; flipped to `false` by the classification helpers
 /// below when a request fails with a "down" condition, and back to
@@ -462,8 +487,12 @@ pub mod api {
     /// Expiry of the persisted session the held bearer came from. `None` when
     /// nothing is persisted (dev bypass, sessionStorage disabled), which is
     /// also "nothing to renew from".
+    ///
+    /// MAPPS-661: also read by the mount-time session confirmation in
+    /// `crate::hooks::auth`, which asks the same question of the same two
+    /// stores and must not answer it a second, drifting way.
     #[cfg(feature = "app")]
-    fn persisted_expiry() -> Option<chrono::DateTime<chrono::Utc>> {
+    pub fn persisted_expiry() -> Option<chrono::DateTime<chrono::Utc>> {
         if let Some(t) = crate::modules::oidc::storage::load_auth() {
             return Some(t.expires_at);
         }
@@ -1240,6 +1269,9 @@ pub mod api {
         // A real HTTP response (even an error one) proves reachability; a
         // 5xx is classified as "down" (MAPPS-333).
         super::note_response_status(status);
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
         let body = response.text().await.unwrap_or_default();
         match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
             Ok(env) => {
@@ -1919,6 +1951,9 @@ pub mod api {
         }
         // Reuse the standard 4xx envelope parse: `crate::utils::error::ErrorResponse`
         // is the shape mokosh-server ships for every validation / auth failure.
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
         let body_text = resp.text().await.unwrap_or_default();
         let (message, fields, envelope_code, envelope_body) =
             match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
@@ -1977,6 +2012,9 @@ pub mod api {
         if (200..300).contains(&status) {
             return Ok(());
         }
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
         let body_text = resp.text().await.unwrap_or_default();
         let (message, fields, envelope_code, envelope_body) =
             match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
@@ -2031,6 +2069,9 @@ pub mod api {
         if (200..300).contains(&status) {
             return Ok(());
         }
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
         let body_text = resp.text().await.unwrap_or_default();
         let (message, fields, envelope_code, envelope_body) =
             match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
@@ -2206,6 +2247,9 @@ pub mod api {
         if (200..300).contains(&status) {
             return Ok(());
         }
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
         let body_text = resp.text().await.unwrap_or_default();
         let (message, fields, envelope_code, envelope_body) =
             match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
@@ -2291,6 +2335,9 @@ pub mod api {
         if (200..300).contains(&status) {
             return Ok(());
         }
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
         let body_text = resp.text().await.unwrap_or_default();
         let (message, fields, envelope_code, envelope_body) =
             match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
@@ -2345,6 +2392,27 @@ pub mod api {
             Some(t) => get_with_auth(path, &t).await,
             None => get(path).await,
         }
+    }
+
+    /// Paging sibling of [`get_authed_any`]: reads a whole list on
+    /// whichever bearer the caller holds, paging until a short page.
+    ///
+    /// The pair matters. [`get_authed_any`] picks the right bearer but
+    /// hands back one page, and [`get_all_authed`] pages but only ever
+    /// on the staff bearer, so a dual-plane list had to give up one of
+    /// the two (MAPPS-528 paging, or the contact-scoped response). A
+    /// contact reading a long note thread through the single-page
+    /// helper saw a list silently short at the page cap.
+    ///
+    /// `path` carries the endpoint's own filters and must NOT spell
+    /// `page` or `per_page`; both are appended per request.
+    #[cfg(feature = "app")]
+    pub async fn get_all_authed_any<T: DeserializeOwned>(path: &str) -> Result<Vec<T>, String> {
+        if let Some(t) = current_contact_access_token() {
+            return get_all_with_auth(path, &t).await;
+        }
+        let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
+        get_all_with_auth(path, &t).await
     }
 
     /// Typed sibling of [`get_authed_any`]. Same contact-first bearer
@@ -2438,6 +2506,9 @@ pub mod api {
         let status = resp.status();
         super::note_response_status(status);
         if !(200..300).contains(&status) {
+            // fetch-error-logging-allow: the request already failed and its status
+            // is what gets reported; an unreadable body only costs the server's own
+            // message, and the status-class fallback is used in its place.
             let body = resp.text().await.unwrap_or_default();
             let (message, fields, envelope_code, envelope_body) =
                 match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
@@ -2750,6 +2821,9 @@ pub mod api {
                 .await
                 .map_err(|e| ApiError::Decode(e.to_string()));
         }
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
         let body = response.text().await.unwrap_or_default();
         let (message, fields, envelope_code, envelope_body) =
             match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
@@ -2865,6 +2939,9 @@ pub mod api {
             note_agent_unauthorized().await;
         }
         if !(200..300).contains(&status) {
+            // fetch-error-logging-allow: the request already failed and its status
+            // is what gets reported; an unreadable body only costs the server's own
+            // message, and the status-class fallback is used in its place.
             let body = resp.text().await.unwrap_or_default();
             let (message, fields, envelope_code, envelope_body) =
                 match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
@@ -3020,6 +3097,9 @@ pub mod api {
         if (200..300).contains(&status) {
             return Ok(());
         }
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
         let body = resp.text().await.unwrap_or_default();
         let (message, fields, envelope_code, envelope_body) =
             match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
@@ -3134,6 +3214,9 @@ pub mod api {
         if (200..300).contains(&status) {
             Ok(())
         } else {
+            // fetch-error-logging-allow: the request already failed and its status
+            // is what gets reported; an unreadable body only costs the server's own
+            // message, and the status-class fallback is used in its place.
             let body = resp.text().await.unwrap_or_default();
             let (message, fields, envelope_code, envelope_body) =
                 match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {

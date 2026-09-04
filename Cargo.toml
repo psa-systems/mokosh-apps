@@ -244,8 +244,8 @@ features = [
 [dev-dependencies]
 # MAPPS-388: render components to an HTML string in unit tests so layout
 # regressions (e.g. an empty-state row losing its colspan / center) are caught
-# on the host `cargo test`. Host-only: dev-deps are not built for the
-# `wasm32-unknown-unknown` check.
+# on the host `cargo test`. MAPPS-682: `just check-web` passes `--all-targets`,
+# so this is built for `wasm32-unknown-unknown` too and has to compile there.
 dioxus-ssr = "0.7.7"
 
 # MAPPS-505: the loopback listener tests drive `serve_one` to completion, so

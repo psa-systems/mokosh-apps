@@ -45,6 +45,7 @@ pub fn SettingsBrandingPage() -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_authed::<TenantSnippet>("/tenants/current")
             .await
+            .inspect_err(|e| tracing::error!("tenant branding load failed: {e}"))
             .ok()
     });
     let mut error: Signal<String> = use_signal(String::new);

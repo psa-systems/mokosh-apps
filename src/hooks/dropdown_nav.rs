@@ -13,6 +13,15 @@
 //! (or the first one) and moves to the next field, Escape closes without
 //! committing.
 //!
+//! MAPPS-653: a picker that has to end up holding a record (company, contact,
+//! asset, product) opts into [`DropdownNav::enter_takes_first_match`], so
+//! Enter takes the first row when nothing is highlighted rather than falling
+//! through to the form. A free-text field with optional suggestions
+//! ([`SuggestInput`]) does not: there, Enter would overwrite what was typed
+//! with a suggestion the user never chose.
+//!
+//! [`SuggestInput`]: crate::components::SuggestInput
+//!
 //! Handlers go on the field's wrapper `div`, never on the shared [`Input`]:
 //! keydown bubbles up from the focused input, and MAPPS-347 already moved a
 //! handler off `Input` because handlers there interfered with inline-error
@@ -70,22 +79,61 @@ pub fn commit_index(active: Option<usize>, len: usize) -> Option<usize> {
     Some(active.filter(|i| *i < len).unwrap_or(0))
 }
 
+/// The navigable row set of a picker whose result rows are followed by an
+/// optional inline "+ Create" action. Owned here because the create action's
+/// index is what makes the no-match path work: with nothing matching the typed
+/// text, the create action is row 0 and Enter therefore starts a new record
+/// (MAPPS-653).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NavRows {
+    /// Every navigable row, the create action included.
+    pub len: usize,
+    /// Index of the trailing create action, when the picker offers one.
+    pub create_index: Option<usize>,
+}
+
+impl NavRows {
+    pub fn new(results: usize, has_create: bool) -> Self {
+        Self {
+            len: results + usize::from(has_create),
+            create_index: has_create.then_some(results),
+        }
+    }
+}
+
 /// The whole key state machine, free of Dioxus and the DOM so it is unit
 /// testable. `len` counts every navigable row, including a trailing inline
-/// "+ Create" action.
-pub fn decide(key: &Key, shift: bool, open: bool, active: Option<usize>, len: usize) -> NavAction {
+/// "+ Create" action. `enter_takes_first` is the picker's opt-in from
+/// [`DropdownNav::enter_takes_first_match`].
+pub fn decide(
+    key: &Key,
+    shift: bool,
+    open: bool,
+    active: Option<usize>,
+    len: usize,
+    enter_takes_first: bool,
+) -> NavAction {
     match key {
         Key::ArrowDown => NavAction::Open(step_index(active, len, true)),
         Key::ArrowUp => NavAction::Open(step_index(active, len, false)),
-        // Enter only ever takes a row the user actually highlighted; with no
-        // highlight it stays the form's key.
-        Key::Enter => match active.filter(|i| open && *i < len) {
-            Some(index) => NavAction::Commit {
-                index,
-                prevent_default: true,
-            },
-            None => NavAction::Ignore,
-        },
+        // MAPPS-653: in a record picker Enter takes the first row when nothing
+        // is highlighted, so a typed name is accepted without arrowing to it
+        // first. Everywhere else it only ever takes a row the user actually
+        // highlighted, and otherwise stays the form's key.
+        Key::Enter if open => {
+            let index = if enter_takes_first {
+                commit_index(active, len)
+            } else {
+                active.filter(|i| *i < len)
+            };
+            match index {
+                Some(index) => NavAction::Commit {
+                    index,
+                    prevent_default: true,
+                },
+                None => NavAction::Ignore,
+            }
+        }
         // Shift+Tab backs out of the field, so committing on the way out
         // would be a surprise.
         Key::Tab if open && !shift => match commit_index(active, len) {
@@ -115,6 +163,7 @@ pub struct DropdownNav {
     active: Signal<Option<usize>>,
     base: &'static str,
     seq: usize,
+    enter_takes_first: bool,
 }
 
 /// Hook it up once per combobox. `id_base` only has to be readable; the
@@ -128,10 +177,23 @@ pub fn use_dropdown_nav(id_base: &'static str) -> DropdownNav {
         active,
         base: id_base,
         seq,
+        enter_takes_first: false,
     }
 }
 
 impl DropdownNav {
+    /// MAPPS-653: opt Enter into taking the first row when nothing is
+    /// highlighted, for a picker whose field has to end up holding a record.
+    /// Chain it onto [`use_dropdown_nav`]; it changes no state, so calling it
+    /// on every render is free.
+    ///
+    /// Left off for a free-text field with optional suggestions, where Enter
+    /// taking an unhighlighted suggestion would replace what the user typed.
+    pub fn enter_takes_first_match(mut self) -> Self {
+        self.enter_takes_first = true;
+        self
+    }
+
     /// Is the panel showing?
     pub fn is_open(&self) -> bool {
         *self.open.read()
@@ -232,6 +294,7 @@ impl DropdownNav {
             self.is_open(),
             self.active_index(),
             len,
+            self.enter_takes_first,
         );
         match action {
             NavAction::Ignore => {}
@@ -318,31 +381,125 @@ mod tests {
         assert_eq!(commit_index(Some(2), 3), Some(2));
     }
 
+    /// The two Enter contracts, so a call site's arguments read as the picker
+    /// they belong to. A record picker opts in (MAPPS-653); a free-text field
+    /// with suggestions does not.
+    const RECORD: bool = true;
+    const FREE_TEXT: bool = false;
+
     #[test]
     fn arrows_open_a_closed_list() {
         assert_eq!(
-            decide(&Key::ArrowDown, false, false, None, 3),
+            decide(&Key::ArrowDown, false, false, None, 3, RECORD),
             NavAction::Open(Some(0))
         );
         assert_eq!(
-            decide(&Key::ArrowUp, false, false, None, 3),
+            decide(&Key::ArrowUp, false, false, None, 3, RECORD),
             NavAction::Open(Some(0))
         );
     }
 
     #[test]
-    fn enter_commits_only_a_highlighted_row_of_an_open_list() {
+    fn enter_commits_the_highlighted_row() {
+        for enter_takes_first in [RECORD, FREE_TEXT] {
+            assert_eq!(
+                decide(&Key::Enter, false, true, Some(1), 3, enter_takes_first),
+                NavAction::Commit {
+                    index: 1,
+                    prevent_default: true,
+                }
+            );
+            // A closed list, or an empty one: Enter belongs to the form.
+            assert_eq!(
+                decide(&Key::Enter, false, false, Some(1), 3, enter_takes_first),
+                NavAction::Ignore
+            );
+            assert_eq!(
+                decide(&Key::Enter, false, true, None, 0, enter_takes_first),
+                NavAction::Ignore
+            );
+        }
+    }
+
+    /// MAPPS-653: the reported symptom. Typing a company name and pressing
+    /// Enter left the field empty, because nothing was highlighted and Enter
+    /// fell through to the form.
+    #[test]
+    fn enter_takes_the_first_row_in_a_record_picker_with_no_highlight() {
         assert_eq!(
-            decide(&Key::Enter, false, true, Some(1), 3),
+            decide(&Key::Enter, false, true, None, 3, RECORD),
             NavAction::Commit {
-                index: 1,
+                index: 0,
                 prevent_default: true,
             }
         );
-        // No highlight, or a closed list: Enter belongs to the form.
-        assert_eq!(decide(&Key::Enter, false, true, None, 3), NavAction::Ignore);
+        // A stale index past the end of a shrunken list falls back to the
+        // first row rather than committing nothing.
         assert_eq!(
-            decide(&Key::Enter, false, false, Some(1), 3),
+            decide(&Key::Enter, false, true, Some(9), 3, RECORD),
+            NavAction::Commit {
+                index: 0,
+                prevent_default: true,
+            }
+        );
+    }
+
+    /// A free-text field's value is what the user typed. Enter there must not
+    /// replace it with a suggestion they never highlighted.
+    #[test]
+    fn enter_takes_nothing_unhighlighted_in_a_free_text_field() {
+        assert_eq!(
+            decide(&Key::Enter, false, true, None, 3, FREE_TEXT),
+            NavAction::Ignore
+        );
+    }
+
+    /// The no-match path: nothing matches the typed text, so the inline create
+    /// action is the only navigable row, and Enter starts a new record with it.
+    #[test]
+    fn enter_on_a_no_match_query_commits_the_inline_create_row() {
+        let list = NavRows::new(0, true);
+        assert_eq!(list.len, 1);
+        assert_eq!(list.create_index, Some(0));
+        assert_eq!(
+            decide(&Key::Enter, false, true, None, list.len, RECORD),
+            NavAction::Commit {
+                index: list.create_index.expect("the create action is navigable"),
+                prevent_default: true,
+            }
+        );
+    }
+
+    /// With matches, the create action is still reachable but never what Enter
+    /// takes by default: the first match is.
+    #[test]
+    fn the_create_action_is_the_last_row_behind_the_matches() {
+        let list = NavRows::new(2, true);
+        assert_eq!(list.len, 3);
+        assert_eq!(list.create_index, Some(2));
+        assert_eq!(
+            decide(&Key::Enter, false, true, None, list.len, RECORD),
+            NavAction::Commit {
+                index: 0,
+                prevent_default: true,
+            }
+        );
+        // Down from the last match reaches it.
+        assert_eq!(step_index(Some(1), list.len, true), list.create_index);
+    }
+
+    /// A picker without the affordance has result rows only, so no index can
+    /// mean "create".
+    #[test]
+    fn a_picker_with_no_create_action_has_only_its_results() {
+        let list = NavRows::new(2, false);
+        assert_eq!(list.len, 2);
+        assert_eq!(list.create_index, None);
+        // And no matches means nothing at all to commit.
+        let empty = NavRows::new(0, false);
+        assert_eq!(empty.len, 0);
+        assert_eq!(
+            decide(&Key::Enter, false, true, None, empty.len, RECORD),
             NavAction::Ignore
         );
     }
@@ -350,7 +507,7 @@ mod tests {
     #[test]
     fn tab_commits_without_preventing_the_move_to_the_next_field() {
         assert_eq!(
-            decide(&Key::Tab, false, true, None, 3),
+            decide(&Key::Tab, false, true, None, 3, RECORD),
             NavAction::Commit {
                 index: 0,
                 prevent_default: false,
@@ -358,10 +515,16 @@ mod tests {
         );
         // Nothing to take, backing out, or already closed (Escape first):
         // Tab just leaves, with the typed text intact.
-        assert_eq!(decide(&Key::Tab, false, true, None, 0), NavAction::Ignore);
-        assert_eq!(decide(&Key::Tab, true, true, Some(1), 3), NavAction::Ignore);
         assert_eq!(
-            decide(&Key::Tab, false, false, Some(1), 3),
+            decide(&Key::Tab, false, true, None, 0, RECORD),
+            NavAction::Ignore
+        );
+        assert_eq!(
+            decide(&Key::Tab, true, true, Some(1), 3, RECORD),
+            NavAction::Ignore
+        );
+        assert_eq!(
+            decide(&Key::Tab, false, false, Some(1), 3, RECORD),
             NavAction::Ignore
         );
     }
@@ -369,11 +532,11 @@ mod tests {
     #[test]
     fn escape_closes_and_other_keys_are_left_alone() {
         assert_eq!(
-            decide(&Key::Escape, false, true, Some(1), 3),
+            decide(&Key::Escape, false, true, Some(1), 3, RECORD),
             NavAction::Close
         );
         assert_eq!(
-            decide(&Key::Character("a".into()), false, true, Some(1), 3),
+            decide(&Key::Character("a".into()), false, true, Some(1), 3, RECORD),
             NavAction::Ignore
         );
     }

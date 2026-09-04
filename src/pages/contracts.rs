@@ -166,11 +166,28 @@ fn ContractListBody() -> Element {
     // is for, so it has to stay selectable here.
     let companies_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<CompanyOption>(&format!(
+        // The dropdown shows its placeholder alone for a tenant with no
+        // companies AND for a failed read, so each says which it is.
+        match crate::hooks::fetch::api::get_all_authed::<CompanyOption>(&format!(
             "/contacts/companies?{COMPANIES_BY_NAME_SORT}"
         ))
         .await
-        .ok()
+        {
+            Ok(rows) => {
+                if rows.is_empty() {
+                    tracing::info!(
+                        "contract company filter load succeeded and this tenant has no companies"
+                    );
+                }
+                Some(rows)
+            }
+            Err(e) => {
+                tracing::error!(
+                    "contract company filter load failed, the dropdown will be empty: {e}"
+                );
+                None
+            }
+        }
     });
     let company_options = {
         let mut opts = vec![SelectOption::new("", "All Companies")];
@@ -223,6 +240,7 @@ fn ContractListBody() -> Element {
             }
             crate::hooks::fetch::api::get_authed_any::<Paginated<ContractResponse>>(&path)
                 .await
+                .inspect_err(|e| tracing::error!("contract list load failed: {e}"))
                 .ok()
         }
     });
@@ -499,6 +517,7 @@ pub fn ContractEditPage(props: ContractEditPageProps) -> Element {
             let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<ContractResponse>(&format!("/contracts/{id}"))
                 .await
+                .inspect_err(|e| tracing::error!("contract edit load failed for {id}: {e}"))
                 .ok()
         }
     });
@@ -668,6 +687,83 @@ fn validate_quantity(raw: &str, label: &str) -> Result<Decimal, String> {
     }
 }
 
+/// Parse a create-form line item's quantity on submit, naming the row.
+///
+/// The submit handler has already validated the row through
+/// [`validate_quantity`] and shown any problem in the row's own `qty_err`
+/// slot, so this is the second read of an already-checked value. It stays a
+/// hard error, and logs, because reaching it means the two disagreed
+/// (MAPPS-703).
+fn parse_item_quantity(raw: &str, row: usize) -> Result<Decimal, String> {
+    // MAPPS-582: `clean_strict` is what `validate_quantity` accepted, so an
+    // invisible character cannot pass validation and then fail here.
+    let s = crate::utils::text::clean_strict(raw);
+    s.parse::<Decimal>().map_err(|e| {
+        tracing::warn!("item {} quantity {s:?} is not a decimal: {e}", row + 1);
+        format!("Item {} quantity is not a number", row + 1)
+    })
+}
+
+/// Parse a create-form line item's unit price on submit, naming the row.
+///
+/// Blank bills at zero, which is what an untouched price has always meant
+/// here. Anything else that is not a `Decimal` is reported and logged rather
+/// than billed as zero (MAPPS-703). See [`parse_item_quantity`] for why this
+/// is not the row's only report.
+fn parse_item_unit_price(raw: &str, row: usize) -> Result<Decimal, String> {
+    let s = crate::utils::text::clean_strict(raw);
+    if s.is_empty() {
+        return Ok(Decimal::ZERO);
+    }
+    s.parse::<Decimal>().map_err(|e| {
+        tracing::warn!("item {} unit price {s:?} is not a decimal: {e}", row + 1);
+        format!("Item {} unit price is not a number", row + 1)
+    })
+}
+
+/// Parse a create-form line item's included hours on submit, naming the row.
+///
+/// Blank is "not set", which is what an untouched allotment has always meant.
+/// An unreadable value used to become that same "not set", so a contract was
+/// created with no allotment and nothing said why (MAPPS-703).
+fn parse_item_included_hours(raw: &str, row: usize) -> Result<Option<Decimal>, String> {
+    let s = crate::utils::text::clean_strict(raw);
+    if s.is_empty() {
+        return Ok(None);
+    }
+    match s.parse::<Decimal>() {
+        Ok(d) => Ok(Some(d)),
+        Err(e) => {
+            tracing::warn!(
+                "item {} included hours {s:?} is not a decimal: {e}",
+                row + 1
+            );
+            Err(format!("Item {} included hours is not a number", row + 1))
+        }
+    }
+}
+
+/// Read the product picker's id back out of it (MAPPS-640).
+///
+/// Blank is "no product". A value that is not a UUID should be unreachable,
+/// since the only way to set this is to pick a row the server issued, and there
+/// is no field a person could correct if it happened. It is logged rather than
+/// left silent, because the substitution drops the item's link to the product
+/// catalogue and the log is the only witness (MAPPS-703).
+fn picked_product_id(raw: &str) -> Option<Uuid> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    match Uuid::parse_str(trimmed) {
+        Ok(id) => Some(id),
+        Err(e) => {
+            tracing::warn!("picked product {trimmed:?} is not a UUID: {e}");
+            None
+        }
+    }
+}
+
 /// One editable line item in the create form. Mirrors the fields the
 /// server's `UpsertContractItemRequest` requires; decimals are held as
 /// strings while editing and parsed on submit. The `*_err` fields hold the
@@ -788,11 +884,25 @@ fn ContractForm(props: ContractFormProps) -> Element {
     // reason archiving keeps history in the first place.
     let companies_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<CompanyOption>(&format!(
+        // Same pair of indistinguishable outcomes as the list filter above.
+        match crate::hooks::fetch::api::get_all_authed::<CompanyOption>(&format!(
             "/contacts/companies?status=active&{COMPANIES_BY_NAME_SORT}"
         ))
         .await
-        .ok()
+        {
+            Ok(rows) => {
+                if rows.is_empty() {
+                    tracing::info!("contract company picker load succeeded and this tenant has no active companies");
+                }
+                Some(rows)
+            }
+            Err(e) => {
+                tracing::error!(
+                    "contract company picker load failed, the dropdown will be empty: {e}"
+                );
+                None
+            }
+        }
     });
     let company_options = {
         let mut opts = vec![SelectOption::new("", "Select a company")];
@@ -1427,24 +1537,9 @@ async fn create_items(contract_id: &str, items: &[ItemFormValues]) -> Result<(),
         if name.is_empty() {
             continue;
         }
-        let quantity = item
-            .quantity
-            .trim()
-            .parse::<Decimal>()
-            .map_err(|_| format!("Item {} quantity is not a number", idx + 1))?;
-        let unit_price = item
-            .unit_price
-            .trim()
-            .parse::<Decimal>()
-            .unwrap_or(Decimal::ZERO);
-        let included_hours = {
-            let raw = item.included_hours.trim();
-            if raw.is_empty() {
-                None
-            } else {
-                raw.parse::<Decimal>().ok()
-            }
-        };
+        let quantity = parse_item_quantity(&item.quantity, idx)?;
+        let unit_price = parse_item_unit_price(&item.unit_price, idx)?;
+        let included_hours = parse_item_included_hours(&item.included_hours, idx)?;
         let body = UpsertContractItemRequest {
             name: name.to_string(),
             description: None,
@@ -1501,6 +1596,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
             let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<ContractResponse>(&format!("/contracts/{id}"))
                 .await
+                .inspect_err(|e| tracing::error!("contract detail load failed for {id}: {e}"))
                 .ok()
         }
     });
@@ -1514,6 +1610,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                 "/contracts/{id}/items"
             ))
             .await
+            .inspect_err(|e| tracing::error!("contract item load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -1525,6 +1622,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                 "/contracts/{id}/hour-balance"
             ))
             .await
+            .inspect_err(|e| tracing::error!("contract hour balance load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -2084,10 +2182,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
                         .as_ref()
                         .map(|o| o.sort_order)
                         .unwrap_or(new_sort_order),
-                    product_id: product_id
-                        .read()
-                        .as_deref()
-                        .and_then(|p| uuid::Uuid::parse_str(p).ok()),
+                    product_id: product_id.read().as_deref().and_then(picked_product_id),
                 };
                 let result = match &orig {
                     None => crate::hooks::fetch::api::post_authed_typed::<ContractItemResponse, _>(
@@ -2572,6 +2667,7 @@ fn RateCardListBody(open_create: bool, can_edit: bool) -> Element {
         let path = format!("/rate-cards?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_with_auth::<Paginated<RateCardResponse>>(&path, &token)
             .await
+            .inspect_err(|e| tracing::error!("rate card list load failed: {e}"))
             .ok()
     });
 
@@ -2757,6 +2853,7 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
             let _reachable = crate::hooks::use_server_reachable();
             let rows = crate::hooks::fetch::api::get_all_authed::<RateCardResponse>("/rate-cards")
                 .await
+                .inspect_err(|e| tracing::error!("rate card load failed for {id}: {e}"))
                 .ok()?;
             rows.into_iter().find(|c| c.id.to_string() == id)
         }
@@ -2769,6 +2866,7 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
                 "/rate-cards/{id}/items"
             ))
             .await
+            .inspect_err(|e| tracing::error!("rate card item load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -3603,10 +3701,67 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::{
+        parse_item_included_hours, parse_item_quantity, parse_item_unit_price, picked_product_id,
         validate_money, validate_quantity, validate_text_optional, validate_text_required,
         CONTRACT_NAME_MAX, CONTRACT_NOTES_MAX, VALUE_MAX,
     };
     use rust_decimal::Decimal;
+    use uuid::Uuid;
+
+    /// MAPPS-703: a quantity that will not parse names its row instead of
+    /// stopping the whole submit with nothing to point at.
+    #[test]
+    fn item_quantity_reports_its_row() {
+        assert_eq!(parse_item_quantity(" 2.5 ", 0), Ok(Decimal::new(25, 1)));
+        assert!(parse_item_quantity("", 0).is_err());
+        assert_eq!(
+            parse_item_quantity("two", 1),
+            Err("Item 2 quantity is not a number".to_string())
+        );
+    }
+
+    /// MAPPS-703: a blank price still bills zero, an unreadable one no longer
+    /// does.
+    #[test]
+    fn item_unit_price_only_defaults_when_blank() {
+        assert_eq!(parse_item_unit_price("", 0), Ok(Decimal::ZERO));
+        assert_eq!(parse_item_unit_price("   ", 0), Ok(Decimal::ZERO));
+        assert_eq!(
+            parse_item_unit_price(" 150.00 ", 0),
+            Ok(Decimal::new(15000, 2))
+        );
+        assert_eq!(
+            parse_item_unit_price("$150", 0),
+            Err("Item 1 unit price is not a number".to_string())
+        );
+    }
+
+    /// MAPPS-703: a blank allotment is still "not set", an unreadable one is
+    /// no longer indistinguishable from it.
+    #[test]
+    fn item_included_hours_only_clears_when_blank() {
+        assert_eq!(parse_item_included_hours("", 0), Ok(None));
+        assert_eq!(parse_item_included_hours("  ", 0), Ok(None));
+        assert_eq!(
+            parse_item_included_hours(" 10 ", 0),
+            Ok(Some(Decimal::from(10)))
+        );
+        assert_eq!(
+            parse_item_included_hours("ten", 2),
+            Err("Item 3 included hours is not a number".to_string())
+        );
+    }
+
+    /// MAPPS-703: blank stays "no product", a picked id parses, and anything
+    /// else still reads as "no product" but has been logged on the way through.
+    #[test]
+    fn picked_product_keeps_blank_as_none() {
+        let id = Uuid::new_v4();
+        assert_eq!(picked_product_id(""), None);
+        assert_eq!(picked_product_id("   "), None);
+        assert_eq!(picked_product_id(&format!(" {id} ")), Some(id));
+        assert_eq!(picked_product_id("the blue one"), None);
+    }
 
     #[test]
     fn text_required_flags_empty_and_overlong() {

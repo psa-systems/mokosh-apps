@@ -150,11 +150,26 @@ async fn fetch_live_build_sha() -> Option<String> {
     use crate::platform::http::Request;
     use wasm_bindgen::JsValue;
 
-    let resp = Request::get(CONFIG_JS_PATH).send().await.ok()?;
+    // Best-effort, and it runs every POLL_INTERVAL_SECS: a `None` only means
+    // this round found no newer build, which is also what a broken poll looks
+    // like, so each failure names itself rather than going quiet.
+    let resp = Request::get(CONFIG_JS_PATH)
+        .send()
+        .await
+        .inspect_err(|e| tracing::warn!("update check could not fetch {CONFIG_JS_PATH}: {e}"))
+        .ok()?;
     if !resp.ok() {
+        tracing::warn!(
+            "update check got {} from {CONFIG_JS_PATH}, skipping this round",
+            resp.status()
+        );
         return None;
     }
-    let body = resp.text().await.ok()?;
+    let body = resp
+        .text()
+        .await
+        .inspect_err(|e| tracing::warn!("update check could not read {CONFIG_JS_PATH}: {e}"))
+        .ok()?;
     let win = web_sys::window()?;
     // `js_sys::eval` is invoked in the SPA's own origin against a
     // resource the SPA itself controls. The body is fetched no-cache

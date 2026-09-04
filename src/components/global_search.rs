@@ -63,6 +63,9 @@ struct SearchHit {
 pub fn GlobalSearch() -> Element {
     let mut query = use_signal(String::new);
     // MAPPS-503: open / highlight state and the shared keyboard contract.
+    // MAPPS-653: deliberately WITHOUT `enter_takes_first_match`. Committing
+    // here navigates the whole app away rather than filling a field, so it
+    // stays something the user asks for by highlighting a hit first.
     let mut nav = use_dropdown_nav("global-search");
     // MAPPS-346: collapsed to a magnifier icon by default; the icon lives in
     // the top-bar action cluster (left of the theme picker) and expands the

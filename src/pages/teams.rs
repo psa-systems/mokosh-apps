@@ -86,6 +86,7 @@ pub fn TeamsPage() -> Element {
             let token = crate::hooks::fetch::api::current_access_token()?;
             crate::hooks::fetch::api::get_with_auth::<Vec<RemoteTeam>>("/teams", &token)
                 .await
+                .inspect_err(|e| tracing::error!("team list load failed: {e}"))
                 .ok()
         }
         #[cfg(not(feature = "app"))]
@@ -529,6 +530,7 @@ fn MembersSection(props: MembersSectionProps) -> Element {
             let path = format!("/teams/{team_id}/members");
             crate::hooks::fetch::api::get_authed::<Vec<RemoteTeamMember>>(&path)
                 .await
+                .inspect_err(|e| tracing::error!("team roster load failed for {team_id}: {e}"))
                 .ok()
         }
         #[cfg(not(feature = "app"))]

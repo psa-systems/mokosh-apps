@@ -572,6 +572,12 @@ async fn build_view(report_type: &str) -> Result<ReportView, String> {
             // a real outage the primary fetch above already returned early).
             let dash = crate::hooks::fetch::api::get_authed::<DashReport>("/reports/dashboard")
                 .await
+                // The zeros this substitutes are indistinguishable from a
+                // quiet tenant's, so the log is what says the KPIs are missing
+                // rather than nil.
+                .inspect_err(|e| {
+                    tracing::error!("report KPI aggregate load failed, the summary reads zero: {e}")
+                })
                 .unwrap_or_default();
             let open: i64 = tickets.opened_by_status.iter().map(|b| b.count).sum();
             Ok(ReportView {

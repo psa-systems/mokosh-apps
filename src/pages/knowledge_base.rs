@@ -135,6 +135,46 @@ fn next_slug(new_title: &str, touched: bool) -> Option<String> {
     }
 }
 
+/// Parse the category form's sort order into the `i32` the request declares.
+///
+/// Blank is `0`, which is what an untouched field has always meant here.
+/// Anything else that is not an `i32` is reported on the field and logged: it
+/// used to become `0` silently, so a typo reordered the category list and said
+/// nothing (MAPPS-703). Same convention as `settings.rs::parse_sort_order`
+/// (MAPPS-688).
+fn parse_sort_order(raw: &str) -> Result<i32, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(0);
+    }
+    trimmed.parse::<i32>().map_err(|e| {
+        tracing::warn!("category sort order {trimmed:?} is not a 32-bit integer: {e}");
+        "Enter a whole number between 0 and 2147483647.".to_string()
+    })
+}
+
+/// Read an id this page put in a picker back out of it.
+///
+/// Blank means "none" (uncategorised, top level, no companies). A non-blank
+/// value that is not a UUID should be unreachable: every option offered comes
+/// from a server-issued id this page itself listed, so there is nothing for a
+/// person to mistype. It is logged rather than left silent because if it ever
+/// does happen the substitution is a real loss (an article filed nowhere, a
+/// client that loses access) and the log is the only witness (MAPPS-703).
+fn picked_uuid(raw: &str, field: &str) -> Option<uuid::Uuid> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    match trimmed.parse::<uuid::Uuid>() {
+        Ok(id) => Some(id),
+        Err(e) => {
+            tracing::warn!("{field} {trimmed:?} came back from the picker and is not a UUID: {e}");
+            None
+        }
+    }
+}
+
 /// MAPPS-612: does the metadata panel have to be open?
 ///
 /// True while the article is missing a required field, which is what an
@@ -398,6 +438,7 @@ pub fn KBHomePage() -> Element {
         let token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
             .await
+            .inspect_err(|e| tracing::error!("kb category grid load failed: {e}"))
             .ok()
     });
 
@@ -419,6 +460,7 @@ pub fn KBHomePage() -> Element {
         let path = format!("/kb/articles?page=1&per_page={RECENT_LIMIT}");
         crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(&path, &token)
             .await
+            .inspect_err(|e| tracing::error!("kb recent article load failed: {e}"))
             .ok()
     });
 
@@ -433,6 +475,9 @@ pub fn KBHomePage() -> Element {
             &token,
         )
         .await
+        // Best-effort: the card is omitted, the same as a window with no
+        // ticket-driving article in it.
+        .inspect_err(|e| tracing::warn!("kb top ticket-driving article load failed: {e}"))
         .ok()
     });
 
@@ -861,9 +906,24 @@ pub fn KBArticleListPage(
     let categories_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
+        // An empty dropdown is what a tenant with no categories looks like
+        // too, so each outcome says which it is.
+        match crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
             .await
-            .ok()
+        {
+            Ok(rows) => {
+                if rows.is_empty() {
+                    tracing::info!(
+                        "kb category filter load succeeded and this tenant has no categories"
+                    );
+                }
+                Some(rows)
+            }
+            Err(e) => {
+                tracing::error!("kb category filter load failed, the dropdown will be empty: {e}");
+                None
+            }
+        }
     });
     let categories: Vec<KbCategory> = match &*categories_resource.read_unchecked() {
         Some(Some(rows)) => rows.clone(),
@@ -880,6 +940,7 @@ pub fn KBArticleListPage(
         let token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_all_with_auth::<KbArticle>("/kb/articles", &token)
             .await
+            .inspect_err(|e| tracing::error!("kb list tree article load failed: {e}"))
             .ok()
     });
     let tree_articles: Vec<KbArticle> = match &*tree_articles_resource.read_unchecked() {
@@ -918,6 +979,7 @@ pub fn KBArticleListPage(
                 let path = format!("/kb/articles?page={current_page}&per_page={PER_PAGE}{filters}");
                 crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(&path, &token)
                     .await
+                    .inspect_err(|e| tracing::error!("kb article list load failed: {e}"))
                     .ok()
                     .map(|resp| (resp.data, resp.meta.total))
             } else {
@@ -932,6 +994,7 @@ pub fn KBArticleListPage(
                 };
                 crate::hooks::fetch::api::get_all_with_auth::<KbArticle>(&path, &token)
                     .await
+                    .inspect_err(|e| tracing::error!("kb tag view article load failed: {e}"))
                     .ok()
                     .map(|rows| {
                         let total = rows.len() as u64;
@@ -1239,6 +1302,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_authed::<KbArticle>(&format!("/kb/articles/{id_for_article}"))
             .await
+            .inspect_err(|e| tracing::error!("kb article load failed for {id_for_article}: {e}"))
             .ok()
     }));
 
@@ -1250,6 +1314,9 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
             "/kb/articles/{id_for_versions}/versions"
         ))
         .await
+        .inspect_err(|e| {
+            tracing::error!("kb version history load failed for {id_for_versions}: {e}")
+        })
         .ok()
     }));
 
@@ -1259,6 +1326,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         let token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
             .await
+            .inspect_err(|e| tracing::error!("kb breadcrumb category load failed: {e}"))
             .ok()
     });
 
@@ -1268,6 +1336,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         let token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_all_with_auth::<KbArticle>("/kb/articles", &token)
             .await
+            .inspect_err(|e| tracing::error!("kb detail tree article load failed: {e}"))
             .ok()
     });
 
@@ -1309,6 +1378,9 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
             &token,
         )
         .await
+        // Best-effort: an unknown count hides the rating UI, which is also
+        // what a single-user tenant does.
+        .inspect_err(|e| tracing::warn!("kb user count load failed, hiding the rating: {e}"))
         .ok()
         .map(|resp| resp.meta.total)
     });
@@ -1681,6 +1753,9 @@ fn MeasuredDurationCard(article_id: String) -> Element {
                 "/kb/articles/{id}/measured-duration"
             ))
             .await
+            // Best-effort: the card is omitted, the same as an article nobody
+            // has timed yet.
+            .inspect_err(|e| tracing::warn!("kb measured duration load failed for {id}: {e}"))
             .ok()
         }
     });
@@ -2014,9 +2089,24 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     let categories_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
+        // An empty dropdown is what a tenant with no categories looks like
+        // too, so each outcome says which it is.
+        match crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
             .await
-            .ok()
+        {
+            Ok(rows) => {
+                if rows.is_empty() {
+                    tracing::info!(
+                        "kb editor category load succeeded and this tenant has no categories"
+                    );
+                }
+                Some(rows)
+            }
+            Err(e) => {
+                tracing::error!("kb editor category load failed, the dropdown will be empty: {e}");
+                None
+            }
+        }
     });
     let categories: Vec<KbCategory> = match &*categories_resource.read_unchecked() {
         Some(Some(rows)) => rows.clone(),
@@ -2187,10 +2277,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             let v = summary.read().trim().to_string();
                             (!v.is_empty()).then_some(v)
                         },
-                        category_id: {
-                            let v = category_id.read().clone();
-                            v.parse::<uuid::Uuid>().ok()
-                        },
+                        category_id: picked_uuid(&category_id.read(), "article category"),
                         visibility: visibility.read().clone(),
                         // Never published behind the author's back. They have
                         // not pressed anything that means "publish" yet.
@@ -2200,7 +2287,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             let ids: Vec<uuid::Uuid> = companies
                                 .read()
                                 .iter()
-                                .filter_map(|(id, _)| id.parse().ok())
+                                .filter_map(|(id, _)| picked_uuid(id, "scoped company"))
                                 .collect();
                             (!ids.is_empty()).then_some(ids)
                         },
@@ -2359,14 +2446,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         } else {
             Some(summary_val)
         };
-        let category_opt = {
-            let raw = category_id.read().clone();
-            if raw.is_empty() {
-                None
-            } else {
-                raw.parse::<uuid::Uuid>().ok()
-            }
-        };
+        let category_opt = picked_uuid(&category_id.read(), "article category");
         let status_val = status.read().clone();
         let tags_vec: Vec<String> = sanitize_tags(&tags.read());
         // MAPPS-515: the server ignores and clears the scope for any other
@@ -2994,6 +3074,8 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
     let mut error = use_signal(String::new);
     // PMS-518: inline error slot for the required Name, fed by the FormGuard.
     let mut name_error = use_signal(String::new);
+    // MAPPS-703: and one for the sort order, the page's only parsed field.
+    let mut sort_order_error = use_signal(String::new);
 
     // Parent dropdown: "None" plus every other category. The category being
     // edited is excluded so it cannot be made its own parent.
@@ -3030,9 +3112,25 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
         let mut guard = FormGuard::new();
         let name_val = name.read().trim().to_string();
         name_error.set(guard.field("name", &name_val, "Name", &[Rule::Required]));
+
+        // MAPPS-703: evaluated here rather than at the point of use, so a sort
+        // order that will not parse is reported on its own field alongside a
+        // missing Name instead of quietly becoming 0.
+        sort_order_error.set(String::new());
+        let sort_val = match parse_sort_order(&sort_order.read()) {
+            Ok(v) => Some(v),
+            Err(message) => {
+                sort_order_error.set(message);
+                guard.note_invalid(Some("sort_order"));
+                None
+            }
+        };
+
         if guard.blocked() {
             return;
         }
+        // Validated above: when the guard passes, the sort order parsed.
+        let sort_val = sort_val.expect("sort order validated above");
 
         is_submitting.set(true);
 
@@ -3050,16 +3148,8 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
         } else {
             Some(description_val)
         };
-        let parent_opt = {
-            let raw = parent_id.read().clone();
-            if raw.is_empty() {
-                None
-            } else {
-                raw.parse::<uuid::Uuid>().ok()
-            }
-        };
+        let parent_opt = picked_uuid(&parent_id.read(), "category parent");
         let visibility_val = visibility.read().clone();
-        let sort_val = sort_order.read().trim().parse::<i32>().unwrap_or(0);
 
         spawn(async move {
             #[cfg(feature = "app")]
@@ -3193,7 +3283,11 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
                         placeholder: "0",
                         help: "Lower numbers sort first within their level.",
                         value: sort_order.read().clone(),
-                        oninput: move |e: FormEvent| sort_order.set(e.value()),
+                        error: sort_order_error.read().clone(),
+                        oninput: move |e: FormEvent| {
+                            sort_order_error.set(String::new());
+                            sort_order.set(e.value());
+                        },
                     }
                 }
 
@@ -3331,9 +3425,12 @@ fn ArticleActions(
     let can_mutate = crate::hooks::use_can_mutate();
     // PMS-482: "Open ticket about this article" carries the article id + title
     // + URL on the query string; the ticket-new form pre-fills its title /
-    // description and stamps `source_kb_article_id` on the create body. Plain
-    // `<a>` so the query string survives intact and the user can right-click
-    // to open it in a new tab.
+    // description and stamps `source_kb_article_id` on the create body.
+    // MAPPS-632: routed `Link` - a raw `<a href>` to an internal path is inert
+    // in the desktop webview. The target is a string rather than a typed
+    // `Route` because `Route::TicketNew` declares no query segment and its
+    // `Display` would drop `?from_kb_*`; `Link` still renders the `href`, so
+    // right-click / open in a new tab keeps working.
     let qs = format!(
         "from_kb_article={}&from_kb_title={}&from_kb_url={}",
         article_id,
@@ -3359,8 +3456,8 @@ fn ArticleActions(
                 },
                 "Delete"
             }
-            a {
-                href: "/tickets/new?{qs}",
+            Link {
+                to: format!("{}?{qs}", Route::TicketNew {}),
                 class: "w-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium rounded-md border border-line hover:bg-surface-2 text-content",
                 "Open ticket about this article"
             }
@@ -3606,6 +3703,33 @@ mod tests {
     fn empty_when_dangling() {
         let cats = vec![cat(Uuid::new_v4(), None, "X")];
         assert!(resolve_category_path(Some(Uuid::new_v4()), &cats).is_empty());
+    }
+
+    /// MAPPS-703: a blank sort order still saves as 0, a good one parses, and a
+    /// bad one is a message rather than a silent 0.
+    #[test]
+    fn sort_order_reports_instead_of_defaulting() {
+        assert_eq!(parse_sort_order(""), Ok(0));
+        assert_eq!(parse_sort_order("   "), Ok(0));
+        assert_eq!(parse_sort_order(" 12 "), Ok(12));
+        assert_eq!(parse_sort_order("-3"), Ok(-3));
+        assert!(parse_sort_order("first").is_err());
+        assert!(parse_sort_order("1.5").is_err());
+        assert!(parse_sort_order("2147483648").is_err());
+    }
+
+    /// MAPPS-703: blank stays "none", a picked id parses, and anything else
+    /// still reads as "none" but has been logged on the way through.
+    #[test]
+    fn picked_uuid_keeps_blank_as_none() {
+        let id = Uuid::new_v4();
+        assert_eq!(picked_uuid("", "article category"), None);
+        assert_eq!(picked_uuid("   ", "article category"), None);
+        assert_eq!(
+            picked_uuid(&format!(" {id} "), "article category"),
+            Some(id)
+        );
+        assert_eq!(picked_uuid("uncategorised", "article category"), None);
     }
 
     fn art(id: Uuid, category: Option<Uuid>, title: &str) -> KbArticle {

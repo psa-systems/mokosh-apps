@@ -76,6 +76,11 @@ pub fn SetPasswordPage(token: String) -> Element {
                 let path = format!("/auth/set-password/context/{}", token);
                 crate::hooks::fetch::api::get_typed::<SetPasswordContext>(&path)
                     .await
+                    // Best-effort: the heading falls back to generic copy and
+                    // the form still works, but an unknown, expired or already
+                    // redeemed token is worth naming when the user asks why the
+                    // page does not name their portal.
+                    .inspect_err(|e| tracing::warn!("set-password context load failed: {e}"))
                     .ok()
             }
             #[cfg(not(feature = "web"))]

@@ -150,6 +150,7 @@ pub fn ContactRolesListPage() -> Element {
         {
             crate::hooks::fetch::api::get_authed_typed::<Vec<PortalRoleWire>>("/portal-roles")
                 .await
+                .inspect_err(|e| tracing::error!("contact role list load failed: {e}"))
                 .ok()
         }
         #[cfg(not(feature = "web"))]
@@ -472,6 +473,7 @@ pub fn ContactRoleEditPage(id: String) -> Element {
                 "/portal-roles/capabilities",
             )
             .await
+            .inspect_err(|e| tracing::error!("portal capability list load failed: {e}"))
             .ok()
         }
         #[cfg(not(feature = "web"))]

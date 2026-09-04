@@ -185,6 +185,7 @@ pub fn TenantManagementPage() -> Element {
         let token = crate::hooks::fetch::api::current_platform_access_token()?;
         crate::hooks::fetch::api::get_with_auth::<PaginatedTenants>("/tenants", &token)
             .await
+            .inspect_err(|e| tracing::error!("tenant roster load failed: {e}"))
             .ok()
             .map(|page| page.data)
     });

@@ -76,8 +76,14 @@ pub fn HomePage() -> Element {
                                 class: "bg-white text-blue-600 px-6 py-3 rounded-md font-semibold hover:bg-blue-50 transition-colors text-center", // theme-guard-allow: marketing hero CTA on brand gradient
                                 "Get Started"
                             }
-                            a {
-                                href: "#features",
+                            // MAPPS-683: scrolled, not linked. `href: "#features"`
+                            // resolves to `dioxus://index.html#features` in the
+                            // desktop webview, whose navigation handler refuses
+                            // every `dioxus://` target after the first load, so
+                            // the button did nothing there.
+                            button {
+                                r#type: "button",
+                                onclick: move |_| crate::platform::dom::scroll_into_view("features", true),
                                 class: "border-2 border-white text-white px-6 py-3 rounded-md font-semibold hover:bg-white hover:text-blue-600 transition-colors text-center", // theme-guard-allow: marketing hero CTA on brand gradient
                                 "Learn More"
                             }

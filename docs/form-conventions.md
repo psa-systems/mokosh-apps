@@ -33,6 +33,8 @@ Native `Select` popups are themed by element-level `option` / `optgroup` rules i
 `input.css` (MAPPS-479), so no call site adds option styling. Colors come from the
 semantic variables, so both base modes follow automatically.
 
+The sub-widgets the browser paints inside a form control (the `type="number"` spin buttons, the `type="date"` and `type="datetime-local"` picker indicator, the `type="search"` clear button, the `type="color"` swatch) follow the base mode through the `color-scheme` declarations in the `:root` and `.dark` blocks of `input.css` (MAPPS-655), so no call site styles them and no call site needs a `dark:` variant for them. The number spinner additionally carries a weight rule in `@layer base` so it reads at the text-subtle level at rest and at full strength on hover and focus; that half is WebKit and Chromium only, because Firefox exposes no pseudo-element for it.
+
 A hand-built floating dropdown panel (picker list, overflow menu, user menu,
 notification list) takes its surface from the `dropdown-panel` class in `input.css`
 and never re-declares `bg-raised` plus `shadow-lg` by hand; the call site keeps only
@@ -50,7 +52,7 @@ too rather than growing its own handlers; five hand-rolled copies is how
 | --- | --- |
 | Focus (tab in) or click on the field | Opens the list, including with an empty query, where the picker's unfiltered fetch supplies the rows. |
 | Down / Up | Move the highlight one row, clamped at both ends (never wraps), opening the list first if it is closed. The active row scrolls into view. |
-| Enter | Takes the highlighted row. Does not submit the form. |
+| Enter | Takes the highlighted row, or the first row when none is highlighted in a record picker (MAPPS-653). Does not submit the form. |
 | Tab | Takes the highlighted row, or the first row when none is highlighted, then moves focus to the next field. Shift+Tab takes nothing. |
 | Escape | Closes without committing, leaving the typed text alone, so a following Tab leaves the field with what was typed. |
 
@@ -66,6 +68,18 @@ The mechanics that go with it:
   into the list.
 - An inline "+ Create new ..." row is part of the list: it is the last navigable
   item, and committing it opens the create modal exactly as clicking it does.
+  With nothing matching the typed text it is the ONLY navigable row, which is
+  what makes Enter on an unknown name start a new record with that name
+  prefilled (MAPPS-653), on the call sites that pass `allow_inline_create`.
+- Whether Enter takes an unhighlighted first row is per surface, opted in with
+  `DropdownNav::enter_takes_first_match` (MAPPS-653):
+
+  | Surface | Enter with no highlight | Why |
+  | --- | --- | --- |
+  | `CompanyPicker`, `ContactPicker`, `AssetPicker`, `ProductPicker` | takes the first row | The field has to end up holding a record, so a typed name that matched something is accepted without arrowing onto it. |
+  | `SuggestInput` (Industry, Title, Department) | takes nothing | Free text: the value is what was typed, and a suggestion is optional, so Enter must not overwrite it. |
+  | `GlobalSearch` | takes nothing | Committing navigates the app away rather than filling a field. |
+  | `MentionAutocomplete` | takes nothing | The popover sits over a textarea where Enter is the newline key. |
 - ARIA comes with the hook: `role="combobox"` with `aria-expanded` and
   `aria-controls` on the field wrapper, `role="listbox"` on the panel,
   `role="option"` plus `aria-selected` on the rows, and `aria-activedescendant`
@@ -76,6 +90,37 @@ The mechanics that go with it:
 
 Native `Select` fields need none of this; the browser already gives
 click-to-open, arrow navigation and Tab-commit.
+
+### The inline-create modal keeps the keyboard (MAPPS-694)
+
+Committing the create row opens a modal, and the keyboard path used to stop at
+that boundary: `ModalDialog` focuses the dialog PANEL on mount, so the prefilled
+name field was several Tabs away, and Enter in it did nothing. Typing an unknown
+name and pressing Enter twice now creates the record.
+
+| Input | Behaviour |
+| --- | --- |
+| The modal opens | Focus lands in the prefilled field: "Company name" on `CompanyPicker`, "First name" on `ContactPicker`. |
+| Enter, anywhere in the modal body | Runs the same create action as the Create button, and is consumed, so it never reaches the form the modal opened on top of. |
+| Escape | Cancels, from `ModalChrome`'s own handler. Closing restores focus to the picker, as every close path already did. |
+
+The two pieces, both opt-in per call site so no other modal changes:
+
+- `Input` takes `autofocus: bool` (default false), which sets the HTML attribute
+  AND focuses the field on mount. The attribute alone is not enough: a browser
+  ignores `autofocus` on an element inserted after load, which is every field in
+  a modal. A call site never hand-rolls a raw `input` to get focus;
+  `scripts/check-kit-adoption.sh` exists to keep fields on the shared component.
+- `form::submit_on_enter` wraps the create action and goes on the modal BODY,
+  never on `Input` (same MAPPS-347 rule as the dropdown handlers). On the body it
+  commits from any field in the modal; it `prevent_default`s first, because the
+  same Enter is otherwise the implicit submit of the parent form behind the
+  modal. Only Enter is touched, which is what leaves Escape to the dialog.
+
+Focusing the first focusable child from `Modal` itself would have covered both
+pickers at once and is deliberately not done: it also lands the caret in a
+destructive `ConfirmDialog`'s type-to-confirm box, which is a delete gate and no
+place to start typing.
 
 ### Company picker - every call site uses `CompanyPicker`
 

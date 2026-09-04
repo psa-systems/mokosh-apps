@@ -450,6 +450,7 @@ pub fn ProjectListPage() -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_authed::<ProjectSummary>("/projects/summary")
             .await
+            .inspect_err(|e| tracing::error!("project summary load failed: {e}"))
             .ok()
     });
     // Company names are a SECONDARY lookup: a missing list just renders
@@ -457,10 +458,10 @@ pub fn ProjectListPage() -> Element {
     // gating the whole page on an outage.
     let companies_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<CompanyOption>("/contacts/companies")
-            .await
-            .ok()
-            .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "project company name",
+            crate::hooks::fetch::api::get_all_authed::<CompanyOption>("/contacts/companies").await,
+        )
     });
 
     // MAPPS-357: primary resource unavailable (failed while the server is
@@ -754,10 +755,10 @@ pub fn ProjectNewPage() -> Element {
     // and shape the Edit modal uses on the detail page.
     let users_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users")
-            .await
-            .ok()
-            .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "project manager option",
+            crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users").await,
+        )
     });
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
     let mut manager_options = vec![SelectOption::new("", "Unassigned")];
@@ -1098,6 +1099,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
             let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<RemoteProject>(&format!("/projects/{id}"))
                 .await
+                .inspect_err(|e| tracing::error!("project detail load failed for {id}: {e}"))
                 .ok()
         }
     });
@@ -1106,25 +1108,28 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         let id = id_for_tasks.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_all_authed::<RemoteTask>(&format!("/projects/{id}/tasks"))
-                .await
-                .ok()
-                .unwrap_or_default()
+            crate::hooks::fetch::list_or_empty(
+                "project task",
+                crate::hooks::fetch::api::get_all_authed::<RemoteTask>(&format!(
+                    "/projects/{id}/tasks"
+                ))
+                .await,
+            )
         }
     });
     let statuses_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<RemoteTaskStatus>("/task-statuses")
-            .await
-            .ok()
-            .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "project task status option",
+            crate::hooks::fetch::api::get_all_authed::<RemoteTaskStatus>("/task-statuses").await,
+        )
     });
     let users_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users")
-            .await
-            .ok()
-            .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "project task assignee option",
+            crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users").await,
+        )
     });
 
     // PMS-184 project-edit modal state.
@@ -1154,12 +1159,13 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         let id = id_for_proj_history.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_all_authed::<HistoryEntry>(&format!(
-                "/audit-log/entity/projects/{id}"
-            ))
-            .await
-            .ok()
-            .unwrap_or_default()
+            crate::hooks::fetch::list_or_empty(
+                "project change history entry",
+                crate::hooks::fetch::api::get_all_authed::<HistoryEntry>(&format!(
+                    "/audit-log/entity/projects/{id}"
+                ))
+                .await,
+            )
         }
     });
 
@@ -2112,22 +2118,23 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
             let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_all_authed::<RemoteTask>(&format!("/projects/{id}/tasks"))
                 .await
+                .inspect_err(|e| tracing::error!("task board load failed for project {id}: {e}"))
                 .ok()
         }
     });
     let statuses_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<RemoteTaskStatus>("/task-statuses")
-            .await
-            .ok()
-            .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "task board status option",
+            crate::hooks::fetch::api::get_all_authed::<RemoteTaskStatus>("/task-statuses").await,
+        )
     });
     let users_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users")
-            .await
-            .ok()
-            .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "task board assignee option",
+            crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users").await,
+        )
     });
 
     let snapshot = tasks_resource.read_unchecked().clone();
@@ -2333,12 +2340,13 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
 
     let history_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<HistoryEntry>(&format!(
-            "/audit-log/entity/tasks/{tid}"
-        ))
-        .await
-        .ok()
-        .unwrap_or_default()
+        crate::hooks::fetch::list_or_empty(
+            "task change history entry",
+            crate::hooks::fetch::api::get_all_authed::<HistoryEntry>(&format!(
+                "/audit-log/entity/tasks/{tid}"
+            ))
+            .await,
+        )
     });
     let task_history = history_resource
         .read_unchecked()

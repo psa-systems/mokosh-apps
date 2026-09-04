@@ -155,6 +155,7 @@ pub fn CompanyRoleEditPage(company_id: String, id: String) -> Element {
                 "/portal-roles/capabilities",
             )
             .await
+            .inspect_err(|e| tracing::error!("portal capability list load failed: {e}"))
             .ok()
         }
         #[cfg(not(feature = "web"))]

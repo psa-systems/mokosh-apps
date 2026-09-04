@@ -68,6 +68,17 @@ jobs:
       - name: Runner-label guard
         run: bash scripts/check-runner-labels.sh
 
+      # MAPPS-680: inside a Nushell `$"..."` string every `(` opens a
+      # subexpression, so `(MAPPS-421)` in a build-oci-image.yml message ran as
+      # an external command and failed the publish job AFTER the image was
+      # pushed. `nu --ide-check` parses it clean (the failure is at run time)
+      # and the branch that prints it only runs on a branch push, so this guard
+      # is the only thing that can see it before a release does.
+      - name: Nushell interpolation guard
+        run: |
+          bash scripts/check-nu-interpolation.sh --self-test
+          bash scripts/check-nu-interpolation.sh
+
       # MAPPS-401: enforce the MAPPS-259 semantic tokens in CI. Without this
       # step the guard only ran locally, and hardcoded grays drifted back in.
       # MAPPS-534: --self-test was on the local recipe and not here, so the
@@ -222,6 +233,15 @@ jobs:
           bash scripts/check-hooks-before-return.sh --self-test
           bash scripts/check-hooks-before-return.sh
 
+      # MAPPS-659: the pre-hydration theme applier read `localStorage.theme`
+      # while the app has always written `mokosh_theme`, so it never found a
+      # stored preference and every load painted its first frame from the OS
+      # match. The two names sit in different languages and no test read both.
+      - name: Theme storage-key guard
+        run: |
+          bash scripts/check-theme-storage-key.sh --self-test
+          bash scripts/check-theme-storage-key.sh
+
       # MAPPS-624: the width cap lives on each route component, not on AppShell.
       # Putting a max-w back on the shell re-caps the page that opted out, and a
       # route added without its own wrapper is full width by accident.
@@ -229,6 +249,14 @@ jobs:
         run: |
           bash scripts/check-page-width.sh --self-test
           bash scripts/check-page-width.sh
+
+      # MAPPS-695: every page awaited a fetch and ended in `.ok()`, so a 401, a
+      # 500, a decode mismatch and a genuinely empty tenant all reached the card
+      # as the same `None` with nothing in the console to tell them apart.
+      - name: Fetch error-logging guard
+        run: |
+          bash scripts/check-fetch-error-logging.sh --self-test
+          bash scripts/check-fetch-error-logging.sh
 
       # MAPPS-584: @tailwindcss/typography writes .prose into `@layer utilities`
       # and the MAPPS-573 corrections were written into `@layer components`, so
@@ -285,7 +313,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Check web/WASM build
-        run: cargo check --target wasm32-unknown-unknown
+        run: cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings
 
       # MAPPS-534: CI had never compiled this feature combination. The steps
       # above cover wasm and the host default, so a desktop-only break - a
