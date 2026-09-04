@@ -517,6 +517,46 @@ fn MembersSection(props: MembersSectionProps) -> Element {
         _ => Vec::new(),
     };
     let mut new_user_id = use_signal(String::new);
+    // MAPPS-436: per-member ConfirmDialog gate for the destructive Remove.
+    // `pending_remove` names the member whose confirm dialog is open;
+    // `removing` is the in-flight spinner; `remove_error` surfaces the
+    // server's refusal reason inside the still-open dialog.
+    let mut pending_remove: Signal<Option<uuid::Uuid>> = use_signal(|| None);
+    let mut removing = use_signal(|| false);
+    let mut remove_error = use_signal(String::new);
+    let pending_member = pending_remove
+        .read()
+        .and_then(|uid| members.iter().find(|m| m.user_id == uid).cloned());
+
+    let on_confirm_remove = move |_: ()| {
+        if *removing.read() {
+            return;
+        }
+        let Some(uid) = *pending_remove.read() else {
+            return;
+        };
+        removing.set(true);
+        remove_error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let path = format!("/teams/{team_id}/members/{uid}");
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(_) => {
+                        crate::hooks::toast::push_toast(AlertType::Success, "Member removed.");
+                        pending_remove.set(None);
+                        roster.restart();
+                    }
+                    Err(msg) => remove_error.set(msg),
+                }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                let _ = uid;
+            }
+            removing.set(false);
+        });
+    };
 
     let add = move |_| {
         let raw = new_user_id.read().trim().to_string();
@@ -572,19 +612,8 @@ fn MembersSection(props: MembersSectionProps) -> Element {
                                 onclick: {
                                     let user_id = m.user_id;
                                     move |_| {
-                                        spawn(async move {
-                                            #[cfg(feature = "web")]
-                                            {
-                                                let path = format!("/teams/{team_id}/members/{user_id}");
-                                                match crate::hooks::fetch::api::delete_authed(&path).await {
-                                                    Ok(_) => {
-                                                        crate::hooks::toast::push_toast(AlertType::Success, "Member removed.");
-                                                        roster.restart();
-                                                    }
-                                                    Err(msg) => crate::hooks::toast::push_toast(AlertType::Warning, msg),
-                                                }
-                                            }
-                                        });
+                                        remove_error.set(String::new());
+                                        pending_remove.set(Some(user_id));
                                     }
                                 },
                                 "Remove"
@@ -609,6 +638,29 @@ fn MembersSection(props: MembersSectionProps) -> Element {
                     "Add"
                 }
             }
+        }
+        crate::components::ConfirmDialog {
+            open: pending_remove.read().is_some(),
+            title: "Remove team member".to_string(),
+            message: match &pending_member {
+                Some(m) => format!(
+                    "Remove {} {} from this team? This cannot be undone.",
+                    m.first_name, m.last_name
+                ),
+                None => "Remove this team member? This cannot be undone.".to_string(),
+            },
+            confirm_text: "Remove".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            error: remove_error.read().clone(),
+            loading: removing(),
+            onconfirm: on_confirm_remove,
+            oncancel: move |_| {
+                if !removing() {
+                    pending_remove.set(None);
+                    remove_error.set(String::new());
+                }
+            },
         }
     }
 }

@@ -3658,6 +3658,10 @@ fn CompanyRoleRow(props: CompanyRoleRowProps) -> Element {
     let company_id = props.company_id.clone();
 
     let mut deleting = use_signal(|| false);
+    // MAPPS-436: destructive-confirm guard requires the DELETE to fire
+    // from a ConfirmDialog's `onconfirm`, never from a bare `onclick`.
+    let mut confirming = use_signal(|| false);
+    let mut delete_error = use_signal(String::new);
 
     // Delete gate: still-in-use is the common case for a scoped role;
     // a defensive built-in guard is included even though a scoped
@@ -3692,29 +3696,15 @@ fn CompanyRoleRow(props: CompanyRoleRowProps) -> Element {
     let edit_href = format!("/companies/{company_id}/roles/{id_str}");
     let delete_company_id = company_id.clone();
     let delete_id = id_str.clone();
-    let delete_name = row.name.clone();
-    let on_delete = move |_| {
-        if !can_delete || *deleting.read() {
-            return;
-        }
-        #[cfg(feature = "web")]
-        let confirmed = web_sys::window()
-            .and_then(|w| {
-                w.confirm_with_message(&format!(
-                    "Delete role \"{}\"? This cannot be undone.",
-                    delete_name
-                ))
-                .ok()
-            })
-            .unwrap_or(false);
-        #[cfg(not(feature = "web"))]
-        let confirmed = false;
-        if !confirmed {
+    let role_display_name = row.name.clone();
+    let on_confirm_delete = move |_: ()| {
+        if *deleting.read() {
             return;
         }
         let cid = delete_company_id.clone();
         let id = delete_id.clone();
         deleting.set(true);
+        delete_error.set(String::new());
         spawn(async move {
             #[cfg(feature = "web")]
             {
@@ -3725,18 +3715,15 @@ fn CompanyRoleRow(props: CompanyRoleRowProps) -> Element {
                             crate::components::AlertType::Success,
                             "Role deleted.".to_string(),
                         );
+                        confirming.set(false);
                         on_deleted.call(());
                     }
                     Err(err) => {
                         // 409 (in-use) carries a server-side count message;
-                        // surface it verbatim so the operator sees the same
-                        // reason the disabled-tooltip would have shown had
-                        // the local count been current.
-                        let msg = err.user_message();
-                        crate::hooks::toast::push_toast(
-                            crate::components::AlertType::Error,
-                            format!("Could not delete role: {msg}"),
-                        );
+                        // surface it inside the still-open dialog so the
+                        // operator sees the refusal next to the button that
+                        // produced it.
+                        delete_error.set(err.user_message());
                     }
                 }
             }
@@ -3778,11 +3765,33 @@ fn CompanyRoleRow(props: CompanyRoleRowProps) -> Element {
                         disabled: !can_delete,
                         loading: *deleting.read(),
                         title: disabled_reason.clone(),
-                        onclick: on_delete,
+                        onclick: move |_| {
+                            if can_delete {
+                                delete_error.set(String::new());
+                                confirming.set(true);
+                            }
+                        },
                         "Delete"
                     }
                 }
             }
+        }
+        crate::components::ConfirmDialog {
+            open: confirming(),
+            title: format!("Delete role \"{role_display_name}\""),
+            message: "This cannot be undone.".to_string(),
+            confirm_text: "Delete".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            error: delete_error.read().clone(),
+            loading: deleting(),
+            onconfirm: on_confirm_delete,
+            oncancel: move |_| {
+                if !deleting() {
+                    confirming.set(false);
+                    delete_error.set(String::new());
+                }
+            },
         }
     }
 }
