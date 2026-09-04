@@ -133,7 +133,7 @@ pub fn TenantSwitcher() -> Element {
         error.set(String::new());
         let mut install_session = install_session;
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 use crate::hooks::fetch::api::ApiError;
                 let path = format!("/auth/switch-tenant/{tenant_id}");
@@ -180,7 +180,7 @@ pub fn TenantSwitcher() -> Element {
         saving.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 use crate::hooks::fetch::api::ApiError;
                 let body = AdditionalBody {

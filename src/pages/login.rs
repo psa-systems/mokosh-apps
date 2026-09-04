@@ -27,6 +27,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::{AuthLayout, Button, ButtonVariant, Input};
 use crate::modules::oidc::storage::{save_standalone, StandaloneSession};
+use crate::pages::pick_tenant::SelectTenantBody;
+use crate::pages::platform_login::{PlatformLoginBody, PlatformLoginResp};
 use crate::CurrentUser;
 use crate::Route;
 
@@ -58,26 +60,6 @@ struct LoginBody {
     tenant_slug: Option<String>,
 }
 
-/// MAPPS-520: request body for `POST /api/v1/platform/login`. Kept as a
-/// distinct struct from `LoginBody` because the platform endpoint takes
-/// only email + password (no MFA / approval / remember-me).
-#[cfg(feature = "web")]
-#[derive(Serialize)]
-struct PlatformLoginBody {
-    email: String,
-    password: String,
-}
-
-/// MAPPS-520: subset of mokosh-server's `PlatformLoginResponse` the
-/// unified login page decodes. Only the bearer is needed here; the
-/// platform admin's profile is refetched from the platform surface
-/// after the redirect.
-#[cfg(feature = "web")]
-#[derive(Deserialize)]
-struct PlatformLoginResp {
-    access_token: String,
-}
-
 /// MAPPS-513 / MAPPS-520: sessionStorage key `/platform/login` (now
 /// unified into `/login`) writes its bearer to. Kept in sync with
 /// `pages::platform_login::PLATFORM_TOKEN_KEY` and
@@ -85,26 +67,19 @@ struct PlatformLoginResp {
 #[cfg(target_arch = "wasm32")]
 const PLATFORM_TOKEN_KEY: &str = "mokosh:platform_token";
 
-/// MAPPS-549: request body for `POST /api/v1/auth/select-tenant`, used
-/// by the auto-pick step to complete a `needs_selection` response
-/// without navigating through `/pick-tenant`. Mirrors the pre-existing
-/// `pages::pick_tenant::SelectTenantBody`.
-#[cfg(feature = "web")]
-#[derive(Serialize)]
-struct SelectTenantBody {
-    identity_token: String,
-    tenant_id: String,
-}
-
 /// MAPPS-549: default tenant id (00000000-0000-0000-0000-000000000001).
 /// Used as a tiebreaker in `choose_membership` so the mokosh operator's
 /// canonical Default tenant wins when two same-role memberships come
 /// back.
-#[cfg(feature = "web")]
+///
+/// Gated on `app` (not `web`) so the desktop build's `choose_membership`
+/// caller inside the `spawn` block resolves too. The value itself is
+/// platform-neutral.
+#[cfg(feature = "app")]
 const DEFAULT_TENANT_ID: &str = "00000000-0000-0000-0000-000000000001";
 
 /// MAPPS-549: role-precedence weight for auto-pick. Higher wins.
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 fn role_rank(role: &str) -> u8 {
     match role {
         "super_admin" => 100,
@@ -122,7 +97,7 @@ fn role_rank(role: &str) -> u8 {
 /// `/auth/login` returns `needs_selection`. Prefers the highest role,
 /// ties broken by `DEFAULT_TENANT_ID` then iteration order. Returns
 /// `None` for an empty list (caller falls back to the picker route).
-#[cfg(feature = "web")]
+#[cfg(feature = "app")]
 fn choose_membership(memberships: &[MembershipItem]) -> Option<&MembershipItem> {
     memberships.iter().reduce(|best, next| {
         let best_rank = role_rank(&best.role);

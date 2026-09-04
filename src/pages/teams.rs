@@ -81,16 +81,16 @@ pub fn TeamsPage() -> Element {
     let mut teams_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             let token = crate::hooks::fetch::api::current_access_token()?;
             crate::hooks::fetch::api::get_with_auth::<Vec<RemoteTeam>>("/teams", &token)
                 .await
                 .ok()
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
-            None
+            None::<Vec<RemoteTeam>>
         }
     });
     let can_mutate = crate::hooks::use_can_mutate();
@@ -500,16 +500,16 @@ fn MembersSection(props: MembersSectionProps) -> Element {
     let team_id = props.team_id;
     let mut roster = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        #[cfg(feature = "web")]
+        #[cfg(feature = "app")]
         {
             let path = format!("/teams/{team_id}/members");
             crate::hooks::fetch::api::get_authed::<Vec<RemoteTeamMember>>(&path)
                 .await
                 .ok()
         }
-        #[cfg(not(feature = "web"))]
+        #[cfg(not(feature = "app"))]
         {
-            None
+            None::<Vec<RemoteTeamMember>>
         }
     });
     let snap = roster.read_unchecked();

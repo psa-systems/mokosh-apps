@@ -67,7 +67,7 @@ pub fn CreateOrgPage() -> Element {
         saving.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 use crate::hooks::fetch::api::ApiError;
                 let body = SelfServeTenantBody {

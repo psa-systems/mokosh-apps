@@ -345,7 +345,13 @@ pub mod api {
     /// source of the original host (dev). Safe either way: the extractor
     /// fails closed on any slug/tenant miss, so a spoofed value cannot
     /// escalate.
-    #[cfg(feature = "web")]
+    ///
+    /// Gated on `app` (not `web`) so the desktop build's callers on
+    /// `post_typed` / `get_typed` / `post_typed_no_content` compile. The
+    /// desktop platform's `location::host()` returns `None`, so the header
+    /// is omitted there and the desktop request goes out plain (no dev
+    /// reverse proxy sits in front of a native binary).
+    #[cfg(feature = "app")]
     fn current_forwarded_host() -> Option<String> {
         crate::platform::location::host().filter(|s| !s.is_empty())
     }
@@ -777,7 +783,7 @@ pub mod api {
     /// clears both the in-memory slot and the localStorage mirror so a
     /// hard refresh after logout lands the visitor at /portal/login
     /// rather than silently re-authenticating.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn set_portal_refresh_token(token: Option<String>) {
         PORTAL_REFRESH_TOKEN.with(|t| *t.borrow_mut() = token.clone());
         // Persist to localStorage so a cold-load can re-mint the access
@@ -811,7 +817,7 @@ pub mod api {
     /// updates both places. If the localStorage read succeeds we also
     /// prime the in-memory slot so subsequent reads in the same
     /// browser session skip the storage round-trip.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn current_portal_refresh_token() -> Option<String> {
         let in_memory = PORTAL_REFRESH_TOKEN.with(|t| t.borrow().clone());
         if in_memory.is_some() {
@@ -848,7 +854,7 @@ pub mod api {
     // localStorage under `CONTACT_REFRESH_STORAGE_KEY` so a hard
     // refresh / deep-link cold-load can re-mint via
     // `POST /contact/auth/refresh` before AuthGuard bounces.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     thread_local! {
         static CONTACT_ACCESS_TOKEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
         static CONTACT_REFRESH_TOKEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
@@ -887,7 +893,7 @@ pub mod api {
     /// New writes flow through both this key and
     /// [`CONTACT_LAST_PORTAL_ID_STORAGE_KEY`]; bootstrap prefers the
     /// portal-id key when present.
-    #[cfg(feature = "web")]
+    #[cfg(target_arch = "wasm32")]
     pub const CONTACT_LAST_SLUG_STORAGE_KEY: &str = "mokosh:contact_last_slug";
 
     /// MAPPS-589 (prompt 011): `localStorage` key that remembers "this
@@ -898,27 +904,27 @@ pub mod api {
     /// a Portal ID (either from the URL handle or from the server
     /// response's `contact.portal_id` field, once PMS-928 lands).
     /// Cleared alongside the refresh token on logout.
-    #[cfg(feature = "web")]
+    #[cfg(target_arch = "wasm32")]
     pub const CONTACT_LAST_PORTAL_ID_STORAGE_KEY: &str = "mokosh:contact_last_portal_id";
 
     /// Set the contact access token. `None` clears the in-memory slot.
     /// Does NOT bump [`super::TENANT_GENERATION`]: the contact plane
     /// has its own tenant scope and the pages it mounts fresh after
     /// login navigation anyway.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn set_contact_access_token(token: Option<String>) {
         CONTACT_ACCESS_TOKEN.with(|t| *t.borrow_mut() = token);
     }
 
     /// Read the contact access token. `None` until a contact signs in.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn current_contact_access_token() -> Option<String> {
         CONTACT_ACCESS_TOKEN.with(|t| t.borrow().clone())
     }
 
     /// Whether a contact session is held. Cheap predicate for gates
     /// (AuthGuard) that don't need to touch the token itself.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn has_contact_session() -> bool {
         CONTACT_ACCESS_TOKEN.with(|t| t.borrow().is_some())
     }
@@ -926,7 +932,7 @@ pub mod api {
     /// Set the contact refresh token. Also mirrors to localStorage so
     /// a cold-load can bootstrap via `/contact/auth/refresh`. Passing
     /// `None` clears both the in-memory slot and the storage mirror.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn set_contact_refresh_token(token: Option<String>) {
         CONTACT_REFRESH_TOKEN.with(|t| *t.borrow_mut() = token.clone());
         #[cfg(target_arch = "wasm32")]
@@ -949,7 +955,7 @@ pub mod api {
     /// Read the contact refresh token. Falls back to the localStorage
     /// mirror on a cold-load; primes the in-memory slot so subsequent
     /// reads skip the storage round-trip.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn current_contact_refresh_token() -> Option<String> {
         let in_memory = CONTACT_REFRESH_TOKEN.with(|t| t.borrow().clone());
         if in_memory.is_some() {
@@ -976,7 +982,7 @@ pub mod api {
     /// Remember the last slug this browser signed in on. Used by the
     /// AuthGuard bounce on expired sessions to route the visitor back
     /// to the same portal they came from.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn set_contact_last_slug(slug: &str) {
         #[cfg(target_arch = "wasm32")]
         if let Some(win) = web_sys::window() {
@@ -990,7 +996,7 @@ pub mod api {
 
     /// Read the last-known slug the browser signed in on. `None` when
     /// no contact login has ever happened on this browser.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn current_contact_last_slug() -> Option<String> {
         #[cfg(target_arch = "wasm32")]
         {
@@ -1014,7 +1020,7 @@ pub mod api {
     /// browser signed in on. Written by every contact login flow that
     /// receives a numeric Portal ID; preferred by the AuthGuard
     /// cold-load bootstrap over the legacy slug key.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn set_contact_last_portal_id(value: &str) {
         #[cfg(target_arch = "wasm32")]
         if let Some(win) = web_sys::window() {
@@ -1032,7 +1038,7 @@ pub mod api {
     /// the AuthGuard cold-load or last-slug-remember paths. Called
     /// from `ContactLoginByPortalIdPage`'s "Choose a different portal"
     /// button.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn clear_contact_last_portal_id() {
         #[cfg(target_arch = "wasm32")]
         if let Some(win) = web_sys::window() {
@@ -1046,7 +1052,7 @@ pub mod api {
     /// browser signed in on. `None` when no contact login carrying a
     /// Portal ID has happened yet (the legacy slug-only flow leaves
     /// this key unset).
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn current_contact_last_portal_id() -> Option<String> {
         #[cfg(target_arch = "wasm32")]
         {
@@ -1068,7 +1074,7 @@ pub mod api {
 
     /// MAPPS-604: overwrite the Company UUID this contact session is
     /// scoped to. `None` clears it (called on logout / session drop).
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn set_contact_company_id(id: Option<uuid::Uuid>) {
         CONTACT_COMPANY_ID.with(|slot| *slot.borrow_mut() = id);
     }
@@ -1078,14 +1084,14 @@ pub mod api {
     /// carries `company_id` (pre-PMS-935 servers omit the field, so a
     /// contact signed in against an older mokosh sees `None` and
     /// callers fall back to whatever URL-derived id they have).
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn current_contact_company_id() -> Option<uuid::Uuid> {
         CONTACT_COMPANY_ID.with(|slot| *slot.borrow())
     }
 
     /// MAPPS-609: overwrite the contact UUID this session belongs to.
     /// `None` clears it (called on logout / session drop).
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn set_contact_id(id: Option<uuid::Uuid>) {
         CONTACT_ID.with(|slot| *slot.borrow_mut() = id);
     }
@@ -1095,7 +1101,7 @@ pub mod api {
     /// `contact_id` (pre-PMS-937 servers omit the field, so a contact
     /// signed in against an older mokosh sees `None`; callers that need
     /// ownership must treat that as "unknown" and fall closed).
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn current_contact_id() -> Option<uuid::Uuid> {
         CONTACT_ID.with(|slot| *slot.borrow())
     }
@@ -1104,7 +1110,7 @@ pub mod api {
     /// `None` clears its localStorage mirror as well; both last-*
     /// keys are wiped so a follow-up cold-load starts blank rather
     /// than latching onto a stale hint.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn clear_contact_session() {
         set_contact_access_token(None);
         set_contact_refresh_token(None);
@@ -1125,7 +1131,7 @@ pub mod api {
     /// clears: the in-memory access token, both OIDC + standalone
     /// stored bundles in sessionStorage, and the platform-admin
     /// bearer that sits alongside them.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn clear_staff_session_for_plane_switch() {
         set_access_token(None);
         crate::modules::oidc::storage::clear_auth();
@@ -1143,7 +1149,7 @@ pub mod api {
     /// path that lands a fresh STAFF access token (standalone login
     /// success, OIDC callback exchange, platform-login success). No
     /// return value; the effect is entirely in the token holders.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn on_staff_signin_clear_contact_side() {
         clear_contact_session();
         crate::hooks::capabilities::clear_contact_capabilities();
@@ -1154,7 +1160,7 @@ pub mod api {
     /// path that lands a fresh CONTACT access token (portal password
     /// login success, magic-link redeem success, contact set-password
     /// -then-auto-login).
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn on_contact_signin_clear_staff_side() {
         clear_staff_session_for_plane_switch();
         crate::hooks::branding::clear_effective_branding();
@@ -1885,7 +1891,7 @@ pub mod api {
     /// Used by change-password. Surfaces `ApiError` so the caller can key on
     /// specific status codes (401 = current password wrong, 400 = new
     /// password fails policy) with typed `.message` for the server text.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn put_portal_authed_json_no_content<B: Serialize>(
         path: &str,
         body: &B,
@@ -1945,7 +1951,7 @@ pub mod api {
     /// Portal-authed PATCH with a JSON body that returns 204. Mirrors
     /// [`put_portal_authed_json_no_content`] for the profile self-edit
     /// path (`PATCH /portal/auth/me`).
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn patch_portal_authed_json_no_content<B: Serialize>(
         path: &str,
         body: &B,
@@ -2004,7 +2010,7 @@ pub mod api {
     /// mutating endpoints that respond 204 (`/portal/company/contacts/
     /// {id}/resend-invite`, ...). Surfaces `ApiError` so the caller
     /// can branch on the envelope code without a second parse.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn post_portal_authed_no_content(path: &str) -> Result<(), ApiError> {
         let t = current_portal_access_token().ok_or_else(|| ApiError::Status {
             code: 401,
@@ -2059,7 +2065,7 @@ pub mod api {
     /// /portal/notifications/{id}/read` responds 204 with no payload).
     /// Only checks the status; a 4xx surfaces through the standard
     /// `status_error` string.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn put_portal_authed_no_content(path: &str) -> Result<(), String> {
         let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
         let url = format!("{}{}", api_base(), path);
@@ -2083,7 +2089,7 @@ pub mod api {
     /// discards the response body. Used by the delegation revoke path
     /// (`DELETE /portal/company/delegations/{id}` responds 204). Only
     /// checks the status; a 4xx surfaces through `status_error`.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn delete_portal_authed_no_content(path: &str) -> Result<(), String> {
         let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
         let url = format!("{}{}", api_base(), path);
@@ -2108,7 +2114,7 @@ pub mod api {
     /// SPA holds the portal bearer in WASM memory so an attachment cannot
     /// be reached via a plain `<a href>`; this helper is what the
     /// `PortalAttachmentLink` handler pipes into a Blob URL.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn get_portal_authed_bytes(path: &str) -> Result<(Vec<u8>, Option<String>), String> {
         let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
         let url = format!("{}{}", api_base(), path);
@@ -2143,7 +2149,7 @@ pub mod api {
     // than falling back to the staff bearer or firing an anonymous
     // request.
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     fn contact_not_signed_in_api() -> ApiError {
         ApiError::Status {
             code: 401,
@@ -2154,7 +2160,7 @@ pub mod api {
         }
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn get_contact_authed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
         let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
         let url = format!("{}{}", api_base(), path);
@@ -2167,7 +2173,7 @@ pub mod api {
         handle_response(resp).await
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn post_contact_authed_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -2185,7 +2191,7 @@ pub mod api {
         handle_response(resp).await
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn post_contact_authed_no_content(path: &str) -> Result<(), ApiError> {
         let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
         let url = format!("{}{}", api_base(), path);
@@ -2229,7 +2235,7 @@ pub mod api {
         })
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn put_contact_authed_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -2252,7 +2258,7 @@ pub mod api {
     /// subset of the caller's own Company branding). Same shape as
     /// [`put_contact_authed_typed`]; separate verb because the server
     /// gates PATCH separately from PUT.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn patch_contact_authed_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -2270,7 +2276,7 @@ pub mod api {
         handle_response(resp).await
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn delete_contact_authed_no_content(path: &str) -> Result<(), ApiError> {
         let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
         let url = format!("{}{}", api_base(), path);
@@ -2330,7 +2336,7 @@ pub mod api {
     /// Prefers the contact bearer over the staff bearer so a contact
     /// session on a URL that ALSO renders for staff routes through the
     /// contact identity and lands on the contact-scoped filter path.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn get_authed_any<T: DeserializeOwned>(path: &str) -> Result<T, String> {
         if let Some(t) = current_contact_access_token() {
             return get_with_auth(path, &t).await;
@@ -2344,7 +2350,7 @@ pub mod api {
     /// Typed sibling of [`get_authed_any`]. Same contact-first bearer
     /// selection; surfaces `ApiError::Status` so a page can branch on
     /// 401 / 403 / 404 without re-parsing the envelope.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn get_authed_any_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
         let url = format!("{}{}", api_base(), path);
         let mut req = Request::get(&url).header("Content-Type", "application/json");
@@ -2364,7 +2370,7 @@ pub mod api {
     /// the server. Surfaces `ApiError::Status` so a caller can branch
     /// on 403 (missing cap) or 501 (not implemented yet) without
     /// re-parsing the envelope.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn post_authed_any_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -2392,7 +2398,7 @@ pub mod api {
     /// per-cap on the server. Surfaces `ApiError::Status` so a caller
     /// can branch on 403 (missing cap / not-owner) without re-parsing
     /// the envelope.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn patch_authed_any_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -2420,7 +2426,7 @@ pub mod api {
     /// server's `Content-Disposition` filename, or `ApiError::Status`
     /// so a caller can branch on 501 (PDF generation stubbed out) and
     /// render the fallback copy inline.
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn get_authed_any_bytes(path: &str) -> Result<(Vec<u8>, Option<String>), ApiError> {
         let url = format!("{}{}", api_base(), path);
         let mut req = Request::get(&url);
@@ -2499,7 +2505,7 @@ pub mod api {
     /// MAPPS-518: read the current platform-admin bearer from
     /// sessionStorage. `None` when the operator has not signed in on
     /// `/platform/login` (or the browser blocks sessionStorage).
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub fn current_platform_access_token() -> Option<String> {
         #[cfg(target_arch = "wasm32")]
         {
@@ -2516,12 +2522,12 @@ pub mod api {
         None
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     fn platform_not_signed_in() -> String {
         "not signed in as a platform admin".to_string()
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     fn platform_not_signed_in_api() -> ApiError {
         ApiError::Status {
             code: 401,
@@ -2532,13 +2538,13 @@ pub mod api {
         }
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn get_platform_authed<T: DeserializeOwned>(path: &str) -> Result<T, String> {
         let t = current_platform_access_token().ok_or_else(platform_not_signed_in)?;
         get_with_auth(path, &t).await
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn get_platform_authed_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
         let t = current_platform_access_token().ok_or_else(platform_not_signed_in_api)?;
         let url = format!("{}{}", api_base(), path);
@@ -2551,7 +2557,7 @@ pub mod api {
         handle_response(resp).await
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn post_platform_authed_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -2569,7 +2575,7 @@ pub mod api {
         handle_response(resp).await
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn put_platform_authed_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -2587,7 +2593,7 @@ pub mod api {
         handle_response(resp).await
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "app")]
     pub async fn post_platform_authed_no_content(path: &str) -> Result<(), String> {
         let t = current_platform_access_token().ok_or_else(platform_not_signed_in)?;
         post_no_content_with_auth(path, &t).await

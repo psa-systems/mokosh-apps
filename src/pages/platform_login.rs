@@ -15,24 +15,25 @@ use crate::components::{AuthLayout, Button, ButtonVariant, Input};
 const PLATFORM_TOKEN_KEY: &str = "mokosh:platform_token";
 
 #[derive(Serialize)]
-struct PlatformLoginBody {
-    email: String,
-    password: String,
+pub(crate) struct PlatformLoginBody {
+    pub(crate) email: String,
+    pub(crate) password: String,
 }
 
 #[derive(Deserialize)]
-struct PlatformLoginResp {
-    access_token: String,
+pub(crate) struct PlatformLoginResp {
+    pub(crate) access_token: String,
     #[allow(dead_code)]
-    expires_at: chrono::DateTime<chrono::Utc>,
-    admin: PlatformAdminProfile,
+    pub(crate) expires_at: chrono::DateTime<chrono::Utc>,
+    #[allow(dead_code)]
+    pub(crate) admin: PlatformAdminProfile,
 }
 
 #[derive(Deserialize)]
-struct PlatformAdminProfile {
-    email: String,
-    first_name: String,
-    last_name: String,
+pub(crate) struct PlatformAdminProfile {
+    pub(crate) email: String,
+    pub(crate) first_name: String,
+    pub(crate) last_name: String,
 }
 
 #[component]

@@ -19,9 +19,9 @@ use crate::modules::oidc::storage::{save_standalone, StandaloneSession};
 use crate::{CurrentUser, Route};
 
 #[derive(Serialize)]
-struct SelectTenantBody {
-    identity_token: String,
-    tenant_id: String,
+pub(crate) struct SelectTenantBody {
+    pub(crate) identity_token: String,
+    pub(crate) tenant_id: String,
 }
 
 #[derive(Deserialize)]
@@ -61,7 +61,7 @@ pub fn PickTenantPage() -> Element {
         saving.set(true);
         error.set(String::new());
         spawn(async move {
-            #[cfg(feature = "web")]
+            #[cfg(feature = "app")]
             {
                 use crate::hooks::fetch::api::ApiError;
                 let body = SelectTenantBody {

@@ -672,11 +672,15 @@ pub fn ContactPickerPage(token: String) -> Element {
 // Web-only helpers (kept out of the pure test surface).
 // ============================================================
 
-/// Web-only wrapper around the initial or MFA-follow-up redeem POST.
+/// Wrapper around the initial or MFA-follow-up redeem POST.
 /// `Err(())` means "treat as invalid link" (any 4xx / network error).
 /// Kept opaque so the picker page does not have to know about
 /// [`ApiError`] shape.
-#[cfg(feature = "web")]
+///
+/// Gated on `app` (not `web`) so the desktop build's callers inside
+/// `ContactPickerPage`'s `spawn` blocks resolve; `post_typed` is
+/// available on both platforms.
+#[cfg(feature = "app")]
 async fn post_redeem(
     token: &str,
     mfa_code: Option<String>,
@@ -695,9 +699,9 @@ async fn post_redeem(
         .map_err(|_| ())
 }
 
-/// Web-only wrapper around the select POST. Same `Err(())` posture as
-/// [`post_redeem`].
-#[cfg(feature = "web")]
+/// Wrapper around the select POST. Same `Err(())` posture as
+/// [`post_redeem`]; app-gated so both browser and desktop compile.
+#[cfg(feature = "app")]
 async fn post_select(
     selection_token: &str,
     contact_id: Uuid,
@@ -725,7 +729,11 @@ async fn post_select(
 /// place. `nav` is passed in because `use_navigator()` is a hook and
 /// cannot be re-called from a spawned async block; the caller
 /// captures the navigator once at render time and hands it here.
-#[cfg(feature = "web")]
+///
+/// Gated on `app` so both the browser and the desktop callers in
+/// `ContactPickerPage` resolve. Every fetch/session-setter it calls is
+/// already `app`-gated with wasm-specific fallbacks in `fetch.rs`.
+#[cfg(feature = "app")]
 fn install_session_and_go(nav: &Navigator, resp: &ContactLoginResponseWire) {
     let caps = resp
         .contact
