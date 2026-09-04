@@ -1098,9 +1098,7 @@ fn ContactPersonalInfoForm(props: ContactPersonalInfoFormProps) -> Element {
                     ErrorBanner { "{error}" }
                 }
                 if saved() {
-                    div { class: "rounded-md bg-green-50 dark:bg-green-900/40 p-3 text-sm text-green-700 dark:text-green-300",
-                        "Profile saved."
-                    }
+                    StatusBanner { tone: BannerTone::Success, "Profile saved." }
                 }
 
                 div { class: "grid gap-4 sm:grid-cols-2",

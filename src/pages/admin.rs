@@ -5,9 +5,9 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, ErrorBanner,
-    Input, Modal, PageHeader, StatCard, Table, TableBody, TableCell, TableEmpty, TableHead,
-    TableHeader, TableLoading, TableRow,
+    use_page_title, Badge, BadgeVariant, BannerTone, Button, ButtonVariant, Card, DataTable,
+    ErrorBanner, Input, Modal, PageHeader, StatCard, StatusBanner, Table, TableBody, TableCell,
+    TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 
 /// Where the tenant roster came from. `Backend` = live server; `Demo`
@@ -278,8 +278,9 @@ pub fn TenantManagementPage() -> Element {
         }
 
         if source == TenantSource::Demo && !is_loading {
-            div {
-                class: "mb-3 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
+            StatusBanner {
+                tone: BannerTone::Warning,
+                class: "mb-3".to_string(),
                 "Backend clients API not reachable - showing demo rows."
             }
         }
@@ -1343,7 +1344,9 @@ fn EditTenantModal(
                     }
                 }
                 if slug_changed_warning() {
-                    div { class: "rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-xs text-amber-800 dark:text-amber-200 space-y-2",
+                    StatusBanner {
+                        tone: BannerTone::Warning,
+                        class: "space-y-2".to_string(),
                         p {
                             "The tenant's portal URL has changed. The old URL now returns 404. Any pending portal-invite emails carrying the old slug will not work; re-send them from Contacts."
                         }
