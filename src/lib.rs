@@ -44,11 +44,7 @@ use components::AppShell;
 pub fn pathname_is_contact_forbidden(path: &str) -> bool {
     // Strip query + trailing slash so the compare is stable
     // regardless of how the browser hands us the URL.
-    let p = path
-        .split('?')
-        .next()
-        .unwrap_or(path)
-        .trim_end_matches('/');
+    let p = path.split('?').next().unwrap_or(path).trim_end_matches('/');
     // Top-level staff-only prefixes. `starts_with("{prefix}/")` covers
     // every nested route under the prefix; a bare equality catches
     // the index route (`/companies` itself).
@@ -94,10 +90,7 @@ pub fn pathname_is_contact_forbidden(path: &str) -> bool {
     // `/settings/portal-branding` (contact editor, has its own cap
     // gate), and `/settings/appearance` (personal theme picker) are
     // the only three surfaces a contact reaches under this tree.
-    if p == "/settings"
-        || p == "/settings/portal-branding"
-        || p == "/settings/appearance"
-    {
+    if p == "/settings" || p == "/settings/portal-branding" || p == "/settings/appearance" {
         return false;
     }
     if p.starts_with("/settings/") || p == "/settings" {
@@ -1421,7 +1414,11 @@ fn CompanyEdit(id: String) -> Element {
 // (company_id + id) are forwarded verbatim.
 #[component]
 fn CompanyRoleEdit(company_id: String, id: String) -> Element {
-    rsx! { company_role_edit::CompanyRoleEditPage { company_id, id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            company_role_edit::CompanyRoleEditPage { company_id, id }
+        }
+    }
 }
 
 #[component]
@@ -1811,13 +1808,21 @@ fn SettingsHome() -> Element {
 /// its own capability gate + load state.
 #[component]
 fn ContactPortalBranding() -> Element {
-    rsx! { pages::contact_portal::portal_branding::ContactPortalBrandingPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::contact_portal::portal_branding::ContactPortalBrandingPage {}
+        }
+    }
 }
 
 /// MAPPS-622: staff-side tenant branding editor.
 #[component]
 fn SettingsBranding() -> Element {
-    rsx! { pages::settings_branding::SettingsBrandingPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_branding::SettingsBrandingPage {}
+        }
+    }
 }
 
 // MAPPS-258 per-group landing pages.
@@ -2024,12 +2029,20 @@ fn SettingsOrganization() -> Element {
 // names for `/settings/contact-roles` and `/settings/contact-roles/:id`.
 #[component]
 fn ContactRolesList() -> Element {
-    rsx! { settings_contact_roles::ContactRolesListPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings_contact_roles::ContactRolesListPage {}
+        }
+    }
 }
 
 #[component]
 fn ContactRoleEdit(id: String) -> Element {
-    rsx! { settings_contact_roles::ContactRoleEditPage { id } }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings_contact_roles::ContactRoleEditPage { id }
+        }
+    }
 }
 
 // MAPPS-172 ticket lookup editors.
@@ -2153,7 +2166,11 @@ fn SlaManagement() -> Element {
 
 #[component]
 fn Invitations() -> Element {
-    rsx! { invitations::InvitationsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            invitations::InvitationsPage {}
+        }
+    }
 }
 
 /// PMS-791 phase 2: legacy bookmarks for `/admin/team` land here and
@@ -2168,7 +2185,7 @@ fn TeamLegacyRedirect() -> Element {
         nav.replace(Route::Invitations {});
     }
     rsx! {
-        div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
+        div { class: "max-w-7xl mx-auto min-h-screen flex items-center justify-center text-sm text-muted",
             "Redirecting to Invitations…"
         }
     }
@@ -2177,7 +2194,11 @@ fn TeamLegacyRedirect() -> Element {
 #[cfg(feature = "multi-tenant")]
 #[component]
 fn Teams() -> Element {
-    rsx! { teams::TeamsPage {} }
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            teams::TeamsPage {}
+        }
+    }
 }
 
 // mokosh-contact-login: TenantManagement wrapper retired with the
