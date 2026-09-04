@@ -387,7 +387,7 @@ fn AssetUploadRow(
                     if current_url.is_some() {
                         button {
                             r#type: "button",
-                            class: "text-xs text-red-600 hover:underline",
+                            class: "text-xs text-red-600 hover:underline dark:text-red-400",
                             disabled: disabled || saving(),
                             onclick: on_remove,
                             "Remove"

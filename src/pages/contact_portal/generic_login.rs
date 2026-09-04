@@ -181,7 +181,7 @@ pub fn ContactGenericLoginPage() -> Element {
                         r#for: "portal_id_input",
                         class: "block text-sm font-medium text-content",
                         "Company ID"
-                        span { class: "text-red-500 ml-1", aria_label: "required", role: "img", "*" }
+                        span { class: "text-red-500 dark:text-red-400 ml-1", aria_label: "required", role: "img", "*" }
                     }
                     input {
                         id: "portal_id_input",

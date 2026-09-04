@@ -568,7 +568,7 @@ fn MembersSection(props: MembersSectionProps) -> Element {
                             span { "{m.first_name} {m.last_name} — {m.email} ({m.role})" }
                             button {
                                 r#type: "button",
-                                class: "text-xs text-red-600 hover:opacity-80",
+                                class: "text-xs text-red-600 hover:opacity-80 dark:text-red-400",
                                 onclick: {
                                     let user_id = m.user_id;
                                     move |_| {
