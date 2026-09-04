@@ -10,15 +10,6 @@ use crate::components::{
     TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 
-/// Where the tenant roster came from. `Backend` = live server; `Demo`
-/// = seeded fallback (no platform bearer / API unreachable).
-#[cfg(feature = "multi-tenant")]
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum TenantSource {
-    Backend,
-    Demo,
-}
-
 /// Subset of mokosh-server's `TenantResponse` we render in the admin
 /// tenant table. Serde drops unknown fields so adding columns later
 /// just means extending this struct.
@@ -174,8 +165,10 @@ pub fn TenantManagementPage() -> Element {
     // with the new state.
     let mut show_create = use_signal(|| false);
     let mut edit_target: Signal<Option<RemoteTenant>> = use_signal(|| None);
-    // Try the live tenants endpoint first; fall back to seeded demo
-    // rows so the page stays demoable for envs without a live backend.
+    // MAPPS-438: render only rows the backend returned. A failed fetch
+    // (missing platform bearer, 4xx / 5xx, transport error) resolves to
+    // `Some(None)` so `fetch_failed` can render an ErrorBanner over the
+    // empty table instead of inventing rows.
     let mut tenants_resource = use_resource(|| async {
         // F1: re-fetch on org switch / token swap so the roster reflects
         // the active scope instead of the prior tenant's cached rows.
@@ -188,26 +181,21 @@ pub fn TenantManagementPage() -> Element {
         // guaranteed 401 here. Read the platform bearer stashed by
         // `/platform/login` instead; the caller (TenantManagementPage)
         // gates rendering on `platform_bearer_present()`, so an
-        // absent token here means the visitor is unauthenticated for
-        // this surface and should see the empty/demo state.
-        let token = match crate::hooks::fetch::api::current_platform_access_token() {
-            Some(t) => t,
-            None => return (Vec::<RemoteTenant>::new(), TenantSource::Demo),
-        };
-        match crate::hooks::fetch::api::get_with_auth::<PaginatedTenants>("/tenants", &token).await
-        {
-            Ok(page) => (page.data, TenantSource::Backend),
-            Err(_) => (Vec::new(), TenantSource::Demo),
-        }
+        // absent token here reads as a fetch failure.
+        let token = crate::hooks::fetch::api::current_platform_access_token()?;
+        crate::hooks::fetch::api::get_with_auth::<PaginatedTenants>("/tenants", &token)
+            .await
+            .ok()
+            .map(|page| page.data)
     });
 
     let resource_snapshot = tenants_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
-    let (remote_tenants, source): (Vec<RemoteTenant>, TenantSource) = match &*resource_snapshot {
-        Some((rows, src)) => (rows.clone(), *src),
-        None => (Vec::new(), TenantSource::Demo),
-    };
-    let fetch_failed = false;
+    let fetch_failed = matches!(*resource_snapshot, Some(None));
+    let remote_tenants: Vec<RemoteTenant> = resource_snapshot
+        .as_ref()
+        .and_then(|o| o.clone())
+        .unwrap_or_default();
 
     // MAPPS-351: a failed load while the server is flagged DOWN is an outage,
     // not an empty roster - show the honest unavailable state instead of an
@@ -277,15 +265,8 @@ pub fn TenantManagementPage() -> Element {
             StatCard { label: "MRR", value: "-" }
         }
 
-        if source == TenantSource::Demo && !is_loading {
-            StatusBanner {
-                tone: BannerTone::Warning,
-                class: "mb-3".to_string(),
-                "Backend clients API not reachable - showing demo rows."
-            }
-        }
         if fetch_failed {
-            ErrorBanner { class: "mb-3", "Could not load tenants. Refresh the page to retry." }
+            ErrorBanner { class: "mb-3", "Could not load clients. Refresh the page to retry." }
         }
 
         DataTable {
@@ -309,7 +290,7 @@ pub fn TenantManagementPage() -> Element {
                 }
                 if is_loading {
                     TableLoading { columns: 7, rows: 4 }
-                } else if source == TenantSource::Backend && remote_tenants.is_empty() {
+                } else if !fetch_failed && remote_tenants.is_empty() {
                     TableEmpty {
                         columns: 7,
                         title: "No tenants yet".to_string(),
