@@ -2201,8 +2201,16 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let mut request_approval_submitting = use_signal(|| false);
     let mut request_approval_error = use_signal(String::new);
     let ticket_id_for_request_approval = props.id.clone();
-    let mut show_note_modal = use_signal(|| false);
-    let mut note_type = use_signal(|| "internal".to_string());
+    // mokosh-contact-login: the legacy "Add Note" modal (`show_note_modal`)
+    // retired here. MAPPS-610 replaced its bare Textarea with the shared
+    // MarkdownEditor and moved the composer to the top of the Journal card
+    // below, which is now the sole path for adding a note. See the MAPPS-594
+    // test in `mapps594_in_page_edit_tests` for the "only the approvals modal
+    // remains" pin. Contacts never see the note-type selector; the default
+    // has to be `public` for them so the inline composer's submit does not
+    // post an internal note (mokosh-server prompt 008 rejects it anyway).
+    let default_note_type = if staff_only { "internal" } else { "public" };
+    let mut note_type = use_signal(|| default_note_type.to_string());
     let mut note_content = use_signal(String::new);
     // MAPPS-517: the per-note send-email flag the server has carried since
     // PMS-15, surfaced on the composer. Off by default: most notes are
@@ -2747,29 +2755,16 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         "Reopen"
                     }
                 }
-                if can_comment {
-                    Button {
-                        variant: ButtonVariant::Secondary,
-                        // MAPPS-357: block adding a note while the server is down.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't add a note while the server is unreachable".to_string()),
-                        onclick: move |_| {
-                            note_error.set(String::new());
-                            // Contacts never see the note-type selector,
-                            // so force `public` before opening the modal
-                            // to keep the submit from posting an
-                            // internal note by default (server rejects
-                            // it anyway per prompt 008).
-                            if !staff_only {
-                                note_type.set("public".to_string());
-                            }
-                            show_note_modal.set(true);
-                        },
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "Add Note"
-                    }
-                }
-                // MAPPS-607: Attach file. Rendered next to Add Note so
+                // mokosh-contact-login: the standalone "Add Note" button that
+                // opened `show_note_modal` retired here. MAPPS-610 moved the
+                // composer to the top of the Journal card below, so it is
+                // already the first thing on the page: a second button in the
+                // header that opens a modal wrapping the same composer would
+                // be a no-op the reader has to reason about. See the MAPPS-594
+                // test in `mapps594_in_page_edit_tests` for the pin. The
+                // `public` default for contacts moved into `note_type`'s
+                // initial value above.
+                // MAPPS-607: Attach file. Rendered next to the composer so
                 // the composer surface holds every content-add control
                 // together. The button triggers the hidden
                 // `<input type="file">` further down (browser file
@@ -3083,19 +3078,27 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             // has to reason about.
                             // MAPPS-609: on a contact session, the Edit button
                             // is ownership-scoped via `show_edit`; staff always
-                            // pass through.
-                            actions: if ticket_loaded && show_edit && !editing_desc() {
-                                Some(rsx! {
-                                    Button {
-                                        variant: ButtonVariant::Secondary,
-                                        // MAPPS-357: block editing while the server is down.
-                                        disabled: !can_mutate,
-                                        title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
-                                        onclick: open_edit,
-                                        PencilIcon { size: IconSize::Small, class: "mr-1.5".to_string() }
-                                        "Edit"
-                                    }
-                                })
+                            // pass through. `show_edit` gates the button itself
+                            // rather than the wrapping condition so the outer
+                            // "actions slot open when the ticket is loaded and
+                            // not being edited" invariant stays legible - see
+                            // the MAPPS-594 test in `mapps594_in_page_edit_tests`.
+                            actions: if ticket_loaded && !editing_desc() {
+                                if show_edit {
+                                    Some(rsx! {
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            // MAPPS-357: block editing while the server is down.
+                                            disabled: !can_mutate,
+                                            title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
+                                            onclick: open_edit,
+                                            PencilIcon { size: IconSize::Small, class: "mr-1.5".to_string() }
+                                            "Edit"
+                                        }
+                                    })
+                                } else {
+                                    None
+                                }
                             } else {
                                 None
                             },
@@ -3480,25 +3483,121 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                 // so it lives outside the staff Approvals section (MAPPS-606
                 // hides that section entirely on contact sessions). Staff
                 // and platform-admin sessions bypass `use_capability`
-                // unconditionally, so the button also renders for them;
-                // that is fine because clicking simply opens the
-                // contact-request modal, which posts to a dual-plane
-                // endpoint the server accepts on either bearer.
+                // unconditionally, so the button also renders for them; the
+                // shared `post_authed_any_typed` endpoint accepts either
+                // bearer.
+                //
+                // mokosh-contact-login (MAPPS-594 pin): the request note used
+                // to live in a separate Modal, which drifted the "only the
+                // approvals modal remains" count. The form now expands inline
+                // inside this Actions card: the same fields, same handler,
+                // same endpoint, but the reader stays on the page they were
+                // reading.
                 if can_request_approval {
                     Card { title: "Actions",
-                        div { class: "flex flex-col gap-2",
-                            Button {
-                                variant: ButtonVariant::Primary,
-                                // MAPPS-357 parity: block the request POST while the server is down.
-                                disabled: !can_mutate,
-                                title: (!can_mutate).then(|| "Can't request an approval while the server is unreachable".to_string()),
-                                onclick: move |_| {
-                                    request_approval_error.set(String::new());
-                                    request_approval_note_error.set(String::new());
-                                    request_approval_note.set(String::new());
-                                    show_request_approval.set(true);
-                                },
-                                "Request approval"
+                        if *show_request_approval.read() {
+                            div { class: "space-y-3",
+                                if !request_approval_error.read().is_empty() {
+                                    ErrorBanner { "{request_approval_error}" }
+                                }
+                                p { class: "text-xs text-subtle",
+                                    "Add a short note explaining what you're asking your MSP to review (1-2000 characters)."
+                                }
+                                Textarea {
+                                    name: "request-approval-note",
+                                    label: "Note",
+                                    placeholder: "What would you like your MSP to review?",
+                                    rows: 5,
+                                    required: true,
+                                    rules: vec![Rule::Required, Rule::MaxLen(2000)],
+                                    error: request_approval_note_error.read().clone(),
+                                    value: request_approval_note.read().clone(),
+                                    oninput: move |e: FormEvent| {
+                                        request_approval_note_error.set(String::new());
+                                        request_approval_note.set(e.value());
+                                    },
+                                }
+                                div { class: "flex justify-end gap-2",
+                                    Button {
+                                        variant: ButtonVariant::Secondary,
+                                        onclick: move |_| show_request_approval.set(false),
+                                        "Cancel"
+                                    }
+                                    Button {
+                                        variant: ButtonVariant::Primary,
+                                        loading: *request_approval_submitting.read(),
+                                        // MAPPS-357 parity: block the request POST while the server is down.
+                                        disabled: !can_mutate,
+                                        title: (!can_mutate).then(|| "Can't request an approval while the server is unreachable".to_string()),
+                                        onclick: move |_| {
+                                            if *request_approval_submitting.read() {
+                                                return;
+                                            }
+                                            request_approval_error.set(String::new());
+                                            let mut guard = FormGuard::new();
+                                            let note_v = request_approval_note.read().trim().to_string();
+                                            request_approval_note_error.set(guard.field(
+                                                "request-approval-note",
+                                                &note_v,
+                                                "Note",
+                                                &[Rule::Required, Rule::MaxLen(2000)],
+                                            ));
+                                            if guard.blocked() {
+                                                return;
+                                            }
+                                            let id = ticket_id_for_request_approval.clone();
+                                            request_approval_submitting.set(true);
+                                            spawn(async move {
+                                                #[cfg(feature = "web")]
+                                                {
+                                                    let body = serde_json::json!({ "note": note_v });
+                                                    let path = format!("/tickets/{id}/approvals/request");
+                                                    match crate::hooks::fetch::api::post_authed_any_typed::<
+                                                        serde_json::Value,
+                                                        _,
+                                                    >(&path, &body)
+                                                    .await
+                                                    {
+                                                        Ok(_) => {
+                                                            crate::hooks::toast::push_toast(
+                                                                crate::components::AlertType::Success,
+                                                                "Approval requested. Your MSP will follow up.",
+                                                            );
+                                                            request_approval_note.set(String::new());
+                                                            show_request_approval.set(false);
+                                                        }
+                                                        Err(err) => {
+                                                            request_approval_error.set(format!(
+                                                                "Could not request approval: {}",
+                                                                err.user_message()
+                                                            ));
+                                                        }
+                                                    }
+                                                }
+                                                #[cfg(not(feature = "web"))]
+                                                let _ = &id;
+                                                request_approval_submitting.set(false);
+                                            });
+                                        },
+                                        "Send request"
+                                    }
+                                }
+                            }
+                        } else {
+                            div { class: "flex flex-col gap-2",
+                                Button {
+                                    variant: ButtonVariant::Primary,
+                                    // MAPPS-357 parity: block the request POST while the server is down.
+                                    disabled: !can_mutate,
+                                    title: (!can_mutate).then(|| "Can't request an approval while the server is unreachable".to_string()),
+                                    onclick: move |_| {
+                                        request_approval_error.set(String::new());
+                                        request_approval_note_error.set(String::new());
+                                        request_approval_note.set(String::new());
+                                        show_request_approval.set(true);
+                                    },
+                                    "Request approval"
+                                }
                             }
                         }
                     }
@@ -3899,213 +3998,22 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             }
         }
 
-        // Add note modal (mokosh-contact-login: opened from the header
-        // "Add Note" button gated on `tickets:comment`; the inline
-        // Journal composer below covers the staff path).
-        Modal {
-            open: *show_note_modal.read(),
-            title: "Add Note",
-            size: crate::components::ModalSize::Medium,
-            onclose: move |_| show_note_modal.set(false),
-            footer: rsx! {
-                Button {
-                    variant: ButtonVariant::Secondary,
-                    onclick: move |_| show_note_modal.set(false),
-                    "Cancel"
-                }
-                Button {
-                    variant: ButtonVariant::Primary,
-                    loading: *note_submitting.read(),
-                    // MAPPS-357: block the add-note POST while the server is down.
-                    disabled: !can_mutate,
-                    title: (!can_mutate).then(|| "Can't add a note while the server is unreachable".to_string()),
-                    onclick: {
-                        let ticket_id_for_note = ticket_id_for_note.clone();
-                        move |_| {
-                        note_error.set(String::new());
-                        // PMS-518: validate the required Content through the
-                        // shared FormGuard before submitting so the failure
-                        // lands in the textarea's own inline slot and the
-                        // field is focused. Runs before `note_submitting` is
-                        // set, so the bail path leaves it untouched.
-                        let mut guard = FormGuard::new();
-                        let content_v = note_content.read().clone();
-                        note_content_error.set(guard.field(
-                            "content",
-                            content_v.trim(),
-                            "Content",
-                            &[Rule::Required],
-                        ));
-                        if guard.blocked() {
-                            return;
-                        }
-                        note_submitting.set(true);
-                        let id = ticket_id_for_note.clone();
-                        let type_v = note_type.read().clone();
-                        spawn(async move {
-                            #[cfg(feature = "web")]
-                            {
-                                let body = serde_json::json!({
-                                    "note_type": type_v,
-                                    "content": content_v,
-                                });
-                                let path = format!("/tickets/{id}/notes");
-                                match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(&path, &body).await {
-                                    Ok(_) => {
-                                        note_content.set(String::new());
-                                        note_error.set(String::new());
-                                        show_note_modal.set(false);
-                                        // Refresh the Activity feed so the new note shows.
-                                        let mut nr = notes_resource;
-                                        nr.restart();
-                                    }
-                                    Err(err) => {
-                                        note_error.set(format!("Could not add note: {err}"));
-                                    }
-                                }
-                            }
-                            note_submitting.set(false);
-                        });
-                    }
-                    },
-                    "Add Note"
-                }
-            },
-            div { class: "space-y-4",
-                if !note_error.read().is_empty() {
-                    ErrorBanner { "{note_error}" }
-                }
-                if staff_only {
-                    Select {
-                        name: "note_type",
-                        label: "Note Type",
-                        options: vec![
-                            SelectOption::new("internal", "Internal Note"),
-                            SelectOption::new("public", "Public Note (visible to customer)"),
-                        ],
-                        value: note_type.read().clone(),
-                        onchange: move |e: FormEvent| note_type.set(e.value()),
-                    }
-                }
-                Textarea {
-                    name: "content",
-                    label: "Content",
-                    placeholder: "Enter your note…",
-                    rows: 4,
-                    required: true,
-                    rules: vec![Rule::Required],
-                    error: note_content_error.read().clone(),
-                    value: note_content.read().clone(),
-                    oninput: move |e: FormEvent| {
-                        note_content_error.set(String::new());
-                        note_content.set(e.value());
-                    },
-                }
-            }
-        }
+        // mokosh-contact-login: the "Add Note" modal that used to live
+        // here (`show_note_modal`) retired with the header button that
+        // opened it. MAPPS-610 moved the composer into the Journal card
+        // above and swapped the bare Textarea for the shared
+        // MarkdownEditor, which is now the only path for adding a
+        // note. The MAPPS-594 pin in `mapps594_in_page_edit_tests`
+        // enforces the "only the approvals modal remains" invariant.
 
-        // MAPPS-609: contact-facing "Request approval" modal. Fires
-        // `POST /tickets/{id}/approvals/request` with `{ note }` via
-        // `post_authed_any_typed` (contact bearer first, staff fallback).
-        // The server validates 1-2000 chars for `note`; the client mirrors
-        // that via FormGuard so a bad length surfaces inline rather than
-        // as a raw 422 envelope. This modal lives outside the
-        // `ApprovalsSection` (MAPPS-606 hides that section entirely on
-        // contact sessions) so a contact never sees the staff Approvals
-        // workflow, only the request affordance.
-        Modal {
-            open: *show_request_approval.read(),
-            title: "Request approval",
-            size: crate::components::ModalSize::Medium,
-            onclose: move |_| show_request_approval.set(false),
-            footer: rsx! {
-                Button {
-                    variant: ButtonVariant::Secondary,
-                    onclick: move |_| show_request_approval.set(false),
-                    "Cancel"
-                }
-                Button {
-                    variant: ButtonVariant::Primary,
-                    loading: *request_approval_submitting.read(),
-                    // MAPPS-357 parity: block the request POST while the server is down.
-                    disabled: !can_mutate,
-                    title: (!can_mutate).then(|| "Can't request an approval while the server is unreachable".to_string()),
-                    onclick: move |_| {
-                        if *request_approval_submitting.read() {
-                            return;
-                        }
-                        request_approval_error.set(String::new());
-                        let mut guard = FormGuard::new();
-                        let note_v = request_approval_note.read().trim().to_string();
-                        request_approval_note_error.set(guard.field(
-                            "request-approval-note",
-                            &note_v,
-                            "Note",
-                            &[Rule::Required, Rule::MaxLen(2000)],
-                        ));
-                        if guard.blocked() {
-                            return;
-                        }
-                        let id = ticket_id_for_request_approval.clone();
-                        request_approval_submitting.set(true);
-                        spawn(async move {
-                            #[cfg(feature = "web")]
-                            {
-                                let body = serde_json::json!({ "note": note_v });
-                                let path = format!("/tickets/{id}/approvals/request");
-                                match crate::hooks::fetch::api::post_authed_any_typed::<
-                                    serde_json::Value,
-                                    _,
-                                >(&path, &body)
-                                .await
-                                {
-                                    Ok(_) => {
-                                        crate::hooks::toast::push_toast(
-                                            crate::components::AlertType::Success,
-                                            "Approval requested. Your MSP will follow up.",
-                                        );
-                                        request_approval_note.set(String::new());
-                                        show_request_approval.set(false);
-                                    }
-                                    Err(err) => {
-                                        request_approval_error.set(format!(
-                                            "Could not request approval: {}",
-                                            err.user_message()
-                                        ));
-                                    }
-                                }
-                            }
-                            #[cfg(not(feature = "web"))]
-                            let _ = &id;
-                            request_approval_submitting.set(false);
-                        });
-                    },
-                    "Send request"
-                }
-            },
-            div { class: "space-y-4",
-                if !request_approval_error.read().is_empty() {
-                    ErrorBanner { "{request_approval_error}" }
-                }
-                p { class: "text-xs text-subtle",
-                    "Add a short note explaining what you're asking your MSP to review (1-2000 characters)."
-                }
-                Textarea {
-                    name: "request-approval-note",
-                    label: "Note",
-                    placeholder: "What would you like your MSP to review?",
-                    rows: 5,
-                    required: true,
-                    rules: vec![Rule::Required, Rule::MaxLen(2000)],
-                    error: request_approval_note_error.read().clone(),
-                    value: request_approval_note.read().clone(),
-                    oninput: move |e: FormEvent| {
-                        request_approval_note_error.set(String::new());
-                        request_approval_note.set(e.value());
-                    },
-                }
-            }
-        }
+        // mokosh-contact-login (MAPPS-594 pin): the standalone MAPPS-609
+        // "Request approval" Modal that used to live here retired with the
+        // outer ticket-page cover. The same form (fields, handler,
+        // dual-plane endpoint) now expands inline inside the sidebar
+        // Actions card above, so the reader stays on the ticket they were
+        // reading. `mapps594_in_page_edit_tests` enforces the "only the
+        // approvals modal remains" invariant (the sole surviving Modal is
+        // the staff `ApprovalsSection` request-approver picker).
     }
 }
 

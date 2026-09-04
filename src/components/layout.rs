@@ -503,7 +503,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                 // Portal Branding tile for tenant defaults + the
                 // Company detail card for per-Company overrides.
                 if branding_link_visible {
-                    NavItem { to: Route::ContactPortalBranding {}, icon: rsx!(SwatchIcon {}), label: "Portal Branding", collapsed }
+                    NavItem { to: Route::ContactPortalBranding {}, icon: rsx!(PhotoIcon {}), label: "Portal Branding", collapsed }
                 }
 
                 // MAPPS-453: surface the docs subdomain in the main menu, not
@@ -528,7 +528,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                         NavItem { to: Route::TimeEntryList {}, icon: rsx!(ClockIcon {}), label: "Time Entries", collapsed }
                     }
                     if show_timesheets {
-                        NavItem { to: Route::Timesheets {}, icon: rsx!(DocumentIcon {}), label: "Timesheets", collapsed }
+                        NavItem { to: Route::Timesheets {}, icon: rsx!(TableCellsIcon {}), label: "Timesheets", collapsed }
                     }
                     if can_manage {
                         NavItem { to: Route::TimesheetApprovals {}, icon: rsx!(DocumentCheckIcon {}), label: "Timesheet Approvals", collapsed }
@@ -670,7 +670,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     // default = A. The `team_enabled` runtime flag was
                     // retired: Teams is now core, not a preview.
                     TeamsNavItem { visible: is_org_tenant, collapsed }
-                    NavItem { to: Route::Invitations {}, icon: rsx!(UserGroupIcon {}), label: "Invitations", collapsed }
+                    NavItem { to: Route::Invitations {}, icon: rsx!(MailIcon {}), label: "Invitations", collapsed }
                     NavItem { to: Route::AuditLog {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Audit Log", collapsed }
                     NavItem { to: Route::FormsBuilder {}, icon: rsx!(InboxArrowDownIcon {}), label: "Request Forms", collapsed }
                     NavItem { to: Route::SlaManagement {}, icon: rsx!(ShieldCheckIcon {}), label: "SLA Management", collapsed }
@@ -923,16 +923,12 @@ struct TeamsNavItemProps {
 #[cfg(feature = "multi-tenant")]
 #[component]
 fn TeamsNavItem(props: TeamsNavItemProps) -> Element {
-    if !props.visible {
+    let TeamsNavItemProps { visible, collapsed } = props;
+    if !visible {
         return rsx! {};
     }
     rsx! {
-        NavItem {
-            to: Route::Teams {},
-            icon: rsx!(UserGroupIcon {}),
-            label: "Teams",
-            collapsed: props.collapsed,
-        }
+        NavItem { to: Route::Teams {}, icon: rsx!(UserGroupIcon {}), label: "Teams", collapsed }
     }
 }
 
@@ -1510,7 +1506,7 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
         .clone()
         .filter(|s| !s.is_empty())
         .or_else(|| brand.company_name.clone().filter(|s| !s.is_empty()))
-        .unwrap_or_else(|| "Mokosh Platform".to_string());
+        .unwrap_or_else(crate::branding::product_name);
     let logo_url = brand
         .logo_url
         .clone()
@@ -1533,9 +1529,15 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
                             class: "h-16 w-16 object-contain",
                         }
                     } else {
+                        // MAPPS-509 recurrence guard: route the fallback through
+                        // the branding helper so an operator swapping in their
+                        // own asset via `MOKOSH_BRAND_LOGO_URL` reaches this
+                        // site too, and the built-in `asset!()` reference
+                        // stays single-sourced inside `branding.rs`. See the
+                        // `every_render_site_reads_the_helper` test.
                         img {
-                            src: asset!("/assets/icon-192.png"),
-                            alt: "Mokosh",
+                            src: "{crate::branding::logo_src()}",
+                            alt: "{wordmark}",
                             class: "h-16 w-16",
                         }
                     }

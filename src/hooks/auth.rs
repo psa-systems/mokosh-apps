@@ -364,6 +364,8 @@ pub fn use_memberships_loader() {
         spawn(async move {
             #[cfg(feature = "web")]
             {
+                // MAPPS-491: primary source is mokosh's own multi-tenant list.
+                // A populated response wins outright.
                 match crate::hooks::fetch::api::get_authed_typed::<Vec<MembershipView>>(
                     "/auth/memberships",
                 )
@@ -373,13 +375,55 @@ pub fn use_memberships_loader() {
                         let mut a = auth.write();
                         a.memberships = list;
                         a.memberships_loaded = true;
+                        return;
                     }
                     Ok(_) => {
-                        tracing::debug!("mokosh /auth/memberships returned no rows");
+                        tracing::debug!(
+                            "mokosh /auth/memberships returned no rows; \
+                                         falling back to /tenants/current"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "mokosh /auth/memberships load failed: {e}; \
+                                        falling back to /tenants/current"
+                        );
+                    }
+                }
+                // MAPPS-427 recurrence guard: the org name must come from
+                // mokosh's own tenant row, not the OIDC issuer's
+                // `/v1/auth/memberships` (which 401s for this SPA's token by
+                // design, BUNYIP-252) and not from a fabricated fallback (the
+                // synthesised row this hook used to seed was displaying the
+                // user's email address as an organisation name). Reading
+                // `/tenants/current` here uses the exact column client-facing
+                // emails compose from (MAPPS-541), so the top bar, the board
+                // view and the message a client receives cannot disagree.
+                #[derive(serde::Deserialize)]
+                struct TenantView {
+                    #[serde(default)]
+                    id: String,
+                    #[serde(default)]
+                    name: String,
+                }
+                match crate::hooks::fetch::api::get_authed::<TenantView>("/tenants/current").await {
+                    Ok(t) if !t.name.trim().is_empty() => {
+                        let mut a = auth.write();
+                        if let Ok(id) = t.id.parse::<uuid::Uuid>() {
+                            a.active_tenant_id = Some(id);
+                        }
+                        a.memberships = vec![MembershipView {
+                            tenant_id: t.id,
+                            tenant_name: t.name,
+                        }];
+                        a.memberships_loaded = true;
+                    }
+                    Ok(_) => {
+                        tracing::warn!("organisation load returned no name; leaving it unset");
                         auth.write().memberships_loaded = true;
                     }
                     Err(e) => {
-                        tracing::warn!("mokosh /auth/memberships load failed: {e}");
+                        tracing::warn!("organisation load failed, leaving it unset: {e}");
                         auth.write().memberships_loaded = true;
                     }
                 }

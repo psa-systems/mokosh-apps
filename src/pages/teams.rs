@@ -107,6 +107,30 @@ pub fn TeamsPage() -> Element {
         };
     }
 
+    // MAPPS-526: mokosh-server gates the /teams read + write endpoints on
+    // `RequireAdmin`, so a non-admin who reached this URL directly (nav
+    // hides the row for them) would render an empty roster and every
+    // action would 403 server-side. Refuse the page instead, matching
+    // the pattern audit_log.rs uses for the other /admin/* surfaces.
+    if !is_admin {
+        return rsx! {
+            PageHeader {
+                title: "Teams",
+                subtitle: "Sub-groups of users inside your organization.",
+            }
+            crate::components::Card {
+                div { class: "py-12 text-center",
+                    p { class: "text-sm font-medium text-content mb-1",
+                        "Admins only"
+                    }
+                    p { class: "text-sm text-muted",
+                        "You do not have permission to manage teams."
+                    }
+                }
+            }
+        };
+    }
+
     let snap = teams_resource.read_unchecked();
     let is_loading = snap.is_none();
     let teams: Vec<RemoteTeam> = match &*snap {

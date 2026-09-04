@@ -2599,29 +2599,34 @@ mod contact_portal_routes {
     }
 
     /// PMS-832 / MAPPS-538: the password-reset pair resolves, and resolves to
-    /// the PORTAL pages.
+    /// the PORTAL (now contact-plane) pages, NOT the platform ones.
     ///
     /// The emailed link landing on the 404 catch-all is the defect this work
-    /// fixes, and `emailed_link_routes` above now covers that. What it cannot
-    /// see is the other half: `/reset-password/{token}` is the PLATFORM page,
-    /// which posts to `/api/v1/auth/reset-password` and resolves the token
-    /// against `users`. A portal customer reaching that page resets a staff
-    /// login, which is the PMS-820 defect exactly. These paths differ by one
-    /// prefix, so the two are asserted apart rather than assumed.
+    /// fixes. What the two individual-shape tests above cannot see is the
+    /// other half: `/reset-password/{token}` is the PLATFORM page, which
+    /// posts to `/api/v1/auth/reset-password` and resolves the token against
+    /// `users`. A portal customer reaching that page resets a staff login,
+    /// which is the PMS-820 defect exactly. These paths differ by one prefix,
+    /// so the two are asserted apart rather than assumed.
+    ///
+    /// mokosh-contact-login (prompt 001): the emailed portal reset link is
+    /// slug-scoped now (`/portal/:slug/reset-password?token=...`), so the
+    /// URLs asserted here follow that shape. The platform-vs-portal
+    /// separation is what still matters.
     #[test]
     fn the_portal_reset_pages_resolve_and_are_not_the_platform_one() {
-        let reset =
-            Route::from_str("/portal/reset-password").expect("/portal/reset-password parses");
+        let reset = Route::from_str("/portal/acme/reset-password?token=Zt4kQ1p9Zt4kQ1p9Zt4k")
+            .expect("/portal/:slug/reset-password parses");
         assert!(
             matches!(reset, Route::ContactResetPassword { .. }),
-            "the emailed portal link must land on the portal page, got {reset:?}"
+            "the emailed portal link must land on the contact-plane reset page, got {reset:?}"
         );
 
-        let forgot =
-            Route::from_str("/portal/forgot-password").expect("/portal/forgot-password parses");
+        let forgot = Route::from_str("/portal/acme/forgot-password")
+            .expect("/portal/:slug/forgot-password parses");
         assert!(
             matches!(forgot, Route::ContactForgotPassword { .. }),
-            "/portal/forgot-password must resolve to PortalForgotPassword, got {forgot:?}"
+            "/portal/:slug/forgot-password must resolve to ContactForgotPassword, got {forgot:?}"
         );
 
         // The platform page is still its own route, one prefix away.
@@ -2629,7 +2634,7 @@ mod contact_portal_routes {
             .expect("the platform reset route parses");
         assert!(
             !matches!(platform, Route::ContactResetPassword { .. }),
-            "the platform reset link must not resolve to the portal page: it posts to \
+            "the platform reset link must not resolve to the contact-plane page: it posts to \
              /api/v1/auth/reset-password, which resolves the token against `users`"
         );
     }
@@ -2651,6 +2656,12 @@ mod admin_route_role_gates {
 
     /// (route path, page source path, page source). One entry per `/admin/*`
     /// route in the `Route` enum, `#[cfg]`-gated ones included.
+    ///
+    /// `mokosh-contact-login`: `/admin/tenants` retired with the Clients tab
+    /// (prompt 001), so its `src/pages/admin.rs` entry is gone. `/admin/team`
+    /// still routes here as a legacy redirect to `/admin/invitations`, so it
+    /// points at `invitations.rs` (the target of the redirect and where the
+    /// role gate actually lives).
     const ADMIN_ROUTE_PAGES: &[(&str, &str, &str)] = &[
         (
             "/admin/audit",
@@ -2668,9 +2679,19 @@ mod admin_route_role_gates {
             include_str!("pages/sla.rs"),
         ),
         (
-            "/admin/tenants",
-            "src/pages/admin.rs",
-            include_str!("pages/admin.rs"),
+            "/admin/invitations",
+            "src/pages/invitations.rs",
+            include_str!("pages/invitations.rs"),
+        ),
+        (
+            "/admin/team",
+            "src/pages/invitations.rs",
+            include_str!("pages/invitations.rs"),
+        ),
+        (
+            "/admin/teams",
+            "src/pages/teams.rs",
+            include_str!("pages/teams.rs"),
         ),
     ];
 
