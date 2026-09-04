@@ -1117,7 +1117,6 @@ pub fn CogIcon(#[props(default)] size: IconSize, #[props(default)] class: String
     }
 }
 
-
 /// PMS-729 phase 2 §6 slice 3: light-mode indicator for the portal
 /// theme toggle. Heroicons `sun` outline.
 #[component]

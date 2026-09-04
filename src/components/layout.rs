@@ -125,10 +125,8 @@ pub fn AppShell() -> Element {
                 #[serde(default)]
                 branding: crate::hooks::branding::EffectiveBranding,
             }
-            if let Ok(t) = crate::hooks::fetch::api::get_authed::<TenantSnippet>(
-                "/tenants/current",
-            )
-            .await
+            if let Ok(t) =
+                crate::hooks::fetch::api::get_authed::<TenantSnippet>("/tenants/current").await
             {
                 crate::hooks::branding::set_effective_branding(t.branding);
             }
@@ -408,9 +406,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
         #[cfg(feature = "web")]
         {
             crate::hooks::fetch::api::has_contact_session()
-                && crate::hooks::capabilities::use_capability(
-                    "settings:manage_company_branding",
-                )
+                && crate::hooks::capabilities::use_capability("settings:manage_company_branding")
         }
         #[cfg(not(feature = "web"))]
         {
@@ -977,7 +973,6 @@ fn DocsNavItem(href: String, collapsed: bool) -> Element {
     }
 }
 
-
 /// Persistent top bar.
 ///
 /// Brand sits on the left, occupying the same column-width as the
@@ -1483,7 +1478,6 @@ fn NotificationRow(item: NotificationItem, on_read: EventHandler<()>) -> Element
 // mokosh-contact-login: PortalLayout + PortalUserMenu retired with the
 // customer-portal /portal/* route family (prompt 001). Contact-plane
 // pages under `src/pages/contact_portal/` use their own layout.
-
 
 /// Auth layout (login, signup, password reset)
 #[derive(Props, Clone, PartialEq)]

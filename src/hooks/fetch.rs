@@ -1270,8 +1270,7 @@ pub mod api {
         let m = msg.trim();
         matches!(
             m,
-            ""
-                | "Authentication required"
+            "" | "Authentication required"
                 | "Access denied"
                 | "Access denied: Access denied"
                 | "Forbidden"
@@ -1281,8 +1280,8 @@ pub mod api {
 
     #[cfg(feature = "web")]
     fn permission_message() -> String {
-        let has_any_session = current_access_token().is_some()
-            || current_contact_access_token().is_some();
+        let has_any_session =
+            current_access_token().is_some() || current_contact_access_token().is_some();
         if has_any_session {
             "You don't have permission to perform this action. Contact your administrator or support team if you think you should.".into()
         } else {

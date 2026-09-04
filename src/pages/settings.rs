@@ -579,9 +579,7 @@ impl SurfaceContext {
         // never see the contact-only tiles.
         let has_contact_session = crate::hooks::fetch::api::has_contact_session();
         let has_manage_branding_cap = has_contact_session
-            && crate::hooks::capabilities::use_capability(
-                "settings:manage_company_branding",
-            );
+            && crate::hooks::capabilities::use_capability("settings:manage_company_branding");
         Self {
             is_staff_admin,
             has_manage_branding_cap,

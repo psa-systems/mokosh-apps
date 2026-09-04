@@ -335,8 +335,10 @@ pub fn apply_favicon(brand: &EffectiveBranding) {
     };
     let target = brand.favicon_url.as_deref().filter(|s| !s.is_empty());
     // Default hrefs restored on clear. Kept in sync with index.html.
-    const DEFAULT_ICONS: &[(&str, &str)] =
-        &[("/favicon.svg", "image/svg+xml"), ("/favicon.ico", "image/x-icon")];
+    const DEFAULT_ICONS: &[(&str, &str)] = &[
+        ("/favicon.svg", "image/svg+xml"),
+        ("/favicon.ico", "image/x-icon"),
+    ];
     for i in 0..nodes.length() {
         let Some(node) = nodes.item(i) else { continue };
         let Ok(el) = node.dyn_into::<web_sys::Element>() else {
