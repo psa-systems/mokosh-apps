@@ -7,12 +7,12 @@ on:
   push:
     branches:
       - "main"
-      # Branch publish allow-list (MAPPS-421). A push to a branch named here
-      # publishes ONLY a tag derived from the branch name, so staging can run a
-      # feature branch while `:latest` stays reachable from main alone. This
-      # list IS the allow-list: any other branch never triggers the workflow,
-      # so it publishes nothing. Retire an entry when its branch merges.
-      - "mokosh-contact-login"
+      # Branch publish allow-list (MAPPS-421). Add a branch here and a push to
+      # it publishes ONLY a tag derived from the branch name, so staging can
+      # run a feature branch while `:latest` stays reachable from main alone.
+      # This list IS the allow-list: any other branch never triggers the
+      # workflow, so it publishes nothing. Retire an entry when its branch
+      # merges; the list is empty because `mokosh-contact-login` has.
     tags:
       - "v*"
     paths:
