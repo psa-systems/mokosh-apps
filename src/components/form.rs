@@ -687,6 +687,14 @@ pub struct FileFieldProps {
     /// Optional content between the label and the input (e.g. the current
     /// logo and its Remove button).
     preview: Option<Element>,
+    /// MAPPS-607 (kit-adoption): the picker is triggered by a synthesised
+    /// click on this input from a sibling button. Safari discards synthetic
+    /// clicks on detached inputs, so the input has to stay in the DOM but
+    /// invisible. `hidden: true` renders JUST the raw input with
+    /// `style="display:none"` and omits the label / preview / help /
+    /// status chrome; every other prop is unused in that mode.
+    #[props(default = false)]
+    hidden: bool,
     #[props(default)]
     onchange: EventHandler<FormEvent>,
 }
@@ -695,6 +703,19 @@ pub struct FileFieldProps {
 /// label + help + error structure and owns the `file:` class recipe.
 #[component]
 pub fn FileField(props: FileFieldProps) -> Element {
+    if props.hidden {
+        return rsx! {
+            input {
+                id: "{props.name}",
+                name: "{props.name}",
+                r#type: "file",
+                accept: if props.accept.is_empty() { None } else { Some(props.accept.clone()) },
+                disabled: props.disabled,
+                style: "display:none",
+                onchange: move |e| props.onchange.call(e),
+            }
+        };
+    }
     rsx! {
         div { class: "space-y-1",
             if !props.label.is_empty() {

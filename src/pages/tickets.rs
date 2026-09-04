@@ -2600,10 +2600,9 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             let result: Result<(), String> = if is_contact {
                 #[cfg(feature = "web")]
                 {
-                    crate::hooks::fetch::api::patch_authed_any_typed::<
-                        serde_json::Value,
-                        _,
-                    >(&path, &body)
+                    crate::hooks::fetch::api::patch_authed_any_typed::<serde_json::Value, _>(
+                        &path, &body,
+                    )
                     .await
                     .map(|_| ())
                     .map_err(|e| e.user_message())
@@ -2856,10 +2855,9 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         // the picker on Safari, which discards synthetic clicks on
         // detached inputs.
         if can_attach {
-            input {
-                id: "mapps-607-attach-input",
-                r#type: "file",
-                style: "display:none",
+            crate::components::FileField {
+                name: "mapps-607-attach-input".to_string(),
+                hidden: true,
                 onchange: move |evt: FormEvent| {
                     if *attach_submitting.read() {
                         return;

@@ -293,7 +293,7 @@ pub fn TenantSwitcher() -> Element {
                     onclick: move |_| open.set(false),
                 }
                 div {
-                    class: "absolute right-0 mt-2 w-64 rounded-md shadow-lg bg-raised ring-1 ring-black/5 z-20 p-1",
+                    class: "dropdown-panel absolute right-0 mt-2 w-64 z-20 p-1",
                     role: "menu",
                     div { class: "px-3 py-2 text-xs uppercase tracking-wide text-subtle",
                         "Your organizations"

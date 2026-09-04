@@ -118,15 +118,13 @@ async fn reset_field(plane: BrandingPlane, field: &str) -> Result<(), String> {
             .map(|_| ())
             .map_err(|e| e.to_string())
         }
-        BrandingPlane::ContactSelf => {
-            crate::hooks::fetch::api::patch_contact_authed_typed::<serde_json::Value, _>(
-                "/contact/companies/self/branding",
-                &patch,
-            )
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-        }
+        BrandingPlane::ContactSelf => crate::hooks::fetch::api::patch_contact_authed_typed::<
+            serde_json::Value,
+            _,
+        >("/contact/companies/self/branding", &patch)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string()),
     }
 }
 
@@ -376,11 +374,9 @@ fn AssetUploadRow(
                     }
                 }
                 div { class: "flex-1 space-y-2",
-                    input {
-                        id: "brand_upload_{asset}",
-                        r#type: "file",
-                        accept: "image/png,image/jpeg,image/webp,image/gif",
-                        class: "block w-full text-sm text-content file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-accent file:text-on-accent hover:file:opacity-90",
+                    crate::components::FileField {
+                        name: format!("brand_upload_{asset}"),
+                        accept: "image/png,image/jpeg,image/webp,image/gif".to_string(),
                         disabled: disabled || saving(),
                         onchange,
                     }
