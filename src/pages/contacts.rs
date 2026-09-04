@@ -8558,6 +8558,7 @@ mod shared_dto_tests {
             address,
             account_manager_id,
             account_manager_name,
+            default_billing_contact_id,
             sla_id,
             default_contract_id,
             contact_count,
@@ -8592,12 +8593,7 @@ mod shared_dto_tests {
         };
         let _ = CompanyDetail {
             name,
-            // MAPPS-701: `CompanyResponse` carries no `default_billing_contact_id`,
-            // so there is no binding to feed here and the Billing Contact card
-            // (MAPPS-644) reads `None` for every company. The field is written
-            // by `UpdateCompanyBody` and never read back; the fix is a server
-            // change and is tracked there.
-            default_billing_contact_id: None,
+            default_billing_contact_id,
             company_type: company_type.as_str().to_string(),
             status: status.as_str().to_string(),
             industry,
@@ -9103,5 +9099,30 @@ mod shared_dto_guard_tests {
                 "{name} is sent but no function feeds it from a shared DTO"
             );
         }
+    }
+
+    /// MAPPS-701: the company read gate binds `default_billing_contact_id` off
+    /// the response rather than feeding the detail struct a literal. A
+    /// placeholder here compiles clean and silently puts the Billing Contact
+    /// card (MAPPS-644) back to reading "not set" for every company, which is
+    /// exactly the defect that survived unnoticed until the gate was written.
+    #[test]
+    fn the_company_read_gate_binds_the_billing_contact() {
+        let start = SRC
+            .find("fn company_response_fields_this_page_reads(")
+            .expect("the company read gate is part of this file");
+        let gate = &SRC[start..];
+        let end = gate
+            .find("\n    #[allow(dead_code)]")
+            .expect("another gate follows it");
+        let gate = &gate[..end];
+        assert!(
+            gate.contains("\n            default_billing_contact_id,\n"),
+            "the company read gate no longer binds default_billing_contact_id from the response"
+        );
+        assert!(
+            !gate.contains("default_billing_contact_id:"),
+            "the company read gate is feeding default_billing_contact_id a literal again"
+        );
     }
 }
