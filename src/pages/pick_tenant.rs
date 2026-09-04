@@ -138,14 +138,14 @@ pub fn PickTenantPage() -> Element {
                         li { key: "{tenant_id}",
                             button {
                                 r#type: "button",
-                                class: "w-full text-left px-4 py-3 rounded-md border border-border hover:bg-surface-hover focus:outline-none focus:ring-2 focus:ring-primary",
+                                class: "w-full text-left px-4 py-3 rounded-md border border-line hover:bg-surface-2 focus:outline-none focus:ring-2 focus:ring-accent",
                                 disabled: saving(),
                                 onclick: {
                                     let tenant_id = tenant_id.clone();
                                     move |_| pick(tenant_id.clone())
                                 },
                                 div { class: "font-medium text-content", "{label_name}" }
-                                div { class: "text-sm text-content-muted", "Role: {label_role}" }
+                                div { class: "text-sm text-muted", "Role: {label_role}" }
                             }
                         }
                     }

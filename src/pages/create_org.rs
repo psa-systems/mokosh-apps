@@ -171,7 +171,7 @@ pub fn CreateOrgPage() -> Element {
                         slug.set(e.value());
                     },
                 }
-                p { class: "text-xs text-content-muted",
+                p { class: "text-xs text-muted",
                     "Leave blank to derive from the name. Slugs are used only for the client-facing portal URL."
                 }
                 if !error().is_empty() {
