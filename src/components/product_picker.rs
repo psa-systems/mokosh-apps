@@ -36,6 +36,14 @@ struct PickerProduct {
     unit_price: String,
     #[serde(default)]
     unit: String,
+    /// MAPPS-712: whether the catalog taxes it. Defaulted for an older
+    /// server; a line from such a server is taxable, the server's own default.
+    #[serde(default = "default_true")]
+    is_taxable: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -54,6 +62,9 @@ pub struct PickedProduct {
     /// Decimal string, as the server sends it and as a price field holds it.
     pub unit_price: String,
     pub unit: String,
+    /// MAPPS-712: the product's own taxable flag. The server copies it onto
+    /// a product line and ignores the request's, so a form shows it read-only.
+    pub is_taxable: bool,
 }
 
 impl PickedProduct {
@@ -65,6 +76,7 @@ impl PickedProduct {
             description: row.description.clone().filter(|s| !s.trim().is_empty()),
             unit_price: row.unit_price.clone(),
             unit: row.unit.clone(),
+            is_taxable: row.is_taxable,
         }
     }
 }
