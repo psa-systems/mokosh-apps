@@ -64,34 +64,10 @@ ammonia = "4"
 # change over there turns this build red rather than drifting unnoticed.
 [dependencies.mokosh-types]
 git = "https://dev.a8n.run/psa-systems/mokosh-server.git"
-# MAPPS-617: follow `mokosh-contact-login` (the long-lived contact-
-# portal + branding integration branch on the server), a superset of
-# the retired `mokosh-client-login` pin. Once this whole track merges
-# to main, drop `branch = ...` and let the pin follow main again.
-#
-# Bumping the pin requires the server branch to actually contain the
-# branding types (`CompanyBranding`, `EffectiveBranding`, and the
-# `background_*` / `display_name` fields on `TenantBranding`). Until
-# MAPPS-617 lands on this branch, the client uses local shadow types
-# in `hooks/branding.rs` that mirror the wire shape byte-for-byte via
-# `serde(default)`; runtime interop works regardless of which commit
-# `Cargo.lock` resolves to. After the server merge + a
-# `cargo update -p mokosh-types` here, the shadow types can be
-# deleted in favour of `pub use mokosh_types::...`.
-# Pinned to the head of the server's own `mokosh-contact-login`, which
-# has merged server `main` and so carries both DTO sets: the
-# contact-portal + branding types this branch needs, and the fields
-# client `main` added (`CompanyResponse.default_billing_contact_id`,
-# MAPPS-701). Neither side alone compiles this client: server `main`
-# is missing `tenant_kind` and the whole contact-portal surface.
-#
-# A `rev`, not `branch = "mokosh-contact-login"`, deliberately. The
-# branch form re-resolves on every `cargo update`, so this client
-# would follow a moving server branch mid-review; the explicit rev
-# makes each catch-up a reviewed edit. Dropping the pin entirely, so
-# it follows server `main` again, is the end state once the server's
-# contact-login track merges there.
-rev = "06f0946b9230568bd056e30bcaf7f0b03b1eed25"
+# MAPPS-726: MAPPS-617 had pinned a `rev` on the server's
+# `mokosh-contact-login` branch while the contact-portal and branding
+# types lived only there; that track merged to server `main`
+# (PMS-1025), so the pin follows `main` again as the comment above says.
 
 [dependencies.dioxus]
 version = "0.7.7"
