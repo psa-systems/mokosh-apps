@@ -218,6 +218,9 @@ fn billing_status_label(status: BillingStatus) -> &'static str {
         BillingStatus::NotBilled => "Not Billed",
         BillingStatus::ReadyToBill => "Ready to Bill",
         BillingStatus::Billed => "Billed",
+        // MAPPS-726 / PMS-1035: fully covered by a block-hours allotment
+        // the customer already paid for; never reaches an invoice.
+        BillingStatus::Prepaid => "Prepaid",
     }
 }
 
@@ -3424,6 +3427,7 @@ mod tests {
             "Ready to Bill"
         );
         assert_eq!(billing_status_label(BillingStatus::Billed), "Billed");
+        assert_eq!(billing_status_label(BillingStatus::Prepaid), "Prepaid");
     }
 
     /// The wire tags the server sends must decode into the shared enum; an
@@ -3437,6 +3441,15 @@ mod tests {
         }))
         .expect("wire tag decodes");
         assert_eq!(decoded.billing_status, BillingStatus::ReadyToBill);
+        // MAPPS-726: the PMS-1035 value decodes, so a prepaid entry renders.
+        let prepaid: RemoteTimeEntry = serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::nil(),
+            "date": "2026-06-18",
+            "billing_status": "prepaid",
+        }))
+        .expect("prepaid decodes");
+        assert_eq!(prepaid.billing_status, BillingStatus::Prepaid);
+        assert_eq!(billing_status_label(prepaid.billing_status), "Prepaid");
 
         assert!(
             serde_json::from_value::<RemoteTimeEntry>(serde_json::json!({
