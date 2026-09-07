@@ -160,7 +160,11 @@ fn push_run(out: &mut Vec<Piece>, piece: Piece) {
 }
 
 /// Longest common subsequence over the two token slices, emitted as runs.
-fn lcs_into(a: &[&str], b: &[&str], out: &mut Vec<Piece>) {
+///
+/// `pub(crate)` since MAPPS-739: `line_diff` runs the same table over lines,
+/// tokens that happen to end in `\n` rather than a space, so the one
+/// implementation serves both granularities.
+pub(crate) fn lcs_into(a: &[&str], b: &[&str], out: &mut Vec<Piece>) {
     if a.is_empty() && b.is_empty() {
         return;
     }
