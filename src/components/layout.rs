@@ -418,12 +418,31 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
             false
         }
     };
+    // MAPPS-737: a contact holding `approvals:decide` (PMS-1084) gets a
+    // Service Desk entry to the queue of approvals addressed to it. The
+    // same contact-session AND cap shape as the branding link: staff
+    // reach the queue through the top-bar badge and their navigation
+    // does not change.
+    let contact_approvals_visible = {
+        #[cfg(feature = "web")]
+        {
+            crate::hooks::fetch::api::has_contact_session()
+                && crate::hooks::capabilities::use_capability("approvals:decide")
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            false
+        }
+    };
     // Any Service Desk / Projects / CRM / Operations section header
     // vanishes when every item under it is gated out for a contact.
     // Precomputed so the `if` right around the `NavSection` renders
     // no header for a contact whose caps are empty for that group.
-    let show_service_desk_section =
-        show_tickets || show_time_entries || show_timesheets || can_manage;
+    let show_service_desk_section = show_tickets
+        || show_time_entries
+        || show_timesheets
+        || can_manage
+        || contact_approvals_visible;
     let show_projects_section = show_projects;
     let show_crm_section = show_companies || show_contacts;
     let show_operations_section = show_calendar || show_dispatch || show_scheduling_templates;
@@ -536,6 +555,9 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     }
                     if can_manage {
                         NavItem { to: Route::TimesheetApprovals {}, icon: rsx!(DocumentCheckIcon {}), label: "Timesheet Approvals", collapsed }
+                    }
+                    if contact_approvals_visible {
+                        NavItem { to: Route::Approvals {}, icon: rsx!(ChecklistIcon {}), label: "My Approvals", collapsed }
                     }
                 }
             }
@@ -1434,11 +1456,20 @@ fn NotificationBell() -> Element {
 /// pending decision so the chrome stays clean for non-approvers.
 #[component]
 fn ApprovalsBadge() -> Element {
-    let inbox = use_resource(|| async {
+    // MAPPS-737: the server's contact arm requires `approvals:decide`, so
+    // a contact without it must not fire a 403 on every mount; staff
+    // bypass the cap as everywhere.
+    let can_decide = crate::hooks::capabilities::use_capability("approvals:decide");
+    let inbox = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        if !can_decide {
+            return Vec::new();
+        }
         // The badge collapses to nothing on an empty queue AND on a failed
         // read, so the log is the only thing that separates them.
-        crate::hooks::fetch::api::get_authed::<Vec<serde_json::Value>>("/approvals/pending")
+        // MAPPS-737: contact-first bearer, so the chip counts a contact's
+        // own queue on the contact plane.
+        crate::hooks::fetch::api::get_authed_any::<Vec<serde_json::Value>>("/approvals/pending")
             .await
             .inspect(|rows| {
                 if rows.is_empty() {

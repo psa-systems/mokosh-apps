@@ -167,6 +167,10 @@ pub fn ApprovalsPage() -> Element {
     use_page_title("My Approvals");
     let mut version = use_signal(|| 0u32);
     let mut decision_error = use_signal(String::new);
+    // MAPPS-737: the server's contact arm (PMS-1084) requires
+    // `approvals:decide`; staff bypass the cap check as everywhere. Read
+    // before any early return, because it is a hook.
+    let can_decide = crate::hooks::capabilities::use_capability("approvals:decide");
 
     let mut pending_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -174,7 +178,13 @@ pub fn ApprovalsPage() -> Element {
         // the instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
         let _v = version.read();
-        crate::hooks::fetch::api::get_authed::<Vec<PendingApproval>>("/approvals/pending")
+        if !can_decide {
+            return Some(Vec::new());
+        }
+        // MAPPS-737: `get_authed_any` prefers the contact bearer, so a
+        // contact holding the cap reads the approvals addressed to it on
+        // the contact plane; staff keep the staff bearer as before.
+        crate::hooks::fetch::api::get_authed_any::<Vec<PendingApproval>>("/approvals/pending")
             .await
             .inspect_err(|e| tracing::error!("approval queue load failed: {e}"))
             .ok()
@@ -201,13 +211,29 @@ pub fn ApprovalsPage() -> Element {
             crate::components::ContentUnavailable { title: "My Approvals".to_string() }
         };
     }
+    // MAPPS-737: a contact without the grant gets a plain sentence, not a
+    // 403 banner; the badge and the sidebar entry are gated the same way,
+    // so this is only reachable by typing the URL.
+    if !can_decide {
+        return rsx! {
+            PageHeader { title: "My Approvals", subtitle: "Decisions waiting on you" }
+            Card {
+                p { class: "text-sm text-muted",
+                    "Approvals are not enabled for your account. Ask your provider if you are expected to approve requests."
+                }
+            }
+        };
+    }
 
     let decide = move |id: Uuid, decision: &'static str| {
         spawn(async move {
             #[cfg(feature = "app")]
             {
                 let body = serde_json::json!({ "decision": decision });
-                match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
+                // MAPPS-737: the same contact-first bearer as the read, so a
+                // contact decides on the contact plane (the server 404s any
+                // approval not addressed to it).
+                match crate::hooks::fetch::api::post_authed_any_typed::<serde_json::Value, _>(
                     &format!("/approvals/{id}/decision"),
                     &body,
                 )
@@ -223,7 +249,8 @@ pub fn ApprovalsPage() -> Element {
                         version += 1;
                         pending_resource.restart();
                     }
-                    Err(e) => decision_error.set(format!("Could not record decision: {e}")),
+                    Err(e) => decision_error
+                        .set(format!("Could not record decision: {}", e.user_message())),
                 }
             }
         });
