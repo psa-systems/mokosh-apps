@@ -4610,10 +4610,21 @@ struct TicketApprovalRow {
     state: String,
     #[serde(default)]
     requested_by_name: Option<String>,
+    /// PMS-937: the portal contact who filed it, when a contact did.
+    #[serde(default)]
+    requested_by_contact_name: Option<String>,
     #[serde(default)]
     approver_user_name: Option<String>,
     #[serde(default)]
     approver_role: Option<String>,
+    /// PMS-1084: the portal contact it is addressed to.
+    #[serde(default)]
+    approver_contact_name: Option<String>,
+    #[serde(default)]
+    decided_by_name: Option<String>,
+    /// PMS-1084: the contact who decided it on the contact plane.
+    #[serde(default)]
+    decided_by_contact_name: Option<String>,
     #[serde(default)]
     decision: Option<String>,
     #[serde(default)]
@@ -4819,12 +4830,27 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                                 "rejected" => BadgeVariant::Red,
                                 _ => BadgeVariant::Yellow,
                             };
-                            let approver_label = match (row.approver_user_name.clone(), row.approver_role.clone()) {
-                                (Some(n), _) if !n.trim().is_empty() => format!("To: {n}"),
-                                (_, Some(r)) if !r.trim().is_empty() => format!("Role: {r}"),
-                                _ => "(unassigned)".to_string(),
+                            // MAPPS-736: the same three labels the My Approvals
+                            // queue prints, so a contact approver, requester or
+                            // decider reads the same on both pages.
+                            let approver_label = crate::pages::approvals::approver_label(
+                                row.approver_user_name.as_deref(),
+                                row.approver_role.as_deref(),
+                                row.approver_contact_name.as_deref(),
+                            );
+                            let requester = if row.requested_by_name.is_some() || row.requested_by_contact_name.is_some() {
+                                crate::pages::approvals::requester_label(
+                                    row.requested_by_name.as_deref(),
+                                    row.requested_by_contact_name.as_deref(),
+                                )
+                            } else {
+                                String::new()
                             };
-                            let requester = row.requested_by_name.clone().unwrap_or_default();
+                            let decided_by = crate::pages::approvals::decided_by_label(
+                                row.decided_by_name.as_deref(),
+                                row.decided_by_contact_name.as_deref(),
+                            )
+                            .unwrap_or_default();
                             let when = row
                                 .requested_at
                                 .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
@@ -4854,6 +4880,7 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                                     if !decision.is_empty() {
                                         p { class: "text-xs text-subtle mt-2",
                                             "Decision: " strong { "{decision}" }
+                                            if !decided_by.is_empty() { " by {decided_by}" }
                                             if !decided.is_empty() { " on {decided}" }
                                         }
                                     }
