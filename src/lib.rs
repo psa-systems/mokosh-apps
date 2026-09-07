@@ -920,6 +920,9 @@ pub enum Route {
     // MAPPS-345: tenant-wide standard due date (PMS-345 server setting).
     #[route("/settings/scheduling")]
     SettingsScheduling {},
+    // MAPPS-728: the PMS-1037 overdue reminder schedule.
+    #[route("/settings/payment-reminders")]
+    SettingsPaymentReminders {},
     // MAPPS-259: per-user theme + accent picker.
     #[route("/settings/appearance")]
     SettingsAppearance {},
@@ -1981,6 +1984,15 @@ fn SettingsScheduling() -> Element {
 }
 
 #[component]
+fn SettingsPaymentReminders() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            settings::PaymentRemindersSettingsPage {}
+        }
+    }
+}
+
+#[component]
 fn SettingsAppearance() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
@@ -2457,6 +2469,7 @@ mod contact_route_gate {
             "/settings/work-types",
             "/settings/sla",
             "/settings/scheduling",
+            "/settings/payment-reminders",
             "/settings/rate-cards",
             "/settings/tax-rates",
             "/settings/import-export",
