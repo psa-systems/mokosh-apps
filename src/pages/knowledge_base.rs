@@ -4298,3 +4298,87 @@ mod mapps612_details_panel_tests {
         ));
     }
 }
+
+/// MAPPS-740: the page hygiene items.
+#[cfg(test)]
+mod mapps740_page_hygiene_tests {
+    fn head() -> &'static str {
+        let src = include_str!("knowledge_base.rs");
+        &src[..src
+            .find("mod mapps740_page_hygiene_tests")
+            .expect("this module")]
+    }
+
+    /// Edit leads as the primary action, opening a ticket is a real
+    /// secondary button, Delete is a ghost at the bottom, and no reading
+    /// preference sits among the actions.
+    #[test]
+    fn the_actions_card_leads_with_edit_and_ends_with_a_demoted_delete() {
+        let head = head();
+        let actions = &head[head.find("fn ArticleActions(").expect("the card")..];
+        let actions = &actions[..actions.find("fn ArticleActionsMenu(").expect("end of card")];
+        // The rendered block, past the PMS-482 comment that names the
+        // ticket link before the buttons.
+        let actions = &actions[actions.find("rsx! {").expect("the rendered block")..];
+        let edit = actions.find("\"Edit\"").expect("Edit");
+        let ticket = actions
+            .find("\"Open ticket about this article\"")
+            .expect("Open ticket");
+        let delete = actions.find("\"Delete\"").expect("Delete");
+        assert!(
+            edit < ticket && ticket < delete,
+            "order: Edit, Open ticket, Delete"
+        );
+        assert!(
+            actions.contains("Button { variant: ButtonVariant::Primary, class: \"w-full\".to_string(), \"Edit\" }"),
+            "Edit is the primary action"
+        );
+        assert!(
+            actions.contains("Button { variant: ButtonVariant::Secondary, class: \"w-full\".to_string(), \"Open ticket about this article\" }"),
+            "Open ticket is a real secondary button"
+        );
+        assert!(
+            actions.contains("variant: ButtonVariant::Ghost,\n                class: \"w-full text-red-600 dark:text-red-400\".to_string(),"),
+            "Delete is a ghost in the destructive colour"
+        );
+        assert!(
+            !actions.contains("ButtonVariant::Danger"),
+            "no solid red block in the card"
+        );
+        assert!(
+            !head.contains("fn DensityToggle("),
+            "the density toggle left the page"
+        );
+        assert!(
+            !head.contains("Comfortable"),
+            "no density label on the article page"
+        );
+    }
+
+    /// The density preference is still read here under the key the
+    /// settings page writes, so a choice made before this keeps working.
+    #[test]
+    fn the_article_still_reads_the_density_the_settings_page_writes() {
+        let head = head();
+        assert!(head.contains("crate::utils::prefs::get_bool(\"kb_density\", true)"));
+        let settings = include_str!("settings.rs");
+        assert!(
+            settings.contains("crate::utils::prefs::set_bool(\"kb_density\", next)"),
+            "the Appearance page writes the same key"
+        );
+        assert!(
+            settings.contains("name: \"kb_density\""),
+            "as a labelled select"
+        );
+    }
+
+    #[test]
+    fn an_uncategorised_article_gets_its_own_crumb() {
+        let head = head();
+        let crumb = &head[head.find("fn KbBreadcrumb(").expect("the breadcrumb")..];
+        let crumb = &crumb[..crumb.find("fn KbTreeNav(").expect("end")];
+        assert!(crumb.contains("if path.is_empty() {"));
+        assert!(crumb.contains("\"{UNCATEGORISED_CRUMB}\""));
+        assert_eq!(super::UNCATEGORISED_CRUMB, "Uncategorised");
+    }
+}
