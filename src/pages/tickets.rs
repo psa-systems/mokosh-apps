@@ -5897,6 +5897,106 @@ mod prefill_tests {
 /// The user, ticket-status, priority, type and category lookups this page also
 /// decodes are picker subsets (an id and a label) and are deliberately not
 /// gated; see the audit in `docs/client-server-integration.md`.
+/// MAPPS-734: the SLA block on the ticket detail.
+#[cfg(test)]
+mod mapps734_sla_panel_tests {
+    use super::{sla_leg, sla_leg_text, RemoteTicketSla, SlaLeg, SlaStatus};
+    use chrono::{DateTime, TimeZone, Utc};
+
+    fn at(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s)
+            .expect("fixture timestamp")
+            .with_timezone(&Utc)
+    }
+
+    fn fixed(dt: DateTime<Utc>) -> String {
+        dt.format("%Y-%m-%d %H:%M").to_string()
+    }
+
+    /// The route's body decodes with nulls and its snake_case state, and a
+    /// ticket with no policy (every field null) still decodes.
+    #[test]
+    fn decodes_the_route_body() {
+        let body = r#"{"sla_due_date":"2026-09-08T17:00:00Z","first_response_due":"2026-09-08T10:00:00Z","first_response_at":"2026-09-08T09:30:00Z","resolution_due":"2026-09-08T17:00:00Z","resolved_at":null,"closed_at":null,"status":"on_track","status_name":"In Progress"}"#;
+        let sla: RemoteTicketSla = serde_json::from_str(body).expect("decode");
+        assert_eq!(sla.status, SlaStatus::OnTrack);
+        assert_eq!(sla.first_response_at, Some(at("2026-09-08T09:30:00Z")));
+        assert!(sla.resolved_at.is_none());
+
+        let empty: RemoteTicketSla = serde_json::from_str(
+            r#"{"sla_due_date":null,"first_response_due":null,"first_response_at":null,"resolution_due":null,"resolved_at":null,"closed_at":null,"status":"not_applicable","status_name":"Open"}"#,
+        )
+        .expect("decode nulls");
+        assert_eq!(empty.status, SlaStatus::NotApplicable);
+        assert!(empty.first_response_due.is_none());
+    }
+
+    #[test]
+    fn a_leg_with_no_target_prints_nothing() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 8, 12, 0, 0).unwrap();
+        assert_eq!(sla_leg(None, None, now), None);
+        // An actual with nothing to meet is not a leg either.
+        assert_eq!(sla_leg(None, Some(now), now), None);
+    }
+
+    #[test]
+    fn a_pending_leg_says_how_far_off_the_target_is() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 8, 12, 0, 0).unwrap();
+        let ahead = sla_leg(Some(at("2026-09-08T14:30:00Z")), None, now).expect("leg");
+        assert_eq!(
+            sla_leg_text(&ahead, fixed),
+            "Due 2026-09-08 14:30 (2 hr left)"
+        );
+        let behind = sla_leg(Some(at("2026-09-05T12:00:00Z")), None, now).expect("leg");
+        assert_eq!(
+            sla_leg_text(&behind, fixed),
+            "Due 2026-09-05 12:00 (3 days overdue)"
+        );
+    }
+
+    #[test]
+    fn a_reached_leg_is_met_on_or_before_the_target_and_missed_after() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 8, 12, 0, 0).unwrap();
+        let due = at("2026-09-08T10:00:00Z");
+        let met = sla_leg(Some(due), Some(due), now).expect("leg");
+        assert_eq!(
+            met,
+            SlaLeg::Reached {
+                at: due,
+                due,
+                met: true
+            }
+        );
+        assert_eq!(
+            sla_leg_text(&met, fixed),
+            "2026-09-08 10:00 (met, due 2026-09-08 10:00)"
+        );
+        let missed = sla_leg(Some(due), Some(at("2026-09-08T10:00:01Z")), now).expect("leg");
+        assert_eq!(
+            sla_leg_text(&missed, fixed),
+            "2026-09-08 10:00 (missed, due 2026-09-08 10:00)"
+        );
+    }
+
+    /// The legs are fetched on whichever bearer the session holds, the way
+    /// the ticket itself is, so a contact reads them on the contact plane.
+    #[test]
+    fn the_legs_are_fetched_on_any_bearer() {
+        let src = include_str!("tickets.rs");
+        let head = &src[..src
+            .find("mod mapps734_sla_panel_tests")
+            .expect("this module")];
+        assert!(
+            head.contains("get_authed_any::<RemoteTicketSla>"),
+            "the SLA legs must be read through get_authed_any"
+        );
+        assert!(
+            head.contains("\"/tickets/{id}/sla\""),
+            "the SLA legs come from /tickets/{{id}}/sla"
+        );
+    }
+}
+
 #[cfg(test)]
 mod mapps686_shared_dto_tests {
     use super::{
