@@ -91,6 +91,28 @@ pub struct KbArticle {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
+/// `KbArticleTicketRow` (PMS-1127): a ticket that references the article,
+/// from `GET /kb/articles/{id}/tickets`. `relation` is `source` (opened
+/// from the article) or `procedure` (the article says how to work it).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct KbArticleTicket {
+    pub id: Uuid,
+    #[serde(default)]
+    pub ticket_number: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub status_is_closed: bool,
+    #[serde(default)]
+    pub priority: Option<String>,
+    #[serde(default)]
+    pub relation: String,
+    #[serde(default)]
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
 /// `KbArticleVersionResponse` subset for the version-history list.
 ///
 /// MAPPS-739: a version says who wrote it, what kind of change it was

@@ -33,8 +33,8 @@ use crate::components::{
 };
 use crate::modules::kb::{
     ArticleMeasuredDuration, CreateKbArticleRequest, CreateKbCategoryRequest, KbArticle,
-    KbArticleFeedback, KbArticleVersion, KbAttachmentResponse, KbCategory, TopTicketDrivingArticle,
-    UpdateKbArticleRequest, UpdateKbCategoryRequest,
+    KbArticleFeedback, KbArticleTicket, KbArticleVersion, KbAttachmentResponse, KbCategory,
+    TopTicketDrivingArticle, UpdateKbArticleRequest, UpdateKbCategoryRequest,
 };
 use crate::utils::url::urlencoding_minimal;
 use crate::utils::{FormGuard, Paginated, Rule};
@@ -1776,6 +1776,11 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                             // history because it is the number the person
                             // about to do the work came here for.
                             MeasuredDurationCard { article_id: props.id.clone() }
+                            // MAPPS-741: which tickets lean on this article.
+                            // Staff only: the route refuses a contact bearer.
+                            if !is_contact {
+                                LinkedTicketsCard { article_id: props.id.clone() }
+                            }
                             // MAPPS-741: the article's own headings, following
                             // the reader; above the history because it is about
                             // the text being read, not about its past.
@@ -1964,6 +1969,81 @@ fn ArticleToc(content: String) -> Element {
 /// so an article that starts at `##` does not open with a gap.
 fn toc_indent_rem(level: u8, min_level: u8) -> f32 {
     0.75 + 0.75 * f32::from(level.saturating_sub(min_level))
+}
+
+/// MAPPS-741: what a linked ticket's relation to the article means.
+fn relation_label(relation: &str) -> &str {
+    match relation {
+        "source" => "Opened from this article",
+        "procedure" => "Works this procedure",
+        other => other,
+    }
+}
+
+/// MAPPS-741: the tickets that reference this article (PMS-1127), open
+/// first as the server lists them. A closed ticket keeps its link and its
+/// text, de-emphasised and with the key struck through; the panel is
+/// about whether the article is load-bearing, and a closed ticket is
+/// still evidence that it was.
+#[component]
+fn LinkedTicketsCard(article_id: String) -> Element {
+    let tickets = use_resource(use_reactive!(|article_id| async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_all_authed::<KbArticleTicket>(&format!(
+            "/kb/articles/{article_id}/tickets"
+        ))
+        .await
+        .inspect_err(|e| tracing::error!("kb linked tickets load failed for {article_id}: {e}"))
+        .ok()
+    }));
+    let snap = tickets.read_unchecked();
+    rsx! {
+        Card { title: "Linked tickets",
+            match &*snap {
+                None => rsx! {
+                    p { class: "text-xs text-subtle", "Loading…" }
+                },
+                Some(None) => rsx! {
+                    p { class: "text-xs text-red-600 dark:text-red-300", "Could not load linked tickets." }
+                },
+                Some(Some(rows)) if rows.is_empty() => rsx! {
+                    p { class: "text-xs text-subtle", "No ticket references this article yet." }
+                },
+                Some(Some(rows)) => rsx! {
+                    ul { class: "divide-y divide-line -my-2",
+                        for t in rows.iter() {
+                            {
+                                let key = t.id.to_string();
+                                let closed = t.status_is_closed;
+                                let key_class = if closed {
+                                    "font-medium text-muted line-through hover:text-content"
+                                } else {
+                                    "font-medium text-accent hover:opacity-90"
+                                };
+                                let title_class = if closed { "text-subtle truncate" } else { "text-content truncate" };
+                                let relation = relation_label(&t.relation).to_string();
+                                let variant = crate::components::ticket_status_badge(&t.status);
+                                rsx! {
+                                    li { key: "{key}", class: "py-2 text-xs",
+                                        div { class: "flex items-center justify-between gap-2",
+                                            Link {
+                                                to: Route::TicketDetail { id: t.id.to_string() },
+                                                class: "{key_class}",
+                                                "{t.ticket_number}"
+                                            }
+                                            Badge { variant, "{t.status}" }
+                                        }
+                                        p { class: "mt-0.5 {title_class}", "{t.title}" }
+                                        p { class: "text-subtle", "{relation}" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+        }
+    }
 }
 
 /// MAPPS-739: what a version row leads with.
