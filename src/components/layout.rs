@@ -987,6 +987,13 @@ pub struct TopBarProps {
 
 #[component]
 pub fn TopBar(props: TopBarProps) -> Element {
+    // MAPPS-729: the global search calls `/api/v1/search`, which is
+    // staff-only on the server (it indexes tickets, contacts and
+    // companies, CRM entities a contact must not enumerate), so a
+    // contact session never sees the box; every keystroke would be a
+    // 401. Same `STAFF_ONLY` sentinel as the CRM and reports nav.
+    let show_search =
+        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
     let auth = crate::hooks::use_auth();
     let active_org = auth.read().active_org_name().map(str::to_string);
     // MAPPS-366: the page title lives in a shared signal each page sets via
@@ -1064,8 +1071,10 @@ pub fn TopBar(props: TopBarProps) -> Element {
             div { class: "flex items-center px-4 sm:px-6 lg:px-8 space-x-4",
                 // MAPPS-346: global search, collapsed to a magnifier icon
                 // that expands the text entry leftward. Sits to the left of
-                // the theme picker.
-                GlobalSearch {}
+                // the theme picker. MAPPS-729: staff only.
+                if show_search {
+                    GlobalSearch {}
+                }
 
                 // Theme + accent picker (MAPPS-259), opens a centered modal.
                 ThemePickerButton {}
@@ -1942,6 +1951,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// MAPPS-729: the global search box is rendered only behind the
+    /// `STAFF_ONLY` gate. `use_capability` reads session state the test
+    /// runtime has none of, so this pins the shape in the source: the
+    /// one `GlobalSearch {}` render site sits inside an `if` on a flag
+    /// bound to `STAFF_ONLY`. Dropping the `if`, or binding the flag to
+    /// a contact capability, fails here.
+    #[test]
+    fn global_search_renders_only_behind_the_staff_gate() {
+        // Scan only the components, not this module, which quotes the
+        // needles as literals.
+        let src = include_str!("layout.rs")
+            .split_once("mod tests {")
+            .map(|(before, _)| before)
+            .expect("the tests module header is in this file");
+        let sites: Vec<usize> = src
+            .match_indices("GlobalSearch {}")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(sites.len(), 1, "one render site for the search box");
+        let before = &src[..sites[0]];
+        let gate = before
+            .rfind("if show_search {")
+            .expect("GlobalSearch {} must sit inside `if show_search {`");
+        assert!(
+            sites[0] - gate < 200,
+            "the `if show_search` guard is not the block that wraps GlobalSearch"
+        );
+        let binding = "let show_search =\n        crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);";
+        assert!(
+            src.contains(binding),
+            "show_search must be bound to use_capability(STAFF_ONLY)"
+        );
     }
 
     #[test]
