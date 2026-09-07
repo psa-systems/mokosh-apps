@@ -227,6 +227,31 @@ struct RemoteInvoice {
     total: String,
     #[serde(default)]
     balance_due: String,
+    /// PMS-1037 (MAPPS-728): derived by the server in the tenant's day, so
+    /// the page never computes overdue from the browser's clock.
+    #[serde(default)]
+    is_overdue: bool,
+    #[serde(default)]
+    days_overdue: i64,
+}
+
+/// MAPPS-728: the badge text for an overdue invoice. The day count is the
+/// server's (`days_overdue`, PMS-1037), never derived here.
+pub(crate) fn overdue_label(days: i64) -> String {
+    match days {
+        1 => "Overdue (1 day)".to_string(),
+        n => format!("Overdue ({n} days)"),
+    }
+}
+
+/// MAPPS-728: the `overdue` query the list sends for the filter's three
+/// states: everything, overdue only, not overdue.
+pub(crate) fn overdue_query(filter: &str) -> Option<&'static str> {
+    match filter {
+        "true" => Some("&overdue=true"),
+        "false" => Some("&overdue=false"),
+        _ => None,
+    }
 }
 
 /// Load a single company's invoices for the Record Payment picker (MAPPS-191).
@@ -334,6 +359,8 @@ fn InvoiceListBody() -> Element {
     let mut company_filter =
         use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     let mut status_filter = use_signal(String::new);
+    // MAPPS-728: the overdue filter, sent as `overdue=true|false` (PMS-1037).
+    let mut overdue_filter = use_signal(String::new);
     let mut page = use_signal(|| 1usize);
 
     let companies_resource = use_resource(|| async {
@@ -366,13 +393,16 @@ fn InvoiceListBody() -> Element {
 
     let company_text = company_filter.read().trim().to_string();
     let status_text = status_filter.read().clone();
+    let overdue_text = overdue_filter.read().clone();
     let current_page = (*page.read()).max(1);
 
     let company_for_resource = company_text.clone();
     let status_for_resource = status_text.clone();
+    let overdue_for_resource = overdue_text.clone();
     let invoices_resource = use_resource(move || {
         let company = company_for_resource.clone();
         let status = status_for_resource.clone();
+        let overdue = overdue_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             // MAPPS-357: subscribe to reachability so the list auto-refetches
@@ -396,6 +426,9 @@ fn InvoiceListBody() -> Element {
             }
             if !status.is_empty() {
                 path.push_str(&format!("&status={status}"));
+            }
+            if let Some(q) = overdue_query(&overdue) {
+                path.push_str(q);
             }
             crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteInvoice>>(&path)
                 .await
@@ -423,7 +456,8 @@ fn InvoiceListBody() -> Element {
             crate::components::ContentUnavailable { title: "Invoices".to_string() }
         };
     }
-    let has_filters = !company_text.is_empty() || !status_text.is_empty();
+    let has_filters =
+        !company_text.is_empty() || !status_text.is_empty() || !overdue_text.is_empty();
 
     rsx! {
         PageHeader {
@@ -479,6 +513,21 @@ fn InvoiceListBody() -> Element {
                         page.set(1);
                     },
                 }
+                // MAPPS-728: overdue is the server's call (PMS-1037), so the
+                // chip is a query filter rather than a client-side sort.
+                Select {
+                    name: "overdue",
+                    options: vec![
+                        SelectOption::new("", "Overdue and current"),
+                        SelectOption::new("true", "Overdue only"),
+                        SelectOption::new("false", "Not overdue"),
+                    ],
+                    value: overdue_filter.read().clone(),
+                    onchange: move |e: FormEvent| {
+                        overdue_filter.set(e.value());
+                        page.set(1);
+                    },
+                }
             }
         }
 
@@ -520,6 +569,7 @@ fn InvoiceListBody() -> Element {
                                 onclick: move |_| {
                                     company_filter.set(String::new());
                                     status_filter.set(String::new());
+                                    overdue_filter.set(String::new());
                                 },
                                 "Clear filters"
                             }
@@ -556,6 +606,7 @@ fn InvoiceListBody() -> Element {
                                 total: format_money_str(&invoice.total),
                                 balance: format_money_str(&invoice.balance_due),
                                 status: invoice.status,
+                                overdue_days: invoice.is_overdue.then_some(invoice.days_overdue),
                             }
                         }
                     }
@@ -575,6 +626,9 @@ struct InvoiceRowProps {
     total: String,
     balance: String,
     status: String,
+    /// MAPPS-728: `Some(days)` when the server says the invoice is overdue.
+    #[props(default)]
+    overdue_days: Option<i64>,
 }
 
 #[component]
@@ -617,7 +671,14 @@ fn InvoiceRow(props: InvoiceRowProps) -> Element {
             }
             TableCell { class: "text-right font-medium", "{props.total}" }
             TableCell { class: "text-right", "{props.balance}" }
-            TableCell { Badge { variant: status_variant, "{status_label}" } }
+            TableCell {
+                div { class: "flex flex-wrap items-center gap-1",
+                    Badge { variant: status_variant, "{status_label}" }
+                    if let Some(days) = props.overdue_days {
+                        Badge { variant: BadgeVariant::Orange, "{overdue_label(days)}" }
+                    }
+                }
+            }
         }
     }
 }
@@ -680,6 +741,11 @@ struct InvoiceDetail {
     /// The percent as the server's decimal string, e.g. `13.0000`.
     #[serde(default)]
     tax_rate: Option<String>,
+    /// PMS-1037 (MAPPS-728): the server's overdue call, in the tenant's day.
+    #[serde(default)]
+    is_overdue: bool,
+    #[serde(default)]
+    days_overdue: i64,
     #[serde(default)]
     lines: Option<Vec<InvoiceLine>>,
 }
@@ -1706,6 +1772,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
             },
             Some(Some(inv)) => {
                 let (status_variant, status_label) = invoice_status_badge(&inv.status);
+                let overdue_days = inv.is_overdue.then_some(inv.days_overdue);
                 let lines = inv.lines.clone().unwrap_or_default();
                 let currency = inv.currency.clone().unwrap_or_default();
                 let notes = inv.notes.clone();
@@ -1839,7 +1906,12 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                 div { class: "space-y-4",
                                     div { class: "flex justify-between items-center",
                                         span { class: "text-muted", "Status" }
-                                        Badge { variant: status_variant, "{status_label}" }
+                                        div { class: "flex flex-wrap items-center justify-end gap-1",
+                                            Badge { variant: status_variant, "{status_label}" }
+                                            if let Some(days) = overdue_days {
+                                                Badge { variant: BadgeVariant::Orange, "{overdue_label(days)}" }
+                                            }
+                                        }
                                     }
                                     div { class: "flex justify-between",
                                         span { class: "text-muted", "Total" }
@@ -5010,6 +5082,27 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                 }
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod overdue_tests {
+    use super::{overdue_label, overdue_query};
+
+    /// The count is the server's; the label only pluralises it.
+    #[test]
+    fn the_badge_names_the_day_count() {
+        assert_eq!(overdue_label(1), "Overdue (1 day)");
+        assert_eq!(overdue_label(14), "Overdue (14 days)");
+    }
+
+    /// Three states, two of which reach the wire as PMS-1037's `overdue`.
+    #[test]
+    fn the_filter_maps_to_the_query_or_nothing() {
+        assert_eq!(overdue_query(""), None);
+        assert_eq!(overdue_query("true"), Some("&overdue=true"));
+        assert_eq!(overdue_query("false"), Some("&overdue=false"));
+        assert_eq!(overdue_query("maybe"), None);
     }
 }
 
