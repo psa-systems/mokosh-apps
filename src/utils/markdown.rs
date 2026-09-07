@@ -3,7 +3,7 @@
 //! the same content feeds the public portal feed, so the HTML is always
 //! scrubbed with ammonia before it reaches a browser.
 
-use pulldown_cmark::{html, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{html, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use crate::utils::highlight;
 use crate::utils::mentions::{self, Mention};
@@ -40,9 +40,30 @@ fn to_html(src: &str, people: &[Mention], api_origin: &str) -> String {
     // Depth of enclosing links, so a bare URL used as a link's own text is not
     // turned into a link inside a link.
     let mut link_depth = 0usize;
+    // MAPPS-741: the id each heading gets, in document order, from the same
+    // pass the table of contents reads, so the two agree by construction.
+    let mut heading_ids = headings(src).into_iter().map(|h| h.slug);
 
     for event in parser {
         match event {
+            // MAPPS-741: a heading carries an id derived from its text, so a
+            // table of contents can point at it and the id survives any edit
+            // that leaves the heading alone. Ammonia prefixes it (`kb-`) on
+            // the way out, along with any `#fragment` link, so an author's
+            // own `id` cannot collide with the page chrome.
+            Event::Start(Tag::Heading {
+                level,
+                classes,
+                attrs,
+                ..
+            }) => {
+                events.push(Event::Start(Tag::Heading {
+                    level,
+                    id: heading_ids.next().map(Into::into),
+                    classes,
+                    attrs,
+                }));
+            }
             Event::Start(Tag::CodeBlock(ref kind)) => {
                 in_code = Some(match kind {
                     CodeBlockKind::Fenced(info) => info.to_string(),
@@ -74,9 +95,26 @@ fn to_html(src: &str, people: &[Mention], api_origin: &str) -> String {
                     id,
                 }));
             }
-            Event::Start(Tag::Link { .. }) => {
+            // MAPPS-741: a `#fragment` link follows the heading ids, which
+            // the sanitizer prefixes; ammonia's `id_prefix` rewrites ids and
+            // not hrefs, so the link is moved here to stay on target.
+            Event::Start(Tag::Link {
+                link_type,
+                dest_url,
+                title,
+                id,
+            }) => {
                 link_depth += 1;
-                events.push(event);
+                let dest_url = match dest_url.strip_prefix('#') {
+                    Some(fragment) => format!("#{}", heading_dom_id(fragment)).into(),
+                    None => dest_url,
+                };
+                events.push(Event::Start(Tag::Link {
+                    link_type,
+                    dest_url,
+                    title,
+                    id,
+                }));
             }
             Event::End(TagEnd::Link) => {
                 link_depth = link_depth.saturating_sub(1);
@@ -92,6 +130,105 @@ fn to_html(src: &str, people: &[Mention], api_origin: &str) -> String {
     let mut html_out = String::new();
     html::push_html(&mut html_out, events.into_iter());
     html_out
+}
+
+/// MAPPS-741: what a table of contents needs to know about one heading.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Heading {
+    /// 1 for `#`, 6 for `######`.
+    pub level: u8,
+    /// The heading's own text, markup removed.
+    pub text: String,
+    /// The id as the renderer assigns it, BEFORE the sanitizer's prefix.
+    /// [`heading_dom_id`] turns it into the id that is in the document.
+    pub slug: String,
+}
+
+/// The prefix ammonia puts on every `id` in rendered Markdown (MAPPS-741),
+/// and so on every `#fragment` link, so nothing an author writes can name
+/// an element of the page chrome.
+pub const ID_PREFIX: &str = "kb-";
+
+/// The id a heading has in the rendered document.
+pub fn heading_dom_id(slug: &str) -> String {
+    format!("{ID_PREFIX}{slug}")
+}
+
+/// Every heading in `src`, in document order, with the id the renderer
+/// gives it (MAPPS-741). The slug is a function of the heading's text,
+/// lower-cased, alphanumerics kept and everything else folded to one `-`,
+/// so it survives any edit that leaves the heading unchanged; a repeated
+/// heading gets `-2`, `-3` and so on, in order, so two "Notes" sections
+/// stay distinct and stable while nothing above them changes.
+pub fn headings(src: &str) -> Vec<Heading> {
+    let mut out: Vec<Heading> = Vec::new();
+    let mut current: Option<(u8, String)> = None;
+    for event in Parser::new_ext(src, render_options()) {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                current = Some((heading_level(level), String::new()));
+            }
+            Event::Text(t) | Event::Code(t) => {
+                if let Some((_, text)) = current.as_mut() {
+                    text.push_str(&t);
+                }
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                if let Some((_, text)) = current.as_mut() {
+                    text.push(' ');
+                }
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                if let Some((level, text)) = current.take() {
+                    let text = text.trim().to_string();
+                    let base = heading_slug(&text);
+                    let mut slug = base.clone();
+                    let mut n = 1;
+                    while out.iter().any(|h| h.slug == slug) {
+                        n += 1;
+                        slug = format!("{base}-{n}");
+                    }
+                    out.push(Heading { level, text, slug });
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn heading_level(level: HeadingLevel) -> u8 {
+    match level {
+        HeadingLevel::H1 => 1,
+        HeadingLevel::H2 => 2,
+        HeadingLevel::H3 => 3,
+        HeadingLevel::H4 => 4,
+        HeadingLevel::H5 => 5,
+        HeadingLevel::H6 => 6,
+    }
+}
+
+/// The slug rule. Unicode letters and digits are kept (an article in
+/// Vietnamese or German has headings in it), so the id is readable in the
+/// URL bar; a heading with nothing else is `section`.
+fn heading_slug(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut prev_dash = true;
+    for c in text.chars() {
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    let trimmed = out.trim_end_matches('-');
+    if trimmed.is_empty() {
+        "section".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// Split `text` into plain runs and bare URLs, pushing link events for the
@@ -308,6 +445,17 @@ pub fn absolutize_attachment(dest: &str, api_origin: &str) -> String {
 fn sanitize(html: &str) -> String {
     let mut builder = ammonia::Builder::default();
     builder
+        // MAPPS-741: headings carry the id the renderer gave them, and only
+        // headings carry an id at all. `id_prefix` puts `kb-` on every id
+        // AND on every `#fragment` href, so an in-article link keeps working
+        // and an author-written id cannot name a page element.
+        .add_tag_attributes("h1", ["id"])
+        .add_tag_attributes("h2", ["id"])
+        .add_tag_attributes("h3", ["id"])
+        .add_tag_attributes("h4", ["id"])
+        .add_tag_attributes("h5", ["id"])
+        .add_tag_attributes("h6", ["id"])
+        .id_prefix(Some(ID_PREFIX))
         .add_tags(["input"])
         .add_tag_attributes("input", ["checked", "disabled", "data-ti"])
         .add_tag_attribute_values("input", "type", ["checkbox"])
@@ -628,7 +776,8 @@ mod tests {
     #[test]
     fn renders_headings_and_lists() {
         let out = render_markdown("# Title\n\n- a\n- b");
-        assert!(out.contains("<h1>Title</h1>"));
+        // MAPPS-741: a heading carries its id.
+        assert!(out.contains("<h1 id=\"kb-title\">Title</h1>"), "{out}");
         assert!(out.contains("<li>a</li>"));
     }
 
@@ -1204,5 +1353,87 @@ export TOKEN="$MOKOSH_TOKEN"
         let flipped = toggle_task(SRC, 1).expect("nested item is index 1");
         assert!(flipped.contains("- [x] Secrets and tokens stored in Infisical"));
         assert!(flipped.contains("* [ ] <span style=\"color:red\">**REST API**</span>"));
+    }
+}
+
+/// MAPPS-741: heading ids, the contract the table of contents rests on.
+#[cfg(test)]
+mod heading_id_tests {
+    use super::{heading_dom_id, headings, render_markdown, Heading};
+
+    #[test]
+    fn a_heading_is_rendered_with_an_id_derived_from_its_text() {
+        let html = render_markdown("# Reset the router\n\ntext\n\n## Still stuck?\n");
+        assert!(html.contains(r#"<h1 id="kb-reset-the-router">"#), "{html}");
+        assert!(html.contains(r#"<h2 id="kb-still-stuck">"#), "{html}");
+    }
+
+    #[test]
+    fn the_reader_and_the_renderer_agree() {
+        let src = "## Notes\n\n### Notes\n\n## Notes\n\n# Ünïcode Überschrift 2\n";
+        let hs = headings(src);
+        assert_eq!(
+            hs,
+            vec![
+                Heading {
+                    level: 2,
+                    text: "Notes".into(),
+                    slug: "notes".into()
+                },
+                Heading {
+                    level: 3,
+                    text: "Notes".into(),
+                    slug: "notes-2".into()
+                },
+                Heading {
+                    level: 2,
+                    text: "Notes".into(),
+                    slug: "notes-3".into()
+                },
+                Heading {
+                    level: 1,
+                    text: "Ünïcode Überschrift 2".into(),
+                    slug: "ünïcode-überschrift-2".into()
+                },
+            ]
+        );
+        let html = render_markdown(src);
+        for h in &hs {
+            let id = heading_dom_id(&h.slug);
+            assert!(html.contains(&format!(r#"id="{id}""#)), "{id} in {html}");
+        }
+    }
+
+    #[test]
+    fn markup_inside_a_heading_does_not_reach_the_id() {
+        let hs = headings("## Run `just check` **first**\n");
+        assert_eq!(hs[0].text, "Run just check first");
+        assert_eq!(hs[0].slug, "run-just-check-first");
+        let hs = headings("## ???\n");
+        assert_eq!(hs[0].slug, "section");
+    }
+
+    #[test]
+    fn an_author_written_id_is_prefixed_and_a_fragment_link_follows_it() {
+        let html = render_markdown("<h2 id=\"toc\">Contents</h2>\n\n[up](#toc)\n");
+        assert!(html.contains(r#"<h2 id="kb-toc">"#), "{html}");
+        // The Markdown link is rewritten by the renderer; an author's raw
+        // `<a href="#...">` is not, and that is the known cost of a raw tag.
+        assert!(html.contains(r##"href="#kb-toc""##), "{html}");
+        let html = render_markdown("[docs](https://example.com/#top)\n");
+        assert!(
+            html.contains(r#"href="https://example.com/#top""#),
+            "only a bare fragment: {html}"
+        );
+        // Only headings carry ids: a div does not.
+        let html = render_markdown("<div id=\"x\">y</div>\n");
+        assert!(!html.contains("id="), "{html}");
+    }
+
+    #[test]
+    fn an_edit_elsewhere_leaves_a_heading_id_alone() {
+        let before = headings("# A\n\ntext\n\n## B\n");
+        let after = headings("# A\n\nvery different text\n\nmore\n\n## B\n");
+        assert_eq!(before, after);
     }
 }
