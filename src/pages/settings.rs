@@ -79,16 +79,23 @@ fn AdminOnlyNotice(title: String) -> Element {
 /// Per-user appearance settings (MAPPS-259): base mode + accent color.
 /// Not admin-gated; every user personalizes their own theme. Embeds the
 /// same `ThemePicker` the top-bar swatch modal uses.
+///
+/// MAPPS-740: also the reading density for knowledge base articles. It used
+/// to be a toggle inside the article's Actions card, between Delete and
+/// Open ticket; a display preference is not an action on an article, and
+/// this is where the user's other display preferences live. Same `kb_density`
+/// key in `prefs`, so nobody's choice moves.
 #[component]
 pub fn AppearanceSettingsPage() -> Element {
     // MAPPS-357: N/A - per-user appearance (theme + accent) has no server-backed
     // resource; the ThemePicker persists to the account with no page fetch that
     // an outage could blank, so there is no unavailable state to render.
     use_page_title("Appearance");
+    let mut comfortable = use_signal(|| crate::utils::prefs::get_bool("kb_density", true));
     rsx! {
         PageHeader {
             title: "Appearance",
-            subtitle: "Theme and accent color, saved to your account",
+            subtitle: "Theme and accent color, saved to your account; article reading density, saved to this browser",
             breadcrumbs: rsx! {
                 SettingsBreadcrumb { current: Route::SettingsAppearance {} }
             },
@@ -96,6 +103,25 @@ pub fn AppearanceSettingsPage() -> Element {
         Card {
             div { class: "p-6",
                 ThemePicker {}
+            }
+        }
+        Card { title: "Reading",
+            div { class: "p-6 max-w-xl",
+                Select {
+                    name: "kb_density",
+                    label: "Knowledge base article density",
+                    help: "Comfortable gives an article room to breathe; Compact fits more of a long procedure on one screen.",
+                    options: vec![
+                        SelectOption { value: "comfortable".to_string(), label: "Comfortable".to_string(), disabled: false },
+                        SelectOption { value: "compact".to_string(), label: "Compact".to_string(), disabled: false },
+                    ],
+                    value: if comfortable() { "comfortable".to_string() } else { "compact".to_string() },
+                    onchange: move |e: FormEvent| {
+                        let next = e.value() != "compact";
+                        comfortable.set(next);
+                        crate::utils::prefs::set_bool("kb_density", next);
+                    },
+                }
             }
         }
     }
@@ -205,7 +231,9 @@ impl SettingsGroupKey {
     /// One-line summary shown on the group card on the index.
     fn description(self) -> &'static str {
         match self {
-            SettingsGroupKey::Personalization => "Theme and accent color for your account.",
+            SettingsGroupKey::Personalization => {
+                "Theme and accent color for your account, and how dense an article reads."
+            }
             SettingsGroupKey::ServiceTypes => {
                 "Work types, task statuses, asset types, and project types."
             }

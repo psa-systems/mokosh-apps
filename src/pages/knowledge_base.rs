@@ -1361,6 +1361,9 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     // Reading-view UI state, persisted per user via the prefs store.
     let left_collapsed = use_signal(|| crate::utils::prefs::get_bool("kb_left_rail", false));
     let right_collapsed = use_signal(|| crate::utils::prefs::get_bool("kb_right_rail", false));
+    // MAPPS-740: set on /settings/appearance, read here. The toggle that
+    // used to sit in the Actions card between Delete and Open ticket is
+    // gone; a display preference is not an action on the article.
     let comfortable = use_signal(|| crate::utils::prefs::get_bool("kb_density", true));
     let open_overlay = use_signal(|| None::<crate::components::RailSide>);
     use_effect(move || crate::utils::prefs::set_bool("kb_left_rail", left_collapsed()));
@@ -1580,7 +1583,6 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                     ArticleActionsMenu {
                                         article_id: props.id.clone(),
                                         article_title: article.title.clone(),
-                                        comfortable,
                                         confirming_delete,
                                         delete_error,
                                         delete_busy,
@@ -1703,7 +1705,6 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                 ArticleActions {
                                     article_id: props.id.clone(),
                                     article_title: article.title.clone(),
-                                    comfortable,
                                     confirming_delete,
                                     delete_error,
                                     delete_busy,
@@ -3404,7 +3405,8 @@ fn KbTreeArticle(article: KbArticle, current_id: String) -> Element {
 }
 
 // ============================================================================
-// Article actions, rating bar, density toggle, read-mode button
+// Article actions, rating bar, read-mode button (the density toggle moved
+// to /settings/appearance in MAPPS-740)
 // ============================================================================
 
 /// MAPPS-423: the controls that act on the article, as one full-width column.
@@ -3414,7 +3416,6 @@ fn KbTreeArticle(article: KbArticle, current_id: String) -> Element {
 fn ArticleActions(
     article_id: String,
     article_title: String,
-    comfortable: Signal<bool>,
     confirming_delete: Signal<bool>,
     delete_error: Signal<String>,
     delete_busy: Signal<bool>,
@@ -3461,7 +3462,6 @@ fn ArticleActions(
                 class: "w-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium rounded-md border border-line hover:bg-surface-2 text-content",
                 "Open ticket about this article"
             }
-            DensityToggle { comfortable, class: "w-full".to_string() }
         }
     }
 }
@@ -3473,7 +3473,6 @@ fn ArticleActions(
 fn ArticleActionsMenu(
     article_id: String,
     article_title: String,
-    comfortable: Signal<bool>,
     confirming_delete: Signal<bool>,
     delete_error: Signal<String>,
     delete_busy: Signal<bool>,
@@ -3505,7 +3504,6 @@ fn ArticleActionsMenu(
                     ArticleActions {
                         article_id,
                         article_title,
-                        comfortable,
                         confirming_delete,
                         delete_error,
                         delete_busy,
@@ -3610,23 +3608,6 @@ fn RatingBar(
                 span { "\u{1F44E}" }
                 span { class: "tabular-nums", "{n}" }
             }
-        }
-    }
-}
-
-#[component]
-fn DensityToggle(comfortable: Signal<bool>, #[props(default)] class: String) -> Element {
-    let mut comfortable = comfortable;
-    rsx! {
-        button {
-            class: "text-xs px-2 py-1 rounded border border-line text-content {class}",
-            title: "Toggle reading density",
-            onclick: move |_| {
-                let next = !comfortable();
-                comfortable.set(next);
-                crate::utils::prefs::set_bool("kb_density", next);
-            },
-            if comfortable() { "Comfortable" } else { "Compact" }
         }
     }
 }
