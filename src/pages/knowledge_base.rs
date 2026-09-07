@@ -419,6 +419,39 @@ fn date_only(ts: &Option<DateTime<Utc>>) -> String {
     }
 }
 
+/// MAPPS-739: a timestamp in the user's own format, "-" when absent.
+fn when_label(ts: &Option<DateTime<Utc>>) -> String {
+    match ts {
+        Some(dt) => crate::utils::datetime::fmt_datetime_pref(*dt),
+        None => "-".to_string(),
+    }
+}
+
+/// MAPPS-739: "Created by Ada Lovelace Sep 07, 2026 10:12 · Updated by
+/// Grace Hopper Sep 08, 2026 09:40". A name the server could not resolve
+/// prints as "Unknown" (the server's own word), never as an id, and the
+/// second half is left out when nobody has written the row since it was
+/// made, so an untouched article does not claim an editor.
+fn attribution_line(
+    author: Option<&str>,
+    created: &Option<DateTime<Utc>>,
+    editor: Option<&str>,
+    updated: &Option<DateTime<Utc>>,
+) -> String {
+    let author = author.filter(|n| !n.trim().is_empty()).unwrap_or("Unknown");
+    let mut line = format!("Created by {author} {}", when_label(created));
+    let touched = match (created, updated) {
+        (Some(c), Some(u)) => u > c,
+        (None, Some(_)) => true,
+        _ => false,
+    };
+    if touched {
+        let editor = editor.filter(|n| !n.trim().is_empty()).unwrap_or("Unknown");
+        line.push_str(&format!(" · Updated by {editor} {}", when_label(updated)));
+    }
+    line
+}
+
 // ============================================================================
 // Home page
 // ============================================================================
@@ -1320,6 +1353,10 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         .ok()
     }));
 
+    // MAPPS-739: a contact session reads the same page; the names in the
+    // header and the version history are staff surfaces.
+    let is_contact = crate::hooks::capabilities::use_is_contact_session();
+
     // Category list for the breadcrumb path and the left tree rail.
     let categories_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -1548,7 +1585,19 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                     &article.status
                 };
                 let (status_variant, status_label) = kb_article_status_badge(status_raw);
-                let updated = date_only(&article.updated_at);
+                // MAPPS-739: who and when, by name. Staff only: the contact
+                // projection carries no names, and a customer reading a
+                // published article does not need the editor's.
+                let attribution = if is_contact {
+                    format!("Updated {}", when_label(&article.updated_at))
+                } else {
+                    attribution_line(
+                        article.author_name.as_deref(),
+                        &article.created_at,
+                        article.updated_by_name.as_deref(),
+                        &article.updated_at,
+                    )
+                };
                 let content = article.content.clone();
                 let path = resolve_category_path(article.category_id, &categories);
                 // Density drives BOTH the line spacing (leading-*) and the
@@ -1615,7 +1664,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                     }
                                 }
                             }
-                            p { class: "mt-1 text-xs text-subtle", "Updated {updated}" }
+                            p { class: "mt-1 text-xs text-subtle", "{attribution}" }
                             if !article.tags.is_empty() {
                                 TagChips { tags: article.tags.clone(), class: "mt-3".to_string() }
                             }
@@ -2476,6 +2525,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             status: Some(status_val.clone()),
                             tags: Some(tags_vec.clone()),
                             company_ids: company_ids_opt.clone(),
+                            change_note: None,
                         };
                         let path = format!("/kb/articles/{id}");
                         crate::hooks::fetch::api::put_authed::<KbArticle, _>(&path, &body)
