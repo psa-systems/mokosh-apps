@@ -431,15 +431,17 @@ fn when_label(ts: &Option<DateTime<Utc>>) -> String {
 /// Grace Hopper Sep 08, 2026 09:40". A name the server could not resolve
 /// prints as "Unknown" (the server's own word), never as an id, and the
 /// second half is left out when nobody has written the row since it was
-/// made, so an untouched article does not claim an editor.
+/// made, so an untouched article does not claim an editor. The formatter is
+/// passed in so the page uses the user's preference and a test a fixed one.
 fn attribution_line(
     author: Option<&str>,
     created: &Option<DateTime<Utc>>,
     editor: Option<&str>,
     updated: &Option<DateTime<Utc>>,
+    when: impl Fn(&Option<DateTime<Utc>>) -> String,
 ) -> String {
     let author = author.filter(|n| !n.trim().is_empty()).unwrap_or("Unknown");
-    let mut line = format!("Created by {author} {}", when_label(created));
+    let mut line = format!("Created by {author} {}", when(created));
     let touched = match (created, updated) {
         (Some(c), Some(u)) => u > c,
         (None, Some(_)) => true,
@@ -447,7 +449,7 @@ fn attribution_line(
     };
     if touched {
         let editor = editor.filter(|n| !n.trim().is_empty()).unwrap_or("Unknown");
-        line.push_str(&format!(" · Updated by {editor} {}", when_label(updated)));
+        line.push_str(&format!(" · Updated by {editor} {}", when(updated)));
     }
     line
 }
@@ -1596,6 +1598,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                         &article.created_at,
                         article.updated_by_name.as_deref(),
                         &article.updated_at,
+                        when_label,
                     )
                 };
                 let content = article.content.clone();
@@ -4051,6 +4054,11 @@ mod tests {
             id,
             title: title.to_string(),
             slug: title.to_lowercase(),
+            author_id: None,
+            author_name: None,
+            updated_by_id: None,
+            updated_by_name: None,
+            current_version: 0,
             content: String::new(),
             summary: None,
             category_id: category,
@@ -4614,5 +4622,117 @@ mod mapps612_details_panel_tests {
             "How to reset a password",
             "how-to-reset-a-password"
         ));
+    }
+}
+
+/// MAPPS-739: attribution, version rows, and the restore that shows its
+/// diff first.
+#[cfg(test)]
+mod mapps739_history_tests {
+    use super::{attribution_line, change_kind_label, person_label};
+    use chrono::{DateTime, TimeZone, Utc};
+
+    fn fixed(ts: &Option<DateTime<Utc>>) -> String {
+        ts.map(|dt| dt.format("%b %d, %Y %H:%M").to_string())
+            .unwrap_or_else(|| "-".to_string())
+    }
+
+    #[test]
+    fn the_header_names_the_author_and_the_editor_and_never_an_id() {
+        let created = Some(Utc.with_ymd_and_hms(2026, 9, 7, 10, 12, 0).unwrap());
+        let updated = Some(Utc.with_ymd_and_hms(2026, 9, 8, 9, 40, 0).unwrap());
+        let line = attribution_line(
+            Some("Ada Lovelace"),
+            &created,
+            Some("Grace Hopper"),
+            &updated,
+            fixed,
+        );
+        assert_eq!(
+            line,
+            "Created by Ada Lovelace Sep 07, 2026 10:12 · Updated by Grace Hopper Sep 08, 2026 09:40"
+        );
+    }
+
+    #[test]
+    fn an_untouched_article_claims_no_editor() {
+        let created = Some(Utc.with_ymd_and_hms(2026, 9, 7, 10, 12, 0).unwrap());
+        let line = attribution_line(
+            Some("Ada Lovelace"),
+            &created,
+            Some("Ada Lovelace"),
+            &created,
+            fixed,
+        );
+        assert!(!line.contains("Updated by"), "{line}");
+    }
+
+    #[test]
+    fn a_missing_name_prints_unknown() {
+        let created = Some(Utc.with_ymd_and_hms(2026, 9, 7, 10, 12, 0).unwrap());
+        let updated = Some(Utc.with_ymd_and_hms(2026, 9, 8, 9, 40, 0).unwrap());
+        let line = attribution_line(None, &created, Some("  "), &updated, fixed);
+        assert!(line.starts_with("Created by Unknown "), "{line}");
+        assert!(line.contains("Updated by Unknown "), "{line}");
+        assert_eq!(person_label(None), "Unknown");
+        assert_eq!(person_label(Some(" ")), "Unknown");
+        assert_eq!(person_label(Some(" Ada ")), "Ada");
+    }
+
+    #[test]
+    fn a_version_row_leads_with_what_kind_of_change_it_was() {
+        assert_eq!(change_kind_label("create", None), "Created");
+        assert_eq!(change_kind_label("edit", None), "Edited");
+        assert_eq!(change_kind_label("restore", Some(3)), "Restored from v3");
+        assert_eq!(change_kind_label("restore", None), "Restored");
+        // A kind this build does not know reads as an edit rather than
+        // failing the page.
+        assert_eq!(change_kind_label("merge", None), "Edited");
+    }
+
+    /// The card never repeats the article title per row, restore goes
+    /// through a dialog that shows the diff, a failed restore is reported
+    /// rather than swallowed, and the edit form sends its note.
+    #[test]
+    fn restore_shows_its_diff_and_reports_its_failure() {
+        let src = include_str!("knowledge_base.rs");
+        let head = &src[..src.find("mod mapps739_history_tests").expect("this module")];
+        let card = &head[head.find("fn VersionHistoryCard(").expect("the card")..];
+        let card = &card[..card
+            .find("// New / edit article pages")
+            .expect("end of card")];
+        assert!(
+            card.contains("ConfirmDialog {")
+                && card.contains(
+                    "LineDiffView { old: live_content.clone(), new: target_content.clone() }"
+                ),
+            "restore confirms on a dialog that shows the live body against the version"
+        );
+        assert!(
+            card.contains(
+                "restore_error.set(format!(\"Could not restore: {}\", err.user_message()))"
+            ),
+            "a failed restore is reported inside the dialog"
+        );
+        assert!(
+            !card.contains("if crate::hooks::fetch::api::post_authed::<KbArticle, _>(&path, &serde_json::json!({})).await.is_ok()"),
+            "the one-click, swallow-the-error restore is gone"
+        );
+        assert!(
+            card.contains("Badge { variant: BadgeVariant::Gray, \"Current\" }"),
+            "the live version is marked"
+        );
+        assert!(
+            !card.contains("p { class: \"mt-0.5 text-muted truncate\", \"{title}\" }"),
+            "the row no longer repeats the article title"
+        );
+        assert!(
+            head.contains("change_note: change_note_opt.clone(),"),
+            "the edit form sends its note on the PUT"
+        );
+        assert!(
+            head.contains("if !is_contact {\n                                VersionHistoryCard {"),
+            "the history is not rendered on a contact session"
+        );
     }
 }
