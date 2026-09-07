@@ -850,6 +850,162 @@ pub fn set_textarea_selection(id: &str, start: u32, end: u32) {
 /// evaluate JavaScript in, so no host test can drive them. What can
 /// regress is the wiring, and each of these went missing once already
 /// as a stub that answered "nothing to do" and said nothing about it.
+/// MAPPS-741: the headings a table of contents follows, inside the article
+/// body. Only headings carry an id in rendered Markdown (`utils::markdown`),
+/// so `[id]` is the whole filter.
+pub const HEADING_SELECTOR: &str = "h1[id],h2[id],h3[id],h4[id],h5[id],h6[id]";
+
+/// The band of the viewport a heading has to be in to count as current:
+/// the top 30%. A heading that scrolled out above stays current until the
+/// next one enters, so the section being read is the one marked, not the
+/// one whose heading happens to be on screen further down.
+const HEADING_BAND: &str = "0px 0px -70% 0px";
+
+/// Report which heading inside the container with this id is current, as
+/// its DOM id, every time that changes (MAPPS-741).
+///
+/// One `IntersectionObserver` over the headings, with [`HEADING_BAND`] as
+/// its root margin; the current heading is the first in document order
+/// that is inside the band. Installing again for the same container
+/// replaces the previous observer, which is how a re-rendered body (an
+/// edit, a restore, a navigation to another article) is picked up without
+/// two observers reporting.
+///
+/// The callback runs from a raw DOM listener, so it goes through an
+/// `EventHandler` for the MAPPS-586 reason: nothing else may touch the
+/// runtime from there.
+#[cfg(target_arch = "wasm32")]
+pub fn watch_active_heading(container_id: &str, on_active: dioxus::prelude::EventHandler<String>) {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::JsCast;
+
+    type Spy = (
+        web_sys::IntersectionObserver,
+        Closure<dyn FnMut(js_sys::Array)>,
+    );
+    thread_local! {
+        static SPIES: RefCell<HashMap<String, Spy>> = RefCell::new(HashMap::new());
+    }
+    SPIES.with(|spies| {
+        if let Some((observer, _)) = spies.borrow_mut().remove(container_id) {
+            observer.disconnect();
+        }
+    });
+
+    let Some(container) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(container_id))
+    else {
+        return;
+    };
+    let Ok(nodes) = container.query_selector_all(HEADING_SELECTOR) else {
+        return;
+    };
+    let mut targets: Vec<web_sys::Element> = Vec::new();
+    for i in 0..nodes.length() {
+        if let Some(el) = nodes
+            .get(i)
+            .and_then(|n| n.dyn_into::<web_sys::Element>().ok())
+        {
+            targets.push(el);
+        }
+    }
+    if targets.is_empty() {
+        return;
+    }
+    let ids: Vec<String> = targets.iter().map(|e| e.id()).collect();
+    let visible = Rc::new(RefCell::new(vec![false; ids.len()]));
+    let callback = {
+        let ids = ids.clone();
+        let visible = visible.clone();
+        Closure::wrap(Box::new(move |entries: js_sys::Array| {
+            for entry in entries.iter() {
+                let Ok(entry) = entry.dyn_into::<web_sys::IntersectionObserverEntry>() else {
+                    continue;
+                };
+                let id = entry.target().id();
+                if let Some(idx) = ids.iter().position(|known| *known == id) {
+                    visible.borrow_mut()[idx] = entry.is_intersecting();
+                }
+            }
+            let first = visible.borrow().iter().position(|v| *v);
+            if let Some(first) = first {
+                on_active.call(ids[first].clone());
+            }
+        }) as Box<dyn FnMut(js_sys::Array)>)
+    };
+    let options = web_sys::IntersectionObserverInit::new();
+    options.set_root_margin(HEADING_BAND);
+    let Ok(observer) = web_sys::IntersectionObserver::new_with_options(
+        callback.as_ref().unchecked_ref(),
+        &options,
+    ) else {
+        // The table of contents still lists and still jumps; only the
+        // current-section mark is missing.
+        tracing::error!("could not observe the article headings for #{container_id}");
+        return;
+    };
+    for el in &targets {
+        observer.observe(el);
+    }
+    SPIES.with(|spies| {
+        spies
+            .borrow_mut()
+            .insert(container_id.to_string(), (observer, callback));
+    });
+}
+
+/// MAPPS-741, desktop: the injected script builds the same observer and
+/// posts each change back over the `eval` channel, the `watch_task_toggles`
+/// shape. A previous observer on the same container is disconnected first,
+/// parked on `window.__mokoshHeadingSpy`; its listener task then never
+/// hears again and stays parked, which is the cost of not being able to
+/// cancel an `eval` from Rust.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn watch_active_heading(container_id: &str, on_active: dioxus::prelude::EventHandler<String>) {
+    if !in_runtime() {
+        return;
+    }
+    let mut eval = dioxus::document::eval(&format!(
+        "const el = document.getElementById({id}); \
+         if (!el) return 'missing'; \
+         window.__mokoshHeadingSpy = window.__mokoshHeadingSpy || {{}}; \
+         const prev = window.__mokoshHeadingSpy[{id}]; \
+         if (prev) prev.disconnect(); \
+         const heads = Array.from(el.querySelectorAll({selector})); \
+         if (!heads.length) return 'empty'; \
+         const visible = heads.map(() => false); \
+         const obs = new IntersectionObserver((entries) => {{ \
+            for (const e of entries) {{ \
+                const i = heads.indexOf(e.target); \
+                if (i >= 0) visible[i] = e.isIntersecting; \
+            }} \
+            const first = visible.indexOf(true); \
+            if (first >= 0) dioxus.send(heads[first].id); \
+         }}, {{ rootMargin: {band} }}); \
+         heads.forEach((h) => obs.observe(h)); \
+         window.__mokoshHeadingSpy[{id}] = obs; \
+         return 'installed';",
+        id = js_string(container_id),
+        selector = js_string(HEADING_SELECTOR),
+        band = js_string(HEADING_BAND),
+    ));
+    dioxus::prelude::spawn(async move {
+        loop {
+            match eval.recv::<String>().await {
+                Ok(id) => on_active.call(id),
+                Err(e) => {
+                    tracing::error!("stopped following the article headings: {e}");
+                    return;
+                }
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod desktop_wiring_tests {
     const SRC: &str = include_str!("dom.rs");
@@ -909,6 +1065,26 @@ mod desktop_wiring_tests {
         assert!(
             code.contains("dioxus.send(Number(index));"),
             "and each click is posted back as its data-ti index"
+        );
+    }
+
+    /// MAPPS-741: the current heading reaches Rust on both hosts, through
+    /// the same selector and the same band.
+    #[test]
+    fn the_current_heading_comes_back_on_both_hosts() {
+        let code = code_only();
+        assert_eq!(
+            code.matches("pub fn watch_active_heading(container_id: &str, on_active: dioxus::prelude::EventHandler<String>)").count(),
+            2,
+            "one per host"
+        );
+        assert!(
+            code.contains("dioxus.send(heads[first].id);"),
+            "the desktop posts the id back"
+        );
+        assert!(
+            code.contains("options.set_root_margin(HEADING_BAND);"),
+            "the browser observes the same band"
         );
     }
 
