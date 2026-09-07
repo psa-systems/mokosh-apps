@@ -189,6 +189,28 @@ struct RemoteTicketDetail {
     sla_status: SlaStatus,
 }
 
+/// MAPPS-734: the body of `GET /tickets/{id}/sla` (server PMS-1087), the
+/// two legs a reader cares about with the target and, once reached, the
+/// actual event time. `status` is the same rule as the ticket's own
+/// `sla_status`, so the badge cannot disagree with the list; every field
+/// defaults because a ticket with no policy answers nulls. The route is
+/// dual-plane: a contact gets it for its own company's ticket, a staff
+/// user for any, and nothing internal (policy id, escalation chain) is in
+/// it, so the same struct serves both sessions.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteTicketSla {
+    #[serde(default)]
+    first_response_due: Option<DateTime<Utc>>,
+    #[serde(default)]
+    first_response_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    resolution_due: Option<DateTime<Utc>>,
+    #[serde(default)]
+    resolved_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    status: SlaStatus,
+}
+
 /// One row from `GET /tickets/statuses` (PMS-359). Tenant-scoped lookup
 /// powering the inline Status editor on the ticket detail sidebar. The
 /// `is_closed` flag is read so the renderer can keep the badge colour
@@ -522,10 +544,16 @@ fn format_sla_due(due: DateTime<Utc>) -> String {
         Some(fmt) => crate::utils::datetime::format_user_datetime(due, Some(fmt)),
         None => due.format("%b %-d, %Y %-I:%M %p").to_string(),
     };
-    let now = Utc::now();
+    let hint = remaining_hint(due, Utc::now());
+    format!("{absolute} ({hint})")
+}
+
+/// The coarse "2 hr left" / "3 days overdue" hint behind `format_sla_due`,
+/// with `now` explicit so a test can pin it (MAPPS-734 reuses it per leg).
+fn remaining_hint(due: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let delta = due.signed_duration_since(now);
     let secs = delta.num_seconds();
-    let hint = if secs <= 0 {
+    if secs <= 0 {
         let overdue = (-secs).max(0);
         if overdue < 3600 {
             format!("{} min overdue", (overdue / 60).max(1))
@@ -540,8 +568,58 @@ fn format_sla_due(due: DateTime<Utc>) -> String {
         format!("{} hr left", secs / 3600)
     } else {
         format!("{} days left", secs / 86_400)
-    };
-    format!("{absolute} ({hint})")
+    }
+}
+
+/// MAPPS-734: one SLA leg (first response or resolution) as the Details
+/// card prints it. `Pending` is a target not yet reached: the target and
+/// how far off it is. `Reached` is a target with its actual event time,
+/// met when the actual is on or before the target. A leg with no target
+/// is `None` and prints nothing, which is what a ticket with no policy
+/// answers; an actual with no target is not a leg either, because there
+/// was nothing to meet.
+#[derive(Clone, Debug, PartialEq)]
+enum SlaLeg {
+    Pending {
+        due: DateTime<Utc>,
+        hint: String,
+    },
+    Reached {
+        at: DateTime<Utc>,
+        due: DateTime<Utc>,
+        met: bool,
+    },
+}
+
+fn sla_leg(
+    target: Option<DateTime<Utc>>,
+    actual: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> Option<SlaLeg> {
+    let due = target?;
+    Some(match actual {
+        Some(at) => SlaLeg::Reached {
+            at,
+            due,
+            met: at <= due,
+        },
+        None => SlaLeg::Pending {
+            due,
+            hint: remaining_hint(due, now),
+        },
+    })
+}
+
+/// The leg as one line, with the timestamp formatter passed in so the
+/// render uses the per-user preference and a test uses a fixed one.
+fn sla_leg_text(leg: &SlaLeg, fmt: impl Fn(DateTime<Utc>) -> String) -> String {
+    match leg {
+        SlaLeg::Pending { due, hint } => format!("Due {} ({hint})", fmt(*due)),
+        SlaLeg::Reached { at, due, met } => {
+            let verdict = if *met { "met" } else { "missed" };
+            format!("{} ({verdict}, due {})", fmt(*at), fmt(*due))
+        }
+    }
 }
 
 /// Render a `DateTime<Utc>` as a coarse "X ago" string. Good enough
@@ -2408,6 +2486,29 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             .ok()
         }
     });
+    // MAPPS-734: the two SLA legs from the dual-plane route (server
+    // PMS-1087). `get_authed_any` for the same reason the ticket uses it: a
+    // contact reads its own ticket on the contact bearer. Reading the
+    // ticket resource here subscribes this one to it, so every refetch the
+    // inline editors trigger (a status change closes a leg, a close
+    // collapses the state) refreshes the legs too. `Some(None)` on a
+    // failure keeps the card on the ticket's own `sla_due_date` row, so an
+    // older server or a refused route never removes what the page showed
+    // before this.
+    let id_for_sla = props.id.clone();
+    let sla_resource = use_resource(move || {
+        let id = id_for_sla.clone();
+        let _ticket = ticket_resource.read().clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed_any::<RemoteTicketSla>(&format!(
+                "/tickets/{id}/sla"
+            ))
+            .await
+            .inspect_err(|e| tracing::warn!("ticket sla load failed for {id}: {e}"))
+            .ok()
+        }
+    });
     let id_for_notes = props.id.clone();
     let notes_resource = use_resource(move || {
         let id = id_for_notes.clone();
@@ -2573,6 +2674,9 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let ticket_snapshot = ticket_resource.read_unchecked().clone();
     let ticket_fetch_failed = matches!(ticket_snapshot, Some(None));
     let ticket = ticket_snapshot.flatten();
+    // MAPPS-734: `None` while loading or after a failure, and the card
+    // falls back to the ticket's own SLA pair in both cases.
+    let sla = sla_resource.read_unchecked().clone().flatten();
     // MAPPS-357: split the failed-fetch case. A failure while the server is
     // flagged down is an outage - render the honest ContentUnavailable state
     // (which keeps the nav + banner and auto-recovers on reconnect) instead of
@@ -4160,11 +4264,39 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                     DetailItem { label: "Created", nowrap: true, value: rsx!(span { "{created}" }) }
                                 }
                             }
-                            if let Some((variant , label)) = t.sla_status.badge() {
-                                DetailItem { label: "SLA Status", value: rsx!(Badge { variant, "{label}" }) }
-                            }
-                            if let Some(due) = t.sla_due_date.map(format_sla_due) {
-                                DetailItem { label: "SLA Due", nowrap: true, value: rsx!(span { "{due}" }) }
+                            // MAPPS-734: the SLA block. The badge follows the
+                            // route's state once it has loaded (the same rule
+                            // as the ticket's own, so it only changes when the
+                            // ticket did between the two reads), and each leg
+                            // prints its target against its actual. Before the
+                            // route answers, and if it never does, the card
+                            // shows the one due date the ticket carries, as it
+                            // did before this. A ticket with no policy has no
+                            // badge and no legs, so no block.
+                            {
+                                let now = Utc::now();
+                                let badge = sla.as_ref().map(|s| s.status).unwrap_or(t.sla_status).badge();
+                                let rows: Vec<(&'static str, String)> = match sla.as_ref() {
+                                    Some(s) => [
+                                        ("First response", sla_leg(s.first_response_due, s.first_response_at, now)),
+                                        ("Resolution", sla_leg(s.resolution_due, s.resolved_at, now)),
+                                    ]
+                                    .into_iter()
+                                    .filter_map(|(label, leg)| leg.map(|leg| (label, sla_leg_text(&leg, fmt_datetime))))
+                                    .collect(),
+                                    None => t
+                                        .sla_due_date
+                                        .map(|due| vec![("SLA Due", format_sla_due(due))])
+                                        .unwrap_or_default(),
+                                };
+                                rsx! {
+                                    if let Some((variant, label)) = badge {
+                                        DetailItem { label: "SLA Status", value: rsx!(Badge { variant, "{label}" }) }
+                                    }
+                                    for (label, value) in rows {
+                                        DetailItem { label: label.to_string(), nowrap: true, value: rsx!(span { "{value}" }) }
+                                    }
+                                }
                             }
                         }
                     } else {
