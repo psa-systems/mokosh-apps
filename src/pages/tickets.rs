@@ -535,20 +535,21 @@ impl SlaStatus {
     }
 }
 
-/// Format an SLA due date as an absolute timestamp plus a coarse
-/// remaining/overdue hint, e.g. "Jan 15, 2025 5:00 PM (2 hours left)".
+/// An SLA due date as an absolute timestamp plus a coarse remaining/overdue
+/// hint, e.g. "Jan 15, 2025 5:00 PM" and "(2 hours left)", as the two
+/// phrases a `Phrases` cell wraps between (MAPPS-731).
 /// PMS-253: honours the per-user format pref for the absolute part.
-fn format_sla_due(due: DateTime<Utc>) -> String {
+fn sla_due_parts(due: DateTime<Utc>) -> Vec<String> {
     let pref = crate::utils::datetime::user_format_pref();
     let absolute = match pref.as_deref().filter(|s| !s.trim().is_empty()) {
         Some(fmt) => crate::utils::datetime::format_user_datetime(due, Some(fmt)),
         None => due.format("%b %-d, %Y %-I:%M %p").to_string(),
     };
     let hint = remaining_hint(due, Utc::now());
-    format!("{absolute} ({hint})")
+    vec![absolute, format!("({hint})")]
 }
 
-/// The coarse "2 hr left" / "3 days overdue" hint behind `format_sla_due`,
+/// The coarse "2 hr left" / "3 days overdue" hint behind `sla_due_parts`,
 /// with `now` explicit so a test can pin it (MAPPS-734 reuses it per leg).
 fn remaining_hint(due: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let delta = due.signed_duration_since(now);
@@ -610,15 +611,33 @@ fn sla_leg(
     })
 }
 
-/// The leg as one line, with the timestamp formatter passed in so the
-/// render uses the per-user preference and a test uses a fixed one.
-fn sla_leg_text(leg: &SlaLeg, fmt: impl Fn(DateTime<Utc>) -> String) -> String {
+/// The leg as the phrases a `Phrases` cell wraps between (MAPPS-731), with
+/// the timestamp formatter passed in so the render uses the per-user
+/// preference and a test uses a fixed one. Joined with spaces it reads
+/// "Due <due> (<hint>)" or "<at> (met, due <due>)"; every timestamp is a
+/// phrase of its own, so a narrow card breaks the line beside it and not
+/// through it.
+fn sla_leg_parts(leg: &SlaLeg, fmt: impl Fn(DateTime<Utc>) -> String) -> Vec<String> {
     match leg {
-        SlaLeg::Pending { due, hint } => format!("Due {} ({hint})", fmt(*due)),
+        SlaLeg::Pending { due, hint } => vec![format!("Due {}", fmt(*due)), format!("({hint})")],
         SlaLeg::Reached { at, due, met } => {
             let verdict = if *met { "met" } else { "missed" };
-            format!("{} ({verdict}, due {})", fmt(*at), fmt(*due))
+            vec![
+                fmt(*at),
+                format!("({verdict}, due"),
+                format!("{})", fmt(*due)),
+            ]
         }
+    }
+}
+
+/// The Created row's phrases: the timestamp, then who created the ticket
+/// when that is known (MAPPS-731).
+fn created_parts(created: String, by: &str) -> Vec<String> {
+    if by.is_empty() {
+        vec![created]
+    } else {
+        vec![created, format!("by {by}")]
     }
 }
 
@@ -4255,13 +4274,9 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                 DetailItem { label: "Queue", value: rsx!(span { "{t.queue_name}" }) }
                             }
                             {
-                                let created = if t.created_by_name.is_empty() {
-                                    fmt_datetime(t.created_at)
-                                } else {
-                                    format!("{} by {}", fmt_datetime(t.created_at), t.created_by_name)
-                                };
+                                let created = created_parts(fmt_datetime(t.created_at), &t.created_by_name);
                                 rsx! {
-                                    DetailItem { label: "Created", nowrap: true, value: rsx!(span { "{created}" }) }
+                                    DetailItem { label: "Created", value: rsx!(Phrases { parts: created }) }
                                 }
                             }
                             // MAPPS-734: the SLA block. The badge follows the
@@ -4276,25 +4291,25 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             {
                                 let now = Utc::now();
                                 let badge = sla.as_ref().map(|s| s.status).unwrap_or(t.sla_status).badge();
-                                let rows: Vec<(&'static str, String)> = match sla.as_ref() {
+                                let rows: Vec<(&'static str, Vec<String>)> = match sla.as_ref() {
                                     Some(s) => [
                                         ("First response", sla_leg(s.first_response_due, s.first_response_at, now)),
                                         ("Resolution", sla_leg(s.resolution_due, s.resolved_at, now)),
                                     ]
                                     .into_iter()
-                                    .filter_map(|(label, leg)| leg.map(|leg| (label, sla_leg_text(&leg, fmt_datetime))))
+                                    .filter_map(|(label, leg)| leg.map(|leg| (label, sla_leg_parts(&leg, fmt_datetime))))
                                     .collect(),
                                     None => t
                                         .sla_due_date
-                                        .map(|due| vec![("SLA Due", format_sla_due(due))])
+                                        .map(|due| vec![("SLA Due", sla_due_parts(due))])
                                         .unwrap_or_default(),
                                 };
                                 rsx! {
                                     if let Some((variant, label)) = badge {
                                         DetailItem { label: "SLA Status", value: rsx!(Badge { variant, "{label}" }) }
                                     }
-                                    for (label, value) in rows {
-                                        DetailItem { label: label.to_string(), nowrap: true, value: rsx!(span { "{value}" }) }
+                                    for (label, parts) in rows {
+                                        DetailItem { label: label.to_string(), value: rsx!(Phrases { parts }) }
                                     }
                                 }
                             }
@@ -4352,11 +4367,25 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
 struct DetailItemProps {
     label: String,
     value: Element,
-    /// Keep the value on a single line (no wrapping). Used for Created and
-    /// SLA Due, whose timestamps would otherwise wrap onto a second line
-    /// (PMS-181).
-    #[props(default = false)]
-    nowrap: bool,
+}
+
+/// A value made of several phrases (a timestamp and who, a timestamp and
+/// its hint), laid out so a narrow card breaks the line BETWEEN phrases
+/// (MAPPS-731). Each phrase is a flex item, so it stays whole while it fits
+/// on a line and only wraps inside itself when it alone is wider than the
+/// cell. PMS-181 had put `whitespace-nowrap` on the whole cell instead,
+/// which kept the timestamp whole by forbidding the break that belongs
+/// after it, and a value wider than the sidebar was clipped at the card's
+/// edge: "Aug 28, 2026 12:39 PM (9 days overdue" with no closing bracket.
+#[component]
+fn Phrases(parts: Vec<String>) -> Element {
+    rsx! {
+        span { class: "flex flex-wrap justify-end gap-x-1",
+            for part in parts {
+                span { "{part}" }
+            }
+        }
+    }
 }
 
 #[component]
@@ -4370,16 +4399,12 @@ fn DetailItem(props: DetailItemProps) -> Element {
     // than escaping the row and rendering on top of the next field.
     // `items-start` (instead of `items-baseline`) keeps a multi-line
     // value cell (chip + buttons) aligned to the label's top, not its
-    // baseline.
-    let dd_class = if props.nowrap {
-        "text-sm text-content text-right whitespace-nowrap flex-1 min-w-0"
-    } else {
-        "text-sm text-content text-right flex-1 min-w-0"
-    };
+    // baseline. The cell never carries `whitespace-nowrap` (MAPPS-731):
+    // a multi-phrase value wraps through `Phrases` instead.
     rsx! {
         div { class: "flex justify-between items-start gap-3",
             dt { class: "text-sm text-muted flex-shrink-0 pt-0.5", "{props.label}" }
-            dd { class: "{dd_class}", {props.value} }
+            dd { class: "text-sm text-content text-right flex-1 min-w-0", {props.value} }
         }
     }
 }
@@ -5927,7 +5952,7 @@ mod prefill_tests {
 /// MAPPS-734: the SLA block on the ticket detail.
 #[cfg(test)]
 mod mapps734_sla_panel_tests {
-    use super::{sla_leg, sla_leg_text, RemoteTicketSla, SlaLeg, SlaStatus};
+    use super::{sla_leg, sla_leg_parts, RemoteTicketSla, SlaLeg, SlaStatus};
     use chrono::{DateTime, TimeZone, Utc};
 
     fn at(s: &str) -> DateTime<Utc> {
@@ -5971,13 +5996,13 @@ mod mapps734_sla_panel_tests {
         let now = Utc.with_ymd_and_hms(2026, 9, 8, 12, 0, 0).unwrap();
         let ahead = sla_leg(Some(at("2026-09-08T14:30:00Z")), None, now).expect("leg");
         assert_eq!(
-            sla_leg_text(&ahead, fixed),
-            "Due 2026-09-08 14:30 (2 hr left)"
+            sla_leg_parts(&ahead, fixed),
+            ["Due 2026-09-08 14:30", "(2 hr left)"]
         );
         let behind = sla_leg(Some(at("2026-09-05T12:00:00Z")), None, now).expect("leg");
         assert_eq!(
-            sla_leg_text(&behind, fixed),
-            "Due 2026-09-05 12:00 (3 days overdue)"
+            sla_leg_parts(&behind, fixed),
+            ["Due 2026-09-05 12:00", "(3 days overdue)"]
         );
     }
 
@@ -5995,13 +6020,13 @@ mod mapps734_sla_panel_tests {
             }
         );
         assert_eq!(
-            sla_leg_text(&met, fixed),
-            "2026-09-08 10:00 (met, due 2026-09-08 10:00)"
+            sla_leg_parts(&met, fixed),
+            ["2026-09-08 10:00", "(met, due", "2026-09-08 10:00)"]
         );
         let missed = sla_leg(Some(due), Some(at("2026-09-08T10:00:01Z")), now).expect("leg");
         assert_eq!(
-            sla_leg_text(&missed, fixed),
-            "2026-09-08 10:00 (missed, due 2026-09-08 10:00)"
+            sla_leg_parts(&missed, fixed),
+            ["2026-09-08 10:00", "(missed, due", "2026-09-08 10:00)"]
         );
     }
 
