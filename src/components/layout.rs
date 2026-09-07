@@ -2018,6 +2018,48 @@ mod tests {
         );
     }
 
+    /// MAPPS-737: the approvals chip and the contact's sidebar entry both
+    /// gate on `approvals:decide`, and the chip reads on whichever bearer
+    /// the session holds. Pinned in the source for the same reason the
+    /// search gate is.
+    #[test]
+    fn the_approvals_chip_and_contact_entry_gate_on_the_decide_cap() {
+        let src = include_str!("layout.rs")
+            .split_once("mod tests {")
+            .map(|(before, _)| before)
+            .expect("the tests module header is in this file");
+        let badge = src
+            .find("fn ApprovalsBadge()")
+            .expect("the badge component");
+        let body = &src[badge..badge + 1200];
+        assert!(
+            body.contains("use_capability(\"approvals:decide\")"),
+            "the badge must gate on approvals:decide"
+        );
+        assert!(
+            body.contains("get_authed_any::<Vec<serde_json::Value>>(\"/approvals/pending\")"),
+            "the badge must read through get_authed_any"
+        );
+        assert!(
+            !src.contains("get_authed::<Vec<serde_json::Value>>(\"/approvals/pending\")"),
+            "no staff-only read of the queue may remain"
+        );
+        let entry = src
+            .find("label: \"My Approvals\"")
+            .expect("the contact's My Approvals entry");
+        let gate = src[..entry]
+            .rfind("if contact_approvals_visible {")
+            .expect("the entry sits inside `if contact_approvals_visible {`");
+        assert!(
+            entry - gate < 200,
+            "the gate is not the block that wraps the entry"
+        );
+        assert!(
+            src.contains("has_contact_session()\n                && crate::hooks::capabilities::use_capability(\"approvals:decide\")"),
+            "contact_approvals_visible must require a contact session AND the cap"
+        );
+    }
+
     #[test]
     fn sidebar_down_then_recovery_transition() {
         // MAPPS-358 AC: cover the server-down and recovery transitions.

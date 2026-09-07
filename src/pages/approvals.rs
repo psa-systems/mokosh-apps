@@ -419,6 +419,38 @@ pub fn ApprovalsPage() -> Element {
     }
 }
 
+/// MAPPS-737: the queue serves a contact on the contact plane.
+#[cfg(test)]
+mod mapps737_contact_plane_tests {
+    /// `use_capability` and the fetch helpers read session state the test
+    /// runtime has none of, so this pins the shape in the source: the read
+    /// and the write go through the contact-first helpers, and the page is
+    /// gated on the cap the server's contact arm requires.
+    #[test]
+    fn the_queue_reads_and_decides_on_whichever_bearer_the_session_holds() {
+        let src = include_str!("approvals.rs");
+        let head = &src[..src
+            .find("mod mapps737_contact_plane_tests")
+            .expect("this module")];
+        assert!(
+            head.contains("get_authed_any::<Vec<PendingApproval>>(\"/approvals/pending\")"),
+            "the queue must be read through get_authed_any"
+        );
+        assert!(
+            head.contains("post_authed_any_typed::<serde_json::Value, _>("),
+            "the decision must be posted through post_authed_any_typed"
+        );
+        assert!(
+            !head.contains("get_authed::<Vec<PendingApproval>>"),
+            "no staff-only read of the queue may remain"
+        );
+        assert!(
+            head.contains("use_capability(\"approvals:decide\")"),
+            "the page must gate on approvals:decide"
+        );
+    }
+}
+
 /// MAPPS-736: the three actor labels, shared with the ticket section.
 #[cfg(test)]
 mod mapps736_actor_label_tests {

@@ -2383,6 +2383,15 @@ mod emailed_link_routes {
 mod contact_route_gate {
     use super::pathname_is_contact_forbidden as f;
 
+    /// MAPPS-737: the approvals queue is dual-plane on the server
+    /// (PMS-1084) and a contact holding `approvals:decide` reaches it, so
+    /// it must never join the forbidden prefixes.
+    #[test]
+    fn the_approvals_queue_is_permitted() {
+        assert!(!f("/approvals"));
+        assert!(!f("/approvals/"));
+    }
+
     #[test]
     fn crm_paths_are_blocked() {
         for p in [
