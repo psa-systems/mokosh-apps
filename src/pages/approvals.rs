@@ -392,6 +392,98 @@ pub fn ApprovalsPage() -> Element {
     }
 }
 
+/// MAPPS-736: the three actor labels, shared with the ticket section.
+#[cfg(test)]
+mod mapps736_actor_label_tests {
+    use super::{approver_label, decided_by_label, requester_label, PendingApproval};
+    use serde_json::json;
+
+    #[test]
+    fn the_approver_is_a_user_a_role_or_a_contact_in_that_order() {
+        assert_eq!(
+            approver_label(Some("Ada Admin"), None, None),
+            "To: Ada Admin"
+        );
+        assert_eq!(approver_label(None, Some("manager"), None), "Role: manager");
+        assert_eq!(
+            approver_label(None, None, Some("Casey Client")),
+            "To: Casey Client (customer contact)"
+        );
+        // A blank name is no name; the next kind wins.
+        assert_eq!(
+            approver_label(Some("  "), Some("finance"), None),
+            "Role: finance"
+        );
+        assert_eq!(
+            approver_label(None, Some(""), Some("  ")),
+            "(unassigned approver)"
+        );
+    }
+
+    #[test]
+    fn the_requester_is_a_user_or_a_contact() {
+        assert_eq!(requester_label(Some("Ada Admin"), None), "Ada Admin");
+        assert_eq!(
+            requester_label(None, Some("Casey Client")),
+            "Casey Client (customer contact)"
+        );
+        assert_eq!(requester_label(Some(" "), None), "(unknown requester)");
+    }
+
+    #[test]
+    fn the_decider_is_named_only_when_the_server_named_one() {
+        assert_eq!(
+            decided_by_label(Some("Ada Admin"), None).as_deref(),
+            Some("Ada Admin")
+        );
+        assert_eq!(
+            decided_by_label(None, Some("Casey Client")).as_deref(),
+            Some("Casey Client (customer contact)")
+        );
+        assert_eq!(decided_by_label(None, Some("  ")), None);
+    }
+
+    /// A contact-addressed, contact-filed row decodes with the PMS-1084 and
+    /// PMS-937 names, and a row from an older server without them decodes
+    /// to the same labels as before.
+    #[test]
+    fn a_contact_addressed_row_decodes_and_labels() {
+        let r: PendingApproval = serde_json::from_value(json!({
+            "id": "11111111-1111-1111-1111-111111111111",
+            "entity_id": "853a5a2f-a58e-44e5-9a80-f8f8852e1a93",
+            "requested_by_contact_name": "Casey Client",
+            "approver_contact_name": "Dana Decider",
+        }))
+        .expect("decode");
+        assert_eq!(
+            approver_label(
+                r.approver_user_name.as_deref(),
+                r.approver_role.as_deref(),
+                r.approver_contact_name.as_deref()
+            ),
+            "To: Dana Decider (customer contact)"
+        );
+        assert_eq!(
+            requester_label(
+                r.requested_by_name.as_deref(),
+                r.requested_by_contact_name.as_deref()
+            ),
+            "Casey Client (customer contact)"
+        );
+        let old: PendingApproval = serde_json::from_value(json!({
+            "id": "11111111-1111-1111-1111-111111111111",
+            "entity_id": "853a5a2f-a58e-44e5-9a80-f8f8852e1a93",
+            "approver_role": "manager",
+        }))
+        .expect("decode without the new fields");
+        assert!(old.approver_contact_name.is_none());
+        assert_eq!(
+            approver_label(None, old.approver_role.as_deref(), None),
+            "Role: manager"
+        );
+    }
+}
+
 #[cfg(test)]
 mod mapps611_subject_tests {
     use super::PendingApproval;
