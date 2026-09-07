@@ -680,8 +680,43 @@ struct InvoiceDetail {
     /// The percent as the server's decimal string, e.g. `13.0000`.
     #[serde(default)]
     tax_rate: Option<String>,
+    /// PMS-1036 (MAPPS-727): the write-off, when there was one. The amount
+    /// is the balance at that moment, frozen; `written_off_by_name` is the
+    /// server's joined display name and absent from an older server.
+    #[serde(default)]
+    written_off_at: Option<String>,
+    #[serde(default)]
+    written_off_by_name: Option<String>,
+    #[serde(default)]
+    write_off_reason: Option<String>,
+    #[serde(default)]
+    write_off_amount: Option<String>,
     #[serde(default)]
     lines: Option<Vec<InvoiceLine>>,
+}
+
+/// MAPPS-727: whether the server would accept a write-off. PMS-1036 moves a
+/// `sent` or `partially_paid` invoice to `written_off` and refuses every
+/// other status with a 409, so the button is absent rather than disabled
+/// everywhere else: a control that can never work should not be on the page.
+pub(crate) fn can_write_off(status: &str) -> bool {
+    matches!(status, "sent" | "partially_paid")
+}
+
+/// MAPPS-727: the Details row for a written-off invoice: the amount, the
+/// date part of the timestamp, and who, when the server named them.
+pub(crate) fn write_off_line(amount: &str, at: Option<&str>, by: Option<&str>) -> String {
+    let mut line = amount.to_string();
+    if let Some(date) = at
+        .map(|a| a.chars().take(10).collect::<String>())
+        .filter(|d| !d.is_empty())
+    {
+        line.push_str(&format!(" on {date}"));
+    }
+    if let Some(who) = by.map(str::trim).filter(|w| !w.is_empty()) {
+        line.push_str(&format!(" by {who}"));
+    }
+    line
 }
 
 /// PMS-1004: the Details row for a sent invoice. The address, and the date
@@ -917,6 +952,15 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     // exist in the codebase today; skipped gracefully.
     let staff_only =
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    // MAPPS-727: writing off is finance only on the server (PMS-1036), so
+    // the action is gated on the role and not only on the staff plane; a
+    // technician sees no button rather than a 403.
+    let has_finance = crate::hooks::use_auth()
+        .read()
+        .user
+        .as_ref()
+        .map(|u| u.role.can_manage_billing())
+        .unwrap_or(false);
     // MAPPS-607: PMS-936 exposes `GET /invoices/{id}/pdf` behind the
     // `invoices:download_pdf` cap. Staff / platform sessions bypass
     // unconditionally via `use_capability`, so this button renders for
@@ -1022,6 +1066,12 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     let mut show_edit = use_signal(|| false);
     let mut show_payment = use_signal(|| false);
     let mut show_credit_note = use_signal(|| false);
+    // MAPPS-727: the write-off dialog, its required reason, and its own
+    // error so a refusal lands beside the button that produced it.
+    let mut show_write_off = use_signal(|| false);
+    let mut write_off_reason = use_signal(String::new);
+    let mut write_off_error = use_signal(String::new);
+    let id_for_write_off = props.id.clone();
     let mut busy = use_signal(|| false);
     let mut action_error = use_signal(String::new);
     // MAPPS-668 (P1c): Pay Now click state. `pay_saving` gates the button
@@ -1107,6 +1157,8 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         .unwrap_or_default();
     let editable = matches!(status.as_str(), "draft" | "pending");
     let collectible = matches!(status.as_str(), "pending" | "sent" | "partially_paid");
+    // MAPPS-727: PMS-1036 writes off a sent or partially paid invoice.
+    let write_offable = can_write_off(status.as_str());
     // MAPPS-638: a credit note corrects a frozen invoice, and only while
     // something is left to credit: the total less what is already credited,
     // and NOT less what was paid, because a paid invoice can be credited in
@@ -1135,7 +1187,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     // show nothing here (their actions, including Void, are available above).
     let frozen_note = match status.as_str() {
         "sent" | "partially_paid" => Some(
-            "This invoice has been sent and is now a finalized record. It can't be edited, cancelled, or voided. Record a payment to collect the balance; corrections are made with a credit note, from the Credit Notes card.",
+            "This invoice has been sent and is now a finalized record. It can't be edited, cancelled, or voided. Record a payment to collect the balance, or write it off if it will not be paid; corrections are made with a credit note, from the Credit Notes card.",
         ),
         "paid" => Some(
             "This invoice is paid and finalized. It can't be edited or voided; corrections are made with a credit note, from the Credit Notes card.",
@@ -1184,6 +1236,39 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
             }
             busy.set(false);
             confirming_void.set(false);
+        });
+    };
+
+    // MAPPS-727: the write-off POST fires from the dialog once a reason is
+    // typed. A refusal (a 409 naming the status, a 403) stays in the dialog.
+    let mut on_confirm_write_off = move |_: ()| {
+        if *busy.read() {
+            return;
+        }
+        let reason = write_off_reason.read().trim().to_string();
+        if reason.is_empty() {
+            write_off_error.set("A reason is required.".to_string());
+            return;
+        }
+        busy.set(true);
+        write_off_error.set(String::new());
+        let path = format!("/invoices/{id_for_write_off}/write-off");
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let body = serde_json::json!({ "reason": reason });
+                match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(&path, &body)
+                    .await
+                {
+                    Ok(_) => {
+                        write_off_reason.set(String::new());
+                        show_write_off.set(false);
+                        invoice_resource.restart();
+                    }
+                    Err(err) => write_off_error.set(format!("Could not write off invoice: {err}")),
+                }
+            }
+            busy.set(false);
         });
     };
 
@@ -1286,6 +1371,60 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     let is_paid = status == "paid";
 
     rsx! {
+        // MAPPS-727: the write-off dialog. A Modal rather than ConfirmDialog
+        // because the reason is required and typed here (PMS-1036 records it
+        // as the audit trail), and ConfirmDialog carries no field.
+        if show_write_off() {
+            Modal {
+                open: true,
+                title: "Write off invoice",
+                onclose: move |_| {
+                    if !*busy.read() {
+                        show_write_off.set(false);
+                        write_off_error.set(String::new());
+                    }
+                },
+                footer: rsx! {
+                    div { class: "flex-1" }
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| {
+                            if !*busy.read() {
+                                show_write_off.set(false);
+                                write_off_error.set(String::new());
+                            }
+                        },
+                        "Cancel"
+                    }
+                    Button {
+                        variant: ButtonVariant::Danger,
+                        loading: *busy.read(),
+                        disabled: !can_mutate || write_off_reason.read().trim().is_empty(),
+                        title: (!can_mutate).then(|| "Can't write off while the server is unreachable".to_string()),
+                        onclick: move |_| on_confirm_write_off(()),
+                        "Write off"
+                    }
+                },
+                div { class: "space-y-4",
+                    if !write_off_error.read().is_empty() {
+                        ErrorBanner { "{write_off_error.read()}" }
+                    }
+                    p { class: "text-sm text-muted",
+                        "The customer owes this balance and will not pay it. The invoice moves to written off and keeps its balance on record as a bad-debt expense; a later payment is recorded as a recovery. This is not a correction: use a credit note for that."
+                    }
+                    crate::components::Textarea {
+                        name: "write_off_reason",
+                        label: "Reason",
+                        placeholder: "Why this balance will not be collected (required)",
+                        rows: 3,
+                        maxlength: 2000,
+                        required: true,
+                        value: write_off_reason.read().clone(),
+                        oninput: move |e: FormEvent| write_off_reason.set(e.value()),
+                    }
+                }
+            }
+        }
         crate::components::ConfirmDialog {
             open: confirming_void(),
             title: "Void invoice".to_string(),
@@ -1556,6 +1695,22 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         "Record Payment"
                     }
                 }
+                // MAPPS-727 (PMS-1036): the bad-debt record for a sent
+                // balance that will not be paid. Finance only, like the
+                // route.
+                if write_offable && staff_only && has_finance {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't write off while the server is unreachable".to_string()),
+                        onclick: move |_| {
+                            action_error.set(String::new());
+                            write_off_error.set(String::new());
+                            show_write_off.set(true);
+                        },
+                        "Write off"
+                    }
+                }
                 // PMS-953 (MAPPS-638): a credit note is the correction path
                 // for a frozen invoice. Staff-only per the contact-login
                 // stance; contact plane never issues a credit note.
@@ -1723,6 +1878,15 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                     .emailed_to
                     .as_deref()
                     .map(|to| emailed_line(to, inv.emailed_at.as_deref()));
+                // MAPPS-727: the write-off block, when there was one.
+                let write_off = inv.written_off_at.as_deref().map(|at| {
+                    write_off_line(
+                        &format_money_str(inv.write_off_amount.as_deref().unwrap_or("0")),
+                        Some(at),
+                        inv.written_off_by_name.as_deref(),
+                    )
+                });
+                let write_off_reason_text = inv.write_off_reason.clone().unwrap_or_default();
                 let invoice_date = inv.invoice_date.clone().unwrap_or_default();
                 let due_date = inv.due_date.clone().unwrap_or_default();
                 let subtotal = format_money_str(&inv.subtotal);
@@ -1945,6 +2109,18 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                         div { class: "flex justify-between gap-4",
                                             dt { class: "text-muted shrink-0", "Emailed to" }
                                             dd { class: "text-right break-all", "{sent_to}" }
+                                        }
+                                    }
+                                    if let Some(wo) = write_off.clone() {
+                                        div { class: "flex justify-between gap-4",
+                                            dt { class: "text-muted shrink-0", "Written off" }
+                                            dd { class: "text-right", "{wo}" }
+                                        }
+                                        if !write_off_reason_text.is_empty() {
+                                            div { class: "flex justify-between gap-4",
+                                                dt { class: "text-muted shrink-0", "Reason" }
+                                                dd { class: "text-right whitespace-pre-line", "{write_off_reason_text}" }
+                                            }
                                         }
                                     }
                                     if let Some(bcid) = billing_contact_id.clone() {
@@ -5010,6 +5186,38 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                 }
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod write_off_tests {
+    use super::{can_write_off, write_off_line};
+
+    /// PMS-1036 accepts a sent or partially paid invoice and refuses the
+    /// rest with a 409, so the button follows the same rule.
+    #[test]
+    fn only_a_sent_or_partially_paid_invoice_offers_the_action() {
+        assert!(can_write_off("sent"));
+        assert!(can_write_off("partially_paid"));
+        for status in ["draft", "pending", "paid", "void", "written_off", ""] {
+            assert!(!can_write_off(status), "{status}");
+        }
+    }
+
+    /// The row names the amount, the date part of the timestamp, and the
+    /// actor when the server sent one; an older server without the name
+    /// reads as amount and date alone.
+    #[test]
+    fn the_row_says_how_much_when_and_who() {
+        assert_eq!(
+            write_off_line("$120.00", Some("2026-09-02T14:03:11Z"), Some("Ada Admin")),
+            "$120.00 on 2026-09-02 by Ada Admin"
+        );
+        assert_eq!(
+            write_off_line("$120.00", Some("2026-09-02T14:03:11Z"), None),
+            "$120.00 on 2026-09-02"
+        );
+        assert_eq!(write_off_line("$120.00", None, Some("  ")), "$120.00");
     }
 }
 
