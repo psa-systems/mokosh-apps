@@ -49,6 +49,10 @@ struct RemoteStatement {
     refunds: Vec<RemoteStatementRefund>,
     #[serde(default)]
     credit_notes: Vec<RemoteStatementCredit>,
+    /// PMS-1036 (MAPPS-727): the write-offs dated in the period, taken out
+    /// of the closing balance; absent from an older server.
+    #[serde(default)]
+    write_offs: Vec<RemoteStatementWriteOff>,
     #[serde(default)]
     total_invoiced: String,
     #[serde(default)]
@@ -58,7 +62,24 @@ struct RemoteStatement {
     #[serde(default)]
     total_credited: String,
     #[serde(default)]
+    total_written_off: String,
+    #[serde(default)]
     closing_balance: String,
+}
+
+/// PMS-1036 (MAPPS-727): one write-off line, dated by the write-off and
+/// carrying the balance that was let go.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct RemoteStatementWriteOff {
+    invoice_id: uuid::Uuid,
+    #[serde(default)]
+    invoice_number: String,
+    #[serde(default)]
+    write_off_date: String,
+    #[serde(default)]
+    amount: String,
+    #[serde(default)]
+    reason: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -437,12 +458,18 @@ fn StatementDocument(statement: RemoteStatement) -> Element {
     let refunded = format_money_str(&s.total_refunded);
     let paid = format_money_str(&s.total_paid);
     let credited = format_money_str(&s.total_credited);
+    let written_off = format_money_str(if s.total_written_off.is_empty() {
+        "0"
+    } else {
+        &s.total_written_off
+    });
     let closing = format_money_str(&s.closing_balance);
     let period_label = format!("{} to {}", s.period_start, s.period_end);
     let quiet = s.invoices.is_empty()
         && s.payments.is_empty()
         && s.refunds.is_empty()
-        && s.credit_notes.is_empty();
+        && s.credit_notes.is_empty()
+        && s.write_offs.is_empty();
 
     rsx! {
         div { class: "space-y-6",
@@ -476,6 +503,12 @@ fn StatementDocument(statement: RemoteStatement) -> Element {
                     div { class: "flex justify-between",
                         dt { class: "text-muted", "- Credited" }
                         dd { "{credited}" }
+                    }
+                    // PMS-1036: a written-off amount leaves the balance the
+                    // customer is asked to settle; it is the MSP's loss.
+                    div { class: "flex justify-between",
+                        dt { class: "text-muted", "- Written off" }
+                        dd { "{written_off}" }
                     }
                     div { class: "flex justify-between border-t border-line pt-2 text-lg font-bold",
                         dt { "Closing balance" }
@@ -608,6 +641,43 @@ fn StatementDocument(statement: RemoteStatement) -> Element {
                                         span { class: "block truncate", title: "{c.reason}", "{c.reason}" }
                                     }
                                     TableCell { class: "text-right font-medium", "{format_money_str(&c.total)}" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // PMS-1036 (MAPPS-727): what was let go in the period, as its
+            // own section the way the PDF prints it.
+            Card { title: "Write-offs", class: "overflow-x-auto",
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Invoice" }
+                            TableHeader { "Date" }
+                            TableHeader { "Reason" }
+                            TableHeader { class: "text-right", "Amount" }
+                        }
+                    }
+                    if s.write_offs.is_empty() {
+                        TableEmpty { columns: 4, message: "No write-offs in this period.".to_string() }
+                    } else {
+                        TableBody {
+                            for w in s.write_offs.iter().cloned() {
+                                TableRow { key: "{w.invoice_id}",
+                                    TableCell {
+                                        Link {
+                                            to: Route::InvoiceDetail { id: w.invoice_id.to_string() },
+                                            class: "font-medium text-accent hover:opacity-90",
+                                            "{w.invoice_number}"
+                                        }
+                                    }
+                                    TableCell { "{w.write_off_date}" }
+                                    TableCell { class: "max-w-xs",
+                                        span { class: "block truncate", title: "{w.reason}", "{w.reason}" }
+                                    }
+                                    TableCell { class: "text-right font-medium", "{format_money_str(&w.amount)}" }
                                 }
                             }
                         }
