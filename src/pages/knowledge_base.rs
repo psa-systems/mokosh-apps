@@ -190,6 +190,9 @@ fn meta_must_be_open(title: &str, slug: &str) -> bool {
 /// category by walking `parent_id`. Returns `[]` when the article has no
 /// category or the id is dangling. Guards against cycles with a visited
 /// set so a malformed parent chain cannot loop forever.
+/// MAPPS-740: the crumb an article with no category shows.
+const UNCATEGORISED_CRUMB: &str = "Uncategorised";
+
 fn resolve_category_path(category_id: Option<uuid::Uuid>, all: &[KbCategory]) -> Vec<KbCategory> {
     use std::collections::HashSet;
     let mut chain = Vec::new();
@@ -3318,11 +3321,18 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
 // Breadcrumb and tree-nav components
 // ============================================================================
 
+/// The trail already walks the category ancestors; MAPPS-740 adds a crumb
+/// for the article that has none, so "KB > title" says it is uncategorised
+/// rather than looking like a flat KB.
 #[component]
 fn KbBreadcrumb(path: Vec<KbCategory>, title: String) -> Element {
     rsx! {
         nav { class: "flex items-center flex-wrap gap-1 text-sm text-muted",
             Link { to: Route::KBHome {}, class: "hover:text-content", "KB" }
+            if path.is_empty() {
+                ChevronRightIcon { size: IconSize::Small }
+                span { class: "italic", "{UNCATEGORISED_CRUMB}" }
+            }
             for cat in path.iter() {
                 ChevronRightIcon { size: IconSize::Small }
                 Link {
