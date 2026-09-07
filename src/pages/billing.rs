@@ -683,6 +683,53 @@ fn InvoiceRow(props: InvoiceRowProps) -> Element {
     }
 }
 
+/// MAPPS-735: one payment on the invoice, as `GET /invoices/{id}/payments`
+/// (server PMS-1088) lists it. The amounts are decimal strings, the way
+/// every money field on this page arrives.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct RemoteLedgerPayment {
+    #[serde(default)]
+    id: Option<uuid::Uuid>,
+    #[serde(default)]
+    payment_date: String,
+    #[serde(default)]
+    amount: String,
+    #[serde(default)]
+    payment_method: String,
+    #[serde(default)]
+    reference_number: Option<String>,
+}
+
+/// MAPPS-735: one refund against a payment on the invoice.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct RemoteLedgerRefund {
+    #[serde(default)]
+    id: Option<uuid::Uuid>,
+    #[serde(default)]
+    payment_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    amount: String,
+    #[serde(default)]
+    created_at: String,
+}
+
+/// MAPPS-735: the ledger behind `amount_paid` and `balance_due`, newest
+/// first, with the server's own sums so the card adds nothing. Dual-plane:
+/// a contact reads its own company's invoice on the contact bearer, and
+/// nothing internal (gateway ids, fees, notes) is in it, so one struct
+/// serves both sessions.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+struct RemoteInvoiceLedger {
+    #[serde(default)]
+    payments: Vec<RemoteLedgerPayment>,
+    #[serde(default)]
+    refunds: Vec<RemoteLedgerRefund>,
+    #[serde(default)]
+    total_paid: String,
+    #[serde(default)]
+    total_refunded: String,
+}
+
 /// Full `InvoiceResponse` for the detail page, including line items.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct InvoiceDetail {
@@ -783,6 +830,50 @@ pub(crate) fn write_off_line(amount: &str, at: Option<&str>, by: Option<&str>) -
         line.push_str(&format!(" by {who}"));
     }
     line
+}
+
+/// MAPPS-735: a payment method as the Payments card labels it: the
+/// server's snake_case token with the underscores spaced and the first
+/// letter raised (`credit_card` to "Credit card"). An empty token reads
+/// as "Payment" rather than as a blank.
+pub(crate) fn payment_method_label(method: &str) -> String {
+    let words = method.trim().replace('_', " ");
+    let mut chars = words.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => "Payment".to_string(),
+    }
+}
+
+/// The row text for a payment: the method, the date, and the reference
+/// when the server sent a non-blank one.
+pub(crate) fn payment_line(date: &str, method: &str, reference: Option<&str>) -> String {
+    let mut line = payment_method_label(method);
+    let date = date.trim();
+    if !date.is_empty() {
+        line.push_str(&format!(" on {date}"));
+    }
+    if let Some(r) = reference.map(str::trim).filter(|r| !r.is_empty()) {
+        line.push_str(&format!(" (ref {r})"));
+    }
+    line
+}
+
+/// The row text for a refund: the date part of its timestamp.
+pub(crate) fn refund_line(created_at: &str) -> String {
+    let date: String = created_at.trim().chars().take(10).collect();
+    if date.is_empty() {
+        "Refunded".to_string()
+    } else {
+        format!("Refunded on {date}")
+    }
+}
+
+/// True for a decimal string the server uses for "nothing": empty, or
+/// zero at any scale (`0`, `0.00`).
+pub(crate) fn is_zero_amount(raw: &str) -> bool {
+    let t = raw.trim();
+    t.is_empty() || t.chars().all(|c| c == '0' || c == '.')
 }
 
 /// PMS-1004: the Details row for a sent invoice. The address, and the date
@@ -1118,6 +1209,31 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             crate::pages::credit_notes::load_invoice_credit_notes(&id).await
+        }
+    });
+
+    // MAPPS-735: the payments and refunds behind the balance (server
+    // PMS-1088). `get_authed_any` for the same reason the invoice uses it:
+    // a contact reads its own invoice on the contact bearer. Reading the
+    // invoice resource here subscribes this one to it, so every restart
+    // the page already does (a recorded payment, a credit note, a
+    // write-off, the paid-landing poll) refreshes the ledger with the
+    // balance. `Some(None)` on a failure hides the card: the staff arm
+    // carries the finance gate inline, so a technician is refused with a
+    // 403 and must see no card rather than an error, and the summary
+    // above already carries the balance.
+    let id_for_ledger = props.id.clone();
+    let ledger_resource = use_resource(move || {
+        let id = id_for_ledger.clone();
+        let _invoice = invoice_resource.read().clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed_any::<RemoteInvoiceLedger>(&format!(
+                "/invoices/{id}/payments"
+            ))
+            .await
+            .inspect_err(|e| tracing::warn!("invoice ledger load failed for {id}: {e}"))
+            .ok()
         }
     });
 
@@ -2098,6 +2214,45 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
 
                             // MAPPS-638: the corrections raised against this
                             // invoice, and the place to raise one.
+                            // MAPPS-735: the Payments card. Rendered only once
+                            // the ledger has loaded; a refused or failed read
+                            // (a technician's 403 from the inline finance gate,
+                            // an older server) shows nothing, because the
+                            // balance above already says what was paid.
+                            {
+                                let ledger = ledger_resource.read_unchecked().clone().flatten();
+                                rsx! {
+                                    if let Some(ledger) = ledger {
+                                        Card { title: "Payments",
+                                            if ledger.payments.is_empty() {
+                                                p { class: "text-sm text-muted", "No payments recorded." }
+                                            } else {
+                                                ul { class: "space-y-2 text-sm",
+                                                    for payment in ledger.payments.iter() {
+                                                        li { key: "{payment.id.map(|u| u.to_string()).unwrap_or_default()}", class: "flex justify-between items-center gap-2",
+                                                            span { "{payment_line(&payment.payment_date, &payment.payment_method, payment.reference_number.as_deref())}" }
+                                                            span { class: "font-medium", "{format_money_str(&payment.amount)}" }
+                                                        }
+                                                        for refund in ledger.refunds.iter().filter(|r| r.payment_id.is_some() && r.payment_id == payment.id) {
+                                                            li { key: "{refund.id.map(|u| u.to_string()).unwrap_or_default()}", class: "flex justify-between items-center gap-2 pl-4 text-muted",
+                                                                span { "{refund_line(&refund.created_at)}" }
+                                                                span { "-{format_money_str(&refund.amount)}" }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                p { class: "mt-3 text-sm text-muted",
+                                                    "Total paid {format_money_str(&ledger.total_paid)}"
+                                                    if !is_zero_amount(&ledger.total_refunded) {
+                                                        ", refunded {format_money_str(&ledger.total_refunded)}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             Card { title: "Credit Notes",
                                 {
                                     let notes = credit_notes_resource.read_unchecked().clone().unwrap_or_default();
@@ -5311,6 +5466,82 @@ mod write_off_tests {
             "$120.00 on 2026-09-02"
         );
         assert_eq!(write_off_line("$120.00", None, Some("  ")), "$120.00");
+    }
+}
+
+/// MAPPS-735: the Payments card.
+#[cfg(test)]
+mod payments_card_tests {
+    use super::{
+        is_zero_amount, payment_line, payment_method_label, refund_line, RemoteInvoiceLedger,
+    };
+
+    #[test]
+    fn the_method_label_spaces_and_capitalises_the_token() {
+        assert_eq!(payment_method_label("credit_card"), "Credit card");
+        assert_eq!(payment_method_label("bank_transfer"), "Bank transfer");
+        assert_eq!(payment_method_label("check"), "Check");
+        assert_eq!(payment_method_label("  "), "Payment");
+    }
+
+    #[test]
+    fn the_payment_row_names_method_date_and_reference() {
+        assert_eq!(
+            payment_line("2026-09-02", "credit_card", Some("ch_123")),
+            "Credit card on 2026-09-02 (ref ch_123)"
+        );
+        assert_eq!(
+            payment_line("2026-09-02", "cash", Some("  ")),
+            "Cash on 2026-09-02"
+        );
+        assert_eq!(payment_line("", "cash", None), "Cash");
+    }
+
+    #[test]
+    fn the_refund_row_takes_the_date_part_of_the_timestamp() {
+        assert_eq!(
+            refund_line("2026-09-03T10:15:00Z"),
+            "Refunded on 2026-09-03"
+        );
+        assert_eq!(refund_line(""), "Refunded");
+    }
+
+    #[test]
+    fn zero_at_any_scale_is_nothing_refunded() {
+        for raw in ["", "0", "0.00", "0.0000", " 0 "] {
+            assert!(is_zero_amount(raw), "{raw:?}");
+        }
+        for raw in ["0.01", "20", "20.00"] {
+            assert!(!is_zero_amount(raw), "{raw:?}");
+        }
+    }
+
+    /// The route body decodes, newest first as the server sends it, with
+    /// the optional reference absent, and an empty ledger decodes too.
+    #[test]
+    fn decodes_the_route_body() {
+        let body = r#"{"invoice_id":"aaaaaaaa-0000-4000-8000-000000000001","currency":"USD","payments":[{"id":"aaaaaaaa-0000-4000-8000-000000000002","payment_date":"2026-09-02","amount":"120.00","payment_method":"credit_card","created_at":"2026-09-02T14:00:00Z"}],"refunds":[{"id":"aaaaaaaa-0000-4000-8000-000000000003","payment_id":"aaaaaaaa-0000-4000-8000-000000000002","amount":"20.00","created_at":"2026-09-03T10:15:00Z"}],"total_paid":"120.00","total_refunded":"20.00"}"#;
+        let ledger: RemoteInvoiceLedger = serde_json::from_str(body).expect("decode");
+        assert_eq!(ledger.payments.len(), 1);
+        assert!(ledger.payments[0].reference_number.is_none());
+        assert_eq!(ledger.refunds[0].payment_id, ledger.payments[0].id);
+        assert_eq!(ledger.total_refunded, "20.00");
+
+        let empty: RemoteInvoiceLedger = serde_json::from_str(
+            r#"{"payments":[],"refunds":[],"total_paid":"0","total_refunded":"0"}"#,
+        )
+        .expect("decode empty");
+        assert!(empty.payments.is_empty());
+    }
+
+    /// The ledger is fetched on whichever bearer the session holds, the way
+    /// the invoice itself is, so a contact reads it on the contact plane.
+    #[test]
+    fn the_ledger_is_fetched_on_any_bearer() {
+        let src = include_str!("billing.rs");
+        let head = &src[..src.find("mod payments_card_tests").expect("this module")];
+        assert!(head.contains("get_authed_any::<RemoteInvoiceLedger>"));
+        assert!(head.contains("\"/invoices/{id}/payments\""));
     }
 }
 
