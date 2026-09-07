@@ -48,14 +48,70 @@ struct PendingApproval {
     entity_label: Option<String>,
     #[serde(default)]
     requested_by_name: Option<String>,
+    /// PMS-937: the portal contact who filed the approval, when a
+    /// contact did; `requested_by_name` is None on that row.
+    #[serde(default)]
+    requested_by_contact_name: Option<String>,
     #[serde(default)]
     approver_user_name: Option<String>,
     #[serde(default)]
     approver_role: Option<String>,
+    /// PMS-1084: the portal contact the approval is addressed to, the
+    /// third approver kind beside a user and a role.
+    #[serde(default)]
+    approver_contact_name: Option<String>,
     #[serde(default)]
     notes: Option<String>,
     #[serde(default)]
     requested_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// A name the server sent, trimmed, or nothing for a blank one.
+fn named(name: Option<&str>) -> Option<&str> {
+    name.map(str::trim).filter(|n| !n.is_empty())
+}
+
+/// MAPPS-736: who an approval is addressed to. A user by name, a role by
+/// its label, or a portal contact by name with the plane said out loud,
+/// because the same first-and-last name can exist on both planes and the
+/// reader needs to know which one is being asked. Shared with the ticket
+/// detail's approvals section so the two never drift.
+pub(crate) fn approver_label(
+    user: Option<&str>,
+    role: Option<&str>,
+    contact: Option<&str>,
+) -> String {
+    if let Some(n) = named(user) {
+        format!("To: {n}")
+    } else if let Some(r) = named(role) {
+        format!("Role: {r}")
+    } else if let Some(c) = named(contact) {
+        format!("To: {c} (customer contact)")
+    } else {
+        "(unassigned approver)".to_string()
+    }
+}
+
+/// MAPPS-736: who filed an approval, a staff user or a portal contact
+/// (PMS-937), with the same plane suffix as `approver_label`.
+pub(crate) fn requester_label(user: Option<&str>, contact: Option<&str>) -> String {
+    if let Some(n) = named(user) {
+        n.to_string()
+    } else if let Some(c) = named(contact) {
+        format!("{c} (customer contact)")
+    } else {
+        "(unknown requester)".to_string()
+    }
+}
+
+/// MAPPS-736: who decided an approval, when the server named anyone; a
+/// row decided before PMS-1084 or by a deleted account carries neither.
+pub(crate) fn decided_by_label(user: Option<&str>, contact: Option<&str>) -> Option<String> {
+    if let Some(n) = named(user) {
+        Some(n.to_string())
+    } else {
+        named(contact).map(|c| format!("{c} (customer contact)"))
+    }
 }
 
 fn default_target() -> String {
@@ -209,19 +265,15 @@ pub fn ApprovalsPage() -> Element {
                         let row_id = row.id;
                         let target = row.target.clone();
                         let entity = row.entity();
-                        let requester = row
-                            .requested_by_name
-                            .clone()
-                            .filter(|s| !s.trim().is_empty())
-                            .unwrap_or_else(|| "(unknown requester)".to_string());
-                        let approver_label = match (
-                            row.approver_user_name.clone(),
-                            row.approver_role.clone(),
-                        ) {
-                            (Some(n), _) if !n.trim().is_empty() => format!("To: {n}"),
-                            (_, Some(r)) if !r.trim().is_empty() => format!("Role: {r}"),
-                            _ => "(unassigned approver)".to_string(),
-                        };
+                        let requester = requester_label(
+                            row.requested_by_name.as_deref(),
+                            row.requested_by_contact_name.as_deref(),
+                        );
+                        let approver_label = approver_label(
+                            row.approver_user_name.as_deref(),
+                            row.approver_role.as_deref(),
+                            row.approver_contact_name.as_deref(),
+                        );
                         let when = row
                             .requested_at
                             .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
