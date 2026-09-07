@@ -2363,6 +2363,10 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     });
     let mut content = use_signal(|| initial.content.clone());
     let mut tags = use_signal(|| initial.tags.clone());
+    // MAPPS-739: why this edit was made, for the version it creates. Not part
+    // of `initial` and not part of `dirty`: a note with nothing else changed
+    // saves nothing, because the server stores it only on a new version.
+    let mut change_note = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
     // PMS-518: per-field inline error slots, fed by the FormGuard on submit.
@@ -2749,6 +2753,8 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         } else {
             None
         };
+        let change_note_val = change_note.read().trim().to_string();
+        let change_note_opt = (!change_note_val.is_empty()).then_some(change_note_val);
 
         spawn(async move {
             #[cfg(feature = "app")]
@@ -2769,7 +2775,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             status: Some(status_val.clone()),
                             tags: Some(tags_vec.clone()),
                             company_ids: company_ids_opt.clone(),
-                            change_note: None,
+                            change_note: change_note_opt.clone(),
                         };
                         let path = format!("/kb/articles/{id}");
                         crate::hooks::fetch::api::put_authed::<KbArticle, _>(&path, &body)
@@ -3255,6 +3261,20 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                         }
                     },
                     oncancel: move |_| confirming_cancel.set(false),
+                }
+
+                // MAPPS-739: why. Only on an edit: the creation snapshot has
+                // no "why" beyond existing, and the server keeps a note only
+                // on the version a save creates.
+                if is_edit {
+                    crate::components::Input {
+                        name: "change_note",
+                        label: "What changed? (optional)",
+                        placeholder: "One line for the history, e.g. added the VPN fallback step",
+                        maxlength: 500i64,
+                        value: change_note.read().clone(),
+                        oninput: move |e: FormEvent| change_note.set(e.value()),
+                    }
                 }
 
                 div { class: "flex justify-end space-x-3",
