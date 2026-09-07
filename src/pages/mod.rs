@@ -66,3 +66,4 @@ pub mod system_status;
 pub mod teams;
 pub mod tickets;
 pub mod time;
+pub mod work_day;

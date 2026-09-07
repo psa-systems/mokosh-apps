@@ -383,6 +383,11 @@ pub fn TimeEntryListPage() -> Element {
             },
         }
 
+        // MAPPS-730: the day's clock, breaks and breakdown (PMS-950). Renders
+        // nothing when the timesheets module is off, which the server says
+        // with a 404 on `GET /workday`.
+        crate::pages::work_day::WorkDayStrip {}
+
         div { class: "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5 mb-6",
             StatCard { label: "Today", value: "{today_h}" }
             StatCard { label: "This Week", value: "{week_h}" }
