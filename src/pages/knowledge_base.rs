@@ -4995,3 +4995,92 @@ mod mapps739_history_tests {
         );
     }
 }
+
+/// MAPPS-741: the table of contents and the linked tickets panel.
+#[cfg(test)]
+mod mapps741_rail_tests {
+    use super::{relation_label, toc_indent_rem, KB_ARTICLE_BODY_ID};
+
+    fn head() -> &'static str {
+        let src = include_str!("knowledge_base.rs");
+        &src[..src.find("mod mapps741_rail_tests").expect("this module")]
+    }
+
+    #[test]
+    fn the_shallowest_heading_is_flush_and_each_level_steps_in() {
+        assert_eq!(toc_indent_rem(2, 2), 0.75);
+        assert_eq!(toc_indent_rem(3, 2), 1.5);
+        assert_eq!(
+            toc_indent_rem(1, 2),
+            0.75,
+            "a level above the minimum does not go negative"
+        );
+    }
+
+    #[test]
+    fn a_relation_reads_as_what_it_means() {
+        assert_eq!(relation_label("source"), "Opened from this article");
+        assert_eq!(relation_label("procedure"), "Works this procedure");
+        assert_eq!(relation_label("other"), "other");
+    }
+
+    /// The body wrapper's id cannot be a heading id (slugs are lower-case),
+    /// the watcher observes inside it, and the contents link marks the
+    /// current section with more than colour.
+    #[test]
+    fn the_toc_follows_the_body_it_wraps() {
+        let head = head();
+        assert!(KB_ARTICLE_BODY_ID.chars().any(|c| c.is_ascii_uppercase()));
+        assert!(
+            head.contains("div { id: KB_ARTICLE_BODY_ID,"),
+            "the body renders inside the root"
+        );
+        assert!(
+            head.contains(
+                "crate::platform::dom::watch_active_heading(KB_ARTICLE_BODY_ID, on_active);"
+            ),
+            "the watcher observes that root"
+        );
+        let toc = &head[head.find("fn ArticleToc(").expect("the toc")..];
+        let toc = &toc[..toc.find("fn toc_indent_rem(").expect("end")];
+        assert!(toc.contains("\"aria-current\": if is_active { \"true\" } else { \"false\" },"));
+        assert!(
+            toc.contains("\"border-l-2 border-accent font-medium text-content\""),
+            "border and weight, not colour alone"
+        );
+        assert!(
+            toc.contains("e.prevent_default();"),
+            "the router stays out of a hash jump"
+        );
+        assert!(
+            toc.contains("if headings.is_empty() {\n        return rsx! {};"),
+            "no empty contents card"
+        );
+    }
+
+    /// The rail order and the contact gate: linked tickets is staff only,
+    /// the contents sit above the history.
+    #[test]
+    fn the_rail_gates_the_tickets_and_orders_the_cards() {
+        let head = head();
+        let rail = &head[head
+            .find("MeasuredDurationCard { article_id: props.id.clone() }")
+            .expect("rail")..];
+        let tickets = rail
+            .find("LinkedTicketsCard { article_id: props.id.clone() }")
+            .expect("tickets card");
+        let toc = rail
+            .find("ArticleToc { content: article.content.clone() }")
+            .expect("toc");
+        let versions = rail.find("VersionHistoryCard {").expect("versions");
+        assert!(
+            tickets < toc && toc < versions,
+            "tickets, contents, versions"
+        );
+        let before_tickets = &rail[..tickets];
+        assert!(
+            before_tickets.trim_end().ends_with("if !is_contact {"),
+            "tickets are staff only: {before_tickets}"
+        );
+    }
+}
