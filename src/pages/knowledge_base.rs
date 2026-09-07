@@ -3438,17 +3438,27 @@ fn ArticleActions(
         urlencoding_minimal(&article_title),
         urlencoding_minimal(&format!("/kb/articles/{article_id}")),
     );
+    // MAPPS-740: the hierarchy. Edit is the primary act on an article and
+    // leads; opening a ticket is the ordinary secondary one; Delete comes
+    // last as a ghost button in the destructive colour, still behind the
+    // ConfirmDialog. Before this Delete was a solid red block above the
+    // others, the loudest thing on the page. Danger's red is a fixed
+    // destructive colour, not the accent, so this reads the same on every
+    // accent.
     rsx! {
         div { class: "flex flex-col gap-2",
             Link { to: Route::KBArticleEdit { id: article_id.clone() }, class: "block",
-                Button { variant: ButtonVariant::Secondary, class: "w-full".to_string(), "Edit" }
+                Button { variant: ButtonVariant::Primary, class: "w-full".to_string(), "Edit" }
+            }
+            Link { to: format!("{}?{qs}", Route::TicketNew {}), class: "block",
+                Button { variant: ButtonVariant::Secondary, class: "w-full".to_string(), "Open ticket about this article" }
             }
             // MAPPS-309: delete affordance. Gated by the `ConfirmDialog`
             // rendered at the page root; success navigates back to the KB
             // landing.
             Button {
-                variant: ButtonVariant::Danger,
-                class: "w-full".to_string(),
+                variant: ButtonVariant::Ghost,
+                class: "w-full text-red-600 dark:text-red-400".to_string(),
                 disabled: delete_busy() || !can_mutate,
                 title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                 onclick: move |_| {
@@ -3456,11 +3466,6 @@ fn ArticleActions(
                     confirming_delete.set(true);
                 },
                 "Delete"
-            }
-            Link {
-                to: format!("{}?{qs}", Route::TicketNew {}),
-                class: "w-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium rounded-md border border-line hover:bg-surface-2 text-content",
-                "Open ticket about this article"
             }
         }
     }
