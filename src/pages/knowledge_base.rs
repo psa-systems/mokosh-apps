@@ -419,6 +419,41 @@ fn date_only(ts: &Option<DateTime<Utc>>) -> String {
     }
 }
 
+/// MAPPS-739: a timestamp in the user's own format, "-" when absent.
+fn when_label(ts: &Option<DateTime<Utc>>) -> String {
+    match ts {
+        Some(dt) => crate::utils::datetime::fmt_datetime_pref(*dt),
+        None => "-".to_string(),
+    }
+}
+
+/// MAPPS-739: "Created by Ada Lovelace Sep 07, 2026 10:12 · Updated by
+/// Grace Hopper Sep 08, 2026 09:40". A name the server could not resolve
+/// prints as "Unknown" (the server's own word), never as an id, and the
+/// second half is left out when nobody has written the row since it was
+/// made, so an untouched article does not claim an editor. The formatter is
+/// passed in so the page uses the user's preference and a test a fixed one.
+fn attribution_line(
+    author: Option<&str>,
+    created: &Option<DateTime<Utc>>,
+    editor: Option<&str>,
+    updated: &Option<DateTime<Utc>>,
+    when: impl Fn(&Option<DateTime<Utc>>) -> String,
+) -> String {
+    let author = author.filter(|n| !n.trim().is_empty()).unwrap_or("Unknown");
+    let mut line = format!("Created by {author} {}", when(created));
+    let touched = match (created, updated) {
+        (Some(c), Some(u)) => u > c,
+        (None, Some(_)) => true,
+        _ => false,
+    };
+    if touched {
+        let editor = editor.filter(|n| !n.trim().is_empty()).unwrap_or("Unknown");
+        line.push_str(&format!(" · Updated by {editor} {}", when(updated)));
+    }
+    line
+}
+
 // ============================================================================
 // Home page
 // ============================================================================
@@ -1320,6 +1355,10 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         .ok()
     }));
 
+    // MAPPS-739: a contact session reads the same page; the names in the
+    // header and the version history are staff surfaces.
+    let is_contact = crate::hooks::capabilities::use_is_contact_session();
+
     // Category list for the breadcrumb path and the left tree rail.
     let categories_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -1548,7 +1587,20 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                     &article.status
                 };
                 let (status_variant, status_label) = kb_article_status_badge(status_raw);
-                let updated = date_only(&article.updated_at);
+                // MAPPS-739: who and when, by name. Staff only: the contact
+                // projection carries no names, and a customer reading a
+                // published article does not need the editor's.
+                let attribution = if is_contact {
+                    format!("Updated {}", when_label(&article.updated_at))
+                } else {
+                    attribution_line(
+                        article.author_name.as_deref(),
+                        &article.created_at,
+                        article.updated_by_name.as_deref(),
+                        &article.updated_at,
+                        when_label,
+                    )
+                };
                 let content = article.content.clone();
                 let path = resolve_category_path(article.category_id, &categories);
                 // Density drives BOTH the line spacing (leading-*) and the
@@ -1615,7 +1667,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                     }
                                 }
                             }
-                            p { class: "mt-1 text-xs text-subtle", "Updated {updated}" }
+                            p { class: "mt-1 text-xs text-subtle", "{attribution}" }
                             if !article.tags.is_empty() {
                                 TagChips { tags: article.tags.clone(), class: "mt-3".to_string() }
                             }
@@ -1714,13 +1766,18 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                             // history because it is the number the person
                             // about to do the work came here for.
                             MeasuredDurationCard { article_id: props.id.clone() }
-                            VersionHistoryCard {
-                                article_id: props.id.clone(),
-                                versions_resource,
-                                on_restored: move |_| {
-                                    article_resource.restart();
-                                    versions_resource.restart();
-                                },
+                            // MAPPS-739: the history names staff; a contact
+                            // session has no read on it (the route refuses a
+                            // contact bearer) so it is not rendered there.
+                            if !is_contact {
+                                VersionHistoryCard {
+                                    article: article.clone(),
+                                    versions_resource,
+                                    on_restored: move |_| {
+                                        article_resource.restart();
+                                        versions_resource.restart();
+                                    },
+                                }
                             }
                         }
                     }
@@ -1806,16 +1863,128 @@ fn MeasuredDurationCard(article_id: String) -> Element {
     }
 }
 
+/// MAPPS-739: what a version row leads with.
+fn change_kind_label(kind: &str, restored_from: Option<i32>) -> String {
+    match (kind, restored_from) {
+        ("create", _) => "Created".to_string(),
+        ("restore", Some(n)) => format!("Restored from v{n}"),
+        ("restore", None) => "Restored".to_string(),
+        _ => "Edited".to_string(),
+    }
+}
+
+/// MAPPS-739: a name the server sent, "Unknown" when it sent none. The
+/// server already prints "Unknown" for a user row that is gone; this covers
+/// a build of the server from before it sent names at all.
+fn person_label(name: Option<&str>) -> String {
+    name.map(str::trim)
+        .filter(|n| !n.is_empty())
+        .unwrap_or("Unknown")
+        .to_string()
+}
+
+/// MAPPS-739: the body of one version against another, line by line, the
+/// rewritten lines refined to their words. Folds long unchanged stretches
+/// to three lines of context so a one-line edit in a long article does not
+/// print the article. Removed and added lines carry a `-` / `+` gutter as
+/// well as a tint, so colour is not the only signal.
+#[component]
+fn LineDiffView(old: String, new: String) -> Element {
+    use crate::utils::line_diff::{diff_lines, fold, LineKind, Row};
+    use crate::utils::word_diff::Piece;
+    let diff = diff_lines(&old, &new);
+    let rows = fold(&diff, 3);
+    rsx! {
+        div { class: "rounded border border-line overflow-hidden",
+            p { class: "px-3 py-1.5 text-xs text-muted border-b border-line bg-surface-2",
+                "+{diff.added} / -{diff.removed} lines"
+            }
+            if diff.is_empty() {
+                p { class: "px-3 py-2 text-xs text-subtle", "No differences in the body." }
+            } else {
+                div { class: "max-h-[60vh] overflow-auto font-mono text-xs leading-5",
+                    for (idx , row) in rows.iter().enumerate() {
+                        match row {
+                            Row::Folded(n) => rsx! {
+                                div { key: "{idx}", class: "px-3 py-1 text-subtle italic bg-surface-2",
+                                    "… {n} unchanged lines"
+                                }
+                            },
+                            Row::Line(line) => {
+                                let (marker, cls) = match line.kind {
+                                    LineKind::Same => (" ", "text-content"),
+                                    LineKind::Removed => ("-", "bg-red-100 text-red-900 dark:bg-red-900/40 dark:text-red-200"),
+                                    LineKind::Added => ("+", "bg-green-100 text-green-900 dark:bg-green-900/40 dark:text-green-200"),
+                                };
+                                rsx! {
+                                    div { key: "{idx}", class: "flex whitespace-pre-wrap break-words {cls}",
+                                        span { class: "w-5 shrink-0 select-none text-center", "{marker}" }
+                                        span { class: "flex-1 min-w-0 pr-3",
+                                            if let Some(pieces) = &line.pieces {
+                                                for piece in pieces.iter() {
+                                                    match piece {
+                                                        Piece::Removed(t) => rsx! {
+                                                            span { class: "line-through bg-red-200 dark:bg-red-800/60 rounded-sm", "{t}" }
+                                                        },
+                                                        Piece::Added(t) => rsx! {
+                                                            span { class: "bg-green-200 dark:bg-green-800/60 rounded-sm", "{t}" }
+                                                        },
+                                                        Piece::Same(t) => rsx! {
+                                                            span { "{t}" }
+                                                        },
+                                                    }
+                                                }
+                                            } else {
+                                                "{line.text}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The article's version history (MAPPS-739 rework).
+///
+/// Each row says who wrote the version, when, what kind of change it was,
+/// why (the change note) and how many lines it added and removed against
+/// the version before it. The row for the live article is marked and has
+/// no actions; every other row can be compared with the live article, and
+/// restored only after a dialog has shown exactly what the restore will
+/// change (the live body against that version, the same diff the compare
+/// shows the other way round) and taken an optional note. Restore stays a
+/// new version, never a truncation, which the server guarantees. A failed
+/// restore is reported inside the dialog (the MAPPS-574 rule) instead of
+/// being swallowed as it was before this.
 #[component]
 fn VersionHistoryCard(
-    article_id: String,
+    article: KbArticle,
     versions_resource: Resource<Option<Vec<KbArticleVersion>>>,
     on_restored: EventHandler<()>,
 ) -> Element {
     let snap = versions_resource.read_unchecked();
-    let mut restoring = use_signal(|| None::<i32>);
+    let mut comparing = use_signal(|| None::<i32>);
+    let mut restore_target = use_signal(|| None::<i32>);
+    let mut restore_note = use_signal(String::new);
+    let mut restore_busy = use_signal(|| false);
+    let mut restore_error = use_signal(String::new);
     // MAPPS-357: block version restore while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
+
+    let current_version = article.current_version;
+    let live_title = article.title.clone();
+    let live_content = article.content.clone();
+    let article_id = article.id.to_string();
+    let versions: Vec<KbArticleVersion> = match &*snap {
+        Some(Some(v)) => v.clone(),
+        _ => Vec::new(),
+    };
+    let find = |n: i32| versions.iter().find(|v| v.version_number == n).cloned();
 
     rsx! {
         div { class: "rounded border border-line",
@@ -1833,49 +2002,76 @@ fn VersionHistoryCard(
                     p { class: "px-3 py-3 text-xs text-subtle", "No prior versions." }
                 },
                 Some(Some(page)) => {
+                    // Ordered version_number DESC, so the row after this one
+                    // is the version before it.
                     let rows = page.clone();
-                    let article_id = article_id.clone();
                     rsx! {
                         ul { class: "divide-y divide-line",
-                            for version in rows.into_iter() {
+                            for (idx , version) in rows.iter().enumerate() {
                                 {
                                     let key = version.id.to_string();
                                     let n = version.version_number;
+                                    let is_current = n == current_version;
+                                    let previous = rows.get(idx + 1);
+                                    let delta = previous.map(|p| {
+                                        let d = crate::utils::line_diff::diff_lines(&p.content, &version.content);
+                                        (d.added, d.removed)
+                                    });
+                                    let title_changed = previous.is_some_and(|p| p.title != version.title);
+                                    let kind = change_kind_label(&version.change_kind, version.restored_from_version);
+                                    let who = person_label(version.edited_by_name.as_deref());
+                                    let when = when_label(&version.created_at);
+                                    let note = version
+                                        .change_note
+                                        .as_deref()
+                                        .map(str::trim)
+                                        .filter(|s| !s.is_empty())
+                                        .map(str::to_string);
                                     let title = version.title.clone();
-                                    let saved = date_only(&version.created_at);
-                                    let id_for_restore = article_id.clone();
                                     rsx! {
                                         li { key: "{key}", class: "px-3 py-2 text-xs",
                                             div { class: "flex items-center justify-between gap-2",
-                                                span { class: "font-medium text-content", "v{n}" }
-                                                Button {
-                                                    variant: ButtonVariant::Link,
-                                                    size: ButtonSize::Small,
-                                                    // MAPPS-357: block restore while the server is unreachable.
-                                                    disabled: *restoring.read() == Some(n) || !can_mutate,
-                                                    title: (!can_mutate).then(|| "Can't restore while the server is unreachable".to_string()),
-                                                    onclick: move |_| {
-                                                        if restoring.read().is_some() { return; }
-                                                        restoring.set(Some(n));
-                                                        let id = id_for_restore.clone();
-                                                        spawn(async move {
-                                                            #[cfg(feature = "app")]
-                                                            {
-                                                                let path = format!("/kb/articles/{id}/versions/{n}/restore");
-                                                                if crate::hooks::fetch::api::post_authed::<KbArticle, _>(&path, &serde_json::json!({})).await.is_ok() {
-                                                                    on_restored.call(());
-                                                                }
-                                                            }
-                                                            #[cfg(not(feature = "app"))]
-                                                            let _ = &id;
-                                                            restoring.set(None);
-                                                        });
-                                                    },
-                                                    "Restore"
+                                                div { class: "flex items-center gap-2",
+                                                    span { class: "font-medium text-content", "v{n}" }
+                                                    if is_current {
+                                                        Badge { variant: BadgeVariant::Gray, "Current" }
+                                                    }
+                                                }
+                                                if !is_current {
+                                                    div { class: "flex items-center gap-1",
+                                                        Button {
+                                                            variant: ButtonVariant::Link,
+                                                            size: ButtonSize::Small,
+                                                            onclick: move |_| comparing.set(Some(n)),
+                                                            "Compare"
+                                                        }
+                                                        Button {
+                                                            variant: ButtonVariant::Link,
+                                                            size: ButtonSize::Small,
+                                                            // MAPPS-357: block restore while the server is unreachable.
+                                                            disabled: !can_mutate,
+                                                            title: (!can_mutate).then(|| "Can't restore while the server is unreachable".to_string()),
+                                                            onclick: move |_| {
+                                                                restore_note.set(String::new());
+                                                                restore_error.set(String::new());
+                                                                restore_target.set(Some(n));
+                                                            },
+                                                            "Restore"
+                                                        }
+                                                    }
                                                 }
                                             }
-                                            p { class: "mt-0.5 text-muted truncate", "{title}" }
-                                            p { class: "text-subtle", "{saved}" }
+                                            p { class: "mt-0.5 text-content", "{kind} by {who}" }
+                                            p { class: "text-subtle", "{when}" }
+                                            if let Some((added, removed)) = delta {
+                                                p { class: "text-subtle", "+{added} / -{removed} lines" }
+                                            }
+                                            if title_changed {
+                                                p { class: "text-subtle truncate", "Title: {title}" }
+                                            }
+                                            if let Some(note) = note {
+                                                p { class: "mt-0.5 italic text-muted", "\u{201c}{note}\u{201d}" }
+                                            }
                                         }
                                     }
                                 }
@@ -1883,6 +2079,106 @@ fn VersionHistoryCard(
                         }
                     }
                 },
+            }
+        }
+
+        // MAPPS-739: a version against the live article.
+        if let Some(n) = comparing() {
+            if let Some(version) = find(n) {
+                Modal {
+                    open: true,
+                    title: format!("v{n} compared with the current article"),
+                    size: ModalSize::XLarge,
+                    onclose: move |_| comparing.set(None),
+                    div { class: "space-y-3",
+                        if version.title != live_title {
+                            p { class: "text-sm",
+                                span { class: "text-muted", "Title: " }
+                                span { class: "line-through text-subtle", "{version.title}" }
+                                " → "
+                                span { "{live_title}" }
+                            }
+                        }
+                        p { class: "text-xs text-muted", "Lines removed are in v{n} only; lines added are in the current article only." }
+                        LineDiffView { old: version.content.clone(), new: live_content.clone() }
+                    }
+                }
+            }
+        }
+
+        // MAPPS-739: what the restore will change, before it changes it.
+        if let Some(n) = restore_target() {
+            if let Some(version) = find(n) {
+                {
+                    let next = current_version + 1;
+                    let id = article_id.clone();
+                    let target_content = version.content.clone();
+                    rsx! {
+                        ConfirmDialog {
+                            open: true,
+                            title: format!("Restore v{n}?"),
+                            message: format!("The article goes back to what version {n} says. That is recorded as v{next}; nothing is deleted."),
+                            confirm_text: "Restore",
+                            loading: restore_busy(),
+                            error: restore_error(),
+                            body: rsx! {
+                                div { class: "space-y-3",
+                                    if version.title != live_title {
+                                        p { class: "text-sm",
+                                            span { class: "text-muted", "Title: " }
+                                            span { class: "line-through text-subtle", "{live_title}" }
+                                            " → "
+                                            span { "{version.title}" }
+                                        }
+                                    }
+                                    LineDiffView { old: live_content.clone(), new: target_content.clone() }
+                                    crate::components::Input {
+                                        name: "change_note",
+                                        label: "Why? (optional)",
+                                        placeholder: "e.g. the later edit dropped the warning",
+                                        maxlength: 500i64,
+                                        value: restore_note(),
+                                        oninput: move |e: FormEvent| restore_note.set(e.value()),
+                                    }
+                                }
+                            },
+                            onconfirm: move |_| {
+                                if restore_busy() {
+                                    return;
+                                }
+                                restore_busy.set(true);
+                                restore_error.set(String::new());
+                                let id = id.clone();
+                                let note = restore_note.read().trim().to_string();
+                                spawn(async move {
+                                    #[cfg(feature = "app")]
+                                    {
+                                        let path = format!("/kb/articles/{id}/versions/{n}/restore");
+                                        let body = crate::modules::kb::RestoreKbArticleVersionRequest {
+                                            change_note: (!note.is_empty()).then_some(note),
+                                        };
+                                        match crate::hooks::fetch::api::post_authed_typed::<KbArticleVersion, _>(&path, &body).await {
+                                            Ok(_) => {
+                                                restore_target.set(None);
+                                                on_restored.call(());
+                                            }
+                                            Err(err) => {
+                                                tracing::error!("kb version restore failed for {id} v{n}: {err}");
+                                                restore_error.set(format!("Could not restore: {}", err.user_message()));
+                                            }
+                                        }
+                                    }
+                                    #[cfg(not(feature = "app"))]
+                                    {
+                                        let _ = (&id, &note);
+                                    }
+                                    restore_busy.set(false);
+                                });
+                            },
+                            oncancel: move |_| restore_target.set(None),
+                        }
+                    }
+                }
             }
         }
     }
@@ -2070,6 +2366,10 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     });
     let mut content = use_signal(|| initial.content.clone());
     let mut tags = use_signal(|| initial.tags.clone());
+    // MAPPS-739: why this edit was made, for the version it creates. Not part
+    // of `initial` and not part of `dirty`: a note with nothing else changed
+    // saves nothing, because the server stores it only on a new version.
+    let mut change_note = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
     // PMS-518: per-field inline error slots, fed by the FormGuard on submit.
@@ -2456,6 +2756,8 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         } else {
             None
         };
+        let change_note_val = change_note.read().trim().to_string();
+        let change_note_opt = (!change_note_val.is_empty()).then_some(change_note_val);
 
         spawn(async move {
             #[cfg(feature = "app")]
@@ -2476,6 +2778,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             status: Some(status_val.clone()),
                             tags: Some(tags_vec.clone()),
                             company_ids: company_ids_opt.clone(),
+                            change_note: change_note_opt.clone(),
                         };
                         let path = format!("/kb/articles/{id}");
                         crate::hooks::fetch::api::put_authed::<KbArticle, _>(&path, &body)
@@ -2961,6 +3264,20 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                         }
                     },
                     oncancel: move |_| confirming_cancel.set(false),
+                }
+
+                // MAPPS-739: why. Only on an edit: the creation snapshot has
+                // no "why" beyond existing, and the server keeps a note only
+                // on the version a save creates.
+                if is_edit {
+                    crate::components::Input {
+                        name: "change_note",
+                        label: "What changed? (optional)",
+                        placeholder: "One line for the history, e.g. added the VPN fallback step",
+                        maxlength: 500i64,
+                        value: change_note.read().clone(),
+                        oninput: move |e: FormEvent| change_note.set(e.value()),
+                    }
                 }
 
                 div { class: "flex justify-end space-x-3",
@@ -3737,6 +4054,11 @@ mod tests {
             id,
             title: title.to_string(),
             slug: title.to_lowercase(),
+            author_id: None,
+            author_name: None,
+            updated_by_id: None,
+            updated_by_name: None,
+            current_version: 0,
             content: String::new(),
             summary: None,
             category_id: category,
@@ -4300,5 +4622,117 @@ mod mapps612_details_panel_tests {
             "How to reset a password",
             "how-to-reset-a-password"
         ));
+    }
+}
+
+/// MAPPS-739: attribution, version rows, and the restore that shows its
+/// diff first.
+#[cfg(test)]
+mod mapps739_history_tests {
+    use super::{attribution_line, change_kind_label, person_label};
+    use chrono::{DateTime, TimeZone, Utc};
+
+    fn fixed(ts: &Option<DateTime<Utc>>) -> String {
+        ts.map(|dt| dt.format("%b %d, %Y %H:%M").to_string())
+            .unwrap_or_else(|| "-".to_string())
+    }
+
+    #[test]
+    fn the_header_names_the_author_and_the_editor_and_never_an_id() {
+        let created = Some(Utc.with_ymd_and_hms(2026, 9, 7, 10, 12, 0).unwrap());
+        let updated = Some(Utc.with_ymd_and_hms(2026, 9, 8, 9, 40, 0).unwrap());
+        let line = attribution_line(
+            Some("Ada Lovelace"),
+            &created,
+            Some("Grace Hopper"),
+            &updated,
+            fixed,
+        );
+        assert_eq!(
+            line,
+            "Created by Ada Lovelace Sep 07, 2026 10:12 · Updated by Grace Hopper Sep 08, 2026 09:40"
+        );
+    }
+
+    #[test]
+    fn an_untouched_article_claims_no_editor() {
+        let created = Some(Utc.with_ymd_and_hms(2026, 9, 7, 10, 12, 0).unwrap());
+        let line = attribution_line(
+            Some("Ada Lovelace"),
+            &created,
+            Some("Ada Lovelace"),
+            &created,
+            fixed,
+        );
+        assert!(!line.contains("Updated by"), "{line}");
+    }
+
+    #[test]
+    fn a_missing_name_prints_unknown() {
+        let created = Some(Utc.with_ymd_and_hms(2026, 9, 7, 10, 12, 0).unwrap());
+        let updated = Some(Utc.with_ymd_and_hms(2026, 9, 8, 9, 40, 0).unwrap());
+        let line = attribution_line(None, &created, Some("  "), &updated, fixed);
+        assert!(line.starts_with("Created by Unknown "), "{line}");
+        assert!(line.contains("Updated by Unknown "), "{line}");
+        assert_eq!(person_label(None), "Unknown");
+        assert_eq!(person_label(Some(" ")), "Unknown");
+        assert_eq!(person_label(Some(" Ada ")), "Ada");
+    }
+
+    #[test]
+    fn a_version_row_leads_with_what_kind_of_change_it_was() {
+        assert_eq!(change_kind_label("create", None), "Created");
+        assert_eq!(change_kind_label("edit", None), "Edited");
+        assert_eq!(change_kind_label("restore", Some(3)), "Restored from v3");
+        assert_eq!(change_kind_label("restore", None), "Restored");
+        // A kind this build does not know reads as an edit rather than
+        // failing the page.
+        assert_eq!(change_kind_label("merge", None), "Edited");
+    }
+
+    /// The card never repeats the article title per row, restore goes
+    /// through a dialog that shows the diff, a failed restore is reported
+    /// rather than swallowed, and the edit form sends its note.
+    #[test]
+    fn restore_shows_its_diff_and_reports_its_failure() {
+        let src = include_str!("knowledge_base.rs");
+        let head = &src[..src.find("mod mapps739_history_tests").expect("this module")];
+        let card = &head[head.find("fn VersionHistoryCard(").expect("the card")..];
+        let card = &card[..card
+            .find("// New / edit article pages")
+            .expect("end of card")];
+        assert!(
+            card.contains("ConfirmDialog {")
+                && card.contains(
+                    "LineDiffView { old: live_content.clone(), new: target_content.clone() }"
+                ),
+            "restore confirms on a dialog that shows the live body against the version"
+        );
+        assert!(
+            card.contains(
+                "restore_error.set(format!(\"Could not restore: {}\", err.user_message()))"
+            ),
+            "a failed restore is reported inside the dialog"
+        );
+        assert!(
+            !card.contains("if crate::hooks::fetch::api::post_authed::<KbArticle, _>(&path, &serde_json::json!({})).await.is_ok()"),
+            "the one-click, swallow-the-error restore is gone"
+        );
+        assert!(
+            card.contains("Badge { variant: BadgeVariant::Gray, \"Current\" }"),
+            "the live version is marked"
+        );
+        assert!(
+            !card.contains("p { class: \"mt-0.5 text-muted truncate\", \"{title}\" }"),
+            "the row no longer repeats the article title"
+        );
+        assert!(
+            head.contains("change_note: change_note_opt.clone(),"),
+            "the edit form sends its note on the PUT"
+        );
+        assert!(
+            head.contains("if !is_contact {\n                                VersionHistoryCard {"),
+            "the history is not rendered on a contact session"
+        );
     }
 }

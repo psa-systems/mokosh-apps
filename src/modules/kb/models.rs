@@ -34,16 +34,29 @@ pub struct KbCategory {
 /// portal feed (the server returns the same DTO from
 /// `GET /api/v1/portal/kb`).
 ///
-/// The server's `KbArticleResponse` also carries `author_id`. This client
-/// omits it on purpose: serde drops the unknown key, nothing here displays
-/// the author, so there is no fix to make. Add
-/// `#[serde(default)] pub author_id: Option<Uuid>` only if author display
-/// is wanted later (MAPPS-138, recorded no-fix).
+/// MAPPS-739 (reversing the MAPPS-138 no-fix): the header prints who wrote
+/// and who last edited the article, so the author and the editor ride
+/// along as the display NAMES the server resolves (PMS-1126), never as
+/// ids. The contact projection carries none of these, so every one
+/// defaults, and the page prints attribution only on a staff session.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct KbArticle {
     pub id: Uuid,
     #[serde(default)]
     pub title: String,
+    #[serde(default)]
+    pub author_id: Option<Uuid>,
+    #[serde(default)]
+    pub author_name: Option<String>,
+    #[serde(default)]
+    pub updated_by_id: Option<Uuid>,
+    #[serde(default)]
+    pub updated_by_name: Option<String>,
+    /// The highest version number, so the history card can mark the row
+    /// that is the live article. `0` for a contact read, which never shows
+    /// the card.
+    #[serde(default)]
+    pub current_version: i32,
     #[serde(default)]
     pub slug: String,
     #[serde(default)]
@@ -79,6 +92,10 @@ pub struct KbArticle {
 }
 
 /// `KbArticleVersionResponse` subset for the version-history list.
+///
+/// MAPPS-739: a version says who wrote it, what kind of change it was
+/// (`create`, `edit`, `restore`), why, and for a restore which version it
+/// brought back (PMS-1126).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct KbArticleVersion {
     pub id: Uuid,
@@ -89,7 +106,22 @@ pub struct KbArticleVersion {
     #[serde(default)]
     pub content: String,
     #[serde(default)]
+    pub edited_by_name: Option<String>,
+    #[serde(default)]
+    pub change_note: Option<String>,
+    #[serde(default)]
+    pub change_kind: String,
+    #[serde(default)]
+    pub restored_from_version: Option<i32>,
+    #[serde(default)]
     pub created_at: Option<DateTime<Utc>>,
+}
+
+/// MAPPS-739: the body of `POST /kb/articles/{id}/versions/{n}/restore`.
+#[derive(Clone, Debug, PartialEq, Serialize, Default)]
+pub struct RestoreKbArticleVersionRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub change_note: Option<String>,
 }
 
 /// `KbArticleFeedbackResponse`: returned by the helpful / not_helpful
@@ -185,6 +217,10 @@ pub struct UpdateKbArticleRequest {
     /// visibility is `client_specific`; `None` otherwise, since the server
     /// clears the stored scope for any other visibility anyway.
     pub company_ids: Option<Vec<Uuid>>,
+    /// MAPPS-739: why this edit was made; the server stores it on the
+    /// version the save creates and drops it when the save creates none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub change_note: Option<String>,
 }
 
 /// PMS-485: one row of the `/kb/top-ticket-driving-articles` feed used

@@ -316,6 +316,19 @@ pub fn token_warnings(format: &str) -> Vec<String> {
     warnings
 }
 
+/// An absolute timestamp for a "created" or "updated" line, in the user's
+/// own format when they set one and "Jun 05, 2026 14:30" otherwise
+/// (PMS-253). MAPPS-739 lifted this out of the ticket page's private copy
+/// so the KB prints its dates the way the rest of the app does instead of
+/// a bare `YYYY-MM-DD`.
+pub fn fmt_datetime_pref(dt: DateTime<Utc>) -> String {
+    let pref = user_format_pref();
+    match pref.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(fmt) => format_user_datetime(dt, Some(fmt)),
+        None => dt.format("%b %d, %Y %H:%M").to_string(),
+    }
+}
+
 /// Read the active user's date_format_string off the AuthContext
 /// without forcing every caller to thread the value through their
 /// signature. Use this from any handler component that already
