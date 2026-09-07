@@ -190,6 +190,9 @@ fn meta_must_be_open(title: &str, slug: &str) -> bool {
 /// category by walking `parent_id`. Returns `[]` when the article has no
 /// category or the id is dangling. Guards against cycles with a visited
 /// set so a malformed parent chain cannot loop forever.
+/// MAPPS-740: the crumb an article with no category shows.
+const UNCATEGORISED_CRUMB: &str = "Uncategorised";
+
 fn resolve_category_path(category_id: Option<uuid::Uuid>, all: &[KbCategory]) -> Vec<KbCategory> {
     use std::collections::HashSet;
     let mut chain = Vec::new();
@@ -1400,6 +1403,9 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     // Reading-view UI state, persisted per user via the prefs store.
     let left_collapsed = use_signal(|| crate::utils::prefs::get_bool("kb_left_rail", false));
     let right_collapsed = use_signal(|| crate::utils::prefs::get_bool("kb_right_rail", false));
+    // MAPPS-740: set on /settings/appearance, read here. The toggle that
+    // used to sit in the Actions card between Delete and Open ticket is
+    // gone; a display preference is not an action on the article.
     let comfortable = use_signal(|| crate::utils::prefs::get_bool("kb_density", true));
     let open_overlay = use_signal(|| None::<crate::components::RailSide>);
     use_effect(move || crate::utils::prefs::set_bool("kb_left_rail", left_collapsed()));
@@ -1632,7 +1638,6 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                     ArticleActionsMenu {
                                         article_id: props.id.clone(),
                                         article_title: article.title.clone(),
-                                        comfortable,
                                         confirming_delete,
                                         delete_error,
                                         delete_busy,
@@ -1755,7 +1760,6 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                 ArticleActions {
                                     article_id: props.id.clone(),
                                     article_title: article.title.clone(),
-                                    comfortable,
                                     confirming_delete,
                                     delete_error,
                                     delete_busy,
@@ -3634,11 +3638,18 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
 // Breadcrumb and tree-nav components
 // ============================================================================
 
+/// The trail already walks the category ancestors; MAPPS-740 adds a crumb
+/// for the article that has none, so "KB > title" says it is uncategorised
+/// rather than looking like a flat KB.
 #[component]
 fn KbBreadcrumb(path: Vec<KbCategory>, title: String) -> Element {
     rsx! {
         nav { class: "flex items-center flex-wrap gap-1 text-sm text-muted",
             Link { to: Route::KBHome {}, class: "hover:text-content", "KB" }
+            if path.is_empty() {
+                ChevronRightIcon { size: IconSize::Small }
+                span { class: "italic", "{UNCATEGORISED_CRUMB}" }
+            }
             for cat in path.iter() {
                 ChevronRightIcon { size: IconSize::Small }
                 Link {
@@ -3721,7 +3732,8 @@ fn KbTreeArticle(article: KbArticle, current_id: String) -> Element {
 }
 
 // ============================================================================
-// Article actions, rating bar, density toggle, read-mode button
+// Article actions, rating bar, read-mode button (the density toggle moved
+// to /settings/appearance in MAPPS-740)
 // ============================================================================
 
 /// MAPPS-423: the controls that act on the article, as one full-width column.
@@ -3731,7 +3743,6 @@ fn KbTreeArticle(article: KbArticle, current_id: String) -> Element {
 fn ArticleActions(
     article_id: String,
     article_title: String,
-    comfortable: Signal<bool>,
     confirming_delete: Signal<bool>,
     delete_error: Signal<String>,
     delete_busy: Signal<bool>,
@@ -3754,17 +3765,27 @@ fn ArticleActions(
         urlencoding_minimal(&article_title),
         urlencoding_minimal(&format!("/kb/articles/{article_id}")),
     );
+    // MAPPS-740: the hierarchy. Edit is the primary act on an article and
+    // leads; opening a ticket is the ordinary secondary one; Delete comes
+    // last as a ghost button in the destructive colour, still behind the
+    // ConfirmDialog. Before this Delete was a solid red block above the
+    // others, the loudest thing on the page. Danger's red is a fixed
+    // destructive colour, not the accent, so this reads the same on every
+    // accent.
     rsx! {
         div { class: "flex flex-col gap-2",
             Link { to: Route::KBArticleEdit { id: article_id.clone() }, class: "block",
-                Button { variant: ButtonVariant::Secondary, class: "w-full".to_string(), "Edit" }
+                Button { variant: ButtonVariant::Primary, class: "w-full".to_string(), "Edit" }
+            }
+            Link { to: format!("{}?{qs}", Route::TicketNew {}), class: "block",
+                Button { variant: ButtonVariant::Secondary, class: "w-full".to_string(), "Open ticket about this article" }
             }
             // MAPPS-309: delete affordance. Gated by the `ConfirmDialog`
             // rendered at the page root; success navigates back to the KB
             // landing.
             Button {
-                variant: ButtonVariant::Danger,
-                class: "w-full".to_string(),
+                variant: ButtonVariant::Ghost,
+                class: "w-full text-red-600 dark:text-red-400".to_string(),
                 disabled: delete_busy() || !can_mutate,
                 title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                 onclick: move |_| {
@@ -3773,12 +3794,6 @@ fn ArticleActions(
                 },
                 "Delete"
             }
-            Link {
-                to: format!("{}?{qs}", Route::TicketNew {}),
-                class: "w-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium rounded-md border border-line hover:bg-surface-2 text-content",
-                "Open ticket about this article"
-            }
-            DensityToggle { comfortable, class: "w-full".to_string() }
         }
     }
 }
@@ -3790,7 +3805,6 @@ fn ArticleActions(
 fn ArticleActionsMenu(
     article_id: String,
     article_title: String,
-    comfortable: Signal<bool>,
     confirming_delete: Signal<bool>,
     delete_error: Signal<String>,
     delete_busy: Signal<bool>,
@@ -3822,7 +3836,6 @@ fn ArticleActionsMenu(
                     ArticleActions {
                         article_id,
                         article_title,
-                        comfortable,
                         confirming_delete,
                         delete_error,
                         delete_busy,
@@ -3927,23 +3940,6 @@ fn RatingBar(
                 span { "\u{1F44E}" }
                 span { class: "tabular-nums", "{n}" }
             }
-        }
-    }
-}
-
-#[component]
-fn DensityToggle(comfortable: Signal<bool>, #[props(default)] class: String) -> Element {
-    let mut comfortable = comfortable;
-    rsx! {
-        button {
-            class: "text-xs px-2 py-1 rounded border border-line text-content {class}",
-            title: "Toggle reading density",
-            onclick: move |_| {
-                let next = !comfortable();
-                comfortable.set(next);
-                crate::utils::prefs::set_bool("kb_density", next);
-            },
-            if comfortable() { "Comfortable" } else { "Compact" }
         }
     }
 }
@@ -4622,6 +4618,90 @@ mod mapps612_details_panel_tests {
             "How to reset a password",
             "how-to-reset-a-password"
         ));
+    }
+}
+
+/// MAPPS-740: the page hygiene items.
+#[cfg(test)]
+mod mapps740_page_hygiene_tests {
+    fn head() -> &'static str {
+        let src = include_str!("knowledge_base.rs");
+        &src[..src
+            .find("mod mapps740_page_hygiene_tests")
+            .expect("this module")]
+    }
+
+    /// Edit leads as the primary action, opening a ticket is a real
+    /// secondary button, Delete is a ghost at the bottom, and no reading
+    /// preference sits among the actions.
+    #[test]
+    fn the_actions_card_leads_with_edit_and_ends_with_a_demoted_delete() {
+        let head = head();
+        let actions = &head[head.find("fn ArticleActions(").expect("the card")..];
+        let actions = &actions[..actions.find("fn ArticleActionsMenu(").expect("end of card")];
+        // The rendered block, past the PMS-482 comment that names the
+        // ticket link before the buttons.
+        let actions = &actions[actions.find("rsx! {").expect("the rendered block")..];
+        let edit = actions.find("\"Edit\"").expect("Edit");
+        let ticket = actions
+            .find("\"Open ticket about this article\"")
+            .expect("Open ticket");
+        let delete = actions.find("\"Delete\"").expect("Delete");
+        assert!(
+            edit < ticket && ticket < delete,
+            "order: Edit, Open ticket, Delete"
+        );
+        assert!(
+            actions.contains("Button { variant: ButtonVariant::Primary, class: \"w-full\".to_string(), \"Edit\" }"),
+            "Edit is the primary action"
+        );
+        assert!(
+            actions.contains("Button { variant: ButtonVariant::Secondary, class: \"w-full\".to_string(), \"Open ticket about this article\" }"),
+            "Open ticket is a real secondary button"
+        );
+        assert!(
+            actions.contains("variant: ButtonVariant::Ghost,\n                class: \"w-full text-red-600 dark:text-red-400\".to_string(),"),
+            "Delete is a ghost in the destructive colour"
+        );
+        assert!(
+            !actions.contains("ButtonVariant::Danger"),
+            "no solid red block in the card"
+        );
+        assert!(
+            !head.contains("fn DensityToggle("),
+            "the density toggle left the page"
+        );
+        assert!(
+            !head.contains("Comfortable"),
+            "no density label on the article page"
+        );
+    }
+
+    /// The density preference is still read here under the key the
+    /// settings page writes, so a choice made before this keeps working.
+    #[test]
+    fn the_article_still_reads_the_density_the_settings_page_writes() {
+        let head = head();
+        assert!(head.contains("crate::utils::prefs::get_bool(\"kb_density\", true)"));
+        let settings = include_str!("settings.rs");
+        assert!(
+            settings.contains("crate::utils::prefs::set_bool(\"kb_density\", next)"),
+            "the Appearance page writes the same key"
+        );
+        assert!(
+            settings.contains("name: \"kb_density\""),
+            "as a labelled select"
+        );
+    }
+
+    #[test]
+    fn an_uncategorised_article_gets_its_own_crumb() {
+        let head = head();
+        let crumb = &head[head.find("fn KbBreadcrumb(").expect("the breadcrumb")..];
+        let crumb = &crumb[..crumb.find("fn KbTreeNav(").expect("end")];
+        assert!(crumb.contains("if path.is_empty() {"));
+        assert!(crumb.contains("\"{UNCATEGORISED_CRUMB}\""));
+        assert_eq!(super::UNCATEGORISED_CRUMB, "Uncategorised");
     }
 }
 
