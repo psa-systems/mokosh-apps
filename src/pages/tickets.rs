@@ -6049,6 +6049,108 @@ mod mapps734_sla_panel_tests {
     }
 }
 
+/// MAPPS-731: a long Details value wraps between its phrases instead of
+/// being clipped at the card's edge.
+#[cfg(test)]
+mod mapps731_detail_row_tests {
+    use super::{created_parts, sla_leg, sla_leg_parts};
+    use chrono::{TimeZone, Utc};
+
+    /// Every timestamp in a Details value is a phrase of its own, so the
+    /// browser breaks the line beside it rather than through it.
+    #[test]
+    fn a_timestamp_is_never_split_across_phrases() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 8, 12, 0, 0).unwrap();
+        let fmt = |dt: chrono::DateTime<Utc>| dt.format("%b %-d, %Y %-I:%M %p").to_string();
+        let due = Utc.with_ymd_and_hms(2026, 8, 28, 12, 39, 0).unwrap();
+        let at = Utc.with_ymd_and_hms(2026, 8, 28, 12, 0, 0).unwrap();
+
+        let pending = sla_leg(Some(due), None, now).expect("leg");
+        assert_eq!(
+            sla_leg_parts(&pending, fmt),
+            ["Due Aug 28, 2026 12:39 PM", "(10 days overdue)"]
+        );
+        let reached = sla_leg(Some(due), Some(at), now).expect("leg");
+        assert_eq!(
+            sla_leg_parts(&reached, fmt),
+            [
+                "Aug 28, 2026 12:00 PM",
+                "(met, due",
+                "Aug 28, 2026 12:39 PM)"
+            ]
+        );
+        assert_eq!(
+            created_parts("Aug 27, 2026 12:39".into(), "Long Le"),
+            ["Aug 27, 2026 12:39", "by Long Le"]
+        );
+        assert_eq!(
+            created_parts("Aug 27, 2026 12:39".into(), ""),
+            ["Aug 27, 2026 12:39"]
+        );
+    }
+
+    /// Joined with spaces, the phrases read exactly as the one-line value
+    /// did, so a card wide enough to hold the value shows the same text.
+    #[test]
+    fn the_phrases_joined_are_the_former_one_line_value() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 8, 12, 0, 0).unwrap();
+        let fmt = |dt: chrono::DateTime<Utc>| dt.format("%Y-%m-%d %H:%M").to_string();
+        let due = Utc.with_ymd_and_hms(2026, 9, 8, 10, 0, 0).unwrap();
+        let reached = sla_leg(Some(due), Some(due), now).expect("leg");
+        assert_eq!(
+            sla_leg_parts(&reached, fmt).join(" "),
+            "2026-09-08 10:00 (met, due 2026-09-08 10:00)"
+        );
+        let pending = sla_leg(Some(due), None, now).expect("leg");
+        assert_eq!(
+            sla_leg_parts(&pending, fmt).join(" "),
+            "Due 2026-09-08 10:00 (2 hr overdue)"
+        );
+    }
+
+    /// The DetailItem cell never carries `whitespace-nowrap` again, and the
+    /// Created and SLA rows go through `Phrases`: a nowrap cell is what
+    /// clipped the value, and a plain span would split the timestamp.
+    #[test]
+    fn the_detail_cell_wraps_and_the_timestamp_rows_use_phrases() {
+        let src = include_str!("tickets.rs");
+        let head = &src[..src
+            .find("mod mapps731_detail_row_tests")
+            .expect("this module")];
+        let item = &head[head.find("fn DetailItem(").expect("DetailItem")..];
+        let item = &item[..item.find("\n}\n").expect("end of DetailItem")];
+        let rendered: String = item
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !rendered.contains("whitespace-nowrap"),
+            "DetailItem must not pin its value cell to one line"
+        );
+        assert!(
+            !head.contains("nowrap: true"),
+            "no Details row asks for a one-line cell any more"
+        );
+        assert!(
+            head.contains(
+                "DetailItem { label: \"Created\", value: rsx!(Phrases { parts: created }) }"
+            ),
+            "the Created row renders its phrases through Phrases"
+        );
+        assert!(
+            head.contains(
+                "DetailItem { label: label.to_string(), value: rsx!(Phrases { parts }) }"
+            ),
+            "the SLA rows render their phrases through Phrases"
+        );
+        assert!(
+            head.contains("span { class: \"flex flex-wrap justify-end gap-x-1\","),
+            "Phrases wraps between its items and keeps the value right-aligned"
+        );
+    }
+}
+
 #[cfg(test)]
 mod mapps686_shared_dto_tests {
     use super::{
