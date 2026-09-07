@@ -5469,6 +5469,82 @@ mod write_off_tests {
     }
 }
 
+/// MAPPS-735: the Payments card.
+#[cfg(test)]
+mod payments_card_tests {
+    use super::{
+        is_zero_amount, payment_line, payment_method_label, refund_line, RemoteInvoiceLedger,
+    };
+
+    #[test]
+    fn the_method_label_spaces_and_capitalises_the_token() {
+        assert_eq!(payment_method_label("credit_card"), "Credit card");
+        assert_eq!(payment_method_label("bank_transfer"), "Bank transfer");
+        assert_eq!(payment_method_label("check"), "Check");
+        assert_eq!(payment_method_label("  "), "Payment");
+    }
+
+    #[test]
+    fn the_payment_row_names_method_date_and_reference() {
+        assert_eq!(
+            payment_line("2026-09-02", "credit_card", Some("ch_123")),
+            "Credit card on 2026-09-02 (ref ch_123)"
+        );
+        assert_eq!(
+            payment_line("2026-09-02", "cash", Some("  ")),
+            "Cash on 2026-09-02"
+        );
+        assert_eq!(payment_line("", "cash", None), "Cash");
+    }
+
+    #[test]
+    fn the_refund_row_takes_the_date_part_of_the_timestamp() {
+        assert_eq!(
+            refund_line("2026-09-03T10:15:00Z"),
+            "Refunded on 2026-09-03"
+        );
+        assert_eq!(refund_line(""), "Refunded");
+    }
+
+    #[test]
+    fn zero_at_any_scale_is_nothing_refunded() {
+        for raw in ["", "0", "0.00", "0.0000", " 0 "] {
+            assert!(is_zero_amount(raw), "{raw:?}");
+        }
+        for raw in ["0.01", "20", "20.00"] {
+            assert!(!is_zero_amount(raw), "{raw:?}");
+        }
+    }
+
+    /// The route body decodes, newest first as the server sends it, with
+    /// the optional reference absent, and an empty ledger decodes too.
+    #[test]
+    fn decodes_the_route_body() {
+        let body = r#"{"invoice_id":"aaaaaaaa-0000-4000-8000-000000000001","currency":"USD","payments":[{"id":"aaaaaaaa-0000-4000-8000-000000000002","payment_date":"2026-09-02","amount":"120.00","payment_method":"credit_card","created_at":"2026-09-02T14:00:00Z"}],"refunds":[{"id":"aaaaaaaa-0000-4000-8000-000000000003","payment_id":"aaaaaaaa-0000-4000-8000-000000000002","amount":"20.00","created_at":"2026-09-03T10:15:00Z"}],"total_paid":"120.00","total_refunded":"20.00"}"#;
+        let ledger: RemoteInvoiceLedger = serde_json::from_str(body).expect("decode");
+        assert_eq!(ledger.payments.len(), 1);
+        assert!(ledger.payments[0].reference_number.is_none());
+        assert_eq!(ledger.refunds[0].payment_id, ledger.payments[0].id);
+        assert_eq!(ledger.total_refunded, "20.00");
+
+        let empty: RemoteInvoiceLedger = serde_json::from_str(
+            r#"{"payments":[],"refunds":[],"total_paid":"0","total_refunded":"0"}"#,
+        )
+        .expect("decode empty");
+        assert!(empty.payments.is_empty());
+    }
+
+    /// The ledger is fetched on whichever bearer the session holds, the way
+    /// the invoice itself is, so a contact reads it on the contact plane.
+    #[test]
+    fn the_ledger_is_fetched_on_any_bearer() {
+        let src = include_str!("billing.rs");
+        let head = &src[..src.find("mod payments_card_tests").expect("this module")];
+        assert!(head.contains("get_authed_any::<RemoteInvoiceLedger>"));
+        assert!(head.contains("\"/invoices/{id}/payments\""));
+    }
+}
+
 #[cfg(test)]
 mod invoice_preview_tests {
     use super::invoice_pay_now_preview;
