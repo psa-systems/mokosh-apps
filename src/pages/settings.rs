@@ -396,6 +396,15 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         advanced: false,
         visibility: SurfaceVisibility::Always,
     },
+    // MAPPS-728: the PMS-1037 reminder schedule.
+    SettingsSurface {
+        route: Route::SettingsPaymentReminders {},
+        title: "Payment Reminders",
+        description: "Whether and when overdue invoices are re-sent to the customer.",
+        group: SettingsGroupKey::Billing,
+        advanced: false,
+        visibility: SurfaceVisibility::Always,
+    },
     SettingsSurface {
         route: Route::SettingsTimeTracking {},
         title: "Time Tracking",
@@ -2225,6 +2234,313 @@ fn StandardDueDateForm(initial: u32) -> Element {
                 }
                 p { class: "text-sm text-muted",
                     "New tasks without a due date, and tickets that match no SLA, default to this many business days from the day they are created (weekends skipped). Set 0 to leave new work with no default due date."
+                }
+                div {
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        loading: *saving.read(),
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
+                        onclick: handle_save,
+                        "Save Changes"
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Payment reminders (MAPPS-728 / PMS-1037)
+// GET `/settings/billing_reminders`, PUT `/settings/billing_reminders/{key}`
+// ============================================================================
+
+const REMINDERS_CATEGORY_PATH: &str = "/settings/billing_reminders";
+const REMINDER_MAX_STEPS: usize = 10;
+const REMINDER_MAX_DAY: u64 = 365;
+
+/// One `TenantSettingResponse` row of the category read.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct SettingRow {
+    #[serde(default)]
+    key: String,
+    #[serde(default)]
+    value: serde_json::Value,
+}
+
+/// The three `billing_reminders` settings as the form holds them, with the
+/// server's defaults for a row that does not exist yet (PMS-1037: off,
+/// no steps, 08:00).
+#[derive(Clone, Debug, PartialEq)]
+struct ReminderSettings {
+    enabled: bool,
+    schedule: Vec<u64>,
+    send_hour: u64,
+}
+
+impl ReminderSettings {
+    fn from_rows(rows: &[SettingRow]) -> Self {
+        let mut s = Self {
+            enabled: false,
+            schedule: Vec::new(),
+            send_hour: 8,
+        };
+        for row in rows {
+            match row.key.as_str() {
+                "enabled" => s.enabled = row.value.as_bool().unwrap_or(false),
+                "schedule" => {
+                    s.schedule = row
+                        .value
+                        .as_array()
+                        .map(|a| a.iter().filter_map(|d| d.as_u64()).collect())
+                        .unwrap_or_default()
+                }
+                "send_hour" => s.send_hour = setting_u64(&row.value, "send_hour", 8),
+                _ => {}
+            }
+        }
+        s
+    }
+}
+
+/// MAPPS-728: parse the schedule the way the server validates it
+/// (`billing_reminders/schedule`, PMS-1037): 1 to 10 whole days, each in
+/// 1..=365, strictly ascending. Mirrored here so a slip reads as an inline
+/// message rather than a 422 round trip; the server's rule still wins.
+pub(crate) fn parse_reminder_schedule(raw: &str) -> Result<Vec<u64>, String> {
+    let mut days = Vec::new();
+    for part in raw
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|p| !p.is_empty())
+    {
+        let day: u64 = part
+            .parse()
+            .map_err(|_| format!("\"{part}\" is not a whole number of days."))?;
+        if !(1..=REMINDER_MAX_DAY).contains(&day) {
+            return Err(format!(
+                "Each step must be between 1 and {REMINDER_MAX_DAY} days past due."
+            ));
+        }
+        if let Some(&last) = days.last() {
+            if day <= last {
+                return Err(
+                    "List the steps in ascending order, each later than the one before."
+                        .to_string(),
+                );
+            }
+        }
+        days.push(day);
+    }
+    if days.is_empty() {
+        return Err("Enter at least one step, for example 3, 7, 14, 30.".to_string());
+    }
+    if days.len() > REMINDER_MAX_STEPS {
+        return Err(format!("At most {REMINDER_MAX_STEPS} steps."));
+    }
+    Ok(days)
+}
+
+/// The schedule as the field shows it.
+fn schedule_text(days: &[u64]) -> String {
+    days.iter()
+        .map(|d| d.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `/settings/payment-reminders` - the PMS-1037 overdue reminder schedule:
+/// on or off, the day offsets a reminder goes out on, and the tenant's
+/// local sending hour.
+#[component]
+pub fn PaymentRemindersSettingsPage() -> Element {
+    use_page_title("Payment Reminders");
+    if !use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: "Payment Reminders" } };
+    }
+    rsx! { PaymentRemindersBody {} }
+}
+
+#[component]
+fn PaymentRemindersBody() -> Element {
+    let resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _reachable = crate::hooks::use_server_reachable();
+        #[cfg(feature = "app")]
+        {
+            match crate::hooks::fetch::api::get_authed_typed::<Vec<SettingRow>>(
+                REMINDERS_CATEGORY_PATH,
+            )
+            .await
+            {
+                Ok(rows) => Some(ReminderSettings::from_rows(&rows)),
+                // No row yet is the unconfigured state: the server's defaults.
+                Err(e) if e.status_code() == Some(404) => Some(ReminderSettings::from_rows(&[])),
+                Err(_) => None,
+            }
+        }
+        #[cfg(not(feature = "app"))]
+        {
+            None::<ReminderSettings>
+        }
+    });
+    let snap = resource.read_unchecked();
+    let reachable = crate::hooks::use_server_reachable();
+    if matches!(*snap, Some(None)) && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Payment Reminders".to_string() }
+        };
+    }
+    rsx! {
+        PageHeader {
+            title: "Payment Reminders",
+            subtitle: "Re-send an overdue invoice to the customer on a schedule",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsPaymentReminders {} }
+            },
+        }
+        match &*snap {
+            None => rsx! {
+                crate::components::DetailSkeleton {}
+            },
+            Some(None) => rsx! {
+                Card {
+                    div { class: "py-12 text-center",
+                        p { class: "text-sm text-red-600 dark:text-red-300",
+                            "Could not load payment reminder settings. Refresh the page to retry."
+                        }
+                    }
+                }
+            },
+            Some(Some(settings)) => rsx! {
+                PaymentRemindersForm { initial: settings.clone() }
+            },
+        }
+    }
+}
+
+#[component]
+fn PaymentRemindersForm(initial: ReminderSettings) -> Element {
+    let mut enabled = use_signal(|| initial.enabled);
+    let mut schedule = use_signal(|| schedule_text(&initial.schedule));
+    let mut send_hour = use_signal(|| initial.send_hour.to_string());
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+    let mut saved = use_signal(|| false);
+    let can_mutate = crate::hooks::use_can_mutate();
+
+    let handle_save = move |_| {
+        if *saving.read() {
+            return;
+        }
+        saved.set(false);
+        let days = match parse_reminder_schedule(&schedule.read()) {
+            Ok(days) => days,
+            Err(msg) => {
+                error.set(msg);
+                return;
+            }
+        };
+        let hour = match send_hour.read().trim().parse::<u64>() {
+            Ok(h) if h <= 23 => h,
+            _ => {
+                error.set("Enter the sending hour as a whole number from 0 to 23.".to_string());
+                return;
+            }
+        };
+        let on = *enabled.read();
+        saving.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                // Three rows, three writes, the schedule first: a refused
+                // schedule then leaves the switch where it was rather than
+                // turning reminders on against the old steps.
+                let writes = [
+                    ("schedule", serde_json::json!(days)),
+                    ("send_hour", serde_json::json!(hour)),
+                    ("enabled", serde_json::json!(on)),
+                ];
+                let mut failed = None;
+                for (key, value) in writes {
+                    let path = format!("{REMINDERS_CATEGORY_PATH}/{key}");
+                    let body = serde_json::json!({ "value": value });
+                    if let Err(e) =
+                        crate::hooks::fetch::api::put_authed_typed::<SettingValueRow, _>(
+                            &path, &body,
+                        )
+                        .await
+                    {
+                        failed = Some(format!(
+                            "Could not save payment reminder settings ({key}): {}",
+                            e.user_message()
+                        ));
+                        break;
+                    }
+                }
+                match failed {
+                    Some(msg) => error.set(msg),
+                    None => {
+                        schedule.set(schedule_text(&days));
+                        saved.set(true);
+                    }
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = (&days, hour, on);
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        Card {
+            div { class: "space-y-4 p-6",
+                if saved() {
+                    div { class: "text-sm text-green-700 dark:text-green-300", "Payment reminder settings saved." }
+                }
+                if !error.read().is_empty() {
+                    ErrorBanner { "{error}" }
+                }
+                crate::components::Checkbox {
+                    name: "billing_reminders_enabled",
+                    label: "Send payment reminders",
+                    checked: enabled(),
+                    help: "Emails the invoice to its billing contact again on each step below, with the document attached.",
+                    onchange: move |e: FormEvent| {
+                        saved.set(false);
+                        enabled.set(e.checked());
+                    },
+                }
+                crate::components::Input {
+                    name: "billing_reminders_schedule",
+                    label: "Days past due",
+                    placeholder: "3, 7, 14, 30",
+                    value: schedule.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        saved.set(false);
+                        schedule.set(e.value());
+                    },
+                }
+                p { class: "text-sm text-muted",
+                    "One reminder per step, on the day the invoice is that many days past due. Up to ten steps, each between 1 and 365, in ascending order. Each step is sent once."
+                }
+                crate::components::Input {
+                    name: "billing_reminders_send_hour",
+                    label: "Sending hour (local time, 0 to 23)",
+                    r#type: "number",
+                    min: "0".to_string(),
+                    max: "23".to_string(),
+                    step: "1".to_string(),
+                    value: send_hour.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        saved.set(false);
+                        send_hour.set(e.value());
+                    },
+                }
+                p { class: "text-sm text-muted",
+                    "The hour of the tenant's day the reminder goes out, taken from the business-hours timezone."
                 }
                 div {
                     Button {
@@ -8129,6 +8445,58 @@ async fn delete_lookup(id: &str, base: &str) -> Result<bool, String> {
 // `SettingFormModal` (the shared create/edit modal chrome) now lives in
 // `crate::components` so both these editors and the rate-card editor can
 // reuse it (MAPPS-160).
+
+#[cfg(test)]
+mod reminder_schedule_tests {
+    use super::{parse_reminder_schedule, ReminderSettings, SettingRow};
+
+    /// The server's rule (PMS-1037): 1 to 10 steps, each 1..=365, ascending.
+    #[test]
+    fn the_schedule_parses_the_way_the_server_validates_it() {
+        assert_eq!(
+            parse_reminder_schedule("3, 7, 14, 30"),
+            Ok(vec![3, 7, 14, 30])
+        );
+        assert_eq!(parse_reminder_schedule(" 5 "), Ok(vec![5]));
+        assert!(parse_reminder_schedule("").is_err());
+        assert!(parse_reminder_schedule("7, 3").is_err(), "descending");
+        assert!(parse_reminder_schedule("3, 3").is_err(), "duplicate");
+        assert!(parse_reminder_schedule("0, 3").is_err(), "below one");
+        assert!(parse_reminder_schedule("3, 400").is_err(), "past a year");
+        assert!(parse_reminder_schedule("3, seven").is_err(), "not a number");
+        assert!(
+            parse_reminder_schedule("1,2,3,4,5,6,7,8,9,10,11").is_err(),
+            "eleven steps"
+        );
+    }
+
+    /// Missing rows read as the server's defaults: off, no steps, 08:00.
+    #[test]
+    fn missing_rows_read_as_the_servers_defaults() {
+        let s = ReminderSettings::from_rows(&[]);
+        assert!(!s.enabled);
+        assert!(s.schedule.is_empty());
+        assert_eq!(s.send_hour, 8);
+        let rows = [
+            SettingRow {
+                key: "enabled".into(),
+                value: serde_json::json!(true),
+            },
+            SettingRow {
+                key: "schedule".into(),
+                value: serde_json::json!([3, 7]),
+            },
+            SettingRow {
+                key: "send_hour".into(),
+                value: serde_json::json!(17),
+            },
+        ];
+        let s = ReminderSettings::from_rows(&rows);
+        assert!(s.enabled);
+        assert_eq!(s.schedule, vec![3, 7]);
+        assert_eq!(s.send_hour, 17);
+    }
+}
 
 #[cfg(test)]
 mod net_days_tests {
