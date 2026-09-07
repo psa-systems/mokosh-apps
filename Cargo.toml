@@ -157,6 +157,14 @@ features = [
     "Event",
     "MediaQueryList",
     "Performance",
+    # MAPPS-741: the article table of contents follows the reader. One
+    # IntersectionObserver over the headings inside the article body says
+    # which one is in the top band of the viewport; NodeList is what
+    # querySelectorAll answers with.
+    "IntersectionObserver",
+    "IntersectionObserverEntry",
+    "IntersectionObserverInit",
+    "NodeList",
     # MAPPS-292: unsaved-changes guard listens on window's `beforeunload`.
     "BeforeUnloadEvent",
     # MAPPS-355: auth heartbeat skips its request when the tab is hidden.

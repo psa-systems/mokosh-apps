@@ -33,8 +33,8 @@ use crate::components::{
 };
 use crate::modules::kb::{
     ArticleMeasuredDuration, CreateKbArticleRequest, CreateKbCategoryRequest, KbArticle,
-    KbArticleFeedback, KbArticleVersion, KbAttachmentResponse, KbCategory, TopTicketDrivingArticle,
-    UpdateKbArticleRequest, UpdateKbCategoryRequest,
+    KbArticleFeedback, KbArticleTicket, KbArticleVersion, KbAttachmentResponse, KbCategory,
+    TopTicketDrivingArticle, UpdateKbArticleRequest, UpdateKbCategoryRequest,
 };
 use crate::utils::url::urlencoding_minimal;
 use crate::utils::{FormGuard, Paginated, Rule};
@@ -1688,53 +1688,59 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                 let src = content.clone();
                                 let aid = props.id.clone();
                                 rsx! {
-                                    crate::components::Markdown {
-                                        class: "mt-4 {prose_density}",
-                                        content: content.clone(),
-                                        // A toggle PUTs the whole body, so drop
-                                        // interactivity while the server is
-                                        // unreachable rather than letting the
-                                        // write fail silently (MAPPS-357's rule,
-                                        // matching the ticket page).
-                                        interactive: can_mutate,
-                                        on_toggle: move |i: usize| {
-                                            let Some(next) = crate::utils::markdown::toggle_task(&src, i) else {
-                                                return;
-                                            };
-                                            let aid = aid.clone();
-                                            let mut ar = article_resource;
-                                            spawn(async move {
-                                                #[cfg(feature = "app")]
-                                                {
-                                                    let body = serde_json::json!({ "content": next });
-                                                    let path = format!("/kb/articles/{aid}");
-                                                    match crate::hooks::fetch::api::put_authed_typed::<
-                                                        serde_json::Value,
-                                                        _,
-                                                    >(&path, &body)
-                                                        .await
+                                    // MAPPS-741: the root the heading watcher and the
+                                    // table of contents share. Its id has an
+                                    // upper-case letter, which no heading slug
+                                    // can produce, so it never collides with one.
+                                    div { id: KB_ARTICLE_BODY_ID,
+                                        crate::components::Markdown {
+                                            class: "mt-4 {prose_density}",
+                                            content: content.clone(),
+                                            // A toggle PUTs the whole body, so drop
+                                            // interactivity while the server is
+                                            // unreachable rather than letting the
+                                            // write fail silently (MAPPS-357's rule,
+                                            // matching the ticket page).
+                                            interactive: can_mutate,
+                                            on_toggle: move |i: usize| {
+                                                let Some(next) = crate::utils::markdown::toggle_task(&src, i) else {
+                                                    return;
+                                                };
+                                                let aid = aid.clone();
+                                                let mut ar = article_resource;
+                                                spawn(async move {
+                                                    #[cfg(feature = "app")]
                                                     {
-                                                        Ok(_) => ar.restart(),
-                                                        Err(e) => {
-                                                            // The box has already flipped in the
-                                                            // DOM, so a silent failure leaves the
-                                                            // reader believing it saved. Say so,
-                                                            // then re-fetch to put it back.
-                                                            crate::hooks::toast::push_toast(
-                                                                crate::components::AlertType::Error,
-                                                                format!(
-                                                                    "Could not save that change: {}",
-                                                                    e.user_message()
-                                                                ),
-                                                            );
-                                                            ar.restart();
+                                                        let body = serde_json::json!({ "content": next });
+                                                        let path = format!("/kb/articles/{aid}");
+                                                        match crate::hooks::fetch::api::put_authed_typed::<
+                                                            serde_json::Value,
+                                                            _,
+                                                        >(&path, &body)
+                                                            .await
+                                                        {
+                                                            Ok(_) => ar.restart(),
+                                                            Err(e) => {
+                                                                // The box has already flipped in the
+                                                                // DOM, so a silent failure leaves the
+                                                                // reader believing it saved. Say so,
+                                                                // then re-fetch to put it back.
+                                                                crate::hooks::toast::push_toast(
+                                                                    crate::components::AlertType::Error,
+                                                                    format!(
+                                                                        "Could not save that change: {}",
+                                                                        e.user_message()
+                                                                    ),
+                                                                );
+                                                                ar.restart();
+                                                            }
                                                         }
                                                     }
-                                                }
-                                                #[cfg(not(feature = "app"))]
-                                                let _ = (&aid, &mut ar);
-                                            });
-                                        },
+                                                    #[cfg(not(feature = "app"))]
+                                                    let _ = (&aid, &mut ar);
+                                                });
+                                            },
+                                        }
                                     }
                                 }
                             }
@@ -1770,6 +1776,15 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                             // history because it is the number the person
                             // about to do the work came here for.
                             MeasuredDurationCard { article_id: props.id.clone() }
+                            // MAPPS-741: which tickets lean on this article.
+                            // Staff only: the route refuses a contact bearer.
+                            if !is_contact {
+                                LinkedTicketsCard { article_id: props.id.clone() }
+                            }
+                            // MAPPS-741: the article's own headings, following
+                            // the reader; above the history because it is about
+                            // the text being read, not about its past.
+                            ArticleToc { content: article.content.clone() }
                             // MAPPS-739: the history names staff; a contact
                             // session has no read on it (the route refuses a
                             // contact bearer) so it is not rendered there.
@@ -1862,6 +1877,170 @@ fn MeasuredDurationCard(article_id: String) -> Element {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// MAPPS-741: the id on the wrapper around the rendered article body, the
+/// root the heading watcher observes inside. Upper-case on purpose: a
+/// heading slug is lower-case, so no heading can carry this id.
+const KB_ARTICLE_BODY_ID: &str = "kbArticleBody";
+
+/// MAPPS-741: the table of contents, from the article's own headings,
+/// nested by level, the current section marked, click to jump.
+///
+/// The list is a function of the Markdown (`utils::markdown::headings`,
+/// the same pass the renderer assigns ids from), so it agrees with the
+/// ids in the document by construction and survives any edit that leaves
+/// a heading alone. The current section comes from
+/// `platform::dom::watch_active_heading`, re-installed whenever the body
+/// re-renders. The mark is a left border AND a weight change, and the link
+/// carries `aria-current`, so it is not colour alone. A jump is an instant
+/// `scrollIntoView`, which is what `prefers-reduced-motion` asks for and
+/// costs nothing to honour. Nothing renders for an article with no
+/// headings: an empty "On this page" would say the article has no shape.
+#[component]
+fn ArticleToc(content: String) -> Element {
+    let headings = crate::utils::markdown::headings(&content);
+    let mut active = use_signal(|| None::<String>);
+    #[cfg(feature = "app")]
+    {
+        let on_active = EventHandler::new(move |id: String| active.set(Some(id)));
+        let body = content.clone();
+        use_effect(use_reactive!(|body| {
+            // The body is the dependency: a different body means different
+            // headings in the document, so the observer is rebuilt.
+            let _ = body.len();
+            crate::platform::dom::watch_active_heading(KB_ARTICLE_BODY_ID, on_active);
+        }));
+    }
+    if headings.is_empty() {
+        return rsx! {};
+    }
+    let min_level = headings.iter().map(|h| h.level).min().unwrap_or(1);
+    rsx! {
+        div { class: "rounded border border-line",
+            p { class: "px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted border-b border-line",
+                "On this page"
+            }
+            nav { "aria-label": "Table of contents", class: "py-1",
+                ul { class: "text-xs",
+                    for h in headings.iter() {
+                        {
+                            let id = crate::utils::markdown::heading_dom_id(&h.slug);
+                            let is_active = active.read().as_deref() == Some(id.as_str());
+                            let indent = toc_indent_rem(h.level, min_level);
+                            let cls = if is_active {
+                                "border-l-2 border-accent font-medium text-content"
+                            } else {
+                                "border-l-2 border-transparent text-muted hover:text-content"
+                            };
+                            let jump_to = id.clone();
+                            let text = h.text.clone();
+                            rsx! {
+                                li { key: "{id}",
+                                    a {
+                                        href: "#{id}",
+                                        class: "block py-1 pr-3 {cls}",
+                                        style: "padding-left: {indent}rem",
+                                        "aria-current": if is_active { "true" } else { "false" },
+                                        onclick: move |e: MouseEvent| {
+                                            // The router must not see a hash
+                                            // navigation; the jump is ours.
+                                            e.prevent_default();
+                                            crate::platform::dom::scroll_into_view(&jump_to, true);
+                                            active.set(Some(jump_to.clone()));
+                                        },
+                                        "{text}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// MAPPS-741: how far a heading is indented for its level, in rem, with
+/// the shallowest level in the article flush against the card's padding
+/// so an article that starts at `##` does not open with a gap.
+fn toc_indent_rem(level: u8, min_level: u8) -> f32 {
+    0.75 + 0.75 * f32::from(level.saturating_sub(min_level))
+}
+
+/// MAPPS-741: what a linked ticket's relation to the article means.
+fn relation_label(relation: &str) -> &str {
+    match relation {
+        "source" => "Opened from this article",
+        "procedure" => "Works this procedure",
+        other => other,
+    }
+}
+
+/// MAPPS-741: the tickets that reference this article (PMS-1127), open
+/// first as the server lists them. A closed ticket keeps its link and its
+/// text, de-emphasised and with the key struck through; the panel is
+/// about whether the article is load-bearing, and a closed ticket is
+/// still evidence that it was.
+#[component]
+fn LinkedTicketsCard(article_id: String) -> Element {
+    let tickets = use_resource(use_reactive!(|article_id| async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_all_authed::<KbArticleTicket>(&format!(
+            "/kb/articles/{article_id}/tickets"
+        ))
+        .await
+        .inspect_err(|e| tracing::error!("kb linked tickets load failed for {article_id}: {e}"))
+        .ok()
+    }));
+    let snap = tickets.read_unchecked();
+    rsx! {
+        Card { title: "Linked tickets",
+            match &*snap {
+                None => rsx! {
+                    p { class: "text-xs text-subtle", "Loading…" }
+                },
+                Some(None) => rsx! {
+                    p { class: "text-xs text-red-600 dark:text-red-300", "Could not load linked tickets." }
+                },
+                Some(Some(rows)) if rows.is_empty() => rsx! {
+                    p { class: "text-xs text-subtle", "No ticket references this article yet." }
+                },
+                Some(Some(rows)) => rsx! {
+                    ul { class: "divide-y divide-line -my-2",
+                        for t in rows.iter() {
+                            {
+                                let key = t.id.to_string();
+                                let closed = t.status_is_closed;
+                                let key_class = if closed {
+                                    "font-medium text-muted line-through hover:text-content"
+                                } else {
+                                    "font-medium text-accent hover:opacity-90"
+                                };
+                                let title_class = if closed { "text-subtle truncate" } else { "text-content truncate" };
+                                let relation = relation_label(&t.relation).to_string();
+                                let variant = crate::components::ticket_status_badge(&t.status);
+                                rsx! {
+                                    li { key: "{key}", class: "py-2 text-xs",
+                                        div { class: "flex items-center justify-between gap-2",
+                                            Link {
+                                                to: Route::TicketDetail { id: t.id.to_string() },
+                                                class: "{key_class}",
+                                                "{t.ticket_number}"
+                                            }
+                                            Badge { variant, "{t.status}" }
+                                        }
+                                        p { class: "mt-0.5 {title_class}", "{t.title}" }
+                                        p { class: "text-subtle", "{relation}" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
             }
         }
     }
@@ -4813,6 +4992,95 @@ mod mapps739_history_tests {
         assert!(
             head.contains("if !is_contact {\n                                VersionHistoryCard {"),
             "the history is not rendered on a contact session"
+        );
+    }
+}
+
+/// MAPPS-741: the table of contents and the linked tickets panel.
+#[cfg(test)]
+mod mapps741_rail_tests {
+    use super::{relation_label, toc_indent_rem, KB_ARTICLE_BODY_ID};
+
+    fn head() -> &'static str {
+        let src = include_str!("knowledge_base.rs");
+        &src[..src.find("mod mapps741_rail_tests").expect("this module")]
+    }
+
+    #[test]
+    fn the_shallowest_heading_is_flush_and_each_level_steps_in() {
+        assert_eq!(toc_indent_rem(2, 2), 0.75);
+        assert_eq!(toc_indent_rem(3, 2), 1.5);
+        assert_eq!(
+            toc_indent_rem(1, 2),
+            0.75,
+            "a level above the minimum does not go negative"
+        );
+    }
+
+    #[test]
+    fn a_relation_reads_as_what_it_means() {
+        assert_eq!(relation_label("source"), "Opened from this article");
+        assert_eq!(relation_label("procedure"), "Works this procedure");
+        assert_eq!(relation_label("other"), "other");
+    }
+
+    /// The body wrapper's id cannot be a heading id (slugs are lower-case),
+    /// the watcher observes inside it, and the contents link marks the
+    /// current section with more than colour.
+    #[test]
+    fn the_toc_follows_the_body_it_wraps() {
+        let head = head();
+        assert!(KB_ARTICLE_BODY_ID.chars().any(|c| c.is_ascii_uppercase()));
+        assert!(
+            head.contains("div { id: KB_ARTICLE_BODY_ID,"),
+            "the body renders inside the root"
+        );
+        assert!(
+            head.contains(
+                "crate::platform::dom::watch_active_heading(KB_ARTICLE_BODY_ID, on_active);"
+            ),
+            "the watcher observes that root"
+        );
+        let toc = &head[head.find("fn ArticleToc(").expect("the toc")..];
+        let toc = &toc[..toc.find("fn toc_indent_rem(").expect("end")];
+        assert!(toc.contains("\"aria-current\": if is_active { \"true\" } else { \"false\" },"));
+        assert!(
+            toc.contains("\"border-l-2 border-accent font-medium text-content\""),
+            "border and weight, not colour alone"
+        );
+        assert!(
+            toc.contains("e.prevent_default();"),
+            "the router stays out of a hash jump"
+        );
+        assert!(
+            toc.contains("if headings.is_empty() {\n        return rsx! {};"),
+            "no empty contents card"
+        );
+    }
+
+    /// The rail order and the contact gate: linked tickets is staff only,
+    /// the contents sit above the history.
+    #[test]
+    fn the_rail_gates_the_tickets_and_orders_the_cards() {
+        let head = head();
+        let rail = &head[head
+            .find("MeasuredDurationCard { article_id: props.id.clone() }")
+            .expect("rail")..];
+        let tickets = rail
+            .find("LinkedTicketsCard { article_id: props.id.clone() }")
+            .expect("tickets card");
+        let toc = rail
+            .find("ArticleToc { content: article.content.clone() }")
+            .expect("toc");
+        let versions = rail.find("VersionHistoryCard {").expect("versions");
+        assert!(
+            tickets < toc && toc < versions,
+            "tickets, contents, versions"
+        );
+        let before_tickets = &rail[..tickets];
+        assert!(
+            before_tickets.trim_end().ends_with("if !is_contact {"),
+            "tickets are staff only: {before_tickets}"
         );
     }
 }
