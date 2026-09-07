@@ -1688,53 +1688,59 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                 let src = content.clone();
                                 let aid = props.id.clone();
                                 rsx! {
-                                    crate::components::Markdown {
-                                        class: "mt-4 {prose_density}",
-                                        content: content.clone(),
-                                        // A toggle PUTs the whole body, so drop
-                                        // interactivity while the server is
-                                        // unreachable rather than letting the
-                                        // write fail silently (MAPPS-357's rule,
-                                        // matching the ticket page).
-                                        interactive: can_mutate,
-                                        on_toggle: move |i: usize| {
-                                            let Some(next) = crate::utils::markdown::toggle_task(&src, i) else {
-                                                return;
-                                            };
-                                            let aid = aid.clone();
-                                            let mut ar = article_resource;
-                                            spawn(async move {
-                                                #[cfg(feature = "app")]
-                                                {
-                                                    let body = serde_json::json!({ "content": next });
-                                                    let path = format!("/kb/articles/{aid}");
-                                                    match crate::hooks::fetch::api::put_authed_typed::<
-                                                        serde_json::Value,
-                                                        _,
-                                                    >(&path, &body)
-                                                        .await
+                                    // MAPPS-741: the root the heading watcher and the
+                                    // table of contents share. Its id has an
+                                    // upper-case letter, which no heading slug
+                                    // can produce, so it never collides with one.
+                                    div { id: KB_ARTICLE_BODY_ID,
+                                        crate::components::Markdown {
+                                            class: "mt-4 {prose_density}",
+                                            content: content.clone(),
+                                            // A toggle PUTs the whole body, so drop
+                                            // interactivity while the server is
+                                            // unreachable rather than letting the
+                                            // write fail silently (MAPPS-357's rule,
+                                            // matching the ticket page).
+                                            interactive: can_mutate,
+                                            on_toggle: move |i: usize| {
+                                                let Some(next) = crate::utils::markdown::toggle_task(&src, i) else {
+                                                    return;
+                                                };
+                                                let aid = aid.clone();
+                                                let mut ar = article_resource;
+                                                spawn(async move {
+                                                    #[cfg(feature = "app")]
                                                     {
-                                                        Ok(_) => ar.restart(),
-                                                        Err(e) => {
-                                                            // The box has already flipped in the
-                                                            // DOM, so a silent failure leaves the
-                                                            // reader believing it saved. Say so,
-                                                            // then re-fetch to put it back.
-                                                            crate::hooks::toast::push_toast(
-                                                                crate::components::AlertType::Error,
-                                                                format!(
-                                                                    "Could not save that change: {}",
-                                                                    e.user_message()
-                                                                ),
-                                                            );
-                                                            ar.restart();
+                                                        let body = serde_json::json!({ "content": next });
+                                                        let path = format!("/kb/articles/{aid}");
+                                                        match crate::hooks::fetch::api::put_authed_typed::<
+                                                            serde_json::Value,
+                                                            _,
+                                                        >(&path, &body)
+                                                            .await
+                                                        {
+                                                            Ok(_) => ar.restart(),
+                                                            Err(e) => {
+                                                                // The box has already flipped in the
+                                                                // DOM, so a silent failure leaves the
+                                                                // reader believing it saved. Say so,
+                                                                // then re-fetch to put it back.
+                                                                crate::hooks::toast::push_toast(
+                                                                    crate::components::AlertType::Error,
+                                                                    format!(
+                                                                        "Could not save that change: {}",
+                                                                        e.user_message()
+                                                                    ),
+                                                                );
+                                                                ar.restart();
+                                                            }
                                                         }
                                                     }
-                                                }
-                                                #[cfg(not(feature = "app"))]
-                                                let _ = (&aid, &mut ar);
-                                            });
-                                        },
+                                                    #[cfg(not(feature = "app"))]
+                                                    let _ = (&aid, &mut ar);
+                                                });
+                                            },
+                                        }
                                     }
                                 }
                             }
@@ -1770,6 +1776,10 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                             // history because it is the number the person
                             // about to do the work came here for.
                             MeasuredDurationCard { article_id: props.id.clone() }
+                            // MAPPS-741: the article's own headings, following
+                            // the reader; above the history because it is about
+                            // the text being read, not about its past.
+                            ArticleToc { content: article.content.clone() }
                             // MAPPS-739: the history names staff; a contact
                             // session has no read on it (the route refuses a
                             // contact bearer) so it is not rendered there.
@@ -1865,6 +1875,95 @@ fn MeasuredDurationCard(article_id: String) -> Element {
             }
         }
     }
+}
+
+/// MAPPS-741: the id on the wrapper around the rendered article body, the
+/// root the heading watcher observes inside. Upper-case on purpose: a
+/// heading slug is lower-case, so no heading can carry this id.
+const KB_ARTICLE_BODY_ID: &str = "kbArticleBody";
+
+/// MAPPS-741: the table of contents, from the article's own headings,
+/// nested by level, the current section marked, click to jump.
+///
+/// The list is a function of the Markdown (`utils::markdown::headings`,
+/// the same pass the renderer assigns ids from), so it agrees with the
+/// ids in the document by construction and survives any edit that leaves
+/// a heading alone. The current section comes from
+/// `platform::dom::watch_active_heading`, re-installed whenever the body
+/// re-renders. The mark is a left border AND a weight change, and the link
+/// carries `aria-current`, so it is not colour alone. A jump is an instant
+/// `scrollIntoView`, which is what `prefers-reduced-motion` asks for and
+/// costs nothing to honour. Nothing renders for an article with no
+/// headings: an empty "On this page" would say the article has no shape.
+#[component]
+fn ArticleToc(content: String) -> Element {
+    let headings = crate::utils::markdown::headings(&content);
+    let mut active = use_signal(|| None::<String>);
+    #[cfg(feature = "app")]
+    {
+        let on_active = EventHandler::new(move |id: String| active.set(Some(id)));
+        let body = content.clone();
+        use_effect(use_reactive!(|body| {
+            // The body is the dependency: a different body means different
+            // headings in the document, so the observer is rebuilt.
+            let _ = body.len();
+            crate::platform::dom::watch_active_heading(KB_ARTICLE_BODY_ID, on_active);
+        }));
+    }
+    if headings.is_empty() {
+        return rsx! {};
+    }
+    let min_level = headings.iter().map(|h| h.level).min().unwrap_or(1);
+    rsx! {
+        div { class: "rounded border border-line",
+            p { class: "px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted border-b border-line",
+                "On this page"
+            }
+            nav { "aria-label": "Table of contents", class: "py-1",
+                ul { class: "text-xs",
+                    for h in headings.iter() {
+                        {
+                            let id = crate::utils::markdown::heading_dom_id(&h.slug);
+                            let is_active = active.read().as_deref() == Some(id.as_str());
+                            let indent = toc_indent_rem(h.level, min_level);
+                            let cls = if is_active {
+                                "border-l-2 border-accent font-medium text-content"
+                            } else {
+                                "border-l-2 border-transparent text-muted hover:text-content"
+                            };
+                            let jump_to = id.clone();
+                            let text = h.text.clone();
+                            rsx! {
+                                li { key: "{id}",
+                                    a {
+                                        href: "#{id}",
+                                        class: "block py-1 pr-3 {cls}",
+                                        style: "padding-left: {indent}rem",
+                                        "aria-current": if is_active { "true" } else { "false" },
+                                        onclick: move |e: MouseEvent| {
+                                            // The router must not see a hash
+                                            // navigation; the jump is ours.
+                                            e.prevent_default();
+                                            crate::platform::dom::scroll_into_view(&jump_to, true);
+                                            active.set(Some(jump_to.clone()));
+                                        },
+                                        "{text}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// MAPPS-741: how far a heading is indented for its level, in rem, with
+/// the shallowest level in the article flush against the card's padding
+/// so an article that starts at `##` does not open with a gap.
+fn toc_indent_rem(level: u8, min_level: u8) -> f32 {
+    0.75 + 0.75 * f32::from(level.saturating_sub(min_level))
 }
 
 /// MAPPS-739: what a version row leads with.
