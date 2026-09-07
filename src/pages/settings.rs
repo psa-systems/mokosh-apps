@@ -8318,6 +8318,7 @@ mod tests {
             background_url,
             background_mime,
             display_name,
+            invoice_template,
         } = branding;
         let _ = TenantView {
             name,
@@ -8362,6 +8363,9 @@ mod tests {
             background_url,
             background_mime,
             display_name,
+            // PMS-1006 / MAPPS-726: the invoice template key. Its editor is
+            // the invoice settings surface, not this form.
+            invoice_template,
         );
     }
 
