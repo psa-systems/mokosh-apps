@@ -178,6 +178,15 @@ pub fn ThemePicker() -> Element {
                         }
                     }
                 }
+                // MAPPS-740: Danger buttons are a fixed red, not the accent,
+                // so this is the one accent under which a primary action
+                // and a destructive one look alike. Said here, where it is
+                // chosen, rather than discovered on a Delete button.
+                if accent_id() == "red" {
+                    p { class: "text-xs text-subtle",
+                        "Red is also the colour of destructive actions, so Save and Delete will look alike with this accent."
+                    }
+                }
             }
 
             // Live preview (reads the same tokens the whole app does).
