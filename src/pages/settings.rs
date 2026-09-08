@@ -988,9 +988,12 @@ struct TenantView {
     branding: BrandingView,
 }
 
-/// The subset of `TenantBranding` these pages read. Everything else it declares
-/// (colours, favicon, portal domain) is unread by any surface today, so it is
-/// deliberately not deserialised here and not shown.
+/// The subset of `TenantBranding` these pages read. Everything else it
+/// declares (favicon, portal domain, the MAPPS-619 paint keys) is unread by
+/// this surface and deliberately not deserialised here; `primary_color` is
+/// the exception, because PMS-1006's Modern invoice template paints its
+/// header band with it, so it is edited here alongside the rest of the
+/// invoice identity.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 struct BrandingView {
     #[serde(default)]
@@ -1009,6 +1012,20 @@ struct BrandingView {
     tax_id: Option<String>,
     #[serde(default)]
     postal_address: Option<String>,
+    /// PMS-896: the organisation's own web address, printed on the invoice
+    /// alongside the rest of the issuer identity.
+    #[serde(default)]
+    website: Option<String>,
+    /// PMS-1006: the Modern template's header band colour. A hex string like
+    /// `#0066cc`; unset renders the band in the template's own default.
+    #[serde(default)]
+    primary_color: Option<String>,
+    /// PMS-1006: which of the three document templates this tenant's
+    /// invoices, credit notes and statements render with. Always sent as one
+    /// of `classic`, `modern` or `compact`, never cleared to null: the picker
+    /// always has a selection.
+    #[serde(default)]
+    invoice_template: Option<String>,
     /// Read to render the current logo. Never sent: the upload and the delete
     /// own this key, and PMS-758 is what happens when one writer overwrites
     /// another's half of the document.
@@ -1016,12 +1033,36 @@ struct BrandingView {
     logo_url: Option<String>,
 }
 
-/// PMS-911 bounds, mirrored from `validate_branding_value_as` on mokosh-server
-/// so an over-long value is refused in the field rather than by a 422.
+/// PMS-911 / PMS-896 / PMS-1006 bounds, mirrored from
+/// `validate_branding_value_as` on mokosh-server so an over-long value is
+/// refused in the field rather than by a 422.
 const MAX_LEGAL_NAME: i64 = 120;
 const MAX_TAX_ID: i64 = 60;
 const MAX_POSTAL_ADDRESS: i64 = 300;
 const MAX_POSTAL_ADDRESS_LINES: usize = 6;
+const MAX_WEBSITE: i64 = 255;
+const MAX_PRIMARY_COLOR: i64 = 7;
+
+/// The three keys `branding.invoice_template` accepts, in the order the
+/// picker offers them, paired with the sentence describing each look
+/// (mirrors `pdf::Template` on mokosh-server).
+const INVOICE_TEMPLATES: [(&str, &str, &str); 3] = [
+    (
+        "classic",
+        "Classic",
+        "The current look: black text, a plain table, totals as simple label/value rows. Every invoice sent before templates existed.",
+    ),
+    (
+        "modern",
+        "Modern",
+        "A coloured band across the top in your brand colour, From and Bill To side by side, right-aligned totals in a bordered block.",
+    ),
+    (
+        "compact",
+        "Compact",
+        "Smaller type and tighter spacing so a long line-item invoice still fits one page, with rules instead of shading.",
+    ),
+];
 
 /// The one bound `maxlength` cannot express: the server holds a postal address
 /// to six lines as well as 300 characters. `\r` is folded away there, so it is
@@ -1271,6 +1312,15 @@ fn OrganizationSettingsBody() -> Element {
     let mut tax_id = use_signal(String::new);
     let mut postal_address = use_signal(String::new);
     let mut postal_address_error = use_signal(String::new);
+    let mut website = use_signal(String::new);
+    let mut website_error = use_signal(String::new);
+    // PMS-1006: the Modern template's header band colour, and which of the
+    // three templates this tenant's documents render with. `invoice_template`
+    // always holds one of the three keys once seeded, so the picker always
+    // shows a selection.
+    let mut primary_color = use_signal(String::new);
+    let mut primary_color_error = use_signal(String::new);
+    let mut invoice_template = use_signal(|| "classic".to_string());
     let mut logo_url = use_signal(|| None::<String>);
     let mut logo_busy = use_signal(|| false);
     // PMS-758: reported next to the file input rather than in the form banner
@@ -1315,6 +1365,14 @@ fn OrganizationSettingsBody() -> Element {
             legal_name.set(t.branding.legal_name.clone().unwrap_or_default());
             tax_id.set(t.branding.tax_id.clone().unwrap_or_default());
             postal_address.set(t.branding.postal_address.clone().unwrap_or_default());
+            website.set(t.branding.website.clone().unwrap_or_default());
+            primary_color.set(t.branding.primary_color.clone().unwrap_or_default());
+            invoice_template.set(
+                t.branding
+                    .invoice_template
+                    .clone()
+                    .unwrap_or_else(|| "classic".to_string()),
+            );
             logo_url.set(t.branding.logo_url.clone());
         }
         seeded.set(true);
@@ -1335,6 +1393,8 @@ fn OrganizationSettingsBody() -> Element {
         error.set(String::new());
         name_error.set(String::new());
         postal_address_error.set(String::new());
+        website_error.set(String::new());
+        primary_color_error.set(String::new());
 
         let trimmed = name.read().trim().to_string();
         // The server enforces 1..=255; checking here keeps a blank submit from
@@ -1375,6 +1435,9 @@ fn OrganizationSettingsBody() -> Element {
                             legal_name: optional_text(&legal_name.read()),
                             tax_id: optional_text(&tax_id.read()),
                             postal_address: optional_text(&postal_address.read()),
+                            website: optional_text(&website.read()),
+                            primary_color: optional_text(&primary_color.read()),
+                            invoice_template: Some(invoice_template.read().clone()),
                             logo_url: None,
                         },
                     },
@@ -1396,15 +1459,18 @@ fn OrganizationSettingsBody() -> Element {
                     Err(err) => {
                         crate::hooks::push_api_error(&err);
                         // The server names a rejected branding key
-                        // `branding.{key}`; hang the address message on the
-                        // field rather than only in the banner at the top.
-                        match (
-                            err.field_message("name"),
-                            err.field_message("branding.postal_address"),
-                        ) {
-                            (Some(m), _) => name_error.set(m),
-                            (None, Some(m)) => postal_address_error.set(m),
-                            (None, None) => error.set(err.user_message()),
+                        // `branding.{key}`; hang the message on the field
+                        // rather than only in the banner at the top.
+                        if let Some(m) = err.field_message("name") {
+                            name_error.set(m);
+                        } else if let Some(m) = err.field_message("branding.postal_address") {
+                            postal_address_error.set(m);
+                        } else if let Some(m) = err.field_message("branding.website") {
+                            website_error.set(m);
+                        } else if let Some(m) = err.field_message("branding.primary_color") {
+                            primary_color_error.set(m);
+                        } else {
+                            error.set(err.user_message());
                         }
                     }
                 }
@@ -1514,6 +1580,65 @@ fn OrganizationSettingsBody() -> Element {
                         postal_address_error.set(String::new());
                         postal_address.set(e.value());
                     },
+                }
+
+                Input {
+                    name: "website",
+                    label: "Website",
+                    r#type: "url".to_string(),
+                    value: website(),
+                    maxlength: MAX_WEBSITE,
+                    disabled: is_loading || saving(),
+                    error: website_error(),
+                    help: "Optional. Printed on your invoices. Needs the scheme, like https://acme.example.".to_string(),
+                    oninput: move |e: FormEvent| {
+                        website_error.set(String::new());
+                        website.set(e.value());
+                    },
+                }
+
+                Input {
+                    name: "primary_color",
+                    label: "Brand color",
+                    value: primary_color(),
+                    maxlength: MAX_PRIMARY_COLOR,
+                    disabled: is_loading || saving(),
+                    error: primary_color_error(),
+                    help: "Optional. A hex colour like #0066cc, used for the header band on the Modern invoice template below.".to_string(),
+                    oninput: move |e: FormEvent| {
+                        primary_color_error.set(String::new());
+                        primary_color.set(e.value());
+                    },
+                }
+
+                // PMS-1006: which of the three document templates this
+                // tenant's invoices, credit notes and statements render
+                // with. No live preview here: there is no invoice in scope
+                // on this page, and a made-up sample would misrepresent the
+                // MSP's own data. The real preview is on a draft invoice
+                // itself (`src/pages/billing.rs`).
+                fieldset { class: "space-y-3",
+                    legend { class: "block text-sm font-medium text-content",
+                        "Invoice template"
+                    }
+                    for (key , label , description) in INVOICE_TEMPLATES {
+                        label {
+                            key: "{key}",
+                            class: "flex items-start gap-2 text-sm text-content",
+                            input {
+                                r#type: "radio",
+                                name: "invoice_template",
+                                value: "{key}",
+                                checked: invoice_template() == key,
+                                disabled: is_loading || saving(),
+                                onchange: move |_| invoice_template.set(key.to_string()),
+                            }
+                            div {
+                                span { class: "font-medium", "{label}" }
+                                p { class: "text-muted", "{description}" }
+                            }
+                        }
+                    }
                 }
 
                 // MAPPS-429: the logo uploads on selection rather than on Save.
@@ -8735,14 +8860,18 @@ mod tests {
                 legal_name,
                 tax_id,
                 postal_address,
+                website,
+                primary_color,
+                invoice_template,
                 logo_url,
             },
         };
         // Carried by the response but not rendered here: the tenant's identity
         // and lifecycle belong to the super-admin list (`admin.rs`), the
-        // billing contact to the billing surfaces, and the branding keys below
-        // are unread by any surface today (see `BrandingView`). `logo_mime` is
-        // the upload's half of the document, never this form's.
+        // billing contact to the billing surfaces, and the paint keys below
+        // (`secondary_color` and the rest) are unread by this form; their
+        // editor is the branding page (MAPPS-619). `logo_mime` is the
+        // upload's half of the document, never this form's.
         let _ = (
             id,
             slug,
@@ -8755,10 +8884,8 @@ mod tests {
             created_at,
             logo_mime,
             favicon_url,
-            primary_color,
             secondary_color,
             company_name,
-            website,
             portal_domain,
             // MAPPS-619 paint keys. Their editor is the branding page, not
             // this form, and `favicon_mime` / `background_mime` are the
@@ -8769,9 +8896,6 @@ mod tests {
             background_url,
             background_mime,
             display_name,
-            // PMS-1006 / MAPPS-726: the invoice template key. Its editor is
-            // the invoice settings surface, not this form.
-            invoice_template,
         );
     }
 

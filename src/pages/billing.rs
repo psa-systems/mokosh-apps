@@ -1256,6 +1256,11 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     let id_for_write_off = props.id.clone();
     let mut busy = use_signal(|| false);
     let mut action_error = use_signal(String::new);
+    // MAPPS-672: which template to render the draft preview under. Empty
+    // means the tenant's own setting (no `?template=` sent), matching the
+    // preview before this control existed. PMS-1006 honours `?template=`
+    // only while the invoice is still editable.
+    let mut preview_template = use_signal(String::new);
     // MAPPS-668 (P1c): Pay Now click state. `pay_saving` gates the button
     // while the checkout-session round trip is in flight; `pay_error`
     // surfaces a failure inline the way `action_error` and `pdf_error`
@@ -1742,8 +1747,34 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                 // unconditionally.
                 if can_download_pdf {
                     if let Some(inv) = invoice.as_ref() {
+                        // MAPPS-672: on a draft, try another template before
+                        // committing to it in settings. No live render here
+                        // either: `?template=` asks the server to render the
+                        // invoice's own data under the named template, which
+                        // is PMS-1006's whole point. Nothing is saved by
+                        // picking one; the tenant-wide choice is still made
+                        // on the organization settings page.
+                        if editable {
+                            crate::components::Select {
+                                name: "invoice_preview_template",
+                                label: "Preview template".to_string(),
+                                options: vec![
+                                    crate::components::SelectOption::new("", "Your current template"),
+                                    crate::components::SelectOption::new("classic", "Classic"),
+                                    crate::components::SelectOption::new("modern", "Modern"),
+                                    crate::components::SelectOption::new("compact", "Compact"),
+                                ],
+                                value: preview_template(),
+                                help: "Renders this draft under another template without saving anything.".to_string(),
+                                onchange: move |e: FormEvent| preview_template.set(e.value()),
+                            }
+                        }
                         crate::components::DownloadButton {
-                            path: format!("/invoices/{}/pdf", props.id),
+                            path: if editable && !preview_template.read().is_empty() {
+                                format!("/invoices/{}/pdf?template={}", props.id, preview_template())
+                            } else {
+                                format!("/invoices/{}/pdf", props.id)
+                            },
                             fallback_name: format!("{}.pdf", inv.invoice_number),
                             what: "the invoice PDF".to_string(),
                             label: if editable { "Preview PDF".to_string() } else { "Download PDF".to_string() },
