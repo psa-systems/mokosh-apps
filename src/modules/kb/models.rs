@@ -91,6 +91,53 @@ pub struct KbArticle {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
+/// `KbCommentResponse` (PMS-1128): one comment, with its replies nested when
+/// it is a root. A deleted comment keeps its place with `deleted: true` and
+/// an empty body.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct KbComment {
+    pub id: Uuid,
+    pub article_id: Uuid,
+    #[serde(default)]
+    pub parent_id: Option<Uuid>,
+    pub author_id: Uuid,
+    #[serde(default)]
+    pub author_name: String,
+    #[serde(default)]
+    pub author_avatar_url: Option<String>,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub anchor: Option<serde_json::Value>,
+    #[serde(default)]
+    pub anchor_version: Option<i32>,
+    pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub edited_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub resolved_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub resolved_by_name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+    #[serde(default)]
+    pub replies: Vec<KbComment>,
+}
+
+/// `POST /kb/articles/{id}/comments` (PMS-1128).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct CreateKbCommentRequest {
+    pub body: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<Uuid>,
+}
+
+/// `PUT /kb/comments/{id}` (PMS-1128).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct UpdateKbCommentRequest {
+    pub body: String,
+}
+
 /// `KbArticleTicketRow` (PMS-1127): a ticket that references the article,
 /// from `GET /kb/articles/{id}/tickets`. `relation` is `source` (opened
 /// from the article) or `procedure` (the article says how to work it).
