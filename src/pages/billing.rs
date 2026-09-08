@@ -1067,6 +1067,38 @@ fn invoice_send_path(id: &str) -> String {
 }
 
 /// Invoice detail page. GET `/invoices/{id}` with `lines` populated.
+/// MAPPS-643: what the page says in place of Edit, Cancel and Void once an
+/// invoice is sent. One sentence per state, in the reader's order: what
+/// the invoice is now, why nothing on it can change, then what they can do
+/// from this page. The earlier wording opened with "finalized record", said
+/// "cancelled, or voided" for one thing, and put the actions last.
+///
+/// The actions named are the ones on this page: Record Payment and Write
+/// off in the header (write-off is finance only, so it is offered as a
+/// possibility rather than a button), and the Credit Notes card below. A
+/// written-off invoice's late payment is a recovery (PMS-1036), so that
+/// state says so instead of "cannot be reinstated".
+pub(crate) fn locked_invoice_note(status: &str) -> Option<&'static str> {
+    match status {
+        "sent" => Some(
+            "This invoice was sent to the customer, so it is locked: nothing on it can change. Record a payment when it is paid, or write it off if it never will be. To correct it, issue a credit note from the Credit Notes card below.",
+        ),
+        "partially_paid" => Some(
+            "This invoice is partly paid and locked: nothing on it can change. Record the rest as it arrives, or write off what will not be paid. To correct it, issue a credit note from the Credit Notes card below.",
+        ),
+        "paid" => Some(
+            "This invoice is paid and locked: nothing on it can change. To refund or correct it, issue a credit note from the Credit Notes card below.",
+        ),
+        "void" => Some(
+            "This invoice was voided. It stays on record as it was and cannot be reinstated; raise a new invoice instead.",
+        ),
+        "written_off" => Some(
+            "This invoice was written off as unpaid. It stays on record as it was; a payment that arrives later is recorded as a recovery.",
+        ),
+        _ => None,
+    }
+}
+
 #[derive(Props, Clone, PartialEq)]
 pub struct InvoiceDetailPageProps {
     pub id: String,
@@ -1372,17 +1404,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     // through a credit note (MAPPS-638, the Credit Notes card). Say so inline so the
     // missing actions read as intentional rather than broken. Draft / pending
     // show nothing here (their actions, including Void, are available above).
-    let frozen_note = match status.as_str() {
-        "sent" | "partially_paid" => Some(
-            "This invoice has been sent and is now a finalized record. It can't be edited, cancelled, or voided. Record a payment to collect the balance, or write it off if it will not be paid; corrections are made with a credit note, from the Credit Notes card.",
-        ),
-        "paid" => Some(
-            "This invoice is paid and finalized. It can't be edited or voided; corrections are made with a credit note, from the Credit Notes card.",
-        ),
-        "void" => Some("This invoice has been voided and is kept on record. It can't be edited or reinstated."),
-        "written_off" => Some("This invoice has been written off and is kept on record. It can't be edited or reinstated."),
-        _ => None,
-    };
+    let frozen_note = locked_invoice_note(status.as_str());
     let pay_company_id = invoice
         .as_ref()
         .and_then(|i| i.company_id)
