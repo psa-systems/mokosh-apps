@@ -423,7 +423,7 @@ fn date_only(ts: &Option<DateTime<Utc>>) -> String {
 }
 
 /// MAPPS-739: a timestamp in the user's own format, "-" when absent.
-fn when_label(ts: &Option<DateTime<Utc>>) -> String {
+pub(crate) fn when_label(ts: &Option<DateTime<Utc>>) -> String {
     match ts {
         Some(dt) => crate::utils::datetime::fmt_datetime_pref(*dt),
         None => "-".to_string(),
@@ -1758,6 +1758,16 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                     }
                                 }
                             }
+                            // MAPPS-742: the discussion and the history as one
+                            // stream at the foot of the article. Staff only:
+                            // there is no customer-visible comment (PMS-1128),
+                            // and the routes refuse a contact bearer.
+                            if !is_contact {
+                                crate::pages::kb_activity::ArticleActivity {
+                                    article: article.clone(),
+                                    versions_resource,
+                                }
+                            }
                         }
                         CollapsibleRail { side: RailSide::Right, collapsed: right_collapsed, open_overlay,
                             // MAPPS-423: one column of actions that act on this
@@ -2047,7 +2057,7 @@ fn LinkedTicketsCard(article_id: String) -> Element {
 }
 
 /// MAPPS-739: what a version row leads with.
-fn change_kind_label(kind: &str, restored_from: Option<i32>) -> String {
+pub(crate) fn change_kind_label(kind: &str, restored_from: Option<i32>) -> String {
     match (kind, restored_from) {
         ("create", _) => "Created".to_string(),
         ("restore", Some(n)) => format!("Restored from v{n}"),
@@ -2059,7 +2069,7 @@ fn change_kind_label(kind: &str, restored_from: Option<i32>) -> String {
 /// MAPPS-739: a name the server sent, "Unknown" when it sent none. The
 /// server already prints "Unknown" for a user row that is gone; this covers
 /// a build of the server from before it sent names at all.
-fn person_label(name: Option<&str>) -> String {
+pub(crate) fn person_label(name: Option<&str>) -> String {
     name.map(str::trim)
         .filter(|n| !n.is_empty())
         .unwrap_or("Unknown")
@@ -2072,7 +2082,7 @@ fn person_label(name: Option<&str>) -> String {
 /// print the article. Removed and added lines carry a `-` / `+` gutter as
 /// well as a tint, so colour is not the only signal.
 #[component]
-fn LineDiffView(old: String, new: String) -> Element {
+pub(crate) fn LineDiffView(old: String, new: String) -> Element {
     use crate::utils::line_diff::{diff_lines, fold, LineKind, Row};
     use crate::utils::word_diff::Piece;
     let diff = diff_lines(&old, &new);

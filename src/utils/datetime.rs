@@ -329,6 +329,42 @@ pub fn fmt_datetime_pref(dt: DateTime<Utc>) -> String {
     }
 }
 
+/// "4 months ago", "in 2 days", "just now": the coarse distance from `now`
+/// (MAPPS-742), for a stream where the absolute time rides in `title`. Pure
+/// in `now` so a test pins it; [`fmt_relative`] is the page's wrapper.
+pub fn relative_label(dt: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let delta = now.signed_duration_since(dt);
+    let past = delta.num_seconds() >= 0;
+    let secs = delta.num_seconds().unsigned_abs();
+    let (n, unit) = if secs < 45 {
+        return "just now".to_string();
+    } else if secs < 90 {
+        (1, "minute")
+    } else if secs < 3600 {
+        (secs / 60, "minute")
+    } else if secs < 86_400 {
+        (secs / 3600, "hour")
+    } else if secs < 30 * 86_400 {
+        (secs / 86_400, "day")
+    } else if secs < 365 * 86_400 {
+        (secs / (30 * 86_400), "month")
+    } else {
+        (secs / (365 * 86_400), "year")
+    };
+    let n = n.max(1);
+    let plural = if n == 1 { "" } else { "s" };
+    if past {
+        format!("{n} {unit}{plural} ago")
+    } else {
+        format!("in {n} {unit}{plural}")
+    }
+}
+
+/// [`relative_label`] against the clock now.
+pub fn fmt_relative(dt: DateTime<Utc>) -> String {
+    relative_label(dt, Utc::now())
+}
+
 /// Read the active user's date_format_string off the AuthContext
 /// without forcing every caller to thread the value through their
 /// signature. Use this from any handler component that already
@@ -376,6 +412,31 @@ pub fn user_today() -> chrono::NaiveDate {
 /// cell the rest of the app uses, matching the records' timezone.
 pub fn user_local_date(dt: DateTime<Utc>) -> chrono::NaiveDate {
     dt.with_timezone(&user_timezone()).date_naive()
+}
+
+#[cfg(test)]
+mod relative_label_tests {
+    use super::relative_label;
+    use chrono::{Duration, TimeZone, Utc};
+
+    #[test]
+    fn coarse_distances_in_both_directions() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 8, 12, 0, 0).unwrap();
+        assert_eq!(relative_label(now - Duration::seconds(20), now), "just now");
+        assert_eq!(
+            relative_label(now - Duration::seconds(70), now),
+            "1 minute ago"
+        );
+        assert_eq!(
+            relative_label(now - Duration::minutes(5), now),
+            "5 minutes ago"
+        );
+        assert_eq!(relative_label(now - Duration::hours(3), now), "3 hours ago");
+        assert_eq!(relative_label(now - Duration::days(1), now), "1 day ago");
+        assert_eq!(relative_label(now - Duration::days(45), now), "1 month ago");
+        assert_eq!(relative_label(now - Duration::days(400), now), "1 year ago");
+        assert_eq!(relative_label(now + Duration::days(2), now), "in 2 days");
+    }
 }
 
 #[cfg(test)]

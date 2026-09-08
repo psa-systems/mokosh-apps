@@ -33,6 +33,7 @@ pub mod forgot_password;
 pub mod forms;
 pub mod home;
 pub mod invitations;
+pub mod kb_activity;
 pub mod knowledge_base;
 pub mod login;
 pub mod not_found;
