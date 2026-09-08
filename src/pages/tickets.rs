@@ -6848,6 +6848,7 @@ mod mapps686_shared_dto_tests {
             created_by_contact_id,
             created_at,
             updated_at,
+            can_edit,
         } = resp;
         let _ = RemoteNote {
             id,
@@ -6866,12 +6867,12 @@ mod mapps686_shared_dto_tests {
             created_by_contact_id,
             created_at,
             updated_at: Some(updated_at),
-            // MAPPS-749: `TicketNoteResponse.can_edit` (PMS-974) is not in the
-            // pinned shared DTO yet, so there is nothing to move across here.
-            // The destructure above is exhaustive, so the pin bump that brings
-            // the field fails this function and the wiring is done then; until
-            // it lands `note_is_editable` falls back to its local rules.
-            can_edit: None,
+            // MAPPS-749: the server's own answer to whether this caller may
+            // edit this note (PMS-974). `Option` here for the same stated
+            // tolerance as the two above: a server that predates the field
+            // sends nothing, and `note_is_editable` falls back to its local
+            // rules rather than hiding every Edit control.
+            can_edit: Some(can_edit),
         };
     }
 
