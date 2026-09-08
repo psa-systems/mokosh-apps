@@ -590,6 +590,17 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         advanced: false,
         visibility: SurfaceVisibility::Always,
     },
+    // MAPPS-749: who may correct a ticket note after it was posted
+    // (`tickets/note_editing`, PMS-974), which until then was reachable
+    // only through the API with an admin bearer.
+    SettingsSurface {
+        route: Route::SettingsNoteEditing {},
+        title: "Note Editing",
+        description: "Who may correct a ticket note after it was posted.",
+        group: SettingsGroupKey::Tickets,
+        advanced: false,
+        visibility: SurfaceVisibility::StaffAdmin,
+    },
     // MAPPS-747: the per-tenant module flags, which until then were
     // reachable only through the API with an admin bearer.
     SettingsSurface {
