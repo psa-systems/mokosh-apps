@@ -295,6 +295,14 @@ struct RemoteNote {
     /// server that predates PMS-931 decodes rather than failing the whole list.
     #[serde(default)]
     updated_at: Option<DateTime<Utc>>,
+    /// PMS-974: whether THIS caller may edit this note, answered by the server
+    /// with the rule the PUT enforces: the tenant's `tickets/note_editing`
+    /// policy AND the note's own state. `None` from a server that predates
+    /// PMS-974, which is what `note_is_editable` falls back to its local rules
+    /// for; a hard `false` there would take the Edit control away from every
+    /// note the moment this build met an older server.
+    #[serde(default)]
+    can_edit: Option<bool>,
 }
 
 // ============================================================================
@@ -376,18 +384,29 @@ struct UpdateNoteBody {
     content: String,
 }
 
-/// MAPPS-593: whether this viewer may edit this note.
+/// MAPPS-593, MAPPS-749: whether this viewer may edit this note.
 ///
-/// Mirrors `TicketService::update_note`'s two gates so the affordance and the
-/// answer agree; a control that 403s or 409s is worse than no control. The
-/// server is the authority and its refusal is still handled, because these
-/// rules can only be enforced there.
+/// The server answers this on every note it serves (`can_edit`, PMS-974) with
+/// the rule `PUT /tickets/{id}/notes/{note_id}` enforces, so that answer wins
+/// whenever it is present. It has to: the WHO half is now the tenant's
+/// `tickets/note_editing` policy, which this page cannot see, so the local
+/// rules below would offer an Edit control on every note of a tenant that
+/// switched editing off.
+///
+/// The local rules stay as the fallback for a server that predates PMS-974.
+/// They mirror the same two gates so the affordance and the answer agree; a
+/// control that 403s or 409s is worse than no control. The server is the
+/// authority either way and its refusal is still handled.
 ///
 /// The state half: a note the customer wrote through the portal is never an
 /// agent's to edit, an emailed public note is frozen because the customer holds
 /// the original in their inbox, and a `time_entry` note is edited through its
-/// time entry. The permission half: the author, or an admin.
+/// time entry. The permission half: the author, or an admin, which is the
+/// server's own default policy.
 fn note_is_editable(note: &RemoteNote, viewer: Option<uuid::Uuid>, viewer_is_admin: bool) -> bool {
+    if let Some(server) = note.can_edit {
+        return server;
+    }
     if note.created_by_contact_id.is_some() {
         return false;
     }
@@ -456,6 +475,13 @@ fn note_type_options() -> Vec<SelectOption> {
 /// their before/after values (PMS-204).
 #[derive(Clone, Debug, Deserialize)]
 struct HistoryEntry {
+    /// PMS-974: which record the entry is about. `tickets` for the ticket's
+    /// own edits, `ticket_notes` for an edit to one of its notes, which the
+    /// server folds into this feed because the audit row it wrote had been
+    /// reachable only at the table. Empty from a server that predates it,
+    /// which reads as a ticket edit exactly as it did then.
+    #[serde(default)]
+    entity_type: String,
     #[serde(default)]
     action: String,
     #[serde(default)]
@@ -779,6 +805,18 @@ fn journal_actor(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
 /// reader expects for that column ("changed the status"); anything wider falls
 /// back to naming the columns, as the change-history pane always did.
 fn history_action(entry: &HistoryEntry) -> String {
+    // MAPPS-749: a note edit rides in this feed (PMS-974) and is not an edit
+    // to the ticket. Saying "updated content" of the ticket would be a plain
+    // untruth about which record changed, and the body of the change is the
+    // note's text, so the reader has to be told which one it belongs to.
+    if entry.entity_type == "ticket_notes" {
+        return match entry.action.as_str() {
+            "delete" => "deleted a note".to_string(),
+            // `create` is filtered out server-side (the note itself is the
+            // record of its creation), so this is an edit.
+            _ => "edited a note".to_string(),
+        };
+    }
     match entry.action.as_str() {
         "create" => return "created the ticket".to_string(),
         "delete" => return "deleted the ticket".to_string(),
@@ -5368,6 +5406,55 @@ mod mapps517_journal_tests {
         assert!(build_journal(&[], &[], &[], &users(), None, false).is_empty());
     }
 
+    /// MAPPS-749: an edit to one of the ticket's notes rides in this feed
+    /// (PMS-974). It says which record changed, and it carries the replaced
+    /// text, which is the whole reason the edit is auditable.
+    #[test]
+    fn a_note_edit_reads_as_a_note_edit_and_carries_the_replaced_text() {
+        let entry = history(
+            r#"{"entity_type":"ticket_notes","entity_id":"aaaaaaaa-0000-4000-8000-00000000000f",
+                "action":"update","user_id":"11111111-1111-4111-8111-111111111111",
+                "changed_fields":["content"],
+                "changes":[{"field":"content","old":"the original text","new":"the corrected text"}],
+                "timestamp":"2026-08-20T11:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[], &[entry], &[], &users(), None, false);
+
+        assert_eq!(actions(&journal), vec!["Dana Reeve edited a note"]);
+        assert_eq!(
+            journal[0].changes,
+            vec![ChangeLine {
+                field: "Content".to_string(),
+                old: "the original text".to_string(),
+                new: "the corrected text".to_string(),
+            }],
+            "the replaced text is on the line, diffed like any other edit"
+        );
+    }
+
+    /// A ticket edit still reads as one, and so does an entry from a server
+    /// that sends no `entity_type` at all.
+    #[test]
+    fn a_ticket_edit_is_unaffected_by_the_note_arm() {
+        let typed = history(
+            r#"{"entity_type":"tickets","action":"update","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":["status_id"],"changes":[],"timestamp":"2026-08-20T11:00:00Z"}"#,
+        );
+        let untyped = history(
+            r#"{"action":"update","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":["status_id"],"changes":[],"timestamp":"2026-08-20T10:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[], &[typed, untyped], &[], &users(), None, false);
+
+        assert_eq!(
+            actions(&journal),
+            vec![
+                "Dana Reeve changed the status".to_string(),
+                "Dana Reeve changed the status".to_string(),
+            ]
+        );
+    }
+
     /// Whether the email went out is the note's own outcome, so the line says
     /// which of the three cases it was.
     #[test]
@@ -5624,6 +5711,45 @@ mod mapps593_note_edit_tests {
     fn an_unknown_note_type_offers_no_control() {
         assert!(!note_is_editable(
             &make("something_new", VIEWER, false, None),
+            Some(viewer()),
+            true
+        ));
+    }
+
+    /// MAPPS-749: the server's own answer wins whenever it sends one. It knows
+    /// the tenant's `tickets/note_editing` policy and this page does not, so a
+    /// tenant that switched editing off must see no Edit control even on the
+    /// notes the local rules would allow.
+    #[test]
+    fn the_servers_answer_wins_over_the_local_rules() {
+        let mut n = make("internal", VIEWER, false, None);
+        assert!(
+            note_is_editable(&n, Some(viewer()), false),
+            "the local rules say yes"
+        );
+        n.can_edit = Some(false);
+        assert!(
+            !note_is_editable(&n, Some(viewer()), false),
+            "and the server says no, which is the answer"
+        );
+
+        // The other direction: a manager under `author_or_manager`, which no
+        // local rule could work out.
+        let mut other = make("internal", SOMEONE_ELSE, false, None);
+        assert!(!note_is_editable(&other, Some(viewer()), false));
+        other.can_edit = Some(true);
+        assert!(note_is_editable(&other, Some(viewer()), false));
+    }
+
+    /// A server that predates PMS-974 sends no `can_edit`, and the note still
+    /// decodes; the local rules answer, which is what this build did before.
+    #[test]
+    fn a_note_without_the_field_falls_back_to_the_local_rules() {
+        let n = make("internal", VIEWER, false, None);
+        assert_eq!(n.can_edit, None, "the field is absent from the fixture");
+        assert!(note_is_editable(&n, Some(viewer()), false));
+        assert!(!note_is_editable(
+            &make("public", VIEWER, true, None),
             Some(viewer()),
             true
         ));
@@ -6722,6 +6848,7 @@ mod mapps686_shared_dto_tests {
             created_by_contact_id,
             created_at,
             updated_at,
+            can_edit,
         } = resp;
         let _ = RemoteNote {
             id,
@@ -6740,6 +6867,12 @@ mod mapps686_shared_dto_tests {
             created_by_contact_id,
             created_at,
             updated_at: Some(updated_at),
+            // MAPPS-749: the server's own answer to whether this caller may
+            // edit this note (PMS-974). `Option` here for the same stated
+            // tolerance as the two above: a server that predates the field
+            // sends nothing, and `note_is_editable` falls back to its local
+            // rules rather than hiding every Edit control.
+            can_edit: Some(can_edit),
         };
     }
 

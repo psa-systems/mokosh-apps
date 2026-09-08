@@ -985,6 +985,11 @@ pub enum Route {
     #[route("/settings/modules")]
     SettingsModules {},
 
+    // MAPPS-749: who may edit a ticket note (`tickets/note_editing`,
+    // PMS-974). Admin only on the page, like the write it drives.
+    #[route("/settings/note-editing")]
+    SettingsNoteEditing {},
+
     // Mokosh-side profile. Edits the tenant-scoped fields on the
     // user row (name, title, phone, mobile, timezone). Cross-app
     // identity (email, password, MFA, sessions, billing) lives on
@@ -2075,6 +2080,15 @@ fn SettingsModules() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             pages::settings_modules::ModulesSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsNoteEditing() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_note_editing::NoteEditingSettingsPage {}
         }
     }
 }
