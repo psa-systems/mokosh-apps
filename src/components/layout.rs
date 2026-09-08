@@ -2228,3 +2228,56 @@ mod sidebar_scroll_tests {
         );
     }
 }
+
+/// MAPPS-743: the bell's rows go somewhere.
+#[cfg(test)]
+mod notification_link_tests {
+    use super::notification_route;
+    use crate::Route;
+
+    #[test]
+    fn every_stamped_entity_kind_has_a_page_and_nothing_else_does() {
+        let id = uuid::Uuid::new_v4();
+        let s = id.to_string();
+        assert_eq!(
+            notification_route("ticket", id),
+            Some(Route::TicketDetail { id: s.clone() })
+        );
+        assert_eq!(
+            notification_route("tickets", id),
+            Some(Route::TicketDetail { id: s.clone() })
+        );
+        assert_eq!(
+            notification_route("quote", id),
+            Some(Route::QuoteDetail { id: s.clone() })
+        );
+        assert_eq!(
+            notification_route("invoice", id),
+            Some(Route::InvoiceDetail { id: s.clone() })
+        );
+        assert_eq!(
+            notification_route("kb_articles", id),
+            Some(Route::KBArticleDetail { id: s.clone() })
+        );
+        assert_eq!(notification_route("auth", id), None);
+        assert_eq!(notification_route("", id), None);
+    }
+
+    /// The row decodes the deep link, navigates on click after the mark-read
+    /// is sent, closes the panel, and stays a button.
+    #[test]
+    fn a_linked_row_navigates_and_closes_the_panel() {
+        let src = include_str!("layout.rs");
+        let head = &src[..src
+            .find("mod notification_link_tests")
+            .expect("this module")];
+        assert!(head.contains("    entity_type: Option<String>,\n    #[serde(default)]\n    entity_id: Option<uuid::Uuid>,"));
+        let row = &head[head.find("fn NotificationRow(").expect("the row")..];
+        assert!(row.contains("if let Some(target) = target.clone() {\n                    on_navigate.call(());\n                    navigator.push(target);"));
+        assert!(row.contains("r#type: \"button\","), "still a button");
+        assert!(
+            head.contains("on_navigate: move |_| open.set(false),"),
+            "the panel closes"
+        );
+    }
+}
