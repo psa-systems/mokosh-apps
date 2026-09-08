@@ -295,6 +295,14 @@ struct RemoteNote {
     /// server that predates PMS-931 decodes rather than failing the whole list.
     #[serde(default)]
     updated_at: Option<DateTime<Utc>>,
+    /// PMS-974: whether THIS caller may edit this note, answered by the server
+    /// with the rule the PUT enforces: the tenant's `tickets/note_editing`
+    /// policy AND the note's own state. `None` from a server that predates
+    /// PMS-974, which is what `note_is_editable` falls back to its local rules
+    /// for; a hard `false` there would take the Edit control away from every
+    /// note the moment this build met an older server.
+    #[serde(default)]
+    can_edit: Option<bool>,
 }
 
 // ============================================================================
@@ -376,18 +384,29 @@ struct UpdateNoteBody {
     content: String,
 }
 
-/// MAPPS-593: whether this viewer may edit this note.
+/// MAPPS-593, MAPPS-749: whether this viewer may edit this note.
 ///
-/// Mirrors `TicketService::update_note`'s two gates so the affordance and the
-/// answer agree; a control that 403s or 409s is worse than no control. The
-/// server is the authority and its refusal is still handled, because these
-/// rules can only be enforced there.
+/// The server answers this on every note it serves (`can_edit`, PMS-974) with
+/// the rule `PUT /tickets/{id}/notes/{note_id}` enforces, so that answer wins
+/// whenever it is present. It has to: the WHO half is now the tenant's
+/// `tickets/note_editing` policy, which this page cannot see, so the local
+/// rules below would offer an Edit control on every note of a tenant that
+/// switched editing off.
+///
+/// The local rules stay as the fallback for a server that predates PMS-974.
+/// They mirror the same two gates so the affordance and the answer agree; a
+/// control that 403s or 409s is worse than no control. The server is the
+/// authority either way and its refusal is still handled.
 ///
 /// The state half: a note the customer wrote through the portal is never an
 /// agent's to edit, an emailed public note is frozen because the customer holds
 /// the original in their inbox, and a `time_entry` note is edited through its
-/// time entry. The permission half: the author, or an admin.
+/// time entry. The permission half: the author, or an admin, which is the
+/// server's own default policy.
 fn note_is_editable(note: &RemoteNote, viewer: Option<uuid::Uuid>, viewer_is_admin: bool) -> bool {
+    if let Some(server) = note.can_edit {
+        return server;
+    }
     if note.created_by_contact_id.is_some() {
         return false;
     }
@@ -5629,6 +5648,45 @@ mod mapps593_note_edit_tests {
         ));
     }
 
+    /// MAPPS-749: the server's own answer wins whenever it sends one. It knows
+    /// the tenant's `tickets/note_editing` policy and this page does not, so a
+    /// tenant that switched editing off must see no Edit control even on the
+    /// notes the local rules would allow.
+    #[test]
+    fn the_servers_answer_wins_over_the_local_rules() {
+        let mut n = make("internal", VIEWER, false, None);
+        assert!(
+            note_is_editable(&n, Some(viewer()), false),
+            "the local rules say yes"
+        );
+        n.can_edit = Some(false);
+        assert!(
+            !note_is_editable(&n, Some(viewer()), false),
+            "and the server says no, which is the answer"
+        );
+
+        // The other direction: a manager under `author_or_manager`, which no
+        // local rule could work out.
+        let mut other = make("internal", SOMEONE_ELSE, false, None);
+        assert!(!note_is_editable(&other, Some(viewer()), false));
+        other.can_edit = Some(true);
+        assert!(note_is_editable(&other, Some(viewer()), false));
+    }
+
+    /// A server that predates PMS-974 sends no `can_edit`, and the note still
+    /// decodes; the local rules answer, which is what this build did before.
+    #[test]
+    fn a_note_without_the_field_falls_back_to_the_local_rules() {
+        let n = make("internal", VIEWER, false, None);
+        assert_eq!(n.can_edit, None, "the field is absent from the fixture");
+        assert!(note_is_editable(&n, Some(viewer()), false));
+        assert!(!note_is_editable(
+            &make("public", VIEWER, true, None),
+            Some(viewer()),
+            true
+        ));
+    }
+
     /// A signed-out or unresolved viewer is nobody's author, and `None == None`
     /// must not read as a match against a note with no recorded author.
     #[test]
@@ -6740,6 +6798,12 @@ mod mapps686_shared_dto_tests {
             created_by_contact_id,
             created_at,
             updated_at: Some(updated_at),
+            // MAPPS-749: `TicketNoteResponse.can_edit` (PMS-974) is not in the
+            // pinned shared DTO yet, so there is nothing to move across here.
+            // The destructure above is exhaustive, so the pin bump that brings
+            // the field fails this function and the wiring is done then; until
+            // it lands `note_is_editable` falls back to its local rules.
+            can_edit: None,
         };
     }
 
