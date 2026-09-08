@@ -2678,6 +2678,73 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     // file. If the author then discards, the row is litter and gets deleted;
     // an article they opened for editing obviously does not.
     let mut auto_created = use_signal(|| false);
+
+    // MAPPS-745: the inline comments on the article being edited, so the
+    // preview can show their highlights and the save can say which of them
+    // the edit orphans. None on a create: there is nothing anchored yet.
+    let edit_id_for_comments = match &props.mode {
+        ArticleFormMode::Edit { id } => Some(id.clone()),
+        ArticleFormMode::Create => None,
+    };
+    let inline_comments = use_resource(use_reactive!(|edit_id_for_comments| async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let id = edit_id_for_comments?;
+        crate::hooks::fetch::api::get_authed::<Vec<crate::modules::kb::KbComment>>(&format!(
+            "/kb/articles/{id}/comments"
+        ))
+        .await
+        .inspect_err(|e| tracing::warn!("kb comments for the editor failed for {id}: {e}"))
+        .ok()
+    }));
+    // The quotes the pending save would orphan; non-empty opens the dialog.
+    let mut orphan_warning = use_signal(Vec::<String>::new);
+    let saved_content = initial.content.clone();
+
+    // MAPPS-745: the preview shows the inline highlights. The editor owns
+    // the preview pane and re-renders it on every keystroke, which drops the
+    // marks, so a loop re-places them: when the body or an anchor changed,
+    // or when the pane is showing with no marks on it (the author switched
+    // to Preview), never more often than every 700ms. The loop dies with the
+    // form. Nothing is placed for a create, which has no anchors.
+    #[cfg(feature = "app")]
+    if edit_id_for_comments.is_some() {
+        use_effect(move || {
+            spawn(async move {
+                let preview = crate::components::markdown_editor_preview_id(KB_SOURCE_ID);
+                let mut last: Option<u64> = None;
+                loop {
+                    crate::platform::timer::sleep_ms(700).await;
+                    let roots: Vec<crate::modules::kb::KbComment> = inline_comments
+                        .read_unchecked()
+                        .clone()
+                        .flatten()
+                        .unwrap_or_default();
+                    if !roots.iter().any(|c| c.anchor.is_some() && !c.deleted) {
+                        continue;
+                    }
+                    let body = content.read().clone();
+                    let key = {
+                        use std::hash::{Hash, Hasher};
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        body.hash(&mut h);
+                        roots.len().hash(&mut h);
+                        h.finish()
+                    };
+                    let present = crate::platform::anchor_dom::mark_positions(&preview).await;
+                    if last == Some(key) && !present.is_empty() {
+                        continue;
+                    }
+                    let Some(text) = crate::platform::anchor_dom::text_of(&preview).await else {
+                        continue;
+                    };
+                    crate::platform::anchor_dom::clear_highlights(&preview);
+                    let (specs, _) = crate::pages::kb_inline::place(&text, &roots);
+                    crate::platform::anchor_dom::apply_highlights(&preview, &specs);
+                    last = Some(key);
+                }
+            });
+        });
+    }
     // Surfaced under the body field. Uploads are not silent: a failure has to
     // say so, because the author is watching for an image to appear.
     let mut upload_error = use_signal(String::new);
@@ -2907,8 +2974,9 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         );
     });
 
-    let handle_submit = move |e: FormEvent| {
-        e.prevent_default();
+    // MAPPS-745: `ack` is true when the author has read the orphan warning
+    // and chosen to save anyway; the first call from the form passes false.
+    let handle_submit = use_callback(move |ack: bool| {
         error.set(String::new());
 
         // PMS-518: validate both required fields through the shared FormGuard so
@@ -2960,6 +3028,22 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
 
         if guard.blocked() {
             return;
+        }
+
+        // MAPPS-745: say what this save will orphan before it does. Not a
+        // block: orphaning is allowed, the point is that it is visible.
+        if !ack {
+            let roots = inline_comments
+                .read_unchecked()
+                .clone()
+                .flatten()
+                .unwrap_or_default();
+            let quotes =
+                crate::pages::kb_inline::orphaned_by_edit(&saved_content, &content_val, &roots);
+            if !quotes.is_empty() {
+                orphan_warning.set(quotes);
+                return;
+            }
         }
 
         is_submitting.set(true);
@@ -3048,7 +3132,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
             }
             is_submitting.set(false);
         });
-    };
+    });
 
     // MAPPS-515: company-scope view state. The selection survives a visibility
     // change (so switching back inside one edit restores it); the block itself
@@ -3081,7 +3165,10 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         Card {
             form {
                 class: "space-y-6",
-                onsubmit: handle_submit,
+                onsubmit: move |e: FormEvent| {
+                    e.prevent_default();
+                    handle_submit.call(false);
+                },
 
                 if !error.read().is_empty() {
                     ErrorBanner { "{error.read()}" }
@@ -3499,6 +3586,38 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                         }
                     },
                     oncancel: move |_| confirming_cancel.set(false),
+                }
+
+                // MAPPS-745: what this save orphans, before it does. Not
+                // destructive: the comments stay in the stream, labelled and
+                // quoting what they were attached to; the dialog exists so the
+                // author sees it rather than discovers it.
+                {
+                    let quotes = orphan_warning.read().clone();
+                    let n = quotes.len();
+                    rsx! {
+                        ConfirmDialog {
+                            open: n > 0,
+                            title: if n == 1 { "This edit orphans 1 inline comment".to_string() } else { format!("This edit orphans {n} inline comments") },
+                            message: "The passages these comments were attached to are no longer in the article. The comments stay in the discussion, labelled, quoting what they referred to.".to_string(),
+                            confirm_text: "Save anyway".to_string(),
+                            cancel_text: "Go back".to_string(),
+                            body: rsx! {
+                                ul { class: "space-y-1 text-sm",
+                                    for quote in quotes.iter() {
+                                        li { key: "{quote}",
+                                            blockquote { class: "border-l-2 border-amber-400 pl-2 italic text-muted truncate", "\u{201c}{quote}\u{201d}" }
+                                        }
+                                    }
+                                }
+                            },
+                            onconfirm: move |_| {
+                                orphan_warning.set(Vec::new());
+                                handle_submit.call(true);
+                            },
+                            oncancel: move |_| orphan_warning.set(Vec::new()),
+                        }
+                    }
                 }
 
                 // MAPPS-739: why. Only on an edit: the creation snapshot has
@@ -5133,6 +5252,67 @@ mod mapps741_rail_tests {
         assert!(
             before_tickets.trim_end().ends_with("if !is_contact {"),
             "tickets are staff only: {before_tickets}"
+        );
+    }
+}
+
+/// MAPPS-745: the editor shows the inline anchors and warns before it
+/// orphans one.
+#[cfg(test)]
+mod mapps745_editor_anchor_tests {
+    fn head() -> &'static str {
+        let src = include_str!("knowledge_base.rs");
+        &src[..src
+            .find("mod mapps745_editor_anchor_tests")
+            .expect("this module")]
+    }
+
+    /// The form submits through the acknowledgement flow: the first call
+    /// passes false and stops on an orphan with the dialog open; the dialog's
+    /// "Save anyway" calls again with true; "Go back" clears it. The check
+    /// runs before the save is armed, and only on an edit that has anchors.
+    #[test]
+    fn a_save_that_orphans_an_anchor_asks_first_and_never_blocks() {
+        let head = head();
+        assert!(head.contains("let handle_submit = use_callback(move |ack: bool| {"));
+        assert!(
+            head.contains("handle_submit.call(false);"),
+            "the form's own submit"
+        );
+        assert!(
+            head.contains("handle_submit.call(true);"),
+            "Save anyway re-enters acknowledged"
+        );
+        let check = head
+            .find(
+                "crate::pages::kb_inline::orphaned_by_edit(&saved_content, &content_val, &roots);",
+            )
+            .expect("the check");
+        let armed = head[check..]
+            .find("is_submitting.set(true);")
+            .expect("the arming");
+        assert!(armed > 0, "the check runs before the save is armed");
+        assert!(head.contains("confirm_text: \"Save anyway\".to_string(),"));
+        assert!(head.contains("cancel_text: \"Go back\".to_string(),"));
+        assert!(head.contains("oncancel: move |_| orphan_warning.set(Vec::new()),"));
+        assert!(!head.contains("destructive: true,\n                            onconfirm: move |_| {\n                                orphan_warning.set(Vec::new());"), "not a destructive dialog");
+    }
+
+    /// The preview loop places the same marks the article page does, on the
+    /// editor's own preview box, and only for an edit.
+    #[test]
+    fn the_preview_reuses_the_article_placement_on_the_editor_pane() {
+        let head = head();
+        assert!(
+            head.contains("if edit_id_for_comments.is_some() {"),
+            "a create places nothing"
+        );
+        assert!(head.contains("crate::components::markdown_editor_preview_id(KB_SOURCE_ID)"));
+        assert!(head.contains("crate::pages::kb_inline::place(&text, &roots)"));
+        assert!(head.contains("crate::platform::anchor_dom::apply_highlights(&preview, &specs);"));
+        assert!(
+            head.contains("crate::platform::timer::sleep_ms(700).await;"),
+            "a debounce, not a keystroke"
         );
     }
 }

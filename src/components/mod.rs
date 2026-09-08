@@ -72,6 +72,8 @@ pub use icon_button::*;
 pub use icons::*;
 pub use layout::*;
 pub use markdown::*;
+/// MAPPS-745: the id of a `MarkdownEditor`'s preview box, for the KB editor's inline highlights.
+pub(crate) use markdown_editor::preview_id as markdown_editor_preview_id;
 pub use markdown_editor::*;
 pub use markdown_toolbar::*;
 pub use mention_autocomplete::*;
