@@ -177,6 +177,14 @@ pub(crate) fn day_query(date: Option<NaiveDate>, user_id: Option<uuid::Uuid>) ->
     }
 }
 
+/// MAPPS-746: what the Time page says in place of the clock when the
+/// server answers 404 for the day, which is the timesheets module being
+/// off for the tenant (PMS-943: a `personal` tenant starts with it off, an
+/// `org` with it on; migration 120 backfilled the same rule). Named, so a
+/// reader can ask for the right thing; there is no module page in this
+/// client yet, so it does not promise a link it cannot make.
+pub(crate) const MODULES_OFF_NOTICE: &str = "Clocking in and out needs the Timesheets module, which is off for this organisation. An administrator can turn it on; time entries are unaffected.";
+
 /// The badge beside the buttons: what the day is doing right now.
 pub(crate) fn state_label(is_clocked_in: bool, on_break: bool) -> (&'static str, BadgeVariant) {
     match (is_clocked_in, on_break) {
@@ -249,10 +257,30 @@ pub fn WorkDayStrip() -> Element {
 
     let snap = day_resource.read_unchecked().clone();
     let day = match snap {
-        // Loading, a fetch failure, or the modules are off: nothing to show.
-        // A failure is logged above; the Time page's own list reports the
-        // outage state, so the strip does not repeat it.
-        None | Some(None) | Some(Some(DayLoad::ModulesOff)) => return rsx! {},
+        // Loading: nothing yet. A placeholder here would move the page
+        // twice on every load for a strip that is usually small.
+        None => return rsx! {},
+        // MAPPS-746: the two states this used to hide. Both hid the clock
+        // with nothing on the page to say why, and the nav's Timesheets
+        // entries do not follow the module flag, so the reader had every
+        // reason to expect a clock and no way to learn where it went.
+        Some(None) => {
+            return rsx! {
+                div { class: "mb-6 flex items-center justify-between gap-3 rounded-lg border border-line bg-surface px-4 py-3",
+                    p { class: "text-sm text-red-600 dark:text-red-300", "Could not load today's clock." }
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| day_resource.restart(),
+                        "Retry"
+                    }
+                }
+            }
+        }
+        Some(Some(DayLoad::ModulesOff)) => {
+            return rsx! {
+                p { class: "mb-6 text-sm text-subtle", "{MODULES_OFF_NOTICE}" }
+            }
+        }
         Some(Some(DayLoad::Day(day))) => *day,
     };
 
@@ -536,5 +564,45 @@ mod tests {
         assert_eq!(day.segments[0].kind, "work");
         assert_eq!(ticket_label(&day.breakdown.tickets[0]), "T000123 Printer");
         assert_eq!(day.unlogged_minutes, 10);
+    }
+}
+
+/// MAPPS-746: the strip says why the clock is absent.
+#[cfg(test)]
+mod mapps746_strip_says_why_tests {
+    use super::MODULES_OFF_NOTICE;
+
+    /// Only the loading state renders nothing; a failed load offers a retry
+    /// and a 404 names the module, so "where is the clock in UI?" is
+    /// answered on the page.
+    #[test]
+    fn a_failed_load_and_a_disabled_module_both_say_so() {
+        let src = include_str!("work_day.rs");
+        let head = &src[..src
+            .find("mod mapps746_strip_says_why_tests")
+            .expect("this module")];
+        assert!(
+            head.contains("        None => return rsx! {},"),
+            "loading stays silent"
+        );
+        assert!(
+            !head
+                .contains("None | Some(None) | Some(Some(DayLoad::ModulesOff)) => return rsx! {},"),
+            "the silent arm is gone"
+        );
+        assert!(head.contains("\"Could not load today's clock.\""));
+        assert!(
+            head.contains("onclick: move |_| day_resource.restart(),"),
+            "a retry, not a reload"
+        );
+        assert!(head.contains("\"{MODULES_OFF_NOTICE}\""));
+        assert!(
+            MODULES_OFF_NOTICE.contains("Timesheets module"),
+            "the module is named"
+        );
+        assert!(
+            !MODULES_OFF_NOTICE.contains("Settings"),
+            "no link is promised that the client cannot make"
+        );
     }
 }
