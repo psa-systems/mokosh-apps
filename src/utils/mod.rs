@@ -1,5 +1,6 @@
 //! Utility modules for the Mokosh platform
 
+pub mod anchor;
 pub mod datetime;
 pub mod download;
 pub mod duration;
