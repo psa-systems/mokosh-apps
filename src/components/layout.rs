@@ -377,6 +377,10 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
     let show_timesheets =
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    // MAPPS-748: the two timesheet entries follow the tenant's module flag
+    // the way the server does (every timesheet route 404s with it off), so
+    // a switched-off feature is not listed. Off until the flags are known.
+    let timesheets_on = crate::hooks::modules::use_module_enabled("timesheets");
     let show_projects = crate::hooks::capabilities::use_capability("projects:read");
     let show_companies =
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
@@ -550,10 +554,10 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     if show_time_entries {
                         NavItem { to: Route::TimeEntryList {}, icon: rsx!(ClockIcon {}), label: "Time Entries", collapsed }
                     }
-                    if show_timesheets {
+                    if show_timesheets && timesheets_on {
                         NavItem { to: Route::Timesheets {}, icon: rsx!(TableCellsIcon {}), label: "Timesheets", collapsed }
                     }
-                    if can_manage {
+                    if can_manage && timesheets_on {
                         NavItem { to: Route::TimesheetApprovals {}, icon: rsx!(DocumentCheckIcon {}), label: "Timesheet Approvals", collapsed }
                     }
                     if contact_approvals_visible {
