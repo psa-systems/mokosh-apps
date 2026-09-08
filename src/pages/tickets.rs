@@ -475,6 +475,13 @@ fn note_type_options() -> Vec<SelectOption> {
 /// their before/after values (PMS-204).
 #[derive(Clone, Debug, Deserialize)]
 struct HistoryEntry {
+    /// PMS-974: which record the entry is about. `tickets` for the ticket's
+    /// own edits, `ticket_notes` for an edit to one of its notes, which the
+    /// server folds into this feed because the audit row it wrote had been
+    /// reachable only at the table. Empty from a server that predates it,
+    /// which reads as a ticket edit exactly as it did then.
+    #[serde(default)]
+    entity_type: String,
     #[serde(default)]
     action: String,
     #[serde(default)]
@@ -798,6 +805,18 @@ fn journal_actor(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
 /// reader expects for that column ("changed the status"); anything wider falls
 /// back to naming the columns, as the change-history pane always did.
 fn history_action(entry: &HistoryEntry) -> String {
+    // MAPPS-749: a note edit rides in this feed (PMS-974) and is not an edit
+    // to the ticket. Saying "updated content" of the ticket would be a plain
+    // untruth about which record changed, and the body of the change is the
+    // note's text, so the reader has to be told which one it belongs to.
+    if entry.entity_type == "ticket_notes" {
+        return match entry.action.as_str() {
+            "delete" => "deleted a note".to_string(),
+            // `create` is filtered out server-side (the note itself is the
+            // record of its creation), so this is an edit.
+            _ => "edited a note".to_string(),
+        };
+    }
     match entry.action.as_str() {
         "create" => return "created the ticket".to_string(),
         "delete" => return "deleted the ticket".to_string(),
@@ -5385,6 +5404,55 @@ mod mapps517_journal_tests {
     #[test]
     fn an_empty_ticket_yields_an_empty_journal() {
         assert!(build_journal(&[], &[], &[], &users(), None, false).is_empty());
+    }
+
+    /// MAPPS-749: an edit to one of the ticket's notes rides in this feed
+    /// (PMS-974). It says which record changed, and it carries the replaced
+    /// text, which is the whole reason the edit is auditable.
+    #[test]
+    fn a_note_edit_reads_as_a_note_edit_and_carries_the_replaced_text() {
+        let entry = history(
+            r#"{"entity_type":"ticket_notes","entity_id":"aaaaaaaa-0000-4000-8000-00000000000f",
+                "action":"update","user_id":"11111111-1111-4111-8111-111111111111",
+                "changed_fields":["content"],
+                "changes":[{"field":"content","old":"the original text","new":"the corrected text"}],
+                "timestamp":"2026-08-20T11:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[], &[entry], &[], &users(), None, false);
+
+        assert_eq!(actions(&journal), vec!["Dana Reeve edited a note"]);
+        assert_eq!(
+            journal[0].changes,
+            vec![ChangeLine {
+                field: "Content".to_string(),
+                old: "the original text".to_string(),
+                new: "the corrected text".to_string(),
+            }],
+            "the replaced text is on the line, diffed like any other edit"
+        );
+    }
+
+    /// A ticket edit still reads as one, and so does an entry from a server
+    /// that sends no `entity_type` at all.
+    #[test]
+    fn a_ticket_edit_is_unaffected_by_the_note_arm() {
+        let typed = history(
+            r#"{"entity_type":"tickets","action":"update","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":["status_id"],"changes":[],"timestamp":"2026-08-20T11:00:00Z"}"#,
+        );
+        let untyped = history(
+            r#"{"action":"update","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":["status_id"],"changes":[],"timestamp":"2026-08-20T10:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[], &[typed, untyped], &[], &users(), None, false);
+
+        assert_eq!(
+            actions(&journal),
+            vec![
+                "Dana Reeve changed the status".to_string(),
+                "Dana Reeve changed the status".to_string(),
+            ]
+        );
     }
 
     /// Whether the email went out is the note's own outcome, so the line says
