@@ -130,6 +130,9 @@ pub struct CreateKbCommentRequest {
     pub body: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<Uuid>,
+    /// MAPPS-744: a root's anchor into the rendered text (PMS-1130).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<serde_json::Value>,
 }
 
 /// `PUT /kb/comments/{id}` (PMS-1128).
