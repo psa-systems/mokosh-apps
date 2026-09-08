@@ -635,7 +635,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
                 if n.status == "void" {
                     "This credit note has been voided and is kept on record. Its amount no longer counts against the invoice."
                 } else {
-                    "This credit note was issued when it was created and is a finalized record. It can't be edited; if it is wrong, void it and raise another."
+                    "This credit note was issued the moment it was created, so it is locked: nothing on it can change. If it is wrong, void it and raise another."
                 }
             }
         }
