@@ -1338,6 +1338,30 @@ struct NotificationItem {
     #[serde(default)]
     read_at: Option<chrono::DateTime<chrono::Utc>>,
     created_at: chrono::DateTime<chrono::Utc>,
+    /// MAPPS-743: the deep link the server has stamped on every row since
+    /// migration 150 (`ticket`, `quote`, `kb_articles`, ...), which the bell
+    /// ignored: a click only marked the row read. Both default so a row from
+    /// an event with no single entity (the auth mails) decodes as before.
+    #[serde(default)]
+    entity_type: Option<String>,
+    #[serde(default)]
+    entity_id: Option<uuid::Uuid>,
+}
+
+/// MAPPS-743: where a notification about this kind of entity takes the
+/// reader. Both the singular the ticket and quote events stamp and the
+/// table-name plural the KB event stamps, so a new server event that picks
+/// either spelling lands. `None` is a row with nowhere to go, which keeps
+/// today's mark-read-only behaviour.
+fn notification_route(entity_type: &str, entity_id: uuid::Uuid) -> Option<Route> {
+    let id = entity_id.to_string();
+    match entity_type {
+        "ticket" | "tickets" => Some(Route::TicketDetail { id }),
+        "quote" | "quotes" => Some(Route::QuoteDetail { id }),
+        "invoice" | "invoices" => Some(Route::InvoiceDetail { id }),
+        "kb_article" | "kb_articles" => Some(Route::KBArticleDetail { id }),
+        _ => None,
+    }
 }
 
 /// Envelope for the paginated inbox response (`{ data, meta }`); the
@@ -1440,7 +1464,13 @@ fn NotificationBell() -> Element {
                         }
                     } else {
                         for item in items.iter().cloned() {
-                            NotificationRow { item, on_read: move |_| inbox.restart() }
+                            NotificationRow {
+                                item,
+                                on_read: move |_| inbox.restart(),
+                                // MAPPS-743: a row that navigates closes the panel
+                                // behind it; the page it lands on is the point.
+                                on_navigate: move |_| open.set(false),
+                            }
                         }
                     }
                 }
@@ -1500,8 +1530,18 @@ fn ApprovalsBadge() -> Element {
 
 /// A single inbox row. Unread rows are tinted and, on click, POST a
 /// mark-read then ask the parent to refetch via `on_read`.
+///
+/// MAPPS-743: a row that names an entity the app has a page for also
+/// navigates there on click (and says so with an "Open" hint), after the
+/// mark-read has been sent; a row with nowhere to go keeps the old
+/// behaviour. Still a `<button>`, so the keyboard reaches it as before.
 #[component]
-fn NotificationRow(item: NotificationItem, on_read: EventHandler<()>) -> Element {
+fn NotificationRow(
+    item: NotificationItem,
+    on_read: EventHandler<()>,
+    on_navigate: EventHandler<()>,
+) -> Element {
+    let navigator = use_navigator();
     let is_unread = item.read_at.is_none();
     let id = item.id;
     let subject = item.subject.clone().unwrap_or_default();
@@ -1511,6 +1551,12 @@ fn NotificationRow(item: NotificationItem, on_read: EventHandler<()>) -> Element
     } else {
         ""
     };
+    let target = item
+        .entity_type
+        .as_deref()
+        .zip(item.entity_id)
+        .and_then(|(kind, id)| notification_route(kind, id));
+    let has_target = target.is_some();
 
     rsx! {
         button {
@@ -1529,12 +1575,21 @@ fn NotificationRow(item: NotificationItem, on_read: EventHandler<()>) -> Element
                         on_read.call(());
                     });
                 }
+                if let Some(target) = target.clone() {
+                    on_navigate.call(());
+                    navigator.push(target);
+                }
             },
             if !subject.is_empty() {
                 div { class: "text-sm font-medium text-content", "{subject}" }
             }
             div { class: "text-sm text-muted", "{item.body}" }
-            div { class: "mt-1 text-xs text-subtle", "{when}" }
+            div { class: "mt-1 flex items-center justify-between text-xs text-subtle",
+                span { "{when}" }
+                if has_target {
+                    span { class: "text-accent", "Open \u{203a}" }
+                }
+            }
         }
     }
 }
