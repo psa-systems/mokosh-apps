@@ -309,9 +309,9 @@ mod tests {
     #[test]
     fn the_placement_key_moves_with_the_body_or_an_anchor_and_not_with_a_body_edit_of_a_comment() {
         let a = root("x", "", "", false);
-        let k1 = placement_key("body", &[a.clone()]);
-        assert_eq!(k1, placement_key("body", &[a.clone()]));
-        assert_ne!(k1, placement_key("body changed", &[a.clone()]));
+        let k1 = placement_key("body", std::slice::from_ref(&a));
+        assert_eq!(k1, placement_key("body", std::slice::from_ref(&a)));
+        assert_ne!(k1, placement_key("body changed", std::slice::from_ref(&a)));
         let mut b = a.clone();
         b.body = "a different comment text".into();
         assert_eq!(

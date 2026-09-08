@@ -301,14 +301,17 @@ fn match_start(text: &[char], pattern: &[char], end: usize, dist: usize) -> usiz
             cur[i] = (prev[i - 1] + cost).min(prev[i] + 1).min(cur[i - 1] + 1);
         }
         let start = end - (k + 1);
-        if cur[m] < best.0 || (cur[m] == best.0 && cur[m] <= dist) {
-            // Prefer the longest span at the best distance so a match does
-            // not stop short of a leading character the edit budget allowed.
-            if cur[m] <= dist {
-                best = (cur[m], start);
-            } else if cur[m] < best.0 {
-                best = (cur[m], start);
-            }
+        // Prefer the longest span at the best distance so a match does not
+        // stop short of a leading character the edit budget allowed: within
+        // the budget a tie goes to the later (longer) span, outside it only
+        // a strictly better distance moves the answer.
+        let better = if cur[m] <= dist {
+            cur[m] <= best.0
+        } else {
+            cur[m] < best.0
+        };
+        if better {
+            best = (cur[m], start);
         }
         if cur[m] == 0 && dist == 0 {
             break;
