@@ -5255,3 +5255,64 @@ mod mapps741_rail_tests {
         );
     }
 }
+
+/// MAPPS-745: the editor shows the inline anchors and warns before it
+/// orphans one.
+#[cfg(test)]
+mod mapps745_editor_anchor_tests {
+    fn head() -> &'static str {
+        let src = include_str!("knowledge_base.rs");
+        &src[..src
+            .find("mod mapps745_editor_anchor_tests")
+            .expect("this module")]
+    }
+
+    /// The form submits through the acknowledgement flow: the first call
+    /// passes false and stops on an orphan with the dialog open; the dialog's
+    /// "Save anyway" calls again with true; "Go back" clears it. The check
+    /// runs before the save is armed, and only on an edit that has anchors.
+    #[test]
+    fn a_save_that_orphans_an_anchor_asks_first_and_never_blocks() {
+        let head = head();
+        assert!(head.contains("let handle_submit = use_callback(move |ack: bool| {"));
+        assert!(
+            head.contains("handle_submit.call(false);"),
+            "the form's own submit"
+        );
+        assert!(
+            head.contains("handle_submit.call(true);"),
+            "Save anyway re-enters acknowledged"
+        );
+        let check = head
+            .find(
+                "crate::pages::kb_inline::orphaned_by_edit(&saved_content, &content_val, &roots);",
+            )
+            .expect("the check");
+        let armed = head[check..]
+            .find("is_submitting.set(true);")
+            .expect("the arming");
+        assert!(armed > 0, "the check runs before the save is armed");
+        assert!(head.contains("confirm_text: \"Save anyway\".to_string(),"));
+        assert!(head.contains("cancel_text: \"Go back\".to_string(),"));
+        assert!(head.contains("oncancel: move |_| orphan_warning.set(Vec::new()),"));
+        assert!(!head.contains("destructive: true,\n                            onconfirm: move |_| {\n                                orphan_warning.set(Vec::new());"), "not a destructive dialog");
+    }
+
+    /// The preview loop places the same marks the article page does, on the
+    /// editor's own preview box, and only for an edit.
+    #[test]
+    fn the_preview_reuses_the_article_placement_on_the_editor_pane() {
+        let head = head();
+        assert!(
+            head.contains("if edit_id_for_comments.is_some() {"),
+            "a create places nothing"
+        );
+        assert!(head.contains("crate::components::markdown_editor_preview_id(KB_SOURCE_ID)"));
+        assert!(head.contains("crate::pages::kb_inline::place(&text, &roots)"));
+        assert!(head.contains("crate::platform::anchor_dom::apply_highlights(&preview, &specs);"));
+        assert!(
+            head.contains("crate::platform::timer::sleep_ms(700).await;"),
+            "a debounce, not a keystroke"
+        );
+    }
+}

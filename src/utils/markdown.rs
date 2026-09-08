@@ -1508,3 +1508,25 @@ mod heading_id_tests {
         assert_eq!(before, after);
     }
 }
+
+/// MAPPS-745: the text the resolver sees, computed without a DOM.
+#[cfg(test)]
+mod rendered_text_tests {
+    use super::rendered_text;
+
+    #[test]
+    fn tags_go_and_entities_come_back() {
+        let text = rendered_text("# Title\n\nA **bold** step & a <b>tag</b>.\n\n- one\n- two\n");
+        assert!(text.contains("Title"));
+        assert!(text.contains("A bold step & a tag."), "{text:?}");
+        assert!(!text.contains('<'), "{text:?}");
+        assert!(text.contains("one\n") && text.contains("two"), "{text:?}");
+    }
+
+    #[test]
+    fn a_literal_less_than_survives_as_text() {
+        let text = rendered_text("3 < 4 and \"quoted\"\n");
+        assert!(text.contains("3 < 4"), "{text:?}");
+        assert!(text.contains("\"quoted\""), "{text:?}");
+    }
+}

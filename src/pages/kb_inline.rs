@@ -324,6 +324,31 @@ mod tests {
         assert_eq!(orphans, vec![gone.id]);
     }
 
+    /// An edit that removes an anchored sentence orphans that anchor and no
+    /// other; an anchor that was already an orphan is not this edit's doing.
+    #[test]
+    fn an_edit_is_charged_only_with_the_anchors_it_breaks() {
+        let before = "# Steps
+
+Restart the router. Then call the customer back.
+";
+        let kept = root("call the customer", "", "", false);
+        let broken = root("Restart the router", "", "", false);
+        let already = root("Escalate to the vendor", "", "", false);
+        let after = "# Steps
+
+Then call the customer back.
+";
+        assert_eq!(
+            orphaned_by_edit(before, after, &[kept, broken, already]),
+            vec!["Restart the router".to_string()]
+        );
+        assert!(
+            orphaned_by_edit(before, before, &[root("Restart the router", "", "", false)])
+                .is_empty()
+        );
+    }
+
     #[test]
     fn the_placement_key_moves_with_the_body_or_an_anchor_and_not_with_a_body_edit_of_a_comment() {
         let a = root("x", "", "", false);
