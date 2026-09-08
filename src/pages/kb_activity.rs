@@ -134,18 +134,16 @@ const RESOLVED_PREF: &str = "kb_activity_show_resolved";
 pub fn ArticleActivity(
     article: KbArticle,
     versions_resource: Resource<Option<Vec<KbArticleVersion>>>,
+    /// MAPPS-744: read by the page and shared with the inline layer.
+    comments_resource: Resource<Option<Vec<KbComment>>>,
+    /// MAPPS-744: the anchored roots whose passage is no longer in the
+    /// article, as the inline layer found on this render.
+    orphans: Signal<Vec<uuid::Uuid>>,
+    /// MAPPS-744: the thread a mark asked to jump to.
+    focus_thread: Signal<Option<uuid::Uuid>>,
 ) -> Element {
     let article_id = article.id.to_string();
-    let id_for_fetch = article_id.clone();
-    let mut comments_resource = use_resource(use_reactive!(|id_for_fetch| async move {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Vec<KbComment>>(&format!(
-            "/kb/articles/{id_for_fetch}/comments"
-        ))
-        .await
-        .inspect_err(|e| tracing::error!("kb comments load failed for {id_for_fetch}: {e}"))
-        .ok()
-    }));
+    let mut comments_resource = comments_resource;
     let mut tab = use_signal(|| Tab::from_key(&crate::utils::prefs::get_str(TAB_PREF, "all")));
     let mut show_resolved = use_signal(|| crate::utils::prefs::get_bool(RESOLVED_PREF, false));
     let mut settings_open = use_signal(|| false);
@@ -281,7 +279,7 @@ pub fn ArticleActivity(
                         for entry in stream.iter() {
                             match entry {
                                 Entry::Thread(root) => rsx! {
-                                    li { key: "c-{root.id}",
+                                    li { key: "c-{root.id}", id: "kb-comment-{root.id}",
                                         CommentThread {
                                             root: root.clone(),
                                             article_id: article_id.clone(),
@@ -289,6 +287,8 @@ pub fn ArticleActivity(
                                             is_admin,
                                             can_mutate,
                                             people: people.clone(),
+                                            orphaned: orphans.read().contains(&root.id),
+                                            focused: focus_thread() == Some(root.id),
                                             on_changed,
                                             on_error: move |m: String| error.set(m),
                                         }
@@ -311,6 +311,7 @@ pub fn ArticleActivity(
                         CommentComposer {
                             article_id: article_id.clone(),
                             parent_id: None,
+                            anchor: None,
                             author_name: my_name.clone(),
                             author_avatar: my_avatar.clone(),
                             can_mutate,
@@ -390,6 +391,10 @@ fn CommentThread(
     is_admin: bool,
     can_mutate: bool,
     people: Vec<crate::utils::mentions::Mention>,
+    /// MAPPS-744: the passage this thread was anchored to is gone.
+    orphaned: bool,
+    /// MAPPS-744: a mark asked to jump here.
+    focused: bool,
     on_changed: EventHandler<()>,
     on_error: EventHandler<String>,
 ) -> Element {
@@ -430,8 +435,38 @@ fn CommentThread(
         });
     });
 
+    // MAPPS-744: an anchored root quotes its passage; an orphan says the
+    // passage is gone and keeps the quote, which is what it has left.
+    let quote = root
+        .anchor
+        .as_ref()
+        .and_then(crate::utils::anchor::Anchor::from_json)
+        .map(|a| a.exact);
+    let root_for_jump = root.id.to_string();
+    let frame = if focused {
+        "rounded-md border border-accent p-3 ring-2 ring-accent"
+    } else {
+        "rounded-md border border-line p-3"
+    };
     rsx! {
-        div { class: "rounded-md border border-line p-3",
+        div { class: "{frame}",
+            if let Some(quote) = quote.as_ref() {
+                div { class: "mb-2 flex items-start justify-between gap-2",
+                    blockquote { class: "min-w-0 border-l-2 border-amber-400 pl-2 text-sm italic text-muted truncate", "\u{201c}{quote}\u{201d}" }
+                    if orphaned {
+                        span { class: "shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted", title: "The text this comment was attached to is no longer in the article",
+                            "Refers to text that is no longer in the article"
+                        }
+                    } else if !resolved {
+                        Button {
+                            variant: ButtonVariant::Link,
+                            size: ButtonSize::Small,
+                            onclick: move |_| crate::platform::anchor_dom::focus_mark(crate::pages::knowledge_base::KB_ARTICLE_BODY_ID, &root_for_jump),
+                            "Show in article"
+                        }
+                    }
+                }
+            }
             if resolved {
                 // Folded: one line, and the way back.
                 div { class: "flex items-center justify-between gap-3 text-sm",
@@ -503,6 +538,7 @@ fn CommentThread(
                         CommentComposer {
                             article_id: article_id.clone(),
                             parent_id: Some(root_id),
+                            anchor: None,
                             author_name: String::new(),
                             author_avatar: None,
                             can_mutate,
@@ -682,9 +718,11 @@ fn CommentBody(
 /// The editor plus a send button; a root composer shows the author's disc,
 /// a reply composer sits inside the thread and can be cancelled.
 #[component]
-fn CommentComposer(
+pub(crate) fn CommentComposer(
     article_id: String,
     parent_id: Option<uuid::Uuid>,
+    /// MAPPS-744: the passage a root is about (PMS-1130).
+    anchor: Option<serde_json::Value>,
     author_name: String,
     author_avatar: Option<String>,
     can_mutate: bool,
@@ -705,11 +743,16 @@ fn CommentComposer(
         busy.set(true);
         error.set(String::new());
         let id = article_id.clone();
+        let anchor = anchor.clone();
         spawn(async move {
             #[cfg(feature = "app")]
             {
                 let path = format!("/kb/articles/{id}/comments");
-                let req = CreateKbCommentRequest { body, parent_id };
+                let req = CreateKbCommentRequest {
+                    body,
+                    parent_id,
+                    anchor: anchor.clone(),
+                };
                 match crate::hooks::fetch::api::post_authed_typed::<KbComment, _>(&path, &req).await
                 {
                     Ok(_) => {
@@ -720,7 +763,7 @@ fn CommentComposer(
                 }
             }
             #[cfg(not(feature = "app"))]
-            let _ = (&id, &body, parent_id);
+            let _ = (&id, &body, parent_id, &anchor);
             busy.set(false);
         });
     });
