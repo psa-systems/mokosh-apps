@@ -132,6 +132,77 @@ fn to_html(src: &str, people: &[Mention], api_origin: &str) -> String {
     html_out
 }
 
+/// MAPPS-745: the rendered text of `src` as the browser would report it as
+/// `textContent`: the sanitized HTML with the tags removed and the entities
+/// the serializer writes decoded. The inline-comment resolver runs over
+/// exactly this on the article page (read from the DOM); the editor runs it
+/// over the unsaved body to say, before the save, which anchors the edit
+/// will orphan, with no DOM in the loop and the same answer on both hosts.
+pub fn rendered_text(src: &str) -> String {
+    let html = render_markdown(src);
+    let mut out = String::with_capacity(html.len());
+    let mut chars = html.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '<' => {
+                for t in chars.by_ref() {
+                    if t == '>' {
+                        break;
+                    }
+                }
+            }
+            '&' => {
+                let mut name = String::new();
+                let mut terminated = false;
+                while let Some(&n) = chars.peek() {
+                    chars.next();
+                    if n == ';' {
+                        terminated = true;
+                        break;
+                    }
+                    name.push(n);
+                    if name.len() > 10 {
+                        break;
+                    }
+                }
+                let decoded = if terminated {
+                    decode_entity(&name)
+                } else {
+                    None
+                };
+                match decoded {
+                    Some(d) => out.push(d),
+                    None => {
+                        out.push('&');
+                        out.push_str(&name);
+                        if terminated {
+                            out.push(';');
+                        }
+                    }
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn decode_entity(name: &str) -> Option<char> {
+    match name {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" | "#39" | "#x27" => Some('\''),
+        "nbsp" | "#160" | "#xa0" => Some('\u{a0}'),
+        _ => name
+            .strip_prefix("#x")
+            .and_then(|h| u32::from_str_radix(h, 16).ok())
+            .or_else(|| name.strip_prefix('#').and_then(|d| d.parse::<u32>().ok()))
+            .and_then(char::from_u32),
+    }
+}
+
 /// MAPPS-741: what a table of contents needs to know about one heading.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Heading {

@@ -242,7 +242,7 @@ pub struct MarkdownEditorProps {
 /// `name` is already required to be unique on the page (the toolbar and the
 /// mention list both address the field by it), so deriving from it keeps the
 /// two ids in step without a second prop for a host to get wrong.
-fn preview_id(name: &str) -> String {
+pub(crate) fn preview_id(name: &str) -> String {
     format!("{name}-preview")
 }
 
