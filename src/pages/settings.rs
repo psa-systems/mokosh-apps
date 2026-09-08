@@ -47,7 +47,7 @@ const PER_PAGE: usize = 25;
 /// surfaces configure tenant-wide behavior, so they match the same gate
 /// the sidebar uses to show the Settings entry. Server endpoints re-check,
 /// so this is a UX affordance, not a security boundary.
-fn use_is_admin() -> bool {
+pub(crate) fn use_is_admin() -> bool {
     let auth = crate::hooks::use_auth();
     let auth_state = auth.read();
     auth_state
@@ -59,7 +59,7 @@ fn use_is_admin() -> bool {
 
 /// Shown in place of a settings page when a non-admin lands on one.
 #[component]
-fn AdminOnlyNotice(title: String) -> Element {
+pub(crate) fn AdminOnlyNotice(title: String) -> Element {
     use_page_title(title.clone());
     rsx! {
         PageHeader { title, subtitle: "Settings" }
@@ -589,6 +589,16 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Data,
         advanced: false,
         visibility: SurfaceVisibility::Always,
+    },
+    // MAPPS-747: the per-tenant module flags, which until then were
+    // reachable only through the API with an admin bearer.
+    SettingsSurface {
+        route: Route::SettingsModules {},
+        title: "Modules",
+        description: "Turn the platform's gated modules on or off for this organization.",
+        group: SettingsGroupKey::Data,
+        advanced: false,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
 ];
 

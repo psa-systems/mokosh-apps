@@ -979,6 +979,12 @@ pub enum Route {
     #[route("/settings/organization")]
     SettingsOrganization {},
 
+    // MAPPS-747: the per-tenant module flags. Admin only on the page; the
+    // route is staff-only like every other `/settings/*` but the three the
+    // contact allowlist names.
+    #[route("/settings/modules")]
+    SettingsModules {},
+
     // Mokosh-side profile. Edits the tenant-scoped fields on the
     // user row (name, title, phone, mobile, timezone). Cross-app
     // identity (email, password, MFA, sessions, billing) lives on
@@ -2060,6 +2066,15 @@ fn SettingsOrganization() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             settings::OrganizationSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsModules() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_modules::ModulesSettingsPage {}
         }
     }
 }
