@@ -49,6 +49,24 @@ pub fn place(text: &str, roots: &[KbComment]) -> (Vec<MarkSpec>, Vec<uuid::Uuid>
     (specs, orphans)
 }
 
+/// MAPPS-745: the quotes of the anchored roots that resolve in the article
+/// as saved (`before`) and no longer resolve in the unsaved body (`after`).
+/// What the editor warns about on save. A root already orphaned before the
+/// edit is not this edit's doing and is left out.
+pub fn orphaned_by_edit(before: &str, after: &str, roots: &[KbComment]) -> Vec<String> {
+    let before_text = crate::utils::markdown::rendered_text(before);
+    let after_text = crate::utils::markdown::rendered_text(after);
+    roots
+        .iter()
+        .filter(|c| !c.deleted && c.parent_id.is_none())
+        .filter_map(|c| c.anchor.as_ref().and_then(Anchor::from_json))
+        .filter(|a| {
+            anchor::resolve(&before_text, a).is_some() && anchor::resolve(&after_text, a).is_none()
+        })
+        .map(|a| a.exact)
+        .collect()
+}
+
 /// A stable fingerprint of what the placement depends on, so the effect
 /// re-runs exactly when the body or an anchor changed.
 fn placement_key(content: &str, roots: &[KbComment]) -> u64 {
