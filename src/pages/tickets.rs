@@ -6825,3 +6825,75 @@ mod mapps686_shared_dto_tests {
         );
     }
 }
+
+/// MAPPS-733: images from the author's machine reach a ticket the way they
+/// reach an article.
+#[cfg(test)]
+mod mapps733_inline_image_tests {
+    use super::{inline_image_url, TicketInlineAttachment, TICKET_UPLOAD_HELP};
+
+    #[test]
+    fn the_inserted_path_is_the_servers_else_the_public_read_for_the_id() {
+        let id = uuid::Uuid::new_v4();
+        let said = TicketInlineAttachment {
+            id,
+            url: Some("/api/v1/public/tickets/attachments/x".into()),
+        };
+        assert_eq!(
+            inline_image_url(&said),
+            "/api/v1/public/tickets/attachments/x"
+        );
+        let silent = TicketInlineAttachment { id, url: None };
+        assert_eq!(
+            inline_image_url(&silent),
+            format!("/api/v1/public/tickets/attachments/{id}")
+        );
+        let blank = TicketInlineAttachment {
+            id,
+            url: Some("  ".into()),
+        };
+        assert_eq!(
+            inline_image_url(&blank),
+            format!("/api/v1/public/tickets/attachments/{id}")
+        );
+    }
+
+    /// The three editors on the detail page take a file; the create form,
+    /// which has no ticket to store one against yet, keeps the URL field
+    /// only. Every upload goes to the inline route and says the link is
+    /// public, which is the PMS-941 bargain.
+    #[test]
+    fn every_detail_page_editor_uploads_and_the_create_form_does_not() {
+        let src = include_str!("tickets.rs");
+        let head = &src[..src
+            .find("mod mapps733_inline_image_tests")
+            .expect("this module")];
+        let editors: Vec<usize> = head
+            .match_indices("crate::components::MarkdownEditor {")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(editors.len(), 4);
+        let blocks: Vec<&str> = editors
+            .iter()
+            .map(|&i| &head[i..head[i..].find("oninput:").map(|o| i + o).expect("oninput")])
+            .collect();
+        assert!(
+            !blocks[0].contains("on_file:"),
+            "the create form has no ticket yet"
+        );
+        for (n, block) in blocks.iter().enumerate().skip(1) {
+            assert!(block.contains("on_file:"), "editor {n} takes a file");
+            assert!(
+                block.contains("upload_help: Some(TICKET_UPLOAD_HELP.to_string()),"),
+                "editor {n} words it for a ticket"
+            );
+        }
+        assert_eq!(
+            head.matches("start_inline_image_upload(").count(),
+            4,
+            "one definition, three call sites"
+        );
+        assert!(head.contains("format!(\"/tickets/{ticket_id}/attachments/inline\")"));
+        assert!(TICKET_UPLOAD_HELP.contains("anyone holding the link can view it"));
+    }
+}
