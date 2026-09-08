@@ -339,7 +339,11 @@ pub async fn text_of(container_id: &str) -> Option<String> {
         "const el = document.getElementById({}); dioxus.send(el ? el.textContent : null);",
         js_string(container_id)
     ));
-    eval.recv::<Option<String>>().await.ok().flatten()
+    eval.recv::<Option<String>>()
+        .await
+        .inspect_err(|e| tracing::warn!("article text read failed on the desktop: {e}"))
+        .ok()
+        .flatten()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -448,6 +452,7 @@ pub async fn selection_in(container_id: &str) -> Option<std::ops::Range<usize>> 
     ));
     eval.recv::<Option<(usize, usize)>>()
         .await
+        .inspect_err(|e| tracing::warn!("selection read failed on the desktop: {e}"))
         .ok()
         .flatten()
         .map(|(s, e)| s..e)
