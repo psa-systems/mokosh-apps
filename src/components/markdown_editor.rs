@@ -200,6 +200,10 @@ pub struct MarkdownEditorProps {
     /// MAPPS-587: where a picked file goes. See the module header.
     #[props(default)]
     pub on_file: Option<EventHandler<(String, String, Vec<u8>)>>,
+    /// MAPPS-733: the wording under the picker's file field, passed through
+    /// to the toolbar; `None` keeps the knowledge-base wording.
+    #[props(default)]
+    pub upload_help: Option<String>,
     /// MAPPS-594: keep the label out of the flow while still using it.
     ///
     /// For a host that already names the field, such as a card whose title is
@@ -479,6 +483,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                 disabled: props.disabled,
                 open_link: link_shortcut,
                 on_file: props.on_file,
+                upload_help: props.upload_help.clone(),
                 onchange: move |next: String| on_change.call(next),
             }
             Textarea {

@@ -2398,6 +2398,93 @@ pub struct TicketDetailPageProps {
     pub id: String,
 }
 
+/// MAPPS-733: the row `POST /tickets/{id}/attachments/inline` answers with;
+/// only the fields the insert needs. `url` is the public read path the
+/// server hands back for an inline row (PMS-941).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct TicketInlineAttachment {
+    id: uuid::Uuid,
+    #[serde(default)]
+    url: Option<String>,
+}
+
+/// The path that goes into the Markdown: what the server said, else the
+/// public inline read for the id, which is the same thing.
+fn inline_image_url(att: &TicketInlineAttachment) -> String {
+    att.url
+        .clone()
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or_else(|| format!("/api/v1/public/tickets/attachments/{}", att.id))
+}
+
+/// MAPPS-733: the wording under the picker's file field on this page.
+const TICKET_UPLOAD_HELP: &str =
+    "PNG, JPEG, WebP or GIF, up to 5 MB. It is stored with this ticket and anyone holding the link can view it.";
+
+/// MAPPS-733: put a picked or pasted image into a Markdown field on the
+/// ticket page. The KB editor has had this since MAPPS-587; a ticket's
+/// description and notes had only the URL field. The upload goes to the
+/// PMS-941 inline route, which stores the image against the ticket (not the
+/// note, which may not exist yet) and serves it on the public inline read
+/// an `<img>` can fetch; the returned path is inserted at the caret through
+/// the same action the toolbar's URL field takes, so an uploaded image and a
+/// linked one land identically. The server re-checks type and size; the
+/// check here only spares the author a five-megabyte round trip.
+fn start_inline_image_upload(
+    ticket_id: String,
+    target_id: String,
+    (file_name, mime, bytes): (String, String, Vec<u8>),
+    mut content: Signal<String>,
+    mut content_error: Signal<String>,
+    mut uploading: Signal<bool>,
+    mut upload_error: Signal<String>,
+) {
+    upload_error.set(String::new());
+    if let Err(msg) = crate::utils::image_upload::check(&mime, bytes.len()) {
+        upload_error.set(msg);
+        return;
+    }
+    if *uploading.read() {
+        return;
+    }
+    uploading.set(true);
+    #[cfg(feature = "app")]
+    spawn(async move {
+        let path = format!("/tickets/{ticket_id}/attachments/inline");
+        match crate::hooks::fetch::api::post_file_authed::<TicketInlineAttachment>(
+            &path, &file_name, &mime, &bytes,
+        )
+        .await
+        {
+            Ok(att) => {
+                let alt = crate::utils::image_upload::alt_from_file_name(&file_name);
+                let body_now = content.read().clone();
+                crate::components::run_action(
+                    &target_id,
+                    &body_now,
+                    &crate::utils::md_edit::Action::Image {
+                        alt,
+                        url: inline_image_url(&att),
+                    },
+                    &EventHandler::new(move |next: String| {
+                        content_error.set(String::new());
+                        content.set(next);
+                    }),
+                );
+            }
+            Err(e) => {
+                upload_error.set(format!("Could not upload that image: {}", e.user_message()));
+            }
+        }
+        uploading.set(false);
+    });
+    #[cfg(not(feature = "app"))]
+    {
+        let _ = (ticket_id, target_id, file_name, mime, bytes);
+        uploading.set(false);
+    }
+}
+
 #[component]
 #[allow(unused_variables)]
 pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
@@ -2467,6 +2554,9 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     // surfaced in the textarea's own slot by the FormGuard in the composer's
     // submit handler.
     let mut note_content_error = use_signal(String::new);
+    // MAPPS-733: an image on its way into the note, and why one did not go.
+    let note_uploading = use_signal(|| false);
+    let note_upload_error = use_signal(String::new);
     // MAPPS-686: inline slot for a Note Type the shared `CreateNoteRequest`
     // does not name. Every option comes from `note_type_options()`, so this
     // only fires if the server's `NoteType` and this composer disagree, and
@@ -2638,6 +2728,9 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     // in `on_save`.
     let mut e_title_error = use_signal(String::new);
     let mut e_desc_error = use_signal(String::new);
+    // MAPPS-733: an image on its way into the description, and why one did not go.
+    let desc_uploading = use_signal(|| false);
+    let desc_upload_error = use_signal(String::new);
     let mut e_submitting = use_signal(|| false);
     let mut e_error = use_signal(String::new);
     // MAPPS-594: Cancel asks first, but only when there is something to lose.
@@ -3427,10 +3520,33 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                         error: e_desc_error.read().clone(),
                                         value: e_desc.read().clone(),
                                         people: crate::hooks::mention_people(&mention_directory),
+                                        // MAPPS-733: a picked or pasted image lands
+                                        // in the description as it does in an article.
+                                        on_file: {
+                                            let ticket_id = props.id.clone();
+                                            EventHandler::new(move |f: (String, String, Vec<u8>)| {
+                                                start_inline_image_upload(
+                                                    ticket_id.clone(),
+                                                    "edit-description".to_string(),
+                                                    f,
+                                                    e_desc,
+                                                    e_desc_error,
+                                                    desc_uploading,
+                                                    desc_upload_error,
+                                                )
+                                            })
+                                        },
+                                        upload_help: Some(TICKET_UPLOAD_HELP.to_string()),
                                         oninput: move |next: String| {
                                             e_desc_error.set(String::new());
                                             e_desc.set(next);
                                         },
+                                    }
+                                    if desc_uploading() {
+                                        p { class: "text-xs text-subtle", "Uploading image…" }
+                                    }
+                                    if !desc_upload_error().is_empty() {
+                                        p { class: "text-sm text-red-600 dark:text-red-400", "{desc_upload_error}" }
                                     }
                                     div { class: "flex justify-end gap-2",
                                         Button {
@@ -3568,10 +3684,33 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             error: note_content_error.read().clone(),
                             value: note_content.read().clone(),
                             people: crate::hooks::mention_people(&mention_directory),
+                            // MAPPS-733: the image is stored against the ticket,
+                            // so a note that does not exist yet can carry one.
+                            on_file: {
+                                let ticket_id = props.id.clone();
+                                EventHandler::new(move |f: (String, String, Vec<u8>)| {
+                                    start_inline_image_upload(
+                                        ticket_id.clone(),
+                                        "content".to_string(),
+                                        f,
+                                        note_content,
+                                        note_content_error,
+                                        note_uploading,
+                                        note_upload_error,
+                                    )
+                                })
+                            },
+                            upload_help: Some(TICKET_UPLOAD_HELP.to_string()),
                             oninput: move |next: String| {
                                 note_content_error.set(String::new());
                                 note_content.set(next);
                             },
+                        }
+                        if note_uploading() {
+                            p { class: "text-xs text-subtle", "Uploading image…" }
+                        }
+                        if !note_upload_error().is_empty() {
+                            p { class: "text-sm text-red-600 dark:text-red-400", "{note_upload_error}" }
                         }
                         div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
                             Select {
@@ -4446,6 +4585,9 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
     let mut editing = use_signal(|| false);
     let mut draft = use_signal(String::new);
     let mut edit_error = use_signal(String::new);
+    // MAPPS-733: an image on its way into the corrected note.
+    let note_edit_uploading = use_signal(|| false);
+    let note_edit_upload_error = use_signal(String::new);
     let mut saving = use_signal(|| false);
     // MAPPS-610: the directory the inline editor completes `@` against. The
     // hook shares one fetch across the page, so a journal of thirty entries
@@ -4569,10 +4711,34 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                                         error: edit_error.read().clone(),
                                         value: draft.read().clone(),
                                         people: crate::hooks::mention_people(&mention_directory),
+                                        // MAPPS-733: a correction can carry an
+                                        // image the way the note could.
+                                        on_file: {
+                                            let ticket_id = props.ticket_id.clone();
+                                            let target = format!("edit-note-{note_dom_id}");
+                                            EventHandler::new(move |f: (String, String, Vec<u8>)| {
+                                                start_inline_image_upload(
+                                                    ticket_id.clone(),
+                                                    target.clone(),
+                                                    f,
+                                                    draft,
+                                                    edit_error,
+                                                    note_edit_uploading,
+                                                    note_edit_upload_error,
+                                                )
+                                            })
+                                        },
+                                        upload_help: Some(TICKET_UPLOAD_HELP.to_string()),
                                         oninput: move |next: String| {
                                             edit_error.set(String::new());
                                             draft.set(next);
                                         },
+                                    }
+                                    if note_edit_uploading() {
+                                        p { class: "text-xs text-subtle", "Uploading image…" }
+                                    }
+                                    if !note_edit_upload_error().is_empty() {
+                                        p { class: "text-sm text-red-600 dark:text-red-400", "{note_edit_upload_error}" }
                                     }
                                     div { class: "flex gap-2",
                                         Button {
@@ -6657,5 +6823,84 @@ mod mapps686_shared_dto_tests {
             project_name,
             task_title,
         );
+    }
+}
+
+/// MAPPS-733: images from the author's machine reach a ticket the way they
+/// reach an article.
+#[cfg(test)]
+mod mapps733_inline_image_tests {
+    use super::{inline_image_url, TicketInlineAttachment, TICKET_UPLOAD_HELP};
+
+    #[test]
+    fn the_inserted_path_is_the_servers_else_the_public_read_for_the_id() {
+        let id = uuid::Uuid::new_v4();
+        let said = TicketInlineAttachment {
+            id,
+            url: Some("/api/v1/public/tickets/attachments/x".into()),
+        };
+        assert_eq!(
+            inline_image_url(&said),
+            "/api/v1/public/tickets/attachments/x"
+        );
+        let silent = TicketInlineAttachment { id, url: None };
+        assert_eq!(
+            inline_image_url(&silent),
+            format!("/api/v1/public/tickets/attachments/{id}")
+        );
+        let blank = TicketInlineAttachment {
+            id,
+            url: Some("  ".into()),
+        };
+        assert_eq!(
+            inline_image_url(&blank),
+            format!("/api/v1/public/tickets/attachments/{id}")
+        );
+    }
+
+    /// The three editors on the detail page take a file; the create form,
+    /// which has no ticket to store one against yet, keeps the URL field
+    /// only. Every upload goes to the inline route and says the link is
+    /// public, which is the PMS-941 bargain.
+    #[test]
+    fn every_detail_page_editor_uploads_and_the_create_form_does_not() {
+        let src = include_str!("tickets.rs");
+        // The shipping code that holds the four editors: from the new-ticket
+        // page to the first test module after the timeline item. The pins
+        // elsewhere in this file quote the editor's name too, so a scan of the
+        // whole file would count them.
+        let from = src.find("pub fn TicketNewPage()").expect("the create page");
+        let to = src[from..]
+            .find("#[cfg(test)]\nmod mapps_607_tests")
+            .map(|o| from + o)
+            .expect("the first test module after the pages");
+        let head = &src[from..to];
+        let editors: Vec<usize> = head
+            .match_indices("crate::components::MarkdownEditor {")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(editors.len(), 4);
+        let blocks: Vec<&str> = editors
+            .iter()
+            .map(|&i| &head[i..head[i..].find("oninput:").map(|o| i + o).expect("oninput")])
+            .collect();
+        assert!(
+            !blocks[0].contains("on_file:"),
+            "the create form has no ticket yet"
+        );
+        for (n, block) in blocks.iter().enumerate().skip(1) {
+            assert!(block.contains("on_file:"), "editor {n} takes a file");
+            assert!(
+                block.contains("upload_help: Some(TICKET_UPLOAD_HELP.to_string()),"),
+                "editor {n} words it for a ticket"
+            );
+        }
+        assert_eq!(
+            head.matches("start_inline_image_upload(").count(),
+            4,
+            "one definition, three call sites"
+        );
+        assert!(head.contains("format!(\"/tickets/{ticket_id}/attachments/inline\")"));
+        assert!(TICKET_UPLOAD_HELP.contains("anyone holding the link can view it"));
     }
 }

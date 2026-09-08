@@ -61,6 +61,11 @@ pub struct MarkdownToolbarProps {
     /// articles, which is the only reason it can be shared.
     #[props(default)]
     pub on_file: Option<EventHandler<(String, String, Vec<u8>)>>,
+    /// MAPPS-733: what the picker says under the file field, since the host
+    /// is what stores the image. `None` is the knowledge-base wording the
+    /// picker shipped with.
+    #[props(default)]
+    pub upload_help: Option<String>,
 }
 
 /// Length of `value` in UTF-16 code units, which is what the DOM counts.
@@ -335,7 +340,7 @@ pub fn MarkdownToolbar(props: MarkdownToolbarProps) -> Element {
                                         name: "md_image_file",
                                         label: "Upload an image",
                                         accept: crate::utils::image_upload::accept_attribute(),
-                                        help: "PNG, JPEG, WebP or GIF, up to 5 MB. It is stored with this article.".to_string(),
+                                        help: props.upload_help.clone().unwrap_or_else(|| "PNG, JPEG, WebP or GIF, up to 5 MB. It is stored with this article.".to_string()),
                                         onchange: move |evt: FormEvent| {
                                             let Some(file) = evt.files().into_iter().next() else {
                                                 return;
