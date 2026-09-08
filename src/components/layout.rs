@@ -2285,3 +2285,22 @@ mod notification_link_tests {
         );
     }
 }
+
+/// MAPPS-748: the timesheet entries follow the module flag.
+#[cfg(test)]
+mod module_gated_nav_tests {
+    #[test]
+    fn the_two_timesheet_entries_render_only_while_the_module_is_on() {
+        let src = include_str!("layout.rs");
+        let head = &src[..src.find("mod module_gated_nav_tests").expect("this module")];
+        assert!(head.contains(
+            "let timesheets_on = crate::hooks::modules::use_module_enabled(\"timesheets\");"
+        ));
+        assert!(head.contains("if show_timesheets && timesheets_on {"));
+        assert!(head.contains("if can_manage && timesheets_on {"));
+        assert!(
+            head.contains("NavItem { to: Route::TimeEntryList {}, icon: rsx!(ClockIcon {}), label: \"Time Entries\", collapsed }"),
+            "Time Entries is untouched: it is the time_tracking module, not timesheets"
+        );
+    }
+}
