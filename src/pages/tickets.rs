@@ -6865,9 +6865,16 @@ mod mapps733_inline_image_tests {
     #[test]
     fn every_detail_page_editor_uploads_and_the_create_form_does_not() {
         let src = include_str!("tickets.rs");
-        let head = &src[..src
-            .find("mod mapps733_inline_image_tests")
-            .expect("this module")];
+        // The shipping code that holds the four editors: from the new-ticket
+        // page to the first test module after the timeline item. The pins
+        // elsewhere in this file quote the editor's name too, so a scan of the
+        // whole file would count them.
+        let from = src.find("pub fn TicketNewPage()").expect("the create page");
+        let to = src[from..]
+            .find("#[cfg(test)]\nmod mapps_607_tests")
+            .map(|o| from + o)
+            .expect("the first test module after the pages");
+        let head = &src[from..to];
         let editors: Vec<usize> = head
             .match_indices("crate::components::MarkdownEditor {")
             .map(|(i, _)| i)
