@@ -165,6 +165,19 @@ features = [
     "IntersectionObserverEntry",
     "IntersectionObserverInit",
     "NodeList",
+    # MAPPS-744: inline comments wrap ranges of the rendered article in
+    # <mark> elements after sanitizing. Text nodes are walked (TreeWalker,
+    # NodeFilter, Text, CharacterData), the reader's selection is read
+    # (Selection, Range) and the marks' positions feed the margin markers
+    # (DomRect); KeyboardEvent is the Enter key on a focused mark.
+    "Selection",
+    "Range",
+    "Text",
+    "CharacterData",
+    "TreeWalker",
+    "NodeFilter",
+    "DomRect",
+    "KeyboardEvent",
     # MAPPS-292: unsaved-changes guard listens on window's `beforeunload`.
     "BeforeUnloadEvent",
     # MAPPS-355: auth heartbeat skips its request when the tab is hidden.
