@@ -4,6 +4,7 @@
 
 mod account_deleted_overlay;
 mod asset_picker;
+mod avatar;
 mod bar_chart;
 mod branding_editor;
 mod bulk_actions;
@@ -47,6 +48,7 @@ mod update_banner;
 
 pub use account_deleted_overlay::*;
 pub use asset_picker::*;
+pub use avatar::*;
 pub use bar_chart::*;
 pub use branding_editor::*;
 pub use bulk_actions::*;

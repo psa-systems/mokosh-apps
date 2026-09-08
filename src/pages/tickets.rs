@@ -10,7 +10,6 @@ use crate::components::{
     DataTable, ErrorBanner, IconSize, Input, MailIcon, Modal, PageHeader, PencilIcon, PlusIcon,
     SearchInput, Select, SelectAllHeader, SelectOption, SelectRowCell, SortDirection, Table,
     TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea,
-    UserCircleIcon,
 };
 use crate::components::{ChangeDetails, ChangeLine};
 // MAPPS-596: shared with the project, task and asset change-history panes.
@@ -4513,10 +4512,11 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                     }
                 }
                 div { class: "relative flex space-x-3",
+                    // MAPPS-742: the shared disc, initials rather than a
+                    // generic icon, so two people's entries look like two
+                    // people's entries.
                     div {
-                        span { class: "h-8 w-8 rounded-full bg-accent-100 dark:bg-accent-900 flex items-center justify-center ring-8 ring-surface",
-                            UserCircleIcon { size: IconSize::Small, class: "text-accent".to_string() }
-                        }
+                        crate::components::Avatar { name: props.user.clone(), class: "ring-8 ring-surface".to_string() }
                     }
                     div { class: "flex min-w-0 flex-1 justify-between space-x-4 pt-1.5",
                         div {

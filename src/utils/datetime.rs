@@ -329,6 +329,42 @@ pub fn fmt_datetime_pref(dt: DateTime<Utc>) -> String {
     }
 }
 
+/// "4 months ago", "in 2 days", "just now": the coarse distance from `now`
+/// (MAPPS-742), for a stream where the absolute time rides in `title`. Pure
+/// in `now` so a test pins it; [`fmt_relative`] is the page's wrapper.
+pub fn relative_label(dt: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let delta = now.signed_duration_since(dt);
+    let past = delta.num_seconds() >= 0;
+    let secs = delta.num_seconds().unsigned_abs();
+    let (n, unit) = if secs < 45 {
+        return "just now".to_string();
+    } else if secs < 90 {
+        (1, "minute")
+    } else if secs < 3600 {
+        (secs / 60, "minute")
+    } else if secs < 86_400 {
+        (secs / 3600, "hour")
+    } else if secs < 30 * 86_400 {
+        (secs / 86_400, "day")
+    } else if secs < 365 * 86_400 {
+        (secs / (30 * 86_400), "month")
+    } else {
+        (secs / (365 * 86_400), "year")
+    };
+    let n = n.max(1);
+    let plural = if n == 1 { "" } else { "s" };
+    if past {
+        format!("{n} {unit}{plural} ago")
+    } else {
+        format!("in {n} {unit}{plural}")
+    }
+}
+
+/// [`relative_label`] against the clock now.
+pub fn fmt_relative(dt: DateTime<Utc>) -> String {
+    relative_label(dt, Utc::now())
+}
+
 /// Read the active user's date_format_string off the AuthContext
 /// without forcing every caller to thread the value through their
 /// signature. Use this from any handler component that already
