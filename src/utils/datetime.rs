@@ -415,6 +415,31 @@ pub fn user_local_date(dt: DateTime<Utc>) -> chrono::NaiveDate {
 }
 
 #[cfg(test)]
+mod relative_label_tests {
+    use super::relative_label;
+    use chrono::{Duration, TimeZone, Utc};
+
+    #[test]
+    fn coarse_distances_in_both_directions() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 8, 12, 0, 0).unwrap();
+        assert_eq!(relative_label(now - Duration::seconds(20), now), "just now");
+        assert_eq!(
+            relative_label(now - Duration::seconds(70), now),
+            "1 minute ago"
+        );
+        assert_eq!(
+            relative_label(now - Duration::minutes(5), now),
+            "5 minutes ago"
+        );
+        assert_eq!(relative_label(now - Duration::hours(3), now), "3 hours ago");
+        assert_eq!(relative_label(now - Duration::days(1), now), "1 day ago");
+        assert_eq!(relative_label(now - Duration::days(45), now), "1 month ago");
+        assert_eq!(relative_label(now - Duration::days(400), now), "1 year ago");
+        assert_eq!(relative_label(now + Duration::days(2), now), "in 2 days");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Local;
