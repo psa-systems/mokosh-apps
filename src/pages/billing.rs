@@ -5804,3 +5804,46 @@ mod invoice_tax_tests {
         assert_eq!(tax_label(Some("n/a")), "Tax");
     }
 }
+
+/// MAPPS-643: the locked-invoice note.
+#[cfg(test)]
+mod mapps643_locked_note_tests {
+    use super::locked_invoice_note;
+
+    /// Every frozen state has a note, a draft has none, and each note leads
+    /// with the state, names an action the page offers, and never says
+    /// "finalized record" or doubles up "cancelled, or voided".
+    #[test]
+    fn each_locked_state_says_what_it_is_and_what_can_be_done() {
+        for draft in ["draft", "pending", "", "overdue-nonsense"] {
+            assert_eq!(locked_invoice_note(draft), None, "{draft}");
+        }
+        let sent = locked_invoice_note("sent").expect("sent");
+        assert!(sent.starts_with("This invoice was sent"));
+        assert!(
+            sent.contains("Record a payment")
+                && sent.contains("write it off")
+                && sent.contains("credit note")
+        );
+        let partly = locked_invoice_note("partially_paid").expect("partially_paid");
+        assert!(partly.starts_with("This invoice is partly paid"));
+        assert!(partly.contains("Record the rest") && partly.contains("credit note"));
+        let paid = locked_invoice_note("paid").expect("paid");
+        assert!(
+            paid.contains("refund or correct") && !paid.contains("write"),
+            "a paid invoice is not written off"
+        );
+        let void = locked_invoice_note("void").expect("void");
+        assert!(void.contains("raise a new invoice"));
+        let off = locked_invoice_note("written_off").expect("written_off");
+        assert!(
+            off.contains("recovery"),
+            "PMS-1036: a late payment is a recovery, not refused"
+        );
+        for note in [sent, partly, paid, void, off] {
+            assert!(!note.contains("finalized"), "{note}");
+            assert!(!note.contains("cancelled, or voided"), "{note}");
+            assert!(note.ends_with('.'), "{note}");
+        }
+    }
+}
