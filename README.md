@@ -1,217 +1,46 @@
-# Mokosh Client
+# Mokosh Apps
 
-Cross-platform Dioxus client for the Mokosh Platform. It builds two ways from one source tree: a WebAssembly SPA that runs in the browser, and a native desktop application. See [docs/desktop.md](docs/desktop.md) for the desktop build.
+The client for the Mokosh PSA platform: one Dioxus source tree that builds as a WebAssembly SPA in the browser and as a native desktop application.
 
-## Tech stack
+<!--
+BUNYIP-587 records the shared Bunyip-to-Mokosh walkthrough GIF. When it lands,
+commit a copy at docs/assets/mokosh-walkthrough.gif (a cross-repo relative path
+to the Bunyip copy does not render on the mirrors, and hot-linking the raw asset
+URL is fragile) and replace this comment with:
+![Mokosh walkthrough](docs/assets/mokosh-walkthrough.gif)
+-->
 
-- **Dioxus 0.7** (Rust UI framework, `router` feature, plus `web` or `desktop` for the renderer)
-- **wasm32-unknown-unknown** target for the SPA; the host target for the desktop app
-- **Tailwind CSS v4** via Bun (`bun x @tailwindcss/cli`)
-- **just** task runner
-- **Docker Compose** for the dev server
-- **Caddy** to serve the built bundle in production (see `oci-build/`)
+## Try it
 
-## Prerequisites
+Live staging: **<https://msp.a8n.systems>**. This repository is what serves that page; sign in through the platform and click through the product.
 
-Install on the host:
+> Staging shows features **in development**, not a polished demo. State is **wiped on every deploy** - accounts and data are throwaway. Do not reuse a real password.
 
-- [Rust](https://www.rust-lang.org/tools/install) (stable)
-- `wasm32-unknown-unknown` target: `rustup target add wasm32-unknown-unknown`
-- [Bun](https://bun.sh/)
-- [just](https://github.com/casey/just)
-- [Docker](https://docs.docker.com/engine/install/) with the Compose plugin
-- [Nushell 0.112.2](https://www.nushell.sh/) (used by the `dev` and `create-release` recipes)
+## Documentation
 
-The dev server itself runs inside Docker, so the host does not need `dioxus-cli` installed. The desktop build does need it, along with a system webview; see [docs/desktop.md](docs/desktop.md).
+Everything else is in [`docs/`](docs/README.md), indexed there in full:
 
-### Shared task runner
-
-The hook, release and cleanup recipes come from <https://dev.a8n.run/psa-systems/common>, vendored as the `common` git submodule and imported by the root `justfile`. Run this once in a fresh clone, or every `just` invocation fails on the unresolved import:
-
-```nu
-git submodule update --init
-```
-
-Configure those recipes through the variables at the top of the `justfile`; never redefine one, which `just check-justfile` rejects. `just install-hooks` writes the `.git/hooks/pre-commit` stub, and `just pre-commit` runs fmt, clippy, the wasm check and the library tests in the builder image.
-
-## Quick start
-
-```nu
-just dev
-```
-
-This recipe:
-
-1. Detects the host LAN IP from the first non-loopback IPv4 interface (`en*`/`eth*`/`br*`/`wlan*`) via `sys net`.
-2. Exports it as `HOST_IP`.
-3. Runs `docker compose up --build`, which starts `dev-mokosh-apps` and binds port `4301` to `${HOST_IP}:4301`.
-
-Open the printed URL (e.g. `http://172.16.100.120:4301`). Hot reload is enabled.
-
-Binding to the LAN IP rather than `0.0.0.0` keeps the dev server off the public internet when the host is a VPS.
-
-### Reaching the dev server from another container
-
-Either:
-
-- Use the host LAN IP: `http://${HOST_IP}:4301`.
-- Or join the `dev-mokosh-private-${USER}` Docker network and use `http://dev-mokosh-apps-${USER}:4301`.
-
-## Justfile recipes
-
-```nu
-just                  # list recipes
-just dev              # run the dev server in Docker (see above)
-just css-build        # one-shot Tailwind build
-just css-watch        # Tailwind watch mode
-just check            # check-web, check-desktop, check-clippy, check-fmt, and the guard scripts
-just check-web        # cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings
-just check-desktop    # cargo check for the native desktop build
-just check-clippy     # cargo clippy --all-targets
-just check-fmt        # cargo fmt --all --check
-just check-types-pin  # fail if the mokosh-types pin is behind the server head (needs network)
-just fmt              # cargo fmt --all
-just test             # cargo test
-just build            # release WASM bundle (dx build --release)
-just desktop-run      # run the desktop app (see docs/desktop.md)
-just desktop-build    # build the desktop binary
-just desktop-bundle   # build an installable desktop bundle
-just check-docker     # build the production OCI image as :check
-just build-docker     # build the production OCI image as :local
-just install-hooks    # install the git pre-commit hook (from common)
-just pre-commit       # run the containerized pre-commit checks (from common)
-just create-release   # cut a release branch and bump versions (from common, see below)
-```
-
-## Project layout
-
-```
-src/
-  main.rs           # entry point for both targets; picks the renderer
-  lib.rs
-  components/       # button, card, form, icons, layout, modal, table
-  hooks/
-  modules/          # auth, contacts, tenants, tickets
-  pages/            # admin, billing, calendar, contracts, dashboard, ...
-  platform/         # the host boundary: HTTP, storage, DOM, timers, ...
-  utils/
-
-assets/             # built CSS and static assets (styles.css is generated)
-input.css           # Tailwind entry; compiled into assets/styles.css
-index.html          # HTML template for the WASM bundle
-
-Cargo.toml          # Rust workspace + crate config
-Dioxus.toml         # dx serve / dx build config (port 4300, name, bundle)
-package.json        # Bun deps (Tailwind v4)
-justfile            # task runner
-common/             # psa-systems/common submodule (shared hook/release recipes)
-compose.yml         # dev server stack
-Dockerfile          # dev image (dx serve with hot reload)
-oci-build/          # production image (Caddy serving the built bundle)
-```
-
-## Ports
-
-| Port | Where         | What                                                       |
-|------|---------------|------------------------------------------------------------|
-| 4300 | `Dioxus.toml` | `[server]` port used by `dx` for the runtime server config |
-| 4301 | `compose.yml` | `dx serve` dev port, published as `${HOST_IP}:4301:4301`   |
-
-## Login bypass (dev only)
-
-Copy `.env.example` to `.env` and set both `ADMIN_EMAIL` and `ADMIN_PASSWORD`. When both are set and non-empty at compile time, the WASM client starts pre-authenticated as that admin user and the `/login` route redirects straight to `/dashboard`.
-
-The values are baked into the bundle by `option_env!` at build time, so changing them requires a rebuild. `build.rs` declares `cargo:rerun-if-env-changed` for both vars, so editing `.env` (followed by re-running `just dev`) invalidates the cache and rebuilds.
-
-This is dev-only and the boundary is enforced by Docker:
-
-- `compose.yml` loads `.env` via `env_file` and forwards `ADMIN_EMAIL` / `ADMIN_PASSWORD` into the dev container, where `dx serve` bakes them into the WASM bundle.
-- The bypass branch is gated behind `#[cfg(debug_assertions)]` and is compiled out of release builds entirely. `dx build --release` (and the `oci-build/Dockerfile` image) emits a WASM bundle that has no bypass code at all.
-- `.dockerignore` excludes `.env` from every Docker build context, so the file never reaches the production builder even if it exists in the working tree.
-
-Leave both vars unset to use the normal login screen.
-
-## Cargo features
-
-- `app` - the application runtime (the API module, the app-wide signals, the page logic). Not a platform gate; every build that produces the app turns it on, and both renderer features below pull it in.
-- `web` (default) - the browser renderer (`dioxus/web`), plus `app`.
-- `desktop` - the native renderer (`dioxus/desktop`), plus `app`. See [docs/desktop.md](docs/desktop.md).
-- `multi-tenant` (default) - multi-tenant build.
-- `single-tenant` - single-tenant build (mutually exclusive with `multi-tenant`).
-
-## Production build
-
-Two options:
-
-**Local WASM bundle:**
-
-```nu
-just build
-```
-
-Output lands under `target/dx/`.
-
-**Production OCI image (Caddy + WASM bundle):**
-
-```nu
-just build-docker        # tags as mokosh-apps:local
-just check-docker        # tags as mokosh-apps:check (smoke build)
-```
-
-The image is built from `oci-build/Dockerfile` and serves the bundle with `oci-build/Caddyfile`.
-
-## Self-host deployment
-
-Self-hosters can pull the pre-built multi-arch image from the public registry and run it with the reference compose file. No build, no registry login required.
-
-```nu
-cp oci-build/compose.example.yml compose.yml
-# Edit the four MOKOSH_* env vars in compose.yml to point at your own
-# mokosh-server API + OIDC issuer.
-docker compose up --detach
-```
-
-The image is `dev.a8n.run/psa-systems-public/mokosh-www`. Tags:
-
-- `:vX.Y.Z` - pin to a specific release.
-- `:latest` - rolling, advanced on every push to `main`.
-
-The image supports `linux/amd64` and `linux/arm64`; compose pulls the variant matching the host kernel automatically.
-
-Runtime config is supplied via env vars on the container, so a single image works across staging, production, and self-host:
-
-| Env var                     | Purpose                                                 |
-|-----------------------------|---------------------------------------------------------|
-| `MOKOSH_API_BASE`           | API base URL the SPA calls (`https://api.example.com/api/v1`). |
-| `MOKOSH_OIDC_ISSUER`        | OIDC issuer the SPA authenticates against.              |
-| `MOKOSH_OIDC_CLIENT_ID`     | Public-client ID registered with mokosh-server.         |
-| `MOKOSH_HUB_BASE_URL`       | Origin of the Bunyip hub for legacy login bookmarks.    |
-| `MOKOSH_PORTAL_HOST_SUFFIX` | Suffix each tenant's client portal is served under (`.client.example.com`); MUST match the server's `PORTAL_HOST_SUFFIX`. Needs a DNS wildcard + TLS SAN covering the same suffix. |
-
-The container's entrypoint writes a tiny `/_mokosh_config.js` from these on each start; the SPA reads it before falling through to its compile-time defaults. Restart the container to pick up changed values.
-
-To apply an available update, bump the tag in `compose.yml` and run `docker compose pull && docker compose up --detach`. The SPA is stateless so there's no migration step.
-
-## Releases
-
-`create-release` comes from `common`. It bumps the version in `Cargo.toml`, writes the same version into `package.json`, syncs `Cargo.lock`, commits to a `release/vX.Y.Z` branch, pushes, and prints the PR URL:
-
-```nu
-just create-release major     # X.0.0
-just create-release minor     # 0.X.0
-just create-release hotfix    # 0.0.X
-```
-
-The recipe refuses to run on a dirty tree, switches to `main`, and rebases against `origin/main`. The version in `Cargo.toml` is the one it reads, so `package.json` tracks it rather than being compared against it. After the PR is merged, `.forgejo/workflows/create-release.yml` calls the reusable workflow in `common`, which tags the release and publishes it with one changelog line per merged pull request.
-
-## Troubleshooting
-
-**`Address already in use (os error 98)` when starting `just dev`:**
-Something else is bound to `${HOST_IP}:4301`. Find it with `ss --tcp --listening --numeric --processes 'sport = :4301'` (use `sudo` to see the owning process) or `docker ps --format 'table {{.Names}}\t{{.Ports}}' | grep 4301`. Stop the conflicting process or change the port in `compose.yml` and `Dockerfile`.
-
-**`HOST_IP` is empty:**
-The `dev` recipe reads `sys net | where name =~ 'eth0|br0'`. If neither interface has an IPv4 address, the recipe fails. Check `ip --brief address show` and edit the regex to match the right interface.
+- [quickstart.md](docs/quickstart.md) - get a fresh clone serving in the browser
+- [architecture.md](docs/architecture.md) - the stack, the source layout, the cargo features, and what a build produces
+- [recipes.md](docs/recipes.md) - the task runner, recipe by recipe
+- [desktop.md](docs/desktop.md) - the native desktop build
+- [self-hosting.md](docs/self-hosting.md) - run the published image, and every runtime environment variable
+- [client-server-integration.md](docs/client-server-integration.md) - how this client reaches mokosh-server, and what the two repositories share on the wire
 
 ## Development happens on Forgejo
 
 The development home for this repository is <https://dev.a8n.run/psa-systems/mokosh-apps>. The [GitHub](https://github.com/psa-systems/mokosh-apps) and [Codeberg](https://codeberg.org/psa-systems/mokosh-apps) copies are read-only mirrors that exist for visibility only: issues and pull requests are disabled there, and no community support runs on the mirrors. File issues and open pull requests on Forgejo.
+
+## Security
+
+Please do not report a suspected vulnerability through the public issue tracker, on Forgejo or on either mirror: filing it there publishes it. Contact a maintainer privately instead. A published disclosure address and a `SECURITY.md` are being set up and this section will link to them.
+
+## License
+
+Proprietary. See `Cargo.toml`; there is no separate license file.
+
+## Authors and credits
+
+Mokosh Apps is built by the Mokosh Platform Team at PSA Systems, and `Cargo.toml` carries the authoritative author and license fields.
+
+Built on [Rust](https://www.rust-lang.org/), [Dioxus](https://dioxuslabs.com/), [WebAssembly](https://webassembly.org/) and [Tailwind CSS](https://tailwindcss.com/), driven by [just](https://github.com/casey/just), [Nushell](https://www.nushell.sh/) and [Bun](https://bun.sh/), and served in production by [Caddy](https://caddyserver.com/).

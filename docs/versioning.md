@@ -151,13 +151,27 @@ version matches the released tag because production is built from a
 released commit; staging may be a version ahead, and its hash pins the
 exact build.
 
-## Releasing (for reference)
+## Releasing
 
 `just create-release <major|minor|hotfix>` (the shared recipe from the
 `common` submodule, configured by the variables at the top of the
-[`justfile`](../justfile)) bumps `Cargo.toml`, writes the same version
-into `package.json`, and opens a release PR. After merge
-`.forgejo/workflows/create-release.yml` calls common's reusable
-workflow, which tags `vX.Y.Z` and publishes the release. Because the
-displayed `VERSION` follows the bump (not the tag), the footer is
+[`justfile`](../justfile)) bumps the version in `Cargo.toml`, writes the
+same version into `package.json`, syncs `Cargo.lock`, commits to a
+`release/vX.Y.Z` branch, pushes it, and prints the PR URL:
+
+```nu
+just create-release major     # X.0.0
+just create-release minor     # 0.X.0
+just create-release hotfix    # 0.0.X
+```
+
+The recipe refuses to run on a dirty tree, switches to `main`, and
+rebases against `origin/main` first. `Cargo.toml` holds the version it
+reads, so `package.json` tracks that value rather than being compared
+against it.
+
+After the PR merges, [`.forgejo/workflows/create-release.yml`](../.forgejo/workflows/create-release.yml)
+calls common's reusable workflow, which tags `vX.Y.Z` and publishes the
+release with one changelog line per merged pull request. Because the
+displayed `VERSION` follows the bump and not the tag, the footer is
 correct from the release commit onward.
