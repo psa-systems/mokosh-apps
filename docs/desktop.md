@@ -8,7 +8,7 @@ Added in MAPPS-504.
 
 ## Prerequisites
 
-Beyond the [README](../README.md) prerequisites, the desktop build needs
+Beyond the [quickstart](quickstart.md#prerequisites) prerequisites, the desktop build needs
 `dioxus-cli` on the host (`cargo install dioxus-cli`) and a system webview.
 
 On Linux:
