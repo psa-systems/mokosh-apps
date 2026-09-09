@@ -3832,4 +3832,99 @@ mod tests {
         assert_eq!(json["company_id"], serde_json::Value::Null);
         assert_eq!(json["date"], "2026-06-18");
     }
+
+    /// MAPPS-752: the week a tile covers is closed at both ends.
+    ///
+    /// The old predicate was `date >= week_start` with nothing above it, so
+    /// an entry dated next month counted as this week's. Time entries can be
+    /// dated forward, so that was reachable rather than theoretical.
+    #[test]
+    fn the_week_is_bounded_at_both_ends() {
+        let wednesday = NaiveDate::from_ymd_opt(2026, 6, 17).expect("valid date");
+        let (start, end) = week_bounds(wednesday);
+        assert_eq!(
+            start,
+            NaiveDate::from_ymd_opt(2026, 6, 15).unwrap(),
+            "Monday"
+        );
+        assert_eq!(end, NaiveDate::from_ymd_opt(2026, 6, 21).unwrap(), "Sunday");
+        assert!(in_window(start, start, end), "the first day is in");
+        assert!(in_window(end, start, end), "and so is the last");
+        assert!(!in_window(start - Duration::days(1), start, end));
+        assert!(
+            !in_window(end + Duration::days(1), start, end),
+            "a future-dated entry is not this week"
+        );
+        // A Monday and a Sunday resolve to their own week, not the next or
+        // previous one.
+        assert_eq!(week_bounds(start).0, start);
+        assert_eq!(week_bounds(end).0, start);
+    }
+
+    /// Every tile is scoped to the same window, so the row reads as one
+    /// scale. Before this the category tiles carried no date predicate and
+    /// summed every row the client had fetched.
+    #[test]
+    fn every_tile_covers_the_same_week() {
+        let today = NaiveDate::from_ymd_opt(2026, 6, 17).expect("valid date");
+        let (start, end) = week_bounds(today);
+        // Built from the wire shape rather than a struct literal: the same
+        // decode the list itself does, so a field renamed on the server
+        // fails here too.
+        let entry = |date: NaiveDate, minutes: i64, billable: bool, kind: &str| {
+            serde_json::from_value::<RemoteTimeEntry>(serde_json::json!({
+                "id": uuid::Uuid::nil(),
+                "date": date.format("%Y-%m-%d").to_string(),
+                "duration_minutes": minutes,
+                "is_billable": billable,
+                "entry_kind": kind,
+            }))
+            .expect("an entry decodes")
+        };
+        let entries = vec![
+            entry(today, 60, true, "client"),
+            entry(today, 30, false, "client"),
+            entry(today, 15, false, "employee"),
+            // Last week and next week: in the fetched list, out of the window.
+            entry(start - Duration::days(1), 480, true, "client"),
+            entry(end + Duration::days(1), 480, true, "client"),
+        ];
+        let this_week = |e: &RemoteTimeEntry| in_window(e.date, start, end);
+
+        assert_eq!(sum_minutes(&entries, this_week), 105, "the week's total");
+        assert_eq!(
+            sum_minutes(&entries, |e| this_week(e) && e.is_billable),
+            60,
+            "the 8h either side is not this week's billable time"
+        );
+        assert_eq!(
+            sum_minutes(&entries, |e| this_week(e) && is_unbilled_client_work(e)),
+            30
+        );
+        assert_eq!(
+            sum_minutes(&entries, |e| this_week(e) && is_employee_time(e)),
+            15
+        );
+        // And the three categories partition the week's total, which is what
+        // makes them readable as a breakdown of the tile above them.
+        assert_eq!(60 + 30 + 15, 105);
+    }
+
+    /// MAPPS-752: no surface on this page may compute a day from the UTC
+    /// clock. PMS-1027 settled that "today" is where the person is, and this
+    /// file had five instances of the UTC day - one of them deciding the date
+    /// a billable time entry is filed under. A source scan, because the
+    /// helper is one call away and nothing else would notice its return.
+    #[test]
+    fn no_day_on_this_page_comes_from_the_utc_clock() {
+        let src = include_str!("time.rs");
+        let body = &src[..src
+            .find("fn no_day_on_this_page_comes_from_the_utc_clock")
+            .expect("this test")];
+        assert!(
+            !body.contains("Utc::now().date_naive()"),
+            "a day here must come from crate::utils::datetime::user_today(), \
+             which reads the user's own timezone"
+        );
+    }
 }
