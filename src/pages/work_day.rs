@@ -13,12 +13,39 @@
 //! two break routes 404 on their own when the tenant's `track_breaks`
 //! setting is off, and the day view says so in `track_breaks`, which is what
 //! hides the break buttons.
+//!
+//! MAPPS-753 re-weighted the card around its actual job. Three things about
+//! it are decisions rather than styling, and each is easy to undo by accident.
+//!
+//! **The elapsed figure is anchored on a server value, not on the client
+//! clock.** `live_minutes` is the server's own number plus the wall time since
+//! this client received it, so a client whose clock is wrong by ten minutes
+//! still shows the right elapsed - only the RATE of the local clock is
+//! trusted, never its absolute reading. Computing `now - started_at` instead
+//! would be simpler and would inherit every skew. This is billing-adjacent
+//! data; it must not be invented here.
+//!
+//! **The state is readable without colour.** `ButtonVariant::Primary` is
+//! `bg-accent` and the accent is chosen by the user from fourteen options, one
+//! of which is `red`; `ButtonVariant::Danger` is a hardcoded `red-600`. On a
+//! red-accent tenant `Clock in` and `Clock out` are nearly the same colour, so
+//! the difference between the two states is carried by structure (a timer
+//! present or absent, border weight) and by words, with colour as
+//! reinforcement only.
+//!
+//! **A refetch does not blank the card.** The resource restarts on a timer,
+//! and a restarted resource reads `None` again, so rendering nothing while
+//! pending made the whole strip disappear on a cycle. The last loaded day is
+//! held and re-rendered while the next one is in flight; only the very first
+//! load renders nothing, which is what MAPPS-746 decided and its test pins.
 
 use chrono::{DateTime, NaiveDate, Utc};
 use dioxus::prelude::*;
 use serde::Deserialize;
 
-use crate::components::{Badge, BadgeVariant, Button, ButtonVariant, Card, ErrorBanner};
+use crate::components::{
+    Button, ButtonSize, ButtonVariant, Card, ClockIcon, ErrorBanner, ExclamationIcon, IconSize,
+};
 use crate::utils::duration::fmt_duration;
 use crate::Route;
 
@@ -138,26 +165,121 @@ impl DayUser {
 /// What the strip loaded: the day, or nothing because the modules are off.
 #[derive(Clone, Debug, PartialEq)]
 enum DayLoad {
-    Day(Box<RemoteWorkDay>),
+    /// The day, and the instant this client received it. The second half is
+    /// what [`live_minutes`] counts from: the server's figures are true as of
+    /// that moment and nothing else about the local clock is trusted.
+    Day(Box<RemoteWorkDay>, DateTime<Utc>),
     /// The 404 both module gates answer with. Not an error: the feature is
     /// off for this tenant and the strip stays out of the page.
     ModulesOff,
 }
 
-/// MAPPS-730: the sentence under the totals. The server's three numbers,
-/// read back as it reports them; `unlogged` is signed, positive when time
-/// was clocked and not logged, negative when more was logged than clocked.
-pub(crate) fn gap_line(clocked: i64, logged: i64, unlogged: i64) -> String {
-    let head = format!(
-        "{} clocked, {} logged",
-        fmt_duration(clocked),
-        fmt_duration(logged)
-    );
+/// MAPPS-753: what the reconciliation slot says about the signed gap.
+///
+/// `unlogged` is the server's own signed figure: positive when time was
+/// clocked and not attributed to any work item, negative when more was logged
+/// than clocked. The wording drops "accounted for", which MAPPS-751 called
+/// jargon and which is: it is an accounting word for a technician-facing
+/// sentence, and the state it names most often is the one needing an action.
+pub(crate) fn unlogged_label(unlogged: i64) -> String {
     match unlogged {
-        0 => format!("{head}, all of it accounted for."),
-        n if n > 0 => format!("{head}, {} not yet logged.", fmt_duration(n)),
-        n => format!("{head}, {} more logged than clocked.", fmt_duration(-n)),
+        0 => "All clocked time is logged".to_string(),
+        n if n > 0 => format!("{} not yet logged", fmt_duration(n)),
+        n => format!("{} logged beyond the clock", fmt_duration(-n)),
     }
+}
+
+/// A clock running longer than this is almost certainly a forgotten
+/// clock-out rather than a shift.
+///
+/// Sixteen hours: long enough that a genuine long day or a double shift does
+/// not trip it, short enough that a Monday-evening miss is flagged on Tuesday
+/// morning rather than on Wednesday. Hardcoded on purpose for now - a real
+/// threshold belongs to the tenant and to a server that can act on it
+/// (PMS-1146), and inventing a tenant setting the server does not read would
+/// be a promise this client cannot keep.
+pub(crate) const STALE_AFTER_HOURS: i64 = 16;
+
+/// The elapsed value to show, anchored on what the server said.
+///
+/// `base` is the server's own figure for this segment or day, true as of
+/// `fetched_at`; the return is that plus the wall time since. The local clock
+/// is trusted for how fast time passes and never for what time it is, so a
+/// client whose clock is off by ten minutes still shows the right elapsed.
+/// Clamped at `base`, because a clock that jumped backwards must not make an
+/// elapsed figure shrink.
+pub(crate) fn live_minutes(base: i64, fetched_at: DateTime<Utc>, now: DateTime<Utc>) -> i64 {
+    let since = (now - fetched_at).num_minutes();
+    base + since.max(0)
+}
+
+/// What the card is: out, on the clock, or on a break.
+///
+/// A break is still clocked in on the wire (`is_clocked_in` is any open
+/// segment, `on_break` narrows it), and the two need different treatments, so
+/// the three cases are named once here rather than re-derived at each use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClockState {
+    Out,
+    In,
+    OnBreak,
+}
+
+impl ClockState {
+    pub(crate) fn read(is_clocked_in: bool, on_break: bool) -> Self {
+        match (is_clocked_in, on_break) {
+            (_, true) => ClockState::OnBreak,
+            (true, false) => ClockState::In,
+            (false, false) => ClockState::Out,
+        }
+    }
+
+    /// The words. Half of the non-colour distinction; the other half is that
+    /// only the two running states carry a timer at all.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            ClockState::Out => "Clocked out",
+            ClockState::In => "Clocked in",
+            ClockState::OnBreak => "On break",
+        }
+    }
+
+    /// The container treatment. Border WEIGHT carries the distinction so it
+    /// survives greyscale; the tint only reinforces it.
+    pub(crate) fn container_class(self) -> &'static str {
+        match self {
+            ClockState::Out => "border border-line bg-surface-2",
+            ClockState::In => "border-2 border-accent bg-accent-50 dark:bg-surface-2",
+            ClockState::OnBreak => "border-2 border-dashed border-line-strong bg-surface-2",
+        }
+    }
+
+    pub(crate) fn is_running(self) -> bool {
+        matches!(self, ClockState::In | ClockState::OnBreak)
+    }
+}
+
+/// MAPPS-753: the line that names the day when it is not the reader's today.
+///
+/// `GET /workday` with no date returns the OPEN segment's date, not today, so
+/// a clock left running overnight shows yesterday's card - correct, and
+/// baffling if the card does not say so. `None` when the day being shown IS
+/// today, because then there is nothing to explain.
+pub(crate) fn other_day_note(
+    shown: &str,
+    today: chrono::NaiveDate,
+    running: bool,
+) -> Option<String> {
+    let shown_date = chrono::NaiveDate::parse_from_str(shown, "%Y-%m-%d").ok()?;
+    if shown_date == today {
+        return None;
+    }
+    let pretty = shown_date.format("%A %-d %b");
+    Some(if running {
+        format!("Still clocked in from {pretty}")
+    } else {
+        format!("Showing {pretty}")
+    })
 }
 
 /// The `date` query the strip sends: nothing for the server's own today
@@ -185,15 +307,6 @@ pub(crate) fn day_query(date: Option<NaiveDate>, user_id: Option<uuid::Uuid>) ->
 /// client yet, so it does not promise a link it cannot make.
 pub(crate) const MODULES_OFF_NOTICE: &str = "Clocking in and out needs the Timesheets module, which is off for this organisation. An administrator can turn it on; time entries are unaffected.";
 
-/// The badge beside the buttons: what the day is doing right now.
-pub(crate) fn state_label(is_clocked_in: bool, on_break: bool) -> (&'static str, BadgeVariant) {
-    match (is_clocked_in, on_break) {
-        (_, true) => ("On break", BadgeVariant::Yellow),
-        (true, false) => ("Clocked in", BadgeVariant::Green),
-        (false, false) => ("Clocked out", BadgeVariant::Gray),
-    }
-}
-
 /// The strip on the Time page: clock in and out, breaks when the tenant
 /// tracks them, the day's segments, the per-item breakdown and the gap.
 #[component]
@@ -208,8 +321,19 @@ pub fn WorkDayStrip() -> Element {
     let mut picked_user = use_signal(|| None::<uuid::Uuid>);
     let mut busy = use_signal(|| false);
     let mut action_error = use_signal(String::new);
-    // A minute tick so the elapsed figures move while the day is open.
-    let mut tick = use_signal(|| 0u32);
+    let mut show_date_picker = use_signal(|| false);
+    // Two ticks, on purpose. `refetch_tick` restarts the resource, which is
+    // what picks up time logged elsewhere and re-anchors the elapsed figures
+    // on a fresh server value. `clock_tick` only re-renders, so the displayed
+    // minute rolls over promptly without a request behind it: before
+    // MAPPS-753 the only tick was the refetch, so the timer cost a full
+    // `GET /workday` per minute and still sat stale for up to sixty seconds.
+    let mut refetch_tick = use_signal(|| 0u32);
+    let mut clock_tick = use_signal(|| 0u32);
+    // The last day this client actually received. Rendered while the next
+    // load is in flight so a refetch does not blank the card; see the module
+    // docs.
+    let mut last_day = use_signal(|| None::<(Box<RemoteWorkDay>, DateTime<Utc>)>);
     let can_mutate = crate::hooks::use_can_mutate();
 
     let date_for_resource = picked_date();
@@ -217,12 +341,15 @@ pub fn WorkDayStrip() -> Element {
     let mut day_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
-        let _tick = tick();
+        let _tick = refetch_tick();
         let path = day_query(date_for_resource, user_for_resource);
         #[cfg(feature = "app")]
         {
             match crate::hooks::fetch::api::get_authed_typed::<RemoteWorkDay>(&path).await {
-                Ok(day) => Some(DayLoad::Day(Box::new(day))),
+                // Stamped here rather than at render: this is the instant the
+                // server's figures were true, and every elapsed value on the
+                // card counts from it.
+                Ok(day) => Some(DayLoad::Day(Box::new(day), Utc::now())),
                 Err(e) if e.status_code() == Some(404) => Some(DayLoad::ModulesOff),
                 Err(e) => {
                     tracing::warn!("work day load failed: {e}");
@@ -239,7 +366,18 @@ pub fn WorkDayStrip() -> Element {
     use_future(move || async move {
         loop {
             crate::platform::timer::sleep_ms(60_000).await;
-            tick.with_mut(|t| *t = t.wrapping_add(1));
+            refetch_tick.with_mut(|t| *t = t.wrapping_add(1));
+        }
+    });
+    // Ten seconds, not one: the card shows whole minutes (`fmt_duration`
+    // follows the user's duration preference and neither shape has seconds),
+    // so this only has to be short enough that the minute turns over without
+    // a visible lag. A one-second tick would re-render sixty times for one
+    // changed digit.
+    use_future(move || async move {
+        loop {
+            crate::platform::timer::sleep_ms(10_000).await;
+            clock_tick.with_mut(|t| *t = t.wrapping_add(1));
         }
     });
     let users_resource = use_resource(move || async move {
@@ -256,10 +394,23 @@ pub fn WorkDayStrip() -> Element {
     });
 
     let snap = day_resource.read_unchecked().clone();
-    let day = match snap {
-        // Loading: nothing yet. A placeholder here would move the page
-        // twice on every load for a strip that is usually small.
-        None => return rsx! {},
+    // MAPPS-753: hold the day the last load produced. A resource that has
+    // been restarted reads `None` again, so without this the card vanished
+    // and the page jumped every time the refetch tick fired.
+    if let Some(Some(DayLoad::Day(fresh, at))) = &snap {
+        let incoming = Some((fresh.clone(), *at));
+        if *last_day.peek() != incoming {
+            last_day.set(incoming);
+        }
+    }
+    let (day, fetched_at) = match snap {
+        // Loading. A placeholder here would move the page twice on every load
+        // for a strip that is usually small, so the FIRST load stays silent
+        // (MAPPS-746); a later one re-renders what it already had.
+        None => match last_day() {
+            Some((prev, at)) => (*prev, at),
+            None => return rsx! {},
+        },
         // MAPPS-746: the two states this used to hide. Both hid the clock
         // with nothing on the page to say why, and the nav's Timesheets
         // entries do not follow the module flag, so the reader had every
@@ -281,7 +432,7 @@ pub fn WorkDayStrip() -> Element {
                 p { class: "mb-6 text-sm text-subtle", "{MODULES_OFF_NOTICE}" }
             }
         }
-        Some(Some(DayLoad::Day(day))) => *day,
+        Some(Some(DayLoad::Day(day, at))) => (*day, at),
     };
 
     let mut post = move |path: &'static str, body: serde_json::Value, verb: &'static str| {
@@ -314,114 +465,276 @@ pub fn WorkDayStrip() -> Element {
         None => serde_json::json!({}),
     };
     let viewing_someone_else = picked_user().is_some();
-    let (state_text, state_variant) = state_label(day.is_clocked_in, day.on_break);
-    let gap = gap_line(
-        day.clocked_minutes,
-        day.logged_minutes,
-        day.unlogged_minutes,
+    let state = ClockState::read(day.is_clocked_in, day.on_break);
+
+    // Re-render on the clock tick, and read `now` once for every figure below
+    // so they cannot disagree with each other by a tick.
+    let _ = clock_tick();
+    let now = Utc::now();
+    let open_segment = day.segments.iter().find(|s| s.ended_at.is_none());
+    // Only a running clock accrues. Nothing here counts up for a day that is
+    // closed, or for another user's day being read.
+    let accruing = state.is_running() && !viewing_someone_else;
+    let session_minutes = open_segment.map(|s| {
+        if accruing {
+            live_minutes(s.minutes, fetched_at, now)
+        } else {
+            s.minutes
+        }
+    });
+    let clocked_live = if accruing && state == ClockState::In {
+        live_minutes(day.clocked_minutes, fetched_at, now)
+    } else {
+        day.clocked_minutes
+    };
+    let break_live = if accruing && state == ClockState::OnBreak {
+        live_minutes(day.break_minutes, fetched_at, now)
+    } else {
+        day.break_minutes
+    };
+    // The gap follows the clocked figure, or it contradicts the number
+    // printed beside it the moment the clock moves.
+    let unlogged_live = clocked_live - day.logged_minutes;
+    let started_label = open_segment
+        .and_then(|s| s.started_at)
+        .map(clock_time)
+        .unwrap_or_default();
+    let stale = accruing && session_minutes.is_some_and(|m| m >= STALE_AFTER_HOURS * 60);
+    let day_note = other_day_note(
+        &day.date,
+        crate::utils::datetime::user_today(),
+        state.is_running(),
     );
+
     let date_value = picked_date()
         .map(|d| d.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| day.date.clone());
+    let date_pretty = NaiveDate::parse_from_str(&date_value, "%Y-%m-%d")
+        .map(|d| d.format("%A, %-d %b").to_string())
+        .unwrap_or_else(|_| date_value.clone());
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
+    let viewing_name = picked_user()
+        .and_then(|id| users.iter().find(|u| u.id == id).map(|u| u.display_name()))
+        .unwrap_or_default();
     let disabled_title =
         (!can_mutate).then(|| "Can't change the day while the server is unreachable".to_string());
 
     rsx! {
         Card { class: "mb-6",
             div { class: "space-y-4",
+                // Header: the card's name, and (admin only) whose day is
+                // being read. The picker is labelled and out of the action
+                // row: MAPPS-751 read it as a mode selector for the clock,
+                // which it never was.
                 div { class: "flex flex-wrap items-center gap-3",
                     h2 { class: "text-lg font-semibold text-content", "Work day" }
-                    Badge { variant: state_variant, "{state_text}" }
                     div { class: "flex-1" }
-                    input {
-                        r#type: "date",
-                        class: "rounded-md border border-line bg-surface px-2 py-1 text-sm",
-                        value: "{date_value}",
-                        oninput: move |e: FormEvent| {
-                            picked_date.set(NaiveDate::parse_from_str(&e.value(), "%Y-%m-%d").ok());
-                        },
-                    }
                     if is_admin && !users.is_empty() {
-                        select {
-                            class: "rounded-md border border-line bg-surface px-2 py-1 text-sm",
-                            onchange: move |e: FormEvent| {
-                                picked_user.set(uuid::Uuid::parse_str(&e.value()).ok());
-                            },
-                            option { value: "", selected: picked_user().is_none(), "My day" }
-                            for u in users.iter() {
-                                option {
-                                    value: "{u.id}",
-                                    selected: picked_user() == Some(u.id),
-                                    "{u.display_name()}"
+                        label { class: "flex items-center gap-2 text-sm text-muted",
+                            "Viewing"
+                            select {
+                                class: "rounded-md border border-line bg-surface px-2 py-1 text-sm text-content",
+                                onchange: move |e: FormEvent| {
+                                    picked_user.set(uuid::Uuid::parse_str(&e.value()).ok());
+                                },
+                                option { value: "", selected: picked_user().is_none(), "My day" }
+                                for u in users.iter() {
+                                    option {
+                                        value: "{u.id}",
+                                        selected: picked_user() == Some(u.id),
+                                        "{u.display_name()}"
+                                    }
                                 }
                             }
                         }
                     }
                 }
+
+                if viewing_someone_else {
+                    p { class: "text-sm text-muted",
+                        "Read-only: this is {viewing_name}'s day. Clocking in and out acts on your own."
+                    }
+                }
+
+                if let Some(note) = day_note.clone() {
+                    p { class: "text-sm text-muted", "{note}" }
+                }
+
                 if !action_error.read().is_empty() {
                     ErrorBanner { "{action_error.read()}" }
                 }
-                // The actions act on the caller's own day only; an admin
-                // reading someone else's day gets the view without them.
-                if !viewing_someone_else {
-                    div { class: "flex flex-wrap gap-2",
-                        if !day.is_clocked_in {
-                            Button {
-                                variant: ButtonVariant::Primary,
-                                loading: *busy.read(),
-                                disabled: !can_mutate,
-                                title: disabled_title.clone(),
-                                onclick: {
-                                    let body = clock_in_body.clone();
-                                    move |_| post("/workday/clock-in", body.clone(), "clock in")
-                                },
-                                "Clock in"
-                            }
-                        } else {
-                            if day.track_breaks {
-                                if day.on_break {
-                                    Button {
-                                        variant: ButtonVariant::Secondary,
-                                        loading: *busy.read(),
-                                        disabled: !can_mutate,
-                                        title: disabled_title.clone(),
-                                        onclick: move |_| post("/workday/break/end", serde_json::json!({}), "end the break"),
-                                        "End break"
+
+                // The card's actual job. Announced on state change only: the
+                // elapsed value below updates silently, because a live region
+                // that re-read the timer every minute would be unusable.
+                div {
+                    class: "rounded-lg p-4 {state.container_class()}",
+                    div {
+                        class: "sr-only",
+                        role: "status",
+                        "aria-live": "polite",
+                        "{state.label()}"
+                    }
+                    if state.is_running() {
+                        div { class: "flex flex-wrap items-center justify-between gap-4",
+                            div { class: "flex items-start gap-3",
+                                ClockIcon {
+                                    size: IconSize::Medium,
+                                    class: "mt-1 text-content".to_string(),
+                                }
+                                div {
+                                    p { class: "text-sm font-medium text-content", "{state.label()}" }
+                                    // The elapsed figure. Deliberately not in
+                                    // a live region; see the div above.
+                                    p {
+                                        class: "text-3xl font-semibold tabular-nums text-content",
+                                        "aria-live": "off",
+                                        if let Some(m) = session_minutes {
+                                            "{fmt_duration(m)}"
+                                        }
                                     }
-                                } else {
-                                    Button {
-                                        variant: ButtonVariant::Secondary,
-                                        loading: *busy.read(),
-                                        disabled: !can_mutate,
-                                        title: disabled_title.clone(),
-                                        onclick: move |_| post("/workday/break/start", serde_json::json!({}), "start a break"),
-                                        "Start break"
+                                    if !started_label.is_empty() {
+                                        p { class: "text-sm text-muted", "since {started_label}" }
                                     }
                                 }
                             }
-                            Button {
-                                variant: ButtonVariant::Danger,
-                                loading: *busy.read(),
-                                disabled: !can_mutate,
-                                title: disabled_title.clone(),
-                                onclick: move |_| post("/workday/clock-out", serde_json::json!({}), "clock out"),
-                                "Clock out"
+                            if !viewing_someone_else {
+                                div { class: "flex flex-wrap gap-2",
+                                    if day.track_breaks {
+                                        if day.on_break {
+                                            Button {
+                                                variant: ButtonVariant::Secondary,
+                                                loading: *busy.read(),
+                                                disabled: !can_mutate,
+                                                title: disabled_title.clone(),
+                                                onclick: move |_| post("/workday/break/end", serde_json::json!({}), "end the break"),
+                                                "End break"
+                                            }
+                                        } else {
+                                            Button {
+                                                variant: ButtonVariant::Secondary,
+                                                loading: *busy.read(),
+                                                disabled: !can_mutate,
+                                                title: disabled_title.clone(),
+                                                onclick: move |_| post("/workday/break/start", serde_json::json!({}), "start a break"),
+                                                "Start break"
+                                            }
+                                        }
+                                    }
+                                    Button {
+                                        variant: ButtonVariant::Danger,
+                                        size: ButtonSize::Large,
+                                        loading: *busy.read(),
+                                        disabled: !can_mutate,
+                                        title: disabled_title.clone(),
+                                        onclick: move |_| post("/workday/clock-out", serde_json::json!({}), "clock out"),
+                                        "Clock out"
+                                    }
+                                }
+                            }
+                        }
+                        if stale {
+                            div { class: "mt-3 flex items-start gap-2 rounded-md border border-line-strong bg-surface px-3 py-2",
+                                ExclamationIcon {
+                                    size: IconSize::Small,
+                                    class: "mt-0.5 shrink-0 text-content".to_string(),
+                                }
+                                p { class: "text-sm text-content",
+                                    "This clock has been running for over {STALE_AFTER_HOURS} hours. If you forgot to clock out, clocking out now records the time up to this moment."
+                                }
+                            }
+                        }
+                    } else {
+                        div { class: "flex flex-wrap items-center justify-between gap-4",
+                            div {
+                                p { class: "text-sm font-medium text-content", "{state.label()}" }
+                                p { class: "text-lg text-content", "{date_pretty}" }
+                            }
+                            if !viewing_someone_else {
+                                Button {
+                                    variant: ButtonVariant::Primary,
+                                    size: ButtonSize::Large,
+                                    loading: *busy.read(),
+                                    disabled: !can_mutate,
+                                    title: disabled_title.clone(),
+                                    onclick: {
+                                        let body = clock_in_body.clone();
+                                        move |_| post("/workday/clock-in", body.clone(), "clock in")
+                                    },
+                                    "Clock in"
+                                }
+                            }
+                        }
+                        // Backdating is the rare case, so it asks rather than
+                        // occupying the widest control on the card.
+                        if !viewing_someone_else {
+                            div { class: "mt-3",
+                                if *show_date_picker.read() {
+                                    label { class: "flex flex-wrap items-center gap-2 text-sm text-muted",
+                                        "Clock in for"
+                                        input {
+                                            r#type: "date",
+                                            class: "rounded-md border border-line bg-surface px-2 py-1 text-sm text-content",
+                                            value: "{date_value}",
+                                            oninput: move |e: FormEvent| {
+                                                picked_date.set(NaiveDate::parse_from_str(&e.value(), "%Y-%m-%d").ok());
+                                            },
+                                        }
+                                        Button {
+                                            variant: ButtonVariant::Ghost,
+                                            size: ButtonSize::Small,
+                                            onclick: move |_| {
+                                                picked_date.set(None);
+                                                show_date_picker.set(false);
+                                            },
+                                            "Back to today"
+                                        }
+                                    }
+                                } else {
+                                    Button {
+                                        variant: ButtonVariant::Link,
+                                        size: ButtonSize::Small,
+                                        class: "px-0".to_string(),
+                                        onclick: move |_| show_date_picker.set(true),
+                                        "Log for another day"
+                                    }
+                                }
                             }
                         }
                     }
                 }
-                // The totals and the gap, the server's numbers.
-                p { class: "text-sm text-muted",
-                    "{gap}"
-                    if day.break_minutes > 0 {
-                        " Breaks: {fmt_duration(day.break_minutes)}."
+
+                // The reconciliation: three facts, three slots. The gap is
+                // the one that asks for something, so it is the one that
+                // carries an action.
+                div { class: "grid grid-cols-1 gap-3 sm:grid-cols-3",
+                    div {
+                        p { class: "text-xs uppercase tracking-wide text-subtle", "Clocked" }
+                        p { class: "text-lg font-medium tabular-nums text-content", "{fmt_duration(clocked_live)}" }
+                        if break_live > 0 {
+                            p { class: "text-xs text-subtle", "plus {fmt_duration(break_live)} on breaks" }
+                        }
                     }
-                    if day.unlogged_minutes > 0 {
-                        " "
-                        Link { to: Route::TimeEntryNew {}, class: "text-accent hover:opacity-90", "Log time" }
+                    div {
+                        p { class: "text-xs uppercase tracking-wide text-subtle", "Logged to work" }
+                        p { class: "text-lg font-medium tabular-nums text-content", "{fmt_duration(day.logged_minutes)}" }
+                    }
+                    div {
+                        p { class: "text-xs uppercase tracking-wide text-subtle", "Unlogged" }
+                        p {
+                            class: if unlogged_live > 0 { "text-lg font-medium tabular-nums text-content" } else { "text-lg font-medium tabular-nums text-muted" },
+                            "{unlogged_label(unlogged_live)}"
+                        }
+                        if unlogged_live > 0 && !viewing_someone_else {
+                            Link {
+                                to: Route::TimeEntryNew {},
+                                class: "text-sm text-accent hover:opacity-90",
+                                "Log this time"
+                            }
+                        }
                     }
                 }
+
                 if !day.segments.is_empty() {
                     ul { class: "flex flex-wrap gap-2 text-xs",
                         for seg in day.segments.iter() {
@@ -487,14 +800,20 @@ pub fn WorkDayStrip() -> Element {
     }
 }
 
+/// The clock face of an instant, in the viewer's own zone.
+///
+/// `format_user_datetime` renders against `users.timezone` (the same
+/// preference the server dates a clock-in with), and only the time half is
+/// wanted here: the day is named by the card itself.
+fn clock_time(dt: DateTime<Utc>) -> String {
+    let pref = crate::utils::datetime::user_format_pref();
+    let full = crate::utils::datetime::format_user_datetime(dt, pref.as_deref());
+    full.rsplit(' ').next().unwrap_or(&full).to_string()
+}
+
 /// "09:02 to 12:30", or "09:02 onward" while open, in the viewer's zone.
 fn segment_span(started: Option<DateTime<Utc>>, ended: Option<DateTime<Utc>>) -> String {
-    let pref = crate::utils::datetime::user_format_pref();
-    let clock = |dt: DateTime<Utc>| {
-        // The date part is the strip's own header; only the clock matters here.
-        let full = crate::utils::datetime::format_user_datetime(dt, pref.as_deref());
-        full.rsplit(' ').next().unwrap_or(&full).to_string()
-    };
+    let clock = clock_time;
     match (started, ended) {
         (Some(s), Some(e)) => format!("{} to {}", clock(s), clock(e)),
         (Some(s), None) => format!("{} onward", clock(s)),
@@ -515,12 +834,61 @@ fn ticket_label(t: &RemoteTicketLine) -> String {
 mod tests {
     use super::*;
 
-    /// The three numbers are the server's; the sentence only reads them.
+    /// The signed gap reads back as the server reports it, and the wording
+    /// no longer says "accounted for" (MAPPS-751 called it jargon, because it
+    /// is - it is an accounting word in a technician's sentence).
     #[test]
-    fn the_gap_line_reads_the_servers_numbers() {
-        assert!(gap_line(220, 190, 30).ends_with("not yet logged."));
-        assert!(gap_line(0, 135, -135).ends_with("more logged than clocked."));
-        assert!(gap_line(60, 60, 0).ends_with("accounted for."));
+    fn the_unlogged_slot_reads_the_servers_number() {
+        assert_eq!(unlogged_label(0), "All clocked time is logged");
+        assert!(unlogged_label(30).ends_with("not yet logged"));
+        assert!(unlogged_label(-135).ends_with("logged beyond the clock"));
+        for n in [-135, 0, 30] {
+            assert!(
+                !unlogged_label(n).contains("accounted for"),
+                "the jargon stays gone"
+            );
+        }
+    }
+
+    /// The elapsed figure is the SERVER's number plus wall time since this
+    /// client received it, so a client clock that is wrong in absolute terms
+    /// still shows the right elapsed. Only its rate is trusted.
+    #[test]
+    fn elapsed_is_anchored_on_what_the_server_said() {
+        let at = DateTime::parse_from_rfc3339("2026-06-15T09:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        // Server said 40 minutes; 5 minutes of wall time have passed.
+        assert_eq!(live_minutes(40, at, at + chrono::Duration::minutes(5)), 45);
+        // Same instant as the fetch: exactly what the server said, never more.
+        assert_eq!(live_minutes(40, at, at), 40);
+        // A clock that jumped backwards must not shrink an elapsed figure.
+        assert_eq!(live_minutes(40, at, at - chrono::Duration::hours(3)), 40);
+    }
+
+    /// The card names the day whenever it is not the reader's own today,
+    /// which is the overnight case: `GET /workday` returns the OPEN segment's
+    /// date, so a clock left running shows yesterday and must say so.
+    #[test]
+    fn a_day_that_is_not_today_says_which_day_it_is() {
+        let today = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        assert_eq!(other_day_note("2026-06-15", today, true), None);
+        assert_eq!(other_day_note("2026-06-15", today, false), None);
+        let running = other_day_note("2026-06-14", today, true).expect("a note");
+        assert!(running.starts_with("Still clocked in from"), "{running}");
+        let closed = other_day_note("2026-06-14", today, false).expect("a note");
+        assert!(closed.starts_with("Showing"), "{closed}");
+        // A date the server did not send in the expected shape is not worth
+        // a wrong sentence.
+        assert_eq!(other_day_note("not-a-date", today, true), None);
+    }
+
+    /// Sixteen hours is the threshold, and it is a whole number of hours in
+    /// minutes: an off-by-sixty here either never fires or fires on every
+    /// normal day.
+    #[test]
+    fn the_stale_threshold_is_sixteen_hours_of_minutes() {
+        assert_eq!(STALE_AFTER_HOURS * 60, 960);
     }
 
     /// No date means the server's own today, never a date computed here.
@@ -536,12 +904,38 @@ mod tests {
         );
     }
 
-    /// A break wins over clocked in; out is out.
+    /// A break wins over clocked in; out is out. `is_clocked_in` is any open
+    /// segment on the wire, so a break satisfies it too.
     #[test]
-    fn the_state_badge_follows_the_flags() {
-        assert_eq!(state_label(true, true).0, "On break");
-        assert_eq!(state_label(true, false).0, "Clocked in");
-        assert_eq!(state_label(false, false).0, "Clocked out");
+    fn the_state_follows_the_flags() {
+        assert_eq!(ClockState::read(true, true), ClockState::OnBreak);
+        assert_eq!(ClockState::read(true, false), ClockState::In);
+        assert_eq!(ClockState::read(false, false), ClockState::Out);
+        assert!(ClockState::In.is_running() && ClockState::OnBreak.is_running());
+        assert!(!ClockState::Out.is_running());
+    }
+
+    /// The two running states must differ from each other and from the third
+    /// by something that survives greyscale, because the accent may itself be
+    /// red on this tenant and `Danger` is a hardcoded red: colour alone
+    /// cannot carry this distinction.
+    #[test]
+    fn every_state_is_distinguishable_without_colour() {
+        let states = [ClockState::Out, ClockState::In, ClockState::OnBreak];
+        for (i, a) in states.iter().enumerate() {
+            for b in states.iter().skip(i + 1) {
+                assert_ne!(a.label(), b.label(), "the words differ");
+                assert_ne!(
+                    a.container_class(),
+                    b.container_class(),
+                    "the container differs, not only its colour"
+                );
+            }
+        }
+        // Border weight, not hue, is what carries it.
+        assert!(ClockState::In.container_class().contains("border-2"));
+        assert!(ClockState::OnBreak.container_class().contains("dashed"));
+        assert!(!ClockState::Out.container_class().contains("border-2"));
     }
 
     /// The wire shape decodes with its nested breakdown, and a 404 is not a
@@ -582,8 +976,17 @@ mod mapps746_strip_says_why_tests {
             .find("mod mapps746_strip_says_why_tests")
             .expect("this module")];
         assert!(
-            head.contains("        None => return rsx! {},"),
-            "loading stays silent"
+            head.contains("None => return rsx! {},"),
+            "the FIRST load stays silent"
+        );
+        // MAPPS-753: and only the first. A restarted resource reads `None`
+        // again, so a bare `None => rsx! {}` made the whole card disappear
+        // every time the refetch tick fired. The cached day is what keeps it
+        // on the page; losing this arm brings the blink back and nothing
+        // fails.
+        assert!(
+            head.contains("None => match last_day() {"),
+            "a refetch re-renders the last day rather than blanking the card"
         );
         assert!(
             !head
