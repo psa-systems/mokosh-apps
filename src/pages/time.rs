@@ -740,7 +740,10 @@ pub fn TimeEntryNewPage() -> Element {
     // today (see `date` in the submit handler). Any failure falls back to 0.
     let today_total_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        let today = Utc::now().date_naive();
+        // MAPPS-752: the user's day, not the UTC one. A cap check against the
+        // wrong day is the worst shape of this bug on the page - it either
+        // refuses a legitimate entry or lets the day run over.
+        let today = crate::utils::datetime::user_today();
         let user_id = auth.read().user.as_ref().map(|u| u.id)?;
         // MAPPS-528: page the whole day. The old `per_page=500` was clamped
         // to 100 by the server, so a busy day undercounted its own total and
@@ -1023,7 +1026,13 @@ pub fn TimeEntryNewPage() -> Element {
                     // it will drop. PMS-942 makes employee time non-billable
                     // whatever the request says, and General is employee time.
                     let billable = billable && !work_item_is_own_time(&wi);
-                    let date = Utc::now().date_naive();
+                    // MAPPS-752: the date this entry is BILLED under, so the
+                    // UTC day was the costliest instance of the bug: a
+                    // technician west of UTC logging in the evening dated the
+                    // entry tomorrow. PMS-1027 settled that "today" is the
+                    // user's, and the server dates a time entry the same way
+                    // when the request names no date.
+                    let date = crate::utils::datetime::user_today();
                     // Bounded to 1..=MAX_SINGLE_ENTRY_MINUTES by the parse above,
                     // so the narrowing to the server's `i32` cannot lose a digit.
                     let duration_minutes = duration_minutes as i32;
@@ -1210,7 +1219,9 @@ pub fn TimeEntryNewPage() -> Element {
 pub fn TimesheetsPage() -> Element {
     use_page_title("Timesheets");
     let auth = crate::hooks::auth::use_auth();
-    let today = Utc::now().date_naive();
+    // MAPPS-752: the user's day decides which week opens, so a timesheet does
+    // not jump a week early for anyone east of UTC or a week late west of it.
+    let today = crate::utils::datetime::user_today();
     let mut week_start = use_signal(|| monday_of_week(today));
     let mut is_submitting = use_signal(|| false);
     let mut action_msg = use_signal(String::new);
@@ -1987,7 +1998,8 @@ pub fn TimesheetApprovalsPage() -> Element {
         .as_ref()
         .is_some_and(|u| u.role.can_manage_users());
 
-    let today = Utc::now().date_naive();
+    // MAPPS-752, as on the timesheet above.
+    let today = crate::utils::datetime::user_today();
     let mut week_start = use_signal(|| monday_of_week(today));
     let mut action_msg = use_signal(String::new);
     let mut action_err = use_signal(String::new);
