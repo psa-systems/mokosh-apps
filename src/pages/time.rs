@@ -225,6 +225,23 @@ fn billing_status_label(status: BillingStatus) -> &'static str {
 }
 
 /// Start of the Monday-Sunday week that contains `date`.
+/// MAPPS-752: the week a period tile covers, inclusive at BOTH ends.
+///
+/// The upper bound is the half that was missing: `date >= week_start` with
+/// nothing above it counted a future-dated entry as this week's, and a time
+/// entry can be dated forward.
+pub(crate) fn week_bounds(today: NaiveDate) -> (NaiveDate, NaiveDate) {
+    let start = monday_of_week(today);
+    (start, start + Duration::days(6))
+}
+
+/// Whether a dated row falls in a closed window. One predicate, because the
+/// five tiles must agree about what "this week" means or the row goes back to
+/// implying a scale it does not have.
+pub(crate) fn in_window(date: NaiveDate, start: NaiveDate, end: NaiveDate) -> bool {
+    date >= start && date <= end
+}
+
 fn monday_of_week(date: NaiveDate) -> NaiveDate {
     let offset = match date.weekday() {
         Weekday::Mon => 0,
@@ -357,14 +374,27 @@ pub fn TimeEntryListPage() -> Element {
     }
 
     // Stat cards computed from the fetched entries (no hardcoded totals).
-    let today = Utc::now().date_naive();
-    let week_start = monday_of_week(today);
+    //
+    // MAPPS-752: every tile is scoped to the same week, and the day comes
+    // from the user's own zone. Before this, `Today` and `This Week` filtered
+    // on the date while `Billable`, `Non-Billable` and `Own Time` carried no
+    // date predicate at all, so five identical tiles in one row sat on two
+    // different scales - and the unscoped three were not even all-time, they
+    // were "however many rows this client managed to fetch", which is bounded
+    // by `MAX_PAGES` and drifts as a tenant's history grows.
+    let today = crate::utils::datetime::user_today();
+    let (week_start, week_end) = week_bounds(today);
+    let this_week = |e: &RemoteTimeEntry| in_window(e.date, week_start, week_end);
     let hours = crate::utils::duration::fmt_duration;
     let today_h = hours(sum_minutes(&entries, |e| e.date == today));
-    let week_h = hours(sum_minutes(&entries, |e| e.date >= week_start));
-    let billable_h = hours(sum_minutes(&entries, |e| e.is_billable));
-    let nonbillable_h = hours(sum_minutes(&entries, is_unbilled_client_work));
-    let own_time_h = hours(sum_minutes(&entries, is_employee_time));
+    let week_h = hours(sum_minutes(&entries, this_week));
+    let billable_h = hours(sum_minutes(&entries, |e| this_week(e) && e.is_billable));
+    let nonbillable_h = hours(sum_minutes(&entries, |e| {
+        this_week(e) && is_unbilled_client_work(e)
+    }));
+    let own_time_h = hours(sum_minutes(&entries, |e| {
+        this_week(e) && is_employee_time(e)
+    }));
     let total = entries.len();
 
     rsx! {
@@ -388,12 +418,18 @@ pub fn TimeEntryListPage() -> Element {
         // with a 404 on `GET /workday`.
         crate::pages::work_day::WorkDayStrip {}
 
-        div { class: "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5 mb-6",
+        // MAPPS-752: two groups, visibly separated, each stating its scope.
+        // One row of five states a single scale, and these are two: a period
+        // total and a breakdown of that period by category.
+        div { class: "grid grid-cols-1 gap-5 sm:grid-cols-2 mb-5",
             StatCard { label: "Today", value: "{today_h}" }
-            StatCard { label: "This Week", value: "{week_h}" }
+            StatCard { label: "This week", value: "{week_h}" }
+        }
+        h2 { class: "mb-2 text-sm font-medium text-muted", "This week, by category" }
+        div { class: "grid grid-cols-1 gap-5 sm:grid-cols-3 mb-6",
             StatCard { label: "Billable", value: "{billable_h}" }
-            StatCard { label: "Non-Billable", value: "{nonbillable_h}" }
-            StatCard { label: "Own Time", value: "{own_time_h}" }
+            StatCard { label: "Non-billable", value: "{nonbillable_h}" }
+            StatCard { label: "Own time", value: "{own_time_h}" }
         }
 
         if load_failed {
