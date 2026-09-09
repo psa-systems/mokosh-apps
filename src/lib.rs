@@ -990,6 +990,11 @@ pub enum Route {
     #[route("/settings/note-editing")]
     SettingsNoteEditing {},
 
+    // MAPPS-754: who may correct a work-day segment
+    // (`timesheets/segment_editing`, PMS-1145). Admin only, as above.
+    #[route("/settings/segment-editing")]
+    SettingsSegmentEditing {},
+
     // Mokosh-side profile. Edits the tenant-scoped fields on the
     // user row (name, title, phone, mobile, timezone). Cross-app
     // identity (email, password, MFA, sessions, billing) lives on
@@ -2089,6 +2094,15 @@ fn SettingsNoteEditing() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             pages::settings_note_editing::NoteEditingSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsSegmentEditing() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_timesheet_editing::SegmentEditingSettingsPage {}
         }
     }
 }
