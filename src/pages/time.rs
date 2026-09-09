@@ -225,6 +225,23 @@ fn billing_status_label(status: BillingStatus) -> &'static str {
 }
 
 /// Start of the Monday-Sunday week that contains `date`.
+/// MAPPS-752: the week a period tile covers, inclusive at BOTH ends.
+///
+/// The upper bound is the half that was missing: `date >= week_start` with
+/// nothing above it counted a future-dated entry as this week's, and a time
+/// entry can be dated forward.
+pub(crate) fn week_bounds(today: NaiveDate) -> (NaiveDate, NaiveDate) {
+    let start = monday_of_week(today);
+    (start, start + Duration::days(6))
+}
+
+/// Whether a dated row falls in a closed window. One predicate, because the
+/// five tiles must agree about what "this week" means or the row goes back to
+/// implying a scale it does not have.
+pub(crate) fn in_window(date: NaiveDate, start: NaiveDate, end: NaiveDate) -> bool {
+    date >= start && date <= end
+}
+
 fn monday_of_week(date: NaiveDate) -> NaiveDate {
     let offset = match date.weekday() {
         Weekday::Mon => 0,
@@ -357,14 +374,27 @@ pub fn TimeEntryListPage() -> Element {
     }
 
     // Stat cards computed from the fetched entries (no hardcoded totals).
-    let today = Utc::now().date_naive();
-    let week_start = monday_of_week(today);
+    //
+    // MAPPS-752: every tile is scoped to the same week, and the day comes
+    // from the user's own zone. Before this, `Today` and `This Week` filtered
+    // on the date while `Billable`, `Non-Billable` and `Own Time` carried no
+    // date predicate at all, so five identical tiles in one row sat on two
+    // different scales - and the unscoped three were not even all-time, they
+    // were "however many rows this client managed to fetch", which is bounded
+    // by `MAX_PAGES` and drifts as a tenant's history grows.
+    let today = crate::utils::datetime::user_today();
+    let (week_start, week_end) = week_bounds(today);
+    let this_week = |e: &RemoteTimeEntry| in_window(e.date, week_start, week_end);
     let hours = crate::utils::duration::fmt_duration;
     let today_h = hours(sum_minutes(&entries, |e| e.date == today));
-    let week_h = hours(sum_minutes(&entries, |e| e.date >= week_start));
-    let billable_h = hours(sum_minutes(&entries, |e| e.is_billable));
-    let nonbillable_h = hours(sum_minutes(&entries, is_unbilled_client_work));
-    let own_time_h = hours(sum_minutes(&entries, is_employee_time));
+    let week_h = hours(sum_minutes(&entries, this_week));
+    let billable_h = hours(sum_minutes(&entries, |e| this_week(e) && e.is_billable));
+    let nonbillable_h = hours(sum_minutes(&entries, |e| {
+        this_week(e) && is_unbilled_client_work(e)
+    }));
+    let own_time_h = hours(sum_minutes(&entries, |e| {
+        this_week(e) && is_employee_time(e)
+    }));
     let total = entries.len();
 
     rsx! {
@@ -388,12 +418,18 @@ pub fn TimeEntryListPage() -> Element {
         // with a 404 on `GET /workday`.
         crate::pages::work_day::WorkDayStrip {}
 
-        div { class: "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5 mb-6",
+        // MAPPS-752: two groups, visibly separated, each stating its scope.
+        // One row of five states a single scale, and these are two: a period
+        // total and a breakdown of that period by category.
+        div { class: "grid grid-cols-1 gap-5 sm:grid-cols-2 mb-5",
             StatCard { label: "Today", value: "{today_h}" }
-            StatCard { label: "This Week", value: "{week_h}" }
+            StatCard { label: "This week", value: "{week_h}" }
+        }
+        h2 { class: "mb-2 text-sm font-medium text-muted", "This week, by category" }
+        div { class: "grid grid-cols-1 gap-5 sm:grid-cols-3 mb-6",
             StatCard { label: "Billable", value: "{billable_h}" }
-            StatCard { label: "Non-Billable", value: "{nonbillable_h}" }
-            StatCard { label: "Own Time", value: "{own_time_h}" }
+            StatCard { label: "Non-billable", value: "{nonbillable_h}" }
+            StatCard { label: "Own time", value: "{own_time_h}" }
         }
 
         if load_failed {
@@ -704,7 +740,10 @@ pub fn TimeEntryNewPage() -> Element {
     // today (see `date` in the submit handler). Any failure falls back to 0.
     let today_total_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        let today = Utc::now().date_naive();
+        // MAPPS-752: the user's day, not the UTC one. A cap check against the
+        // wrong day is the worst shape of this bug on the page - it either
+        // refuses a legitimate entry or lets the day run over.
+        let today = crate::utils::datetime::user_today();
         let user_id = auth.read().user.as_ref().map(|u| u.id)?;
         // MAPPS-528: page the whole day. The old `per_page=500` was clamped
         // to 100 by the server, so a busy day undercounted its own total and
@@ -987,7 +1026,13 @@ pub fn TimeEntryNewPage() -> Element {
                     // it will drop. PMS-942 makes employee time non-billable
                     // whatever the request says, and General is employee time.
                     let billable = billable && !work_item_is_own_time(&wi);
-                    let date = Utc::now().date_naive();
+                    // MAPPS-752: the date this entry is BILLED under, so the
+                    // UTC day was the costliest instance of the bug: a
+                    // technician west of UTC logging in the evening dated the
+                    // entry tomorrow. PMS-1027 settled that "today" is the
+                    // user's, and the server dates a time entry the same way
+                    // when the request names no date.
+                    let date = crate::utils::datetime::user_today();
                     // Bounded to 1..=MAX_SINGLE_ENTRY_MINUTES by the parse above,
                     // so the narrowing to the server's `i32` cannot lose a digit.
                     let duration_minutes = duration_minutes as i32;
@@ -1174,7 +1219,9 @@ pub fn TimeEntryNewPage() -> Element {
 pub fn TimesheetsPage() -> Element {
     use_page_title("Timesheets");
     let auth = crate::hooks::auth::use_auth();
-    let today = Utc::now().date_naive();
+    // MAPPS-752: the user's day decides which week opens, so a timesheet does
+    // not jump a week early for anyone east of UTC or a week late west of it.
+    let today = crate::utils::datetime::user_today();
     let mut week_start = use_signal(|| monday_of_week(today));
     let mut is_submitting = use_signal(|| false);
     let mut action_msg = use_signal(String::new);
@@ -1951,7 +1998,8 @@ pub fn TimesheetApprovalsPage() -> Element {
         .as_ref()
         .is_some_and(|u| u.role.can_manage_users());
 
-    let today = Utc::now().date_naive();
+    // MAPPS-752, as on the timesheet above.
+    let today = crate::utils::datetime::user_today();
     let mut week_start = use_signal(|| monday_of_week(today));
     let mut action_msg = use_signal(String::new);
     let mut action_err = use_signal(String::new);
@@ -3783,5 +3831,100 @@ mod tests {
         // PMS-942 accepts as employee time (MAPPS-626).
         assert_eq!(json["company_id"], serde_json::Value::Null);
         assert_eq!(json["date"], "2026-06-18");
+    }
+
+    /// MAPPS-752: the week a tile covers is closed at both ends.
+    ///
+    /// The old predicate was `date >= week_start` with nothing above it, so
+    /// an entry dated next month counted as this week's. Time entries can be
+    /// dated forward, so that was reachable rather than theoretical.
+    #[test]
+    fn the_week_is_bounded_at_both_ends() {
+        let wednesday = NaiveDate::from_ymd_opt(2026, 6, 17).expect("valid date");
+        let (start, end) = week_bounds(wednesday);
+        assert_eq!(
+            start,
+            NaiveDate::from_ymd_opt(2026, 6, 15).unwrap(),
+            "Monday"
+        );
+        assert_eq!(end, NaiveDate::from_ymd_opt(2026, 6, 21).unwrap(), "Sunday");
+        assert!(in_window(start, start, end), "the first day is in");
+        assert!(in_window(end, start, end), "and so is the last");
+        assert!(!in_window(start - Duration::days(1), start, end));
+        assert!(
+            !in_window(end + Duration::days(1), start, end),
+            "a future-dated entry is not this week"
+        );
+        // A Monday and a Sunday resolve to their own week, not the next or
+        // previous one.
+        assert_eq!(week_bounds(start).0, start);
+        assert_eq!(week_bounds(end).0, start);
+    }
+
+    /// Every tile is scoped to the same window, so the row reads as one
+    /// scale. Before this the category tiles carried no date predicate and
+    /// summed every row the client had fetched.
+    #[test]
+    fn every_tile_covers_the_same_week() {
+        let today = NaiveDate::from_ymd_opt(2026, 6, 17).expect("valid date");
+        let (start, end) = week_bounds(today);
+        // Built from the wire shape rather than a struct literal: the same
+        // decode the list itself does, so a field renamed on the server
+        // fails here too.
+        let entry = |date: NaiveDate, minutes: i64, billable: bool, kind: &str| {
+            serde_json::from_value::<RemoteTimeEntry>(serde_json::json!({
+                "id": uuid::Uuid::nil(),
+                "date": date.format("%Y-%m-%d").to_string(),
+                "duration_minutes": minutes,
+                "is_billable": billable,
+                "entry_kind": kind,
+            }))
+            .expect("an entry decodes")
+        };
+        let entries = vec![
+            entry(today, 60, true, "client"),
+            entry(today, 30, false, "client"),
+            entry(today, 15, false, "employee"),
+            // Last week and next week: in the fetched list, out of the window.
+            entry(start - Duration::days(1), 480, true, "client"),
+            entry(end + Duration::days(1), 480, true, "client"),
+        ];
+        let this_week = |e: &RemoteTimeEntry| in_window(e.date, start, end);
+
+        assert_eq!(sum_minutes(&entries, this_week), 105, "the week's total");
+        assert_eq!(
+            sum_minutes(&entries, |e| this_week(e) && e.is_billable),
+            60,
+            "the 8h either side is not this week's billable time"
+        );
+        assert_eq!(
+            sum_minutes(&entries, |e| this_week(e) && is_unbilled_client_work(e)),
+            30
+        );
+        assert_eq!(
+            sum_minutes(&entries, |e| this_week(e) && is_employee_time(e)),
+            15
+        );
+        // And the three categories partition the week's total, which is what
+        // makes them readable as a breakdown of the tile above them.
+        assert_eq!(60 + 30 + 15, 105);
+    }
+
+    /// MAPPS-752: no surface on this page may compute a day from the UTC
+    /// clock. PMS-1027 settled that "today" is where the person is, and this
+    /// file had five instances of the UTC day - one of them deciding the date
+    /// a billable time entry is filed under. A source scan, because the
+    /// helper is one call away and nothing else would notice its return.
+    #[test]
+    fn no_day_on_this_page_comes_from_the_utc_clock() {
+        let src = include_str!("time.rs");
+        let body = &src[..src
+            .find("fn no_day_on_this_page_comes_from_the_utc_clock")
+            .expect("this test")];
+        assert!(
+            !body.contains("Utc::now().date_naive()"),
+            "a day here must come from crate::utils::datetime::user_today(), \
+             which reads the user's own timezone"
+        );
     }
 }
