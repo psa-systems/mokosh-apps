@@ -33,13 +33,32 @@
 //! present or absent, border weight) and by words, with colour as
 //! reinforcement only.
 //!
+//! MAPPS-754 added the correction. PMS-1145 gave the server
+//! `PUT`/`DELETE /workday/segments/{id}`; until this, nothing in this app
+//! could reach them, so a mis-tapped clock-in was visible on this card and
+//! not fixable from it. Two things about how it is gated.
+//!
+//! **Whether to draw the control is decided here, and whether to allow it is
+//! decided by the server.** `timesheets/segment_editing` is fetched once and
+//! evaluated against the segment's owner and the caller's role, so a control
+//! is offered only where the request would succeed - the `can_edit` idea from
+//! PMS-974 without a server field to carry it. That means the rule exists in
+//! two places, which is a real cost and is accepted deliberately: the server
+//! still enforces, this only decides what to render, and a disagreement
+//! surfaces as the server's own refusal rather than as a wrong write.
+//!
+//! **Reopening is its own action.** On the wire `ended_at` is a double
+//! option: absent leaves the end alone, an explicit `null` reopens the
+//! segment. A bare empty field meaning "undo the clock-out" is not something
+//! anyone discovers, so "Reopen" is a button that sends the null.
+//!
 //! **A refetch does not blank the card.** The resource restarts on a timer,
 //! and a restarted resource reads `None` again, so rendering nothing while
 //! pending made the whole strip disappear on a cycle. The last loaded day is
 //! held and re-rendered while the next one is in flight; only the very first
 //! load renders nothing, which is what MAPPS-746 decided and its test pins.
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use dioxus::prelude::*;
 use serde::Deserialize;
 
@@ -111,6 +130,12 @@ struct RemoteBreakdown {
 /// `WorkDayResponse`, the server's view of one person's day.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RemoteWorkDay {
+    /// MAPPS-754: whose day this is. Every segment on it belongs to this
+    /// person, so the correction policy needs no per-segment owner. `Option`
+    /// because an older server may not send it, and a day with no owner
+    /// offers no correction rather than guessing one.
+    #[serde(default)]
+    user_id: Option<uuid::Uuid>,
     #[serde(default)]
     date: String,
     #[serde(default)]
@@ -259,6 +284,58 @@ impl ClockState {
     }
 }
 
+/// MAPPS-754: an `HH:MM` on a given day, in the viewer's zone, as an instant.
+///
+/// A `<input type="time">` yields a wall clock and nothing else, and the
+/// segment's timestamps are instants, so the day and the zone are what join
+/// them. The zone is the user's profile zone - the same one the segment times
+/// are RENDERED in - and not the browser's, or a correction typed as "09:14"
+/// would land at a different instant from the "09:14" shown beside it.
+///
+/// `None` for a time that does not exist in that zone (the hour a DST jump
+/// skips) or is ambiguous, rather than silently picking one: the caller shows
+/// the refusal instead of writing a time the person did not mean.
+pub(crate) fn local_time_to_utc(
+    date: NaiveDate,
+    hhmm: &str,
+    tz: chrono_tz::Tz,
+) -> Option<DateTime<Utc>> {
+    let time = chrono::NaiveTime::parse_from_str(hhmm, "%H:%M").ok()?;
+    let naive = date.and_time(time);
+    tz.from_local_datetime(&naive)
+        .single()
+        .map(|local| local.with_timezone(&Utc))
+}
+
+/// The `HH:MM` an instant reads as in the viewer's zone, for prefilling the
+/// input above. Round-trips with `local_time_to_utc` for every time that
+/// exists once in the zone.
+pub(crate) fn utc_to_local_time(dt: DateTime<Utc>, tz: chrono_tz::Tz) -> String {
+    dt.with_timezone(&tz).format("%H:%M").to_string()
+}
+
+/// MAPPS-754: the tenant's segment-correction policy, as this card needs it.
+///
+/// The names are the server's closed set (`SegmentEditPolicy`, PMS-1145) and
+/// the default for an unset or unrecognised value is the server's too. The
+/// page that WRITES this setting owns the list and its wording
+/// (`settings_timesheet_editing`); this is only the read.
+pub(crate) fn segment_edit_allowed(
+    policy: &str,
+    caller_id: uuid::Uuid,
+    caller_is_admin: bool,
+    caller_can_manage: bool,
+    owner_id: uuid::Uuid,
+) -> bool {
+    match policy {
+        "off" => false,
+        "owner_or_manager" => caller_id == owner_id || caller_can_manage,
+        // `owner_or_admin` and anything this build does not recognise, which
+        // is what the server falls back to as well.
+        _ => caller_id == owner_id || caller_is_admin,
+    }
+}
+
 /// MAPPS-753: the line that names the day when it is not the reader's today.
 ///
 /// `GET /workday` with no date returns the OPEN segment's date, not today, so
@@ -334,6 +411,16 @@ pub fn WorkDayStrip() -> Element {
     // load is in flight so a refetch does not blank the card; see the module
     // docs.
     let mut last_day = use_signal(|| None::<(Box<RemoteWorkDay>, DateTime<Utc>)>);
+    // MAPPS-754: which segment's correction form is open, and what is typed
+    // in it. One at a time: two open forms on a strip this size is a way to
+    // save the wrong one.
+    let mut correcting = use_signal(|| None::<uuid::Uuid>);
+    // The segment a Remove is asking about. Removing a clock entry is a
+    // destructive action on attendance data, so it confirms first
+    // (docs/destructive-actions.md); the DELETE fires from the dialog.
+    let mut removing = use_signal(|| None::<uuid::Uuid>);
+    let mut edit_start = use_signal(String::new);
+    let mut edit_end = use_signal(String::new);
     let can_mutate = crate::hooks::use_can_mutate();
 
     let date_for_resource = picked_date();
@@ -380,6 +467,30 @@ pub fn WorkDayStrip() -> Element {
             clock_tick.with_mut(|t| *t = t.wrapping_add(1));
         }
     });
+    // MAPPS-754: the tenant's correction policy, fetched once. It decides
+    // whether to DRAW the controls; the server decides whether to allow the
+    // request. An unreadable settings list reads as the server's default,
+    // which is what an older server without the setting also gives.
+    let policy_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        #[cfg(feature = "app")]
+        {
+            crate::hooks::fetch::api::get_all_authed::<
+                crate::pages::settings_timesheet_editing::TenantSetting,
+            >("/settings")
+            .await
+            .map(|rows| crate::pages::settings_timesheet_editing::policy_in(&rows).to_string())
+            .unwrap_or_else(|e| {
+                tracing::warn!("segment editing policy load failed: {e}");
+                crate::pages::settings_timesheet_editing::DEFAULT_POLICY.to_string()
+            })
+        }
+        #[cfg(not(feature = "app"))]
+        {
+            crate::pages::settings_timesheet_editing::DEFAULT_POLICY.to_string()
+        }
+    });
+
     let users_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         if !is_admin {
@@ -460,6 +571,58 @@ pub fn WorkDayStrip() -> Element {
             busy.set(false);
         });
     };
+    // MAPPS-754: the correction mutators. Same non-optimistic shape as
+    // `post` above and for a stronger reason - this is attendance data, so a
+    // failed correction must not leave a corrected time on the screen. The
+    // server's own refusal is surfaced verbatim: each of the 400/403/409
+    // messages names what is wrong, and re-wording them here would drift from
+    // what the server actually enforces.
+    let mut put_segment = move |id: uuid::Uuid, body: serde_json::Value| {
+        if *busy.read() {
+            return;
+        }
+        busy.set(true);
+        action_error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let path = format!("/workday/segments/{id}");
+                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                    .await
+                {
+                    Ok(_) => day_resource.restart(),
+                    Err(e) => action_error.set(e),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = (id, &body);
+            }
+            busy.set(false);
+        });
+    };
+    let mut delete_segment = move |id: uuid::Uuid| {
+        if *busy.read() {
+            return;
+        }
+        busy.set(true);
+        action_error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let path = format!("/workday/segments/{id}");
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => day_resource.restart(),
+                    Err(e) => action_error.set(e),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = id;
+            }
+            busy.set(false);
+        });
+    };
     let clock_in_body = match picked_date() {
         Some(d) => serde_json::json!({ "date": d.format("%Y-%m-%d").to_string() }),
         None => serde_json::json!({}),
@@ -518,6 +681,28 @@ pub fn WorkDayStrip() -> Element {
         .unwrap_or_default();
     let disabled_title =
         (!can_mutate).then(|| "Can't change the day while the server is unreachable".to_string());
+
+    // MAPPS-754: may this caller correct THIS day's segments? Every segment
+    // on a day belongs to one person, so the answer is per day and not per
+    // segment. A day whose owner the server did not name offers nothing
+    // rather than guessing that it is the caller's own.
+    let policy = policy_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_else(|| crate::pages::settings_timesheet_editing::DEFAULT_POLICY.to_string());
+    let caller = auth.read().user.as_ref().map(|u| (u.id, u.role));
+    let can_correct = match (caller, day.user_id) {
+        (Some((caller_id, role)), Some(owner)) => segment_edit_allowed(
+            &policy,
+            caller_id,
+            role.is_admin(),
+            role.can_manage_users(),
+            owner,
+        ),
+        _ => false,
+    };
+    let zone = crate::utils::datetime::user_timezone();
+    let segment_day = NaiveDate::parse_from_str(&day.date, "%Y-%m-%d").ok();
 
     rsx! {
         Card { class: "mb-6",
@@ -736,13 +921,184 @@ pub fn WorkDayStrip() -> Element {
                 }
 
                 if !day.segments.is_empty() {
-                    ul { class: "flex flex-wrap gap-2 text-xs",
+                    ul { class: "flex flex-col gap-2 text-xs",
                         for seg in day.segments.iter() {
                             li { key: "{seg.id}",
                                 class: if seg.kind == "break" { "rounded-md border border-line px-2 py-1 text-muted" } else { "rounded-md border border-line bg-surface-2 px-2 py-1" },
-                                span { class: "font-medium", if seg.kind == "break" { "Break" } else { "Work" } }
-                                " {segment_span(seg.started_at, seg.ended_at)} "
-                                span { class: "text-muted", "({fmt_duration(seg.minutes)})" }
+                                div { class: "flex flex-wrap items-center gap-2",
+                                    span { class: "font-medium", if seg.kind == "break" { "Break" } else { "Work" } }
+                                    " {segment_span(seg.started_at, seg.ended_at)} "
+                                    span { class: "text-muted", "({fmt_duration(seg.minutes)})" }
+                                    // MAPPS-754: offered only where the
+                                    // tenant's policy and this caller's role
+                                    // would let the request through. The
+                                    // server still decides; this decides
+                                    // whether to draw the control.
+                                    if can_correct && correcting() != Some(seg.id) {
+                                        Button {
+                                            variant: ButtonVariant::Link,
+                                            size: ButtonSize::Small,
+                                            class: "px-0".to_string(),
+                                            disabled: !can_mutate,
+                                            title: disabled_title.clone(),
+                                            onclick: {
+                                                let id = seg.id;
+                                                let started = seg.started_at;
+                                                let ended = seg.ended_at;
+                                                move |_| {
+                                                    edit_start.set(started.map(|t| utc_to_local_time(t, zone)).unwrap_or_default());
+                                                    edit_end.set(ended.map(|t| utc_to_local_time(t, zone)).unwrap_or_default());
+                                                    action_error.set(String::new());
+                                                    correcting.set(Some(id));
+                                                }
+                                            },
+                                            "Correct"
+                                        }
+                                    }
+                                }
+                                if can_correct && correcting() == Some(seg.id) {
+                                    div { class: "mt-2 flex flex-wrap items-end gap-2",
+                                        label { class: "flex flex-col gap-1",
+                                            span { class: "text-muted", "Started" }
+                                            input {
+                                                r#type: "time",
+                                                class: "rounded-md border border-line bg-surface px-2 py-1 text-content",
+                                                value: "{edit_start}",
+                                                oninput: move |e: FormEvent| edit_start.set(e.value()),
+                                            }
+                                        }
+                                        // An open segment has no end to type;
+                                        // it is ended by clocking out, and
+                                        // showing an empty box here would
+                                        // read as one that can be filled.
+                                        if seg.ended_at.is_some() {
+                                            label { class: "flex flex-col gap-1",
+                                                span { class: "text-muted", "Ended" }
+                                                input {
+                                                    r#type: "time",
+                                                    class: "rounded-md border border-line bg-surface px-2 py-1 text-content",
+                                                    value: "{edit_end}",
+                                                    oninput: move |e: FormEvent| edit_end.set(e.value()),
+                                                }
+                                            }
+                                        }
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            size: ButtonSize::Small,
+                                            loading: *busy.read(),
+                                            disabled: !can_mutate,
+                                            onclick: {
+                                                let id = seg.id;
+                                                let closed = seg.ended_at.is_some();
+                                                move |_| {
+                                                    let Some(date) = segment_day else {
+                                                        action_error.set("This day's date could not be read, so a correction cannot be timed.".to_string());
+                                                        return;
+                                                    };
+                                                    let mut body = serde_json::Map::new();
+                                                    match local_time_to_utc(date, &edit_start.read(), zone) {
+                                                        Some(at) => { body.insert("started_at".to_string(), serde_json::json!(at)); }
+                                                        None => {
+                                                            action_error.set("That start time does not exist on this day in your time zone.".to_string());
+                                                            return;
+                                                        }
+                                                    }
+                                                    if closed {
+                                                        match local_time_to_utc(date, &edit_end.read(), zone) {
+                                                            Some(at) => { body.insert("ended_at".to_string(), serde_json::json!(at)); }
+                                                            None => {
+                                                                action_error.set("That end time does not exist on this day in your time zone.".to_string());
+                                                                return;
+                                                            }
+                                                        }
+                                                    }
+                                                    correcting.set(None);
+                                                    put_segment(id, serde_json::Value::Object(body));
+                                                }
+                                            },
+                                            "Save"
+                                        }
+                                        // Reopen is its own button because on
+                                        // the wire it is an explicit null,
+                                        // and an empty field that means "undo
+                                        // the clock-out" is not something
+                                        // anyone discovers.
+                                        if seg.ended_at.is_some() {
+                                            Button {
+                                                variant: ButtonVariant::Secondary,
+                                                size: ButtonSize::Small,
+                                                loading: *busy.read(),
+                                                disabled: !can_mutate,
+                                                onclick: {
+                                                    let id = seg.id;
+                                                    move |_| {
+                                                        correcting.set(None);
+                                                        put_segment(id, serde_json::json!({ "ended_at": serde_json::Value::Null }));
+                                                    }
+                                                },
+                                                "Reopen"
+                                            }
+                                        }
+                                        Button {
+                                            variant: ButtonVariant::Danger,
+                                            size: ButtonSize::Small,
+                                            loading: *busy.read(),
+                                            disabled: !can_mutate,
+                                            onclick: {
+                                                let id = seg.id;
+                                                move |_| removing.set(Some(id))
+                                            },
+                                            "Remove"
+                                        }
+                                        Button {
+                                            variant: ButtonVariant::Ghost,
+                                            size: ButtonSize::Small,
+                                            onclick: move |_| correcting.set(None),
+                                            "Cancel"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Named rather than generic: "Remove this clock entry?" beside
+                // three chips does not say which. The span is what the person
+                // is looking at on the chip they clicked.
+                if let Some(id) = removing() {
+                    {
+                        let target = day.segments.iter().find(|s| s.id == id);
+                        let label = target
+                            .map(|s| {
+                                format!(
+                                    "{} {}",
+                                    if s.kind == "break" { "break" } else { "work" },
+                                    segment_span(s.started_at, s.ended_at)
+                                )
+                            })
+                            .unwrap_or_else(|| "clock entry".to_string());
+                        rsx! {
+                            crate::components::ConfirmDialog {
+                                open: true,
+                                title: "Remove this clock entry".to_string(),
+                                message: format!(
+                                    "The {label} entry is removed from this day and the day's clocked total drops by its length.                                      The removal is recorded. This cannot be undone; clocking in again starts a new entry."
+                                ),
+                                confirm_text: "Remove".to_string(),
+                                cancel_text: "Cancel".to_string(),
+                                destructive: true,
+                                error: action_error.read().clone(),
+                                loading: *busy.read(),
+                                onconfirm: move |_| {
+                                    correcting.set(None);
+                                    removing.set(None);
+                                    delete_segment(id);
+                                },
+                                oncancel: move |_| {
+                                    if !*busy.read() {
+                                        removing.set(None);
+                                    }
+                                },
                             }
                         }
                     }
@@ -881,6 +1237,102 @@ mod tests {
         // A date the server did not send in the expected shape is not worth
         // a wrong sentence.
         assert_eq!(other_day_note("not-a-date", today, true), None);
+    }
+
+    /// MAPPS-754: the policy decides whether the control is drawn, and the
+    /// three names are the server's. `off` refuses the owner too, which is
+    /// the half a reader is most likely to assume is exempt.
+    #[test]
+    fn the_policy_decides_who_sees_a_correction_control() {
+        let me = uuid::Uuid::new_v4();
+        let someone_else = uuid::Uuid::new_v4();
+
+        // off: nobody, including the person whose day it is.
+        assert!(!segment_edit_allowed("off", me, false, false, me));
+        assert!(!segment_edit_allowed("off", me, true, true, me));
+
+        // owner_or_admin, the default: my own always, another's only as admin.
+        assert!(segment_edit_allowed("owner_or_admin", me, false, false, me));
+        assert!(!segment_edit_allowed(
+            "owner_or_admin",
+            me,
+            false,
+            true,
+            someone_else
+        ));
+        assert!(segment_edit_allowed(
+            "owner_or_admin",
+            me,
+            true,
+            true,
+            someone_else
+        ));
+
+        // owner_or_manager widens it to anyone who manages users.
+        assert!(segment_edit_allowed(
+            "owner_or_manager",
+            me,
+            false,
+            true,
+            someone_else
+        ));
+        assert!(!segment_edit_allowed(
+            "owner_or_manager",
+            me,
+            false,
+            false,
+            someone_else
+        ));
+    }
+
+    /// A policy this build does not know reads as the default, which is what
+    /// the server does with one - not as `off`, which would hide a control
+    /// the request would have been allowed to make.
+    #[test]
+    fn an_unknown_policy_reads_as_the_default_not_as_off() {
+        let me = uuid::Uuid::new_v4();
+        assert!(segment_edit_allowed("something_new", me, false, false, me));
+        assert!(segment_edit_allowed("", me, false, false, me));
+    }
+
+    /// A typed `HH:MM` is a wall clock and the stored value is an instant, so
+    /// the day and the USER's zone are what join them. The browser's zone is
+    /// deliberately not used: the times shown beside the input are rendered
+    /// in the profile zone, and a correction typed as "09:14" has to land on
+    /// the "09:14" the person is reading.
+    #[test]
+    fn a_typed_time_is_read_in_the_users_own_zone() {
+        let date = NaiveDate::from_ymd_opt(2026, 6, 15).expect("a date");
+        let ny: chrono_tz::Tz = "America/New_York".parse().expect("a zone");
+        let at = local_time_to_utc(date, "09:14", ny).expect("a real time");
+        // 09:14 in New York in June is 13:14 UTC.
+        assert_eq!(at.to_rfc3339(), "2026-06-15T13:14:00+00:00");
+        // And it round-trips back to what the person typed.
+        assert_eq!(utc_to_local_time(at, ny), "09:14");
+
+        // A zone far from UTC lands on a different UTC day, which is the case
+        // that would silently move a segment if the day were dropped.
+        let auckland: chrono_tz::Tz = "Pacific/Auckland".parse().expect("a zone");
+        let at = local_time_to_utc(date, "09:14", auckland).expect("a real time");
+        assert_eq!(at.to_rfc3339(), "2026-06-14T21:14:00+00:00");
+        assert_eq!(utc_to_local_time(at, auckland), "09:14");
+    }
+
+    /// A time that does not exist in the zone (the hour a spring-forward
+    /// skips) is refused rather than silently resolved, so nobody stores a
+    /// time they did not mean.
+    #[test]
+    fn a_time_that_does_not_exist_is_refused() {
+        let ny: chrono_tz::Tz = "America/New_York".parse().expect("a zone");
+        // 2026-03-08 02:30 does not happen in New York: the clock goes
+        // 01:59:59 -> 03:00:00.
+        let spring_forward = NaiveDate::from_ymd_opt(2026, 3, 8).expect("a date");
+        assert_eq!(local_time_to_utc(spring_forward, "02:30", ny), None);
+        // Garbage is refused the same way.
+        let date = NaiveDate::from_ymd_opt(2026, 6, 15).expect("a date");
+        assert_eq!(local_time_to_utc(date, "", ny), None);
+        assert_eq!(local_time_to_utc(date, "25:00", ny), None);
+        assert_eq!(local_time_to_utc(date, "9am", ny), None);
     }
 
     /// Sixteen hours is the threshold, and it is a whole number of hours in
