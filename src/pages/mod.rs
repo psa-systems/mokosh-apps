@@ -43,6 +43,7 @@ pub mod pick_tenant;
 pub mod platform_login;
 pub mod settings_modules;
 pub mod settings_note_editing;
+pub mod settings_timesheet_editing;
 // mokosh-contact-login: /portal/* customer-portal pages retired on this
 // branch (prompt 001). Contact plane lands under `contact_portal` in
 // prompt 005. Main added `portal`, `portal_forgot_password`,

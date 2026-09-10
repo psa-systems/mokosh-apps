@@ -601,6 +601,20 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         advanced: false,
         visibility: SurfaceVisibility::StaffAdmin,
     },
+    // MAPPS-754: who may correct a clock-in or clock-out after it was
+    // recorded (`timesheets/segment_editing`, PMS-1145). Filed under Billing
+    // & SLA because that group's own description already claims time
+    // tracking, and beside Time Tracking rather than in a Timesheets group of
+    // its own: a group card leading to a landing with one card is a click
+    // that buys nothing (MAPPS-426).
+    SettingsSurface {
+        route: Route::SettingsSegmentEditing {},
+        title: "Segment Editing",
+        description: "Who may correct a clock-in or clock-out after it was recorded.",
+        group: SettingsGroupKey::Billing,
+        advanced: false,
+        visibility: SurfaceVisibility::StaffAdmin,
+    },
     // MAPPS-747: the per-tenant module flags, which until then were
     // reachable only through the API with an admin bearer.
     SettingsSurface {
