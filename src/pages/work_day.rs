@@ -138,6 +138,13 @@ struct RemoteWorkDay {
     user_id: Option<uuid::Uuid>,
     #[serde(default)]
     date: String,
+    /// MAPPS-754 (PMS-1146): where `date` came from - `requested`,
+    /// `open_segment` or `today`. A string rather than an enum so an older
+    /// server that omits it, or a newer one that adds a value, decodes to
+    /// `None` and the card falls back to comparing dates rather than failing
+    /// the whole day.
+    #[serde(default)]
+    date_source: Option<String>,
     #[serde(default)]
     is_clocked_in: bool,
     #[serde(default)]
@@ -342,11 +349,23 @@ pub(crate) fn segment_edit_allowed(
 /// a clock left running overnight shows yesterday's card - correct, and
 /// baffling if the card does not say so. `None` when the day being shown IS
 /// today, because then there is nothing to explain.
+///
+/// MAPPS-754 made it read `date_source` (PMS-1146) first. What that buys is
+/// narrow and worth stating exactly: when the server says it answered with
+/// `today`, the card believes it, instead of re-deciding "is this today?"
+/// against this client's own clock and zone. Those agree almost always and
+/// disagree precisely around midnight or on a skewed clock, which is when a
+/// "Showing Tuesday" on what the server calls today would be wrong. Without
+/// the field (an older server) the comparison is still the fallback.
 pub(crate) fn other_day_note(
     shown: &str,
+    source: Option<&str>,
     today: chrono::NaiveDate,
     running: bool,
 ) -> Option<String> {
+    if source == Some("today") {
+        return None;
+    }
     let shown_date = chrono::NaiveDate::parse_from_str(shown, "%Y-%m-%d").ok()?;
     if shown_date == today {
         return None;
@@ -665,6 +684,7 @@ pub fn WorkDayStrip() -> Element {
     let stale = accruing && session_minutes.is_some_and(|m| m >= STALE_AFTER_HOURS * 60);
     let day_note = other_day_note(
         &day.date,
+        day.date_source.as_deref(),
         crate::utils::datetime::user_today(),
         state.is_running(),
     );
@@ -1228,15 +1248,65 @@ mod tests {
     #[test]
     fn a_day_that_is_not_today_says_which_day_it_is() {
         let today = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
-        assert_eq!(other_day_note("2026-06-15", today, true), None);
-        assert_eq!(other_day_note("2026-06-15", today, false), None);
-        let running = other_day_note("2026-06-14", today, true).expect("a note");
+        assert_eq!(other_day_note("2026-06-15", None, today, true), None);
+        assert_eq!(other_day_note("2026-06-15", None, today, false), None);
+        let running = other_day_note("2026-06-14", None, today, true).expect("a note");
         assert!(running.starts_with("Still clocked in from"), "{running}");
-        let closed = other_day_note("2026-06-14", today, false).expect("a note");
+        let closed = other_day_note("2026-06-14", None, today, false).expect("a note");
         assert!(closed.starts_with("Showing"), "{closed}");
         // A date the server did not send in the expected shape is not worth
         // a wrong sentence.
-        assert_eq!(other_day_note("not-a-date", today, true), None);
+        assert_eq!(other_day_note("not-a-date", None, today, true), None);
+    }
+
+    /// MAPPS-754: when the server says it answered with today, the card does
+    /// not second-guess it against its own clock. The case this exists for is
+    /// the one where the two disagree: a client whose day has already rolled
+    /// over (a skewed clock, or the minutes either side of midnight) must not
+    /// label the server's today as another day.
+    #[test]
+    fn the_servers_today_is_believed_over_this_clients_clock() {
+        let client_thinks = NaiveDate::from_ymd_opt(2026, 6, 16).expect("a date");
+        // The server answered with the 15th and says that IS today.
+        assert_eq!(
+            other_day_note("2026-06-15", Some("today"), client_thinks, false),
+            None,
+            "no 'Showing Monday' on what the server calls today"
+        );
+        // Without the field the old comparison is the fallback, which is
+        // exactly the case that mislabels it.
+        assert!(other_day_note("2026-06-15", None, client_thinks, false).is_some());
+    }
+
+    /// The other two sources keep the wording the comparison always produced:
+    /// the server choosing an open segment's day is the overnight clock, and a
+    /// requested day that is not today is named as the day being shown.
+    #[test]
+    fn an_open_segment_or_a_requested_day_is_still_named() {
+        let today = NaiveDate::from_ymd_opt(2026, 6, 16).expect("a date");
+        let open = other_day_note("2026-06-15", Some("open_segment"), today, true)
+            .expect("the overnight clock is named");
+        assert!(open.starts_with("Still clocked in from"), "{open}");
+        let asked = other_day_note("2026-06-15", Some("requested"), today, false)
+            .expect("a picked day is named");
+        assert!(asked.starts_with("Showing"), "{asked}");
+        // A value this build has not heard of falls back to the comparison
+        // rather than suppressing the note.
+        assert!(other_day_note("2026-06-15", Some("something_new"), today, true).is_some());
+    }
+
+    /// The field decodes when present and is absent without breaking the day,
+    /// because an older server does not send it.
+    #[test]
+    fn date_source_decodes_and_its_absence_is_harmless() {
+        let with: RemoteWorkDay = serde_json::from_value(serde_json::json!({
+            "date": "2026-06-15", "date_source": "open_segment"
+        }))
+        .expect("decodes");
+        assert_eq!(with.date_source.as_deref(), Some("open_segment"));
+        let without: RemoteWorkDay =
+            serde_json::from_value(serde_json::json!({ "date": "2026-06-15" })).expect("decodes");
+        assert_eq!(without.date_source, None);
     }
 
     /// MAPPS-754: the policy decides whether the control is drawn, and the
