@@ -299,6 +299,36 @@ mod tests {
         clear_contact_capabilities();
     }
 
+    /// MAPPS-707: `use_is_contact_session` is the plane predicate the
+    /// Pay Now gate composes with the cap. It must return true only
+    /// when a contact bearer is loaded, false for staff (whose
+    /// `use_capability` bypass is right for read affordances and
+    /// wrong for the checkout-mint action), and false with no session
+    /// at all.
+    #[test]
+    fn use_is_contact_session_answers_the_plane_not_the_capability() {
+        reset_session_state();
+        // Contact plane, with the pay cap: true.
+        set_contact_access_token(Some("contact-token".to_string()));
+        set_contact_capabilities(Some(vec!["invoices:pay".to_string()]));
+        assert!(use_is_contact_session());
+        set_contact_access_token(None);
+        clear_contact_capabilities();
+
+        // Staff plane, without any contact bearer: false, even
+        // though `use_capability("invoices:pay")` bypasses to true.
+        set_access_token_for_test(Some("staff-token".to_string()));
+        assert!(use_capability("invoices:pay"));
+        assert!(
+            !use_is_contact_session(),
+            "staff bearer must not read as a contact session; Pay Now would leak"
+        );
+        set_access_token_for_test(None);
+
+        // No session at all: false.
+        assert!(!use_is_contact_session());
+    }
+
     /// MAPPS-625: a stale staff bearer left in memory while the
     /// visitor is signed in on the contact plane must NOT paint
     /// staff-only UI. The precedence rule in `use_capability` treats

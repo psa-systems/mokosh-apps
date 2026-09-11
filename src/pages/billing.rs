@@ -1176,12 +1176,20 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     // the boot-time search snapshot (the MAPPS-664 fix: the Dioxus
     // router strips the query on mount, so live window.location.search
     // is empty by the time this component renders).
+    //
+    // MAPPS-707: only the contact plane can pay, so only the contact
+    // plane can land back with `?paid=1`. Gating the flag on
+    // `use_is_contact_session` keeps the polling loop and the splash
+    // arm off the staff detail page even if a staff caller manually
+    // types the query string, so the same predicate that hides the
+    // button hides its post-checkout artefacts too.
     let is_paid_landing = {
         #[cfg(feature = "app")]
         {
             let search = crate::modules::oidc::initial_search();
             let params = crate::utils::url::QueryString::parse(&search);
             params.get("paid").as_deref() == Some("1")
+                && crate::hooks::capabilities::use_is_contact_session()
         }
         #[cfg(not(feature = "app"))]
         {
