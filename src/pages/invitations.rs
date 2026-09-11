@@ -25,6 +25,16 @@ struct RemoteInvitation {
     expires_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// PMS-1161: just what the team-picker needs off the `Team` shape. Kept as a
+/// slim projection so we do not pull the whole `RemoteTeam` from
+/// `src/pages/teams.rs` into this module.
+#[derive(Clone, Debug, serde::Deserialize)]
+struct TeamOption {
+    id: uuid::Uuid,
+    name: String,
+    is_active: bool,
+}
+
 #[derive(Clone, Debug, serde::Deserialize)]
 struct PaginatedInvitations {
     data: Vec<RemoteInvitation>,
@@ -52,6 +62,11 @@ pub fn InvitationsPage() -> Element {
 
     let mut email = use_signal(String::new);
     let mut role = use_signal(|| "technician".to_string());
+    // PMS-1161: optional team the invitee joins on accept. `""` = no team,
+    // which is what the server treats as `team_id: None`. Gated on
+    // `is_org_tenant()` because a personal tenant has no teams to pick.
+    let mut team_id = use_signal(String::new);
+    let is_org_tenant = auth.read().is_org_tenant();
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
     // PMS-518: per-field inline error slot for the email field, fed by the
@@ -98,6 +113,43 @@ pub fn InvitationsPage() -> Element {
         SelectOption::new("finance", "Finance"),
     ];
 
+    // PMS-1161: team picker for the invite. Personal tenants have no teams,
+    // so the resource fetches nothing there and the picker renders as an
+    // empty state. On an org tenant the picker offers "No team" plus each
+    // active team; the id round-trips as `team_id` in the request body when
+    // set. A team-scoped invite from a personal tenant is a nonsense shape
+    // the server would 422 on `team_id`, and gating on tenant_kind here
+    // means the operator never even sees the picker.
+    let teams_resource = use_resource(move || async move {
+        if !is_org_tenant {
+            return Some(Vec::<TeamOption>::new());
+        }
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        #[cfg(feature = "app")]
+        {
+            crate::hooks::fetch::api::get_authed::<Vec<TeamOption>>("/teams")
+                .await
+                .inspect_err(|e| tracing::warn!("team picker load failed: {e}"))
+                .ok()
+        }
+        #[cfg(not(feature = "app"))]
+        {
+            Some(Vec::<TeamOption>::new())
+        }
+    });
+    let team_options: Vec<SelectOption> = {
+        let mut opts = vec![SelectOption::new("", "No team")];
+        if let Some(Some(teams)) = teams_resource.read_unchecked().as_ref() {
+            opts.extend(
+                teams
+                    .iter()
+                    .filter(|t| t.is_active)
+                    .map(|t| SelectOption::new(t.id.to_string(), &t.name)),
+            );
+        }
+        opts
+    };
+
     let handle_invite = move |e: FormEvent| {
         e.prevent_default();
         let email_v = email.read().trim().to_string();
@@ -110,12 +162,18 @@ pub fn InvitationsPage() -> Element {
             return;
         }
         let role_v = role.read().clone();
+        // PMS-1161: parse the picked team as a Uuid; empty stays as None
+        // so the server sees the pre-PMS-1161 shape and skips the enrolment.
+        let team_v: Option<uuid::Uuid> = team_id.read().trim().parse::<uuid::Uuid>().ok();
         is_submitting.set(true);
         error.set(String::new());
         spawn(async move {
             #[cfg(feature = "app")]
             {
-                let body = serde_json::json!({ "email": email_v, "role": role_v });
+                let mut body = serde_json::json!({ "email": email_v, "role": role_v });
+                if let Some(t) = team_v {
+                    body["team_id"] = serde_json::json!(t);
+                }
                 #[derive(serde::Deserialize)]
                 struct Created {
                     #[allow(dead_code)]
@@ -223,6 +281,20 @@ pub fn InvitationsPage() -> Element {
                         options: role_options,
                         value: role.read().clone(),
                         onchange: move |e: FormEvent| role.set(e.value()),
+                    }
+                    // PMS-1161: team picker, org tenants only. A personal
+                    // tenant has no teams to pick from and the server would
+                    // refuse a `team_id` on such a tenant with a 422 -
+                    // hiding the picker keeps the operator from ever
+                    // reaching that state.
+                    if is_org_tenant {
+                        Select {
+                            name: "team_id",
+                            label: "Team (optional)",
+                            options: team_options,
+                            value: team_id.read().clone(),
+                            onchange: move |e: FormEvent| team_id.set(e.value()),
+                        }
                     }
                     div { class: "flex items-center gap-3",
                         Button {
