@@ -1,9 +1,16 @@
-//! MAPPS-494 (MAPPS-474 phase 5): in-app tenant switcher.
+//! MAPPS-494 (MAPPS-474 phase 5): in-app team switcher.
 //!
-//! Renders a compact dropdown in the TopBar that lists every membership
-//! the identity holds, marks the active one, lets the operator switch
-//! between tenants without re-logging-in, and offers a "Create new
-//! organization" action to spin up an additional org.
+//! Renders a compact dropdown in the TopBar that lists every team
+//! membership the identity holds, marks the active one, lets the
+//! operator switch between teams without re-logging-in, and offers a
+//! "Create new team" action to spin up an additional team.
+//!
+//! A "team" in the UI is what the code calls a tenant: either the
+//! user's own mokosh or another user's mokosh they have been granted
+//! access to (BUNYIP-673's cross-account grant model, still being
+//! built). The Cloudflare-account-membership shape - one owner, many
+//! invited members, each with their own permission set - is the
+//! target the vocabulary already lines up with.
 //!
 //! Wire path:
 //! - Switch: POST `/api/v1/auth/switch-tenant/:tenant_id` -> LoginResponse.
@@ -109,8 +116,18 @@ pub fn TenantSwitcher() -> Element {
             a.error = None;
             a.tokens = None;
             a.active_tenant_id = active_tenant_id;
-            // Clear so the loader-effect on the next mount refetches.
-            a.memberships = Vec::new();
+            // Do NOT clear `memberships` on switch. The user's set of team
+            // memberships does not change when they switch which one is
+            // active; the only thing that changes is `active_tenant_id`
+            // above. Clearing it here made the switcher trigger disappear
+            // on every switch (the `memberships.len() >= 2` gate below
+            // fails on an empty list) because `memberships_loaded` stayed
+            // `true`, so `use_memberships_loader`'s
+            // `!memberships_loaded` guard refused to refetch. Memberships
+            // need reloading only when the SET changes (new team created,
+            // invite accepted), and those code paths handle it
+            // explicitly (see `submit_create` below and the invitation
+            // acceptance path).
             a.server_loaded = false;
         }
         // MAPPS-497 item 2: bump the tenant generation so every
@@ -168,7 +185,7 @@ pub fn TenantSwitcher() -> Element {
         }
         let name = new_org_name.read().trim().to_string();
         if name.is_empty() {
-            error.set("Enter an organization name.".to_string());
+            error.set("Enter a team name.".to_string());
             return;
         }
         let raw_slug = new_org_slug.read().trim().to_ascii_lowercase();
@@ -265,8 +282,8 @@ pub fn TenantSwitcher() -> Element {
                 button {
                     r#type: "button",
                     class: "flex items-center gap-2 px-3 py-2 rounded-md text-sm text-subtle hover:text-content hover:bg-surface-2 focus:outline-none",
-                    aria_label: "Switch workspace",
-                    title: "Switch workspace",
+                    aria_label: "Switch team",
+                    title: "Switch team",
                     aria_expanded: if open() { "true" } else { "false" },
                     aria_haspopup: "menu",
                     onclick: move |_| {
@@ -274,7 +291,13 @@ pub fn TenantSwitcher() -> Element {
                         open.set(next);
                         if next { error.set(String::new()); }
                     },
-                    span { class: "hidden md:inline max-w-[10rem] truncate", "{active_name}" }
+                    // Team name is visible at every breakpoint so a user
+                    // can see at a glance which team they are on. Narrower
+                    // ceiling on mobile so the top bar stays legible; the
+                    // `truncate` clips anything over that with an ellipsis.
+                    span { class: "inline max-w-[7rem] sm:max-w-[10rem] truncate font-medium text-content",
+                        "{active_name}"
+                    }
                     // Small chevron caret drawn inline (avoids a dep on an
                     // icon we don't own yet).
                     svg {
@@ -296,7 +319,7 @@ pub fn TenantSwitcher() -> Element {
                     class: "dropdown-panel absolute right-0 mt-2 w-64 z-20 p-1",
                     role: "menu",
                     div { class: "px-3 py-2 text-xs uppercase tracking-wide text-subtle",
-                        "Your organizations"
+                        "Your teams"
                     }
                     if memberships.is_empty() {
                         div { class: "px-3 py-2 text-sm text-content", "No memberships loaded." }
@@ -335,7 +358,7 @@ pub fn TenantSwitcher() -> Element {
                             open.set(false);
                             error.set(String::new());
                         },
-                        "Create new organization"
+                        "Create new team"
                     }
                     if !error().is_empty() {
                         p { role: "alert", class: "px-3 py-2 text-xs text-red-600 dark:text-red-400", "{error}" }
@@ -344,7 +367,7 @@ pub fn TenantSwitcher() -> Element {
             }
             Modal {
                 open: SHOW_CREATE_ORG(),
-                title: "Create new organization".to_string(),
+                title: "Create new team".to_string(),
                 size: ModalSize::Small,
                 onclose: move |_| *SHOW_CREATE_ORG.write() = false,
                 form {
@@ -355,7 +378,7 @@ pub fn TenantSwitcher() -> Element {
                     },
                     Input {
                         name: "tenant_name",
-                        label: "Organization name",
+                        label: "Team name",
                         r#type: "text".to_string(),
                         value: new_org_name(),
                         required: true,

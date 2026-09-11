@@ -59,7 +59,7 @@ pub fn CreateOrgPage() -> Element {
         };
         let n = name.read().trim().to_string();
         if n.is_empty() {
-            error.set("Enter an organization name.".to_string());
+            error.set("Enter a team name.".to_string());
             return;
         }
         let raw = slug.read().trim().to_ascii_lowercase();
@@ -107,9 +107,7 @@ pub fn CreateOrgPage() -> Element {
                             nav.replace(Route::Dashboard {});
                         }
                         None => {
-                            error.set(
-                                "Organization created but no session was returned.".to_string(),
-                            );
+                            error.set("Team created but no session was returned.".to_string());
                         }
                     },
                     Err(ApiError::Status { code: 401, .. }) => {
@@ -136,7 +134,7 @@ pub fn CreateOrgPage() -> Element {
     rsx! {
         AuthLayout {
             div { class: "text-center mb-6",
-                h1 { class: "text-2xl font-semibold text-content", "Create your organization" }
+                h1 { class: "text-2xl font-semibold text-content", "Create your team" }
                 p { class: "mt-2 text-sm text-content",
                     "Pick a name for your Mokosh workspace. You will be the first admin."
                 }
@@ -149,7 +147,7 @@ pub fn CreateOrgPage() -> Element {
                 },
                 Input {
                     name: "tenant_name",
-                    label: "Organization name",
+                    label: "Team name",
                     r#type: "text".to_string(),
                     value: name(),
                     required: true,
@@ -184,7 +182,7 @@ pub fn CreateOrgPage() -> Element {
                         loading: saving(),
                         r#type: "submit".to_string(),
                         class: "w-full".to_string(),
-                        "Create organization"
+                        "Create team"
                     }
                     Button {
                         variant: ButtonVariant::Secondary,

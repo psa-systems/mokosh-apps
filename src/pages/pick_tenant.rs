@@ -126,7 +126,7 @@ pub fn PickTenantPage() -> Element {
             div { class: "text-center mb-6",
                 h1 { class: "text-2xl font-semibold text-content", "Choose a workspace" }
                 p { class: "mt-2 text-sm text-content",
-                    "You belong to more than one Mokosh organization. Pick one to sign in to."
+                    "You belong to more than one Mokosh team. Pick one to sign in to."
                 }
             }
             ul { class: "space-y-2",
