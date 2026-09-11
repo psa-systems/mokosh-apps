@@ -1579,6 +1579,41 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     let pay_err = pay_error.read().clone();
     let is_paid = status == "paid";
 
+    // MAPPS-676: currency-mismatch warning above Pay Now.
+    // `docs/mokosh-invoices/03-open-questions.md` Q10 A: the checkout
+    // page charges the invoice currency correctly, but the customer's
+    // card statement shows it in their bank's currency at that day's
+    // FX rate weeks later. The warning line heads off a support
+    // ticket. Rendered ONLY when: (1) Pay Now itself is rendering (so
+    // the note is anchored to an action the customer can take), (2)
+    // the browser locale resolves to a currency, and (3) that currency
+    // differs from the invoice's. Zero FX conversion is done - the
+    // amount is still in the invoice currency, exactly as
+    // `balance_due_display` formats it. Web-only; the desktop shell
+    // returns `None` from `browser_locale_currency`, so nothing
+    // renders there.
+    let invoice_currency = invoice
+        .as_ref()
+        .and_then(|i| i.currency.clone())
+        .filter(|s| !s.trim().is_empty());
+    let browser_currency = crate::platform::currency::browser_locale_currency();
+    let currency_mismatch_note: Option<String> = match (&invoice_currency, &browser_currency) {
+        (Some(inv), Some(browser))
+            if !inv.eq_ignore_ascii_case(browser) && can_pay && invoice_payable && !is_paid =>
+        {
+            let amount = readiness
+                .as_ref()
+                .map(|r| r.balance_due_display.clone())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("this invoice's {inv} balance"));
+            Some(format!(
+                "You will be charged {amount}. Your card statement may show this in a different \
+                 currency at your bank's exchange rate."
+            ))
+        }
+        _ => None,
+    };
+
     rsx! {
         // MAPPS-727: the write-off dialog. A Modal rather than ConfirmDialog
         // because the reason is required and typed here (PMS-1036 records it
@@ -2016,6 +2051,16 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         // above for the same reason.
         if !pay_err.is_empty() {
             ErrorBanner { class: "mb-3", "{pay_err}" }
+        }
+
+        // MAPPS-676: the browser-locale currency-mismatch cue. Rendered
+        // only when Pay Now itself is (see `currency_mismatch_note`),
+        // so a customer who cannot pay never sees a note about being
+        // charged.
+        if let Some(note) = currency_mismatch_note.as_deref() {
+            p { class: "mb-3 text-xs text-muted bg-surface-2 border border-line rounded-md px-3 py-2",
+                "{note}"
+            }
         }
 
         // PMS-1004: the server refused Send because there is nobody to email.

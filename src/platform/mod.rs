@@ -21,6 +21,11 @@ pub mod anchor_dom;
 pub mod clipboard;
 pub mod clock;
 pub mod config;
+// MAPPS-676: browser-locale → ISO 4217 currency, so the invoice detail
+// page can warn a customer whose card statement will show the invoice
+// currency at their bank's FX rate. Web reads `navigator.language`;
+// the desktop shell has no such signal and returns `None`.
+pub mod currency;
 pub mod dom;
 pub mod download;
 pub mod http;
