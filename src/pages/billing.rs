@@ -217,6 +217,11 @@ struct RemoteInvoice {
     /// raw `company_id` UUID.
     #[serde(default)]
     company_name: Option<String>,
+    /// MAPPS-764 / PMS-1173: who the invoice was addressed to. `None` against
+    /// a server that predates the field, and on an invoice that names nobody,
+    /// which the list renders the same way: there is no one to point at.
+    #[serde(default)]
+    billing_contact_name: Option<String>,
     #[serde(default)]
     status: String,
     #[serde(default)]
@@ -546,7 +551,9 @@ fn InvoiceListBody() -> Element {
                 TableHead {
                     TableRow {
                         TableHeader { "Invoice" }
-                        TableHeader { "Company" }
+                        TableHeader {
+                            if staff_only { "Company" } else { "Billed to" }
+                        }
                         TableHeader { "Date" }
                         TableHeader { "Due Date" }
                         TableHeader { class: "text-right", "Total" }
@@ -600,7 +607,14 @@ fn InvoiceListBody() -> Element {
                                 key: "{invoice.id}",
                                 id: invoice.id.to_string(),
                                 number: invoice.invoice_number,
-                                company: invoice.company_name.clone().unwrap_or_default(),
+                                // MAPPS-764: on the contact plane the company
+                                // is the same on every row, so the column
+                                // answers "is this one mine" instead.
+                                company: if staff_only {
+                                    invoice.company_name.clone().unwrap_or_default()
+                                } else {
+                                    invoice.billing_contact_name.clone().unwrap_or_default()
+                                },
                                 date: invoice.invoice_date.unwrap_or_default(),
                                 due_date: invoice.due_date.unwrap_or_default(),
                                 total: format_money_str(&invoice.total),
@@ -620,6 +634,11 @@ fn InvoiceListBody() -> Element {
 struct InvoiceRowProps {
     id: String,
     number: String,
+    /// MAPPS-764: the Company column for staff, and who the invoice is billed
+    /// to for a customer. One column, because on the contact plane every
+    /// invoice belongs to the SAME company, so that value carries no
+    /// information there while "is this one mine" is the only question the
+    /// list has to answer.
     company: String,
     date: String,
     due_date: String,
