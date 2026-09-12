@@ -1716,9 +1716,21 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                     #[cfg(feature = "app")]
                                     {
                                         let origin = crate::platform::location::origin().unwrap_or_default();
+                                        // MAPPS-762: the provider sends the
+                                        // customer back here after they pay,
+                                        // so the path is taken FROM THE ROUTER
+                                        // rather than typed. It used to read
+                                        // `/portal/invoices/{id}`, a route
+                                        // retired with the customer-portal
+                                        // family, so a successful payment
+                                        // landed the customer on the 404 page
+                                        // holding a charged card. A rename of
+                                        // this route now moves the return URL
+                                        // with it.
+                                        let path = Route::InvoiceDetail { id: id.clone() }.to_string();
                                         let body = PayInvoiceBody {
-                                            success_url: format!("{origin}/portal/invoices/{id}?paid=1"),
-                                            cancel_url: format!("{origin}/portal/invoices/{id}"),
+                                            success_url: format!("{origin}{path}?paid=1"),
+                                            cancel_url: format!("{origin}{path}"),
                                         };
                                         match crate::hooks::fetch::api::post_authed_any_typed::<PayInvoiceResp, _>(
                                             &format!("/invoices/{id}/pay"),
@@ -5852,6 +5864,45 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
 /// MAPPS-759: the credential set the form sends has to be the one the server
 /// parses, and the providers it offers have to be the ones the server can
 /// serve. Both drifted, and both drifted silently.
+/// MAPPS-762: where a payment provider returns the customer.
+#[cfg(test)]
+mod checkout_return_tests {
+    use crate::Route;
+
+    /// The path comes from the router, so it is whatever the app serves.
+    ///
+    /// It used to be typed as `/portal/invoices/{id}`, which was retired with
+    /// the customer-portal route family: the customer paid, Stripe returned
+    /// them, and they landed on the 404 page with a charged card and no
+    /// confirmation. Deriving it means a rename moves the return URL too.
+    #[test]
+    fn the_return_path_is_the_invoice_route_this_app_serves() {
+        let id = "2f1c2f1e-0000-4000-8000-00000000abcd";
+        let path = Route::InvoiceDetail { id: id.to_string() }.to_string();
+        assert_eq!(path, format!("/invoices/{id}"));
+        assert!(
+            !path.starts_with("/portal/invoices/"),
+            "the retired route must never be a return target again: {path}"
+        );
+    }
+
+    /// `?paid=1` is what the invoice page reads to show the confirmation
+    /// splash, so the success URL has to carry it and the cancel URL must not
+    /// (a customer who backed out has paid nothing).
+    #[test]
+    fn success_carries_the_paid_marker_and_cancel_does_not() {
+        let path = Route::InvoiceDetail {
+            id: "2f1c2f1e-0000-4000-8000-00000000abcd".to_string(),
+        }
+        .to_string();
+        let success = format!("https://msp.example{path}?paid=1");
+        let cancel = format!("https://msp.example{path}");
+        assert!(success.ends_with("?paid=1"));
+        assert!(!cancel.contains("paid="));
+        assert!(success.starts_with(&cancel));
+    }
+}
+
 #[cfg(test)]
 mod gateway_credential_tests {
     use super::{
