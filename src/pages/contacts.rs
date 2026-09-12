@@ -3643,7 +3643,7 @@ fn CompanyPortalAccessCard(
                                                         Button {
                                                             variant: ButtonVariant::Secondary,
                                                             disabled: true,
-                                                            "Grant"
+                                                            "Invite"
                                                         }
                                                     } else {
                                                         Button {
@@ -3662,19 +3662,19 @@ fn CompanyPortalAccessCard(
                                                                         Ok(_) => {
                                                                             crate::hooks::toast::push_toast(
                                                                                 crate::components::AlertType::Success,
-                                                                                "Portal access granted. A setup email is on its way.",
+                                                                                "Invitation sent.",
                                                                             );
                                                                             roster.restart();
                                                                         }
                                                                         Err(err) => crate::hooks::toast::push_toast(
                                                                             crate::components::AlertType::Error,
-                                                                            format!("Could not grant portal access: {err}"),
+                                                                            format!("Could not send the invitation: {err}"),
                                                                         ),
                                                                     }
                                                                     toggling.write().remove(&contact_id);
                                                                 });
                                                             },
-                                                            "Grant"
+                                                            "Invite"
                                                         }
                                                     }
                                                 }
@@ -7141,10 +7141,10 @@ fn ContactForm(props: ContactFormProps) -> Element {
                             }
                             div {
                                 span { class: "block text-sm font-medium text-content",
-                                    "Grant portal access"
+                                    "Invite to the portal"
                                 }
                                 p { class: "mt-1 text-xs text-muted",
-                                    "Emails this contact a link to set a password and sign in to the Client Portal. Requires an email address above."
+                                    "Emails them a link to set a password and sign in to your client portal. Needs the email address above."
                                 }
                             }
                         }
@@ -7994,6 +7994,24 @@ pub(crate) struct PortalRoleSummaryWire {
     pub(crate) contacts_count: Option<u32>,
 }
 
+/// MAPPS-757: the action is an invitation, not a grant of access.
+///
+/// What changed is the words and nothing else. The button said "Grant
+/// portal access", the modal's confirm said "Grant + send email", and the
+/// explanation was written from the server's side ("mints a random Company
+/// slug, assigns one or more portal roles, and emails the contact a
+/// magic-link setup URL"). None of that is what the MSP is doing: they are
+/// inviting their customer into the portal. The copy rule is MAPPS-755's -
+/// speak as the MSP to their customer, state the fact and stop.
+///
+/// The open question on that issue was whether an invitation could be
+/// issued WITHOUT sending an email, for a contact who is already in touch
+/// another way. The answer is no, and it stays no: the setup link is a
+/// 72-hour magic link (PMS-136) and the email is the only thing that
+/// carries it to the person, so an invitation that sends none leaves a
+/// contact holding access they cannot reach. Nothing here is a behaviour
+/// change, which is also why this card still calls the same
+/// `grant-portal-access` endpoint under its new label.
 #[component]
 fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
     let contact_id = props.contact_id.clone();
@@ -8126,7 +8144,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                     let toast_msg = if is_role_only_edit {
                         "Portal roles updated.".to_string()
                     } else {
-                        "Portal access granted. Setup email queued.".to_string()
+                        "Invitation sent.".to_string()
                     };
                     crate::hooks::toast::push_toast(
                         crate::components::AlertType::Success,
@@ -8159,11 +8177,11 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
             match crate::hooks::fetch::api::post_authed_no_content(&path).await {
                 Ok(()) => crate::hooks::toast::push_toast(
                     crate::components::AlertType::Success,
-                    "Setup email resent.".to_string(),
+                    "Invitation sent again.".to_string(),
                 ),
                 Err(err) => crate::hooks::toast::push_toast(
                     crate::components::AlertType::Error,
-                    format!("Could not resend invite: {err}"),
+                    format!("Could not send the invitation again: {err}"),
                 ),
             }
             mutating.set(false);
@@ -8253,12 +8271,12 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                     }
                     if !last_setup_link.read().is_empty() {
                         p { class: "text-xs text-muted break-all",
-                            span { class: "font-medium text-content", "Setup link (also emailed): " }
+                            span { class: "font-medium text-content", "Invitation link (also emailed): " }
                             code { class: "text-xs", "{last_setup_link}" }
                         }
                     }
                     p { class: "text-xs text-muted",
-                        "This contact can sign in to their client portal. The setup link is a 72h magic link; use Resend if the customer never received the email."
+                        "This contact can sign in to your client portal. The invitation link works for 72 hours; send it again if they never received it."
                     }
                     div { class: "flex flex-wrap gap-2",
                         Button {
@@ -8274,7 +8292,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                             title: (!can_mutate).then(|| "Can't change portal access while the server is unreachable".to_string()),
                             loading: *mutating.read(),
                             onclick: resend_invite,
-                            "Resend setup email"
+                            "Resend invitation"
                         }
                         Button {
                             variant: ButtonVariant::Danger,
@@ -8293,7 +8311,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                         Badge { variant: BadgeVariant::Gray, "Not granted" }
                     }
                     p { class: "text-xs text-muted",
-                        "Granting portal access mints a random Company slug (if this Company has none yet), assigns one or more portal roles, and emails the contact a magic-link setup URL. Contact must have an email + be linked to a Company."
+                        "Emails this contact an invitation to set a password and sign in to your client portal. They need an email address and a company."
                     }
                     Button {
                         variant: ButtonVariant::Primary,
@@ -8302,7 +8320,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                         // leaving the operator with a control that ignores them.
                         title: (!can_mutate).then(|| "Can't change portal access while the server is unreachable".to_string()),
                         onclick: open_modal,
-                        "Grant portal access"
+                        "Invite to the portal"
                     }
                 }
             }
@@ -8386,7 +8404,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                                 disabled: !can_mutate || *mutating.read(),
                                 loading: *mutating.read(),
                                 onclick: submit_grant,
-                                if is_portal_user { "Update roles" } else { "Grant + send email" }
+                                if is_portal_user { "Update roles" } else { "Send invitation" }
                             }
                         }
                     }
