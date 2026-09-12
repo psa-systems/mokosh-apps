@@ -45,6 +45,10 @@ struct LoginLinkBody {
 
 #[component]
 pub fn ContactMagicLinkLoginPage(email: String) -> Element {
+    // MAPPS-761: a link that brought this customer here may name the page it
+    // really wanted. Captured on arrival, because signing in replaces the URL
+    // several times over and the query string does not survive the hops.
+    use_hook(super::next_target::remember_from_query);
     let nav = use_navigator();
     // Pre-fill from the `?email=` query param so the "Request a new
     // sign-in link" button on the picker's invalid-link branch can hand

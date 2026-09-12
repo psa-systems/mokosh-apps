@@ -103,6 +103,10 @@ struct HostHint {
 
 #[component]
 pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
+    // MAPPS-761: a link that brought this customer here may name the page it
+    // really wanted. Captured on arrival, because signing in replaces the URL
+    // several times over and the query string does not survive the hops.
+    use_hook(super::next_target::remember_from_query);
     let nav = use_navigator();
     let mut email = use_signal(String::new);
     let mut password = use_signal(String::new);
@@ -429,5 +433,7 @@ fn install_session(nav: &dioxus::router::Navigator, resp: LoginResp, portal_id_s
         crate::hooks::fetch::api::set_contact_last_slug(&slug);
     }
     crate::hooks::capabilities::set_contact_capabilities(Some(caps));
-    nav.replace(Route::Dashboard {});
+    // MAPPS-761: the page the link that brought them named, else the
+    // dashboard, which is where this always went.
+    nav.replace(super::next_target::landing());
 }
