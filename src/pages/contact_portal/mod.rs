@@ -13,6 +13,9 @@ pub mod login;
 // from `/portal/login` to `/portal/find?:email` so the shorter path
 // can host the primary three-field password login page.
 pub mod magic_link_login;
+/// MAPPS-761: where a contact lands after signing in, when the link that
+/// brought them named a page.
+pub mod next_target;
 pub mod picker;
 pub mod reset_password;
 pub mod set_password;
