@@ -124,8 +124,18 @@ pub fn AuthGuard() -> Element {
     // refresh on `/dashboard` under a contact session may transiently
     // fall through the guard's next branch, then re-render once the
     // refresh lands.
+    // MAPPS-767: whether a contact rehydrate is still in flight.
+    //
+    // The effect below races the first render on purpose, which is fine while
+    // the fall-through only FLASHES. It does not only flash: it navigates, so
+    // a customer returning from a completed payment - a cold load of
+    // `/invoices/{id}?paid=1` - was bounced to a sign-in page before the
+    // refresh landed, holding a charged card and no confirmation. The guard
+    // holds its decision while this is true, the way it already does for
+    // `auth_state.is_loading`.
+    let mut contact_rehydrating = use_signal(|| false);
     #[cfg(feature = "web")]
-    use_effect(|| {
+    use_effect(move || {
         // MAPPS-630: skip the contact rehydrate when a staff bearer
         // is present. The two planes are mutually exclusive within
         // one browser origin, and blindly rehydrating a stale
@@ -139,12 +149,27 @@ pub fn AuthGuard() -> Element {
         if !crate::hooks::fetch::api::has_contact_session()
             && crate::hooks::fetch::api::current_contact_refresh_token().is_some()
         {
+            contact_rehydrating.set(true);
             spawn(async move {
                 let _ = crate::hooks::contact_auth::refresh_contact_session().await;
+                // Cleared whatever the outcome. A refresh that FAILS has to
+                // release the guard so the visitor reaches the sign-in page;
+                // hanging on a placeholder would be a worse bug than the
+                // bounce this replaces.
+                contact_rehydrating.set(false);
             });
         }
     });
     let auth_state = auth.read();
+    // MAPPS-767: same placeholder, same reason - a session is on its way and
+    // deciding now would decide wrong.
+    if contact_rehydrating() {
+        return rsx! {
+            div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
+                "Loading…"
+            }
+        };
+    }
     if auth_state.is_loading {
         // Still hydrating tokens from sessionStorage. Render a
         // placeholder so we do not kick off the OIDC dance just to
