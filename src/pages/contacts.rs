@@ -7956,6 +7956,62 @@ pub(crate) struct PortalRoleSummaryWire {
 /// contact holding access they cannot reach. Nothing here is a behaviour
 /// change, which is also why this card still calls the same
 /// `grant-portal-access` endpoint under its new label.
+/// MAPPS-764: what a portal role lets the customer DO, in their terms.
+///
+/// A role is stored as a capability list, and the picker showed only its name.
+/// An MSP setting the portal up for the first time had no way to tell which
+/// role lets a customer pay an invoice, and the obvious guess is wrong: paying
+/// is gated on the `invoices:pay` CAPABILITY, not on being the company's
+/// billing contact, which is a different thing with almost the same name.
+///
+/// Only the capabilities a customer would recognise are named, in a fixed
+/// order, because the point is to answer "what will this person be able to do"
+/// and not to enumerate a permission model at someone who did not ask for one.
+pub(crate) const ROLE_ABILITIES: &[(&str, &str)] = &[
+    ("invoices:pay", "pay invoices"),
+    ("invoices:read", "see invoices"),
+    ("quotes:accept", "accept quotes"),
+    ("quotes:read", "see quotes"),
+    ("tickets:write", "raise tickets"),
+    ("tickets:comment", "reply on tickets"),
+    ("tickets:read", "see tickets"),
+    ("contracts:read", "see contracts"),
+    ("assets:read", "see assets"),
+    ("projects:read", "see projects"),
+    ("kb:read", "read your knowledge base"),
+];
+
+/// How many abilities to name before summarising the rest. Four is what fits
+/// on one line beside a role name at the width this picker renders at.
+const ROLE_ABILITY_LIMIT: usize = 4;
+
+/// One sentence naming what `capabilities` lets a customer do.
+///
+/// Empty when a role carries nothing a customer would notice, so the caller
+/// renders no line rather than "Can ." - the PMS-1171 lesson applied to a
+/// sentence assembled here instead of in a template.
+pub(crate) fn role_summary(capabilities: &[String]) -> String {
+    let named: Vec<&str> = ROLE_ABILITIES
+        .iter()
+        .filter(|(cap, _)| capabilities.iter().any(|held| held == cap))
+        .map(|(_, phrase)| *phrase)
+        .collect();
+    if named.is_empty() {
+        return String::new();
+    }
+    let shown = &named[..named.len().min(ROLE_ABILITY_LIMIT)];
+    let rest = named.len() - shown.len();
+    let mut list = match shown {
+        [only] => (*only).to_string(),
+        [head @ .., last] => format!("{} and {last}", head.join(", ")),
+        [] => String::new(),
+    };
+    if rest > 0 {
+        list = format!("{list}, and {rest} more");
+    }
+    format!("Can {list}.")
+}
+
 #[component]
 fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
     let contact_id = props.contact_id.clone();
@@ -8279,7 +8335,15 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                         onclick: move |evt: Event<MouseData>| { evt.stop_propagation(); },
                         h3 { class: "text-lg font-semibold text-content", "Assign portal roles" }
                         p { class: "text-xs text-muted",
-                            "Pick every role this contact should hold. Effective capabilities are the union across all picked roles."
+                            "Pick every role this contact should hold. They get everything the picked roles allow, combined."
+                        }
+                        // MAPPS-764: the two things an MSP cannot work out
+                        // from this screen and has to discover by experiment.
+                        p { class: "text-xs text-muted",
+                            "Invoice access is company-wide: a contact who can see invoices sees every invoice for their company, not only the ones addressed to them."
+                        }
+                        p { class: "text-xs text-muted",
+                            "Paying an invoice needs a role that allows it, such as Billing Contact. That is separate from the company's billing contact, who is simply the person invoices are emailed to."
                         }
                         if let Some(err_msg) = roles_fetch_error.as_deref() {
                             p { role: "alert", class: "text-sm text-red-600 dark:text-red-400",
@@ -8326,6 +8390,18 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                                                     // union picker.
                                                     if role.company_id.is_some() {
                                                         span { class: "ml-2 text-xs text-muted", "(Company only)" }
+                                                    }
+                                                    // MAPPS-764: what the role
+                                                    // actually lets them do.
+                                                    {
+                                                        let summary = role_summary(&role.capabilities);
+                                                        if summary.is_empty() {
+                                                            rsx! {}
+                                                        } else {
+                                                            rsx! {
+                                                                span { class: "block text-xs text-muted", "{summary}" }
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
@@ -8761,6 +8837,86 @@ mod validation_tests {
             body.contains("!c.is_whitespace()"),
             "validate_phone_field must strip whitespace via char::is_whitespace"
         );
+    }
+}
+
+/// MAPPS-764: the picker says what a role lets a customer do.
+#[cfg(test)]
+mod role_summary_tests {
+    use super::{role_summary, ROLE_ABILITIES, ROLE_ABILITY_LIMIT};
+
+    fn caps(list: &[&str]) -> Vec<String> {
+        list.iter().map(|c| (*c).to_string()).collect()
+    }
+
+    /// The question that started this: which role lets them pay? A role
+    /// carrying `invoices:pay` has to say so in the words an MSP would use.
+    #[test]
+    fn a_paying_role_says_it_pays() {
+        let summary = role_summary(&caps(&["invoices:read", "invoices:pay"]));
+        assert!(summary.contains("pay invoices"), "{summary}");
+        assert!(summary.contains("see invoices"), "{summary}");
+        assert!(summary.starts_with("Can "), "{summary}");
+        assert!(summary.ends_with('.'), "{summary}");
+    }
+
+    /// One ability reads as a sentence, not as a list of one.
+    #[test]
+    fn a_single_ability_needs_no_conjunction() {
+        assert_eq!(
+            role_summary(&caps(&["kb:read"])),
+            "Can read your knowledge base."
+        );
+    }
+
+    /// Two or more are joined so the last one reads naturally.
+    #[test]
+    fn several_abilities_are_joined_with_and() {
+        let summary = role_summary(&caps(&["tickets:read", "tickets:write"]));
+        assert_eq!(summary, "Can raise tickets and see tickets.");
+    }
+
+    /// A broad role is summarised rather than turned into a permission dump:
+    /// the reader asked what this person can do, not for the model.
+    #[test]
+    fn a_broad_role_is_summarised() {
+        let everything: Vec<String> = ROLE_ABILITIES
+            .iter()
+            .map(|(cap, _)| (*cap).to_string())
+            .collect();
+        let summary = role_summary(&everything);
+        assert!(summary.contains("and 7 more"), "{summary}");
+        assert_eq!(
+            summary.matches(", ").count(),
+            ROLE_ABILITY_LIMIT - 1,
+            "only the first few are named: {summary}"
+        );
+    }
+
+    /// A role carrying nothing a customer would notice renders NO line, never
+    /// `Can .` - the same rule PMS-1171 had to learn about a footer: a
+    /// sentence with a hole in it is worse than no sentence.
+    #[test]
+    fn a_role_with_nothing_notable_says_nothing() {
+        assert!(role_summary(&[]).is_empty());
+        assert!(role_summary(&caps(&["settings:manage_own"])).is_empty());
+    }
+
+    /// The capability spellings are the server's. A typo here is a role that
+    /// silently describes itself as doing less than it does, which is worse
+    /// than saying nothing.
+    #[test]
+    fn the_capability_names_are_the_servers() {
+        for (cap, phrase) in ROLE_ABILITIES {
+            assert!(cap.contains(':'), "{cap} is not a capability name");
+            assert!(!phrase.is_empty());
+            assert_eq!(*phrase, phrase.trim());
+            assert!(
+                !phrase.starts_with("Can "),
+                "{phrase} is joined into one sentence, so it must not open one"
+            );
+        }
+        assert!(ROLE_ABILITIES.iter().any(|(c, _)| *c == "invoices:pay"));
     }
 }
 
