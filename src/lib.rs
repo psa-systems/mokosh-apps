@@ -2402,6 +2402,23 @@ mod emailed_link_routes {
         // src/modules/auth/service.rs (security notice) and
         // src/modules/invitations/service.rs (invite): the bare SPA origin.
         ("auth::security_notice / invitations::create", "/"),
+        // src/modules/billing/service.rs: the invoice pay link, on the send
+        // path and on the overdue reminder worker (PMS-1168). Both shapes,
+        // because a company with no `portal_id` gets the generic login.
+        //
+        // This entry is the one that was missing. The retired
+        // `/portal/invoices/{id}` was emailed for months after the
+        // customer-portal route family went, and the gate this test IS could
+        // not see it, because nothing listed the link. A guard with a hole in
+        // its input is a guard that reports clean.
+        (
+            "billing::email_invoice (company with a portal id)",
+            "/portal/123456789/login",
+        ),
+        (
+            "billing::email_invoice (company without one)",
+            "/portal/login",
+        ),
     ];
 
     #[test]
