@@ -5322,6 +5322,69 @@ pub(crate) fn webhook_events(provider: &str) -> &'static [&'static str] {
     }
 }
 
+/// MAPPS-765: the provider-side half of setting a gateway up.
+///
+/// MAPPS-760 put the endpoint URL and the event list on this form, which
+/// removed the blocker. It was still not enough to finish unaided: *"without
+/// your help i dont know how to navigate through the set destination"*. The
+/// sentence it shipped - "Add this endpoint in Stripe, subscribe it to the
+/// events below" - asserted an order Stripe's UI does not have (it asks for
+/// the events first and the URL last), and named a control that does not
+/// exist there ("Add destination" is the button).
+///
+/// ## Everything in this table names something we do not control
+///
+/// That is the point of keeping it in ONE place. A provider can rename a
+/// screen or redesign a flow whenever it likes - this one did, between
+/// MAPPS-760 being written and an admin using it - and instructions that go
+/// stale silently are worse than none, because a confident wrong instruction
+/// costs more than an absent one. So the split is deliberate:
+///
+/// - What WE know and control - the endpoint URL, the exact events, which
+///   credential goes in which field, that the payload must carry the whole
+///   object - is stated on the form, because it is about us and does not go
+///   stale.
+/// - The provider's own click path is a LINK to their documentation, which
+///   they keep current. We give only enough orientation to find the screen.
+///
+/// A reviewer checking whether this has gone stale reads this table and
+/// nothing else.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ProviderSetup {
+    /// Where the setting lives, named loosely enough to survive a redesign
+    /// and precisely enough to find. Provider-controlled.
+    pub(crate) where_to_look: &'static str,
+    /// The provider's own setup documentation. Provider-controlled.
+    pub(crate) doc_url: &'static str,
+    /// A trap specific to this provider whose failure is SILENT - the setup
+    /// looks complete and money goes missing from the record. Empty when the
+    /// provider has none.
+    pub(crate) silent_trap: &'static str,
+}
+
+/// What we can tell an admin about `provider` beyond the URL and the events.
+pub(crate) fn provider_setup(provider: &str) -> Option<ProviderSetup> {
+    match provider {
+        "stripe" => Some(ProviderSetup {
+            where_to_look: "In Stripe, open Workbench and the Webhooks tab, then create a destination.",
+            doc_url: "https://docs.stripe.com/webhooks",
+            // Stripe now offers thin destinations, which deliver an id
+            // instead of the object. Our handler reads the object, so a thin
+            // destination verifies, answers 200 and records nothing: the
+            // customer pays, Stripe reports success, the invoice stays unpaid.
+            silent_trap: "Choose the destination that sends the full event data (Stripe calls these snapshot events). A destination that sends only an event ID will be accepted and recorded as delivered, and the payment will never reach the invoice.",
+        }),
+        "paypal" => Some(ProviderSetup {
+            where_to_look: "In the PayPal Developer dashboard, open your app and add a webhook.",
+            doc_url: "https://developer.paypal.com/api/rest/webhooks/",
+            // The third credential field wants the webhook's id, and the page
+            // that creates the webhook shows the URL far more prominently.
+            silent_trap: "The Webhook ID field above wants the ID PayPal shows beside the webhook after you save it, not the URL you just pasted in. PayPal verifies every delivery against that ID, so a wrong one refuses all of them.",
+        }),
+        _ => None,
+    }
+}
+
 /// One row of `GET /payment-gateways/webhook-endpoints` (PMS-1165).
 ///
 /// `url` is `None` when the deployment sets no `PUBLIC_API_BASE_URL`, which is
@@ -5790,8 +5853,14 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                                                 "Copy"
                                             }
                                         }
+                                        // MAPPS-765: no order is asserted
+                                        // here. The provider decides whether
+                                        // it asks for the URL or the events
+                                        // first, and Stripe asks for the
+                                        // events first, which the sentence
+                                        // this replaces got backwards.
                                         p { class: "text-xs text-muted",
-                                            "Add this endpoint in {humanize_provider(&selected)}, subscribe it to the events below, and paste the signing secret it gives you into the field above."
+                                            "Create a webhook in {humanize_provider(&selected)} for this URL, subscribed to the events below. It will give you a signing secret: paste that into the field above."
                                         }
                                     },
                                     WebhookEndpoint::NoPublicBase => rsx! {
@@ -5819,6 +5888,27 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                                     // the refund never does.
                                     p { class: "mt-1 text-xs text-muted",
                                         "All of them. Without the refund event a refund never reaches the invoice."
+                                    }
+                                }
+                                // MAPPS-765: where to find the screen, the
+                                // provider's own documentation, and the one
+                                // mistake whose failure is silent. Everything
+                                // in this block names something the provider
+                                // controls, so it lives in `provider_setup`
+                                // where its staleness is findable.
+                                if let Some(setup) = provider_setup(&selected) {
+                                    div { class: "space-y-1 border-t border-line pt-2",
+                                        p { class: "text-xs text-muted", "{setup.where_to_look}" }
+                                        if !setup.silent_trap.is_empty() {
+                                            p { class: "text-xs text-muted", "{setup.silent_trap}" }
+                                        }
+                                        a {
+                                            href: "{setup.doc_url}",
+                                            target: "_blank",
+                                            rel: "noopener noreferrer",
+                                            class: "text-xs text-accent hover:underline",
+                                            "{humanize_provider(&selected)}'s setup guide"
+                                        }
                                     }
                                 }
                             }
@@ -5864,6 +5954,79 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
 /// MAPPS-759: the credential set the form sends has to be the one the server
 /// parses, and the providers it offers have to be the ones the server can
 /// serve. Both drifted, and both drifted silently.
+/// MAPPS-765: the provider-side setup guidance.
+#[cfg(test)]
+mod provider_setup_tests {
+    use super::{provider_setup, webhook_events, CONFIGURABLE_PROVIDERS};
+
+    /// Every provider this app can configure has setup guidance, or an admin
+    /// meets the provider's dashboard with nothing but a URL - which is where
+    /// this started.
+    #[test]
+    fn every_configurable_provider_has_guidance() {
+        for (id, _) in CONFIGURABLE_PROVIDERS {
+            let setup = provider_setup(id).unwrap_or_else(|| panic!("{id} has no setup guidance"));
+            assert!(!setup.where_to_look.is_empty(), "{id}");
+            assert!(setup.doc_url.starts_with("https://"), "{id}");
+        }
+        assert!(provider_setup("authorize_net").is_none());
+    }
+
+    /// The guidance names no button.
+    ///
+    /// A provider renames its controls whenever it likes - Stripe did, between
+    /// the previous copy being written and an admin using it, which is how
+    /// that copy came to name a control that does not exist. Orientation to a
+    /// screen survives a redesign; a quoted button label does not, and a
+    /// confident wrong instruction costs more than an absent one.
+    #[test]
+    fn the_guidance_does_not_quote_a_button_label() {
+        for (id, _) in CONFIGURABLE_PROVIDERS {
+            let setup = provider_setup(id).expect("guidance");
+            let lowered = setup.where_to_look.to_lowercase();
+            for quoted in [
+                "click ",
+                "press ",
+                "\"add",
+                "button labelled",
+                "button labeled",
+            ] {
+                assert!(!lowered.contains(quoted), "{id}: {}", setup.where_to_look);
+            }
+        }
+    }
+
+    /// Each provider's silent trap is stated, because that is the mistake an
+    /// admin cannot detect: the setup looks complete and money goes missing
+    /// from the record.
+    #[test]
+    fn each_provider_states_its_silent_trap() {
+        let stripe = provider_setup("stripe").expect("stripe");
+        assert!(
+            stripe.silent_trap.to_lowercase().contains("snapshot"),
+            "a thin destination records nothing: {}",
+            stripe.silent_trap
+        );
+        let paypal = provider_setup("paypal").expect("paypal");
+        let lowered = paypal.silent_trap.to_lowercase();
+        assert!(lowered.contains("id"), "{}", paypal.silent_trap);
+        assert!(lowered.contains("not the url"), "{}", paypal.silent_trap);
+    }
+
+    /// The guidance is the provider-side half of what the events list is the
+    /// other half of, so the two have to cover the same providers.
+    #[test]
+    fn guidance_and_events_cover_the_same_providers() {
+        for (id, _) in CONFIGURABLE_PROVIDERS {
+            assert_eq!(
+                provider_setup(id).is_some(),
+                !webhook_events(id).is_empty(),
+                "{id} has one half of the setup instructions and not the other"
+            );
+        }
+    }
+}
+
 /// MAPPS-762: where a payment provider returns the customer.
 #[cfg(test)]
 mod checkout_return_tests {
