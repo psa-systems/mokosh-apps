@@ -373,11 +373,15 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
                     // so this link now hops DIRECTLY to the finder
                     // instead of routing through step 1. Carries an
                     // empty email so the finder shows an empty input.
-                    div { class: "pt-4 text-center",
+                    // MAPPS-766: an offer, not a footnote. The customer who
+                    // needs this is stuck on a form they cannot fill, and was
+                    // previously given a text link at the bottom of it.
+                    div { class: "pt-4 mt-2 border-t border-line space-y-2 text-center",
+                        p { class: "pt-3 text-sm text-muted", {super::PORTAL_NO_PASSWORD_PROMPT} }
                         Link {
                             to: Route::ContactMagicLinkLogin { email: String::new() },
-                            class: "text-sm text-accent hover:underline",
-                            "Or sign in without a password"
+                            class: "inline-block text-sm font-medium text-accent hover:underline",
+                            {super::PORTAL_NO_PASSWORD_ACTION}
                         }
                     }
                 }
