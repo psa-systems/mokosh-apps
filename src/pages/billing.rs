@@ -978,7 +978,7 @@ pub(crate) fn invoice_pay_now_preview(
         Some(true) => true,
         Some(false) => {
             notes.push(
-                "No payment gateway is connected, so the email carries no Pay Now link. Connect one under Settings, Payment Gateways to add it."
+                "No payment gateway is connected, so the email carries no Pay Now link. Connect one under Settings, Payment Gateways."
                     .to_string(),
             );
             false
@@ -1081,7 +1081,7 @@ fn invoice_send_path(id: &str) -> String {
 pub(crate) fn locked_invoice_note(status: &str) -> Option<&'static str> {
     match status {
         "sent" => Some(
-            "This invoice was sent to the customer, so it is locked: nothing on it can change. Record a payment when it is paid, or write it off if it never will be. To correct it, issue a credit note from the Credit Notes card below.",
+            "This invoice was sent to your customer, so it is locked: nothing on it can change. Record a payment when it is paid, or write it off if it never will be. To correct it, issue a credit note from the Credit Notes card below.",
         ),
         "partially_paid" => Some(
             "This invoice is partly paid and locked: nothing on it can change. Record the rest as it arrives, or write off what will not be paid. To correct it, issue a credit note from the Credit Notes card below.",
@@ -1627,12 +1627,12 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         ErrorBanner { "{write_off_error.read()}" }
                     }
                     p { class: "text-sm text-muted",
-                        "The customer owes this balance and will not pay it. The invoice moves to written off and keeps its balance on record as a bad-debt expense; a later payment is recorded as a recovery. This is not a correction: use a credit note for that."
+                        "Your customer owes this balance and will not pay it. The invoice moves to written off and keeps its balance on record as a bad-debt expense; a payment that arrives later is recorded as a recovery. This is not a correction - use a credit note for that."
                     }
                     crate::components::Textarea {
                         name: "write_off_reason",
                         label: "Reason",
-                        placeholder: "Why this balance will not be collected (required)",
+                        placeholder: "Why you are not collecting this balance (required)",
                         rows: 3,
                         maxlength: 2000,
                         required: true,
@@ -1795,7 +1795,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                     crate::components::SelectOption::new("compact", "Compact"),
                                 ],
                                 value: preview_template(),
-                                help: "Renders this draft under another template without saving anything.".to_string(),
+                                help: "Shows this draft under another template. Nothing is saved.".to_string(),
                                 onchange: move |e: FormEvent| preview_template.set(e.value()),
                             }
                         }
@@ -1809,9 +1809,9 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                             what: "the invoice PDF".to_string(),
                             label: if editable { "Preview PDF".to_string() } else { "Download PDF".to_string() },
                             title: if editable {
-                                "Renders this draft as it would look now. Nothing is stored until the invoice is sent, so this is a preview, not a record.".to_string()
+                                "Shows this draft as it would look now. Nothing is stored until you send it.".to_string()
                             } else {
-                                "The invoice as it was sent to the client. Stored at that moment; rebranding since does not change it.".to_string()
+                                "The invoice as your customer received it. Stored at that moment, so rebranding since does not change it.".to_string()
                             },
                         }
                     }
@@ -2005,7 +2005,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         // nobody to email is refused rather than marked sent (MAPPS-663).
         if editable {
             p { class: "mb-3 text-xs text-subtle",
-                "Sending emails the billing contact the invoice as a PDF, with a link to pay online if a payment gateway is connected. It needs a billing contact with an email address. Use Preview email to read it first."
+                "Sending emails the invoice to your customer's billing contact as a PDF, with a link to pay online if a payment gateway is connected. That contact needs an email address. Use Preview email to read it first."
             }
         }
 
@@ -3061,7 +3061,7 @@ pub fn InvoiceNewPage() -> Element {
                             step: "0.01".to_string(),
                             min: "0".to_string(),
                             placeholder: "0.00",
-                            help: "A preview from the rate over the taxable lines; edit to override. An override is stored as given and records no rate.",
+                            help: "Worked out from your tax rate. Type your own amount to override it; an override is saved as you enter it and records no rate.",
                             value: tax_value.clone(),
                             oninput: move |e: FormEvent| tax_override.set(Some(e.value())),
                         }
@@ -3081,7 +3081,7 @@ pub fn InvoiceNewPage() -> Element {
                 crate::components::Textarea {
                     name: "notes",
                     label: "Notes",
-                    placeholder: "Internal notes (not shown to the customer)",
+                    placeholder: "Internal notes (your customer never sees these)",
                     rows: 3,
                     maxlength: 2000,
                     value: notes.read().clone(),
@@ -4257,7 +4257,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                     crate::components::DateField {
                         name: "due_date",
                         label: "Due Date",
-                        help: "Change the payment term and leave this as it is to have the due date re-derived from the term.",
+                        help: "Change the payment term and leave this as it is to take the due date from that term.",
                         error: due_date_err(),
                         value: due_date.read().clone(),
                         oninput: move |e: FormEvent| {
@@ -4436,7 +4436,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                         step: "0.01".to_string(),
                         min: "0".to_string(),
                         placeholder: "0.00",
-                        help: "A preview from the rate over the taxable lines; edit to override. An override is stored as given and records no rate.",
+                        help: "Worked out from your tax rate. Type your own amount to override it; an override is saved as you enter it and records no rate.",
                         value: tax_value.clone(),
                         oninput: move |e: FormEvent| tax_override.set(Some(e.value())),
                     }
@@ -5432,7 +5432,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                             "Enter the provider API key".to_string()
                         },
                         required: !configured,
-                        help: "Stored encrypted at rest. It is write-only and never shown again.",
+                        help: "Stored encrypted. You will not see it again after you save.",
                         error: key_err(),
                         value: api_key.read().clone(),
                         oninput: move |e: FormEvent| {
@@ -5448,7 +5448,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                     name: "gateway_client_display_name",
                     label: "Button label (optional)".to_string(),
                     placeholder: "Pay with card".to_string(),
-                    help: "What the customer sees on the Pay Now button on their invoice. Leave blank to use the provider default.",
+                    help: "What your customer sees on the Pay Now button. Leave blank for the provider's default.",
                     maxlength: 64_i64,
                     error: client_display_name_err(),
                     value: client_display_name.read().clone(),
