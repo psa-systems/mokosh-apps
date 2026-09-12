@@ -5161,6 +5161,148 @@ fn humanize_provider(raw: &str) -> String {
     }
 }
 
+/// MAPPS-759: the providers this app can configure, which is the server's
+/// `billing::provider::SUPPORTED` and NOT the wider set the
+/// `payment_gateway_configs.provider` CHECK constraint accepts. The column
+/// predates any implementation and still allows `authorize_net`, which this
+/// form used to offer: the server refuses to activate one, so choosing it was
+/// a 400 the admin could do nothing about.
+pub(crate) const CONFIGURABLE_PROVIDERS: &[(&str, &str)] =
+    &[("stripe", "Stripe"), ("paypal", "PayPal")];
+
+/// One credential a provider needs, named the way that provider names it.
+///
+/// MAPPS-759: the form used to ask for a single "API key" and send
+/// `{"api_key": ...}`, which no provider reads. Both server-side credential
+/// structs are `#[serde(default)]`, so that blob deserialised cleanly into
+/// empty strings: the save succeeded, the row reported Configured, and the
+/// failure only appeared on the customer's invoice when the provider was built
+/// with an empty bearer. The fields are written out here because the shapes are
+/// the providers' own and the server parses each one into its own struct.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CredentialField {
+    /// The key inside the `config` object, exactly as the server deserialises it.
+    pub(crate) key: &'static str,
+    pub(crate) label: &'static str,
+    pub(crate) placeholder: &'static str,
+    pub(crate) help: &'static str,
+}
+
+/// What `provider` needs in its `config` blob.
+///
+/// A provider this build cannot configure gets an empty slice, which is what
+/// stops the form writing a credential set for one: an existing
+/// `authorize_net` row can still be viewed and removed, and saving it leaves
+/// whatever is stored alone.
+pub(crate) fn credential_fields(provider: &str) -> &'static [CredentialField] {
+    match provider {
+        // `StripeCredentials` in mokosh-server's provider/stripe.rs.
+        "stripe" => &[
+            CredentialField {
+                key: "secret_key",
+                label: "Secret key",
+                placeholder: "sk_test_… or rk_live_…",
+                help: "A restricted key is enough. Stripe shows it once, when you create it.",
+            },
+            CredentialField {
+                key: "webhook_secret",
+                label: "Webhook signing secret",
+                placeholder: "whsec_…",
+                help: "From the Stripe webhook endpoint you point at this tenant. Without it a payment is taken and never recorded.",
+            },
+        ],
+        // `PaypalCredentials` in mokosh-server's provider/paypal.rs. `sandbox`
+        // is in that struct too and is deliberately not a field here: it
+        // follows the Test mode switch above, because two controls for one
+        // question is how they come to disagree.
+        "paypal" => &[
+            CredentialField {
+                key: "client_id",
+                label: "Client ID",
+                placeholder: "The REST app's client ID",
+                help: "From the PayPal app under your developer account.",
+            },
+            CredentialField {
+                key: "client_secret",
+                label: "Client secret",
+                placeholder: "The REST app's secret",
+                help: "Shown once when the app's secret is generated.",
+            },
+            CredentialField {
+                key: "webhook_id",
+                label: "Webhook ID",
+                placeholder: "The webhook's ID, not its URL",
+                help: "PayPal verifies a delivery against this ID by calling back, so a wrong one refuses every webhook.",
+            },
+        ],
+        _ => &[],
+    }
+}
+
+/// The `config` object to send, or `None` to leave the stored credentials alone.
+///
+/// All-or-nothing, and that is forced by how the server stores them rather than
+/// chosen here: `upsert_payment_gateway` serialises this whole object and writes
+/// it to the secret provider as ONE value, so a save REPLACES the credential
+/// set. Sending one field would wipe the others. All blank therefore means
+/// "keep what is stored" (the MAPPS-363 omit-to-keep rule), and anything typed
+/// means every field is required, with the ones left empty named in the `Err`
+/// so each gets its own message.
+pub(crate) fn gateway_config_body(
+    provider: &str,
+    values: &std::collections::HashMap<String, String>,
+    is_test_mode: bool,
+) -> Result<Option<serde_json::Value>, Vec<&'static str>> {
+    let fields = credential_fields(provider);
+    if fields.is_empty() {
+        return Ok(None);
+    }
+    let value_of = |field: &CredentialField| {
+        values
+            .get(field.key)
+            .map(|v| v.trim().to_string())
+            .unwrap_or_default()
+    };
+    if fields.iter().all(|f| value_of(f).is_empty()) {
+        return Ok(None);
+    }
+    let missing: Vec<&'static str> = fields
+        .iter()
+        .filter(|f| value_of(f).is_empty())
+        .map(|f| f.key)
+        .collect();
+    if !missing.is_empty() {
+        return Err(missing);
+    }
+    let mut config = serde_json::Map::new();
+    for field in fields {
+        config.insert(field.key.to_string(), serde_json::json!(value_of(field)));
+    }
+    if provider == "paypal" {
+        // The one derived value: PayPal's credential blob carries which API
+        // base to talk to, and the admin already answered that above.
+        config.insert("sandbox".to_string(), serde_json::json!(is_test_mode));
+    }
+    Ok(Some(serde_json::Value::Object(config)))
+}
+
+/// The provider choices to render, given the row being edited.
+///
+/// The configurable set, plus the row's own provider when this build cannot
+/// configure it: the select is disabled on an existing row, and an option that
+/// is not in the list renders as an empty control rather than as the name of
+/// the gateway the admin came to remove.
+pub(crate) fn provider_choices(current: &str) -> Vec<(String, String)> {
+    let mut choices: Vec<(String, String)> = CONFIGURABLE_PROVIDERS
+        .iter()
+        .map(|(id, name)| ((*id).to_string(), (*name).to_string()))
+        .collect();
+    if !current.is_empty() && !CONFIGURABLE_PROVIDERS.iter().any(|(id, _)| *id == current) {
+        choices.push((current.to_string(), humanize_provider(current)));
+    }
+    choices
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct GatewayFormState {
     /// `true` when this state was built from an existing row (provider is
@@ -5226,10 +5368,15 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
     let mut provider = use_signal(|| initial.provider.clone());
     let mut is_active = use_signal(|| initial.is_active);
     let mut is_test_mode = use_signal(|| initial.is_test_mode);
-    // MAPPS-363: the API key is write-only. It always starts blank (the server
-    // never returns the stored secret); a blank value on save keeps the
-    // existing key.
-    let mut api_key = use_signal(String::new);
+    // MAPPS-363 / MAPPS-759: the provider's credentials, keyed by the name the
+    // server deserialises. Write-only: they always start blank (the server
+    // never returns a stored secret), and leaving every one blank keeps what is
+    // stored. Keyed rather than positional so switching provider on a new
+    // gateway cannot carry a Stripe key into a PayPal field.
+    let mut creds: Signal<std::collections::HashMap<String, String>> =
+        use_signal(std::collections::HashMap::new);
+    let mut cred_errs: Signal<std::collections::HashMap<String, String>> =
+        use_signal(std::collections::HashMap::new);
     // MAPPS-671 (mokosh-invoices P2a): the admin's Pay Now button label.
     // Seeded from the existing row so an edit keeps whatever was set;
     // blank = clear the override on save (server treats empty-string as
@@ -5241,14 +5388,13 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
     let mut error = use_signal(String::new);
     // MAPPS-357: block save / remove while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
-    // Inline slot for the key field, routed off the form-level banner.
-    let mut key_err = use_signal(String::new);
 
-    let provider_options = vec![
-        SelectOption::new("stripe", "Stripe"),
-        SelectOption::new("authorize_net", "Authorize.Net"),
-        SelectOption::new("paypal", "PayPal"),
-    ];
+    // MAPPS-759: the set the server can actually serve, plus this row's own
+    // provider when it is one this build cannot configure.
+    let provider_options: Vec<SelectOption> = provider_choices(&provider.read())
+        .into_iter()
+        .map(|(id, name)| SelectOption::new(id, name))
+        .collect();
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -5258,17 +5404,46 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
             return;
         }
         error.set(String::new());
-        key_err.set(String::new());
+        cred_errs.set(std::collections::HashMap::new());
         client_display_name_err.set(String::new());
 
-        // MAPPS-363: the key is write-only. Send `config` only when the admin
-        // typed a key; a blank field keeps the existing secret (PMS-342
-        // omit-to-keep). A first-time gateway (no secret yet) must supply one -
-        // the server rejects a create with no `config` (400), so guard here for
-        // a field-level message instead.
-        let key = api_key.read().trim().to_string();
-        if key.is_empty() && !configured {
-            key_err.set("An API key is required to configure this gateway.".to_string());
+        // MAPPS-759: the credential set, or nothing when every field was left
+        // blank (PMS-342 omit-to-keep). A partial fill is refused here rather
+        // than sent, because the server replaces the whole stored set.
+        let selected = provider.read().clone();
+        let config = match gateway_config_body(&selected, &creds.read(), *is_test_mode.read()) {
+            Ok(value) => value,
+            Err(missing) => {
+                let mut errs = std::collections::HashMap::new();
+                for key in missing {
+                    errs.insert(
+                        key.to_string(),
+                        "Required. Saving replaces the whole credential set, so every field has to be filled in.".to_string(),
+                    );
+                }
+                cred_errs.set(errs);
+                return;
+            }
+        };
+        // A first-time gateway must supply one - the server rejects a create
+        // with no `config` (400), so this is a field-level message instead.
+        if config.is_none() && !configured {
+            let fields = credential_fields(&selected);
+            if fields.is_empty() {
+                error.set(format!(
+                    "{} cannot be configured from this app.",
+                    humanize_provider(&selected)
+                ));
+                return;
+            }
+            let mut errs = std::collections::HashMap::new();
+            for field in fields {
+                errs.insert(
+                    field.key.to_string(),
+                    "Required to configure this gateway.".to_string(),
+                );
+            }
+            cred_errs.set(errs);
             return;
         }
         // MAPPS-671: 64-char cap mirrors the server's validator; catching it
@@ -5280,7 +5455,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
         }
         saving.set(true);
         let mut body = serde_json::json!({
-            "provider": provider.read().clone(),
+            "provider": selected.clone(),
             "is_active": *is_active.read(),
             "is_test_mode": *is_test_mode.read(),
             // MAPPS-671: always send the current value. A trimmed empty
@@ -5290,8 +5465,8 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
             // state (the input is empty).
             "client_display_name": cdn.trim(),
         });
-        if !key.is_empty() {
-            body["config"] = serde_json::json!({ "api_key": key });
+        if let Some(config) = config {
+            body["config"] = config;
         }
         spawn(async move {
             #[cfg(feature = "app")]
@@ -5410,35 +5585,63 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                         is_test_mode.set(next);
                     },
                 }
-                div { class: "space-y-1",
+                // MAPPS-759: the credentials the SELECTED provider needs,
+                // named the way that provider names them. One "API key" field
+                // fitted neither: the server parses a per-provider blob, and
+                // the one this form used to send read as empty strings.
+                div { class: "space-y-3",
                     div { class: "flex items-center gap-2",
-                        label {
-                            r#for: "gateway_api_key",
-                            class: "block text-sm font-medium text-content",
-                            "API key"
-                        }
+                        span { class: "block text-sm font-medium text-content", "Credentials" }
                         if configured {
                             Badge { variant: BadgeVariant::Green, "Configured" }
                         } else {
                             Badge { variant: BadgeVariant::Gray, "Not configured" }
                         }
                     }
-                    crate::components::Input {
-                        name: "gateway_api_key",
-                        r#type: "password",
-                        placeholder: if configured {
-                            "Leave blank to keep the current key".to_string()
+                    {
+                        let selected = provider.read().clone();
+                        let fields = credential_fields(&selected);
+                        if fields.is_empty() {
+                            rsx! {
+                                p { class: "text-sm text-muted",
+                                    "{humanize_provider(&selected)} cannot be configured from this app. You can remove it here."
+                                }
+                            }
                         } else {
-                            "Enter the provider API key".to_string()
-                        },
-                        required: !configured,
-                        help: "Stored encrypted. You will not see it again after you save.",
-                        error: key_err(),
-                        value: api_key.read().clone(),
-                        oninput: move |e: FormEvent| {
-                            key_err.set(String::new());
-                            api_key.set(e.value());
-                        },
+                            rsx! {
+                                for field in fields.iter().copied() {
+                                    {
+                                        let key = field.key;
+                                        rsx! {
+                                            crate::components::Input {
+                                                key: "{key}",
+                                                name: "gateway_cred_{key}",
+                                                label: field.label,
+                                                r#type: "password",
+                                                placeholder: field.placeholder.to_string(),
+                                                required: !configured,
+                                                help: field.help.to_string(),
+                                                error: cred_errs.read().get(key).cloned().unwrap_or_default(),
+                                                value: creds.read().get(key).cloned().unwrap_or_default(),
+                                                oninput: move |e: FormEvent| {
+                                                    cred_errs.write().remove(key);
+                                                    creds.write().insert(key.to_string(), e.value());
+                                                },
+                                            }
+                                        }
+                                    }
+                                }
+                                // Said once, under the set, because it is the
+                                // rule for the set and not for any one field.
+                                p { class: "text-xs text-muted",
+                                    if configured {
+                                        "Stored encrypted. You will not see these again after you save. Leave them all blank to keep what is stored; filling any one replaces the whole set, so enter all of them."
+                                    } else {
+                                        "Stored encrypted. You will not see these again after you save."
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 // MAPPS-671 (mokosh-invoices P2a): admin-set override for
@@ -5474,6 +5677,165 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                 }
             },
         }
+    }
+}
+
+/// MAPPS-759: the credential set the form sends has to be the one the server
+/// parses, and the providers it offers have to be the ones the server can
+/// serve. Both drifted, and both drifted silently.
+#[cfg(test)]
+mod gateway_credential_tests {
+    use super::{credential_fields, gateway_config_body, provider_choices, CONFIGURABLE_PROVIDERS};
+    use std::collections::HashMap;
+
+    fn values(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    /// The keys are the server's, not this page's. `mokosh-server`'s
+    /// `StripeCredentials` and `PaypalCredentials` are both
+    /// `#[serde(default)]`, so a key it does not know is not an error there -
+    /// it reads as an empty string, the row reports Configured, and the
+    /// failure waits until a customer presses Pay Now. That is exactly what
+    /// `{"api_key": ...}` did, so the names are asserted in full.
+    #[test]
+    fn the_credential_keys_are_the_ones_the_server_deserialises() {
+        let stripe: Vec<&str> = credential_fields("stripe").iter().map(|f| f.key).collect();
+        assert_eq!(stripe, vec!["secret_key", "webhook_secret"]);
+        let paypal: Vec<&str> = credential_fields("paypal").iter().map(|f| f.key).collect();
+        assert_eq!(paypal, vec!["client_id", "client_secret", "webhook_id"]);
+        for provider in ["stripe", "paypal"] {
+            assert!(
+                !credential_fields(provider)
+                    .iter()
+                    .any(|f| f.key == "api_key"),
+                "api_key is the key nothing reads"
+            );
+        }
+    }
+
+    /// A provider this build cannot configure offers no fields, so the form
+    /// cannot write a credential set for one. An existing row is still
+    /// viewable and removable, which is why this is an empty slice rather than
+    /// a panic.
+    #[test]
+    fn an_unconfigurable_provider_offers_no_fields() {
+        assert!(credential_fields("authorize_net").is_empty());
+        assert!(credential_fields("").is_empty());
+        assert_eq!(
+            gateway_config_body("authorize_net", &values(&[("secret_key", "x")]), true),
+            Ok(None),
+            "and nothing typed can be written for it"
+        );
+    }
+
+    /// The whole object replaces the stored set, so a fill is all or nothing.
+    #[test]
+    fn a_partial_fill_names_every_field_left_empty() {
+        let partial = values(&[("secret_key", "sk_test_1")]);
+        assert_eq!(
+            gateway_config_body("stripe", &partial, true),
+            Err(vec!["webhook_secret"])
+        );
+        let partial = values(&[("client_id", "id"), ("webhook_id", "  ")]);
+        assert_eq!(
+            gateway_config_body("paypal", &partial, true),
+            Err(vec!["client_secret", "webhook_id"]),
+            "whitespace is not a value"
+        );
+    }
+
+    /// Every field blank is the MAPPS-363 omit-to-keep case, which is what
+    /// lets an admin change Test mode or the button label without retyping a
+    /// secret the server never gave back.
+    #[test]
+    fn all_blank_keeps_what_is_stored() {
+        assert_eq!(gateway_config_body("stripe", &values(&[]), true), Ok(None));
+        assert_eq!(
+            gateway_config_body(
+                "stripe",
+                &values(&[("secret_key", "   "), ("webhook_secret", "")]),
+                true
+            ),
+            Ok(None)
+        );
+    }
+
+    /// A complete set is sent trimmed and under the server's own key names,
+    /// and PayPal's `sandbox` comes from the Test mode switch rather than from
+    /// a second control that could contradict it.
+    #[test]
+    fn a_complete_set_is_sent_under_the_server_key_names() {
+        let stripe = gateway_config_body(
+            "stripe",
+            &values(&[
+                ("secret_key", "  sk_test_1  "),
+                ("webhook_secret", "whsec_1"),
+            ]),
+            true,
+        )
+        .expect("complete")
+        .expect("a config");
+        assert_eq!(
+            stripe,
+            serde_json::json!({"secret_key": "sk_test_1", "webhook_secret": "whsec_1"}),
+            "Stripe's blob carries no sandbox flag; the key prefix says which mode it is"
+        );
+
+        let paypal_values = values(&[
+            ("client_id", "id_1"),
+            ("client_secret", "secret_1"),
+            ("webhook_id", "wh_1"),
+        ]);
+        for test_mode in [true, false] {
+            let paypal = gateway_config_body("paypal", &paypal_values, test_mode)
+                .expect("complete")
+                .expect("a config");
+            assert_eq!(
+                paypal,
+                serde_json::json!({
+                    "client_id": "id_1",
+                    "client_secret": "secret_1",
+                    "webhook_id": "wh_1",
+                    "sandbox": test_mode,
+                })
+            );
+        }
+    }
+
+    /// The picker offers what the server's `provider::SUPPORTED` can serve.
+    /// `authorize_net` is in the column's CHECK constraint and in nothing
+    /// else, so offering it was a 400 the admin could not act on.
+    #[test]
+    fn the_picker_offers_only_what_the_server_can_serve() {
+        let offered: Vec<&str> = CONFIGURABLE_PROVIDERS.iter().map(|(id, _)| *id).collect();
+        assert_eq!(offered, vec!["stripe", "paypal"]);
+        let ids: Vec<String> = provider_choices("").into_iter().map(|(id, _)| id).collect();
+        assert_eq!(ids, vec!["stripe", "paypal"]);
+    }
+
+    /// A row already storing a provider this build cannot configure still
+    /// renders its name: the select is disabled on an existing row, and an
+    /// option that is not in the list would paint an empty control on the
+    /// gateway the admin came to remove.
+    #[test]
+    fn an_existing_unconfigurable_row_keeps_its_name_in_the_picker() {
+        let choices = provider_choices("authorize_net");
+        assert_eq!(
+            choices
+                .last()
+                .map(|(id, name)| (id.as_str(), name.as_str())),
+            Some(("authorize_net", "Authorize.Net"))
+        );
+        assert_eq!(choices.len(), CONFIGURABLE_PROVIDERS.len() + 1);
+        // And a configurable one is never listed twice.
+        assert_eq!(
+            provider_choices("stripe").len(),
+            CONFIGURABLE_PROVIDERS.len()
+        );
     }
 }
 
