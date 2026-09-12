@@ -242,7 +242,7 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
                         install_session(&nav, resp, &pid_str);
                     }
                     Err(ApiError::Status { code: 401, .. }) => {
-                        error.set("Invalid credentials.".to_string());
+                        error.set(super::PORTAL_SIGN_IN_FAILED.to_string());
                     }
                     Err(ApiError::Status { code: 429, .. }) => {
                         error.set("Too many attempts; try again shortly.".to_string());
@@ -329,6 +329,11 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
                         name: "password",
                         label: "Password",
                         r#type: "password".to_string(),
+                        // MAPPS-763: said BEFORE the attempt, because the
+                        // person most likely to get this wrong is the one who
+                        // already has an account with us and reasonably types
+                        // that password.
+                        help: super::PORTAL_PASSWORD_HELP.to_string(),
                         value: password(),
                         required: true,
                         disabled: saving(),
