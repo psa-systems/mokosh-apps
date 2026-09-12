@@ -6469,39 +6469,20 @@ fn company_link_entries(rows: &[CompanyRow]) -> Result<Vec<ContactCompanyLinkBod
     Ok(entries)
 }
 
-/// MAPPS-484: the contact form's two company paths, each named for what it
-/// does. The old freeform toggle read "+ Add Company", which is a create
-/// label on a control that creates nothing; the picker's own "+ New company"
-/// button is the create affordance now.
-const FREEFORM_TOGGLE_LABEL: &str = "Enter a name without creating a company";
-const LINK_COMPANY_TOGGLE_LABEL: &str = "Link an existing company";
-
 /// MAPPS-484: marks a company name that is a typed string rather than a
 /// `companies` row, so link colour is not the only signal.
+///
+/// MAPPS-757 took the path that CREATES one of these off the contact form, so
+/// this note now only ever describes a name saved by an earlier release. Both
+/// places that render it sit beside the one click that turns the name into a
+/// real company.
 const FREEFORM_COMPANY_NOTE: &str = "Typed name - not a company record.";
 
-/// MAPPS-481: the label on the control that appends a company LINK. Now that
-/// a contact holds several companies, "add" means "add another company" and
-/// nothing else; the picker's own "+ New company" button stays the only
-/// control on the form that creates a `companies` row (MAPPS-484).
-fn add_company_label(linked: usize) -> &'static str {
-    if linked == 0 {
-        "Add a company"
-    } else {
-        "Add another company"
-    }
-}
-
-/// MAPPS-484: the consequence of the typed-name path, stated in the value the
-/// user typed. Empty while nothing has been typed, so the form renders no note.
-fn freeform_company_note(value: &str) -> String {
-    let name = value.trim();
-    if name.is_empty() {
-        String::new()
-    } else {
-        format!("Saved as a typed name. {name} will not appear under Companies.")
-    }
-}
+/// MAPPS-757: what the one company control on the contact form does, said
+/// once under the box. Search, pick a match, or create the company you typed:
+/// three outcomes of one interaction rather than three controls.
+const COMPANY_SEARCH_HELP: &str =
+    "Search for the company. Pick a match to link it, or create it under the name you typed.";
 
 #[derive(Clone, Debug, PartialEq)]
 enum ContactFormMode {
@@ -6531,7 +6512,18 @@ fn ContactForm(props: ContactFormProps) -> Element {
             initial.contact_type.clone()
         }
     });
-    let _company_name = use_signal(|| initial.company_name.clone());
+    // MAPPS-757: a typed company name saved by an earlier release, kept so
+    // that editing any other field cannot silently drop it. The form offers
+    // no way to enter a NEW one; what it offers is keeping or removing the
+    // one already on the record, and the detail page's "Create this company"
+    // is the way to turn it into a real row.
+    let mut legacy_company_name = use_signal(|| {
+        if initial.companies.is_empty() {
+            initial.company_name.trim().to_string()
+        } else {
+            String::new()
+        }
+    });
     // MAPPS-396 / PMS-729: single-shot "create contact + grant portal
     // access" checkbox. Only wired in Create mode (Edit uses the
     // dedicated ContactPortalCard toggle on the detail page, which the
@@ -6545,23 +6537,8 @@ fn ContactForm(props: ContactFormProps) -> Element {
     let mut phones = use_signal(|| initial.phones.clone());
     let mut companies = use_signal(|| initial.companies.clone());
     let mut notes = use_signal(|| initial.notes.clone());
-    // MAPPS-481: the "+ Add another company" picker, shown only while the user
-    // is adding one, and the inline note for picking one already in the list.
-    let mut adding_company = use_signal(|| false);
+    // MAPPS-481: the inline note for picking a company already in the list.
     let mut company_add_note = use_signal(String::new);
-    // MAPPS-251: a contact's company can be a freeform typed name instead of an
-    // FK-linked CRM company. MAPPS-481: that path is the no-linked-company
-    // case, so it opens only when the loaded contact links none and carries a
-    // typed name.
-    let initial_freeform = initial.companies.is_empty() && !initial.company_name.trim().is_empty();
-    let mut freeform_mode = use_signal(|| initial_freeform);
-    let mut freeform_company = use_signal(|| {
-        if initial_freeform {
-            initial.company_name.clone()
-        } else {
-            String::new()
-        }
-    });
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
     // Per-field inline validation errors (MAPPS-177, MAPPS-265). Phone errors
@@ -6642,16 +6619,11 @@ fn ContactForm(props: ContactFormProps) -> Element {
             guard.note_invalid(Some("contact_type"));
         }
 
-        // MAPPS-251 / MAPPS-481: company is optional - any number of linked CRM
-        // companies OR a freeform typed name, never both (the server 422s on
-        // the pair). The XOR error has no inline slot, so it goes to the
-        // banner; note_invalid blocks and ties focus to the freeform input.
+        // MAPPS-251 / MAPPS-481: company is optional - any number of linked
+        // companies, or nothing. MAPPS-757: the form can no longer produce the
+        // typed-name-plus-link pair the server 422s on, because linking one
+        // drops the carried-over name (see the picker's `onselect` below).
         let company_rows = companies.read().clone();
-        let freeform_name = freeform_company.read().trim().to_string();
-        if !company_rows.is_empty() && !freeform_name.is_empty() {
-            error.set("Link companies or type a name, not both.".to_string());
-            guard.note_invalid(Some("company_name_freeform"));
-        }
 
         // MAPPS-481: every phone row is validated and every failure lands in
         // that row's own slot before the submit bails once.
@@ -6678,7 +6650,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
             Ok(entries) => Some(entries),
             Err(message) => {
                 error.set(message);
-                guard.note_invalid(Some("company_name_freeform"));
+                guard.note_invalid(Some("company_search"));
                 None
             }
         };
@@ -6707,13 +6679,15 @@ fn ContactForm(props: ContactFormProps) -> Element {
             contact_type: type_value,
             phones: phone_entries,
             companies: company_entries,
-            // MAPPS-251: the freeform typed name is the no-linked-company case.
-            // Sent as `""` whenever a company is linked, which clears any name
-            // stored by an earlier save (a link plus a name is a 422).
+            // MAPPS-251: the typed name is the no-linked-company case. Sent as
+            // `""` whenever a company is linked, which clears any name stored
+            // by an earlier save (a link plus a name is a 422). MAPPS-757: the
+            // only value this can carry now is one an earlier release stored,
+            // resent unchanged so that editing a phone number does not wipe it.
             company_name: if has_links {
                 String::new()
             } else {
-                freeform_name.clone()
+                legacy_company_name.read().trim().to_string()
             },
             notes: clearable_string(&notes.read()),
             create_portal_access,
@@ -6956,18 +6930,22 @@ fn ContactForm(props: ContactFormProps) -> Element {
                     }
                 }
 
-                // MAPPS-251: company is optional and can be entered two ways -
-                // link CRM companies (the picker) or type a name that creates
-                // no `companies` row. Switching modes clears the other mode's
-                // value so only one company source is ever submitted.
-                // MAPPS-484: the picker's own "+ New company" button is the
-                // visible create affordance and it really does create; the
-                // typed-name path is a secondary text link named for what it
-                // does, because the old "+ Add Company" button created nothing.
+                // MAPPS-757: one control. The search box is always there;
+                // picking a match links that company, and a query that matches
+                // nothing offers to create a company under exactly what was
+                // typed. The four affordances this replaces - "Add a company",
+                // "Link an existing company", "Enter a name without creating a
+                // company" and the picker's own "+ New company" button - all
+                // sounded like each other and three of them existed only to
+                // choose between paths the user should not have to know about.
+                //
                 // MAPPS-481: a contact can link several companies, one of them
-                // primary, each with its role at THAT company. The typed name
-                // is the no-linked-company case and is offered only while the
-                // list is empty.
+                // primary, each with its title at THAT company. Primary is a
+                // question only once there are two, so the control appears
+                // then; the first company linked is primary in silence, which
+                // is also what `company_link_entries` falls back to, so a
+                // contact can never end up with a mirror and no link
+                // (PMS-806 / PMS-1069).
                 fieldset { class: "space-y-2",
                     legend { class: "block text-sm font-medium text-content", "Companies" }
                     for (index, row) in company_rows.iter().cloned().enumerate() {
@@ -6980,7 +6958,17 @@ fn ContactForm(props: ContactFormProps) -> Element {
                                     label: "Remove company link".to_string(),
                                     class: "p-1 text-subtle hover:text-red-600 dark:hover:text-red-400".to_string(),
                                     onclick: move |_| {
-                                        companies.write().remove(index);
+                                        let mut rows = companies.write();
+                                        rows.remove(index);
+                                        // MAPPS-757: removing the primary link
+                                        // must not leave the list without one,
+                                        // or the radio would render with
+                                        // nothing checked while the save
+                                        // silently promoted the first row.
+                                        if !rows.is_empty() && !rows.iter().any(|r| r.is_primary) {
+                                            rows[0].is_primary = true;
+                                        }
+                                        drop(rows);
                                         company_add_note.set(String::new());
                                     },
                                     crate::components::TrashIcon { size: IconSize::Small }
@@ -6996,131 +6984,87 @@ fn ContactForm(props: ContactFormProps) -> Element {
                                     companies.write()[index].title = e.value();
                                 },
                             }
-                            label { class: "flex items-center gap-2 text-sm text-content",
-                                input {
-                                    r#type: "radio",
-                                    name: "company_primary",
-                                    checked: row.is_primary,
-                                    onchange: move |_| {
-                                        let mut rows = companies.write();
-                                        for (i, r) in rows.iter_mut().enumerate() {
-                                            r.is_primary = i == index;
-                                        }
+                            if company_rows.len() > 1 {
+                                label { class: "flex items-center gap-2 text-sm text-content",
+                                    input {
+                                        r#type: "radio",
+                                        name: "company_primary",
+                                        checked: row.is_primary,
+                                        onchange: move |_| {
+                                            let mut rows = companies.write();
+                                            for (i, r) in rows.iter_mut().enumerate() {
+                                                r.is_primary = i == index;
+                                            }
+                                        },
+                                    }
+                                    "Primary"
+                                }
+                            }
+                        }
+                    }
+                    // MAPPS-757: a typed name stored by an earlier release.
+                    // Shown so the person editing this contact can see what is
+                    // on the record and drop it deliberately, rather than
+                    // having it disappear on the first save of an unrelated
+                    // field. There is no way to type a new one: linking a
+                    // company is what the box below does.
+                    if company_rows.is_empty() && !legacy_company_name.read().trim().is_empty() {
+                        div { class: "rounded-md border border-line p-3 space-y-1",
+                            div { class: "flex items-center justify-between gap-3",
+                                span { class: "text-sm font-medium text-content", "{legacy_company_name}" }
+                                crate::components::IconButton {
+                                    label: "Remove this company name".to_string(),
+                                    class: "p-1 text-subtle hover:text-red-600 dark:hover:text-red-400".to_string(),
+                                    onclick: move |_| {
+                                        legacy_company_name.set(String::new());
+                                        company_add_note.set(String::new());
                                     },
+                                    crate::components::TrashIcon { size: IconSize::Small }
                                 }
-                                "Primary"
                             }
+                            p { class: "text-xs text-subtle", {FREEFORM_COMPANY_NOTE} }
                         }
                     }
-                    if *freeform_mode.read() {
-                        crate::components::Input {
-                            name: "company_name_freeform",
-                            value: freeform_company.read().clone(),
-                            oninput: move |e: FormEvent| freeform_company.set(e.value()),
-                        }
-                        // MAPPS-484: state the outcome in the user's own value
-                        // instead of the old "not linked to a CRM company record"
-                        // jargon. Empty until something is typed.
-                        if !freeform_company_note(&freeform_company.read()).is_empty() {
-                            p { class: "text-xs text-muted",
-                                {freeform_company_note(&freeform_company.read())}
+                    crate::components::CompanyPicker {
+                        value: String::new(),
+                        selected_id: None,
+                        // MAPPS-251: company is no longer mandatory; a contact
+                        // can be saved with no company at all.
+                        required: false,
+                        label: String::new(),
+                        // PMS-352 / MAPPS-653: the dropdown's create row is the
+                        // third outcome of the one interaction - it opens
+                        // seeded with what was typed, so a query that matches
+                        // nothing becomes the name of a real `companies` row.
+                        // Its own "+ New company" BUTTON stays off here: it
+                        // opens the same modal, which on this form made a
+                        // fourth control saying what the box already does.
+                        allow_inline_create: true,
+                        onselect: move |(id, name): (String, String)| {
+                            // Picking a company already linked is a no-op
+                            // that says so, not a duplicate row (the server
+                            // 422s on a repeated company_id anyway).
+                            if companies.read().iter().any(|c| c.company_id == id) {
+                                company_add_note.set(format!("{name} is already linked to this contact."));
+                                return;
                             }
-                        }
-                    } else if *adding_company.read() {
-                        crate::components::CompanyPicker {
-                            value: String::new(),
-                            selected_id: None,
-                            // MAPPS-251: company is no longer mandatory; a contact
-                            // can be saved with no company at all.
-                            required: false,
-                            label: String::new(),
-                            // PMS-352: keep the inline "+ Create new company"
-                            // affordance for first-time tenants with zero companies;
-                            // distinct from the freeform path, it materializes a real
-                            // `companies` row.
-                            allow_inline_create: true,
-                            // MAPPS-484: and surface it as a button beside the
-                            // input, so a user with nothing to search for does
-                            // not have to open the dropdown to find it.
-                            show_create_button: true,
-                            onselect: move |(id, name): (String, String)| {
-                                // Picking a company already linked is a no-op
-                                // that says so, not a duplicate row (the server
-                                // 422s on a repeated company_id anyway).
-                                if companies.read().iter().any(|c| c.company_id == id) {
-                                    company_add_note.set(format!("{name} is already linked to this contact."));
-                                    return;
-                                }
-                                let is_first = companies.read().is_empty();
-                                companies.write().push(CompanyRow {
-                                    company_id: id,
-                                    company_name: name,
-                                    title: String::new(),
-                                    is_primary: is_first,
-                                });
-                                // Linking a company clears the typed name: the
-                                // server rejects a link plus a freeform name.
-                                freeform_company.set(String::new());
-                                company_add_note.set(String::new());
-                                adding_company.set(false);
-                            },
-                            onclear: move |_| { company_add_note.set(String::new()); },
-                        }
+                            let is_first = companies.read().is_empty();
+                            companies.write().push(CompanyRow {
+                                company_id: id,
+                                company_name: name,
+                                title: String::new(),
+                                is_primary: is_first,
+                            });
+                            // Linking a company drops the carried-over typed
+                            // name: the server rejects a link plus a name.
+                            legacy_company_name.set(String::new());
+                            company_add_note.set(String::new());
+                        },
+                        onclear: move |_| { company_add_note.set(String::new()); },
                     }
+                    p { class: "text-xs text-muted", {COMPANY_SEARCH_HELP} }
                     if !company_add_note.read().is_empty() {
                         p { class: "text-xs text-muted", role: "status", "{company_add_note}" }
-                    }
-                    div { class: "flex flex-wrap items-center gap-3",
-                        if !*freeform_mode.read() {
-                            if *adding_company.read() {
-                                // The picker is open with nothing picked yet,
-                                // so there is a way back out of it.
-                                button {
-                                    r#type: "button",
-                                    class: "inline-flex items-center text-xs text-accent hover:opacity-90",
-                                    onclick: move |_| {
-                                        company_add_note.set(String::new());
-                                        adding_company.set(false);
-                                    },
-                                    "Don't add a company"
-                                }
-                            } else {
-                                Button {
-                                    variant: ButtonVariant::Secondary,
-                                    size: ButtonSize::Small,
-                                    onclick: move |_| {
-                                        company_add_note.set(String::new());
-                                        adding_company.set(true);
-                                    },
-                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                    {add_company_label(company_rows.len())}
-                                }
-                            }
-                        }
-                        // MAPPS-481: the typed name is what a contact has
-                        // INSTEAD of a link, so the path disappears once one
-                        // company is linked.
-                        if company_rows.is_empty() {
-                            button {
-                                r#type: "button",
-                                class: "inline-flex items-center text-xs text-accent hover:opacity-90",
-                                onclick: move |_| {
-                                    let next = !*freeform_mode.read();
-                                    if next {
-                                        adding_company.set(false);
-                                    } else {
-                                        freeform_company.set(String::new());
-                                    }
-                                    company_add_note.set(String::new());
-                                    freeform_mode.set(next);
-                                },
-                                if *freeform_mode.read() {
-                                    {LINK_COMPANY_TOGGLE_LABEL}
-                                } else {
-                                    {FREEFORM_TOGGLE_LABEL}
-                                }
-                            }
-                        }
                     }
                 }
 
@@ -8822,56 +8766,36 @@ mod validation_tests {
 
 #[cfg(test)]
 mod company_source_tests {
-    use super::{
-        freeform_company_note, FREEFORM_COMPANY_NOTE, FREEFORM_TOGGLE_LABEL,
-        LINK_COMPANY_TOGGLE_LABEL,
-    };
-
-    /// MAPPS-484: the visible create affordance is the picker's "+ New
-    /// company" button, which creates a `companies` row. Neither company
-    /// control that does NOT create may read like one, which is what the old
-    /// "+ Add Company" label did.
-    #[test]
-    fn neither_toggle_label_promises_a_create() {
-        for label in [FREEFORM_TOGGLE_LABEL, LINK_COMPANY_TOGGLE_LABEL] {
-            let lowered = label.to_lowercase();
-            assert!(
-                !lowered.contains("add "),
-                "{label} reads like a create action but creates nothing"
-            );
-            assert!(
-                !lowered.contains("new compan"),
-                "{label} reads like a create action but creates nothing"
-            );
-        }
-        assert_eq!(
-            FREEFORM_TOGGLE_LABEL,
-            "Enter a name without creating a company"
-        );
-    }
-
-    /// The note names the value and the consequence, and says nothing until
-    /// something has been typed.
-    #[test]
-    fn freeform_note_names_the_value_and_the_consequence() {
-        assert_eq!(
-            freeform_company_note("PugTsurani"),
-            "Saved as a typed name. PugTsurani will not appear under Companies."
-        );
-        // Trimmed, so the note reads the same as the value that gets submitted.
-        assert_eq!(
-            freeform_company_note("  PugTsurani  "),
-            "Saved as a typed name. PugTsurani will not appear under Companies."
-        );
-        assert!(freeform_company_note("").is_empty());
-        assert!(freeform_company_note("   ").is_empty());
-    }
+    use super::{COMPANY_SEARCH_HELP, FREEFORM_COMPANY_NOTE};
 
     /// The read side says what the name is rather than leaving link colour as
     /// the only signal.
     #[test]
     fn read_side_note_says_it_is_not_a_record() {
         assert!(FREEFORM_COMPANY_NOTE.contains("not a company record"));
+    }
+
+    /// MAPPS-757: the help under the one company control names all three
+    /// outcomes of the one interaction, because a search box that quietly
+    /// creates records has to say so before it does.
+    #[test]
+    fn the_company_help_names_search_link_and_create() {
+        let lowered = COMPANY_SEARCH_HELP.to_lowercase();
+        for word in ["search", "link", "create"] {
+            assert!(
+                lowered.contains(word),
+                "the one company control says nothing about {word}: {COMPANY_SEARCH_HELP}"
+            );
+        }
+    }
+
+    /// The note describes a name the record already holds; it must not read
+    /// as an invitation to enter one, because the form offers no way to.
+    #[test]
+    fn the_note_describes_a_stored_name_rather_than_offering_one() {
+        let lowered = FREEFORM_COMPANY_NOTE.to_lowercase();
+        assert!(!lowered.contains("enter"), "{FREEFORM_COMPANY_NOTE}");
+        assert!(!lowered.contains("type a"), "{FREEFORM_COMPANY_NOTE}");
     }
 }
 
@@ -8881,10 +8805,10 @@ mod company_source_tests {
 #[cfg(test)]
 mod contact_child_row_tests {
     use super::{
-        add_company_label, company_link_entries, company_rows_from_remote, extra_company_suffix,
-        humanize_phone_type, normalize_phone_type, phone_row_index, phone_rows_from_remote,
-        primary_phone_label, validate_phone_rows, CompanyRow, ContactDetail, PhoneRow, PhoneType,
-        RemoteCompanyLink, RemoteContact, RemotePhone,
+        company_link_entries, company_rows_from_remote, extra_company_suffix, humanize_phone_type,
+        normalize_phone_type, phone_row_index, phone_rows_from_remote, primary_phone_label,
+        validate_phone_rows, CompanyRow, ContactDetail, PhoneRow, PhoneType, RemoteCompanyLink,
+        RemoteContact, RemotePhone,
     };
 
     fn row(phone_type: &str, number: &str, is_primary: bool) -> PhoneRow {
@@ -9074,6 +8998,42 @@ mod contact_child_row_tests {
         assert!(company_link_entries(&[]).expect("no rows").is_empty());
     }
 
+    /// MAPPS-757: the Primary control is hidden while a contact links one
+    /// company, so nothing flags that link and the fallback is what gives the
+    /// contact its primary. A contact left with a mirror and no primary link
+    /// is the PMS-1069 defect, so this is the rule that makes hiding the
+    /// control safe rather than a saving of one line of UI.
+    #[test]
+    fn a_single_link_is_primary_without_anyone_saying_so() {
+        let rows = [CompanyRow {
+            company_id: uuid::Uuid::nil().to_string(),
+            company_name: "Acme".to_string(),
+            title: String::new(),
+            is_primary: false,
+        }];
+        let entries = company_link_entries(&rows).expect("id is a uuid");
+        assert!(entries[0].is_primary);
+        // And with several, exactly one still comes back primary even when the
+        // user never touched the control.
+        let rows = [
+            CompanyRow {
+                company_id: uuid::Uuid::nil().to_string(),
+                company_name: "Acme".to_string(),
+                title: String::new(),
+                is_primary: false,
+            },
+            CompanyRow {
+                company_id: uuid::Uuid::max().to_string(),
+                company_name: "Globex".to_string(),
+                title: String::new(),
+                is_primary: false,
+            },
+        ];
+        let entries = company_link_entries(&rows).expect("ids are uuids");
+        assert_eq!(entries.iter().filter(|e| e.is_primary).count(), 1);
+        assert!(entries[0].is_primary, "the first link is the one promoted");
+    }
+
     /// MAPPS-687: `ContactCompanyLinkInput::company_id` is a `Uuid`, so a row
     /// that does not carry one is refused here rather than sent as a string
     /// the server has to reject.
@@ -9138,19 +9098,6 @@ mod contact_child_row_tests {
         assert_eq!(phone_row_index("phones[].number"), None);
         assert_eq!(phone_row_index("phone"), None);
         assert_eq!(phone_row_index("first_name"), None);
-    }
-
-    /// "Add" on the company block means add another company, and never reads
-    /// like the create affordance MAPPS-484 reserved for the picker.
-    #[test]
-    fn add_company_label_only_ever_adds() {
-        assert_eq!(add_company_label(0), "Add a company");
-        assert_eq!(add_company_label(2), "Add another company");
-        for linked in [0usize, 2] {
-            assert!(!add_company_label(linked)
-                .to_lowercase()
-                .contains("new compan"));
-        }
     }
 
     /// The DTOs carry both lists with `#[serde(default)]`, so a response from
