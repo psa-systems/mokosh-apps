@@ -5286,6 +5286,80 @@ pub(crate) fn gateway_config_body(
     Ok(Some(serde_json::Value::Object(config)))
 }
 
+/// MAPPS-760: the events a provider has to be subscribed to for this app to
+/// hear about a payment.
+///
+/// Half the setup answer, and not a nice-to-have. An admin who pastes the
+/// endpoint URL correctly and subscribes only to the completion event has
+/// refunds silently never reach the invoice, which is the same quiet class of
+/// failure MAPPS-759 closed: everything looks configured and a number is
+/// wrong.
+///
+/// The sets are the ones mokosh-server's providers act on
+/// (`provider/stripe.rs` and `provider/paypal.rs`); anything else is ignored
+/// there, so subscribing to more is noise rather than harm.
+pub(crate) fn webhook_events(provider: &str) -> &'static [&'static str] {
+    match provider {
+        "stripe" => &["checkout.session.completed", "charge.refunded"],
+        "paypal" => &[
+            "CHECKOUT.ORDER.APPROVED",
+            "PAYMENT.CAPTURE.COMPLETED",
+            "PAYMENT.CAPTURE.REFUNDED",
+        ],
+        _ => &[],
+    }
+}
+
+/// One row of `GET /payment-gateways/webhook-endpoints` (PMS-1165).
+///
+/// `url` is `None` when the deployment sets no `PUBLIC_API_BASE_URL`, which is
+/// an operator fix and not something the admin can do in this form, so the two
+/// cases are rendered differently.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct RemoteWebhookEndpoint {
+    #[serde(default)]
+    pub(crate) provider: String,
+    #[serde(default)]
+    pub(crate) url: Option<String>,
+}
+
+/// What the form knows about where `provider`'s webhooks should be delivered.
+///
+/// Three states, each with its own thing to say, because a blank would leave
+/// an admin holding a request for a webhook signing secret with no way to act
+/// on it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum WebhookEndpoint {
+    /// The deployment answered with a URL.
+    Known(String),
+    /// The deployment has no public API base configured.
+    NoPublicBase,
+    /// This provider has no receiver, or the server predates PMS-1165.
+    Unknown,
+}
+
+/// Read the endpoint for `provider` out of what the server answered.
+///
+/// A server that predates PMS-1165 404s the fetch, which reaches here as
+/// `None` and reads as [`WebhookEndpoint::Unknown`]: the rest of the form
+/// still works, because a missing hint must not take the credential fields
+/// down with it.
+pub(crate) fn endpoint_for(
+    rows: Option<&[RemoteWebhookEndpoint]>,
+    provider: &str,
+) -> WebhookEndpoint {
+    let Some(rows) = rows else {
+        return WebhookEndpoint::Unknown;
+    };
+    match rows.iter().find(|r| r.provider == provider) {
+        Some(row) => match row.url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+            Some(url) => WebhookEndpoint::Known(url.to_string()),
+            None => WebhookEndpoint::NoPublicBase,
+        },
+        None => WebhookEndpoint::Unknown,
+    }
+}
+
 /// The provider choices to render, given the row being edited.
 ///
 /// The configurable set, plus the row's own provider when this build cannot
@@ -5388,6 +5462,21 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
     let mut error = use_signal(String::new);
     // MAPPS-357: block save / remove while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
+    // MAPPS-760 / PMS-1165: where this deployment receives webhooks, answered
+    // per provider and independently of whether a gateway is configured. It
+    // has to be on screen BEFORE the first save: creating the endpoint in the
+    // provider's dashboard is what produces the signing secret this form then
+    // demands. A server that predates the endpoint 404s, which reads as
+    // `Unknown` and leaves the rest of the form alone.
+    let endpoints = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Vec<RemoteWebhookEndpoint>>(
+            "/payment-gateways/webhook-endpoints",
+        )
+        .await
+        .inspect_err(|e| tracing::warn!("webhook endpoint lookup failed: {e}"))
+        .ok()
+    });
 
     // MAPPS-759: the set the server can actually serve, plus this row's own
     // provider when it is one this build cannot configure.
@@ -5644,6 +5733,86 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                         }
                     }
                 }
+                // MAPPS-760: the other half of the webhook signing secret
+                // above. The endpoint carries this tenant's id, which is not
+                // rendered anywhere else in this app, so without this an admin
+                // was asked for a secret belonging to a URL they had no
+                // supported way to learn.
+                {
+                    let selected = provider.read().clone();
+                    let events = webhook_events(&selected);
+                    let snap = endpoints.read_unchecked().clone();
+                    let known = endpoint_for(
+                        snap.as_ref().and_then(|r| r.as_deref()),
+                        &selected,
+                    );
+                    if events.is_empty() {
+                        rsx! {}
+                    } else {
+                        rsx! {
+                            div { class: "space-y-2 rounded-md border border-line bg-surface p-4",
+                                span { class: "block text-sm font-medium text-content", "Webhook endpoint" }
+                                match known {
+                                    WebhookEndpoint::Known(url) => rsx! {
+                                        div { class: "flex items-start gap-2",
+                                            code {
+                                                class: "flex-1 min-w-0 break-all text-xs text-content",
+                                                "{url}"
+                                            }
+                                            Button {
+                                                variant: ButtonVariant::Secondary,
+                                                size: ButtonSize::Small,
+                                                onclick: move |_| {
+                                                    let u = url.clone();
+                                                    #[cfg(target_arch = "wasm32")]
+                                                    if let Some(win) = web_sys::window() {
+                                                        let _ = win.navigator().clipboard().write_text(&u);
+                                                        crate::hooks::toast::push_toast(
+                                                            crate::components::AlertType::Success,
+                                                            "Webhook endpoint copied to clipboard.".to_string(),
+                                                        );
+                                                    }
+                                                    #[cfg(not(target_arch = "wasm32"))]
+                                                    let _ = u;
+                                                },
+                                                "Copy"
+                                            }
+                                        }
+                                        p { class: "text-xs text-muted",
+                                            "Add this endpoint in {humanize_provider(&selected)}, subscribe it to the events below, and paste the signing secret it gives you into the field above."
+                                        }
+                                    },
+                                    WebhookEndpoint::NoPublicBase => rsx! {
+                                        p { class: "text-xs text-muted",
+                                            "This deployment has no public API address set, so the endpoint cannot be shown. Whoever runs the server sets PUBLIC_API_BASE_URL."
+                                        }
+                                    },
+                                    WebhookEndpoint::Unknown => rsx! {
+                                        p { class: "text-xs text-muted",
+                                            "The endpoint for this provider could not be read from the server."
+                                        }
+                                    },
+                                }
+                                div {
+                                    span { class: "block text-xs text-muted", "Subscribe it to these events:" }
+                                    ul { class: "mt-1 space-y-0.5",
+                                        for event in events.iter().copied() {
+                                            li { key: "{event}",
+                                                code { class: "text-xs text-content", "{event}" }
+                                            }
+                                        }
+                                    }
+                                    // Said because the cost of missing one is
+                                    // invisible: the payment still records and
+                                    // the refund never does.
+                                    p { class: "mt-1 text-xs text-muted",
+                                        "All of them. Without the refund event a refund never reaches the invoice."
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 // MAPPS-671 (mokosh-invoices P2a): admin-set override for
                 // the Pay Now button label the portal contact sees on
                 // their invoice.
@@ -5685,7 +5854,10 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
 /// serve. Both drifted, and both drifted silently.
 #[cfg(test)]
 mod gateway_credential_tests {
-    use super::{credential_fields, gateway_config_body, provider_choices, CONFIGURABLE_PROVIDERS};
+    use super::{
+        credential_fields, endpoint_for, gateway_config_body, provider_choices, webhook_events,
+        RemoteWebhookEndpoint, WebhookEndpoint, CONFIGURABLE_PROVIDERS,
+    };
     use std::collections::HashMap;
 
     fn values(pairs: &[(&str, &str)]) -> HashMap<String, String> {
@@ -5815,6 +5987,85 @@ mod gateway_credential_tests {
         assert_eq!(offered, vec!["stripe", "paypal"]);
         let ids: Vec<String> = provider_choices("").into_iter().map(|(id, _)| id).collect();
         assert_eq!(ids, vec!["stripe", "paypal"]);
+    }
+
+    /// MAPPS-760: the event sets are the ones the server's providers act on.
+    /// Named in full, because the cost of a missing one is invisible: with
+    /// only the completion event subscribed, payments record and refunds
+    /// silently never reach the invoice.
+    #[test]
+    fn the_event_lists_are_the_ones_the_server_acts_on() {
+        assert_eq!(
+            webhook_events("stripe"),
+            ["checkout.session.completed", "charge.refunded"]
+        );
+        assert_eq!(
+            webhook_events("paypal"),
+            [
+                "CHECKOUT.ORDER.APPROVED",
+                "PAYMENT.CAPTURE.COMPLETED",
+                "PAYMENT.CAPTURE.REFUNDED",
+            ]
+        );
+        for provider in ["stripe", "paypal"] {
+            assert!(
+                webhook_events(provider)
+                    .iter()
+                    .any(|e| e.to_lowercase().contains("refund")),
+                "{provider} must tell the admin to subscribe to refunds"
+            );
+        }
+        assert!(webhook_events("authorize_net").is_empty());
+    }
+
+    /// The three states the form renders differently. A blank would leave the
+    /// admin holding a request for a webhook signing secret with nothing to
+    /// act on, which is the whole defect.
+    #[test]
+    fn an_absent_url_is_told_apart_from_an_absent_answer() {
+        let rows = vec![
+            RemoteWebhookEndpoint {
+                provider: "stripe".to_string(),
+                url: Some("https://api.example.com/api/v1/stripe/webhooks/x".to_string()),
+            },
+            RemoteWebhookEndpoint {
+                provider: "paypal".to_string(),
+                url: None,
+            },
+        ];
+        assert_eq!(
+            endpoint_for(Some(&rows), "stripe"),
+            WebhookEndpoint::Known("https://api.example.com/api/v1/stripe/webhooks/x".to_string())
+        );
+        // The server answered, and said it has no public base: an operator
+        // fix, not something this form can offer.
+        assert_eq!(
+            endpoint_for(Some(&rows), "paypal"),
+            WebhookEndpoint::NoPublicBase
+        );
+        // A provider the server did not list at all.
+        assert_eq!(
+            endpoint_for(Some(&rows), "authorize_net"),
+            WebhookEndpoint::Unknown
+        );
+        // And a server that predates the endpoint: the fetch failed, which
+        // must not read as "no public base" and must not take the rest of the
+        // form down with it.
+        assert_eq!(endpoint_for(None, "stripe"), WebhookEndpoint::Unknown);
+    }
+
+    /// A blank string is not a URL. A forwarded-but-unset variable arrives as
+    /// `""` (PMS-836), so the server could answer one.
+    #[test]
+    fn a_blank_url_reads_as_no_public_base() {
+        let rows = vec![RemoteWebhookEndpoint {
+            provider: "stripe".to_string(),
+            url: Some("   ".to_string()),
+        }];
+        assert_eq!(
+            endpoint_for(Some(&rows), "stripe"),
+            WebhookEndpoint::NoPublicBase
+        );
     }
 
     /// A row already storing a provider this build cannot configure still
