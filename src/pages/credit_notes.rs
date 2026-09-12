@@ -1084,12 +1084,12 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
                     ErrorBanner { "{error.read()}" }
                 }
                 p { class: "text-sm text-muted",
-                    "A credit note is issued the moment it is created and cannot be edited afterwards. It reduces what is owed on this invoice; crediting the whole remaining amount voids the invoice."
+                    "This reduces what your customer owes on this invoice. It is issued as soon as you create it and cannot be edited afterwards; crediting the whole balance voids the invoice."
                 }
                 crate::components::Textarea {
                     name: "credit_note_reason",
                     label: "Reason",
-                    placeholder: "Why this invoice is being corrected, as the customer and an auditor will read it",
+                    placeholder: "Why you are correcting this invoice",
                     required: true,
                     rows: 3,
                     rules: vec![Rule::Required, Rule::MaxLen(2000)],
@@ -1113,7 +1113,7 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
                         }
                     }
                     p { class: "mb-3 text-xs text-subtle",
-                        "Every line is an amount given back, so quantity and unit price are both positive. Enter what is being credited, not a negative charge."
+                        "Each line is money you are giving back, so amounts are positive."
                     }
                     if lines.read().is_empty() {
                         p { class: "text-sm text-muted",
@@ -1191,7 +1191,7 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
                         step: "0.01".to_string(),
                         min: "0".to_string(),
                         placeholder: "0.00",
-                        help: "Optional. The tax portion of the amount credited; leave blank for none.",
+                        help: "Optional. The tax you are crediting back.",
                         error: tax_err(),
                         value: tax_amount.read().clone(),
                         oninput: move |e: FormEvent| {
@@ -1210,7 +1210,7 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
                 crate::components::Textarea {
                     name: "credit_note_notes",
                     label: "Notes",
-                    placeholder: "Optional: anything the customer should see on the document",
+                    placeholder: "Optional",
                     rows: 2,
                     value: notes.read().clone(),
                     oninput: move |e: FormEvent| notes.set(e.value()),
@@ -1236,12 +1236,12 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
                                 }
                             }
                             div { class: "flex justify-between",
-                                span { class: "text-muted", "Left to credit on this invoice" }
+                                span { class: "text-muted", "Left on this invoice" }
                                 span { "{remaining_label}" }
                             }
                             if over_cap {
                                 p { class: "text-xs text-red-600 dark:text-red-300",
-                                    "The total is more than what is left to credit."
+                                    "That is more than is left on this invoice."
                                 }
                             }
                         }
