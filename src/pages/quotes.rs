@@ -90,10 +90,10 @@ fn status_explainer(status: &str) -> &'static str {
     match status {
         "draft" => "Still being worked up. Editable.",
         "submitted" => "Waiting on internal approval. Content is locked.",
-        "approved" => "Cleared internally. Not yet sent to the client.",
+        "approved" => "Cleared internally. Not yet sent to your customer.",
         "rejected" => "Turned down internally. Editable again.",
         "sent" => "With the client, awaiting their decision.",
-        "accepted" => "The client signed off. Ready to convert to a project.",
+        "accepted" => "Your customer signed off. Ready to convert to a project.",
         "declined" => "The client turned it down.",
         "expired" => "Passed its valid-until date without a decision.",
         "converted" => "Became a project.",
@@ -777,7 +777,7 @@ fn QuoteDetailBody(id: String) -> Element {
                                             empty_note: QUOTE_PREVIEW_NOTE.to_string(),
                                         }
                                         p { class: "text-xs text-subtle",
-                                            "Emails the billing contact a link to accept or decline."
+                                            "Emails your customer's billing contact a link to accept or decline."
                                         }
                                     }
                                     if status::awaiting_client(&st) {
@@ -804,7 +804,7 @@ fn QuoteDetailBody(id: String) -> Element {
                                         crate::components::ConfirmDialog {
                                             open: confirming_cancel(),
                                             title: "Cancel quote".to_string(),
-                                            message: format!("Cancel quote {header_title}? The client can no longer accept it and this cannot be undone."),
+                                            message: format!("Cancel quote {header_title}? Your customer can no longer accept it and this cannot be undone."),
                                             confirm_text: "Cancel quote".to_string(),
                                             cancel_text: "Keep quote".to_string(),
                                             destructive: true,
@@ -1304,7 +1304,7 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
     rsx! {
         PageHeader {
             title: if is_edit { "Edit Quote" } else { "New Quote" },
-            subtitle: "Scope the work and price it. Totals are calculated from the line items.",
+            subtitle: "Scope the work and price it. Totals come from the line items.",
         }
 
         if !error.read().is_empty() {
