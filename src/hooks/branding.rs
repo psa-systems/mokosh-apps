@@ -114,6 +114,41 @@ pub fn set_effective_branding(next: EffectiveBranding) {
 /// query string with a `v=` param (defensive: never double-tag). A
 /// bare url `/api/v1/public/tenants/{id}/logo` becomes
 /// `/api/v1/public/tenants/{id}/logo?v=<hash>`.
+/// MAPPS-767: the same URL, absolute against the API origin.
+///
+/// `branding.logo_url` is a PATH by design - the server's write validator
+/// pins it to `/api/v1/public/tenants/` - and the API is on a different host
+/// from the SPA on every deployed environment. A page rendering the path
+/// directly resolves it against its OWN origin and gets a 404, which is what
+/// the portal sign-in page did: `https://msp.a8n.systems/api/v1/public/...`
+/// where the logo lives on `api.msp.a8n.systems`.
+///
+/// PMS-758 settled the rule and `api_origin` is the helper for it (it strips
+/// the `/api/v1` suffix, because the stored value carries its own). This
+/// wraps the two steps together so a render site cannot do one and forget the
+/// other, which is how the auth layout came to version a URL it had not yet
+/// made absolute.
+///
+/// Empty in, empty out, so a caller with no logo renders nothing rather than
+/// a bare origin.
+pub fn absolute_versioned_asset_url(url: &str, brand: &EffectiveBranding) -> String {
+    if url.trim().is_empty() {
+        return String::new();
+    }
+    let versioned = versioned_asset_url(url, brand);
+    if versioned.starts_with("http://") || versioned.starts_with("https://") {
+        return versioned;
+    }
+    #[cfg(feature = "app")]
+    {
+        format!("{}{versioned}", crate::hooks::fetch::api::api_origin())
+    }
+    #[cfg(not(feature = "app"))]
+    {
+        versioned
+    }
+}
+
 pub fn versioned_asset_url(url: &str, brand: &EffectiveBranding) -> String {
     if url.is_empty() {
         return String::new();
@@ -204,7 +239,9 @@ pub fn apply_brand_css_vars(brand: &EffectiveBranding) {
     if let Some(body) = doc.body() {
         let body_style = body.style();
         if let Some(url) = brand.background_url.as_deref().filter(|s| !s.is_empty()) {
-            let versioned = versioned_asset_url(url, brand);
+            // MAPPS-767: absolute, for the same reason the logo is - a CSS
+            // `url()` resolves against the document, not the API.
+            let versioned = absolute_versioned_asset_url(url, brand);
             let escaped = versioned.replace('"', "%22");
             let _ = body_style.set_property("background-image", &format!("url(\"{escaped}\")"));
             let _ = body_style.set_property("background-size", "cover");
@@ -345,7 +382,9 @@ pub fn apply_favicon(brand: &EffectiveBranding) {
             continue;
         };
         if let Some(url) = target {
-            let versioned = versioned_asset_url(url, brand);
+            // MAPPS-767: absolute, or the browser asks the SPA origin for a
+            // favicon the API serves.
+            let versioned = absolute_versioned_asset_url(url, brand);
             let _ = el.set_attribute("href", &versioned);
             // Clear the type hint; whatever mime the server serves
             // wins. Chrome + Firefox recompute from the response.
@@ -365,3 +404,74 @@ pub fn apply_favicon(brand: &EffectiveBranding) {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn apply_favicon(_brand: &EffectiveBranding) {}
+
+/// MAPPS-767: a branding asset URL has to name the host that serves it.
+#[cfg(test)]
+mod asset_url_tests {
+    use super::{absolute_versioned_asset_url, versioned_asset_url, EffectiveBranding};
+
+    fn brand() -> EffectiveBranding {
+        EffectiveBranding::default()
+    }
+
+    /// The stored value is a PATH from the API origin, and every deployed
+    /// environment serves the SPA from a different host. Rendering the path
+    /// directly asked `msp.a8n.systems` for a logo that lives on
+    /// `api.msp.a8n.systems`, which is the reported 404.
+    ///
+    /// Off-web there is no origin to join, so the path is returned as-is and
+    /// this asserts the version tag survives rather than the host, which is
+    /// the half that can be checked without a browser.
+    #[test]
+    fn a_path_keeps_its_version_tag() {
+        let b = brand();
+        let out = absolute_versioned_asset_url("/api/v1/public/tenants/abc/logo", &b);
+        assert!(out.contains("/api/v1/public/tenants/abc/logo"), "{out}");
+        assert!(out.contains("?v="), "the cache-buster must survive: {out}");
+    }
+
+    /// A value that is already absolute is never prefixed. An operator
+    /// pointing branding at an externally hosted mark is not this function's
+    /// business, and a second origin in front of it would break what worked.
+    #[test]
+    fn an_absolute_url_is_left_alone() {
+        let b = brand();
+        for url in [
+            "https://cdn.example/logo.png",
+            "http://cdn.example/logo.png",
+        ] {
+            let out = absolute_versioned_asset_url(url, &b);
+            assert!(out.starts_with(url), "{out}");
+            assert_eq!(out.matches("http").count(), 1, "prefixed twice: {out}");
+        }
+    }
+
+    /// Empty in, empty out, so a brand with no logo renders nothing rather
+    /// than a bare origin that would 404 on its own.
+    #[test]
+    fn no_logo_yields_no_url() {
+        let b = brand();
+        assert_eq!(absolute_versioned_asset_url("", &b), "");
+        assert_eq!(absolute_versioned_asset_url("   ", &b), "");
+    }
+
+    /// The versioning half is unchanged: same brand, same URL, so the browser
+    /// cache still hits between renders (MAPPS-635).
+    #[test]
+    fn the_version_is_stable_for_one_brand() {
+        let b = brand();
+        let first = absolute_versioned_asset_url("/api/v1/public/tenants/abc/logo", &b);
+        let second = absolute_versioned_asset_url("/api/v1/public/tenants/abc/logo", &b);
+        assert_eq!(first, second);
+        assert!(!versioned_asset_url("/x", &b).is_empty());
+    }
+
+    /// A URL that already carries a version is not tagged twice, which the
+    /// underlying helper guarantees and the absolute wrapper must not undo.
+    #[test]
+    fn an_already_versioned_url_is_not_tagged_again() {
+        let b = brand();
+        let out = absolute_versioned_asset_url("/api/v1/public/tenants/abc/logo?v=deadbeef", &b);
+        assert_eq!(out.matches("v=").count(), 1, "{out}");
+    }
+}
