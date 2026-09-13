@@ -5190,6 +5190,45 @@ struct RemoteGateway {
     /// `get_invoice_payment_readiness`.
     #[serde(default)]
     client_display_name: Option<String>,
+    /// MAPPS-773 / PMS-1181: what this gateway holds, field by field. Empty
+    /// against a server that predates the answer, which is why `configured`
+    /// above is still read.
+    #[serde(default)]
+    credentials: Vec<RemoteCredentialState>,
+}
+
+/// MAPPS-773 / PMS-1181: one stored credential field, as much of it as the
+/// server is willing to show.
+///
+/// The masking decision is the SERVER's: it knows which field is a secret and
+/// sends back an identifier whole and a secret as a tail. This client renders
+/// `value` and invents no rule of its own, because a rule here would be a
+/// second answer to "may this be shown", and the wrong answer prints a
+/// customer's payment credentials on a settings page.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct RemoteCredentialState {
+    #[serde(default)]
+    pub(crate) key: String,
+    #[serde(default)]
+    pub(crate) label: String,
+    #[serde(default)]
+    pub(crate) present: bool,
+    #[serde(default)]
+    pub(crate) secret: bool,
+    #[serde(default)]
+    pub(crate) value: Option<String>,
+}
+
+/// MAPPS-773 / PMS-1181: what checking a stored gateway concluded.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct RemoteGatewayCheck {
+    #[serde(default)]
+    pub(crate) name: String,
+    /// `passed`, `failed` or `not_checkable`.
+    #[serde(default)]
+    pub(crate) outcome: String,
+    #[serde(default)]
+    pub(crate) detail: String,
 }
 
 /// Payment-gateway config view. GET `/payment-gateways` (paginated) and
@@ -5457,6 +5496,75 @@ pub(crate) fn credential_fields(provider: &str) -> &'static [CredentialField] {
     }
 }
 
+/// MAPPS-773: what to say under a credential field about what is stored.
+///
+/// The form's fields are blank on an edit and always have been, because the
+/// server replaces the whole credential set on save, so blank means "keep what
+/// is stored" (MAPPS-363). What was missing is the other half of that
+/// sentence: WHAT is stored. A green Configured badge over three empty boxes
+/// tells an admin nothing about which of the three landed, and nothing at all
+/// about whether the webhook id they pasted is the one their provider shows.
+///
+/// `None` is a server that predates PMS-1181 and says nothing, which is
+/// rendered as nothing rather than as "not stored".
+pub(crate) fn stored_credential_note(state: Option<&RemoteCredentialState>) -> String {
+    let Some(state) = state else {
+        return String::new();
+    };
+    if !state.present {
+        return "Not stored.".to_string();
+    }
+    match state
+        .value
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        // An identifier the provider prints in its own dashboard, shown whole
+        // so it can be compared against it. That comparison is the check a
+        // wrong webhook id would otherwise survive until a customer paid.
+        Some(value) if !state.secret => format!("Stored: {value}"),
+        Some(tail) => format!("Stored, ending {tail}"),
+        // Stored, and too short for the server to show a tail of.
+        None => "Stored.".to_string(),
+    }
+}
+
+/// MAPPS-773: how one check reads.
+///
+/// `not_checkable` is deliberately NOT rendered as a pass: the provider
+/// offered no way to check it, and a green tick on a field nothing checked is
+/// the failure this whole ticket is about.
+pub(crate) fn check_label(outcome: &str) -> &'static str {
+    match outcome {
+        "passed" => "Passed",
+        "failed" => "Failed",
+        "not_checkable" => "Not checked",
+        _ => "Unknown",
+    }
+}
+
+/// The one-line summary above the checks, which has to be readable without
+/// reading the rows: an admin who came here because a payment did not arrive
+/// needs to know in one glance whether this configuration is the reason.
+pub(crate) fn check_summary(checks: &[RemoteGatewayCheck]) -> String {
+    if checks.is_empty() {
+        return "This gateway reported no checks.".to_string();
+    }
+    let failed: Vec<&str> = checks
+        .iter()
+        .filter(|c| c.outcome == "failed")
+        .map(|c| c.name.as_str())
+        .collect();
+    if !failed.is_empty() {
+        return format!("{} did not pass.", failed.join(" and "));
+    }
+    if checks.iter().any(|c| c.outcome == "not_checkable") {
+        return "Everything that can be checked from here passed.".to_string();
+    }
+    "Everything passed.".to_string()
+}
+
 /// The `config` object to send, or `None` to leave the stored credentials alone.
 ///
 /// All-or-nothing, and that is forced by how the server stores them rather than
@@ -5674,6 +5782,10 @@ struct GatewayFormState {
     /// Now button label. Empty string = clear the override (falls back
     /// to the provider default).
     client_display_name: String,
+    /// MAPPS-773: what the server says is stored, field by field. Empty for a
+    /// gateway being configured for the first time, and for a server that
+    /// predates PMS-1181.
+    credentials: Vec<RemoteCredentialState>,
 }
 
 impl GatewayFormState {
@@ -5685,6 +5797,7 @@ impl GatewayFormState {
             is_test_mode: true,
             configured: false,
             client_display_name: String::new(),
+            credentials: Vec::new(),
         }
     }
 
@@ -5696,6 +5809,7 @@ impl GatewayFormState {
             is_test_mode: g.is_test_mode,
             configured: g.configured,
             client_display_name: g.client_display_name.clone().unwrap_or_default(),
+            credentials: g.credentials.clone(),
         }
     }
 }
@@ -5738,6 +5852,14 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
     // clear-to-provider-default).
     let mut client_display_name = use_signal(|| initial.client_display_name.clone());
     let mut client_display_name_err = use_signal(String::new);
+    // MAPPS-773: what the server says is stored, per field. Read off the row
+    // this modal was opened from rather than fetched again: it came from the
+    // same list, and a second read would be a second answer.
+    let stored_credentials = initial.credentials.clone();
+    // MAPPS-773: the result of the last check, and whether one is running.
+    let mut checking = use_signal(|| false);
+    let mut check_results: Signal<Option<Vec<RemoteGatewayCheck>>> = use_signal(|| None);
+    let mut check_error = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -5854,6 +5976,41 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                 }
             }
             saving.set(false);
+        });
+    };
+
+    // MAPPS-773: ask the provider whether what is stored works, without taking
+    // a payment. The provider is this row's own and never the select's current
+    // value: the select is locked on an existing row, and checking a provider
+    // other than the one whose credentials are stored would answer about the
+    // wrong gateway.
+    let check_provider = initial.provider.clone();
+    let handle_check = move |_| {
+        if *checking.read() {
+            return;
+        }
+        checking.set(true);
+        check_error.set(String::new());
+        check_results.set(None);
+        let provider = check_provider.clone();
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let path = format!("/payment-gateways/{provider}/check");
+                match crate::hooks::fetch::api::post_authed_typed::<Vec<RemoteGatewayCheck>, _>(
+                    &path,
+                    &serde_json::json!({}),
+                )
+                .await
+                {
+                    Ok(results) => check_results.set(Some(results)),
+                    Err(err) => check_error.set(format!(
+                        "Could not check this gateway: {}",
+                        err.user_message()
+                    )),
+                }
+            }
+            checking.set(false);
         });
     };
 
@@ -5982,21 +6139,34 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                                 for field in fields.iter().copied() {
                                     {
                                         let key = field.key;
+                                        // MAPPS-773: what the server says is
+                                        // stored for THIS field, so the empty
+                                        // box above it stops being the only
+                                        // thing the admin can see.
+                                        let stored = stored_credential_note(
+                                            stored_credentials
+                                                .iter()
+                                                .find(|c| c.key == key),
+                                        );
                                         rsx! {
-                                            crate::components::Input {
-                                                key: "{key}",
-                                                name: "gateway_cred_{key}",
-                                                label: field.label,
-                                                r#type: "password",
-                                                placeholder: field.placeholder.to_string(),
-                                                required: !configured,
-                                                help: field.help.to_string(),
-                                                error: cred_errs.read().get(key).cloned().unwrap_or_default(),
-                                                value: creds.read().get(key).cloned().unwrap_or_default(),
-                                                oninput: move |e: FormEvent| {
-                                                    cred_errs.write().remove(key);
-                                                    creds.write().insert(key.to_string(), e.value());
-                                                },
+                                            div { key: "{key}", class: "space-y-1",
+                                                crate::components::Input {
+                                                    name: "gateway_cred_{key}",
+                                                    label: field.label,
+                                                    r#type: "password",
+                                                    placeholder: field.placeholder.to_string(),
+                                                    required: !configured,
+                                                    help: field.help.to_string(),
+                                                    error: cred_errs.read().get(key).cloned().unwrap_or_default(),
+                                                    value: creds.read().get(key).cloned().unwrap_or_default(),
+                                                    oninput: move |e: FormEvent| {
+                                                        cred_errs.write().remove(key);
+                                                        creds.write().insert(key.to_string(), e.value());
+                                                    },
+                                                }
+                                                if !stored.is_empty() {
+                                                    p { class: "text-xs text-muted", "{stored}" }
+                                                }
                                             }
                                         }
                                     }
@@ -6005,9 +6175,58 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                                 // rule for the set and not for any one field.
                                 p { class: "text-xs text-muted",
                                     if configured {
-                                        "Stored encrypted. You will not see these again after you save. Leave them all blank to keep what is stored; filling any one replaces the whole set, so enter all of them."
+                                        "Secrets are stored encrypted and are never shown again in full. Leave them all blank to keep what is stored; filling any one replaces the whole set, so enter all of them."
                                     } else {
                                         "Stored encrypted. You will not see these again after you save."
+                                    }
+                                }
+                                // MAPPS-773: the check. Only for a gateway
+                                // that has something stored, because there is
+                                // nothing to check before the first save, and
+                                // an admin pressing it then would be told the
+                                // gateway is broken when it is merely new.
+                                if configured && provider_locked {
+                                    div { class: "rounded-md border border-line p-3 space-y-2",
+                                        div { class: "flex items-center justify-between gap-2",
+                                            span { class: "text-sm font-medium text-content", "Check this configuration" }
+                                            Button {
+                                                variant: ButtonVariant::Secondary,
+                                                loading: *checking.read(),
+                                                disabled: !can_mutate || *checking.read(),
+                                                title: (!can_mutate).then(|| "Can't reach the server to run a check".to_string()),
+                                                onclick: handle_check,
+                                                "Run check"
+                                            }
+                                        }
+                                        p { class: "text-xs text-muted",
+                                            "Asks the provider whether these stored credentials work, without taking a payment."
+                                        }
+                                        if !check_error.read().is_empty() {
+                                            p { class: "text-xs text-red-600 dark:text-red-300", "{check_error}" }
+                                        }
+                                        if let Some(results) = check_results.read().clone() {
+                                            p { class: "text-sm text-content", "{check_summary(&results)}" }
+                                            ul { class: "space-y-1",
+                                                for result in results {
+                                                    li {
+                                                        key: "{result.name}",
+                                                        class: "text-xs",
+                                                        span { class: "font-medium text-content", "{result.name}: " }
+                                                        span {
+                                                            class: match result.outcome.as_str() {
+                                                                "passed" => "text-green-600 dark:text-green-400",
+                                                                "failed" => "text-red-600 dark:text-red-300",
+                                                                _ => "text-muted",
+                                                            },
+                                                            "{check_label(&result.outcome)}"
+                                                        }
+                                                        if !result.detail.is_empty() {
+                                                            span { class: "text-muted", " {result.detail}" }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -6881,6 +7100,114 @@ mod invoice_tax_tests {
         assert_eq!(tax_label(Some("")), "Tax");
         assert_eq!(tax_label(None), "Tax");
         assert_eq!(tax_label(Some("n/a")), "Tax");
+    }
+}
+
+/// MAPPS-773: what a configured gateway shows about itself.
+#[cfg(test)]
+mod gateway_credential_state_tests {
+    use super::{
+        check_label, check_summary, stored_credential_note, RemoteCredentialState,
+        RemoteGatewayCheck,
+    };
+
+    fn state(key: &str, present: bool, secret: bool, value: Option<&str>) -> RemoteCredentialState {
+        RemoteCredentialState {
+            key: key.to_string(),
+            label: key.to_string(),
+            present,
+            secret,
+            value: value.map(str::to_string),
+        }
+    }
+
+    fn check(name: &str, outcome: &str) -> RemoteGatewayCheck {
+        RemoteGatewayCheck {
+            name: name.to_string(),
+            outcome: outcome.to_string(),
+            detail: String::new(),
+        }
+    }
+
+    /// An identifier is shown whole, because comparing the stored webhook ID
+    /// against the one the provider prints is the check this exists for.
+    #[test]
+    fn an_identifier_is_shown_whole() {
+        assert_eq!(
+            stored_credential_note(Some(&state(
+                "webhook_id",
+                true,
+                false,
+                Some("3WL54026PT222181E")
+            ))),
+            "Stored: 3WL54026PT222181E"
+        );
+    }
+
+    /// A secret is whatever tail the server chose to send, and this client
+    /// never derives one itself.
+    #[test]
+    fn a_secret_is_shown_as_the_tail_the_server_sent() {
+        assert_eq!(
+            stored_credential_note(Some(&state("client_secret", true, true, Some("LRDN")))),
+            "Stored, ending LRDN"
+        );
+        // Stored, and too short for the server to show a tail of.
+        assert_eq!(
+            stored_credential_note(Some(&state("client_secret", true, true, None))),
+            "Stored."
+        );
+    }
+
+    /// Which field is missing is the answer an admin came for.
+    #[test]
+    fn an_absent_field_says_so() {
+        assert_eq!(
+            stored_credential_note(Some(&state("webhook_id", false, false, None))),
+            "Not stored."
+        );
+    }
+
+    /// A server that predates PMS-1181 says nothing, and nothing is rendered.
+    /// It must not read as "not stored", which would be an accusation about a
+    /// gateway that is working.
+    #[test]
+    fn a_server_that_says_nothing_renders_nothing() {
+        assert_eq!(stored_credential_note(None), "");
+    }
+
+    /// `not_checkable` is not a pass, in the label or in the summary.
+    #[test]
+    fn an_unchecked_field_is_never_reported_as_passing() {
+        assert_eq!(check_label("not_checkable"), "Not checked");
+        assert_eq!(
+            check_summary(&[
+                check("Secret key", "passed"),
+                check("Webhook signing secret", "not_checkable")
+            ]),
+            "Everything that can be checked from here passed."
+        );
+        assert_eq!(
+            check_summary(&[check("Secret key", "passed"), check("Webhook ID", "passed")]),
+            "Everything passed."
+        );
+    }
+
+    /// A failure names the check that failed, so the summary alone tells the
+    /// admin which half of the form to fix.
+    #[test]
+    fn a_failure_names_what_failed() {
+        assert_eq!(
+            check_summary(&[
+                check("Client ID and secret", "passed"),
+                check("Webhook ID", "failed"),
+            ]),
+            "Webhook ID did not pass."
+        );
+        assert_eq!(
+            check_summary(&[check("Secret key", "failed"), check("Webhook ID", "failed")]),
+            "Secret key and Webhook ID did not pass."
+        );
     }
 }
 
