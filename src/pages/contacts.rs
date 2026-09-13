@@ -405,6 +405,18 @@ struct GrantPortalAccessBody {
     role_ids: Vec<uuid::Uuid>,
 }
 
+/// MAPPS-775 / PMS-1187: `POST /contacts/contacts/access-requests/{id}/resolve`.
+///
+/// A typed body rather than a `json!` literal, which the MAPPS-685 guard on
+/// this page enforces: a literal compiles clean against any DTO, so the field
+/// name and the server's are only ever in step by luck.
+#[derive(Debug, Serialize)]
+struct ResolveAccessRequestBody {
+    /// `true` grants the area's built-in role and closes the request; `false`
+    /// closes it without granting.
+    grant: bool,
+}
+
 /// `POST /contacts/companies` sent by the contact page's "Create this company"
 /// recovery (MAPPS-484), which has a typed name and nothing else.
 #[derive(Debug, Serialize)]
@@ -8012,6 +8024,150 @@ pub(crate) fn role_summary(capabilities: &[String]) -> String {
     format!("Can {list}.")
 }
 
+/// MAPPS-775 / PMS-1187: one access request as the server sends it.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct AccessRequestWire {
+    id: uuid::Uuid,
+    #[serde(default)]
+    area: String,
+    #[serde(default)]
+    note: Option<String>,
+    /// `open`, `granted`, `declined` or `withdrawn`.
+    #[serde(default)]
+    status: String,
+}
+
+/// MAPPS-775: how one request reads on the contact record.
+///
+/// An open request is a question waiting on the MSP and says so; a resolved
+/// one is history and is stated flatly. Kept as a pure function because the
+/// distinction is the point: a list where "granted" and "waiting on you" look
+/// alike is a list nobody acts on.
+pub(crate) fn access_request_line(area: &str, status: &str) -> String {
+    match status {
+        "open" => format!("Asked to see {area}"),
+        "granted" => format!("Asked to see {area} - granted"),
+        "declined" => format!("Asked to see {area} - declined"),
+        "withdrawn" => format!("Asked to see {area} - withdrawn"),
+        other => format!("Asked to see {area} - {other}"),
+    }
+}
+
+/// MAPPS-775 / PMS-1187: what this contact has asked for, and the one press
+/// that answers it.
+///
+/// Granting from here assigns the area's role and closes the request in one
+/// action on the server. The alternative it replaces is "read the mail, find
+/// the contact, remember which role, edit it", where the step most likely to
+/// be skipped is the one that makes anything happen for the customer.
+#[component]
+fn AccessRequestPanel(contact_id: String) -> Element {
+    let id_for_resource = contact_id.clone();
+    let mut requests = use_resource(move || {
+        let id = id_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _roles_gen = crate::hooks::fetch::active_portal_roles_generation();
+            crate::hooks::fetch::list_or_empty(
+                "portal access request",
+                crate::hooks::fetch::api::get_authed::<Vec<AccessRequestWire>>(&format!(
+                    "/contacts/contacts/{id}/access-requests"
+                ))
+                .await,
+            )
+        }
+    });
+    let rows: Vec<AccessRequestWire> = requests.read_unchecked().clone().unwrap_or_default();
+    let mut resolving = use_signal(|| None::<uuid::Uuid>);
+    let mut error = use_signal(String::new);
+    let can_mutate = crate::hooks::use_can_mutate();
+
+    // Nothing asked for is the ordinary state and needs no words on a card
+    // that is already dense.
+    if rows.is_empty() {
+        return rsx! {};
+    }
+
+    rsx! {
+        div { class: "space-y-2 rounded-md border border-line p-3",
+            span { class: "text-xs font-medium text-content block", "Access requests" }
+            if !error.read().is_empty() {
+                p { class: "text-xs text-red-600 dark:text-red-300", "{error}" }
+            }
+            for request in rows {
+                {
+                    let request_id = request.id;
+                    let line = access_request_line(&request.area, &request.status);
+                    let note = request.note.clone().unwrap_or_default();
+                    let is_open = request.status == "open";
+                    let busy = *resolving.read() == Some(request_id);
+                    let mut resolve = move |grant: bool| {
+                        if resolving.read().is_some() {
+                            return;
+                        }
+                        resolving.set(Some(request_id));
+                        error.set(String::new());
+                        spawn(async move {
+                            #[cfg(feature = "app")]
+                            {
+                                let path = format!(
+                                    "/contacts/contacts/access-requests/{request_id}/resolve"
+                                );
+                                match crate::hooks::fetch::api::post_authed_typed::<
+                                    serde_json::Value,
+                                    _,
+                                >(
+                                    &path, &ResolveAccessRequestBody { grant }
+                                )
+                                .await
+                                {
+                                    Ok(_) => {
+                                        // The grant changed the contact's
+                                        // roles, so the badges beside this
+                                        // panel are stale too.
+                                        crate::hooks::fetch::bump_portal_roles_generation();
+                                        requests.restart();
+                                    }
+                                    Err(err) => error.set(format!(
+                                        "Could not answer this request: {}",
+                                        err.user_message()
+                                    )),
+                                }
+                            }
+                            resolving.set(None);
+                        });
+                    };
+                    rsx! {
+                        div { key: "{request_id}", class: "space-y-1",
+                            p { class: "text-xs text-content", "{line}" }
+                            if !note.is_empty() {
+                                p { class: "text-xs text-muted", "\"{note}\"" }
+                            }
+                            if is_open {
+                                div { class: "flex gap-2",
+                                    Button {
+                                        variant: ButtonVariant::Primary,
+                                        loading: busy,
+                                        disabled: !can_mutate || busy,
+                                        onclick: move |_| resolve(true),
+                                        "Grant"
+                                    }
+                                    Button {
+                                        variant: ButtonVariant::Secondary,
+                                        disabled: !can_mutate || busy,
+                                        onclick: move |_| resolve(false),
+                                        "Decline"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[component]
 fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
     let contact_id = props.contact_id.clone();
@@ -8278,6 +8434,12 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                     p { class: "text-xs text-muted",
                         "This contact can sign in to your client portal. The invitation link works for 72 hours; send it again if they never received it."
                     }
+                    // MAPPS-775 / PMS-1187: what this customer has asked to
+                    // see. The gap this closes was invisible from here: a
+                    // contact could be designated the billing contact, mailed
+                    // an invoice, and be unable to open it, with nothing on
+                    // this page saying so.
+                    AccessRequestPanel { contact_id: contact_id.clone() }
                     div { class: "flex flex-wrap gap-2",
                         Button {
                             variant: ButtonVariant::Secondary,
@@ -10219,6 +10381,10 @@ mod shared_dto_tests {
         let _ = GrantPortalAccessBody {
             role_ids: Vec::new(),
         };
+        // MAPPS-775: the resolve body. `mokosh-types` exports no DTO for it at
+        // the pinned server rev either, so this names the shape the way the
+        // grant body above does.
+        let _ = ResolveAccessRequestBody { grant: true };
         // Deliberately not sent, for the reasons on the create request above.
         // `default_technical_contact_id` and `default_contract_id` have no
         // editor on this page either; the contract default is set from billing.
@@ -10754,6 +10920,37 @@ mod shared_dto_tests {
 /// every write here runs inside a `#[cfg(feature = "app")]` block that no host
 /// test can reach, so what is being pinned is the shape of the code rather than
 /// a rendered result.
+#[cfg(test)]
+mod access_request_tests {
+    use super::access_request_line;
+
+    /// An open request is a question waiting on the MSP; a resolved one is
+    /// history. A list where the two read alike is a list nobody acts on.
+    #[test]
+    fn an_open_request_reads_differently_from_a_resolved_one() {
+        assert_eq!(
+            access_request_line("invoices", "open"),
+            "Asked to see invoices"
+        );
+        assert_eq!(
+            access_request_line("invoices", "granted"),
+            "Asked to see invoices - granted"
+        );
+        assert_eq!(
+            access_request_line("tickets", "declined"),
+            "Asked to see tickets - declined"
+        );
+    }
+
+    /// A status this build does not know is shown as it came rather than
+    /// silently read as one of the ones it does know.
+    #[test]
+    fn an_unknown_status_is_shown_rather_than_guessed() {
+        let line = access_request_line("quotes", "escalated");
+        assert!(line.contains("escalated"), "{line}");
+    }
+}
+
 #[cfg(test)]
 mod shared_dto_guard_tests {
     const SRC: &str = include_str!("contacts.rs");

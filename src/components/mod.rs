@@ -2,6 +2,7 @@
 //!
 //! This module contains reusable Dioxus components used throughout the application.
 
+mod access_required;
 mod account_deleted_overlay;
 mod asset_picker;
 mod avatar;
@@ -46,6 +47,7 @@ mod theme_picker;
 mod update_available_banner;
 mod update_banner;
 
+pub use access_required::*;
 pub use account_deleted_overlay::*;
 pub use asset_picker::*;
 pub use avatar::*;
