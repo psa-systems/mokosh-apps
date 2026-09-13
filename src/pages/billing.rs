@@ -346,6 +346,21 @@ pub fn InvoiceListPage() -> Element {
 
     use_page_title("Invoices");
     if !has_finance && !contact_can_read {
+        // MAPPS-775: a customer and a technician are refused for different
+        // reasons and need different words. `NoFinancePermission` says
+        // "restricted to administrator and finance roles. Ask an
+        // administrator", which is true of a technician and false of a
+        // customer: they have no administrator, and the person who can change
+        // this is the MSP they hired. The portal state names the MSP and
+        // offers the ask (PMS-1187).
+        if crate::hooks::fetch::api::has_contact_session() {
+            return rsx! {
+                crate::components::PortalAccessRequired {
+                    title: "Invoices".to_string(),
+                    area: crate::components::INVOICES,
+                }
+            };
+        }
         return rsx! { NoFinancePermission { title: "Invoices" } };
     }
 
