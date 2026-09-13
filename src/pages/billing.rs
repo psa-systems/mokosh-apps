@@ -1138,10 +1138,89 @@ struct PaymentReadiness {
     gateway_ready: bool,
     #[serde(default)]
     button_label: Option<String>,
+    /// MAPPS-771 / PMS-1179: every way this invoice can be paid. Empty against
+    /// a server that predates the choice, which is why `button_label` is still
+    /// read: `pay_options` falls back to it.
+    #[serde(default)]
+    providers: Vec<RemotePaymentProvider>,
     #[serde(default)]
     invoice_payable: bool,
     #[serde(default)]
     balance_due_display: String,
+}
+
+/// MAPPS-771 / PMS-1179: one way the customer can pay, as the server sends it.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+pub(crate) struct RemotePaymentProvider {
+    #[serde(default)]
+    pub(crate) provider: String,
+    #[serde(default)]
+    pub(crate) label: String,
+}
+
+/// MAPPS-771: one Pay button.
+///
+/// `provider` is `None` only against a server that predates PMS-1179, where
+/// the pay request names nothing and the server resolves its single active
+/// gateway - which is exactly what every client did before the choice existed.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PayOption {
+    pub(crate) provider: Option<String>,
+    pub(crate) label: String,
+}
+
+/// MAPPS-771: what to render right now, including before readiness lands.
+///
+/// An empty list would mean no button at all while the readiness fetch is in
+/// flight, which is a button that appears late rather than one that is
+/// disabled - so the pending state keeps its single unnamed button, exactly
+/// what this page rendered before the choice existed.
+pub(crate) fn pay_options_for_render(
+    choices: &[PayOption],
+    fallback_label: &str,
+) -> Vec<PayOption> {
+    if choices.is_empty() {
+        return vec![PayOption {
+            provider: None,
+            label: fallback_label.to_string(),
+        }];
+    }
+    choices.to_vec()
+}
+
+/// MAPPS-771: the Pay buttons this invoice offers.
+///
+/// One per provider the tenant has connected, in the order the server sends
+/// them, each labelled by the server (the MSP's own override where they set
+/// one). The client never names a provider itself, so adding a third one is a
+/// server change alone.
+///
+/// A server that predates PMS-1179 sends no list and one `button_label`; that
+/// becomes a single option naming no provider, which is the request every
+/// client sent before the choice existed. No labels at all means nothing to
+/// offer, and the caller renders no button rather than one that cannot work.
+pub(crate) fn pay_options(
+    providers: &[RemotePaymentProvider],
+    button_label: Option<&str>,
+) -> Vec<PayOption> {
+    let named: Vec<PayOption> = providers
+        .iter()
+        .filter(|p| !p.provider.trim().is_empty() && !p.label.trim().is_empty())
+        .map(|p| PayOption {
+            provider: Some(p.provider.clone()),
+            label: p.label.clone(),
+        })
+        .collect();
+    if !named.is_empty() {
+        return named;
+    }
+    match button_label.map(str::trim).filter(|l| !l.is_empty()) {
+        Some(label) => vec![PayOption {
+            provider: None,
+            label: label.to_string(),
+        }],
+        None => Vec::new(),
+    }
 }
 
 /// MAPPS-668 (mokosh-invoices P1c): body sent to POST /invoices/{id}/pay.
@@ -1149,6 +1228,11 @@ struct PaymentReadiness {
 struct PayInvoiceBody {
     success_url: String,
     cancel_url: String,
+    /// MAPPS-771: which provider the customer pressed. Omitted entirely when
+    /// there is nothing to choose between, so the request stays byte-identical
+    /// to what the server has always accepted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
 }
 
 /// MAPPS-668: what the server returns from POST /invoices/{id}/pay.
@@ -1603,11 +1687,15 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     };
     let gateway_ready = readiness.as_ref().is_some_and(|r| r.gateway_ready);
     let invoice_payable = readiness.as_ref().is_some_and(|r| r.invoice_payable);
-    let pay_button_label = readiness
+    // MAPPS-771: one button per connected provider. An older server sends one
+    // label and no list, which becomes a single unnamed option.
+    let pay_choices = readiness
         .as_ref()
-        .and_then(|r| r.button_label.clone())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "Pay Now".to_string());
+        .map(|r| pay_options(&r.providers, r.button_label.as_deref()))
+        .unwrap_or_default();
+    // Kept for the case where readiness has not landed yet: the button still
+    // needs words on it, and "Pay Now" is what it said before any of this.
+    let pay_fallback_label = "Pay Now".to_string();
     let pay_err = pay_error.read().clone();
     let is_paid = status == "paid";
 
@@ -1718,89 +1806,112 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                 // loop and the splash below.
                 if can_pay && !is_paid {
                     if invoice_payable {
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            loading: *pay_saving.read(),
-                            disabled: !can_mutate || !gateway_ready || *pay_saving.read(),
-                            title: if !can_mutate {
-                                Some("Can't start a payment while the server is unreachable".to_string())
-                            } else if !gateway_ready {
-                                Some("Your MSP has not connected an online payment provider yet. Contact them to arrange payment.".to_string())
-                            } else {
-                                None
-                            },
-                            onclick: move |_| {
-                                if *pay_saving.read() {
-                                    return;
-                                }
-                                pay_error.set(String::new());
-                                pay_saving.set(true);
-                                let id = id_for_pay.clone();
-                                spawn(async move {
-                                    #[cfg(feature = "app")]
-                                    {
-                                        let origin = crate::platform::location::origin().unwrap_or_default();
-                                        // MAPPS-762: the provider sends the
-                                        // customer back here after they pay,
-                                        // so the path is taken FROM THE ROUTER
-                                        // rather than typed. It used to read
-                                        // `/portal/invoices/{id}`, a route
-                                        // retired with the customer-portal
-                                        // family, so a successful payment
-                                        // landed the customer on the 404 page
-                                        // holding a charged card. A rename of
-                                        // this route now moves the return URL
-                                        // with it.
-                                        let path = Route::InvoiceDetail { id: id.clone() }.to_string();
-                                        let body = PayInvoiceBody {
-                                            success_url: format!("{origin}{path}?paid=1"),
-                                            cancel_url: format!("{origin}{path}"),
-                                        };
-                                        match crate::hooks::fetch::api::post_authed_any_typed::<PayInvoiceResp, _>(
-                                            &format!("/invoices/{id}/pay"),
-                                            &body,
-                                        ).await {
-                                            Ok(resp) if !resp.checkout_url.is_empty() => {
-                                                #[cfg(target_arch = "wasm32")]
+                        // MAPPS-771: one button per provider the tenant has
+                        // connected. With one connected this renders exactly
+                        // what it always did; with two the customer chooses,
+                        // and the choice rides on the pay request.
+                        for option in pay_options_for_render(&pay_choices, &pay_fallback_label) {
+                            {
+                                // Per button, because each closure needs its
+                                // own copies: the invoice id and the provider
+                                // this button pays through.
+                                let id_for_pay = id_for_pay.clone();
+                                let chosen_provider = option.provider.clone();
+                                let label = option.label.clone();
+                                rsx! {
+                                    Button {
+                                        key: "{label}",
+                                        variant: ButtonVariant::Primary,
+                                        loading: *pay_saving.read(),
+                                        disabled: !can_mutate || !gateway_ready || *pay_saving.read(),
+                                        title: if !can_mutate {
+                                            Some("Can't start a payment while the server is unreachable".to_string())
+                                        } else if !gateway_ready {
+                                            Some("Your MSP has not connected an online payment provider yet. Contact them to arrange payment.".to_string())
+                                        } else {
+                                            None
+                                        },
+                                        onclick: move |_| {
+                                            if *pay_saving.read() {
+                                                return;
+                                            }
+                                            pay_error.set(String::new());
+                                            pay_saving.set(true);
+                                            let id = id_for_pay.clone();
+                                            // MAPPS-771: captured per button, so the
+                                            // request names the one that was pressed.
+                                            let chosen_provider = chosen_provider.clone();
+                                            spawn(async move {
+                                                #[cfg(feature = "app")]
                                                 {
-                                                    if let Some(win) = web_sys::window() {
-                                                        let _ = win.location().replace(&resp.checkout_url);
-                                                        return;
+                                                    let origin = crate::platform::location::origin().unwrap_or_default();
+                                                    // MAPPS-762: the provider sends the
+                                                    // customer back here after they pay,
+                                                    // so the path is taken FROM THE ROUTER
+                                                    // rather than typed. It used to read
+                                                    // `/portal/invoices/{id}`, a route
+                                                    // retired with the customer-portal
+                                                    // family, so a successful payment
+                                                    // landed the customer on the 404 page
+                                                    // holding a charged card. A rename of
+                                                    // this route now moves the return URL
+                                                    // with it.
+                                                    let path = Route::InvoiceDetail { id: id.clone() }.to_string();
+                                                    let body = PayInvoiceBody {
+                                                        success_url: format!("{origin}{path}?paid=1"),
+                                                        cancel_url: format!("{origin}{path}"),
+                                                        // MAPPS-771: the button the
+                                                        // customer actually pressed.
+                                                        provider: chosen_provider.clone(),
+                                                    };
+                                                    match crate::hooks::fetch::api::post_authed_any_typed::<PayInvoiceResp, _>(
+                                                        &format!("/invoices/{id}/pay"),
+                                                        &body,
+                                                    ).await {
+                                                        Ok(resp) if !resp.checkout_url.is_empty() => {
+                                                            #[cfg(target_arch = "wasm32")]
+                                                            {
+                                                                if let Some(win) = web_sys::window() {
+                                                                    let _ = win.location().replace(&resp.checkout_url);
+                                                                    return;
+                                                                }
+                                                            }
+                                                            #[cfg(not(target_arch = "wasm32"))]
+                                                            {
+                                                                // Desktop shell has no
+                                                                // location redirect; the
+                                                                // provider checkout is
+                                                                // browser-only, so a
+                                                                // portal contact on the
+                                                                // desktop app hits this
+                                                                // path and is told to open
+                                                                // the portal in a browser.
+                                                                let _ = &resp;
+                                                            }
+                                                            pay_error.set(
+                                                                "Payment checkout is only available in the web portal. Open your portal in a browser to pay.".to_string(),
+                                                            );
+                                                        }
+                                                        Ok(_) => {
+                                                            pay_error.set(
+                                                                "Payment provider returned an empty response. Try again.".to_string(),
+                                                            );
+                                                        }
+                                                        Err(err) => {
+                                                            pay_error.set(format!(
+                                                                "Could not start payment: {}",
+                                                                err.user_message()
+                                                            ));
+                                                        }
                                                     }
                                                 }
-                                                #[cfg(not(target_arch = "wasm32"))]
-                                                {
-                                                    // Desktop shell has no
-                                                    // location redirect; the
-                                                    // provider checkout is
-                                                    // browser-only, so a
-                                                    // portal contact on the
-                                                    // desktop app hits this
-                                                    // path and is told to open
-                                                    // the portal in a browser.
-                                                    let _ = &resp;
-                                                }
-                                                pay_error.set(
-                                                    "Payment checkout is only available in the web portal. Open your portal in a browser to pay.".to_string(),
-                                                );
-                                            }
-                                            Ok(_) => {
-                                                pay_error.set(
-                                                    "Payment provider returned an empty response. Try again.".to_string(),
-                                                );
-                                            }
-                                            Err(err) => {
-                                                pay_error.set(format!(
-                                                    "Could not start payment: {}",
-                                                    err.user_message()
-                                                ));
-                                            }
-                                        }
+                                                pay_saving.set(false);
+                                            });
+                                        },
+                                        "{label}"
                                     }
-                                    pay_saving.set(false);
-                                });
-                            },
-                            "{pay_button_label}"
+                                }
+                            }
                         }
                     }
                 }
@@ -6695,6 +6806,87 @@ mod invoice_tax_tests {
         assert_eq!(tax_label(Some("")), "Tax");
         assert_eq!(tax_label(None), "Tax");
         assert_eq!(tax_label(Some("n/a")), "Tax");
+    }
+}
+
+/// MAPPS-771: which Pay buttons an invoice offers.
+#[cfg(test)]
+mod pay_option_tests {
+    use super::{pay_options, pay_options_for_render, RemotePaymentProvider};
+
+    fn remote(provider: &str, label: &str) -> RemotePaymentProvider {
+        RemotePaymentProvider {
+            provider: provider.to_string(),
+            label: label.to_string(),
+        }
+    }
+
+    /// Two connected providers give two buttons, in the server's order, each
+    /// naming the provider it pays through so the request can say which one
+    /// was pressed.
+    #[test]
+    fn each_connected_provider_gets_its_own_button() {
+        let options = pay_options(
+            &[
+                remote("paypal", "Pay with PayPal"),
+                remote("stripe", "Pay with card"),
+            ],
+            Some("Pay with PayPal"),
+        );
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0].provider.as_deref(), Some("paypal"));
+        assert_eq!(options[0].label, "Pay with PayPal");
+        assert_eq!(options[1].provider.as_deref(), Some("stripe"));
+    }
+
+    /// A server that predates PMS-1179 sends one label and no list. That
+    /// becomes a single button naming NO provider, which is the request every
+    /// client sent before the choice existed, so an old server and a new
+    /// client still transact.
+    #[test]
+    fn an_older_server_still_gets_one_working_button() {
+        let options = pay_options(&[], Some("Pay with card"));
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].provider, None);
+        assert_eq!(options[0].label, "Pay with card");
+    }
+
+    /// Nothing to offer is no button, not a button that cannot work.
+    #[test]
+    fn no_labels_means_no_buttons() {
+        assert!(pay_options(&[], None).is_empty());
+        assert!(pay_options(&[], Some("   ")).is_empty());
+    }
+
+    /// A malformed entry is dropped rather than rendered: a button with no
+    /// label is invisible, and one naming no provider would pay through
+    /// whichever gateway the server resolved, which is not what the customer
+    /// pressed.
+    #[test]
+    fn an_incomplete_entry_is_not_offered() {
+        let options = pay_options(&[remote("", "Pay with card"), remote("paypal", "  ")], None);
+        assert!(options.is_empty(), "{options:?}");
+    }
+
+    /// Before readiness lands there is still a button, because one that
+    /// appears late reads as a broken page; it carries the same words this
+    /// page used before any of this.
+    #[test]
+    fn the_pending_state_keeps_one_button() {
+        let rendered = pay_options_for_render(&[], "Pay Now");
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0].label, "Pay Now");
+        assert_eq!(rendered[0].provider, None);
+    }
+
+    /// Once readiness lands, the fallback is not mixed in with the real ones.
+    #[test]
+    fn resolved_choices_replace_the_fallback() {
+        let choices = pay_options(&[remote("stripe", "Pay with card")], None);
+        let rendered = pay_options_for_render(&choices, "Pay Now");
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0].provider.as_deref(), Some("stripe"));
+        assert_eq!(rendered[0].label, "Pay with card");
     }
 }
 
