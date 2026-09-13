@@ -760,6 +760,11 @@ struct InvoiceDetail {
     company_name: Option<String>,
     #[serde(default)]
     billing_contact_id: Option<uuid::Uuid>,
+    /// MAPPS-768 / PMS-1173: who the invoice is billed to, by name. The
+    /// contact plane gets no link to the staff contact page, so the name is
+    /// the whole answer there. `None` against a server that predates it.
+    #[serde(default)]
+    billing_contact_name: Option<String>,
     #[serde(default)]
     status: String,
     #[serde(default)]
@@ -2186,6 +2191,10 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "View company".to_string());
                 let billing_contact_id = inv.billing_contact_id.map(|c| c.to_string());
+                // MAPPS-768 / PMS-1173: the name, for the contact plane, which
+                // gets no link to follow. Empty against a server that predates
+                // the field, and the cell then renders a dash.
+                let billing_contact_name = inv.billing_contact_name.clone().unwrap_or_default();
                 let emailed = inv
                     .emailed_to
                     .as_deref()
@@ -2453,9 +2462,19 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                         div { class: "flex justify-between",
                                             dt { class: "text-muted", "Company" }
                                             dd {
-                                                Link {
-                                                    to: Route::CompanyDetail { id: cid.clone() },
-                                                    class: "text-accent hover:opacity-90",
+                                                // MAPPS-768: same reason as the
+                                                // billing contact below. The
+                                                // company page is staff-only,
+                                                // and it is the customer's own
+                                                // company, so the name is all
+                                                // there is to say.
+                                                if staff_only {
+                                                    Link {
+                                                        to: Route::CompanyDetail { id: cid.clone() },
+                                                        class: "text-accent hover:opacity-90",
+                                                        "{company_name}"
+                                                    }
+                                                } else {
                                                     "{company_name}"
                                                 }
                                             }
@@ -2479,14 +2498,34 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                             }
                                         }
                                     }
+                                    // MAPPS-768: a portal customer was offered
+                                    // "View contact", which is the STAFF
+                                    // contacts page. Following it landed them
+                                    // on "Contact not found" with Edit and
+                                    // Delete buttons, because the guard's
+                                    // staff-only block reads the browser
+                                    // pathname in a LAYOUT, and a layout does
+                                    // not re-render when a link inside it is
+                                    // clicked. The block still catches a typed
+                                    // URL; not offering the link is what makes
+                                    // it unreachable by hand.
                                     if let Some(bcid) = billing_contact_id.clone() {
                                         div { class: "flex justify-between",
                                             dt { class: "text-muted", "Billing Contact" }
                                             dd {
-                                                Link {
-                                                    to: Route::ContactDetail { id: bcid.clone() },
-                                                    class: "text-accent hover:opacity-90",
-                                                    "View contact"
+                                                if staff_only {
+                                                    Link {
+                                                        to: Route::ContactDetail { id: bcid.clone() },
+                                                        class: "text-accent hover:opacity-90",
+                                                        "View contact"
+                                                    }
+                                                } else if !billing_contact_name.is_empty() {
+                                                    // The customer already knows who they are;
+                                                    // the name is the useful half and the only
+                                                    // half they can act on.
+                                                    "{billing_contact_name}"
+                                                } else {
+                                                    span { class: "text-subtle", "-" }
                                                 }
                                             }
                                         }
