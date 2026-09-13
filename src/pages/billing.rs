@@ -1423,6 +1423,12 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     // resource restarts until the Stripe webhook has landed the
     // payment. The loop always runs; it no-ops when `is_paid_landing`
     // is false so the hook count stays stable.
+    // MAPPS-772: whether the wait is over. `is_paid_landing` reads the
+    // boot-time query snapshot and stays true for the life of the page, so
+    // without this the "Processing your payment" arm below kept matching after
+    // the budget ran out and the spinner span forever. A customer who had just
+    // paid sat on it indefinitely with nothing saying what had happened.
+    let mut poll_expired = use_signal(|| false);
     use_future(move || async move {
         if !is_paid_landing {
             return;
@@ -1431,6 +1437,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
             crate::platform::timer::sleep_ms(2_000).await;
             poll_tick.with_mut(|t| *t += 1);
         }
+        poll_expired.set(true);
     });
 
     let snap = invoice_resource.read_unchecked();
@@ -1446,6 +1453,13 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     // loaded, so the read never ran and the preview always reported the
     // contact as having no address.
     let contact_resource = use_resource(move || async move {
+        // MAPPS-772: staff only. `/contacts/contacts/{id}` is a staff route,
+        // and this fetch is for the staff email preview, so on the portal
+        // plane it 401d on every render - and once per poll tick during the
+        // post-payment wait, which is what filled the customer's console.
+        if !staff_only {
+            return None;
+        }
         let id = invoice_resource
             .read_unchecked()
             .clone()
@@ -1460,7 +1474,13 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         .inspect_err(|e| tracing::warn!("invoice billing contact load failed for {id}: {e}"))
         .ok()
     });
-    let gateway_resource = use_resource(|| async {
+    let gateway_resource = use_resource(move || async move {
+        // MAPPS-772: staff only, for the same reason. A customer learns
+        // whether they can pay from `payment-readiness`, which serves both
+        // planes; `/payment-gateways` is finance-gated and 401s for them.
+        if !staff_only {
+            return None;
+        }
         let _gen = crate::hooks::fetch::active_tenant_generation();
         // "no gateway is live" and "the gateway list did not load" both hide
         // the pay affordance, so each says which it is.
@@ -1520,7 +1540,13 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     // through a credit note (MAPPS-638, the Credit Notes card). Say so inline so the
     // missing actions read as intentional rather than broken. Draft / pending
     // show nothing here (their actions, including Void, are available above).
-    let frozen_note = locked_invoice_note(status.as_str());
+    // MAPPS-772: the locked-invoice note speaks to the MSP ("sent to your
+    // customer", "Record a payment", "write it off"), and every action it
+    // names is staff-only. A customer was being told to write off their own
+    // invoice.
+    let frozen_note = staff_only
+        .then(|| locked_invoice_note(status.as_str()))
+        .flatten();
     let pay_company_id = invoice
         .as_ref()
         .and_then(|i| i.company_id)
@@ -2144,6 +2170,17 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                 "{note}"
             }
         }
+        // MAPPS-772: the customer came back from the provider, we waited, and
+        // the payment has still not reached the invoice. Saying nothing leaves
+        // them looking at an unpaid invoice they know they paid, which is the
+        // moment someone pays twice.
+        if is_paid_landing && poll_expired() && status != "paid" {
+            div {
+                role: "status",
+                class: "mb-3 text-xs text-muted bg-surface-2 border border-line rounded-md px-3 py-2",
+                "Your payment has not reached this invoice yet. If you completed it, this usually settles within a few minutes: reload this page to check. Do not pay again; contact us if it has not appeared by tomorrow."
+            }
+        }
 
         // MAPPS-539: Send is a one-way door that emails the client, and the
         // button alone cannot say so. Since PMS-991 and PMS-992 the rule is
@@ -2229,7 +2266,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                     }
                 }
             },
-            Some(Some(inv)) if is_paid_landing && inv.status != "paid" => rsx! {
+            Some(Some(inv)) if is_paid_landing && !poll_expired() && inv.status != "paid" => rsx! {
                 // MAPPS-669 (P1d): post-checkout splash. The Stripe /
                 // PayPal webhook writes the payment; until the tick
                 // catches up we keep the invoice body hidden so the
@@ -6197,6 +6234,44 @@ mod provider_setup_tests {
 }
 
 /// MAPPS-762: where a payment provider returns the customer.
+/// MAPPS-772: the post-payment wait ends, and says so.
+#[cfg(test)]
+mod paid_landing_tests {
+    use super::locked_invoice_note;
+
+    /// The wait is bounded in the loop (15 ticks of 2s), and the arm that
+    /// renders the spinner has to be bounded by the same thing. `is_paid_landing`
+    /// reads a boot-time snapshot and never goes false, so without a separate
+    /// expiry signal the spinner outlives its own polling - which is what a
+    /// customer sat on after paying with PayPal.
+    #[test]
+    fn the_wait_is_bounded_in_the_source_that_renders_it() {
+        let source = include_str!("billing.rs");
+        assert!(
+            source.contains("poll_expired.set(true);"),
+            "the polling loop must record that its budget is spent"
+        );
+        assert!(
+            source.contains("is_paid_landing && !poll_expired() && inv.status != \"paid\""),
+            "the processing arm must stop matching once the budget is spent"
+        );
+    }
+
+    /// Every action the locked-invoice note names - record a payment, write it
+    /// off, issue a credit note - is staff-only, and it addresses the MSP
+    /// about "your customer". It was rendering on the customer's own invoice.
+    #[test]
+    fn the_locked_note_is_written_for_the_msp_not_the_customer() {
+        let sent = locked_invoice_note("sent").expect("a sent invoice is locked");
+        assert!(sent.contains("your customer"), "{sent}");
+        let source = include_str!("billing.rs");
+        assert!(
+            source.contains("let frozen_note = staff_only"),
+            "the note must be gated on the staff plane"
+        );
+    }
+}
+
 #[cfg(test)]
 mod checkout_return_tests {
     use crate::Route;
