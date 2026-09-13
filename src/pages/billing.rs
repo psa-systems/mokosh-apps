@@ -1169,6 +1169,21 @@ pub(crate) struct PayOption {
     pub(crate) label: String,
 }
 
+/// MAPPS-774: whether THIS Pay button is the one starting a payment.
+///
+/// One flag used to answer both "a payment is starting" and "this button is
+/// starting it", which was the same fact while there was one button. With one
+/// button per connected provider it is two facts, and reading the first as the
+/// second spun every button at once - a page that looks like it is starting a
+/// payment through both providers.
+///
+/// Identified by position rather than by provider or label: the provider is
+/// absent against a server that predates PMS-1179, and two providers may carry
+/// the same admin-set label, so neither identifies a button.
+pub(crate) fn pay_button_loading(pending: Option<usize>, index: usize) -> bool {
+    pending == Some(index)
+}
+
 /// MAPPS-771: what to render right now, including before readiness lands.
 ///
 /// An empty list would mean no button at all while the readiness fetch is in
@@ -1414,6 +1429,12 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     // surfaces a failure inline the way `action_error` and `pdf_error`
     // do.
     let mut pay_saving = use_signal(|| false);
+    // MAPPS-774: WHICH button was pressed. With one Pay button, "a payment is
+    // starting" and "this button is starting it" were the same fact and one
+    // flag said both. MAPPS-771 made the button one per connected provider and
+    // kept the one flag, so pressing Pay with PayPal spun the card button too,
+    // which reads as the page starting two payments.
+    let mut pay_pending = use_signal(|| None::<usize>);
     let mut pay_error = use_signal(String::new);
     let id_for_pay = props.id.clone();
 
@@ -1836,7 +1857,10 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         // connected. With one connected this renders exactly
                         // what it always did; with two the customer chooses,
                         // and the choice rides on the pay request.
-                        for option in pay_options_for_render(&pay_choices, &pay_fallback_label) {
+                        for (index, option) in pay_options_for_render(&pay_choices, &pay_fallback_label)
+                            .into_iter()
+                            .enumerate()
+                        {
                             {
                                 // Per button, because each closure needs its
                                 // own copies: the invoice id and the provider
@@ -1844,11 +1868,25 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                 let id_for_pay = id_for_pay.clone();
                                 let chosen_provider = option.provider.clone();
                                 let label = option.label.clone();
+                                // MAPPS-774: the position in the rendered list
+                                // rather than the provider or the label. The
+                                // provider is absent against a server that
+                                // predates PMS-1179, and two providers may
+                                // carry the same admin-set label, so neither
+                                // identifies a button; the position always
+                                // does, and the list is derived fresh from the
+                                // same readiness on every render.
+                                let is_pending = pay_button_loading(*pay_pending.read(), index);
                                 rsx! {
                                     Button {
                                         key: "{label}",
                                         variant: ButtonVariant::Primary,
-                                        loading: *pay_saving.read(),
+                                        // Only the pressed button spins. Every
+                                        // button is still disabled while a
+                                        // payment is starting, because two
+                                        // checkout sessions for one invoice is
+                                        // not a thing to offer.
+                                        loading: is_pending,
                                         disabled: !can_mutate || !gateway_ready || *pay_saving.read(),
                                         title: if !can_mutate {
                                             Some("Can't start a payment while the server is unreachable".to_string())
@@ -1863,6 +1901,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                             }
                                             pay_error.set(String::new());
                                             pay_saving.set(true);
+                                            pay_pending.set(Some(index));
                                             let id = id_for_pay.clone();
                                             // MAPPS-771: captured per button, so the
                                             // request names the one that was pressed.
@@ -1932,6 +1971,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                                     }
                                                 }
                                                 pay_saving.set(false);
+                                                pay_pending.set(None);
                                             });
                                         },
                                         "{label}"
@@ -7279,6 +7319,21 @@ mod pay_option_tests {
         assert_eq!(rendered.len(), 1);
         assert_eq!(rendered[0].label, "Pay Now");
         assert_eq!(rendered[0].provider, None);
+    }
+
+    /// MAPPS-774: pressing one Pay button spins that button and no other.
+    ///
+    /// Two buttons spinning reads as the page starting two payments for one
+    /// invoice, which is the thing the disabled state beside this exists to
+    /// prevent.
+    #[test]
+    fn only_the_pressed_button_shows_its_payment_starting() {
+        use super::pay_button_loading;
+        assert!(pay_button_loading(Some(1), 1));
+        assert!(!pay_button_loading(Some(1), 0));
+        // Nothing pressed, nothing spinning - including the single button the
+        // pending state renders before readiness lands.
+        assert!(!pay_button_loading(None, 0));
     }
 
     /// Once readiness lands, the fallback is not mixed in with the real ones.
