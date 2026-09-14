@@ -2298,6 +2298,9 @@ pub mod api {
         if (200..300).contains(&status) {
             return Ok(());
         }
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
         let body_text = resp.text().await.unwrap_or_default();
         let (message, fields, envelope_code, envelope_body) =
             match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
