@@ -405,6 +405,18 @@ struct GrantPortalAccessBody {
     role_ids: Vec<uuid::Uuid>,
 }
 
+/// MAPPS-775 / PMS-1187: `POST /contacts/contacts/access-requests/{id}/resolve`.
+///
+/// A typed body rather than a `json!` literal, which the MAPPS-685 guard on
+/// this page enforces: a literal compiles clean against any DTO, so the field
+/// name and the server's are only ever in step by luck.
+#[derive(Debug, Serialize)]
+struct ResolveAccessRequestBody {
+    /// `true` grants the area's built-in role and closes the request; `false`
+    /// closes it without granting.
+    grant: bool,
+}
+
 /// `POST /contacts/companies` sent by the contact page's "Create this company"
 /// recovery (MAPPS-484), which has a typed name and nothing else.
 #[derive(Debug, Serialize)]
@@ -3643,7 +3655,7 @@ fn CompanyPortalAccessCard(
                                                         Button {
                                                             variant: ButtonVariant::Secondary,
                                                             disabled: true,
-                                                            "Grant"
+                                                            "Invite"
                                                         }
                                                     } else {
                                                         Button {
@@ -3662,19 +3674,19 @@ fn CompanyPortalAccessCard(
                                                                         Ok(_) => {
                                                                             crate::hooks::toast::push_toast(
                                                                                 crate::components::AlertType::Success,
-                                                                                "Portal access granted. A setup email is on its way.",
+                                                                                "Invitation sent.",
                                                                             );
                                                                             roster.restart();
                                                                         }
                                                                         Err(err) => crate::hooks::toast::push_toast(
                                                                             crate::components::AlertType::Error,
-                                                                            format!("Could not grant portal access: {err}"),
+                                                                            format!("Could not send the invitation: {err}"),
                                                                         ),
                                                                     }
                                                                     toggling.write().remove(&contact_id);
                                                                 });
                                                             },
-                                                            "Grant"
+                                                            "Invite"
                                                         }
                                                     }
                                                 }
@@ -6469,39 +6481,20 @@ fn company_link_entries(rows: &[CompanyRow]) -> Result<Vec<ContactCompanyLinkBod
     Ok(entries)
 }
 
-/// MAPPS-484: the contact form's two company paths, each named for what it
-/// does. The old freeform toggle read "+ Add Company", which is a create
-/// label on a control that creates nothing; the picker's own "+ New company"
-/// button is the create affordance now.
-const FREEFORM_TOGGLE_LABEL: &str = "Enter a name without creating a company";
-const LINK_COMPANY_TOGGLE_LABEL: &str = "Link an existing company";
-
 /// MAPPS-484: marks a company name that is a typed string rather than a
 /// `companies` row, so link colour is not the only signal.
+///
+/// MAPPS-757 took the path that CREATES one of these off the contact form, so
+/// this note now only ever describes a name saved by an earlier release. Both
+/// places that render it sit beside the one click that turns the name into a
+/// real company.
 const FREEFORM_COMPANY_NOTE: &str = "Typed name - not a company record.";
 
-/// MAPPS-481: the label on the control that appends a company LINK. Now that
-/// a contact holds several companies, "add" means "add another company" and
-/// nothing else; the picker's own "+ New company" button stays the only
-/// control on the form that creates a `companies` row (MAPPS-484).
-fn add_company_label(linked: usize) -> &'static str {
-    if linked == 0 {
-        "Add a company"
-    } else {
-        "Add another company"
-    }
-}
-
-/// MAPPS-484: the consequence of the typed-name path, stated in the value the
-/// user typed. Empty while nothing has been typed, so the form renders no note.
-fn freeform_company_note(value: &str) -> String {
-    let name = value.trim();
-    if name.is_empty() {
-        String::new()
-    } else {
-        format!("Saved as a typed name. {name} will not appear under Companies.")
-    }
-}
+/// MAPPS-757: what the one company control on the contact form does, said
+/// once under the box. Search, pick a match, or create the company you typed:
+/// three outcomes of one interaction rather than three controls.
+const COMPANY_SEARCH_HELP: &str =
+    "Search for the company. Pick a match to link it, or create it under the name you typed.";
 
 #[derive(Clone, Debug, PartialEq)]
 enum ContactFormMode {
@@ -6531,7 +6524,18 @@ fn ContactForm(props: ContactFormProps) -> Element {
             initial.contact_type.clone()
         }
     });
-    let _company_name = use_signal(|| initial.company_name.clone());
+    // MAPPS-757: a typed company name saved by an earlier release, kept so
+    // that editing any other field cannot silently drop it. The form offers
+    // no way to enter a NEW one; what it offers is keeping or removing the
+    // one already on the record, and the detail page's "Create this company"
+    // is the way to turn it into a real row.
+    let mut legacy_company_name = use_signal(|| {
+        if initial.companies.is_empty() {
+            initial.company_name.trim().to_string()
+        } else {
+            String::new()
+        }
+    });
     // MAPPS-396 / PMS-729: single-shot "create contact + grant portal
     // access" checkbox. Only wired in Create mode (Edit uses the
     // dedicated ContactPortalCard toggle on the detail page, which the
@@ -6545,23 +6549,8 @@ fn ContactForm(props: ContactFormProps) -> Element {
     let mut phones = use_signal(|| initial.phones.clone());
     let mut companies = use_signal(|| initial.companies.clone());
     let mut notes = use_signal(|| initial.notes.clone());
-    // MAPPS-481: the "+ Add another company" picker, shown only while the user
-    // is adding one, and the inline note for picking one already in the list.
-    let mut adding_company = use_signal(|| false);
+    // MAPPS-481: the inline note for picking a company already in the list.
     let mut company_add_note = use_signal(String::new);
-    // MAPPS-251: a contact's company can be a freeform typed name instead of an
-    // FK-linked CRM company. MAPPS-481: that path is the no-linked-company
-    // case, so it opens only when the loaded contact links none and carries a
-    // typed name.
-    let initial_freeform = initial.companies.is_empty() && !initial.company_name.trim().is_empty();
-    let mut freeform_mode = use_signal(|| initial_freeform);
-    let mut freeform_company = use_signal(|| {
-        if initial_freeform {
-            initial.company_name.clone()
-        } else {
-            String::new()
-        }
-    });
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
     // Per-field inline validation errors (MAPPS-177, MAPPS-265). Phone errors
@@ -6642,16 +6631,11 @@ fn ContactForm(props: ContactFormProps) -> Element {
             guard.note_invalid(Some("contact_type"));
         }
 
-        // MAPPS-251 / MAPPS-481: company is optional - any number of linked CRM
-        // companies OR a freeform typed name, never both (the server 422s on
-        // the pair). The XOR error has no inline slot, so it goes to the
-        // banner; note_invalid blocks and ties focus to the freeform input.
+        // MAPPS-251 / MAPPS-481: company is optional - any number of linked
+        // companies, or nothing. MAPPS-757: the form can no longer produce the
+        // typed-name-plus-link pair the server 422s on, because linking one
+        // drops the carried-over name (see the picker's `onselect` below).
         let company_rows = companies.read().clone();
-        let freeform_name = freeform_company.read().trim().to_string();
-        if !company_rows.is_empty() && !freeform_name.is_empty() {
-            error.set("Link companies or type a name, not both.".to_string());
-            guard.note_invalid(Some("company_name_freeform"));
-        }
 
         // MAPPS-481: every phone row is validated and every failure lands in
         // that row's own slot before the submit bails once.
@@ -6678,7 +6662,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
             Ok(entries) => Some(entries),
             Err(message) => {
                 error.set(message);
-                guard.note_invalid(Some("company_name_freeform"));
+                guard.note_invalid(Some("company_search"));
                 None
             }
         };
@@ -6707,13 +6691,15 @@ fn ContactForm(props: ContactFormProps) -> Element {
             contact_type: type_value,
             phones: phone_entries,
             companies: company_entries,
-            // MAPPS-251: the freeform typed name is the no-linked-company case.
-            // Sent as `""` whenever a company is linked, which clears any name
-            // stored by an earlier save (a link plus a name is a 422).
+            // MAPPS-251: the typed name is the no-linked-company case. Sent as
+            // `""` whenever a company is linked, which clears any name stored
+            // by an earlier save (a link plus a name is a 422). MAPPS-757: the
+            // only value this can carry now is one an earlier release stored,
+            // resent unchanged so that editing a phone number does not wipe it.
             company_name: if has_links {
                 String::new()
             } else {
-                freeform_name.clone()
+                legacy_company_name.read().trim().to_string()
             },
             notes: clearable_string(&notes.read()),
             create_portal_access,
@@ -6956,18 +6942,22 @@ fn ContactForm(props: ContactFormProps) -> Element {
                     }
                 }
 
-                // MAPPS-251: company is optional and can be entered two ways -
-                // link CRM companies (the picker) or type a name that creates
-                // no `companies` row. Switching modes clears the other mode's
-                // value so only one company source is ever submitted.
-                // MAPPS-484: the picker's own "+ New company" button is the
-                // visible create affordance and it really does create; the
-                // typed-name path is a secondary text link named for what it
-                // does, because the old "+ Add Company" button created nothing.
+                // MAPPS-757: one control. The search box is always there;
+                // picking a match links that company, and a query that matches
+                // nothing offers to create a company under exactly what was
+                // typed. The four affordances this replaces - "Add a company",
+                // "Link an existing company", "Enter a name without creating a
+                // company" and the picker's own "+ New company" button - all
+                // sounded like each other and three of them existed only to
+                // choose between paths the user should not have to know about.
+                //
                 // MAPPS-481: a contact can link several companies, one of them
-                // primary, each with its role at THAT company. The typed name
-                // is the no-linked-company case and is offered only while the
-                // list is empty.
+                // primary, each with its title at THAT company. Primary is a
+                // question only once there are two, so the control appears
+                // then; the first company linked is primary in silence, which
+                // is also what `company_link_entries` falls back to, so a
+                // contact can never end up with a mirror and no link
+                // (PMS-806 / PMS-1069).
                 fieldset { class: "space-y-2",
                     legend { class: "block text-sm font-medium text-content", "Companies" }
                     for (index, row) in company_rows.iter().cloned().enumerate() {
@@ -6980,7 +6970,17 @@ fn ContactForm(props: ContactFormProps) -> Element {
                                     label: "Remove company link".to_string(),
                                     class: "p-1 text-subtle hover:text-red-600 dark:hover:text-red-400".to_string(),
                                     onclick: move |_| {
-                                        companies.write().remove(index);
+                                        let mut rows = companies.write();
+                                        rows.remove(index);
+                                        // MAPPS-757: removing the primary link
+                                        // must not leave the list without one,
+                                        // or the radio would render with
+                                        // nothing checked while the save
+                                        // silently promoted the first row.
+                                        if !rows.is_empty() && !rows.iter().any(|r| r.is_primary) {
+                                            rows[0].is_primary = true;
+                                        }
+                                        drop(rows);
                                         company_add_note.set(String::new());
                                     },
                                     crate::components::TrashIcon { size: IconSize::Small }
@@ -6996,131 +6996,87 @@ fn ContactForm(props: ContactFormProps) -> Element {
                                     companies.write()[index].title = e.value();
                                 },
                             }
-                            label { class: "flex items-center gap-2 text-sm text-content",
-                                input {
-                                    r#type: "radio",
-                                    name: "company_primary",
-                                    checked: row.is_primary,
-                                    onchange: move |_| {
-                                        let mut rows = companies.write();
-                                        for (i, r) in rows.iter_mut().enumerate() {
-                                            r.is_primary = i == index;
-                                        }
+                            if company_rows.len() > 1 {
+                                label { class: "flex items-center gap-2 text-sm text-content",
+                                    input {
+                                        r#type: "radio",
+                                        name: "company_primary",
+                                        checked: row.is_primary,
+                                        onchange: move |_| {
+                                            let mut rows = companies.write();
+                                            for (i, r) in rows.iter_mut().enumerate() {
+                                                r.is_primary = i == index;
+                                            }
+                                        },
+                                    }
+                                    "Primary"
+                                }
+                            }
+                        }
+                    }
+                    // MAPPS-757: a typed name stored by an earlier release.
+                    // Shown so the person editing this contact can see what is
+                    // on the record and drop it deliberately, rather than
+                    // having it disappear on the first save of an unrelated
+                    // field. There is no way to type a new one: linking a
+                    // company is what the box below does.
+                    if company_rows.is_empty() && !legacy_company_name.read().trim().is_empty() {
+                        div { class: "rounded-md border border-line p-3 space-y-1",
+                            div { class: "flex items-center justify-between gap-3",
+                                span { class: "text-sm font-medium text-content", "{legacy_company_name}" }
+                                crate::components::IconButton {
+                                    label: "Remove this company name".to_string(),
+                                    class: "p-1 text-subtle hover:text-red-600 dark:hover:text-red-400".to_string(),
+                                    onclick: move |_| {
+                                        legacy_company_name.set(String::new());
+                                        company_add_note.set(String::new());
                                     },
+                                    crate::components::TrashIcon { size: IconSize::Small }
                                 }
-                                "Primary"
                             }
+                            p { class: "text-xs text-subtle", {FREEFORM_COMPANY_NOTE} }
                         }
                     }
-                    if *freeform_mode.read() {
-                        crate::components::Input {
-                            name: "company_name_freeform",
-                            value: freeform_company.read().clone(),
-                            oninput: move |e: FormEvent| freeform_company.set(e.value()),
-                        }
-                        // MAPPS-484: state the outcome in the user's own value
-                        // instead of the old "not linked to a CRM company record"
-                        // jargon. Empty until something is typed.
-                        if !freeform_company_note(&freeform_company.read()).is_empty() {
-                            p { class: "text-xs text-muted",
-                                {freeform_company_note(&freeform_company.read())}
+                    crate::components::CompanyPicker {
+                        value: String::new(),
+                        selected_id: None,
+                        // MAPPS-251: company is no longer mandatory; a contact
+                        // can be saved with no company at all.
+                        required: false,
+                        label: String::new(),
+                        // PMS-352 / MAPPS-653: the dropdown's create row is the
+                        // third outcome of the one interaction - it opens
+                        // seeded with what was typed, so a query that matches
+                        // nothing becomes the name of a real `companies` row.
+                        // Its own "+ New company" BUTTON stays off here: it
+                        // opens the same modal, which on this form made a
+                        // fourth control saying what the box already does.
+                        allow_inline_create: true,
+                        onselect: move |(id, name): (String, String)| {
+                            // Picking a company already linked is a no-op
+                            // that says so, not a duplicate row (the server
+                            // 422s on a repeated company_id anyway).
+                            if companies.read().iter().any(|c| c.company_id == id) {
+                                company_add_note.set(format!("{name} is already linked to this contact."));
+                                return;
                             }
-                        }
-                    } else if *adding_company.read() {
-                        crate::components::CompanyPicker {
-                            value: String::new(),
-                            selected_id: None,
-                            // MAPPS-251: company is no longer mandatory; a contact
-                            // can be saved with no company at all.
-                            required: false,
-                            label: String::new(),
-                            // PMS-352: keep the inline "+ Create new company"
-                            // affordance for first-time tenants with zero companies;
-                            // distinct from the freeform path, it materializes a real
-                            // `companies` row.
-                            allow_inline_create: true,
-                            // MAPPS-484: and surface it as a button beside the
-                            // input, so a user with nothing to search for does
-                            // not have to open the dropdown to find it.
-                            show_create_button: true,
-                            onselect: move |(id, name): (String, String)| {
-                                // Picking a company already linked is a no-op
-                                // that says so, not a duplicate row (the server
-                                // 422s on a repeated company_id anyway).
-                                if companies.read().iter().any(|c| c.company_id == id) {
-                                    company_add_note.set(format!("{name} is already linked to this contact."));
-                                    return;
-                                }
-                                let is_first = companies.read().is_empty();
-                                companies.write().push(CompanyRow {
-                                    company_id: id,
-                                    company_name: name,
-                                    title: String::new(),
-                                    is_primary: is_first,
-                                });
-                                // Linking a company clears the typed name: the
-                                // server rejects a link plus a freeform name.
-                                freeform_company.set(String::new());
-                                company_add_note.set(String::new());
-                                adding_company.set(false);
-                            },
-                            onclear: move |_| { company_add_note.set(String::new()); },
-                        }
+                            let is_first = companies.read().is_empty();
+                            companies.write().push(CompanyRow {
+                                company_id: id,
+                                company_name: name,
+                                title: String::new(),
+                                is_primary: is_first,
+                            });
+                            // Linking a company drops the carried-over typed
+                            // name: the server rejects a link plus a name.
+                            legacy_company_name.set(String::new());
+                            company_add_note.set(String::new());
+                        },
+                        onclear: move |_| { company_add_note.set(String::new()); },
                     }
+                    p { class: "text-xs text-muted", {COMPANY_SEARCH_HELP} }
                     if !company_add_note.read().is_empty() {
                         p { class: "text-xs text-muted", role: "status", "{company_add_note}" }
-                    }
-                    div { class: "flex flex-wrap items-center gap-3",
-                        if !*freeform_mode.read() {
-                            if *adding_company.read() {
-                                // The picker is open with nothing picked yet,
-                                // so there is a way back out of it.
-                                button {
-                                    r#type: "button",
-                                    class: "inline-flex items-center text-xs text-accent hover:opacity-90",
-                                    onclick: move |_| {
-                                        company_add_note.set(String::new());
-                                        adding_company.set(false);
-                                    },
-                                    "Don't add a company"
-                                }
-                            } else {
-                                Button {
-                                    variant: ButtonVariant::Secondary,
-                                    size: ButtonSize::Small,
-                                    onclick: move |_| {
-                                        company_add_note.set(String::new());
-                                        adding_company.set(true);
-                                    },
-                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                    {add_company_label(company_rows.len())}
-                                }
-                            }
-                        }
-                        // MAPPS-481: the typed name is what a contact has
-                        // INSTEAD of a link, so the path disappears once one
-                        // company is linked.
-                        if company_rows.is_empty() {
-                            button {
-                                r#type: "button",
-                                class: "inline-flex items-center text-xs text-accent hover:opacity-90",
-                                onclick: move |_| {
-                                    let next = !*freeform_mode.read();
-                                    if next {
-                                        adding_company.set(false);
-                                    } else {
-                                        freeform_company.set(String::new());
-                                    }
-                                    company_add_note.set(String::new());
-                                    freeform_mode.set(next);
-                                },
-                                if *freeform_mode.read() {
-                                    {LINK_COMPANY_TOGGLE_LABEL}
-                                } else {
-                                    {FREEFORM_TOGGLE_LABEL}
-                                }
-                            }
-                        }
                     }
                 }
 
@@ -7141,10 +7097,10 @@ fn ContactForm(props: ContactFormProps) -> Element {
                             }
                             div {
                                 span { class: "block text-sm font-medium text-content",
-                                    "Grant portal access"
+                                    "Invite to the portal"
                                 }
                                 p { class: "mt-1 text-xs text-muted",
-                                    "Emails this contact a link to set a password and sign in to the Client Portal. Requires an email address above."
+                                    "Emails them a link to set a password and sign in to your client portal. Needs the email address above."
                                 }
                             }
                         }
@@ -7994,6 +7950,224 @@ pub(crate) struct PortalRoleSummaryWire {
     pub(crate) contacts_count: Option<u32>,
 }
 
+/// MAPPS-757: the action is an invitation, not a grant of access.
+///
+/// What changed is the words and nothing else. The button said "Grant
+/// portal access", the modal's confirm said "Grant + send email", and the
+/// explanation was written from the server's side ("mints a random Company
+/// slug, assigns one or more portal roles, and emails the contact a
+/// magic-link setup URL"). None of that is what the MSP is doing: they are
+/// inviting their customer into the portal. The copy rule is MAPPS-755's -
+/// speak as the MSP to their customer, state the fact and stop.
+///
+/// The open question on that issue was whether an invitation could be
+/// issued WITHOUT sending an email, for a contact who is already in touch
+/// another way. The answer is no, and it stays no: the setup link is a
+/// 72-hour magic link (PMS-136) and the email is the only thing that
+/// carries it to the person, so an invitation that sends none leaves a
+/// contact holding access they cannot reach. Nothing here is a behaviour
+/// change, which is also why this card still calls the same
+/// `grant-portal-access` endpoint under its new label.
+/// MAPPS-764: what a portal role lets the customer DO, in their terms.
+///
+/// A role is stored as a capability list, and the picker showed only its name.
+/// An MSP setting the portal up for the first time had no way to tell which
+/// role lets a customer pay an invoice, and the obvious guess is wrong: paying
+/// is gated on the `invoices:pay` CAPABILITY, not on being the company's
+/// billing contact, which is a different thing with almost the same name.
+///
+/// Only the capabilities a customer would recognise are named, in a fixed
+/// order, because the point is to answer "what will this person be able to do"
+/// and not to enumerate a permission model at someone who did not ask for one.
+pub(crate) const ROLE_ABILITIES: &[(&str, &str)] = &[
+    ("invoices:pay", "pay invoices"),
+    ("invoices:read", "see invoices"),
+    ("quotes:accept", "accept quotes"),
+    ("quotes:read", "see quotes"),
+    ("tickets:write", "raise tickets"),
+    ("tickets:comment", "reply on tickets"),
+    ("tickets:read", "see tickets"),
+    ("contracts:read", "see contracts"),
+    ("assets:read", "see assets"),
+    ("projects:read", "see projects"),
+    ("kb:read", "read your knowledge base"),
+];
+
+/// How many abilities to name before summarising the rest. Four is what fits
+/// on one line beside a role name at the width this picker renders at.
+const ROLE_ABILITY_LIMIT: usize = 4;
+
+/// One sentence naming what `capabilities` lets a customer do.
+///
+/// Empty when a role carries nothing a customer would notice, so the caller
+/// renders no line rather than "Can ." - the PMS-1171 lesson applied to a
+/// sentence assembled here instead of in a template.
+pub(crate) fn role_summary(capabilities: &[String]) -> String {
+    let named: Vec<&str> = ROLE_ABILITIES
+        .iter()
+        .filter(|(cap, _)| capabilities.iter().any(|held| held == cap))
+        .map(|(_, phrase)| *phrase)
+        .collect();
+    if named.is_empty() {
+        return String::new();
+    }
+    let shown = &named[..named.len().min(ROLE_ABILITY_LIMIT)];
+    let rest = named.len() - shown.len();
+    let mut list = match shown {
+        [only] => (*only).to_string(),
+        [head @ .., last] => format!("{} and {last}", head.join(", ")),
+        [] => String::new(),
+    };
+    if rest > 0 {
+        list = format!("{list}, and {rest} more");
+    }
+    format!("Can {list}.")
+}
+
+/// MAPPS-775 / PMS-1187: one access request as the server sends it.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct AccessRequestWire {
+    id: uuid::Uuid,
+    #[serde(default)]
+    area: String,
+    #[serde(default)]
+    note: Option<String>,
+    /// `open`, `granted`, `declined` or `withdrawn`.
+    #[serde(default)]
+    status: String,
+}
+
+/// MAPPS-775: how one request reads on the contact record.
+///
+/// An open request is a question waiting on the MSP and says so; a resolved
+/// one is history and is stated flatly. Kept as a pure function because the
+/// distinction is the point: a list where "granted" and "waiting on you" look
+/// alike is a list nobody acts on.
+pub(crate) fn access_request_line(area: &str, status: &str) -> String {
+    match status {
+        "open" => format!("Asked to see {area}"),
+        "granted" => format!("Asked to see {area} - granted"),
+        "declined" => format!("Asked to see {area} - declined"),
+        "withdrawn" => format!("Asked to see {area} - withdrawn"),
+        other => format!("Asked to see {area} - {other}"),
+    }
+}
+
+/// MAPPS-775 / PMS-1187: what this contact has asked for, and the one press
+/// that answers it.
+///
+/// Granting from here assigns the area's role and closes the request in one
+/// action on the server. The alternative it replaces is "read the mail, find
+/// the contact, remember which role, edit it", where the step most likely to
+/// be skipped is the one that makes anything happen for the customer.
+#[component]
+fn AccessRequestPanel(contact_id: String) -> Element {
+    let id_for_resource = contact_id.clone();
+    let mut requests = use_resource(move || {
+        let id = id_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _roles_gen = crate::hooks::fetch::active_portal_roles_generation();
+            crate::hooks::fetch::list_or_empty(
+                "portal access request",
+                crate::hooks::fetch::api::get_authed::<Vec<AccessRequestWire>>(&format!(
+                    "/contacts/contacts/{id}/access-requests"
+                ))
+                .await,
+            )
+        }
+    });
+    let rows: Vec<AccessRequestWire> = requests.read_unchecked().clone().unwrap_or_default();
+    let mut resolving = use_signal(|| None::<uuid::Uuid>);
+    let mut error = use_signal(String::new);
+    let can_mutate = crate::hooks::use_can_mutate();
+
+    // Nothing asked for is the ordinary state and needs no words on a card
+    // that is already dense.
+    if rows.is_empty() {
+        return rsx! {};
+    }
+
+    rsx! {
+        div { class: "space-y-2 rounded-md border border-line p-3",
+            span { class: "text-xs font-medium text-content block", "Access requests" }
+            if !error.read().is_empty() {
+                p { class: "text-xs text-red-600 dark:text-red-300", "{error}" }
+            }
+            for request in rows {
+                {
+                    let request_id = request.id;
+                    let line = access_request_line(&request.area, &request.status);
+                    let note = request.note.clone().unwrap_or_default();
+                    let is_open = request.status == "open";
+                    let busy = *resolving.read() == Some(request_id);
+                    let mut resolve = move |grant: bool| {
+                        if resolving.read().is_some() {
+                            return;
+                        }
+                        resolving.set(Some(request_id));
+                        error.set(String::new());
+                        spawn(async move {
+                            #[cfg(feature = "app")]
+                            {
+                                let path = format!(
+                                    "/contacts/contacts/access-requests/{request_id}/resolve"
+                                );
+                                match crate::hooks::fetch::api::post_authed_typed::<
+                                    serde_json::Value,
+                                    _,
+                                >(
+                                    &path, &ResolveAccessRequestBody { grant }
+                                )
+                                .await
+                                {
+                                    Ok(_) => {
+                                        // The grant changed the contact's
+                                        // roles, so the badges beside this
+                                        // panel are stale too.
+                                        crate::hooks::fetch::bump_portal_roles_generation();
+                                        requests.restart();
+                                    }
+                                    Err(err) => error.set(format!(
+                                        "Could not answer this request: {}",
+                                        err.user_message()
+                                    )),
+                                }
+                            }
+                            resolving.set(None);
+                        });
+                    };
+                    rsx! {
+                        div { key: "{request_id}", class: "space-y-1",
+                            p { class: "text-xs text-content", "{line}" }
+                            if !note.is_empty() {
+                                p { class: "text-xs text-muted", "\"{note}\"" }
+                            }
+                            if is_open {
+                                div { class: "flex gap-2",
+                                    Button {
+                                        variant: ButtonVariant::Primary,
+                                        loading: busy,
+                                        disabled: !can_mutate || busy,
+                                        onclick: move |_| resolve(true),
+                                        "Grant"
+                                    }
+                                    Button {
+                                        variant: ButtonVariant::Secondary,
+                                        disabled: !can_mutate || busy,
+                                        onclick: move |_| resolve(false),
+                                        "Decline"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[component]
 fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
     let contact_id = props.contact_id.clone();
@@ -8126,7 +8300,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                     let toast_msg = if is_role_only_edit {
                         "Portal roles updated.".to_string()
                     } else {
-                        "Portal access granted. Setup email queued.".to_string()
+                        "Invitation sent.".to_string()
                     };
                     crate::hooks::toast::push_toast(
                         crate::components::AlertType::Success,
@@ -8159,11 +8333,11 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
             match crate::hooks::fetch::api::post_authed_no_content(&path).await {
                 Ok(()) => crate::hooks::toast::push_toast(
                     crate::components::AlertType::Success,
-                    "Setup email resent.".to_string(),
+                    "Invitation sent again.".to_string(),
                 ),
                 Err(err) => crate::hooks::toast::push_toast(
                     crate::components::AlertType::Error,
-                    format!("Could not resend invite: {err}"),
+                    format!("Could not send the invitation again: {err}"),
                 ),
             }
             mutating.set(false);
@@ -8253,13 +8427,19 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                     }
                     if !last_setup_link.read().is_empty() {
                         p { class: "text-xs text-muted break-all",
-                            span { class: "font-medium text-content", "Setup link (also emailed): " }
+                            span { class: "font-medium text-content", "Invitation link (also emailed): " }
                             code { class: "text-xs", "{last_setup_link}" }
                         }
                     }
                     p { class: "text-xs text-muted",
-                        "This contact can sign in to their client portal. The setup link is a 72h magic link; use Resend if the customer never received the email."
+                        "This contact can sign in to your client portal. The invitation link works for 72 hours; send it again if they never received it."
                     }
+                    // MAPPS-775 / PMS-1187: what this customer has asked to
+                    // see. The gap this closes was invisible from here: a
+                    // contact could be designated the billing contact, mailed
+                    // an invoice, and be unable to open it, with nothing on
+                    // this page saying so.
+                    AccessRequestPanel { contact_id: contact_id.clone() }
                     div { class: "flex flex-wrap gap-2",
                         Button {
                             variant: ButtonVariant::Secondary,
@@ -8274,7 +8454,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                             title: (!can_mutate).then(|| "Can't change portal access while the server is unreachable".to_string()),
                             loading: *mutating.read(),
                             onclick: resend_invite,
-                            "Resend setup email"
+                            "Resend invitation"
                         }
                         Button {
                             variant: ButtonVariant::Danger,
@@ -8293,7 +8473,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                         Badge { variant: BadgeVariant::Gray, "Not granted" }
                     }
                     p { class: "text-xs text-muted",
-                        "Granting portal access mints a random Company slug (if this Company has none yet), assigns one or more portal roles, and emails the contact a magic-link setup URL. Contact must have an email + be linked to a Company."
+                        "Emails this contact an invitation to set a password and sign in to your client portal. They need an email address and a company."
                     }
                     Button {
                         variant: ButtonVariant::Primary,
@@ -8302,7 +8482,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                         // leaving the operator with a control that ignores them.
                         title: (!can_mutate).then(|| "Can't change portal access while the server is unreachable".to_string()),
                         onclick: open_modal,
-                        "Grant portal access"
+                        "Invite to the portal"
                     }
                 }
             }
@@ -8317,7 +8497,15 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                         onclick: move |evt: Event<MouseData>| { evt.stop_propagation(); },
                         h3 { class: "text-lg font-semibold text-content", "Assign portal roles" }
                         p { class: "text-xs text-muted",
-                            "Pick every role this contact should hold. Effective capabilities are the union across all picked roles."
+                            "Pick every role this contact should hold. They get everything the picked roles allow, combined."
+                        }
+                        // MAPPS-764: the two things an MSP cannot work out
+                        // from this screen and has to discover by experiment.
+                        p { class: "text-xs text-muted",
+                            "Invoice access is company-wide: a contact who can see invoices sees every invoice for their company, not only the ones addressed to them."
+                        }
+                        p { class: "text-xs text-muted",
+                            "Paying an invoice needs a role that allows it, such as Billing Contact. That is separate from the company's billing contact, who is simply the person invoices are emailed to."
                         }
                         if let Some(err_msg) = roles_fetch_error.as_deref() {
                             p { role: "alert", class: "text-sm text-red-600 dark:text-red-400",
@@ -8365,6 +8553,18 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                                                     if role.company_id.is_some() {
                                                         span { class: "ml-2 text-xs text-muted", "(Company only)" }
                                                     }
+                                                    // MAPPS-764: what the role
+                                                    // actually lets them do.
+                                                    {
+                                                        let summary = role_summary(&role.capabilities);
+                                                        if summary.is_empty() {
+                                                            rsx! {}
+                                                        } else {
+                                                            rsx! {
+                                                                span { class: "block text-xs text-muted", "{summary}" }
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -8386,7 +8586,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                                 disabled: !can_mutate || *mutating.read(),
                                 loading: *mutating.read(),
                                 onclick: submit_grant,
-                                if is_portal_user { "Update roles" } else { "Grant + send email" }
+                                if is_portal_user { "Update roles" } else { "Send invitation" }
                             }
                         }
                     }
@@ -8802,58 +9002,118 @@ mod validation_tests {
     }
 }
 
+/// MAPPS-764: the picker says what a role lets a customer do.
 #[cfg(test)]
-mod company_source_tests {
-    use super::{
-        freeform_company_note, FREEFORM_COMPANY_NOTE, FREEFORM_TOGGLE_LABEL,
-        LINK_COMPANY_TOGGLE_LABEL,
-    };
+mod role_summary_tests {
+    use super::{role_summary, ROLE_ABILITIES, ROLE_ABILITY_LIMIT};
 
-    /// MAPPS-484: the visible create affordance is the picker's "+ New
-    /// company" button, which creates a `companies` row. Neither company
-    /// control that does NOT create may read like one, which is what the old
-    /// "+ Add Company" label did.
+    fn caps(list: &[&str]) -> Vec<String> {
+        list.iter().map(|c| (*c).to_string()).collect()
+    }
+
+    /// The question that started this: which role lets them pay? A role
+    /// carrying `invoices:pay` has to say so in the words an MSP would use.
     #[test]
-    fn neither_toggle_label_promises_a_create() {
-        for label in [FREEFORM_TOGGLE_LABEL, LINK_COMPANY_TOGGLE_LABEL] {
-            let lowered = label.to_lowercase();
+    fn a_paying_role_says_it_pays() {
+        let summary = role_summary(&caps(&["invoices:read", "invoices:pay"]));
+        assert!(summary.contains("pay invoices"), "{summary}");
+        assert!(summary.contains("see invoices"), "{summary}");
+        assert!(summary.starts_with("Can "), "{summary}");
+        assert!(summary.ends_with('.'), "{summary}");
+    }
+
+    /// One ability reads as a sentence, not as a list of one.
+    #[test]
+    fn a_single_ability_needs_no_conjunction() {
+        assert_eq!(
+            role_summary(&caps(&["kb:read"])),
+            "Can read your knowledge base."
+        );
+    }
+
+    /// Two or more are joined so the last one reads naturally.
+    #[test]
+    fn several_abilities_are_joined_with_and() {
+        let summary = role_summary(&caps(&["tickets:read", "tickets:write"]));
+        assert_eq!(summary, "Can raise tickets and see tickets.");
+    }
+
+    /// A broad role is summarised rather than turned into a permission dump:
+    /// the reader asked what this person can do, not for the model.
+    #[test]
+    fn a_broad_role_is_summarised() {
+        let everything: Vec<String> = ROLE_ABILITIES
+            .iter()
+            .map(|(cap, _)| (*cap).to_string())
+            .collect();
+        let summary = role_summary(&everything);
+        assert!(summary.contains("and 7 more"), "{summary}");
+        assert_eq!(
+            summary.matches(", ").count(),
+            ROLE_ABILITY_LIMIT - 1,
+            "only the first few are named: {summary}"
+        );
+    }
+
+    /// A role carrying nothing a customer would notice renders NO line, never
+    /// `Can .` - the same rule PMS-1171 had to learn about a footer: a
+    /// sentence with a hole in it is worse than no sentence.
+    #[test]
+    fn a_role_with_nothing_notable_says_nothing() {
+        assert!(role_summary(&[]).is_empty());
+        assert!(role_summary(&caps(&["settings:manage_own"])).is_empty());
+    }
+
+    /// The capability spellings are the server's. A typo here is a role that
+    /// silently describes itself as doing less than it does, which is worse
+    /// than saying nothing.
+    #[test]
+    fn the_capability_names_are_the_servers() {
+        for (cap, phrase) in ROLE_ABILITIES {
+            assert!(cap.contains(':'), "{cap} is not a capability name");
+            assert!(!phrase.is_empty());
+            assert_eq!(*phrase, phrase.trim());
             assert!(
-                !lowered.contains("add "),
-                "{label} reads like a create action but creates nothing"
-            );
-            assert!(
-                !lowered.contains("new compan"),
-                "{label} reads like a create action but creates nothing"
+                !phrase.starts_with("Can "),
+                "{phrase} is joined into one sentence, so it must not open one"
             );
         }
-        assert_eq!(
-            FREEFORM_TOGGLE_LABEL,
-            "Enter a name without creating a company"
-        );
+        assert!(ROLE_ABILITIES.iter().any(|(c, _)| *c == "invoices:pay"));
     }
+}
 
-    /// The note names the value and the consequence, and says nothing until
-    /// something has been typed.
-    #[test]
-    fn freeform_note_names_the_value_and_the_consequence() {
-        assert_eq!(
-            freeform_company_note("PugTsurani"),
-            "Saved as a typed name. PugTsurani will not appear under Companies."
-        );
-        // Trimmed, so the note reads the same as the value that gets submitted.
-        assert_eq!(
-            freeform_company_note("  PugTsurani  "),
-            "Saved as a typed name. PugTsurani will not appear under Companies."
-        );
-        assert!(freeform_company_note("").is_empty());
-        assert!(freeform_company_note("   ").is_empty());
-    }
+#[cfg(test)]
+mod company_source_tests {
+    use super::{COMPANY_SEARCH_HELP, FREEFORM_COMPANY_NOTE};
 
     /// The read side says what the name is rather than leaving link colour as
     /// the only signal.
     #[test]
     fn read_side_note_says_it_is_not_a_record() {
         assert!(FREEFORM_COMPANY_NOTE.contains("not a company record"));
+    }
+
+    /// MAPPS-757: the help under the one company control names all three
+    /// outcomes of the one interaction, because a search box that quietly
+    /// creates records has to say so before it does.
+    #[test]
+    fn the_company_help_names_search_link_and_create() {
+        let lowered = COMPANY_SEARCH_HELP.to_lowercase();
+        for word in ["search", "link", "create"] {
+            assert!(
+                lowered.contains(word),
+                "the one company control says nothing about {word}: {COMPANY_SEARCH_HELP}"
+            );
+        }
+    }
+
+    /// The note describes a name the record already holds; it must not read
+    /// as an invitation to enter one, because the form offers no way to.
+    #[test]
+    fn the_note_describes_a_stored_name_rather_than_offering_one() {
+        let lowered = FREEFORM_COMPANY_NOTE.to_lowercase();
+        assert!(!lowered.contains("enter"), "{FREEFORM_COMPANY_NOTE}");
+        assert!(!lowered.contains("type a"), "{FREEFORM_COMPANY_NOTE}");
     }
 }
 
@@ -8863,10 +9123,10 @@ mod company_source_tests {
 #[cfg(test)]
 mod contact_child_row_tests {
     use super::{
-        add_company_label, company_link_entries, company_rows_from_remote, extra_company_suffix,
-        humanize_phone_type, normalize_phone_type, phone_row_index, phone_rows_from_remote,
-        primary_phone_label, validate_phone_rows, CompanyRow, ContactDetail, PhoneRow, PhoneType,
-        RemoteCompanyLink, RemoteContact, RemotePhone,
+        company_link_entries, company_rows_from_remote, extra_company_suffix, humanize_phone_type,
+        normalize_phone_type, phone_row_index, phone_rows_from_remote, primary_phone_label,
+        validate_phone_rows, CompanyRow, ContactDetail, PhoneRow, PhoneType, RemoteCompanyLink,
+        RemoteContact, RemotePhone,
     };
 
     fn row(phone_type: &str, number: &str, is_primary: bool) -> PhoneRow {
@@ -9056,6 +9316,42 @@ mod contact_child_row_tests {
         assert!(company_link_entries(&[]).expect("no rows").is_empty());
     }
 
+    /// MAPPS-757: the Primary control is hidden while a contact links one
+    /// company, so nothing flags that link and the fallback is what gives the
+    /// contact its primary. A contact left with a mirror and no primary link
+    /// is the PMS-1069 defect, so this is the rule that makes hiding the
+    /// control safe rather than a saving of one line of UI.
+    #[test]
+    fn a_single_link_is_primary_without_anyone_saying_so() {
+        let rows = [CompanyRow {
+            company_id: uuid::Uuid::nil().to_string(),
+            company_name: "Acme".to_string(),
+            title: String::new(),
+            is_primary: false,
+        }];
+        let entries = company_link_entries(&rows).expect("id is a uuid");
+        assert!(entries[0].is_primary);
+        // And with several, exactly one still comes back primary even when the
+        // user never touched the control.
+        let rows = [
+            CompanyRow {
+                company_id: uuid::Uuid::nil().to_string(),
+                company_name: "Acme".to_string(),
+                title: String::new(),
+                is_primary: false,
+            },
+            CompanyRow {
+                company_id: uuid::Uuid::max().to_string(),
+                company_name: "Globex".to_string(),
+                title: String::new(),
+                is_primary: false,
+            },
+        ];
+        let entries = company_link_entries(&rows).expect("ids are uuids");
+        assert_eq!(entries.iter().filter(|e| e.is_primary).count(), 1);
+        assert!(entries[0].is_primary, "the first link is the one promoted");
+    }
+
     /// MAPPS-687: `ContactCompanyLinkInput::company_id` is a `Uuid`, so a row
     /// that does not carry one is refused here rather than sent as a string
     /// the server has to reject.
@@ -9120,19 +9416,6 @@ mod contact_child_row_tests {
         assert_eq!(phone_row_index("phones[].number"), None);
         assert_eq!(phone_row_index("phone"), None);
         assert_eq!(phone_row_index("first_name"), None);
-    }
-
-    /// "Add" on the company block means add another company, and never reads
-    /// like the create affordance MAPPS-484 reserved for the picker.
-    #[test]
-    fn add_company_label_only_ever_adds() {
-        assert_eq!(add_company_label(0), "Add a company");
-        assert_eq!(add_company_label(2), "Add another company");
-        for linked in [0usize, 2] {
-            assert!(!add_company_label(linked)
-                .to_lowercase()
-                .contains("new compan"));
-        }
     }
 
     /// The DTOs carry both lists with `#[serde(default)]`, so a response from
@@ -10098,6 +10381,10 @@ mod shared_dto_tests {
         let _ = GrantPortalAccessBody {
             role_ids: Vec::new(),
         };
+        // MAPPS-775: the resolve body. `mokosh-types` exports no DTO for it at
+        // the pinned server rev either, so this names the shape the way the
+        // grant body above does.
+        let _ = ResolveAccessRequestBody { grant: true };
         // Deliberately not sent, for the reasons on the create request above.
         // `default_technical_contact_id` and `default_contract_id` have no
         // editor on this page either; the contract default is set from billing.
@@ -10633,6 +10920,37 @@ mod shared_dto_tests {
 /// every write here runs inside a `#[cfg(feature = "app")]` block that no host
 /// test can reach, so what is being pinned is the shape of the code rather than
 /// a rendered result.
+#[cfg(test)]
+mod access_request_tests {
+    use super::access_request_line;
+
+    /// An open request is a question waiting on the MSP; a resolved one is
+    /// history. A list where the two read alike is a list nobody acts on.
+    #[test]
+    fn an_open_request_reads_differently_from_a_resolved_one() {
+        assert_eq!(
+            access_request_line("invoices", "open"),
+            "Asked to see invoices"
+        );
+        assert_eq!(
+            access_request_line("invoices", "granted"),
+            "Asked to see invoices - granted"
+        );
+        assert_eq!(
+            access_request_line("tickets", "declined"),
+            "Asked to see tickets - declined"
+        );
+    }
+
+    /// A status this build does not know is shown as it came rather than
+    /// silently read as one of the ones it does know.
+    #[test]
+    fn an_unknown_status_is_shown_rather_than_guessed() {
+        let line = access_request_line("quotes", "escalated");
+        assert!(line.contains("escalated"), "{line}");
+    }
+}
+
 #[cfg(test)]
 mod shared_dto_guard_tests {
     const SRC: &str = include_str!("contacts.rs");

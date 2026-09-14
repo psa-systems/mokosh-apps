@@ -1116,7 +1116,7 @@ pub fn TopBar(props: TopBarProps) -> Element {
 
                 // MAPPS-494 (MAPPS-474 phase 5): tenant switcher.
                 // Dropdown listing every membership the identity holds
-                // + a "Create new organization" action.
+                // + a "Create new team" action.
                 TenantSwitcher {}
 
                 // User menu (P3-26 avatar dropdown)
@@ -1312,7 +1312,7 @@ fn UserMenu() -> Element {
                             *crate::components::tenant_switcher::SHOW_CREATE_ORG.write() = true;
                             open.set(false);
                         },
-                        "Create new organization"
+                        "Create new team"
                     }
                     div { class: "border-t border-line my-1" }
                     button {
@@ -1636,7 +1636,11 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
         .filter(|s| !s.is_empty())
         // MAPPS-635 A: version the URL so a fresh upload evicts the
         // 1h-cached bytes on the very next render, not an hour later.
-        .map(|u| crate::hooks::branding::versioned_asset_url(&u, &brand));
+        // MAPPS-767: and make it absolute. The stored value is a path from
+        // the API origin, and this page is served from the SPA origin, so
+        // rendering it directly asked msp.a8n.systems for a file that lives
+        // on api.msp.a8n.systems.
+        .map(|u| crate::hooks::branding::absolute_versioned_asset_url(&u, &brand));
     let support_email = brand.support_email.clone().filter(|s| !s.is_empty());
     let support_phone = brand.support_phone.clone().filter(|s| !s.is_empty());
     let support_contact = brand.support_contact_name.clone().filter(|s| !s.is_empty());

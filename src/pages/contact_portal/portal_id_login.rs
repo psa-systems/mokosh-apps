@@ -103,6 +103,10 @@ struct HostHint {
 
 #[component]
 pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
+    // MAPPS-761: a link that brought this customer here may name the page it
+    // really wanted. Captured on arrival, because signing in replaces the URL
+    // several times over and the query string does not survive the hops.
+    use_hook(super::next_target::remember_from_query);
     let nav = use_navigator();
     let mut email = use_signal(String::new);
     let mut password = use_signal(String::new);
@@ -238,7 +242,7 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
                         install_session(&nav, resp, &pid_str);
                     }
                     Err(ApiError::Status { code: 401, .. }) => {
-                        error.set("Invalid credentials.".to_string());
+                        error.set(super::PORTAL_SIGN_IN_FAILED.to_string());
                     }
                     Err(ApiError::Status { code: 429, .. }) => {
                         error.set("Too many attempts; try again shortly.".to_string());
@@ -325,6 +329,11 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
                         name: "password",
                         label: "Password",
                         r#type: "password".to_string(),
+                        // MAPPS-763: said BEFORE the attempt, because the
+                        // person most likely to get this wrong is the one who
+                        // already has an account with us and reasonably types
+                        // that password.
+                        help: super::PORTAL_PASSWORD_HELP.to_string(),
                         value: password(),
                         required: true,
                         disabled: saving(),
@@ -364,11 +373,15 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
                     // so this link now hops DIRECTLY to the finder
                     // instead of routing through step 1. Carries an
                     // empty email so the finder shows an empty input.
-                    div { class: "pt-4 text-center",
+                    // MAPPS-766: an offer, not a footnote. The customer who
+                    // needs this is stuck on a form they cannot fill, and was
+                    // previously given a text link at the bottom of it.
+                    div { class: "pt-4 mt-2 border-t border-line space-y-2 text-center",
+                        p { class: "pt-3 text-sm text-muted", {super::PORTAL_NO_PASSWORD_PROMPT} }
                         Link {
                             to: Route::ContactMagicLinkLogin { email: String::new() },
-                            class: "text-sm text-accent hover:underline",
-                            "Or sign in without a password"
+                            class: "inline-block text-sm font-medium text-accent hover:underline",
+                            {super::PORTAL_NO_PASSWORD_ACTION}
                         }
                     }
                 }
@@ -429,5 +442,7 @@ fn install_session(nav: &dioxus::router::Navigator, resp: LoginResp, portal_id_s
         crate::hooks::fetch::api::set_contact_last_slug(&slug);
     }
     crate::hooks::capabilities::set_contact_capabilities(Some(caps));
-    nav.replace(Route::Dashboard {});
+    // MAPPS-761: the page the link that brought them named, else the
+    // dashboard, which is where this always went.
+    nav.replace(super::next_target::landing());
 }

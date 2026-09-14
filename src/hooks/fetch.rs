@@ -2925,17 +2925,40 @@ pub mod api {
     /// than showing the transport's string.
     #[cfg(feature = "app")]
     pub async fn get_authed_bytes_typed(path: &str) -> Result<(Vec<u8>, Option<String>), ApiError> {
-        ensure_fresh_access_token().await;
+        // MAPPS-768: the contact's bearer first, the staff one second, the
+        // `_any_` convention `post_authed_any_typed` and friends already
+        // follow for a dual-plane route.
+        //
+        // Every document this fetches sits on a route that serves BOTH planes
+        // (PMS-1041 names the five invoice handlers, `get_invoice_pdf` among
+        // them), and this helper read the staff bearer only. So a portal
+        // customer pressing Download PDF sent no `Authorization` header at
+        // all, got a 401, and was told "Your session has expired" while every
+        // other call on the same page succeeded - which is why signing in
+        // again did not help: there was never a staff token to refresh.
+        //
+        // `ensure_fresh_access_token` stays on the staff path. It refreshes
+        // the staff bearer and does nothing for a contact, whose rehydrate is
+        // the AuthGuard's (MAPPS-769); calling it for a contact would be a
+        // no-op with a misleading name attached.
+        let contact = current_contact_access_token();
+        if contact.is_none() {
+            ensure_fresh_access_token().await;
+        }
         let url = format!("{}{}", api_base(), path);
         let mut req = Request::get(&url);
-        let bearer = current_access_token();
+        let bearer = contact.or_else(current_access_token);
         if let Some(t) = &bearer {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
         let resp = req.send().await.map_err(network_err)?;
         let status = resp.status();
         super::note_response_status(status);
-        if bearer.is_some() && status == 401 {
+        // MAPPS-768: only a STAFF 401 means the agent session is gone. A
+        // contact's 401 here is the contact plane's business, and marking the
+        // agent unauthorized would sign a staff user out of a tab they are
+        // not even using.
+        if bearer.is_some() && status == 401 && current_contact_access_token().is_none() {
             note_agent_unauthorized().await;
         }
         if !(200..300).contains(&status) {
