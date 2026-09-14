@@ -217,6 +217,11 @@ struct RemoteInvoice {
     /// raw `company_id` UUID.
     #[serde(default)]
     company_name: Option<String>,
+    /// MAPPS-764 / PMS-1173: who the invoice was addressed to. `None` against
+    /// a server that predates the field, and on an invoice that names nobody,
+    /// which the list renders the same way: there is no one to point at.
+    #[serde(default)]
+    billing_contact_name: Option<String>,
     #[serde(default)]
     status: String,
     #[serde(default)]
@@ -341,6 +346,21 @@ pub fn InvoiceListPage() -> Element {
 
     use_page_title("Invoices");
     if !has_finance && !contact_can_read {
+        // MAPPS-775: a customer and a technician are refused for different
+        // reasons and need different words. `NoFinancePermission` says
+        // "restricted to administrator and finance roles. Ask an
+        // administrator", which is true of a technician and false of a
+        // customer: they have no administrator, and the person who can change
+        // this is the MSP they hired. The portal state names the MSP and
+        // offers the ask (PMS-1187).
+        if crate::hooks::fetch::api::has_contact_session() {
+            return rsx! {
+                crate::components::PortalAccessRequired {
+                    title: "Invoices".to_string(),
+                    area: crate::components::INVOICES,
+                }
+            };
+        }
         return rsx! { NoFinancePermission { title: "Invoices" } };
     }
 
@@ -546,7 +566,9 @@ fn InvoiceListBody() -> Element {
                 TableHead {
                     TableRow {
                         TableHeader { "Invoice" }
-                        TableHeader { "Company" }
+                        TableHeader {
+                            if staff_only { "Company" } else { "Billed to" }
+                        }
                         TableHeader { "Date" }
                         TableHeader { "Due Date" }
                         TableHeader { class: "text-right", "Total" }
@@ -600,7 +622,14 @@ fn InvoiceListBody() -> Element {
                                 key: "{invoice.id}",
                                 id: invoice.id.to_string(),
                                 number: invoice.invoice_number,
-                                company: invoice.company_name.clone().unwrap_or_default(),
+                                // MAPPS-764: on the contact plane the company
+                                // is the same on every row, so the column
+                                // answers "is this one mine" instead.
+                                company: if staff_only {
+                                    invoice.company_name.clone().unwrap_or_default()
+                                } else {
+                                    invoice.billing_contact_name.clone().unwrap_or_default()
+                                },
                                 date: invoice.invoice_date.unwrap_or_default(),
                                 due_date: invoice.due_date.unwrap_or_default(),
                                 total: format_money_str(&invoice.total),
@@ -620,6 +649,11 @@ fn InvoiceListBody() -> Element {
 struct InvoiceRowProps {
     id: String,
     number: String,
+    /// MAPPS-764: the Company column for staff, and who the invoice is billed
+    /// to for a customer. One column, because on the contact plane every
+    /// invoice belongs to the SAME company, so that value carries no
+    /// information there while "is this one mine" is the only question the
+    /// list has to answer.
     company: String,
     date: String,
     due_date: String,
@@ -741,6 +775,11 @@ struct InvoiceDetail {
     company_name: Option<String>,
     #[serde(default)]
     billing_contact_id: Option<uuid::Uuid>,
+    /// MAPPS-768 / PMS-1173: who the invoice is billed to, by name. The
+    /// contact plane gets no link to the staff contact page, so the name is
+    /// the whole answer there. `None` against a server that predates it.
+    #[serde(default)]
+    billing_contact_name: Option<String>,
     #[serde(default)]
     status: String,
     #[serde(default)]
@@ -978,7 +1017,7 @@ pub(crate) fn invoice_pay_now_preview(
         Some(true) => true,
         Some(false) => {
             notes.push(
-                "No payment gateway is connected, so the email carries no Pay Now link. Connect one under Settings, Payment Gateways to add it."
+                "No payment gateway is connected, so the email carries no Pay Now link. Connect one under Settings, Payment Gateways."
                     .to_string(),
             );
             false
@@ -1081,7 +1120,7 @@ fn invoice_send_path(id: &str) -> String {
 pub(crate) fn locked_invoice_note(status: &str) -> Option<&'static str> {
     match status {
         "sent" => Some(
-            "This invoice was sent to the customer, so it is locked: nothing on it can change. Record a payment when it is paid, or write it off if it never will be. To correct it, issue a credit note from the Credit Notes card below.",
+            "This invoice was sent to your customer, so it is locked: nothing on it can change. Record a payment when it is paid, or write it off if it never will be. To correct it, issue a credit note from the Credit Notes card below.",
         ),
         "partially_paid" => Some(
             "This invoice is partly paid and locked: nothing on it can change. Record the rest as it arrives, or write off what will not be paid. To correct it, issue a credit note from the Credit Notes card below.",
@@ -1114,10 +1153,104 @@ struct PaymentReadiness {
     gateway_ready: bool,
     #[serde(default)]
     button_label: Option<String>,
+    /// MAPPS-771 / PMS-1179: every way this invoice can be paid. Empty against
+    /// a server that predates the choice, which is why `button_label` is still
+    /// read: `pay_options` falls back to it.
+    #[serde(default)]
+    providers: Vec<RemotePaymentProvider>,
     #[serde(default)]
     invoice_payable: bool,
     #[serde(default)]
     balance_due_display: String,
+}
+
+/// MAPPS-771 / PMS-1179: one way the customer can pay, as the server sends it.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+pub(crate) struct RemotePaymentProvider {
+    #[serde(default)]
+    pub(crate) provider: String,
+    #[serde(default)]
+    pub(crate) label: String,
+}
+
+/// MAPPS-771: one Pay button.
+///
+/// `provider` is `None` only against a server that predates PMS-1179, where
+/// the pay request names nothing and the server resolves its single active
+/// gateway - which is exactly what every client did before the choice existed.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PayOption {
+    pub(crate) provider: Option<String>,
+    pub(crate) label: String,
+}
+
+/// MAPPS-774: whether THIS Pay button is the one starting a payment.
+///
+/// One flag used to answer both "a payment is starting" and "this button is
+/// starting it", which was the same fact while there was one button. With one
+/// button per connected provider it is two facts, and reading the first as the
+/// second spun every button at once - a page that looks like it is starting a
+/// payment through both providers.
+///
+/// Identified by position rather than by provider or label: the provider is
+/// absent against a server that predates PMS-1179, and two providers may carry
+/// the same admin-set label, so neither identifies a button.
+pub(crate) fn pay_button_loading(pending: Option<usize>, index: usize) -> bool {
+    pending == Some(index)
+}
+
+/// MAPPS-771: what to render right now, including before readiness lands.
+///
+/// An empty list would mean no button at all while the readiness fetch is in
+/// flight, which is a button that appears late rather than one that is
+/// disabled - so the pending state keeps its single unnamed button, exactly
+/// what this page rendered before the choice existed.
+pub(crate) fn pay_options_for_render(
+    choices: &[PayOption],
+    fallback_label: &str,
+) -> Vec<PayOption> {
+    if choices.is_empty() {
+        return vec![PayOption {
+            provider: None,
+            label: fallback_label.to_string(),
+        }];
+    }
+    choices.to_vec()
+}
+
+/// MAPPS-771: the Pay buttons this invoice offers.
+///
+/// One per provider the tenant has connected, in the order the server sends
+/// them, each labelled by the server (the MSP's own override where they set
+/// one). The client never names a provider itself, so adding a third one is a
+/// server change alone.
+///
+/// A server that predates PMS-1179 sends no list and one `button_label`; that
+/// becomes a single option naming no provider, which is the request every
+/// client sent before the choice existed. No labels at all means nothing to
+/// offer, and the caller renders no button rather than one that cannot work.
+pub(crate) fn pay_options(
+    providers: &[RemotePaymentProvider],
+    button_label: Option<&str>,
+) -> Vec<PayOption> {
+    let named: Vec<PayOption> = providers
+        .iter()
+        .filter(|p| !p.provider.trim().is_empty() && !p.label.trim().is_empty())
+        .map(|p| PayOption {
+            provider: Some(p.provider.clone()),
+            label: p.label.clone(),
+        })
+        .collect();
+    if !named.is_empty() {
+        return named;
+    }
+    match button_label.map(str::trim).filter(|l| !l.is_empty()) {
+        Some(label) => vec![PayOption {
+            provider: None,
+            label: label.to_string(),
+        }],
+        None => Vec::new(),
+    }
 }
 
 /// MAPPS-668 (mokosh-invoices P1c): body sent to POST /invoices/{id}/pay.
@@ -1125,6 +1258,11 @@ struct PaymentReadiness {
 struct PayInvoiceBody {
     success_url: String,
     cancel_url: String,
+    /// MAPPS-771: which provider the customer pressed. Omitted entirely when
+    /// there is nothing to choose between, so the request stays byte-identical
+    /// to what the server has always accepted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
 }
 
 /// MAPPS-668: what the server returns from POST /invoices/{id}/pay.
@@ -1306,6 +1444,12 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     // surfaces a failure inline the way `action_error` and `pdf_error`
     // do.
     let mut pay_saving = use_signal(|| false);
+    // MAPPS-774: WHICH button was pressed. With one Pay button, "a payment is
+    // starting" and "this button is starting it" were the same fact and one
+    // flag said both. MAPPS-771 made the button one per connected provider and
+    // kept the one flag, so pressing Pay with PayPal spun the card button too,
+    // which reads as the page starting two payments.
+    let mut pay_pending = use_signal(|| None::<usize>);
     let mut pay_error = use_signal(String::new);
     let id_for_pay = props.id.clone();
 
@@ -1315,6 +1459,12 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     // resource restarts until the Stripe webhook has landed the
     // payment. The loop always runs; it no-ops when `is_paid_landing`
     // is false so the hook count stays stable.
+    // MAPPS-772: whether the wait is over. `is_paid_landing` reads the
+    // boot-time query snapshot and stays true for the life of the page, so
+    // without this the "Processing your payment" arm below kept matching after
+    // the budget ran out and the spinner span forever. A customer who had just
+    // paid sat on it indefinitely with nothing saying what had happened.
+    let mut poll_expired = use_signal(|| false);
     use_future(move || async move {
         if !is_paid_landing {
             return;
@@ -1323,6 +1473,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
             crate::platform::timer::sleep_ms(2_000).await;
             poll_tick.with_mut(|t| *t += 1);
         }
+        poll_expired.set(true);
     });
 
     let snap = invoice_resource.read_unchecked();
@@ -1338,6 +1489,13 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     // loaded, so the read never ran and the preview always reported the
     // contact as having no address.
     let contact_resource = use_resource(move || async move {
+        // MAPPS-772: staff only. `/contacts/contacts/{id}` is a staff route,
+        // and this fetch is for the staff email preview, so on the portal
+        // plane it 401d on every render - and once per poll tick during the
+        // post-payment wait, which is what filled the customer's console.
+        if !staff_only {
+            return None;
+        }
         let id = invoice_resource
             .read_unchecked()
             .clone()
@@ -1352,7 +1510,13 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         .inspect_err(|e| tracing::warn!("invoice billing contact load failed for {id}: {e}"))
         .ok()
     });
-    let gateway_resource = use_resource(|| async {
+    let gateway_resource = use_resource(move || async move {
+        // MAPPS-772: staff only, for the same reason. A customer learns
+        // whether they can pay from `payment-readiness`, which serves both
+        // planes; `/payment-gateways` is finance-gated and 401s for them.
+        if !staff_only {
+            return None;
+        }
         let _gen = crate::hooks::fetch::active_tenant_generation();
         // "no gateway is live" and "the gateway list did not load" both hide
         // the pay affordance, so each says which it is.
@@ -1412,7 +1576,13 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     // through a credit note (MAPPS-638, the Credit Notes card). Say so inline so the
     // missing actions read as intentional rather than broken. Draft / pending
     // show nothing here (their actions, including Void, are available above).
-    let frozen_note = locked_invoice_note(status.as_str());
+    // MAPPS-772: the locked-invoice note speaks to the MSP ("sent to your
+    // customer", "Record a payment", "write it off"), and every action it
+    // names is staff-only. A customer was being told to write off their own
+    // invoice.
+    let frozen_note = staff_only
+        .then(|| locked_invoice_note(status.as_str()))
+        .flatten();
     let pay_company_id = invoice
         .as_ref()
         .and_then(|i| i.company_id)
@@ -1579,11 +1749,15 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     };
     let gateway_ready = readiness.as_ref().is_some_and(|r| r.gateway_ready);
     let invoice_payable = readiness.as_ref().is_some_and(|r| r.invoice_payable);
-    let pay_button_label = readiness
+    // MAPPS-771: one button per connected provider. An older server sends one
+    // label and no list, which becomes a single unnamed option.
+    let pay_choices = readiness
         .as_ref()
-        .and_then(|r| r.button_label.clone())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "Pay Now".to_string());
+        .map(|r| pay_options(&r.providers, r.button_label.as_deref()))
+        .unwrap_or_default();
+    // Kept for the case where readiness has not landed yet: the button still
+    // needs words on it, and "Pay Now" is what it said before any of this.
+    let pay_fallback_label = "Pay Now".to_string();
     let pay_err = pay_error.read().clone();
     let is_paid = status == "paid";
 
@@ -1627,12 +1801,12 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         ErrorBanner { "{write_off_error.read()}" }
                     }
                     p { class: "text-sm text-muted",
-                        "The customer owes this balance and will not pay it. The invoice moves to written off and keeps its balance on record as a bad-debt expense; a later payment is recorded as a recovery. This is not a correction: use a credit note for that."
+                        "Your customer owes this balance and will not pay it. The invoice moves to written off and keeps its balance on record as a bad-debt expense; a payment that arrives later is recorded as a recovery. This is not a correction - use a credit note for that."
                     }
                     crate::components::Textarea {
                         name: "write_off_reason",
                         label: "Reason",
-                        placeholder: "Why this balance will not be collected (required)",
+                        placeholder: "Why you are not collecting this balance (required)",
                         rows: 3,
                         maxlength: 2000,
                         required: true,
@@ -1694,77 +1868,131 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                 // loop and the splash below.
                 if can_pay && !is_paid {
                     if invoice_payable {
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            loading: *pay_saving.read(),
-                            disabled: !can_mutate || !gateway_ready || *pay_saving.read(),
-                            title: if !can_mutate {
-                                Some("Can't start a payment while the server is unreachable".to_string())
-                            } else if !gateway_ready {
-                                Some("Your MSP has not connected an online payment provider yet. Contact them to arrange payment.".to_string())
-                            } else {
-                                None
-                            },
-                            onclick: move |_| {
-                                if *pay_saving.read() {
-                                    return;
-                                }
-                                pay_error.set(String::new());
-                                pay_saving.set(true);
-                                let id = id_for_pay.clone();
-                                spawn(async move {
-                                    #[cfg(feature = "app")]
-                                    {
-                                        let origin = crate::platform::location::origin().unwrap_or_default();
-                                        let body = PayInvoiceBody {
-                                            success_url: format!("{origin}/portal/invoices/{id}?paid=1"),
-                                            cancel_url: format!("{origin}/portal/invoices/{id}"),
-                                        };
-                                        match crate::hooks::fetch::api::post_authed_any_typed::<PayInvoiceResp, _>(
-                                            &format!("/invoices/{id}/pay"),
-                                            &body,
-                                        ).await {
-                                            Ok(resp) if !resp.checkout_url.is_empty() => {
-                                                #[cfg(target_arch = "wasm32")]
+                        // MAPPS-771: one button per provider the tenant has
+                        // connected. With one connected this renders exactly
+                        // what it always did; with two the customer chooses,
+                        // and the choice rides on the pay request.
+                        for (index, option) in pay_options_for_render(&pay_choices, &pay_fallback_label)
+                            .into_iter()
+                            .enumerate()
+                        {
+                            {
+                                // Per button, because each closure needs its
+                                // own copies: the invoice id and the provider
+                                // this button pays through.
+                                let id_for_pay = id_for_pay.clone();
+                                let chosen_provider = option.provider.clone();
+                                let label = option.label.clone();
+                                // MAPPS-774: the position in the rendered list
+                                // rather than the provider or the label. The
+                                // provider is absent against a server that
+                                // predates PMS-1179, and two providers may
+                                // carry the same admin-set label, so neither
+                                // identifies a button; the position always
+                                // does, and the list is derived fresh from the
+                                // same readiness on every render.
+                                let is_pending = pay_button_loading(*pay_pending.read(), index);
+                                rsx! {
+                                    Button {
+                                        key: "{label}",
+                                        variant: ButtonVariant::Primary,
+                                        // Only the pressed button spins. Every
+                                        // button is still disabled while a
+                                        // payment is starting, because two
+                                        // checkout sessions for one invoice is
+                                        // not a thing to offer.
+                                        loading: is_pending,
+                                        disabled: !can_mutate || !gateway_ready || *pay_saving.read(),
+                                        title: if !can_mutate {
+                                            Some("Can't start a payment while the server is unreachable".to_string())
+                                        } else if !gateway_ready {
+                                            Some("Your MSP has not connected an online payment provider yet. Contact them to arrange payment.".to_string())
+                                        } else {
+                                            None
+                                        },
+                                        onclick: move |_| {
+                                            if *pay_saving.read() {
+                                                return;
+                                            }
+                                            pay_error.set(String::new());
+                                            pay_saving.set(true);
+                                            pay_pending.set(Some(index));
+                                            let id = id_for_pay.clone();
+                                            // MAPPS-771: captured per button, so the
+                                            // request names the one that was pressed.
+                                            let chosen_provider = chosen_provider.clone();
+                                            spawn(async move {
+                                                #[cfg(feature = "app")]
                                                 {
-                                                    if let Some(win) = web_sys::window() {
-                                                        let _ = win.location().replace(&resp.checkout_url);
-                                                        return;
+                                                    let origin = crate::platform::location::origin().unwrap_or_default();
+                                                    // MAPPS-762: the provider sends the
+                                                    // customer back here after they pay,
+                                                    // so the path is taken FROM THE ROUTER
+                                                    // rather than typed. It used to read
+                                                    // `/portal/invoices/{id}`, a route
+                                                    // retired with the customer-portal
+                                                    // family, so a successful payment
+                                                    // landed the customer on the 404 page
+                                                    // holding a charged card. A rename of
+                                                    // this route now moves the return URL
+                                                    // with it.
+                                                    let path = Route::InvoiceDetail { id: id.clone() }.to_string();
+                                                    let body = PayInvoiceBody {
+                                                        success_url: format!("{origin}{path}?paid=1"),
+                                                        cancel_url: format!("{origin}{path}"),
+                                                        // MAPPS-771: the button the
+                                                        // customer actually pressed.
+                                                        provider: chosen_provider.clone(),
+                                                    };
+                                                    match crate::hooks::fetch::api::post_authed_any_typed::<PayInvoiceResp, _>(
+                                                        &format!("/invoices/{id}/pay"),
+                                                        &body,
+                                                    ).await {
+                                                        Ok(resp) if !resp.checkout_url.is_empty() => {
+                                                            #[cfg(target_arch = "wasm32")]
+                                                            {
+                                                                if let Some(win) = web_sys::window() {
+                                                                    let _ = win.location().replace(&resp.checkout_url);
+                                                                    return;
+                                                                }
+                                                            }
+                                                            #[cfg(not(target_arch = "wasm32"))]
+                                                            {
+                                                                // Desktop shell has no
+                                                                // location redirect; the
+                                                                // provider checkout is
+                                                                // browser-only, so a
+                                                                // portal contact on the
+                                                                // desktop app hits this
+                                                                // path and is told to open
+                                                                // the portal in a browser.
+                                                                let _ = &resp;
+                                                            }
+                                                            pay_error.set(
+                                                                "Payment checkout is only available in the web portal. Open your portal in a browser to pay.".to_string(),
+                                                            );
+                                                        }
+                                                        Ok(_) => {
+                                                            pay_error.set(
+                                                                "Payment provider returned an empty response. Try again.".to_string(),
+                                                            );
+                                                        }
+                                                        Err(err) => {
+                                                            pay_error.set(format!(
+                                                                "Could not start payment: {}",
+                                                                err.user_message()
+                                                            ));
+                                                        }
                                                     }
                                                 }
-                                                #[cfg(not(target_arch = "wasm32"))]
-                                                {
-                                                    // Desktop shell has no
-                                                    // location redirect; the
-                                                    // provider checkout is
-                                                    // browser-only, so a
-                                                    // portal contact on the
-                                                    // desktop app hits this
-                                                    // path and is told to open
-                                                    // the portal in a browser.
-                                                    let _ = &resp;
-                                                }
-                                                pay_error.set(
-                                                    "Payment checkout is only available in the web portal. Open your portal in a browser to pay.".to_string(),
-                                                );
-                                            }
-                                            Ok(_) => {
-                                                pay_error.set(
-                                                    "Payment provider returned an empty response. Try again.".to_string(),
-                                                );
-                                            }
-                                            Err(err) => {
-                                                pay_error.set(format!(
-                                                    "Could not start payment: {}",
-                                                    err.user_message()
-                                                ));
-                                            }
-                                        }
+                                                pay_saving.set(false);
+                                                pay_pending.set(None);
+                                            });
+                                        },
+                                        "{label}"
                                     }
-                                    pay_saving.set(false);
-                                });
-                            },
-                            "{pay_button_label}"
+                                }
+                            }
                         }
                     }
                 }
@@ -1795,7 +2023,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                     crate::components::SelectOption::new("compact", "Compact"),
                                 ],
                                 value: preview_template(),
-                                help: "Renders this draft under another template without saving anything.".to_string(),
+                                help: "Shows this draft under another template. Nothing is saved.".to_string(),
                                 onchange: move |e: FormEvent| preview_template.set(e.value()),
                             }
                         }
@@ -1809,9 +2037,9 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                             what: "the invoice PDF".to_string(),
                             label: if editable { "Preview PDF".to_string() } else { "Download PDF".to_string() },
                             title: if editable {
-                                "Renders this draft as it would look now. Nothing is stored until the invoice is sent, so this is a preview, not a record.".to_string()
+                                "Shows this draft as it would look now. Nothing is stored until you send it.".to_string()
                             } else {
-                                "The invoice as it was sent to the client. Stored at that moment; rebranding since does not change it.".to_string()
+                                "The invoice as your customer received it. Stored at that moment, so rebranding since does not change it.".to_string()
                             },
                         }
                     }
@@ -1997,6 +2225,17 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                 "{note}"
             }
         }
+        // MAPPS-772: the customer came back from the provider, we waited, and
+        // the payment has still not reached the invoice. Saying nothing leaves
+        // them looking at an unpaid invoice they know they paid, which is the
+        // moment someone pays twice.
+        if is_paid_landing && poll_expired() && status != "paid" {
+            div {
+                role: "status",
+                class: "mb-3 text-xs text-muted bg-surface-2 border border-line rounded-md px-3 py-2",
+                "Your payment has not reached this invoice yet. If you completed it, this usually settles within a few minutes: reload this page to check. Do not pay again; contact us if it has not appeared by tomorrow."
+            }
+        }
 
         // MAPPS-539: Send is a one-way door that emails the client, and the
         // button alone cannot say so. Since PMS-991 and PMS-992 the rule is
@@ -2005,7 +2244,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         // nobody to email is refused rather than marked sent (MAPPS-663).
         if editable {
             p { class: "mb-3 text-xs text-subtle",
-                "Sending emails the billing contact the invoice as a PDF, with a link to pay online if a payment gateway is connected. It needs a billing contact with an email address. Use Preview email to read it first."
+                "Sending emails the invoice to your customer's billing contact as a PDF, with a link to pay online if a payment gateway is connected. That contact needs an email address. Use Preview email to read it first."
             }
         }
 
@@ -2082,7 +2321,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                     }
                 }
             },
-            Some(Some(inv)) if is_paid_landing && inv.status != "paid" => rsx! {
+            Some(Some(inv)) if is_paid_landing && !poll_expired() && inv.status != "paid" => rsx! {
                 // MAPPS-669 (P1d): post-checkout splash. The Stripe /
                 // PayPal webhook writes the payment; until the tick
                 // catches up we keep the invoice body hidden so the
@@ -2118,6 +2357,10 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "View company".to_string());
                 let billing_contact_id = inv.billing_contact_id.map(|c| c.to_string());
+                // MAPPS-768 / PMS-1173: the name, for the contact plane, which
+                // gets no link to follow. Empty against a server that predates
+                // the field, and the cell then renders a dash.
+                let billing_contact_name = inv.billing_contact_name.clone().unwrap_or_default();
                 let emailed = inv
                     .emailed_to
                     .as_deref()
@@ -2385,9 +2628,19 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                         div { class: "flex justify-between",
                                             dt { class: "text-muted", "Company" }
                                             dd {
-                                                Link {
-                                                    to: Route::CompanyDetail { id: cid.clone() },
-                                                    class: "text-accent hover:opacity-90",
+                                                // MAPPS-768: same reason as the
+                                                // billing contact below. The
+                                                // company page is staff-only,
+                                                // and it is the customer's own
+                                                // company, so the name is all
+                                                // there is to say.
+                                                if staff_only {
+                                                    Link {
+                                                        to: Route::CompanyDetail { id: cid.clone() },
+                                                        class: "text-accent hover:opacity-90",
+                                                        "{company_name}"
+                                                    }
+                                                } else {
                                                     "{company_name}"
                                                 }
                                             }
@@ -2411,14 +2664,34 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                             }
                                         }
                                     }
+                                    // MAPPS-768: a portal customer was offered
+                                    // "View contact", which is the STAFF
+                                    // contacts page. Following it landed them
+                                    // on "Contact not found" with Edit and
+                                    // Delete buttons, because the guard's
+                                    // staff-only block reads the browser
+                                    // pathname in a LAYOUT, and a layout does
+                                    // not re-render when a link inside it is
+                                    // clicked. The block still catches a typed
+                                    // URL; not offering the link is what makes
+                                    // it unreachable by hand.
                                     if let Some(bcid) = billing_contact_id.clone() {
                                         div { class: "flex justify-between",
                                             dt { class: "text-muted", "Billing Contact" }
                                             dd {
-                                                Link {
-                                                    to: Route::ContactDetail { id: bcid.clone() },
-                                                    class: "text-accent hover:opacity-90",
-                                                    "View contact"
+                                                if staff_only {
+                                                    Link {
+                                                        to: Route::ContactDetail { id: bcid.clone() },
+                                                        class: "text-accent hover:opacity-90",
+                                                        "View contact"
+                                                    }
+                                                } else if !billing_contact_name.is_empty() {
+                                                    // The customer already knows who they are;
+                                                    // the name is the useful half and the only
+                                                    // half they can act on.
+                                                    "{billing_contact_name}"
+                                                } else {
+                                                    span { class: "text-subtle", "-" }
                                                 }
                                             }
                                         }
@@ -3061,7 +3334,7 @@ pub fn InvoiceNewPage() -> Element {
                             step: "0.01".to_string(),
                             min: "0".to_string(),
                             placeholder: "0.00",
-                            help: "A preview from the rate over the taxable lines; edit to override. An override is stored as given and records no rate.",
+                            help: "Worked out from your tax rate. Type your own amount to override it; an override is saved as you enter it and records no rate.",
                             value: tax_value.clone(),
                             oninput: move |e: FormEvent| tax_override.set(Some(e.value())),
                         }
@@ -3081,7 +3354,7 @@ pub fn InvoiceNewPage() -> Element {
                 crate::components::Textarea {
                     name: "notes",
                     label: "Notes",
-                    placeholder: "Internal notes (not shown to the customer)",
+                    placeholder: "Internal notes (your customer never sees these)",
                     rows: 3,
                     maxlength: 2000,
                     value: notes.read().clone(),
@@ -4257,7 +4530,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                     crate::components::DateField {
                         name: "due_date",
                         label: "Due Date",
-                        help: "Change the payment term and leave this as it is to have the due date re-derived from the term.",
+                        help: "Change the payment term and leave this as it is to take the due date from that term.",
                         error: due_date_err(),
                         value: due_date.read().clone(),
                         oninput: move |e: FormEvent| {
@@ -4436,7 +4709,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                         step: "0.01".to_string(),
                         min: "0".to_string(),
                         placeholder: "0.00",
-                        help: "A preview from the rate over the taxable lines; edit to override. An override is stored as given and records no rate.",
+                        help: "Worked out from your tax rate. Type your own amount to override it; an override is saved as you enter it and records no rate.",
                         value: tax_value.clone(),
                         oninput: move |e: FormEvent| tax_override.set(Some(e.value())),
                     }
@@ -4972,6 +5245,45 @@ struct RemoteGateway {
     /// `get_invoice_payment_readiness`.
     #[serde(default)]
     client_display_name: Option<String>,
+    /// MAPPS-773 / PMS-1181: what this gateway holds, field by field. Empty
+    /// against a server that predates the answer, which is why `configured`
+    /// above is still read.
+    #[serde(default)]
+    credentials: Vec<RemoteCredentialState>,
+}
+
+/// MAPPS-773 / PMS-1181: one stored credential field, as much of it as the
+/// server is willing to show.
+///
+/// The masking decision is the SERVER's: it knows which field is a secret and
+/// sends back an identifier whole and a secret as a tail. This client renders
+/// `value` and invents no rule of its own, because a rule here would be a
+/// second answer to "may this be shown", and the wrong answer prints a
+/// customer's payment credentials on a settings page.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct RemoteCredentialState {
+    #[serde(default)]
+    pub(crate) key: String,
+    #[serde(default)]
+    pub(crate) label: String,
+    #[serde(default)]
+    pub(crate) present: bool,
+    #[serde(default)]
+    pub(crate) secret: bool,
+    #[serde(default)]
+    pub(crate) value: Option<String>,
+}
+
+/// MAPPS-773 / PMS-1181: what checking a stored gateway concluded.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct RemoteGatewayCheck {
+    #[serde(default)]
+    pub(crate) name: String,
+    /// `passed`, `failed` or `not_checkable`.
+    #[serde(default)]
+    pub(crate) outcome: String,
+    #[serde(default)]
+    pub(crate) detail: String,
 }
 
 /// Payment-gateway config view. GET `/payment-gateways` (paginated) and
@@ -5161,6 +5473,354 @@ fn humanize_provider(raw: &str) -> String {
     }
 }
 
+/// MAPPS-759: the providers this app can configure, which is the server's
+/// `billing::provider::SUPPORTED` and NOT the wider set the
+/// `payment_gateway_configs.provider` CHECK constraint accepts. The column
+/// predates any implementation and still allows `authorize_net`, which this
+/// form used to offer: the server refuses to activate one, so choosing it was
+/// a 400 the admin could do nothing about.
+pub(crate) const CONFIGURABLE_PROVIDERS: &[(&str, &str)] =
+    &[("stripe", "Stripe"), ("paypal", "PayPal")];
+
+/// One credential a provider needs, named the way that provider names it.
+///
+/// MAPPS-759: the form used to ask for a single "API key" and send
+/// `{"api_key": ...}`, which no provider reads. Both server-side credential
+/// structs are `#[serde(default)]`, so that blob deserialised cleanly into
+/// empty strings: the save succeeded, the row reported Configured, and the
+/// failure only appeared on the customer's invoice when the provider was built
+/// with an empty bearer. The fields are written out here because the shapes are
+/// the providers' own and the server parses each one into its own struct.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CredentialField {
+    /// The key inside the `config` object, exactly as the server deserialises it.
+    pub(crate) key: &'static str,
+    pub(crate) label: &'static str,
+    pub(crate) placeholder: &'static str,
+    pub(crate) help: &'static str,
+}
+
+/// What `provider` needs in its `config` blob.
+///
+/// A provider this build cannot configure gets an empty slice, which is what
+/// stops the form writing a credential set for one: an existing
+/// `authorize_net` row can still be viewed and removed, and saving it leaves
+/// whatever is stored alone.
+pub(crate) fn credential_fields(provider: &str) -> &'static [CredentialField] {
+    match provider {
+        // `StripeCredentials` in mokosh-server's provider/stripe.rs.
+        "stripe" => &[
+            CredentialField {
+                key: "secret_key",
+                label: "Secret key",
+                placeholder: "sk_test_… or rk_live_…",
+                help: "A restricted key is enough. Stripe shows it once, when you create it.",
+            },
+            CredentialField {
+                key: "webhook_secret",
+                label: "Webhook signing secret",
+                placeholder: "whsec_…",
+                help: "From the Stripe webhook endpoint you point at this tenant. Without it a payment is taken and never recorded.",
+            },
+        ],
+        // `PaypalCredentials` in mokosh-server's provider/paypal.rs. `sandbox`
+        // is in that struct too and is deliberately not a field here: it
+        // follows the Test mode switch above, because two controls for one
+        // question is how they come to disagree.
+        "paypal" => &[
+            CredentialField {
+                key: "client_id",
+                label: "Client ID",
+                placeholder: "The REST app's client ID",
+                help: "From the PayPal app under your developer account.",
+            },
+            CredentialField {
+                key: "client_secret",
+                label: "Client secret",
+                placeholder: "The REST app's secret",
+                help: "Shown once when the app's secret is generated.",
+            },
+            CredentialField {
+                key: "webhook_id",
+                label: "Webhook ID",
+                placeholder: "The webhook's ID, not its URL",
+                help: "PayPal verifies a delivery against this ID by calling back, so a wrong one refuses every webhook.",
+            },
+        ],
+        _ => &[],
+    }
+}
+
+/// MAPPS-773: what to say under a credential field about what is stored.
+///
+/// The form's fields are blank on an edit and always have been, because the
+/// server replaces the whole credential set on save, so blank means "keep what
+/// is stored" (MAPPS-363). What was missing is the other half of that
+/// sentence: WHAT is stored. A green Configured badge over three empty boxes
+/// tells an admin nothing about which of the three landed, and nothing at all
+/// about whether the webhook id they pasted is the one their provider shows.
+///
+/// `None` is a server that predates PMS-1181 and says nothing, which is
+/// rendered as nothing rather than as "not stored".
+pub(crate) fn stored_credential_note(state: Option<&RemoteCredentialState>) -> String {
+    let Some(state) = state else {
+        return String::new();
+    };
+    if !state.present {
+        return "Not stored.".to_string();
+    }
+    match state
+        .value
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        // An identifier the provider prints in its own dashboard, shown whole
+        // so it can be compared against it. That comparison is the check a
+        // wrong webhook id would otherwise survive until a customer paid.
+        Some(value) if !state.secret => format!("Stored: {value}"),
+        Some(tail) => format!("Stored, ending {tail}"),
+        // Stored, and too short for the server to show a tail of.
+        None => "Stored.".to_string(),
+    }
+}
+
+/// MAPPS-773: how one check reads.
+///
+/// `not_checkable` is deliberately NOT rendered as a pass: the provider
+/// offered no way to check it, and a green tick on a field nothing checked is
+/// the failure this whole ticket is about.
+pub(crate) fn check_label(outcome: &str) -> &'static str {
+    match outcome {
+        "passed" => "Passed",
+        "failed" => "Failed",
+        "not_checkable" => "Not checked",
+        _ => "Unknown",
+    }
+}
+
+/// The one-line summary above the checks, which has to be readable without
+/// reading the rows: an admin who came here because a payment did not arrive
+/// needs to know in one glance whether this configuration is the reason.
+pub(crate) fn check_summary(checks: &[RemoteGatewayCheck]) -> String {
+    if checks.is_empty() {
+        return "This gateway reported no checks.".to_string();
+    }
+    let failed: Vec<&str> = checks
+        .iter()
+        .filter(|c| c.outcome == "failed")
+        .map(|c| c.name.as_str())
+        .collect();
+    if !failed.is_empty() {
+        return format!("{} did not pass.", failed.join(" and "));
+    }
+    if checks.iter().any(|c| c.outcome == "not_checkable") {
+        return "Everything that can be checked from here passed.".to_string();
+    }
+    "Everything passed.".to_string()
+}
+
+/// The `config` object to send, or `None` to leave the stored credentials alone.
+///
+/// All-or-nothing, and that is forced by how the server stores them rather than
+/// chosen here: `upsert_payment_gateway` serialises this whole object and writes
+/// it to the secret provider as ONE value, so a save REPLACES the credential
+/// set. Sending one field would wipe the others. All blank therefore means
+/// "keep what is stored" (the MAPPS-363 omit-to-keep rule), and anything typed
+/// means every field is required, with the ones left empty named in the `Err`
+/// so each gets its own message.
+pub(crate) fn gateway_config_body(
+    provider: &str,
+    values: &std::collections::HashMap<String, String>,
+    is_test_mode: bool,
+) -> Result<Option<serde_json::Value>, Vec<&'static str>> {
+    let fields = credential_fields(provider);
+    if fields.is_empty() {
+        return Ok(None);
+    }
+    let value_of = |field: &CredentialField| {
+        values
+            .get(field.key)
+            .map(|v| v.trim().to_string())
+            .unwrap_or_default()
+    };
+    if fields.iter().all(|f| value_of(f).is_empty()) {
+        return Ok(None);
+    }
+    let missing: Vec<&'static str> = fields
+        .iter()
+        .filter(|f| value_of(f).is_empty())
+        .map(|f| f.key)
+        .collect();
+    if !missing.is_empty() {
+        return Err(missing);
+    }
+    let mut config = serde_json::Map::new();
+    for field in fields {
+        config.insert(field.key.to_string(), serde_json::json!(value_of(field)));
+    }
+    if provider == "paypal" {
+        // The one derived value: PayPal's credential blob carries which API
+        // base to talk to, and the admin already answered that above.
+        config.insert("sandbox".to_string(), serde_json::json!(is_test_mode));
+    }
+    Ok(Some(serde_json::Value::Object(config)))
+}
+
+/// MAPPS-760: the events a provider has to be subscribed to for this app to
+/// hear about a payment.
+///
+/// Half the setup answer, and not a nice-to-have. An admin who pastes the
+/// endpoint URL correctly and subscribes only to the completion event has
+/// refunds silently never reach the invoice, which is the same quiet class of
+/// failure MAPPS-759 closed: everything looks configured and a number is
+/// wrong.
+///
+/// The sets are the ones mokosh-server's providers act on
+/// (`provider/stripe.rs` and `provider/paypal.rs`); anything else is ignored
+/// there, so subscribing to more is noise rather than harm.
+pub(crate) fn webhook_events(provider: &str) -> &'static [&'static str] {
+    match provider {
+        "stripe" => &["checkout.session.completed", "charge.refunded"],
+        "paypal" => &[
+            "CHECKOUT.ORDER.APPROVED",
+            "PAYMENT.CAPTURE.COMPLETED",
+            "PAYMENT.CAPTURE.REFUNDED",
+        ],
+        _ => &[],
+    }
+}
+
+/// MAPPS-765: the provider-side half of setting a gateway up.
+///
+/// MAPPS-760 put the endpoint URL and the event list on this form, which
+/// removed the blocker. It was still not enough to finish unaided: *"without
+/// your help i dont know how to navigate through the set destination"*. The
+/// sentence it shipped - "Add this endpoint in Stripe, subscribe it to the
+/// events below" - asserted an order Stripe's UI does not have (it asks for
+/// the events first and the URL last), and named a control that does not
+/// exist there ("Add destination" is the button).
+///
+/// ## Everything in this table names something we do not control
+///
+/// That is the point of keeping it in ONE place. A provider can rename a
+/// screen or redesign a flow whenever it likes - this one did, between
+/// MAPPS-760 being written and an admin using it - and instructions that go
+/// stale silently are worse than none, because a confident wrong instruction
+/// costs more than an absent one. So the split is deliberate:
+///
+/// - What WE know and control - the endpoint URL, the exact events, which
+///   credential goes in which field, that the payload must carry the whole
+///   object - is stated on the form, because it is about us and does not go
+///   stale.
+/// - The provider's own click path is a LINK to their documentation, which
+///   they keep current. We give only enough orientation to find the screen.
+///
+/// A reviewer checking whether this has gone stale reads this table and
+/// nothing else.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ProviderSetup {
+    /// Where the setting lives, named loosely enough to survive a redesign
+    /// and precisely enough to find. Provider-controlled.
+    pub(crate) where_to_look: &'static str,
+    /// The provider's own setup documentation. Provider-controlled.
+    pub(crate) doc_url: &'static str,
+    /// A trap specific to this provider whose failure is SILENT - the setup
+    /// looks complete and money goes missing from the record. Empty when the
+    /// provider has none.
+    pub(crate) silent_trap: &'static str,
+}
+
+/// What we can tell an admin about `provider` beyond the URL and the events.
+pub(crate) fn provider_setup(provider: &str) -> Option<ProviderSetup> {
+    match provider {
+        "stripe" => Some(ProviderSetup {
+            where_to_look: "In Stripe, open Workbench and the Webhooks tab, then create a destination.",
+            doc_url: "https://docs.stripe.com/webhooks",
+            // Stripe now offers thin destinations, which deliver an id
+            // instead of the object. Our handler reads the object, so a thin
+            // destination verifies, answers 200 and records nothing: the
+            // customer pays, Stripe reports success, the invoice stays unpaid.
+            silent_trap: "Choose the destination that sends the full event data (Stripe calls these snapshot events). A destination that sends only an event ID will be accepted and recorded as delivered, and the payment will never reach the invoice.",
+        }),
+        "paypal" => Some(ProviderSetup {
+            where_to_look: "In the PayPal Developer dashboard, open your app and add a webhook.",
+            doc_url: "https://developer.paypal.com/api/rest/webhooks/",
+            // The third credential field wants the webhook's id, and the page
+            // that creates the webhook shows the URL far more prominently.
+            silent_trap: "The Webhook ID field above wants the ID PayPal shows beside the webhook after you save it, not the URL you just pasted in. PayPal verifies every delivery against that ID, so a wrong one refuses all of them.",
+        }),
+        _ => None,
+    }
+}
+
+/// One row of `GET /payment-gateways/webhook-endpoints` (PMS-1165).
+///
+/// `url` is `None` when the deployment sets no `PUBLIC_API_BASE_URL`, which is
+/// an operator fix and not something the admin can do in this form, so the two
+/// cases are rendered differently.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct RemoteWebhookEndpoint {
+    #[serde(default)]
+    pub(crate) provider: String,
+    #[serde(default)]
+    pub(crate) url: Option<String>,
+}
+
+/// What the form knows about where `provider`'s webhooks should be delivered.
+///
+/// Three states, each with its own thing to say, because a blank would leave
+/// an admin holding a request for a webhook signing secret with no way to act
+/// on it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum WebhookEndpoint {
+    /// The deployment answered with a URL.
+    Known(String),
+    /// The deployment has no public API base configured.
+    NoPublicBase,
+    /// This provider has no receiver, or the server predates PMS-1165.
+    Unknown,
+}
+
+/// Read the endpoint for `provider` out of what the server answered.
+///
+/// A server that predates PMS-1165 404s the fetch, which reaches here as
+/// `None` and reads as [`WebhookEndpoint::Unknown`]: the rest of the form
+/// still works, because a missing hint must not take the credential fields
+/// down with it.
+pub(crate) fn endpoint_for(
+    rows: Option<&[RemoteWebhookEndpoint]>,
+    provider: &str,
+) -> WebhookEndpoint {
+    let Some(rows) = rows else {
+        return WebhookEndpoint::Unknown;
+    };
+    match rows.iter().find(|r| r.provider == provider) {
+        Some(row) => match row.url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+            Some(url) => WebhookEndpoint::Known(url.to_string()),
+            None => WebhookEndpoint::NoPublicBase,
+        },
+        None => WebhookEndpoint::Unknown,
+    }
+}
+
+/// The provider choices to render, given the row being edited.
+///
+/// The configurable set, plus the row's own provider when this build cannot
+/// configure it: the select is disabled on an existing row, and an option that
+/// is not in the list renders as an empty control rather than as the name of
+/// the gateway the admin came to remove.
+pub(crate) fn provider_choices(current: &str) -> Vec<(String, String)> {
+    let mut choices: Vec<(String, String)> = CONFIGURABLE_PROVIDERS
+        .iter()
+        .map(|(id, name)| ((*id).to_string(), (*name).to_string()))
+        .collect();
+    if !current.is_empty() && !CONFIGURABLE_PROVIDERS.iter().any(|(id, _)| *id == current) {
+        choices.push((current.to_string(), humanize_provider(current)));
+    }
+    choices
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct GatewayFormState {
     /// `true` when this state was built from an existing row (provider is
@@ -5177,6 +5837,10 @@ struct GatewayFormState {
     /// Now button label. Empty string = clear the override (falls back
     /// to the provider default).
     client_display_name: String,
+    /// MAPPS-773: what the server says is stored, field by field. Empty for a
+    /// gateway being configured for the first time, and for a server that
+    /// predates PMS-1181.
+    credentials: Vec<RemoteCredentialState>,
 }
 
 impl GatewayFormState {
@@ -5188,6 +5852,7 @@ impl GatewayFormState {
             is_test_mode: true,
             configured: false,
             client_display_name: String::new(),
+            credentials: Vec::new(),
         }
     }
 
@@ -5199,6 +5864,7 @@ impl GatewayFormState {
             is_test_mode: g.is_test_mode,
             configured: g.configured,
             client_display_name: g.client_display_name.clone().unwrap_or_default(),
+            credentials: g.credentials.clone(),
         }
     }
 }
@@ -5226,29 +5892,56 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
     let mut provider = use_signal(|| initial.provider.clone());
     let mut is_active = use_signal(|| initial.is_active);
     let mut is_test_mode = use_signal(|| initial.is_test_mode);
-    // MAPPS-363: the API key is write-only. It always starts blank (the server
-    // never returns the stored secret); a blank value on save keeps the
-    // existing key.
-    let mut api_key = use_signal(String::new);
+    // MAPPS-363 / MAPPS-759: the provider's credentials, keyed by the name the
+    // server deserialises. Write-only: they always start blank (the server
+    // never returns a stored secret), and leaving every one blank keeps what is
+    // stored. Keyed rather than positional so switching provider on a new
+    // gateway cannot carry a Stripe key into a PayPal field.
+    let mut creds: Signal<std::collections::HashMap<String, String>> =
+        use_signal(std::collections::HashMap::new);
+    let mut cred_errs: Signal<std::collections::HashMap<String, String>> =
+        use_signal(std::collections::HashMap::new);
     // MAPPS-671 (mokosh-invoices P2a): the admin's Pay Now button label.
     // Seeded from the existing row so an edit keeps whatever was set;
     // blank = clear the override on save (server treats empty-string as
     // clear-to-provider-default).
     let mut client_display_name = use_signal(|| initial.client_display_name.clone());
     let mut client_display_name_err = use_signal(String::new);
+    // MAPPS-773: what the server says is stored, per field. Read off the row
+    // this modal was opened from rather than fetched again: it came from the
+    // same list, and a second read would be a second answer.
+    let stored_credentials = initial.credentials.clone();
+    // MAPPS-773: the result of the last check, and whether one is running.
+    let mut checking = use_signal(|| false);
+    let mut check_results: Signal<Option<Vec<RemoteGatewayCheck>>> = use_signal(|| None);
+    let mut check_error = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
     // MAPPS-357: block save / remove while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
-    // Inline slot for the key field, routed off the form-level banner.
-    let mut key_err = use_signal(String::new);
+    // MAPPS-760 / PMS-1165: where this deployment receives webhooks, answered
+    // per provider and independently of whether a gateway is configured. It
+    // has to be on screen BEFORE the first save: creating the endpoint in the
+    // provider's dashboard is what produces the signing secret this form then
+    // demands. A server that predates the endpoint 404s, which reads as
+    // `Unknown` and leaves the rest of the form alone.
+    let endpoints = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Vec<RemoteWebhookEndpoint>>(
+            "/payment-gateways/webhook-endpoints",
+        )
+        .await
+        .inspect_err(|e| tracing::warn!("webhook endpoint lookup failed: {e}"))
+        .ok()
+    });
 
-    let provider_options = vec![
-        SelectOption::new("stripe", "Stripe"),
-        SelectOption::new("authorize_net", "Authorize.Net"),
-        SelectOption::new("paypal", "PayPal"),
-    ];
+    // MAPPS-759: the set the server can actually serve, plus this row's own
+    // provider when it is one this build cannot configure.
+    let provider_options: Vec<SelectOption> = provider_choices(&provider.read())
+        .into_iter()
+        .map(|(id, name)| SelectOption::new(id, name))
+        .collect();
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -5258,17 +5951,46 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
             return;
         }
         error.set(String::new());
-        key_err.set(String::new());
+        cred_errs.set(std::collections::HashMap::new());
         client_display_name_err.set(String::new());
 
-        // MAPPS-363: the key is write-only. Send `config` only when the admin
-        // typed a key; a blank field keeps the existing secret (PMS-342
-        // omit-to-keep). A first-time gateway (no secret yet) must supply one -
-        // the server rejects a create with no `config` (400), so guard here for
-        // a field-level message instead.
-        let key = api_key.read().trim().to_string();
-        if key.is_empty() && !configured {
-            key_err.set("An API key is required to configure this gateway.".to_string());
+        // MAPPS-759: the credential set, or nothing when every field was left
+        // blank (PMS-342 omit-to-keep). A partial fill is refused here rather
+        // than sent, because the server replaces the whole stored set.
+        let selected = provider.read().clone();
+        let config = match gateway_config_body(&selected, &creds.read(), *is_test_mode.read()) {
+            Ok(value) => value,
+            Err(missing) => {
+                let mut errs = std::collections::HashMap::new();
+                for key in missing {
+                    errs.insert(
+                        key.to_string(),
+                        "Required. Saving replaces the whole credential set, so every field has to be filled in.".to_string(),
+                    );
+                }
+                cred_errs.set(errs);
+                return;
+            }
+        };
+        // A first-time gateway must supply one - the server rejects a create
+        // with no `config` (400), so this is a field-level message instead.
+        if config.is_none() && !configured {
+            let fields = credential_fields(&selected);
+            if fields.is_empty() {
+                error.set(format!(
+                    "{} cannot be configured from this app.",
+                    humanize_provider(&selected)
+                ));
+                return;
+            }
+            let mut errs = std::collections::HashMap::new();
+            for field in fields {
+                errs.insert(
+                    field.key.to_string(),
+                    "Required to configure this gateway.".to_string(),
+                );
+            }
+            cred_errs.set(errs);
             return;
         }
         // MAPPS-671: 64-char cap mirrors the server's validator; catching it
@@ -5280,7 +6002,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
         }
         saving.set(true);
         let mut body = serde_json::json!({
-            "provider": provider.read().clone(),
+            "provider": selected.clone(),
             "is_active": *is_active.read(),
             "is_test_mode": *is_test_mode.read(),
             // MAPPS-671: always send the current value. A trimmed empty
@@ -5290,8 +6012,8 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
             // state (the input is empty).
             "client_display_name": cdn.trim(),
         });
-        if !key.is_empty() {
-            body["config"] = serde_json::json!({ "api_key": key });
+        if let Some(config) = config {
+            body["config"] = config;
         }
         spawn(async move {
             #[cfg(feature = "app")]
@@ -5309,6 +6031,41 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                 }
             }
             saving.set(false);
+        });
+    };
+
+    // MAPPS-773: ask the provider whether what is stored works, without taking
+    // a payment. The provider is this row's own and never the select's current
+    // value: the select is locked on an existing row, and checking a provider
+    // other than the one whose credentials are stored would answer about the
+    // wrong gateway.
+    let check_provider = initial.provider.clone();
+    let handle_check = move |_| {
+        if *checking.read() {
+            return;
+        }
+        checking.set(true);
+        check_error.set(String::new());
+        check_results.set(None);
+        let provider = check_provider.clone();
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let path = format!("/payment-gateways/{provider}/check");
+                match crate::hooks::fetch::api::post_authed_typed::<Vec<RemoteGatewayCheck>, _>(
+                    &path,
+                    &serde_json::json!({}),
+                )
+                .await
+                {
+                    Ok(results) => check_results.set(Some(results)),
+                    Err(err) => check_error.set(format!(
+                        "Could not check this gateway: {}",
+                        err.user_message()
+                    )),
+                }
+            }
+            checking.set(false);
         });
     };
 
@@ -5410,35 +6167,232 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                         is_test_mode.set(next);
                     },
                 }
-                div { class: "space-y-1",
+                // MAPPS-759: the credentials the SELECTED provider needs,
+                // named the way that provider names them. One "API key" field
+                // fitted neither: the server parses a per-provider blob, and
+                // the one this form used to send read as empty strings.
+                div { class: "space-y-3",
                     div { class: "flex items-center gap-2",
-                        label {
-                            r#for: "gateway_api_key",
-                            class: "block text-sm font-medium text-content",
-                            "API key"
-                        }
+                        span { class: "block text-sm font-medium text-content", "Credentials" }
                         if configured {
                             Badge { variant: BadgeVariant::Green, "Configured" }
                         } else {
                             Badge { variant: BadgeVariant::Gray, "Not configured" }
                         }
                     }
-                    crate::components::Input {
-                        name: "gateway_api_key",
-                        r#type: "password",
-                        placeholder: if configured {
-                            "Leave blank to keep the current key".to_string()
+                    {
+                        let selected = provider.read().clone();
+                        let fields = credential_fields(&selected);
+                        if fields.is_empty() {
+                            rsx! {
+                                p { class: "text-sm text-muted",
+                                    "{humanize_provider(&selected)} cannot be configured from this app. You can remove it here."
+                                }
+                            }
                         } else {
-                            "Enter the provider API key".to_string()
-                        },
-                        required: !configured,
-                        help: "Stored encrypted at rest. It is write-only and never shown again.",
-                        error: key_err(),
-                        value: api_key.read().clone(),
-                        oninput: move |e: FormEvent| {
-                            key_err.set(String::new());
-                            api_key.set(e.value());
-                        },
+                            rsx! {
+                                for field in fields.iter().copied() {
+                                    {
+                                        let key = field.key;
+                                        // MAPPS-773: what the server says is
+                                        // stored for THIS field, so the empty
+                                        // box above it stops being the only
+                                        // thing the admin can see.
+                                        let stored = stored_credential_note(
+                                            stored_credentials
+                                                .iter()
+                                                .find(|c| c.key == key),
+                                        );
+                                        rsx! {
+                                            div { key: "{key}", class: "space-y-1",
+                                                crate::components::Input {
+                                                    name: "gateway_cred_{key}",
+                                                    label: field.label,
+                                                    r#type: "password",
+                                                    placeholder: field.placeholder.to_string(),
+                                                    required: !configured,
+                                                    help: field.help.to_string(),
+                                                    error: cred_errs.read().get(key).cloned().unwrap_or_default(),
+                                                    value: creds.read().get(key).cloned().unwrap_or_default(),
+                                                    oninput: move |e: FormEvent| {
+                                                        cred_errs.write().remove(key);
+                                                        creds.write().insert(key.to_string(), e.value());
+                                                    },
+                                                }
+                                                if !stored.is_empty() {
+                                                    p { class: "text-xs text-muted", "{stored}" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                // Said once, under the set, because it is the
+                                // rule for the set and not for any one field.
+                                p { class: "text-xs text-muted",
+                                    if configured {
+                                        "Secrets are stored encrypted and are never shown again in full. Leave them all blank to keep what is stored; filling any one replaces the whole set, so enter all of them."
+                                    } else {
+                                        "Stored encrypted. You will not see these again after you save."
+                                    }
+                                }
+                                // MAPPS-773: the check. Only for a gateway
+                                // that has something stored, because there is
+                                // nothing to check before the first save, and
+                                // an admin pressing it then would be told the
+                                // gateway is broken when it is merely new.
+                                if configured && provider_locked {
+                                    div { class: "rounded-md border border-line p-3 space-y-2",
+                                        div { class: "flex items-center justify-between gap-2",
+                                            span { class: "text-sm font-medium text-content", "Check this configuration" }
+                                            Button {
+                                                variant: ButtonVariant::Secondary,
+                                                loading: *checking.read(),
+                                                disabled: !can_mutate || *checking.read(),
+                                                title: (!can_mutate).then(|| "Can't reach the server to run a check".to_string()),
+                                                onclick: handle_check,
+                                                "Run check"
+                                            }
+                                        }
+                                        p { class: "text-xs text-muted",
+                                            "Asks the provider whether these stored credentials work, without taking a payment."
+                                        }
+                                        if !check_error.read().is_empty() {
+                                            p { class: "text-xs text-red-600 dark:text-red-300", "{check_error}" }
+                                        }
+                                        if let Some(results) = check_results.read().clone() {
+                                            p { class: "text-sm text-content", "{check_summary(&results)}" }
+                                            ul { class: "space-y-1",
+                                                for result in results {
+                                                    li {
+                                                        key: "{result.name}",
+                                                        class: "text-xs",
+                                                        span { class: "font-medium text-content", "{result.name}: " }
+                                                        span {
+                                                            class: match result.outcome.as_str() {
+                                                                "passed" => "text-green-600 dark:text-green-400",
+                                                                "failed" => "text-red-600 dark:text-red-300",
+                                                                _ => "text-muted",
+                                                            },
+                                                            "{check_label(&result.outcome)}"
+                                                        }
+                                                        if !result.detail.is_empty() {
+                                                            span { class: "text-muted", " {result.detail}" }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // MAPPS-760: the other half of the webhook signing secret
+                // above. The endpoint carries this tenant's id, which is not
+                // rendered anywhere else in this app, so without this an admin
+                // was asked for a secret belonging to a URL they had no
+                // supported way to learn.
+                {
+                    let selected = provider.read().clone();
+                    let events = webhook_events(&selected);
+                    let snap = endpoints.read_unchecked().clone();
+                    let known = endpoint_for(
+                        snap.as_ref().and_then(|r| r.as_deref()),
+                        &selected,
+                    );
+                    if events.is_empty() {
+                        rsx! {}
+                    } else {
+                        rsx! {
+                            div { class: "space-y-2 rounded-md border border-line bg-surface p-4",
+                                span { class: "block text-sm font-medium text-content", "Webhook endpoint" }
+                                match known {
+                                    WebhookEndpoint::Known(url) => rsx! {
+                                        div { class: "flex items-start gap-2",
+                                            code {
+                                                class: "flex-1 min-w-0 break-all text-xs text-content",
+                                                "{url}"
+                                            }
+                                            Button {
+                                                variant: ButtonVariant::Secondary,
+                                                size: ButtonSize::Small,
+                                                onclick: move |_| {
+                                                    let u = url.clone();
+                                                    #[cfg(target_arch = "wasm32")]
+                                                    if let Some(win) = web_sys::window() {
+                                                        let _ = win.navigator().clipboard().write_text(&u);
+                                                        crate::hooks::toast::push_toast(
+                                                            crate::components::AlertType::Success,
+                                                            "Webhook endpoint copied to clipboard.".to_string(),
+                                                        );
+                                                    }
+                                                    #[cfg(not(target_arch = "wasm32"))]
+                                                    let _ = u;
+                                                },
+                                                "Copy"
+                                            }
+                                        }
+                                        // MAPPS-765: no order is asserted
+                                        // here. The provider decides whether
+                                        // it asks for the URL or the events
+                                        // first, and Stripe asks for the
+                                        // events first, which the sentence
+                                        // this replaces got backwards.
+                                        p { class: "text-xs text-muted",
+                                            "Create a webhook in {humanize_provider(&selected)} for this URL, subscribed to the events below. It will give you a signing secret: paste that into the field above."
+                                        }
+                                    },
+                                    WebhookEndpoint::NoPublicBase => rsx! {
+                                        p { class: "text-xs text-muted",
+                                            "This deployment has no public API address set, so the endpoint cannot be shown. Whoever runs the server sets PUBLIC_API_BASE_URL."
+                                        }
+                                    },
+                                    WebhookEndpoint::Unknown => rsx! {
+                                        p { class: "text-xs text-muted",
+                                            "The endpoint for this provider could not be read from the server."
+                                        }
+                                    },
+                                }
+                                div {
+                                    span { class: "block text-xs text-muted", "Subscribe it to these events:" }
+                                    ul { class: "mt-1 space-y-0.5",
+                                        for event in events.iter().copied() {
+                                            li { key: "{event}",
+                                                code { class: "text-xs text-content", "{event}" }
+                                            }
+                                        }
+                                    }
+                                    // Said because the cost of missing one is
+                                    // invisible: the payment still records and
+                                    // the refund never does.
+                                    p { class: "mt-1 text-xs text-muted",
+                                        "All of them. Without the refund event a refund never reaches the invoice."
+                                    }
+                                }
+                                // MAPPS-765: where to find the screen, the
+                                // provider's own documentation, and the one
+                                // mistake whose failure is silent. Everything
+                                // in this block names something the provider
+                                // controls, so it lives in `provider_setup`
+                                // where its staleness is findable.
+                                if let Some(setup) = provider_setup(&selected) {
+                                    div { class: "space-y-1 border-t border-line pt-2",
+                                        p { class: "text-xs text-muted", "{setup.where_to_look}" }
+                                        if !setup.silent_trap.is_empty() {
+                                            p { class: "text-xs text-muted", "{setup.silent_trap}" }
+                                        }
+                                        a {
+                                            href: "{setup.doc_url}",
+                                            target: "_blank",
+                                            rel: "noopener noreferrer",
+                                            class: "text-xs text-accent hover:underline",
+                                            "{humanize_provider(&selected)}'s setup guide"
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 // MAPPS-671 (mokosh-invoices P2a): admin-set override for
@@ -5448,7 +6402,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                     name: "gateway_client_display_name",
                     label: "Button label (optional)".to_string(),
                     placeholder: "Pay with card".to_string(),
-                    help: "What the customer sees on the Pay Now button on their invoice. Leave blank to use the provider default.",
+                    help: "What your customer sees on the Pay Now button. Leave blank for the provider's default.",
                     maxlength: 64_i64,
                     error: client_display_name_err(),
                     value: client_display_name.read().clone(),
@@ -5474,6 +6428,397 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                 }
             },
         }
+    }
+}
+
+/// MAPPS-759: the credential set the form sends has to be the one the server
+/// parses, and the providers it offers have to be the ones the server can
+/// serve. Both drifted, and both drifted silently.
+/// MAPPS-765: the provider-side setup guidance.
+#[cfg(test)]
+mod provider_setup_tests {
+    use super::{provider_setup, webhook_events, CONFIGURABLE_PROVIDERS};
+
+    /// Every provider this app can configure has setup guidance, or an admin
+    /// meets the provider's dashboard with nothing but a URL - which is where
+    /// this started.
+    #[test]
+    fn every_configurable_provider_has_guidance() {
+        for (id, _) in CONFIGURABLE_PROVIDERS {
+            let setup = provider_setup(id).unwrap_or_else(|| panic!("{id} has no setup guidance"));
+            assert!(!setup.where_to_look.is_empty(), "{id}");
+            assert!(setup.doc_url.starts_with("https://"), "{id}");
+        }
+        assert!(provider_setup("authorize_net").is_none());
+    }
+
+    /// The guidance names no button.
+    ///
+    /// A provider renames its controls whenever it likes - Stripe did, between
+    /// the previous copy being written and an admin using it, which is how
+    /// that copy came to name a control that does not exist. Orientation to a
+    /// screen survives a redesign; a quoted button label does not, and a
+    /// confident wrong instruction costs more than an absent one.
+    #[test]
+    fn the_guidance_does_not_quote_a_button_label() {
+        for (id, _) in CONFIGURABLE_PROVIDERS {
+            let setup = provider_setup(id).expect("guidance");
+            let lowered = setup.where_to_look.to_lowercase();
+            for quoted in [
+                "click ",
+                "press ",
+                "\"add",
+                "button labelled",
+                "button labeled",
+            ] {
+                assert!(!lowered.contains(quoted), "{id}: {}", setup.where_to_look);
+            }
+        }
+    }
+
+    /// Each provider's silent trap is stated, because that is the mistake an
+    /// admin cannot detect: the setup looks complete and money goes missing
+    /// from the record.
+    #[test]
+    fn each_provider_states_its_silent_trap() {
+        let stripe = provider_setup("stripe").expect("stripe");
+        assert!(
+            stripe.silent_trap.to_lowercase().contains("snapshot"),
+            "a thin destination records nothing: {}",
+            stripe.silent_trap
+        );
+        let paypal = provider_setup("paypal").expect("paypal");
+        let lowered = paypal.silent_trap.to_lowercase();
+        assert!(lowered.contains("id"), "{}", paypal.silent_trap);
+        assert!(lowered.contains("not the url"), "{}", paypal.silent_trap);
+    }
+
+    /// The guidance is the provider-side half of what the events list is the
+    /// other half of, so the two have to cover the same providers.
+    #[test]
+    fn guidance_and_events_cover_the_same_providers() {
+        for (id, _) in CONFIGURABLE_PROVIDERS {
+            assert_eq!(
+                provider_setup(id).is_some(),
+                !webhook_events(id).is_empty(),
+                "{id} has one half of the setup instructions and not the other"
+            );
+        }
+    }
+}
+
+/// MAPPS-762: where a payment provider returns the customer.
+/// MAPPS-772: the post-payment wait ends, and says so.
+#[cfg(test)]
+mod paid_landing_tests {
+    use super::locked_invoice_note;
+
+    /// The wait is bounded in the loop (15 ticks of 2s), and the arm that
+    /// renders the spinner has to be bounded by the same thing. `is_paid_landing`
+    /// reads a boot-time snapshot and never goes false, so without a separate
+    /// expiry signal the spinner outlives its own polling - which is what a
+    /// customer sat on after paying with PayPal.
+    #[test]
+    fn the_wait_is_bounded_in_the_source_that_renders_it() {
+        let source = include_str!("billing.rs");
+        assert!(
+            source.contains("poll_expired.set(true);"),
+            "the polling loop must record that its budget is spent"
+        );
+        assert!(
+            source.contains("is_paid_landing && !poll_expired() && inv.status != \"paid\""),
+            "the processing arm must stop matching once the budget is spent"
+        );
+    }
+
+    /// Every action the locked-invoice note names - record a payment, write it
+    /// off, issue a credit note - is staff-only, and it addresses the MSP
+    /// about "your customer". It was rendering on the customer's own invoice.
+    #[test]
+    fn the_locked_note_is_written_for_the_msp_not_the_customer() {
+        let sent = locked_invoice_note("sent").expect("a sent invoice is locked");
+        assert!(sent.contains("your customer"), "{sent}");
+        let source = include_str!("billing.rs");
+        assert!(
+            source.contains("let frozen_note = staff_only"),
+            "the note must be gated on the staff plane"
+        );
+    }
+}
+
+#[cfg(test)]
+mod checkout_return_tests {
+    use crate::Route;
+
+    /// The path comes from the router, so it is whatever the app serves.
+    ///
+    /// It used to be typed as `/portal/invoices/{id}`, which was retired with
+    /// the customer-portal route family: the customer paid, Stripe returned
+    /// them, and they landed on the 404 page with a charged card and no
+    /// confirmation. Deriving it means a rename moves the return URL too.
+    #[test]
+    fn the_return_path_is_the_invoice_route_this_app_serves() {
+        let id = "2f1c2f1e-0000-4000-8000-00000000abcd";
+        let path = Route::InvoiceDetail { id: id.to_string() }.to_string();
+        assert_eq!(path, format!("/invoices/{id}"));
+        assert!(
+            !path.starts_with("/portal/invoices/"),
+            "the retired route must never be a return target again: {path}"
+        );
+    }
+
+    /// `?paid=1` is what the invoice page reads to show the confirmation
+    /// splash, so the success URL has to carry it and the cancel URL must not
+    /// (a customer who backed out has paid nothing).
+    #[test]
+    fn success_carries_the_paid_marker_and_cancel_does_not() {
+        let path = Route::InvoiceDetail {
+            id: "2f1c2f1e-0000-4000-8000-00000000abcd".to_string(),
+        }
+        .to_string();
+        let success = format!("https://msp.example{path}?paid=1");
+        let cancel = format!("https://msp.example{path}");
+        assert!(success.ends_with("?paid=1"));
+        assert!(!cancel.contains("paid="));
+        assert!(success.starts_with(&cancel));
+    }
+}
+
+#[cfg(test)]
+mod gateway_credential_tests {
+    use super::{
+        credential_fields, endpoint_for, gateway_config_body, provider_choices, webhook_events,
+        RemoteWebhookEndpoint, WebhookEndpoint, CONFIGURABLE_PROVIDERS,
+    };
+    use std::collections::HashMap;
+
+    fn values(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    /// The keys are the server's, not this page's. `mokosh-server`'s
+    /// `StripeCredentials` and `PaypalCredentials` are both
+    /// `#[serde(default)]`, so a key it does not know is not an error there -
+    /// it reads as an empty string, the row reports Configured, and the
+    /// failure waits until a customer presses Pay Now. That is exactly what
+    /// `{"api_key": ...}` did, so the names are asserted in full.
+    #[test]
+    fn the_credential_keys_are_the_ones_the_server_deserialises() {
+        let stripe: Vec<&str> = credential_fields("stripe").iter().map(|f| f.key).collect();
+        assert_eq!(stripe, vec!["secret_key", "webhook_secret"]);
+        let paypal: Vec<&str> = credential_fields("paypal").iter().map(|f| f.key).collect();
+        assert_eq!(paypal, vec!["client_id", "client_secret", "webhook_id"]);
+        for provider in ["stripe", "paypal"] {
+            assert!(
+                !credential_fields(provider)
+                    .iter()
+                    .any(|f| f.key == "api_key"),
+                "api_key is the key nothing reads"
+            );
+        }
+    }
+
+    /// A provider this build cannot configure offers no fields, so the form
+    /// cannot write a credential set for one. An existing row is still
+    /// viewable and removable, which is why this is an empty slice rather than
+    /// a panic.
+    #[test]
+    fn an_unconfigurable_provider_offers_no_fields() {
+        assert!(credential_fields("authorize_net").is_empty());
+        assert!(credential_fields("").is_empty());
+        assert_eq!(
+            gateway_config_body("authorize_net", &values(&[("secret_key", "x")]), true),
+            Ok(None),
+            "and nothing typed can be written for it"
+        );
+    }
+
+    /// The whole object replaces the stored set, so a fill is all or nothing.
+    #[test]
+    fn a_partial_fill_names_every_field_left_empty() {
+        let partial = values(&[("secret_key", "sk_test_1")]);
+        assert_eq!(
+            gateway_config_body("stripe", &partial, true),
+            Err(vec!["webhook_secret"])
+        );
+        let partial = values(&[("client_id", "id"), ("webhook_id", "  ")]);
+        assert_eq!(
+            gateway_config_body("paypal", &partial, true),
+            Err(vec!["client_secret", "webhook_id"]),
+            "whitespace is not a value"
+        );
+    }
+
+    /// Every field blank is the MAPPS-363 omit-to-keep case, which is what
+    /// lets an admin change Test mode or the button label without retyping a
+    /// secret the server never gave back.
+    #[test]
+    fn all_blank_keeps_what_is_stored() {
+        assert_eq!(gateway_config_body("stripe", &values(&[]), true), Ok(None));
+        assert_eq!(
+            gateway_config_body(
+                "stripe",
+                &values(&[("secret_key", "   "), ("webhook_secret", "")]),
+                true
+            ),
+            Ok(None)
+        );
+    }
+
+    /// A complete set is sent trimmed and under the server's own key names,
+    /// and PayPal's `sandbox` comes from the Test mode switch rather than from
+    /// a second control that could contradict it.
+    #[test]
+    fn a_complete_set_is_sent_under_the_server_key_names() {
+        let stripe = gateway_config_body(
+            "stripe",
+            &values(&[
+                ("secret_key", "  sk_test_1  "),
+                ("webhook_secret", "whsec_1"),
+            ]),
+            true,
+        )
+        .expect("complete")
+        .expect("a config");
+        assert_eq!(
+            stripe,
+            serde_json::json!({"secret_key": "sk_test_1", "webhook_secret": "whsec_1"}),
+            "Stripe's blob carries no sandbox flag; the key prefix says which mode it is"
+        );
+
+        let paypal_values = values(&[
+            ("client_id", "id_1"),
+            ("client_secret", "secret_1"),
+            ("webhook_id", "wh_1"),
+        ]);
+        for test_mode in [true, false] {
+            let paypal = gateway_config_body("paypal", &paypal_values, test_mode)
+                .expect("complete")
+                .expect("a config");
+            assert_eq!(
+                paypal,
+                serde_json::json!({
+                    "client_id": "id_1",
+                    "client_secret": "secret_1",
+                    "webhook_id": "wh_1",
+                    "sandbox": test_mode,
+                })
+            );
+        }
+    }
+
+    /// The picker offers what the server's `provider::SUPPORTED` can serve.
+    /// `authorize_net` is in the column's CHECK constraint and in nothing
+    /// else, so offering it was a 400 the admin could not act on.
+    #[test]
+    fn the_picker_offers_only_what_the_server_can_serve() {
+        let offered: Vec<&str> = CONFIGURABLE_PROVIDERS.iter().map(|(id, _)| *id).collect();
+        assert_eq!(offered, vec!["stripe", "paypal"]);
+        let ids: Vec<String> = provider_choices("").into_iter().map(|(id, _)| id).collect();
+        assert_eq!(ids, vec!["stripe", "paypal"]);
+    }
+
+    /// MAPPS-760: the event sets are the ones the server's providers act on.
+    /// Named in full, because the cost of a missing one is invisible: with
+    /// only the completion event subscribed, payments record and refunds
+    /// silently never reach the invoice.
+    #[test]
+    fn the_event_lists_are_the_ones_the_server_acts_on() {
+        assert_eq!(
+            webhook_events("stripe"),
+            ["checkout.session.completed", "charge.refunded"]
+        );
+        assert_eq!(
+            webhook_events("paypal"),
+            [
+                "CHECKOUT.ORDER.APPROVED",
+                "PAYMENT.CAPTURE.COMPLETED",
+                "PAYMENT.CAPTURE.REFUNDED",
+            ]
+        );
+        for provider in ["stripe", "paypal"] {
+            assert!(
+                webhook_events(provider)
+                    .iter()
+                    .any(|e| e.to_lowercase().contains("refund")),
+                "{provider} must tell the admin to subscribe to refunds"
+            );
+        }
+        assert!(webhook_events("authorize_net").is_empty());
+    }
+
+    /// The three states the form renders differently. A blank would leave the
+    /// admin holding a request for a webhook signing secret with nothing to
+    /// act on, which is the whole defect.
+    #[test]
+    fn an_absent_url_is_told_apart_from_an_absent_answer() {
+        let rows = vec![
+            RemoteWebhookEndpoint {
+                provider: "stripe".to_string(),
+                url: Some("https://api.example.com/api/v1/stripe/webhooks/x".to_string()),
+            },
+            RemoteWebhookEndpoint {
+                provider: "paypal".to_string(),
+                url: None,
+            },
+        ];
+        assert_eq!(
+            endpoint_for(Some(&rows), "stripe"),
+            WebhookEndpoint::Known("https://api.example.com/api/v1/stripe/webhooks/x".to_string())
+        );
+        // The server answered, and said it has no public base: an operator
+        // fix, not something this form can offer.
+        assert_eq!(
+            endpoint_for(Some(&rows), "paypal"),
+            WebhookEndpoint::NoPublicBase
+        );
+        // A provider the server did not list at all.
+        assert_eq!(
+            endpoint_for(Some(&rows), "authorize_net"),
+            WebhookEndpoint::Unknown
+        );
+        // And a server that predates the endpoint: the fetch failed, which
+        // must not read as "no public base" and must not take the rest of the
+        // form down with it.
+        assert_eq!(endpoint_for(None, "stripe"), WebhookEndpoint::Unknown);
+    }
+
+    /// A blank string is not a URL. A forwarded-but-unset variable arrives as
+    /// `""` (PMS-836), so the server could answer one.
+    #[test]
+    fn a_blank_url_reads_as_no_public_base() {
+        let rows = vec![RemoteWebhookEndpoint {
+            provider: "stripe".to_string(),
+            url: Some("   ".to_string()),
+        }];
+        assert_eq!(
+            endpoint_for(Some(&rows), "stripe"),
+            WebhookEndpoint::NoPublicBase
+        );
+    }
+
+    /// A row already storing a provider this build cannot configure still
+    /// renders its name: the select is disabled on an existing row, and an
+    /// option that is not in the list would paint an empty control on the
+    /// gateway the admin came to remove.
+    #[test]
+    fn an_existing_unconfigurable_row_keeps_its_name_in_the_picker() {
+        let choices = provider_choices("authorize_net");
+        assert_eq!(
+            choices
+                .last()
+                .map(|(id, name)| (id.as_str(), name.as_str())),
+            Some(("authorize_net", "Authorize.Net"))
+        );
+        assert_eq!(choices.len(), CONFIGURABLE_PROVIDERS.len() + 1);
+        // And a configurable one is never listed twice.
+        assert_eq!(
+            provider_choices("stripe").len(),
+            CONFIGURABLE_PROVIDERS.len()
+        );
     }
 }
 
@@ -5810,6 +7155,210 @@ mod invoice_tax_tests {
         assert_eq!(tax_label(Some("")), "Tax");
         assert_eq!(tax_label(None), "Tax");
         assert_eq!(tax_label(Some("n/a")), "Tax");
+    }
+}
+
+/// MAPPS-773: what a configured gateway shows about itself.
+#[cfg(test)]
+mod gateway_credential_state_tests {
+    use super::{
+        check_label, check_summary, stored_credential_note, RemoteCredentialState,
+        RemoteGatewayCheck,
+    };
+
+    fn state(key: &str, present: bool, secret: bool, value: Option<&str>) -> RemoteCredentialState {
+        RemoteCredentialState {
+            key: key.to_string(),
+            label: key.to_string(),
+            present,
+            secret,
+            value: value.map(str::to_string),
+        }
+    }
+
+    fn check(name: &str, outcome: &str) -> RemoteGatewayCheck {
+        RemoteGatewayCheck {
+            name: name.to_string(),
+            outcome: outcome.to_string(),
+            detail: String::new(),
+        }
+    }
+
+    /// An identifier is shown whole, because comparing the stored webhook ID
+    /// against the one the provider prints is the check this exists for.
+    #[test]
+    fn an_identifier_is_shown_whole() {
+        assert_eq!(
+            stored_credential_note(Some(&state(
+                "webhook_id",
+                true,
+                false,
+                Some("3WL54026PT222181E")
+            ))),
+            "Stored: 3WL54026PT222181E"
+        );
+    }
+
+    /// A secret is whatever tail the server chose to send, and this client
+    /// never derives one itself.
+    #[test]
+    fn a_secret_is_shown_as_the_tail_the_server_sent() {
+        assert_eq!(
+            stored_credential_note(Some(&state("client_secret", true, true, Some("LRDN")))),
+            "Stored, ending LRDN"
+        );
+        // Stored, and too short for the server to show a tail of.
+        assert_eq!(
+            stored_credential_note(Some(&state("client_secret", true, true, None))),
+            "Stored."
+        );
+    }
+
+    /// Which field is missing is the answer an admin came for.
+    #[test]
+    fn an_absent_field_says_so() {
+        assert_eq!(
+            stored_credential_note(Some(&state("webhook_id", false, false, None))),
+            "Not stored."
+        );
+    }
+
+    /// A server that predates PMS-1181 says nothing, and nothing is rendered.
+    /// It must not read as "not stored", which would be an accusation about a
+    /// gateway that is working.
+    #[test]
+    fn a_server_that_says_nothing_renders_nothing() {
+        assert_eq!(stored_credential_note(None), "");
+    }
+
+    /// `not_checkable` is not a pass, in the label or in the summary.
+    #[test]
+    fn an_unchecked_field_is_never_reported_as_passing() {
+        assert_eq!(check_label("not_checkable"), "Not checked");
+        assert_eq!(
+            check_summary(&[
+                check("Secret key", "passed"),
+                check("Webhook signing secret", "not_checkable")
+            ]),
+            "Everything that can be checked from here passed."
+        );
+        assert_eq!(
+            check_summary(&[check("Secret key", "passed"), check("Webhook ID", "passed")]),
+            "Everything passed."
+        );
+    }
+
+    /// A failure names the check that failed, so the summary alone tells the
+    /// admin which half of the form to fix.
+    #[test]
+    fn a_failure_names_what_failed() {
+        assert_eq!(
+            check_summary(&[
+                check("Client ID and secret", "passed"),
+                check("Webhook ID", "failed"),
+            ]),
+            "Webhook ID did not pass."
+        );
+        assert_eq!(
+            check_summary(&[check("Secret key", "failed"), check("Webhook ID", "failed")]),
+            "Secret key and Webhook ID did not pass."
+        );
+    }
+}
+
+/// MAPPS-771: which Pay buttons an invoice offers.
+#[cfg(test)]
+mod pay_option_tests {
+    use super::{pay_options, pay_options_for_render, RemotePaymentProvider};
+
+    fn remote(provider: &str, label: &str) -> RemotePaymentProvider {
+        RemotePaymentProvider {
+            provider: provider.to_string(),
+            label: label.to_string(),
+        }
+    }
+
+    /// Two connected providers give two buttons, in the server's order, each
+    /// naming the provider it pays through so the request can say which one
+    /// was pressed.
+    #[test]
+    fn each_connected_provider_gets_its_own_button() {
+        let options = pay_options(
+            &[
+                remote("paypal", "Pay with PayPal"),
+                remote("stripe", "Pay with card"),
+            ],
+            Some("Pay with PayPal"),
+        );
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0].provider.as_deref(), Some("paypal"));
+        assert_eq!(options[0].label, "Pay with PayPal");
+        assert_eq!(options[1].provider.as_deref(), Some("stripe"));
+    }
+
+    /// A server that predates PMS-1179 sends one label and no list. That
+    /// becomes a single button naming NO provider, which is the request every
+    /// client sent before the choice existed, so an old server and a new
+    /// client still transact.
+    #[test]
+    fn an_older_server_still_gets_one_working_button() {
+        let options = pay_options(&[], Some("Pay with card"));
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].provider, None);
+        assert_eq!(options[0].label, "Pay with card");
+    }
+
+    /// Nothing to offer is no button, not a button that cannot work.
+    #[test]
+    fn no_labels_means_no_buttons() {
+        assert!(pay_options(&[], None).is_empty());
+        assert!(pay_options(&[], Some("   ")).is_empty());
+    }
+
+    /// A malformed entry is dropped rather than rendered: a button with no
+    /// label is invisible, and one naming no provider would pay through
+    /// whichever gateway the server resolved, which is not what the customer
+    /// pressed.
+    #[test]
+    fn an_incomplete_entry_is_not_offered() {
+        let options = pay_options(&[remote("", "Pay with card"), remote("paypal", "  ")], None);
+        assert!(options.is_empty(), "{options:?}");
+    }
+
+    /// Before readiness lands there is still a button, because one that
+    /// appears late reads as a broken page; it carries the same words this
+    /// page used before any of this.
+    #[test]
+    fn the_pending_state_keeps_one_button() {
+        let rendered = pay_options_for_render(&[], "Pay Now");
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0].label, "Pay Now");
+        assert_eq!(rendered[0].provider, None);
+    }
+
+    /// MAPPS-774: pressing one Pay button spins that button and no other.
+    ///
+    /// Two buttons spinning reads as the page starting two payments for one
+    /// invoice, which is the thing the disabled state beside this exists to
+    /// prevent.
+    #[test]
+    fn only_the_pressed_button_shows_its_payment_starting() {
+        use super::pay_button_loading;
+        assert!(pay_button_loading(Some(1), 1));
+        assert!(!pay_button_loading(Some(1), 0));
+        // Nothing pressed, nothing spinning - including the single button the
+        // pending state renders before readiness lands.
+        assert!(!pay_button_loading(None, 0));
+    }
+
+    /// Once readiness lands, the fallback is not mixed in with the real ones.
+    #[test]
+    fn resolved_choices_replace_the_fallback() {
+        let choices = pay_options(&[remote("stripe", "Pay with card")], None);
+        let rendered = pay_options_for_render(&choices, "Pay Now");
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0].provider.as_deref(), Some("stripe"));
+        assert_eq!(rendered[0].label, "Pay with card");
     }
 }
 

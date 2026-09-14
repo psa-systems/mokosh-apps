@@ -331,6 +331,10 @@ enum PickerState {
 
 #[component]
 pub fn ContactPickerPage(token: String) -> Element {
+    // MAPPS-761: a link that brought this customer here may name the page it
+    // really wanted. Captured on arrival, because signing in replaces the URL
+    // several times over and the query string does not survive the hops.
+    use_hook(super::next_target::remember_from_query);
     let nav = use_navigator();
     let mut state = use_signal(|| PickerState::Loading);
     let mut mfa_code = use_signal(String::new);
@@ -761,5 +765,7 @@ fn install_session_and_go(nav: &Navigator, resp: &ContactLoginResponseWire) {
         crate::hooks::fetch::api::set_contact_last_slug(&slug);
     }
     crate::hooks::capabilities::set_contact_capabilities(Some(caps));
-    nav.replace(Route::Dashboard {});
+    // MAPPS-761: the page the link that brought them named, else the
+    // dashboard, which is where this always went.
+    nav.replace(super::next_target::landing());
 }

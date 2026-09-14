@@ -111,6 +111,39 @@ pub fn pathname_is_contact_forbidden(path: &str) -> bool {
 /// bypass: a popstate-driven re-render of a protected route never
 /// commits any of its content to the DOM, so there is no flash of
 /// authenticated UI before redirect.
+/// MAPPS-769: whether the guard must wait rather than decide.
+///
+/// A contact session lives in memory, with its refresh token mirrored to
+/// localStorage so a cold load can re-mint it. Between those two facts there
+/// is a window where the visitor HAS a session and the app does not know it
+/// yet, and the guard's fall-through does not merely flash: it navigates. A
+/// customer returning from a completed payment lands in exactly that window,
+/// so deciding early sends them to a sign-in page holding a charged card.
+///
+/// Pure, and called from the `use_signal` initialiser rather than an effect,
+/// because an effect runs after the first render and cannot gate it. Pure
+/// also so the truth table is testable: this is the logic MAPPS-767 got
+/// wrong, and reading hook ordering out of a component is how it stayed
+/// wrong.
+pub(crate) fn hold_for_contact_rehydrate(
+    staff_bearer: bool,
+    contact_session: bool,
+    contact_refresh_token: bool,
+) -> bool {
+    // MAPPS-630: a staff bearer wins outright. Rehydrating a stale contact
+    // token under one would resurrect a portal session inside a staff tab,
+    // and localStorage is cross-tab.
+    if staff_bearer {
+        return false;
+    }
+    // Already signed in as a contact: nothing to wait for.
+    if contact_session {
+        return false;
+    }
+    // No mirrored token means no rehydrate is coming, so waiting would hang.
+    contact_refresh_token
+}
+
 #[component]
 pub fn AuthGuard() -> Element {
     let auth = hooks::use_auth();
@@ -124,8 +157,43 @@ pub fn AuthGuard() -> Element {
     // refresh on `/dashboard` under a contact session may transiently
     // fall through the guard's next branch, then re-render once the
     // refresh lands.
+    // MAPPS-767 / MAPPS-769: whether a contact rehydrate is still in flight.
+    //
+    // The effect below races the first render on purpose, which is fine while
+    // the fall-through only FLASHES. It does not only flash: it navigates, so
+    // a customer returning from a completed payment - a cold load of
+    // `/invoices/{id}?paid=1` - was bounced to a sign-in page before the
+    // refresh landed, holding a charged card and no confirmation. The guard
+    // holds its decision while this is true, the way it already does for
+    // `auth_state.is_loading`.
+    //
+    // MAPPS-769: the condition is decided HERE, in the initialiser, and not
+    // inside the effect. `use_effect` runs AFTER the first render, so a flag
+    // raised in there is still false on the render that falls through and
+    // navigates - it can never gate the one render that does the damage. That
+    // is what shipped under MAPPS-767 and why the bounce survived it.
+    //
+    // `current_contact_refresh_token` reads localStorage and caches into the
+    // thread-local when memory is empty, so this answers correctly on a cold
+    // load, which is the only situation that matters here.
+    let mut contact_rehydrating = use_signal(|| {
+        #[cfg(feature = "web")]
+        {
+            // Same three conditions the effect acts on, in the same order and
+            // for the same reasons (MAPPS-630 on the staff bearer).
+            hold_for_contact_rehydrate(
+                crate::hooks::fetch::api::current_access_token().is_some(),
+                crate::hooks::fetch::api::has_contact_session(),
+                crate::hooks::fetch::api::current_contact_refresh_token().is_some(),
+            )
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            false
+        }
+    });
     #[cfg(feature = "web")]
-    use_effect(|| {
+    use_effect(move || {
         // MAPPS-630: skip the contact rehydrate when a staff bearer
         // is present. The two planes are mutually exclusive within
         // one browser origin, and blindly rehydrating a stale
@@ -141,10 +209,30 @@ pub fn AuthGuard() -> Element {
         {
             spawn(async move {
                 let _ = crate::hooks::contact_auth::refresh_contact_session().await;
+                // Cleared whatever the outcome. A refresh that FAILS has to
+                // release the guard so the visitor reaches the sign-in page;
+                // hanging on a placeholder would be a worse bug than the
+                // bounce this replaces.
+                contact_rehydrating.set(false);
             });
+        } else {
+            // Nothing to wait for: the initialiser and this effect read the
+            // same three values, but a staff bearer can arrive between them,
+            // and a signal left raised with no spawn to lower it would hang
+            // the guard on its placeholder forever.
+            contact_rehydrating.set(false);
         }
     });
     let auth_state = auth.read();
+    // MAPPS-767: same placeholder, same reason - a session is on its way and
+    // deciding now would decide wrong.
+    if contact_rehydrating() {
+        return rsx! {
+            div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
+                "Loading…"
+            }
+        };
+    }
     if auth_state.is_loading {
         // Still hydrating tokens from sessionStorage. Render a
         // placeholder so we do not kick off the OIDC dance just to
@@ -2367,6 +2455,52 @@ fn NotFound(route: Vec<String>) -> Element {
     rsx! { not_found::NotFoundPage { route } }
 }
 
+/// MAPPS-769: when the guard waits instead of deciding.
+#[cfg(test)]
+mod contact_rehydrate_hold {
+    use super::hold_for_contact_rehydrate;
+
+    /// The case the issue is about: a cold load with a mirrored refresh token
+    /// and nothing in memory yet. A customer returning from a completed
+    /// payment is always in this state, and deciding here sends them to a
+    /// sign-in page holding a charged card.
+    #[test]
+    fn a_cold_load_with_a_mirrored_token_waits() {
+        assert!(hold_for_contact_rehydrate(false, false, true));
+    }
+
+    /// Nothing to wait for: no token means no rehydrate is coming, and
+    /// waiting would hang the guard on its placeholder rather than letting
+    /// the visitor reach the sign-in page they need.
+    #[test]
+    fn no_token_means_no_wait() {
+        assert!(!hold_for_contact_rehydrate(false, false, false));
+    }
+
+    /// Already signed in as a contact: decide immediately, or every portal
+    /// navigation would flash a placeholder.
+    #[test]
+    fn an_existing_contact_session_does_not_wait() {
+        assert!(!hold_for_contact_rehydrate(false, true, true));
+        assert!(!hold_for_contact_rehydrate(false, true, false));
+    }
+
+    /// MAPPS-630: a staff bearer wins outright, token or not. localStorage is
+    /// cross-tab, so waiting on a stale contact token here would resurrect a
+    /// portal session inside a freshly opened staff tab.
+    #[test]
+    fn a_staff_bearer_never_waits() {
+        for contact_session in [true, false] {
+            for token in [true, false] {
+                assert!(
+                    !hold_for_contact_rehydrate(true, contact_session, token),
+                    "staff bearer waited: session={contact_session} token={token}"
+                );
+            }
+        }
+    }
+}
+
 /// MAPPS-396 recurrence gate: every link mokosh-server builds on the SPA
 /// origin (`CLIENT_ORIGIN`, wired into the services in `src/api/router.rs`)
 /// and emails to a user must resolve to a real route here, not the catch-all
@@ -2402,6 +2536,23 @@ mod emailed_link_routes {
         // src/modules/auth/service.rs (security notice) and
         // src/modules/invitations/service.rs (invite): the bare SPA origin.
         ("auth::security_notice / invitations::create", "/"),
+        // src/modules/billing/service.rs: the invoice pay link, on the send
+        // path and on the overdue reminder worker (PMS-1168). Both shapes,
+        // because a company with no `portal_id` gets the generic login.
+        //
+        // This entry is the one that was missing. The retired
+        // `/portal/invoices/{id}` was emailed for months after the
+        // customer-portal route family went, and the gate this test IS could
+        // not see it, because nothing listed the link. A guard with a hole in
+        // its input is a guard that reports clean.
+        (
+            "billing::email_invoice (company with a portal id)",
+            "/portal/123456789/login",
+        ),
+        (
+            "billing::email_invoice (company without one)",
+            "/portal/login",
+        ),
     ];
 
     #[test]
