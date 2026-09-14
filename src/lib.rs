@@ -1091,6 +1091,15 @@ pub enum Route {
     #[route("/profile")]
     Profile {},
 
+    /// MAPPS-674: contact-plane saved payment methods. Add a card
+    /// through Stripe Checkout in setup mode, remove one, pick which
+    /// card is the default. Contact plane only: staff have no cards
+    /// to save. Page gates on `use_capability("payment_methods:manage_own")`
+    /// and renders a `PermissionRequired` splash otherwise, matching
+    /// the shape `ContactPortalBranding` uses.
+    #[route("/settings/payment-methods")]
+    ContactPaymentMethods {},
+
     // Build versions + live API/dependency health. Reachable by any
     // authenticated user from the user menu (PMS-237).
     #[route("/system-status")]
@@ -1922,6 +1931,16 @@ fn Profile() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             profile::ProfilePage {}
+        }
+    }
+}
+
+/// MAPPS-674: contact-plane saved payment methods.
+#[component]
+fn ContactPaymentMethods() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            payment_methods::ContactPaymentMethodsPage {}
         }
     }
 }

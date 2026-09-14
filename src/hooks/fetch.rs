@@ -2279,6 +2279,57 @@ pub mod api {
         })
     }
 
+    /// MAPPS-674: PUT with no body, no response body.
+    /// `PUT /contact/payment-methods/{id}/default` is the caller: the
+    /// server flips the picked row to default and returns 204, so there
+    /// is nothing to deserialise either way.
+    #[cfg(feature = "app")]
+    pub async fn put_contact_authed_no_content(path: &str) -> Result<(), ApiError> {
+        let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::put(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .send()
+            .await
+            .map_err(network_err)?;
+        let status = resp.status();
+        super::note_response_status(status);
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
+        let body_text = resp.text().await.unwrap_or_default();
+        let (message, fields, envelope_code, envelope_body) =
+            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
+                Ok(env) => {
+                    let code = env.error.code.clone();
+                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
+                    (
+                        env.error.message,
+                        env.error.errors.unwrap_or_default(),
+                        code,
+                        raw,
+                    )
+                }
+                Err(_) => (
+                    body_text.chars().take(200).collect(),
+                    Vec::new(),
+                    String::new(),
+                    None,
+                ),
+            };
+        Err(ApiError::Status {
+            code: status,
+            message,
+            fields,
+            envelope_code,
+            envelope_body,
+        })
+    }
+
     #[cfg(feature = "app")]
     pub async fn put_contact_authed_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,

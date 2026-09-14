@@ -50,6 +50,7 @@ pub mod settings_timesheet_editing;
 // `portal_login`, `portal_reset_password`, `portal_set_password` which
 // we deliberately leave dropped here.
 pub mod contact_portal;
+pub mod payment_methods;
 pub mod products;
 pub mod profile;
 pub mod projects;
