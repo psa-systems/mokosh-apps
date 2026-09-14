@@ -347,7 +347,7 @@ fn StatementBody() -> Element {
     rsx! {
         PageHeader {
             title: "{header_title}",
-            subtitle: "A company's account over a period: what was invoiced, paid, refunded and credited, with the balance carried in and out",
+            subtitle: "Your customer's account over a period: what you invoiced, what they paid, what you refunded and credited, with the balance carried in and out",
             actions: rsx! {
                 Link {
                     to: Route::InvoiceList {},
@@ -362,7 +362,7 @@ fn StatementBody() -> Element {
                         fallback_name: pdf_name.clone(),
                         what: "the statement PDF".to_string(),
                         variant: ButtonVariant::Primary,
-                        title: "Rendered now, from the current branding: a statement is computed, not stored. This is the document to send.".to_string(),
+                        title: "Built now from your current branding, so it always shows how you look today. This is the document to send.".to_string(),
                     }
                 }
             },

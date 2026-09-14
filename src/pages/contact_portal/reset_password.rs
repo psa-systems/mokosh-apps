@@ -25,6 +25,10 @@ struct HostHint {
 
 #[component]
 pub fn ContactResetPasswordPage(slug: String, token: String) -> Element {
+    // MAPPS-761: a link that brought this customer here may name the page it
+    // really wanted. Captured on arrival, because signing in replaces the URL
+    // several times over and the query string does not survive the hops.
+    use_hook(super::next_target::remember_from_query);
     let nav = use_navigator();
     let mut new_pw = use_signal(String::new);
     let mut confirm_pw = use_signal(String::new);

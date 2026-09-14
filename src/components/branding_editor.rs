@@ -490,7 +490,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                         // upload evicts the cached bytes on the very
                         // next parent restart.
                         current_url: props.current.logo_url.clone().map(|u|
-                            crate::hooks::branding::versioned_asset_url(&u, &props.current)
+                            crate::hooks::branding::absolute_versioned_asset_url(&u, &props.current)
                         ),
                         plane: props.plane.clone(),
                         disabled,
@@ -504,7 +504,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                         label: "Favicon".to_string(),
                         asset: "favicon".to_string(),
                         current_url: props.current.favicon_url.clone().map(|u|
-                            crate::hooks::branding::versioned_asset_url(&u, &props.current)
+                            crate::hooks::branding::absolute_versioned_asset_url(&u, &props.current)
                         ),
                         plane: props.plane.clone(),
                         disabled,
@@ -518,7 +518,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                         label: "Background image".to_string(),
                         asset: "background".to_string(),
                         current_url: props.current.background_url.clone().map(|u|
-                            crate::hooks::branding::versioned_asset_url(&u, &props.current)
+                            crate::hooks::branding::absolute_versioned_asset_url(&u, &props.current)
                         ),
                         plane: props.plane.clone(),
                         disabled,

@@ -106,6 +106,10 @@ struct HostHint {
 
 #[component]
 pub fn ContactLoginPage(slug: String) -> Element {
+    // MAPPS-761: a link that brought this customer here may name the page it
+    // really wanted. Captured on arrival, because signing in replaces the URL
+    // several times over and the query string does not survive the hops.
+    use_hook(super::next_target::remember_from_query);
     let nav = use_navigator();
     let mut email = use_signal(String::new);
     let mut password = use_signal(String::new);
@@ -275,10 +279,13 @@ pub fn ContactLoginPage(slug: String) -> Element {
                         // ownership.
                         crate::hooks::fetch::api::set_contact_id(contact_id);
                         crate::hooks::capabilities::set_contact_capabilities(Some(caps));
-                        nav.replace(Route::Dashboard {});
+                        // MAPPS-761: the page the link that brought them
+                        // named, else the dashboard, which is where this
+                        // always went.
+                        nav.replace(super::next_target::landing());
                     }
                     Err(ApiError::Status { code: 401, .. }) => {
-                        error.set("Invalid credentials.".to_string());
+                        error.set(super::PORTAL_SIGN_IN_FAILED.to_string());
                     }
                     Err(ApiError::Status { code: 429, .. }) => {
                         error.set("Too many attempts; try again shortly.".to_string());
@@ -355,6 +362,11 @@ pub fn ContactLoginPage(slug: String) -> Element {
                         name: "password",
                         label: "Password",
                         r#type: "password".to_string(),
+                        // MAPPS-763: said BEFORE the attempt, because the
+                        // person most likely to get this wrong is the one who
+                        // already has an account with us and reasonably types
+                        // that password.
+                        help: super::PORTAL_PASSWORD_HELP.to_string(),
                         value: password(),
                         required: true,
                         disabled: saving(),
@@ -402,17 +414,22 @@ pub fn ContactLoginPage(slug: String) -> Element {
                     // MAPPS-572 (prompt 010): magic-link escape hatch.
                     // Hands the typed email over via the `?email=`
                     // query so the finder can pre-fill without a
-                    // re-type. Rendered as a plain link (not a full
-                    // Button) so it does not compete visually with
-                    // the primary sign-in / forgot-password affordances.
-                    div { class: "pt-4 text-center",
+                    // re-type.
+                    //
+                    // MAPPS-766: an offer rather than a footnote. It used to
+                    // be a plain link deliberately kept from competing with
+                    // the sign-in button, which is right for a customer who
+                    // HAS a password and wrong for the one who never set one,
+                    // and the second is who ends up reading it.
+                    div { class: "pt-4 mt-2 border-t border-line space-y-2 text-center",
+                        p { class: "pt-3 text-sm text-muted", {super::PORTAL_NO_PASSWORD_PROMPT} }
                         {
                             let hop_email = email.read().trim().to_string();
                             rsx! {
                                 Link {
                                     to: Route::ContactMagicLinkLogin { email: hop_email },
-                                    class: "text-sm text-accent hover:underline",
-                                    "Or sign in without a password"
+                                    class: "inline-block text-sm font-medium text-accent hover:underline",
+                                    {super::PORTAL_NO_PASSWORD_ACTION}
                                 }
                             }
                         }
