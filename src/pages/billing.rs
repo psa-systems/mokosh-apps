@@ -1162,6 +1162,18 @@ struct PaymentReadiness {
     invoice_payable: bool,
     #[serde(default)]
     balance_due_display: String,
+    /// MAPPS-673: `true` iff the caller holds `invoices:pay_partial` (or is
+    /// staff) AND the invoice is payable AND a gateway is ready. Serde default
+    /// keeps a pre-MAPPS-673 server decoding to `false`, so the amount input
+    /// never renders against an old server.
+    #[serde(default)]
+    partial_payment_allowed: bool,
+    /// MAPPS-673: currency-formatted minimum partial-payment amount in the
+    /// invoice's own currency (e.g. `$1.00`, `1.00 EUR`). Rendered as help
+    /// text under the amount input so the customer sees the floor before
+    /// they type. `None` when partial pay is not allowed on this invoice.
+    #[serde(default)]
+    min_partial_amount_display: Option<String>,
 }
 
 /// MAPPS-771 / PMS-1179: one way the customer can pay, as the server sends it.
@@ -1263,6 +1275,14 @@ struct PayInvoiceBody {
     /// to what the server has always accepted.
     #[serde(skip_serializing_if = "Option::is_none")]
     provider: Option<String>,
+    /// MAPPS-673: partial-payment amount as a decimal string (e.g. `"25.00"`).
+    /// Omitted for the full-balance click, so a customer clicking Pay Now
+    /// without touching the amount input still sends the byte-identical
+    /// request the server accepted before this ticket. `String` on the wire
+    /// because JSON floats round-trip badly through Decimal; the server
+    /// parses it back with the same crate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    amount: Option<String>,
 }
 
 /// MAPPS-668: what the server returns from POST /invoices/{id}/pay.
@@ -1452,6 +1472,13 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     let mut pay_pending = use_signal(|| None::<usize>);
     let mut pay_error = use_signal(String::new);
     let id_for_pay = props.id.clone();
+    // MAPPS-673: the partial-payment amount, as the customer types it. Empty
+    // = full balance (the pre-MAPPS-673 default). Kept as a String rather
+    // than an f64 because JSON floats round-trip badly through Decimal and
+    // the server parses the same string with the same crate; the field is
+    // sanity-parsed here for the disabled-button check but the wire value
+    // is what the customer typed.
+    let mut pay_amount = use_signal(String::new);
 
     // MAPPS-669 (P1d): drive the post-checkout poll. When the browser
     // lands with `?paid=1` and the invoice still reads as unpaid,
@@ -1760,6 +1787,23 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     let pay_fallback_label = "Pay Now".to_string();
     let pay_err = pay_error.read().clone();
     let is_paid = status == "paid";
+    // MAPPS-673: partial-payment state. The input renders only when the
+    // server said the caller may mint a partial checkout (cap held, gateway
+    // ready, invoice payable); a caller without the cap or on a paid
+    // invoice never sees the input, matching the server's 403/400 shape.
+    // The typed amount is a plain string on the wire (Decimal round-trips
+    // badly through JSON floats) and blank means "full balance", which is
+    // the byte-identical pre-MAPPS-673 request.
+    let partial_payment_allowed = readiness
+        .as_ref()
+        .is_some_and(|r| r.partial_payment_allowed);
+    let min_partial_display = readiness
+        .as_ref()
+        .and_then(|r| r.min_partial_amount_display.clone());
+    let balance_due_display = readiness
+        .as_ref()
+        .map(|r| r.balance_due_display.clone())
+        .unwrap_or_default();
 
     // MAPPS-676: currency-mismatch warning above Pay Now.
     // `docs/mokosh-invoices/03-open-questions.md` Q10 A: the checkout
@@ -1903,6 +1947,48 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                 // loop and the splash below.
                 if can_pay && !is_paid {
                     if invoice_payable {
+                        // MAPPS-673: the partial-payment amount input. Only
+                        // rendered when the caller holds `invoices:pay_partial`
+                        // AND the invoice is payable AND a gateway is ready
+                        // (`partial_payment_allowed` bundles all three). Blank
+                        // means "full balance", which is the byte-identical
+                        // pre-MAPPS-673 pay request; a value below the tenant's
+                        // floor or above `balance_due` is refused server-side
+                        // and surfaced through `pay_error`.
+                        if partial_payment_allowed {
+                            div {
+                                class: "flex flex-col gap-1 max-w-[14rem]",
+                                label {
+                                    class: "text-sm text-muted",
+                                    r#for: "pay-amount",
+                                    "Amount to pay"
+                                }
+                                input {
+                                    id: "pay-amount",
+                                    class: "px-3 py-2 border border-line rounded-md bg-surface text-content focus:outline-none focus:ring-2 focus:ring-accent",
+                                    r#type: "text",
+                                    inputmode: "decimal",
+                                    placeholder: "{balance_due_display}",
+                                    disabled: !can_mutate || *pay_saving.read(),
+                                    value: "{pay_amount.read()}",
+                                    oninput: move |e: FormEvent| {
+                                        pay_error.set(String::new());
+                                        pay_amount.set(e.value());
+                                    },
+                                }
+                                p {
+                                    class: "text-xs text-muted",
+                                    {
+                                        let min = min_partial_display
+                                            .as_deref()
+                                            .unwrap_or("the minimum");
+                                        format!(
+                                            "Between {min} and {balance_due_display}. Leave blank to pay the full balance."
+                                        )
+                                    }
+                                }
+                            }
+                        }
                         // MAPPS-771: one button per provider the tenant has
                         // connected. With one connected this renders exactly
                         // what it always did; with two the customer chooses,
@@ -1972,12 +2058,23 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                                     // this route now moves the return URL
                                                     // with it.
                                                     let path = Route::InvoiceDetail { id: id.clone() }.to_string();
+                                                    // MAPPS-673: the amount the customer
+                                                    // typed, if any. Blank stays `None`,
+                                                    // which is the byte-identical
+                                                    // pre-MAPPS-673 full-balance request.
+                                                    let typed = pay_amount.read().trim().to_string();
+                                                    let amount = if typed.is_empty() {
+                                                        None
+                                                    } else {
+                                                        Some(typed)
+                                                    };
                                                     let body = PayInvoiceBody {
                                                         success_url: format!("{origin}{path}?paid=1"),
                                                         cancel_url: format!("{origin}{path}"),
                                                         // MAPPS-771: the button the
                                                         // customer actually pressed.
                                                         provider: chosen_provider.clone(),
+                                                        amount,
                                                     };
                                                     match crate::hooks::fetch::api::post_authed_any_typed::<PayInvoiceResp, _>(
                                                         &format!("/invoices/{id}/pay"),
