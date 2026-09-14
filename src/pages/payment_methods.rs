@@ -306,7 +306,7 @@ fn humanise_brand(raw: &str) -> String {
         "diners" => "Diners".to_string(),
         "jcb" => "JCB".to_string(),
         "unionpay" => "UnionPay".to_string(),
-        other if other.is_empty() => "Card".to_string(),
+        "" => "Card".to_string(),
         other => {
             let mut chars = other.chars();
             match chars.next() {
