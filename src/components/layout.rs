@@ -1116,7 +1116,7 @@ pub fn TopBar(props: TopBarProps) -> Element {
 
                 // MAPPS-494 (MAPPS-474 phase 5): tenant switcher.
                 // Dropdown listing every membership the identity holds
-                // + a "Create new organization" action.
+                // + a "Create new team" action.
                 TenantSwitcher {}
 
                 // User menu (P3-26 avatar dropdown)
@@ -1312,7 +1312,7 @@ fn UserMenu() -> Element {
                             *crate::components::tenant_switcher::SHOW_CREATE_ORG.write() = true;
                             open.set(false);
                         },
-                        "Create new organization"
+                        "Create new team"
                     }
                     div { class: "border-t border-line my-1" }
                     button {
