@@ -24,7 +24,9 @@
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::components::{use_page_title, Button, ButtonVariant, Card, ErrorBanner, PageHeader};
+use crate::components::{
+    use_page_title, Button, ButtonVariant, Card, ConfirmDialog, ErrorBanner, PageHeader,
+};
 
 /// One row of `GET /contact/payment-methods`. Serde defaults everywhere
 /// so a server that predates this ticket decodes to a blank row and the
@@ -93,7 +95,7 @@ pub fn ContactPaymentMethodsPage() -> Element {
 #[component]
 fn ContactPaymentMethodsBody() -> Element {
     // MAPPS-602: every hook fires BEFORE any early return.
-    let reload_tick = use_signal(|| 0u64);
+    let mut reload_tick = use_signal(|| 0u64);
     let methods_resource = use_resource(move || {
         let _ = reload_tick.read();
         async {
@@ -114,6 +116,13 @@ fn ContactPaymentMethodsBody() -> Element {
     });
     let mut action_error = use_signal(String::new);
     let mut add_saving = use_signal(|| false);
+    // MAPPS-788: `pending_remove` carries the (id, label) of the row whose
+    // Remove button was clicked; the dialog renders with the same brand +
+    // last4 label the row itself shows. `removing` gates the dialog's
+    // loading state so a click during the in-flight DELETE does not
+    // double-fire.
+    let mut pending_remove = use_signal::<Option<(String, String)>>(|| None);
+    let mut removing = use_signal(|| false);
 
     let snap = methods_resource.read_unchecked();
     let methods: Vec<RemotePaymentMethod> = match &*snap {
@@ -216,8 +225,68 @@ fn ContactPaymentMethodsBody() -> Element {
             } else {
                 ul { class: "divide-y divide-line",
                     for method in methods.iter() {
-                        {render_method_row(method.clone(), reload_tick, action_error)}
+                        {render_method_row(method.clone(), reload_tick, action_error, pending_remove)}
                     }
+                }
+            }
+        }
+
+        {
+            let pending = pending_remove.read().clone();
+            let open = pending.is_some();
+            let label = pending.as_ref().map(|(_, l)| l.clone()).unwrap_or_default();
+            let message = format!("Remove {label}?");
+            let on_confirm = move |_: ()| {
+                let Some((id, _)) = pending_remove.read().clone() else {
+                    return;
+                };
+                if removing() {
+                    return;
+                }
+                removing.set(true);
+                action_error.set(String::new());
+                spawn(async move {
+                    #[cfg(feature = "app")]
+                    {
+                        match crate::hooks::fetch::api::delete_contact_authed_no_content(&format!(
+                            "/contact/payment-methods/{id}"
+                        ))
+                        .await
+                        {
+                            Ok(()) => {
+                                reload_tick.with_mut(|t| *t += 1);
+                            }
+                            Err(err) => {
+                                action_error.set(format!(
+                                    "Could not remove card: {}",
+                                    err.user_message()
+                                ));
+                            }
+                        }
+                    }
+                    #[cfg(not(feature = "app"))]
+                    {
+                        let _ = id;
+                    }
+                    removing.set(false);
+                    pending_remove.set(None);
+                });
+            };
+            rsx! {
+                ConfirmDialog {
+                    open,
+                    title: "Remove card".to_string(),
+                    message,
+                    confirm_text: "Remove".to_string(),
+                    cancel_text: "Cancel".to_string(),
+                    destructive: true,
+                    loading: removing(),
+                    onconfirm: on_confirm,
+                    oncancel: move |_| {
+                        if !removing() {
+                            pending_remove.set(None);
+                        }
+                    },
                 }
             }
         }
@@ -230,6 +299,7 @@ fn render_method_row(
     method: RemotePaymentMethod,
     mut reload_tick: Signal<u64>,
     mut action_error: Signal<String>,
+    mut pending_remove: Signal<Option<(String, String)>>,
 ) -> Element {
     let id_for_default = method.id.clone();
     let id_for_remove = method.id.clone();
@@ -237,6 +307,7 @@ fn render_method_row(
     let last4 = method.last4.clone();
     let exp = format!("expires {:02}/{}", method.exp_month, method.exp_year);
     let is_default = method.is_default;
+    let remove_label = format!("{brand} \u{2022}\u{2022}\u{2022}\u{2022} {last4}");
 
     rsx! {
         li { class: "flex items-center justify-between py-4",
@@ -283,28 +354,7 @@ fn render_method_row(
                     variant: ButtonVariant::Danger,
                     r#type: "button".to_string(),
                     onclick: move |_| {
-                        let id = id_for_remove.clone();
-                        action_error.set(String::new());
-                        spawn(async move {
-                            #[cfg(feature = "app")]
-                            {
-                                match crate::hooks::fetch::api::delete_contact_authed_no_content(&format!(
-                                    "/contact/payment-methods/{id}"
-                                ))
-                                .await
-                                {
-                                    Ok(()) => {
-                                        reload_tick.with_mut(|t| *t += 1);
-                                    }
-                                    Err(err) => {
-                                        action_error.set(format!(
-                                            "Could not remove card: {}",
-                                            err.user_message()
-                                        ));
-                                    }
-                                }
-                            }
-                        });
+                        pending_remove.set(Some((id_for_remove.clone(), remove_label.clone())));
                     },
                     "Remove"
                 }
