@@ -442,7 +442,9 @@ impl AlertType {
         match self {
             AlertType::Info => (
                 "bg-blue-50 dark:bg-blue-900/20",
-                "text-blue-400",
+                // MAPPS-444: decorative icon, and 400 already clears AA on the
+                // dark surface, so it needs no dark pair.
+                "text-blue-400", // theme-guard-allow
                 "text-blue-700 dark:text-blue-300",
             ),
             AlertType::Success => (
@@ -454,7 +456,9 @@ impl AlertType {
             ),
             AlertType::Warning => (
                 "bg-yellow-50 dark:bg-yellow-900/20",
-                "text-yellow-400",
+                // MAPPS-444: decorative icon, and 400 already clears AA on the
+                // dark surface, so it needs no dark pair.
+                "text-yellow-400", // theme-guard-allow
                 "text-yellow-700 dark:text-yellow-300",
             ),
             AlertType::Error => (
