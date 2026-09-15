@@ -431,6 +431,17 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
             false
         }
     };
+    // MAPPS-782: contact sessions only, whatever they hold. See the entry.
+    let payment_methods_link_visible = {
+        #[cfg(feature = "web")]
+        {
+            crate::hooks::fetch::api::has_contact_session()
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            false
+        }
+    };
     // MAPPS-737: a contact holding `approvals:decide` (PMS-1084) gets a
     // Service Desk entry to the queue of approvals addressed to it. The
     // same contact-session AND cap shape as the branding link: staff
@@ -540,6 +551,17 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                 // Company detail card for per-Company overrides.
                 if branding_link_visible {
                     NavItem { to: Route::ContactPortalBranding {}, icon: rsx!(PhotoIcon {}), label: "Portal Branding", collapsed }
+                }
+                // MAPPS-782: nothing linked to Payment Methods (MAPPS-674), so
+                // a customer reached it only by typing its URL - including
+                // one who holds the capability the page was built for. Shown
+                // to every contact session, not only to a holder: a hidden
+                // entry is a dead end, and the page answers a contact without
+                // the capability with the explained state and Ask for access
+                // (MAPPS-780). Staff never see it, for the reason the branding
+                // entry above states.
+                if payment_methods_link_visible {
+                    NavItem { to: Route::ContactPaymentMethods {}, icon: rsx!(WalletIcon {}), label: "Payment Methods", collapsed }
                 }
 
                 // MAPPS-453: surface the docs subdomain in the main menu, not
