@@ -52,7 +52,7 @@ default:
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging
+check: check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging check-loading-recipe
 
 # MAPPS-682: clippy, not check, and `-D warnings`, so the browser target fails
 # on a finding instead of printing it. Mirrors check-clippy and check.yml.
@@ -211,6 +211,14 @@ check-sort-keys:
 check-per-page-cap:
     bash scripts/check-per-page-cap.sh --self-test
     bash scripts/check-per-page-cap.sh
+
+# MAPPS-789: a busy surface renders TableLoading/DetailSkeleton, never a
+# hand-rolled "Loading" string. --self-test first, so a guard that stopped
+# guarding fails loudly.
+[group: 'check']
+check-loading-recipe:
+    bash scripts/check-loading-recipe.sh --self-test
+    bash scripts/check-loading-recipe.sh
 
 # MAPPS-545: every relative Markdown link resolves to a path that exists. MAPPS-540 took docs/ from 49 broken links to zero; all 49 came from a file move that left the links inside it one directory short, and a broken link fails silently - the reader lands on nothing and concludes the docs are abandoned. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']

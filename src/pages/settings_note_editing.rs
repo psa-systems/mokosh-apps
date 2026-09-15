@@ -112,20 +112,22 @@ fn NoteEditingSettingsBody() -> Element {
         if !error().is_empty() {
             ErrorBanner { "{error}" }
         }
-        Card {
-            match snap {
-                None => rsx! { p { class: "p-6 text-sm text-subtle", "Loading…" } },
-                Some(None) => rsx! {
+        match snap {
+            None => rsx! { crate::components::DetailSkeleton {} },
+            Some(None) => rsx! {
+                Card {
                     div { class: "p-6", ErrorBanner { "Could not load the note editing policy." } }
-                },
-                Some(Some(rows)) => {
-                    let current = policy_in(&rows);
-                    let described = POLICIES
-                        .iter()
-                        .find(|(name, _, _)| *name == current)
-                        .map(|(_, _, meaning)| *meaning)
-                        .unwrap_or_default();
-                    rsx! {
+                }
+            },
+            Some(Some(rows)) => {
+                let current = policy_in(&rows);
+                let described = POLICIES
+                    .iter()
+                    .find(|(name, _, _)| *name == current)
+                    .map(|(_, _, meaning)| *meaning)
+                    .unwrap_or_default();
+                rsx! {
+                    Card {
                         div { class: "p-6 space-y-4",
                             Select {
                                 name: "note_editing",
