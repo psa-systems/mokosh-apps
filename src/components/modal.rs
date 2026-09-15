@@ -127,6 +127,16 @@ fn ModalChrome(
 ) -> Element {
     let size_class = size.class();
 
+    // Stable per-instance id so `aria-labelledby` resolves to this dialog's own
+    // title even when two `ModalChrome`s are mounted at once. Atomic counter is
+    // deterministic and wasm is single-threaded (same pattern as `Markdown`'s
+    // `dom_id`).
+    let title_id = use_hook(|| {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        format!("modal-title-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+    });
+
     rsx! {
         div { class: "fixed inset-0 z-50 overflow-y-auto",
             // Backdrop. Tailwind v4 removed `bg-opacity-*`; use the
@@ -149,6 +159,9 @@ fn ModalChrome(
                     // keydown lands here even before the user clicks anything;
                     // keydown from any focused control inside also bubbles up.
                     tabindex: "-1",
+                    role: "dialog",
+                    aria_modal: "true",
+                    aria_labelledby: "{title_id}",
                     onmounted: move |e| {
                         spawn(async move {
                             let _ = e.set_focus(true).await;
@@ -163,7 +176,9 @@ fn ModalChrome(
 
                     // Header (pinned)
                     div { class: "flex-shrink-0 flex items-center justify-between px-4 py-3 border-b border-line",
-                        h3 { class: "text-lg font-medium text-content",
+                        h3 {
+                            id: "{title_id}",
+                            class: "text-lg font-medium text-content",
                             "{title}"
                         }
                         IconButton {
@@ -427,7 +442,9 @@ impl AlertType {
         match self {
             AlertType::Info => (
                 "bg-blue-50 dark:bg-blue-900/20",
-                "text-blue-400",
+                // MAPPS-444: decorative icon, and 400 already clears AA on the
+                // dark surface, so it needs no dark pair.
+                "text-blue-400", // theme-guard-allow
                 "text-blue-700 dark:text-blue-300",
             ),
             AlertType::Success => (
@@ -439,7 +456,9 @@ impl AlertType {
             ),
             AlertType::Warning => (
                 "bg-yellow-50 dark:bg-yellow-900/20",
-                "text-yellow-400",
+                // MAPPS-444: decorative icon, and 400 already clears AA on the
+                // dark surface, so it needs no dark pair.
+                "text-yellow-400", // theme-guard-allow
                 "text-yellow-700 dark:text-yellow-300",
             ),
             AlertType::Error => (
@@ -709,6 +728,58 @@ mod tests {
             1,
             "only the header's own rule, no empty band under the title; got: {html}"
         );
+    }
+
+    /// MAPPS-787: every `ModalChrome` dialog announces itself as a named modal
+    /// dialog. `aria-labelledby` must resolve to an id that actually exists on
+    /// the title, and two dialogs mounted at once must not collide on it.
+    #[component]
+    fn TwoDialogs() -> Element {
+        rsx! {
+            ModalChrome {
+                title: "First".to_string(),
+                size: ModalSize::Medium,
+                onclose: move |_| {},
+                "one"
+            }
+            ModalChrome {
+                title: "Second".to_string(),
+                size: ModalSize::Medium,
+                onclose: move |_| {},
+                "two"
+            }
+        }
+    }
+
+    #[test]
+    fn modal_chrome_carries_dialog_semantics_with_a_resolving_label() {
+        let html = render(TwoDialogs);
+        assert!(html.contains(r#"role="dialog""#), "got: {html}");
+        assert!(html.contains(r#"aria-modal="true""#), "got: {html}");
+
+        let labelledby = html
+            .match_indices("aria-labelledby=\"")
+            .map(|(i, m)| {
+                let start = i + m.len();
+                let end = html[start..].find('"').unwrap() + start;
+                html[start..end].to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            labelledby.len(),
+            2,
+            "each dialog gets its own label; got: {html}"
+        );
+        assert_ne!(
+            labelledby[0], labelledby[1],
+            "two simultaneous dialogs must not share an id; got: {html}"
+        );
+        for id in &labelledby {
+            assert!(
+                html.contains(&format!("id=\"{id}\"")),
+                "aria-labelledby must resolve to a real id; got: {html}"
+            );
+        }
     }
 
     // PMS-369: type-to-confirm gate. The destructive button is enabled only

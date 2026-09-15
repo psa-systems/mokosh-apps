@@ -1599,7 +1599,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-8 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load article." }
+                        ErrorBanner { class: "mb-3", "Could not load article." }
                         Link {
                             to: Route::KBHome {},
                             class: "text-sm text-accent hover:opacity-90",
@@ -2056,7 +2056,7 @@ fn LinkedTicketsCard(article_id: String) -> Element {
                     p { class: "text-xs text-subtle", "Loading…" }
                 },
                 Some(None) => rsx! {
-                    p { class: "text-xs text-red-600 dark:text-red-300", "Could not load linked tickets." }
+                    ErrorBanner { "Could not load linked tickets." }
                 },
                 Some(Some(rows)) if rows.is_empty() => rsx! {
                     p { class: "text-xs text-subtle", "No ticket references this article yet." }
@@ -2231,7 +2231,7 @@ fn VersionHistoryCard(
                     p { class: "px-3 py-3 text-xs text-subtle", "Loading…" }
                 },
                 Some(None) => rsx! {
-                    p { class: "px-3 py-3 text-xs text-red-600 dark:text-red-300", "Could not load version history." }
+                    ErrorBanner { "Could not load version history." }
                 },
                 Some(Some(page)) if page.is_empty() => rsx! {
                     p { class: "px-3 py-3 text-xs text-subtle", "No prior versions." }
@@ -2529,7 +2529,7 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-8 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load article." }
+                        ErrorBanner { class: "mb-3", "Could not load article." }
                         Link {
                             to: Route::KBHome {},
                             class: "text-sm text-accent hover:opacity-90",
@@ -4169,27 +4169,21 @@ fn ArticleActionsMenu(
     };
     rsx! {
         div { class: "{wrapper_class}",
-            button {
-                class: "px-2 py-1 text-muted hover:text-content",
+            crate::components::Popover {
+                open: open(),
+                label: "More actions",
                 title: "More",
-                aria_label: "More actions",
-                aria_expanded: if open() { "true" } else { "false" },
-                onclick: move |_| open.toggle(),
-                "\u{22EF}"
-            }
-            if open() {
-                div {
-                    class: "fixed inset-0 z-40",
-                    onclick: move |_| open.set(false),
-                }
-                div { class: "dropdown-panel absolute right-0 z-50 mt-1 w-56 p-2",
-                    ArticleActions {
-                        article_id,
-                        article_title,
-                        confirming_delete,
-                        delete_error,
-                        delete_busy,
-                    }
+                trigger_class: "px-2 py-1 text-muted hover:text-content",
+                trigger: rsx! { "\u{22EF}" },
+                width: "w-56",
+                ontoggle: move |_| open.toggle(),
+                onclose: move |_| open.set(false),
+                ArticleActions {
+                    article_id,
+                    article_title,
+                    confirming_delete,
+                    delete_error,
+                    delete_busy,
                 }
             }
         }

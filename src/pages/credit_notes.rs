@@ -649,7 +649,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-8 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load credit note." }
+                        ErrorBanner { class: "mb-3", "Could not load credit note." }
                         Link {
                             to: Route::CreditNoteList {},
                             class: "text-sm text-accent hover:opacity-90",

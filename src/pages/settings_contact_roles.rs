@@ -510,9 +510,7 @@ pub fn ContactRoleEditPage(id: String) -> Element {
             EditPageChrome { title: title.to_string(), name: String::new(),
                 Card {
                     div { class: "py-12 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300",
-                            "Could not load this role. Refresh the page to retry."
-                        }
+                        ErrorBanner { "Could not load this role. Refresh the page to retry." }
                     }
                 }
             }

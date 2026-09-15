@@ -39,7 +39,7 @@ pub struct IconButtonProps {
 /// Reusable icon-only button that always carries an accessible name + tooltip.
 #[component]
 pub fn IconButton(props: IconButtonProps) -> Element {
-    let base_class = "inline-flex items-center justify-center rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed";
+    let base_class = "inline-flex items-center justify-center rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-accent disabled:opacity-50 disabled:cursor-not-allowed";
     let class = format!("{} {}", base_class, props.class);
 
     rsx! {
