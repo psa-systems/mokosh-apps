@@ -120,7 +120,7 @@ fn SegmentEditingSettingsBody() -> Element {
             match snap {
                 None => rsx! { p { class: "p-6 text-sm text-subtle", "Loading…" } },
                 Some(None) => rsx! {
-                    p { class: "p-6 text-sm text-red-600 dark:text-red-300", "Could not load the segment editing policy." }
+                    div { class: "p-6", ErrorBanner { "Could not load the segment editing policy." } }
                 },
                 Some(Some(rows)) => {
                     let current = policy_in(&rows);

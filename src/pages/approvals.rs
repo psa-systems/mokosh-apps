@@ -18,7 +18,8 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::components::{
-    use_page_title, AlertType, Badge, BadgeVariant, Button, ButtonVariant, Card, PageHeader,
+    use_page_title, AlertType, Badge, BadgeVariant, Button, ButtonVariant, Card, ErrorBanner,
+    PageHeader,
 };
 use crate::Route;
 
@@ -272,9 +273,7 @@ pub fn ApprovalsPage() -> Element {
             Card { p { class: "text-sm text-muted py-6 text-center", "Loading…" } }
         } else if fetch_failed {
             Card {
-                p { class: "text-sm text-red-600 dark:text-red-300 py-6 text-center",
-                    "Could not load pending approvals."
-                }
+                div { class: "py-6 text-center", ErrorBanner { "Could not load pending approvals." } }
             }
         } else if rows.is_empty() {
             Card {
@@ -305,6 +304,7 @@ pub fn ApprovalsPage() -> Element {
                             .requested_at
                             .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
                             .unwrap_or_default();
+                        let when_iso = row.requested_at.map(|d| d.to_rfc3339()).unwrap_or_default();
                         let notes = row.notes.clone().unwrap_or_default();
                         // Pretty target labels for the badge. Unknown
                         // targets fall through to the raw string so a
@@ -376,7 +376,10 @@ pub fn ApprovalsPage() -> Element {
                                         }
                                         p { class: "text-xs text-subtle mt-1", "{approver_label}" }
                                         if !when.is_empty() {
-                                            p { class: "text-xs text-subtle mt-1", "Requested {when}" }
+                                            p { class: "text-xs text-subtle mt-1",
+                                                "Requested "
+                                                time { datetime: "{when_iso}", "{when}" }
+                                            }
                                         }
                                         if !notes.is_empty() {
                                             p { class: "mt-2 text-sm text-muted whitespace-pre-wrap",

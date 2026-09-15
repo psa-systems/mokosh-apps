@@ -155,6 +155,15 @@ fn FormsBuilderContent() -> Element {
             // defining one is never the goal. Without it the page ends at Save
             // with no sign that a form reaches a client from somewhere else.
             subtitle: "Forms clients fill in to raise a request. Each one becomes a ticket carrying its knowledge base article. Define a form once here, then use Send to email a client a link to it.".to_string(),
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't create a form while the server is unreachable".to_string()),
+                    onclick: move |_| editing.set(Some(EditorState::new())),
+                    "New Form"
+                }
+            },
         }
 
         // PMS-752: the name a client reads on every form and email this page
@@ -175,16 +184,6 @@ fn FormsBuilderContent() -> Element {
                     class: "underline text-accent hover:opacity-90",
                     "Change"
                 }
-            }
-        }
-
-        div { class: "mb-4 flex justify-end",
-            Button {
-                variant: ButtonVariant::Primary,
-                disabled: !can_mutate,
-                title: (!can_mutate).then(|| "Can't create a form while the server is unreachable".to_string()),
-                onclick: move |_| editing.set(Some(EditorState::new())),
-                "New Form"
             }
         }
 

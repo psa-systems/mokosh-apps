@@ -67,7 +67,7 @@ pub fn HomePage() -> Element {
                         h1 { class: "text-4xl sm:text-5xl lg:text-6xl font-bold text-white leading-tight",
                             "Run your whole MSP from one platform."
                         }
-                        p { class: "mt-6 text-lg text-blue-100 leading-relaxed",
+                        p { class: "mt-6 text-lg text-blue-100 leading-relaxed", // theme-guard-allow: marketing hero copy on brand gradient
                             "Tickets, time, projects, contracts, billing, and assets - woven into a single service platform so nothing slips through the cracks."
                         }
                         div { class: "mt-8 flex flex-col sm:flex-row gap-4",
@@ -186,8 +186,8 @@ struct FeatureCardProps {
 fn FeatureCard(props: FeatureCardProps) -> Element {
     rsx! {
         div { class: "bg-surface-2 rounded-lg p-6 hover:shadow-lg transition-shadow",
-            div { class: "w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mb-4",
-                span { class: "text-2xl text-blue-600",
+            div { class: "w-12 h-12 bg-accent-100 rounded-lg flex items-center justify-center mb-4",
+                span { class: "text-2xl text-accent",
                     match props.icon.as_str() {
                         "ticket" => "🎫",
                         "clock" => "⏱️",

@@ -99,6 +99,25 @@ struct HostHint {
     /// legacy `/host` response (pre-MAPPS-617) deserializes cleanly.
     #[serde(default)]
     effective_branding: crate::hooks::branding::EffectiveBranding,
+    /// MAPPS-806: the company's portal slug, which the reset-password route
+    /// is keyed on. The server has always sent it on this response; the client
+    /// never read it, which is part of why this page had no way to reset a
+    /// forgotten password.
+    #[serde(default)]
+    portal_slug: String,
+}
+
+/// MAPPS-806: where "Forgot your password?" goes, or `None` while the company
+/// is not known.
+///
+/// `None` rather than a link to a reset page for an empty slug: that would
+/// route to `/portal//forgot-password`, which matches nothing, and a customer
+/// who has just forgotten their password should not also meet a 404.
+pub(crate) fn forgot_password_route(portal_slug: Option<&str>) -> Option<Route> {
+    let slug = portal_slug.map(str::trim).filter(|s| !s.is_empty())?;
+    Some(Route::ContactForgotPassword {
+        slug: slug.to_string(),
+    })
 }
 
 #[component]
@@ -157,6 +176,7 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
         .map(|h| h.tenant_status.trim().to_ascii_lowercase())
         .unwrap_or_default();
     let host_loaded = host.is_some();
+    let forgot_route = forgot_password_route(host.as_ref().map(|h| h.portal_slug.as_str()));
     // MAPPS-559 shape (mirrored from prompt 005): hide the form when
     // the owning tenant is not active. A missing host hint falls
     // through to the form so a bad Company ID still lets the visitor
@@ -367,6 +387,22 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
                             class: "w-full".to_string(),
                             "Sign in"
                         }
+                        // MAPPS-806: the reset this page never offered. The
+                        // older slug-based login had a "Forgot password?"
+                        // button; this page replaced it (PMS-928) without one,
+                        // and it is where every emailed link lands, so a
+                        // customer who forgot their password had no route to
+                        // a new one. Changing it while signed in needs the
+                        // current password, which is the thing they forgot.
+                        if let Some(route) = forgot_route.clone() {
+                            div { class: "text-center",
+                                Link {
+                                    to: route,
+                                    class: "text-sm text-accent hover:underline",
+                                    "Forgot your password?"
+                                }
+                            }
+                        }
                     }
                     // MAPPS-615 (prompt 014): step 1 no longer carries
                     // the magic-link fallback (it's Portal-ID-only now),
@@ -386,16 +422,11 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
                     }
                 }
             }
-            // MAPPS-615: cross-plane switch. Consistent with the same
-            // link on the step-1 page + the staff /login page, so a
-            // visitor on the wrong plane can jump without browser-back.
-            div { class: "pt-6 mt-6 border-t border-line text-center",
-                Link {
-                    to: Route::Login {},
-                    class: "text-sm text-accent hover:underline",
-                    "MSP staff sign in instead"
-                }
-            }
+            // MAPPS-806: no "MSP staff sign in instead" here. Only customers
+            // are sent to this page, by invoice, quote and sign-in emails, and
+            // a customer who clicked it landed on a staff sign-in they cannot
+            // use. The staff login keeps its link the other way, because a
+            // customer on the staff page is the mistake that actually happens.
         }
     }
 }
@@ -445,4 +476,59 @@ fn install_session(nav: &dioxus::router::Navigator, resp: LoginResp, portal_id_s
     // MAPPS-761: the page the link that brought them named, else the
     // dashboard, which is where this always went.
     nav.replace(super::next_target::landing());
+}
+
+/// MAPPS-806: a customer who forgot their password can reach the reset, and a
+/// customer page does not send them to the staff sign-in.
+#[cfg(test)]
+mod password_reset_tests {
+    use super::forgot_password_route;
+    use crate::Route;
+
+    #[test]
+    fn a_known_company_links_to_its_own_reset_page() {
+        assert_eq!(
+            forgot_password_route(Some("acme-7k2")),
+            Some(Route::ContactForgotPassword {
+                slug: "acme-7k2".to_string()
+            })
+        );
+    }
+
+    /// Before the company loads there is no link at all, rather than one to
+    /// `/portal//forgot-password`, which matches nothing.
+    #[test]
+    fn no_company_means_no_link() {
+        assert_eq!(forgot_password_route(None), None);
+        assert_eq!(forgot_password_route(Some("  ")), None);
+    }
+
+    /// The reset link actually resolves to the reset page, so a route change
+    /// fails here instead of on a customer who has just forgotten a password.
+    #[test]
+    fn the_reset_link_is_a_real_route() {
+        let route = forgot_password_route(Some("acme-7k2")).expect("a link");
+        let parsed: Route = route.to_string().parse().expect("parses back");
+        assert!(
+            matches!(parsed, Route::ContactForgotPassword { .. }),
+            "{parsed:?}"
+        );
+    }
+
+    /// Neither customer login page links to the staff sign-in. Read from the
+    /// shipping source, because the link was a `Link { to: Route::Login {} }`
+    /// that renders fine and is simply the wrong door.
+    #[test]
+    fn customer_login_pages_do_not_link_to_the_staff_sign_in() {
+        for (page, src) in [
+            ("portal_id_login", include_str!("portal_id_login.rs")),
+            ("generic_login", include_str!("generic_login.rs")),
+        ] {
+            let shipping = src.split("#[cfg(test)]").next().unwrap_or(src);
+            assert!(
+                !shipping.contains("Route::Login {}"),
+                "{page} links a customer to the staff sign-in"
+            );
+        }
+    }
 }
