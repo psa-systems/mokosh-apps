@@ -436,15 +436,18 @@ pub(crate) fn when_label(ts: &Option<DateTime<Utc>>) -> String {
 /// second half is left out when nobody has written the row since it was
 /// made, so an untouched article does not claim an editor. The formatter is
 /// passed in so the page uses the user's preference and a test a fixed one.
-fn attribution_line(
+fn attribution_parts(
     author: Option<&str>,
     created: &Option<DateTime<Utc>>,
     editor: Option<&str>,
     updated: &Option<DateTime<Utc>>,
     when: impl Fn(&Option<DateTime<Utc>>) -> String,
-) -> String {
+) -> Vec<(String, Option<String>)> {
     let author = author.filter(|n| !n.trim().is_empty()).unwrap_or("Unknown");
-    let mut line = format!("Created by {author} {}", when(created));
+    let mut parts = vec![
+        (format!("Created by {author} "), None),
+        (when(created), created.map(|d| d.to_rfc3339())),
+    ];
     let touched = match (created, updated) {
         (Some(c), Some(u)) => u > c,
         (None, Some(_)) => true,
@@ -452,9 +455,10 @@ fn attribution_line(
     };
     if touched {
         let editor = editor.filter(|n| !n.trim().is_empty()).unwrap_or("Unknown");
-        line.push_str(&format!(" · Updated by {editor} {}", when(updated)));
+        parts.push((format!(" · Updated by {editor} "), None));
+        parts.push((when(updated), updated.map(|d| d.to_rfc3339())));
     }
-    line
+    parts
 }
 
 // ============================================================================
@@ -699,6 +703,7 @@ pub fn KBHomePage() -> Element {
                             id: article.id.to_string(),
                             title: article.title,
                             updated: date_only(&article.updated_at),
+                            updated_iso: article.updated_at.map(|d| d.to_rfc3339()).unwrap_or_default(),
                         }
                     }
                 }
@@ -869,6 +874,8 @@ struct ArticleItemProps {
     id: String,
     title: String,
     updated: String,
+    /// ISO-8601 form of `updated`, for the wrapping `time` element (N5).
+    updated_iso: String,
 }
 
 #[component]
@@ -881,7 +888,7 @@ fn ArticleItem(props: ArticleItemProps) -> Element {
                 div {
                     h4 { class: "font-medium text-content", "{props.title}" }
                 }
-                span { class: "text-sm text-subtle", "{props.updated}" }
+                time { class: "text-sm text-subtle", datetime: "{props.updated_iso}", "{props.updated}" }
             }
         }
     }
@@ -1232,6 +1239,7 @@ pub fn KBArticleListPage(
                                         visibility: article.visibility,
                                         company_count: article.company_ids.len(),
                                         updated: date_only(&article.updated_at),
+                                        updated_iso: article.updated_at.map(|d| d.to_rfc3339()).unwrap_or_default(),
                                         tags: article.tags,
                                     }
                                 }
@@ -1254,6 +1262,8 @@ struct ArticleRowProps {
     #[props(default)]
     company_count: usize,
     updated: String,
+    /// ISO-8601 form of `updated`, for the wrapping `time` element (N5).
+    updated_iso: String,
     #[props(default)]
     tags: Vec<String>,
 }
@@ -1286,7 +1296,9 @@ fn ArticleRow(props: ArticleRowProps) -> Element {
             }
             TableCell { Badge { variant: status_var, "{status_label}" } }
             TableCell { Badge { variant: vis_variant, "{vis_label}" } }
-            TableCell { class: "text-muted", "{props.updated}" }
+            TableCell { class: "text-muted",
+                time { datetime: "{props.updated_iso}", "{props.updated}" }
+            }
         }
     }
 }
@@ -1599,7 +1611,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-8 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load article." }
+                        ErrorBanner { class: "mb-3", "Could not load article." }
                         Link {
                             to: Route::KBHome {},
                             class: "text-sm text-accent hover:opacity-90",
@@ -1620,15 +1632,28 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                 // projection carries no names, and a customer reading a
                 // published article does not need the editor's.
                 let attribution = if is_contact {
-                    format!("Updated {}", when_label(&article.updated_at))
+                    let updated_iso = article.updated_at.map(|d| d.to_rfc3339()).unwrap_or_default();
+                    rsx! {
+                        "Updated "
+                        time { datetime: "{updated_iso}", "{when_label(&article.updated_at)}" }
+                    }
                 } else {
-                    attribution_line(
+                    let parts = attribution_parts(
                         article.author_name.as_deref(),
                         &article.created_at,
                         article.updated_by_name.as_deref(),
                         &article.updated_at,
                         when_label,
-                    )
+                    );
+                    rsx! {
+                        for (text , iso) in parts {
+                            if let Some(iso) = iso {
+                                time { datetime: "{iso}", "{text}" }
+                            } else {
+                                "{text}"
+                            }
+                        }
+                    }
                 };
                 let content = article.content.clone();
                 let path = resolve_category_path(article.category_id, &categories);
@@ -1695,7 +1720,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                     }
                                 }
                             }
-                            p { class: "mt-1 text-xs text-subtle", "{attribution}" }
+                            p { class: "mt-1 text-xs text-subtle", {attribution} }
                             if !article.tags.is_empty() {
                                 TagChips { tags: article.tags.clone(), class: "mt-3".to_string() }
                             }
@@ -2056,7 +2081,7 @@ fn LinkedTicketsCard(article_id: String) -> Element {
                     p { class: "text-xs text-subtle", "Loading…" }
                 },
                 Some(None) => rsx! {
-                    p { class: "text-xs text-red-600 dark:text-red-300", "Could not load linked tickets." }
+                    ErrorBanner { "Could not load linked tickets." }
                 },
                 Some(Some(rows)) if rows.is_empty() => rsx! {
                     p { class: "text-xs text-subtle", "No ticket references this article yet." }
@@ -2231,7 +2256,7 @@ fn VersionHistoryCard(
                     p { class: "px-3 py-3 text-xs text-subtle", "Loading…" }
                 },
                 Some(None) => rsx! {
-                    p { class: "px-3 py-3 text-xs text-red-600 dark:text-red-300", "Could not load version history." }
+                    ErrorBanner { "Could not load version history." }
                 },
                 Some(Some(page)) if page.is_empty() => rsx! {
                     p { class: "px-3 py-3 text-xs text-subtle", "No prior versions." }
@@ -2256,6 +2281,7 @@ fn VersionHistoryCard(
                                     let kind = change_kind_label(&version.change_kind, version.restored_from_version);
                                     let who = person_label(version.edited_by_name.as_deref());
                                     let when = when_label(&version.created_at);
+                                    let when_iso = version.created_at.map(|d| d.to_rfc3339()).unwrap_or_default();
                                     let note = version
                                         .change_note
                                         .as_deref()
@@ -2297,7 +2323,9 @@ fn VersionHistoryCard(
                                                 }
                                             }
                                             p { class: "mt-0.5 text-content", "{kind} by {who}" }
-                                            p { class: "text-subtle", "{when}" }
+                                            p { class: "text-subtle",
+                                                time { datetime: "{when_iso}", "{when}" }
+                                            }
                                             if let Some((added, removed)) = delta {
                                                 p { class: "text-subtle", "+{added} / -{removed} lines" }
                                             }
@@ -2529,7 +2557,7 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-8 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load article." }
+                        ErrorBanner { class: "mb-3", "Could not load article." }
                         Link {
                             to: Route::KBHome {},
                             class: "text-sm text-accent hover:opacity-90",
@@ -4169,27 +4197,21 @@ fn ArticleActionsMenu(
     };
     rsx! {
         div { class: "{wrapper_class}",
-            button {
-                class: "px-2 py-1 text-muted hover:text-content",
+            crate::components::Popover {
+                open: open(),
+                label: "More actions",
                 title: "More",
-                aria_label: "More actions",
-                aria_expanded: if open() { "true" } else { "false" },
-                onclick: move |_| open.toggle(),
-                "\u{22EF}"
-            }
-            if open() {
-                div {
-                    class: "fixed inset-0 z-40",
-                    onclick: move |_| open.set(false),
-                }
-                div { class: "dropdown-panel absolute right-0 z-50 mt-1 w-56 p-2",
-                    ArticleActions {
-                        article_id,
-                        article_title,
-                        confirming_delete,
-                        delete_error,
-                        delete_busy,
-                    }
+                trigger_class: "px-2 py-1 text-muted hover:text-content",
+                trigger: rsx! { "\u{22EF}" },
+                width: "w-56",
+                ontoggle: move |_| open.toggle(),
+                onclose: move |_| open.set(false),
+                ArticleActions {
+                    article_id,
+                    article_title,
+                    confirming_delete,
+                    delete_error,
+                    delete_busy,
                 }
             }
         }
@@ -5059,7 +5081,7 @@ mod mapps740_page_hygiene_tests {
 /// diff first.
 #[cfg(test)]
 mod mapps739_history_tests {
-    use super::{attribution_line, change_kind_label, person_label};
+    use super::{attribution_parts, change_kind_label, person_label};
     use chrono::{DateTime, TimeZone, Utc};
 
     fn fixed(ts: &Option<DateTime<Utc>>) -> String {
@@ -5067,11 +5089,15 @@ mod mapps739_history_tests {
             .unwrap_or_else(|| "-".to_string())
     }
 
+    fn joined(parts: &[(String, Option<String>)]) -> String {
+        parts.iter().map(|(t, _)| t.as_str()).collect()
+    }
+
     #[test]
     fn the_header_names_the_author_and_the_editor_and_never_an_id() {
         let created = Some(Utc.with_ymd_and_hms(2026, 9, 7, 10, 12, 0).unwrap());
         let updated = Some(Utc.with_ymd_and_hms(2026, 9, 8, 9, 40, 0).unwrap());
-        let line = attribution_line(
+        let parts = attribution_parts(
             Some("Ada Lovelace"),
             &created,
             Some("Grace Hopper"),
@@ -5079,21 +5105,26 @@ mod mapps739_history_tests {
             fixed,
         );
         assert_eq!(
-            line,
+            joined(&parts),
             "Created by Ada Lovelace Sep 07, 2026 10:12 · Updated by Grace Hopper Sep 08, 2026 09:40"
         );
+        // Every timestamp phrase carries its ISO form for the wrapping
+        // `time` element (N5).
+        assert_eq!(parts[1].1.as_deref(), Some("2026-09-07T10:12:00+00:00"));
+        assert_eq!(parts[3].1.as_deref(), Some("2026-09-08T09:40:00+00:00"));
     }
 
     #[test]
     fn an_untouched_article_claims_no_editor() {
         let created = Some(Utc.with_ymd_and_hms(2026, 9, 7, 10, 12, 0).unwrap());
-        let line = attribution_line(
+        let parts = attribution_parts(
             Some("Ada Lovelace"),
             &created,
             Some("Ada Lovelace"),
             &created,
             fixed,
         );
+        let line = joined(&parts);
         assert!(!line.contains("Updated by"), "{line}");
     }
 
@@ -5101,7 +5132,13 @@ mod mapps739_history_tests {
     fn a_missing_name_prints_unknown() {
         let created = Some(Utc.with_ymd_and_hms(2026, 9, 7, 10, 12, 0).unwrap());
         let updated = Some(Utc.with_ymd_and_hms(2026, 9, 8, 9, 40, 0).unwrap());
-        let line = attribution_line(None, &created, Some("  "), &updated, fixed);
+        let line = joined(&attribution_parts(
+            None,
+            &created,
+            Some("  "),
+            &updated,
+            fixed,
+        ));
         assert!(line.starts_with("Created by Unknown "), "{line}");
         assert!(line.contains("Updated by Unknown "), "{line}");
         assert_eq!(person_label(None), "Unknown");

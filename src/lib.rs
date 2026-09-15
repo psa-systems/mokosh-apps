@@ -540,15 +540,12 @@ fn RouteErrorFallback(errors: ErrorContext) -> Element {
                     }
                 }
                 div { class: "flex justify-center gap-3",
-                    button {
-                        r#type: "button",
-                        class: "inline-flex items-center justify-center font-medium rounded-md px-4 py-2 text-sm bg-accent text-on-accent hover:opacity-90",
+                    crate::components::Button {
                         onclick: goto_dashboard,
                         "Go to dashboard"
                     }
-                    button {
-                        r#type: "button",
-                        class: "inline-flex items-center justify-center font-medium rounded-md px-4 py-2 text-sm bg-surface-2 text-content border border-line",
+                    crate::components::Button {
+                        variant: crate::components::ButtonVariant::Secondary,
                         onclick: reload,
                         "Reload page"
                     }

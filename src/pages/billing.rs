@@ -2478,7 +2478,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-8 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load invoice." }
+                        ErrorBanner { class: "mb-3", "Could not load invoice." }
                         Link {
                             to: Route::InvoiceList {},
                             class: "text-sm text-accent hover:opacity-90",
@@ -6423,7 +6423,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                                             "Asks the provider whether these stored credentials work, without taking a payment."
                                         }
                                         if !check_error.read().is_empty() {
-                                            p { class: "text-xs text-red-600 dark:text-red-300", "{check_error}" }
+                                            ErrorBanner { "{check_error}" }
                                         }
                                         if let Some(results) = check_results.read().clone() {
                                             p { class: "text-sm text-content", "{check_summary(&results)}" }

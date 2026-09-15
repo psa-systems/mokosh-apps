@@ -548,7 +548,7 @@ pub fn WorkDayStrip() -> Element {
         Some(None) => {
             return rsx! {
                 div { class: "mb-6 flex items-center justify-between gap-3 rounded-lg border border-line bg-surface px-4 py-3",
-                    p { class: "text-sm text-red-600 dark:text-red-300", "Could not load today's clock." }
+                    ErrorBanner { class: "flex-1", "Could not load today's clock." }
                     Button {
                         variant: ButtonVariant::Secondary,
                         onclick: move |_| day_resource.restart(),
@@ -947,7 +947,9 @@ pub fn WorkDayStrip() -> Element {
                                 class: if seg.kind == "break" { "rounded-md border border-line px-2 py-1 text-muted" } else { "rounded-md border border-line bg-surface-2 px-2 py-1" },
                                 div { class: "flex flex-wrap items-center gap-2",
                                     span { class: "font-medium", if seg.kind == "break" { "Break" } else { "Work" } }
-                                    " {segment_span(seg.started_at, seg.ended_at)} "
+                                    " "
+                                    {segment_span_el(seg.started_at, seg.ended_at)}
+                                    " "
                                     span { class: "text-muted", "({fmt_duration(seg.minutes)})" }
                                     // MAPPS-754: offered only where the
                                     // tenant's policy and this caller's role
@@ -1194,6 +1196,24 @@ fn segment_span(started: Option<DateTime<Utc>>, ended: Option<DateTime<Utc>>) ->
         (Some(s), Some(e)) => format!("{} to {}", clock(s), clock(e)),
         (Some(s), None) => format!("{} onward", clock(s)),
         _ => String::new(),
+    }
+}
+
+/// [`segment_span`] rendered as `time` elements with an ISO `datetime` on
+/// each endpoint, for the segment list (N5).
+fn segment_span_el(started: Option<DateTime<Utc>>, ended: Option<DateTime<Utc>>) -> Element {
+    let clock = clock_time;
+    match (started, ended) {
+        (Some(s), Some(e)) => rsx! {
+            time { datetime: "{s.to_rfc3339()}", "{clock(s)}" }
+            " to "
+            time { datetime: "{e.to_rfc3339()}", "{clock(e)}" }
+        },
+        (Some(s), None) => rsx! {
+            time { datetime: "{s.to_rfc3339()}", "{clock(s)}" }
+            " onward"
+        },
+        _ => rsx! {},
     }
 }
 

@@ -625,6 +625,7 @@ fn AuditRow(props: AuditRowProps) -> Element {
         entry.old_values.is_some() || entry.new_values.is_some() || entry.user_agent.is_some();
 
     let timestamp = format_timestamp(entry.timestamp);
+    let timestamp_iso = entry.timestamp.to_rfc3339();
     let action = entry.action.clone();
     let variant = action_variant(&action);
     let entity_type = entry.entity_type.clone();
@@ -676,7 +677,7 @@ fn AuditRow(props: AuditRowProps) -> Element {
 
     rsx! {
         TableRow {
-            TableCell { class: "text-muted font-mono text-xs", "{timestamp}" }
+            TableCell { class: "text-muted font-mono text-xs", time { datetime: "{timestamp_iso}", "{timestamp}" } }
             TableCell {
                 Badge { variant, "{action}" }
             }
