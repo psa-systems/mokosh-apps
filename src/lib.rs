@@ -2572,6 +2572,27 @@ mod emailed_link_routes {
             "billing::email_invoice (company without one)",
             "/portal/login",
         ),
+        // src/modules/quotes/service.rs: the quote sign-off link (MAPPS-779).
+        // It was `{origin}/portal/quotes/{id}`, a route retired with the rest
+        // of `/portal/*`, so every quote email pointed at the 404 page - the
+        // PMS-1168 defect, fixed for invoices and missed for quotes because
+        // nothing listed this link here. Now the company's portal login with
+        // the quote as `?next=`.
+        (
+            "quotes::send_quote (company with a portal id)",
+            "/portal/123456789/login?next=/quotes/2f1c2f1e-0000-4000-8000-00000000abcd",
+        ),
+        (
+            "quotes::send_quote (company without one)",
+            "/portal/login?next=/quotes/2f1c2f1e-0000-4000-8000-00000000abcd",
+        ),
+        // Where that `?next=` lands after sign-in. The login page restores it
+        // only if it parses as a route, so the target is checked in its own
+        // right rather than assumed.
+        (
+            "quotes::send_quote (the next target)",
+            "/quotes/2f1c2f1e-0000-4000-8000-00000000abcd",
+        ),
     ];
 
     #[test]

@@ -24,9 +24,10 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, ErrorBanner,
-    IconSize, Input, MailIcon, Modal, ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table,
-    TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, ConfirmDialog, DataTable,
+    ErrorBanner, IconSize, Input, MailIcon, Modal, ModalSize, PageHeader, PlusIcon, Select,
+    SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
+    TableRow, Textarea,
 };
 use crate::hooks::use_can_mutate;
 use crate::modules::quotes::{
@@ -158,8 +159,8 @@ pub fn QuoteListPage() -> Element {
 #[component]
 fn QuoteListBody() -> Element {
     // mokosh-contact-login prompt 006: the "New Quote" CTA is
-    // staff-only. Contact-facing accept/decline lives in the detail
-    // body, not this list.
+    // staff-only. Contact-facing accept/decline lives on the quote page
+    // (`CustomerQuoteView`, MAPPS-779), not this list.
     let staff_only =
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
     let mut company_filter =
@@ -453,25 +454,283 @@ fn QuoteRow(props: QuoteRowProps) -> Element {
 // Detail
 // ============================================================================
 
+/// MAPPS-779: the quote page serves three callers, and before this it served
+/// one.
+///
+/// Staff with billing access get the lifecycle page, unchanged. A portal
+/// contact holding `quotes:read` gets [`CustomerQuoteView`]: what they are
+/// agreeing to, and Accept or Decline while it waits on them. A contact
+/// without it gets the portal's explained state with Ask for access.
+///
+/// Before this the page returned the staff permission screen for anyone
+/// without billing access, which is every contact. A Billing Contact, whose
+/// built-in role carries `quotes:read` and `quotes:accept`, reached the quote
+/// list, clicked a quote, and was told quotes are "restricted to administrator
+/// and finance roles" - untrue of them, and a hard stop on the sign-off flow
+/// the server implements and the quote email advertises. `QuoteListBody` said
+/// "Contact-facing accept/decline lives in the detail body"; nothing did.
 #[component]
 pub fn QuoteDetailPage(id: String) -> Element {
     use_page_title("Quote");
-    if !use_can_manage_billing() {
-        return permission_required();
+    let staff_billing = use_can_manage_billing();
+    let contact_can_read = crate::hooks::capabilities::use_capability("quotes:read");
+    if staff_billing && !crate::hooks::fetch::api::has_contact_session() {
+        // MAPPS-377: mount the data body only past the permission gate so its
+        // fetch hooks run unconditionally within it.
+        return rsx! { QuoteDetailBody { id } };
     }
+    if crate::hooks::fetch::api::has_contact_session() {
+        if contact_can_read {
+            return rsx! { CustomerQuoteView { id } };
+        }
+        return rsx! {
+            crate::components::PortalAccessRequired {
+                title: "Quote".to_string(),
+                area: crate::components::QUOTES,
+            }
+        };
+    }
+    permission_required()
+}
 
-    // MAPPS-377: mount the data body only past the permission gate so its
-    // fetch hooks run unconditionally within it (and never fire for a
-    // non-finance role, preserving the pre-fix behaviour).
-    rsx! { QuoteDetailBody { id } }
+/// MAPPS-779: `POST /quotes/{id}/accept` and `/decline`. The server's
+/// `QuoteDecisionBody` takes an optional note for either; typed rather than a
+/// `json!` literal so the field name agrees with the server by construction.
+#[derive(Debug, serde::Serialize)]
+struct QuoteDecisionBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notes: Option<String>,
+}
+
+/// MAPPS-779: what the confirm step says before a decision is sent.
+///
+/// A decision is final from the customer's side - the server records it and
+/// the quote leaves `sent` - so the sentence says what they are agreeing to,
+/// in money, before they press. Declining asks why, because the MSP's next
+/// move (revise, or let it go) depends on the answer.
+pub(crate) fn customer_decision_prompt(accept: bool, number: &str, total: &str) -> String {
+    if accept {
+        format!("Accept quote {number} for {total}? Your acceptance is sent to your provider and cannot be changed here afterwards.")
+    } else {
+        format!("Decline quote {number}? Your provider is told, and you can say why below.")
+    }
+}
+
+/// MAPPS-779: the line under the title, which tells the customer whether the
+/// next move is theirs.
+pub(crate) fn customer_quote_status_line(status: &str, valid_until: Option<&str>) -> String {
+    match (status, valid_until) {
+        ("sent", Some(date)) => format!("Waiting for your decision. Valid until {date}."),
+        ("sent", None) => "Waiting for your decision.".to_string(),
+        ("accepted", _) => "You accepted this quote.".to_string(),
+        ("declined", _) => "You declined this quote.".to_string(),
+        ("expired", _) => "This quote has expired. Ask your provider for a new one.".to_string(),
+        ("converted", _) => "You accepted this quote and the work has started.".to_string(),
+        (other, _) => format!("Status: {}", status::label(other)),
+    }
+}
+
+/// MAPPS-779: the customer's view of one quote.
+#[component]
+fn CustomerQuoteView(id: String) -> Element {
+    let can_decide = crate::hooks::capabilities::use_capability("quotes:accept");
+    let can_mutate = use_can_mutate();
+    let mut version = use_signal(|| 0u32);
+    let id_for_fetch = id.clone();
+    let quote_resource = use_resource(move || {
+        let qid = id_for_fetch.clone();
+        async move {
+            let _v = version.read();
+            crate::hooks::fetch::api::get_authed_any::<QuoteResponse>(&format!("/quotes/{qid}"))
+                .await
+                .inspect_err(|e| tracing::warn!("customer quote load failed for {qid}: {e}"))
+                .ok()
+        }
+    });
+    // Which decision is being confirmed: `Some(true)` accept, `Some(false)`
+    // decline.
+    let mut confirming = use_signal(|| None::<bool>);
+    let mut decline_reason = use_signal(String::new);
+    let mut deciding = use_signal(|| false);
+    let mut decision_error = use_signal(String::new);
+
+    let snapshot = quote_resource.read_unchecked();
+    let Some(loaded) = &*snapshot else {
+        return rsx! {
+            PageHeader { title: "Quote" }
+            Card { div { class: "py-8 text-center text-sm text-muted", "Loading quote…" } }
+        };
+    };
+    let Some(quote) = loaded.clone() else {
+        // The server answers a quote from another company, and one not yet
+        // sent, with the same 404 so the portal never confirms it exists, and
+        // this client cannot tell that apart from a failed request.
+        return rsx! {
+            PageHeader { title: "Quote" }
+            Card {
+                div { class: "py-8 text-center",
+                    p { class: "text-sm text-muted", "This quote could not be loaded. It may not be available to your account." }
+                }
+            }
+        };
+    };
+    drop(snapshot);
+
+    let number = quote
+        .quote_number
+        .clone()
+        .unwrap_or_else(|| "(unnumbered)".to_string());
+    let total = format_money(quote.total);
+    let subtotal = format_money(quote.subtotal);
+    let tax = format_money(quote.tax_amount);
+    let valid_until = quote.valid_until.map(|d| d.to_string());
+    let status_line = customer_quote_status_line(&quote.status, valid_until.as_deref());
+    let awaiting = status::awaiting_client(&quote.status) && can_decide;
+    let lines = quote.lines.clone().unwrap_or_default();
+    let quote_id = quote.id;
+
+    let accept_prompt = customer_decision_prompt(true, &number, &total);
+    let decline_prompt = customer_decision_prompt(false, &number, &total);
+
+    let mut decide = move |accept: bool| {
+        if *deciding.read() {
+            return;
+        }
+        deciding.set(true);
+        decision_error.set(String::new());
+        let notes = if accept {
+            None
+        } else {
+            Some(decline_reason.read().trim().to_string()).filter(|n| !n.is_empty())
+        };
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let action = if accept { "accept" } else { "decline" };
+                match crate::hooks::fetch::api::post_authed_any_typed::<QuoteResponse, _>(
+                    &format!("/quotes/{quote_id}/{action}"),
+                    &QuoteDecisionBody { notes },
+                )
+                .await
+                {
+                    Ok(_) => {
+                        confirming.set(None);
+                        version.with_mut(|v| *v += 1);
+                    }
+                    Err(err) => decision_error.set(format!(
+                        "Your decision was not sent: {}",
+                        err.user_message()
+                    )),
+                }
+            }
+            deciding.set(false);
+        });
+    };
+
+    rsx! {
+        PageHeader { title: "Quote {number}" }
+        Card {
+            div { class: "space-y-4",
+                div { class: "flex flex-wrap items-center justify-between gap-2",
+                    h2 { class: "text-lg font-medium text-content", "{quote.title}" }
+                    Badge { variant: quote_status_variant(&quote.status), "{status::label(&quote.status)}" }
+                }
+                p { class: "text-sm text-muted", "{status_line}" }
+                if let Some(summary) = quote.summary.clone().filter(|s| !s.trim().is_empty()) {
+                    p { class: "text-sm text-content", "{summary}" }
+                }
+                if let Some(description) = quote.description.clone().filter(|s| !s.trim().is_empty()) {
+                    p { class: "text-sm text-content whitespace-pre-line", "{description}" }
+                }
+                if !lines.is_empty() {
+                    div { class: "overflow-x-auto",
+                        Table {
+                            TableHead {
+                                TableRow {
+                                    TableHeader { "Item" }
+                                    TableHeader { "Qty" }
+                                    TableHeader { "Unit price" }
+                                    TableHeader { "Total" }
+                                }
+                            }
+                            TableBody {
+                                for line in lines {
+                                    TableRow { key: "{line.id}",
+                                        TableCell { "{line.description}" }
+                                        TableCell { "{line.quantity}" }
+                                        TableCell { {format_money(line.unit_price)} }
+                                        TableCell { {format_money(line.total)} }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                div { class: "ml-auto max-w-xs space-y-1 text-sm",
+                    div { class: "flex justify-between", span { class: "text-muted", "Subtotal" } span { "{subtotal}" } }
+                    div { class: "flex justify-between", span { class: "text-muted", "Tax" } span { "{tax}" } }
+                    div { class: "flex justify-between font-medium", span { "Total" } span { "{total}" } }
+                }
+                if awaiting {
+                    div { class: "flex flex-wrap gap-2 border-t border-line pt-4",
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            disabled: !can_mutate || *deciding.read(),
+                            title: (!can_mutate).then(|| "Can't send a decision while the server is unreachable".to_string()),
+                            onclick: move |_| { decision_error.set(String::new()); confirming.set(Some(true)); },
+                            "Accept quote"
+                        }
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            disabled: !can_mutate || *deciding.read(),
+                            title: (!can_mutate).then(|| "Can't send a decision while the server is unreachable".to_string()),
+                            onclick: move |_| { decision_error.set(String::new()); confirming.set(Some(false)); },
+                            "Decline"
+                        }
+                    }
+                }
+            }
+        }
+        ConfirmDialog {
+            open: *confirming.read() == Some(true),
+            title: "Accept this quote".to_string(),
+            message: accept_prompt,
+            confirm_text: "Accept".to_string(),
+            loading: *deciding.read(),
+            error: decision_error.read().clone(),
+            onconfirm: move |_| decide(true),
+            oncancel: move |_| confirming.set(None),
+        }
+        ConfirmDialog {
+            open: *confirming.read() == Some(false),
+            title: "Decline this quote".to_string(),
+            message: decline_prompt,
+            confirm_text: "Decline".to_string(),
+            destructive: true,
+            loading: *deciding.read(),
+            error: decision_error.read().clone(),
+            body: rsx! {
+                Textarea {
+                    name: "quote_decline_reason",
+                    label: "Why are you declining? (optional)",
+                    rows: 3,
+                    value: decline_reason.read().clone(),
+                    oninput: move |e: FormEvent| decline_reason.set(e.value()),
+                }
+            },
+            onconfirm: move |_| decide(false),
+            oncancel: move |_| confirming.set(None),
+        }
+    }
 }
 
 #[component]
 fn QuoteDetailBody(id: String) -> Element {
     // mokosh-contact-login prompt 006: all quote lifecycle controls
     // on this detail (Submit/Approve/Reject/Send/Convert/Cancel/Edit)
-    // are staff-only. The customer-facing Accept/Decline UI is not
-    // in this codebase today; skipped gracefully.
+    // are staff-only. The customer's Accept/Decline is
+    // `CustomerQuoteView` (MAPPS-779), which `QuoteDetailPage` routes a
+    // contact session to instead of this body.
     let staff_only =
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
     // MAPPS-607: PMS-936 exposes `GET /quotes/{id}/pdf` behind the
@@ -1572,5 +1831,59 @@ mod tests {
         let mut l = DraftLine::new();
         l.unit_price = "-25".into();
         assert_eq!(l.preview_total(), Decimal::from(-25));
+    }
+}
+
+/// MAPPS-779: what a customer reads on their own quote.
+#[cfg(test)]
+mod customer_quote_tests {
+    use super::{customer_decision_prompt, customer_quote_status_line};
+
+    /// Accepting names the quote and the money before the press, and says it
+    /// is final, because the server records it and the quote leaves `sent`.
+    #[test]
+    fn accepting_says_what_is_agreed_to_and_that_it_is_final() {
+        let prompt = customer_decision_prompt(true, "Q-0042", "$1,200.00");
+        assert!(prompt.contains("Q-0042"), "{prompt}");
+        assert!(prompt.contains("$1,200.00"), "{prompt}");
+        assert!(prompt.contains("cannot be changed"), "{prompt}");
+    }
+
+    /// Declining invites a reason, because the MSP's next move depends on it.
+    #[test]
+    fn declining_invites_a_reason() {
+        let prompt = customer_decision_prompt(false, "Q-0042", "$1,200.00");
+        assert!(prompt.contains("Q-0042"), "{prompt}");
+        assert!(prompt.contains("why"), "{prompt}");
+    }
+
+    /// The status line says whether the next move is the customer's, and
+    /// names the deadline while there is one.
+    #[test]
+    fn the_status_line_says_whose_move_it_is() {
+        assert_eq!(
+            customer_quote_status_line("sent", Some("2026-10-01")),
+            "Waiting for your decision. Valid until 2026-10-01."
+        );
+        assert_eq!(
+            customer_quote_status_line("sent", None),
+            "Waiting for your decision."
+        );
+        assert_eq!(
+            customer_quote_status_line("accepted", None),
+            "You accepted this quote."
+        );
+        assert!(customer_quote_status_line("expired", None).contains("new one"));
+    }
+
+    /// No status a customer can see reads as the internal approval stages,
+    /// which are staff vocabulary: a customer only ever sees a sent quote or
+    /// the outcome of one.
+    #[test]
+    fn a_decided_quote_never_says_it_is_waiting() {
+        for status in ["accepted", "declined", "expired", "converted"] {
+            let line = customer_quote_status_line(status, Some("2026-10-01"));
+            assert!(!line.contains("Waiting"), "{status}: {line}");
+        }
     }
 }
