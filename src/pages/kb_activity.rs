@@ -261,7 +261,7 @@ pub fn ArticleActivity(
                     ErrorBanner { "{error.read()}" }
                 }
                 if comments_failed {
-                    p { class: "text-sm text-red-600 dark:text-red-300", "Could not load the comments." }
+                    ErrorBanner { "Could not load the comments." }
                 }
 
                 if loading && stream.is_empty() {

@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 
 use super::global_search::GlobalSearch;
 use super::icons::*;
+use super::popover::Popover;
 use super::tenant_switcher::TenantSwitcher;
 use super::theme_picker::ThemePickerButton;
 /// MAPPS-518: the sessionStorage key where `/platform/login` stashes
@@ -1268,45 +1269,32 @@ fn UserMenu() -> Element {
     };
 
     rsx! {
-        div { class: "relative",
-            // MAPPS-384: match the sibling top-bar icons (theme picker /
-            // notification bell, MAPPS-359 surface tokens) so the profile
-            // control highlights on hover and carries a tooltip. `title` is the
-            // hover/focus tooltip; `aria_label` the accessible name. IconButton
-            // was considered but its `rounded-md` + blue focus-ring base would
-            // visually diverge from the `rounded-full` top-bar icons this is
-            // meant to sit beside, so matching the sibling convention wins.
-            button {
-                r#type: "button",
-                class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2 focus:outline-none",
-                aria_label: "User menu",
-                title: "User menu",
-                aria_expanded: if open() { "true" } else { "false" },
-                aria_haspopup: "menu",
-                onclick: move |_| {
-                    let next = !*open.read();
-                    open.set(next);
-                },
+        // MAPPS-384: match the sibling top-bar icons (theme picker /
+        // notification bell, MAPPS-359 surface tokens) so the profile
+        // control highlights on hover and carries a tooltip. IconButton
+        // was considered but its `rounded-md` + blue focus-ring base would
+        // visually diverge from the `rounded-full` top-bar icons this is
+        // meant to sit beside, so matching the sibling convention wins.
+        Popover {
+            open: open(),
+            label: "User menu",
+            trigger_class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2 focus:outline-none",
+            trigger: rsx! {
                 // No color class on the icon: it inherits `currentColor` from
                 // the button (`text-subtle`, `hover:text-content`) so it
                 // brightens on hover like the sibling top-bar icons. Pinning
                 // `text-subtle` here would override the button's hover color and
                 // leave the icon looking dead on hover (MAPPS-384 follow-up).
                 UserCircleIcon { size: IconSize::Large }
-            }
-            if *open.read() {
-                // MAPPS-384: full-screen outside-click backdrop, same pattern as
-                // GlobalSearch (MAPPS-346). Sits below the dropdown (z-10 < z-20)
-                // so menu entries stay clickable while any click elsewhere hits
-                // this and dismisses. It unmounts with the dropdown, so there is
-                // no document-level listener that could leak.
-                div {
-                    class: "fixed inset-0 z-10",
-                    onclick: move |_| open.set(false),
-                }
-                div {
-                    class: "dropdown-panel absolute right-0 mt-2 w-52 z-20 p-1",
-                    role: "menu",
+            },
+            width: "w-52",
+            ontoggle: move |_| {
+                let next = !*open.read();
+                open.set(next);
+            },
+            onclose: move |_| open.set(false),
+            {
+                rsx! {
                     // Profile is a mokosh-side route, served by this
                     // SPA. Use the router `Link` so the SPA does an
                     // internal transition instead of a full reload.
@@ -1464,16 +1452,11 @@ fn NotificationBell() -> Element {
     let unread = items.iter().filter(|i| i.read_at.is_none()).count();
 
     rsx! {
-        div { class: "relative",
-            button {
-                r#type: "button",
-                aria_label: "Notifications",
-                title: "Notifications",
-                class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2 relative",
-                onclick: move |_| {
-                    let next = !*open.read();
-                    open.set(next);
-                },
+        Popover {
+            open: open(),
+            label: "Notifications",
+            trigger_class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2 relative",
+            trigger: rsx! {
                 BellIcon {}
                 // Red dot only when something is actually unread. MAPPS-261:
                 // the dot's meaning must not rely on color alone, so it carries
@@ -1483,37 +1466,28 @@ fn NotificationBell() -> Element {
                         span { class: "sr-only", "{unread} unread notifications" }
                     }
                 }
+            },
+            width: "w-80 max-h-96 overflow-y-auto",
+            ontoggle: move |_| {
+                let next = !*open.read();
+                open.set(next);
+            },
+            onclose: move |_| open.set(false),
+            div { class: "px-4 py-2 border-b border-line text-sm font-semibold text-content",
+                "Notifications"
             }
-            if *open.read() {
-                // Full-viewport click-catcher behind the panel. Sits
-                // below the panel's z-index so any click outside the
-                // dropdown (including a second click on the bell) closes
-                // it; clicks on the panel itself land above this and are
-                // unaffected.
-                div {
-                    class: "fixed inset-0 z-10",
-                    onclick: move |_| open.set(false),
+            if items.is_empty() {
+                div { class: "px-4 py-6 text-sm text-muted text-center",
+                    "No notifications yet"
                 }
-                div {
-                    class: "dropdown-panel absolute right-0 mt-2 w-80 max-h-96 overflow-y-auto z-20",
-                    role: "menu",
-                    div { class: "px-4 py-2 border-b border-line text-sm font-semibold text-content",
-                        "Notifications"
-                    }
-                    if items.is_empty() {
-                        div { class: "px-4 py-6 text-sm text-muted text-center",
-                            "No notifications yet"
-                        }
-                    } else {
-                        for item in items.iter().cloned() {
-                            NotificationRow {
-                                item,
-                                on_read: move |_| inbox.restart(),
-                                // MAPPS-743: a row that navigates closes the panel
-                                // behind it; the page it lands on is the point.
-                                on_navigate: move |_| open.set(false),
-                            }
-                        }
+            } else {
+                for item in items.iter().cloned() {
+                    NotificationRow {
+                        item,
+                        on_read: move |_| inbox.restart(),
+                        // MAPPS-743: a row that navigates closes the panel
+                        // behind it; the page it lands on is the point.
+                        on_navigate: move |_| open.set(false),
                     }
                 }
             }

@@ -32,9 +32,9 @@ use dioxus::prelude::*;
 use crate::utils::datetime::{user_timezone, user_today};
 
 use crate::components::{
-    clear_on_edit, use_page_title, BannerTone, Button, ButtonVariant, Card, ChevronRightIcon,
-    EmptyState, ErrorBanner, IconSize, Input, Modal, ModalSize, PageHeader, PencilIcon, PlusIcon,
-    Select, SelectOption, StatusBanner, SwatchIcon, Textarea,
+    clear_on_edit, use_page_title, BannerTone, Button, ButtonVariant, Card, ChevronLeftIcon,
+    ChevronRightIcon, EmptyState, ErrorBanner, IconButton, IconSize, Input, Modal, ModalSize,
+    PageHeader, PencilIcon, PlusIcon, Select, SelectOption, StatusBanner, SwatchIcon, Textarea,
 };
 use crate::modules::calendar::{
     AppointmentResponse, CreateAppointmentRequest, CreateSchedulingTemplateRequest,
@@ -841,22 +841,18 @@ pub fn CalendarPage() -> Element {
                     // Toolbar
                     div { class: "flex items-center justify-between p-4 border-b border-line",
                         div { class: "flex items-center space-x-4",
-                            button {
-                                r#type: "button",
+                            IconButton {
+                                label: "Previous",
                                 class: "p-2 hover:bg-surface-2 rounded",
-                                title: "Previous",
-                                aria_label: "Previous",
                                 onclick: go_prev,
-                                ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
+                                ChevronLeftIcon { class: "h-5 w-5".to_string() }
                             }
                             h2 { class: "text-lg font-semibold text-content",
                                 "{header_label}"
                             }
-                            button {
-                                r#type: "button",
+                            IconButton {
+                                label: "Next",
                                 class: "p-2 hover:bg-surface-2 rounded",
-                                title: "Next",
-                                aria_label: "Next",
                                 onclick: go_next,
                                 ChevronRightIcon { class: "h-5 w-5".to_string() }
                             }
@@ -2591,11 +2587,9 @@ pub fn DispatchBoardPage() -> Element {
         Card { padding: false,
             div { class: "flex items-center justify-between p-4 border-b border-line",
                 div { class: "flex items-center space-x-4",
-                    button {
-                        r#type: "button",
+                    IconButton {
+                        label: "Previous",
                         class: "p-2 hover:bg-surface-2 rounded",
-                        title: "Previous",
-                        aria_label: "Previous",
                         onclick: move |_| {
                             let v = *view.read();
                             let step = match v {
@@ -2605,14 +2599,12 @@ pub fn DispatchBoardPage() -> Element {
                             };
                             active_day.set(active_day() - step);
                         },
-                        ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
+                        ChevronLeftIcon { class: "h-5 w-5".to_string() }
                     }
                     h2 { class: "text-lg font-semibold text-content", "{title}" }
-                    button {
-                        r#type: "button",
+                    IconButton {
+                        label: "Next",
                         class: "p-2 hover:bg-surface-2 rounded",
-                        title: "Next",
-                        aria_label: "Next",
                         onclick: move |_| {
                             let v = *view.read();
                             let step = match v {

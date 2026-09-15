@@ -563,7 +563,7 @@ pub fn ContractEditPage(props: ContractEditPageProps) -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-8 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contract." }
+                        ErrorBanner { class: "mb-3", "Could not load contract." }
                         Link {
                             to: Route::ContractList {},
                             class: "text-sm text-accent hover:opacity-90",
@@ -1774,7 +1774,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-8 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contract." }
+                        ErrorBanner { class: "mb-3", "Could not load contract." }
                         Link {
                             to: Route::ContractList {},
                             class: "text-sm text-accent hover:opacity-90",
@@ -3000,7 +3000,7 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-8 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load rate card." }
+                        ErrorBanner { class: "mb-3", "Could not load rate card." }
                         Link {
                             to: Route::RateCardList {},
                             class: "text-sm text-accent hover:opacity-90",

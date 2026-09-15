@@ -18,7 +18,8 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::components::{
-    use_page_title, AlertType, Badge, BadgeVariant, Button, ButtonVariant, Card, PageHeader,
+    use_page_title, AlertType, Badge, BadgeVariant, Button, ButtonVariant, Card, ErrorBanner,
+    PageHeader,
 };
 use crate::Route;
 
@@ -272,9 +273,7 @@ pub fn ApprovalsPage() -> Element {
             Card { p { class: "text-sm text-muted py-6 text-center", "Loading…" } }
         } else if fetch_failed {
             Card {
-                p { class: "text-sm text-red-600 dark:text-red-300 py-6 text-center",
-                    "Could not load pending approvals."
-                }
+                div { class: "py-6 text-center", ErrorBanner { "Could not load pending approvals." } }
             }
         } else if rows.is_empty() {
             Card {

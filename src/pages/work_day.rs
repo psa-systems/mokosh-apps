@@ -548,7 +548,7 @@ pub fn WorkDayStrip() -> Element {
         Some(None) => {
             return rsx! {
                 div { class: "mb-6 flex items-center justify-between gap-3 rounded-lg border border-line bg-surface px-4 py-3",
-                    p { class: "text-sm text-red-600 dark:text-red-300", "Could not load today's clock." }
+                    ErrorBanner { class: "flex-1", "Could not load today's clock." }
                     Button {
                         variant: ButtonVariant::Secondary,
                         onclick: move |_| day_resource.restart(),

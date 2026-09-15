@@ -627,7 +627,7 @@ fn WidgetSlaAtRisk() -> Element {
     let r = report.read_unchecked().clone().unwrap_or_default();
     rsx! {
         div { class: "flex justify-between text-sm",
-            span { class: "text-yellow-700", "At risk" }
+            span { class: "text-yellow-700 dark:text-yellow-300", "At risk" }
             span { class: "font-medium", "{r.sla_warnings}" }
         }
         div { class: "flex justify-between text-sm mt-1",

@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::{
     use_page_title, Badge, BadgeVariant, BannerTone, Button, ButtonSize, ButtonVariant, Card,
-    Checkbox, ChevronRightIcon, DataTable, ErrorBanner, IconSize, Modal, PageHeader, PlusIcon,
-    Select, SelectOption, StatCard, StatusBanner, Table, TableAlign, TableBody, TableCell,
-    TableEmptyRow, TableHead, TableHeader, TableRow,
+    Checkbox, ChevronLeftIcon, ChevronRightIcon, DataTable, ErrorBanner, IconButton, IconSize,
+    Modal, PageHeader, PlusIcon, Select, SelectOption, StatCard, StatusBanner, Table, TableAlign,
+    TableBody, TableCell, TableEmptyRow, TableHead, TableHeader, TableRow,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
@@ -433,11 +433,7 @@ pub fn TimeEntryListPage() -> Element {
         }
 
         if load_failed {
-            Card { class: "mb-6",
-                p { class: "text-sm text-yellow-600 dark:text-yellow-400",
-                    "Could not load time entries from the server."
-                }
-            }
+            ErrorBanner { class: "mb-6", "Could not load time entries from the server." }
         }
 
         DataTable {
@@ -1516,16 +1512,15 @@ pub fn TimesheetsPage() -> Element {
         // Week selector
         Card { class: "mb-6",
             div { class: "flex items-center justify-between",
-                button {
-                    r#type: "button",
+                IconButton {
+                    label: "Previous week",
                     class: "p-2 text-subtle hover:text-content",
-                    title: "Previous week",
                     onclick: move |_| {
                         action_msg.set(String::new());
                         action_err.set(String::new());
                         week_start.set(week_start() - Duration::days(7));
                     },
-                    ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
+                    ChevronLeftIcon { class: "h-5 w-5".to_string() }
                 }
                 div { class: "flex flex-col items-center gap-1",
                     span { class: "text-lg font-medium text-content",
@@ -1547,10 +1542,9 @@ pub fn TimesheetsPage() -> Element {
                         }
                     }
                 }
-                button {
-                    r#type: "button",
+                IconButton {
+                    label: "Next week",
                     class: "p-2 text-subtle hover:text-content",
-                    title: "Next week",
                     onclick: move |_| {
                         action_msg.set(String::new());
                         action_err.set(String::new());
@@ -1588,10 +1582,8 @@ pub fn TimesheetsPage() -> Element {
                             }
                         }
                     } else if load_failed {
-                        TableRow {
-                            TableCell { colspan: Some(9), class: "text-center text-red-500 dark:text-red-400",
-                                "Could not load timesheet. The time-tracking service may be unavailable."
-                            }
+                        TableEmptyRow { columns: 9, class: "text-red-600 dark:text-red-300",
+                            "Could not load timesheet. The time-tracking service may be unavailable."
                         }
                     } else if !has_entries {
                         // MAPPS-201: empty-week prompt + one-click path to a new
@@ -2254,16 +2246,15 @@ pub fn TimesheetApprovalsPage() -> Element {
         if !in_range_mode {
         Card { class: "mb-6",
             div { class: "flex items-center justify-between",
-                button {
-                    r#type: "button",
+                IconButton {
+                    label: "Previous week",
                     class: "p-2 text-subtle hover:text-content",
-                    title: "Previous week",
                     onclick: move |_| {
                         action_msg.set(String::new());
                         action_err.set(String::new());
                         week_start.set(week_start() - Duration::days(7));
                     },
-                    ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
+                    ChevronLeftIcon { class: "h-5 w-5".to_string() }
                 }
                 div { class: "flex flex-col items-center gap-1",
                     span { class: "text-lg font-medium text-content",
@@ -2282,10 +2273,9 @@ pub fn TimesheetApprovalsPage() -> Element {
                         }
                     }
                 }
-                button {
-                    r#type: "button",
+                IconButton {
+                    label: "Next week",
                     class: "p-2 text-subtle hover:text-content",
-                    title: "Next week",
                     onclick: move |_| {
                         action_msg.set(String::new());
                         action_err.set(String::new());
@@ -2320,10 +2310,8 @@ pub fn TimesheetApprovalsPage() -> Element {
                             TableCell { class: "text-subtle", "Loading…" }
                         }
                     } else if load_failed {
-                        TableRow {
-                            TableCell { class: "text-red-500 dark:text-red-400",
-                                "Could not load timesheets. The time-tracking service may be unavailable."
-                            }
+                        TableEmptyRow { columns: 7, class: "text-red-600 dark:text-red-300",
+                            "Could not load timesheets. The time-tracking service may be unavailable."
                         }
                     } else if rows.is_empty() {
                         // MAPPS-388: centered across the table, not left-aligned.
@@ -2735,9 +2723,7 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
                         p { class: "text-sm text-muted", "Loading history…" }
                     } else {
                         if entries_failed {
-                            p { class: "text-sm text-red-600 dark:text-red-400",
-                                "Could not load the week's entries; showing the decision only."
-                            }
+                            ErrorBanner { "Could not load the week's entries; showing the decision only." }
                         }
                         if events.is_empty() {
                             p { class: "text-sm text-muted italic",

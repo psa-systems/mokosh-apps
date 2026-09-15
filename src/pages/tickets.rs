@@ -3643,7 +3643,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         },
                                     }
                                     if desc_uploading() {
-                                        p { class: "text-xs text-subtle", "Uploading image…" }
+                                        p { class: "text-xs text-subtle", role: "status", "Uploading the image…" }
                                     }
                                     if !desc_upload_error().is_empty() {
                                         p { class: "text-sm text-red-600 dark:text-red-400", "{desc_upload_error}" }
@@ -3807,7 +3807,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             },
                         }
                         if note_uploading() {
-                            p { class: "text-xs text-subtle", "Uploading image…" }
+                            p { class: "text-xs text-subtle", role: "status", "Uploading the image…" }
                         }
                         if !note_upload_error().is_empty() {
                             p { class: "text-sm text-red-600 dark:text-red-400", "{note_upload_error}" }
@@ -4847,7 +4847,7 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                                         },
                                     }
                                     if note_edit_uploading() {
-                                        p { class: "text-xs text-subtle", "Uploading image…" }
+                                        p { class: "text-xs text-subtle", role: "status", "Uploading the image…" }
                                     }
                                     if !note_edit_upload_error().is_empty() {
                                         p { class: "text-sm text-red-600 dark:text-red-400", "{note_edit_upload_error}" }
@@ -5113,7 +5113,7 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
             if loading {
                 p { class: "text-sm text-subtle italic", "Loading approvals…" }
             } else if fetch_failed {
-                p { class: "text-sm text-red-600 dark:text-red-300", "Could not load approvals for this {props.entity_noun}." }
+                ErrorBanner { "Could not load approvals for this {props.entity_noun}." }
             } else if rows.is_empty() {
                 // PMS-747: "No approvals requested yet" read as an obligation
                 // not yet met, which is how a ticket raised from a client's own

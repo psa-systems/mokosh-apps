@@ -505,11 +505,7 @@ pub fn AssetListPage() -> Element {
         }
 
         if load_failed {
-            Card { class: "mb-6",
-                p { class: "text-sm text-yellow-600 dark:text-yellow-400",
-                    "Could not load assets from the server."
-                }
-            }
+            ErrorBanner { class: "mb-6", "Could not load assets from the server." }
         }
 
         // MAPPS-303 + MAPPS-313: bulk-edit + bulk-delete affordances.
@@ -1690,9 +1686,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             crate::components::DetailSkeleton {}
         } else if asset.is_none() {
             Card {
-                p { class: "text-sm text-yellow-600 dark:text-yellow-400",
-                    "Could not load this asset."
-                }
+                ErrorBanner { "Could not load this asset." }
             }
         } else {
             {
@@ -2190,10 +2184,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                         // no longer rendered as "No history yet". The
                                         // user knows to retry; admins know the gate
                                         // applies.
-                                        p {
-                                            class: "text-sm text-red-600 dark:text-red-400",
-                                            "Could not load change history."
-                                        }
+                                        ErrorBanner { "Could not load change history." }
                                         p {
                                             class: "text-xs text-subtle mt-1",
                                             "{e}"
