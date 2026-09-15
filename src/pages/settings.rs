@@ -137,6 +137,7 @@ pub fn TvViewSettingsPage() -> Element {
     // from the server, so this page has no remote resource an outage can blank.
     let mut enabled = use_signal(crate::hooks::tv_view::is_enabled);
     let mut team = use_signal(crate::hooks::tv_view::selected_team);
+    let nav = use_navigator();
 
     use_page_title("TV View");
     rsx! {
@@ -177,9 +178,10 @@ pub fn TvViewSettingsPage() -> Element {
                 }
 
                 if enabled() {
-                    Link {
-                        to: Route::DashboardTv {},
-                        class: "inline-flex items-center rounded-md bg-accent text-on-accent px-4 py-2 text-sm font-medium hover:opacity-90",
+                    Button {
+                        onclick: move |_| {
+                            nav.push(Route::DashboardTv {});
+                        },
                         "Open TV view"
                     }
                 }

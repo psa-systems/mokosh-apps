@@ -15,6 +15,11 @@
 #    class in input.css. Hand-copying `bg-raised` plus `shadow-lg` is what let
 #    six of the eleven panels drift onto `ring-1 ring-black/5`, an edge that is
 #    invisible on the dark surface, so both spellings fail here.
+# 5. `bg-accent` paired with `text-on-accent` in one class string is the
+#    Button component's Primary recipe (components/button.rs). MAPPS-407
+#    fixed a hand-rolled regrowth of it once already, so a new copy fails
+#    here (MAPPS-793). A handful of pre-existing, not-yet-migrated copies
+#    are allow-listed below; that debt is tracked as a subtask of MAPPS-793.
 #
 # Usage: check-kit-adoption.sh [ROOT | --self-test]
 #   ROOT defaults to `src`. `--self-test` re-runs the guard over generated
@@ -78,6 +83,11 @@ if [ "${1:-}" = "--self-test" ]; then
   printf '    div { class: "dropdown-panel absolute ring-1 ring-black/5", "menu" }\n' \
     > "$fixtures/src/components/menu.rs"
   check_rejects "an untokenized black ring"
+
+  build_clean
+  printf '    class: "inline-flex rounded-md bg-accent text-on-accent px-4 py-2 text-sm",\n' \
+    > "$fixtures/src/pages/widget.rs"
+  check_rejects "a hand-rolled accent button"
 
   build_clean
   out=$("$0" "$fixtures/src" 2>&1) && rc=0 || rc=$?
@@ -198,6 +208,24 @@ if [ -n "$hits" ]; then
   echo "Use \`dropdown-panel\` on a dropdown, or \`border border-line\` on any other surface."
   printf '%s\n' "$hits"
   status=1
+fi
+
+# --- 5. accent button recipe ---------------------------------------------
+# Pre-existing copies not yet routed through Button, tracked as a subtask of
+# MAPPS-793. New copies are not exempt.
+accent_allowed="$root/components/table.rs $root/components/theme_picker.rs $root/pages/calendar.rs $root/pages/contact_portal/picker.rs"
+accent_hits=$(grep -rn 'bg-accent' "$root" --include='*.rs' | grep -F 'text-on-accent' || true)
+if [ -n "$accent_hits" ]; then
+  hits=$(printf '%s\n' "$accent_hits" | grep -v "^$root/components/button.rs:")
+  for allowed in $accent_allowed; do
+    hits=$(printf '%s\n' "$hits" | grep -v "^$allowed:" || true)
+  done
+  if [ -n "$hits" ]; then
+    echo "accent-button guard: FAIL (hand-rolled bg-accent/text-on-accent copy outside Button)"
+    echo "Route the control through \`components::button::Button\` (variant \`Primary\`) instead."
+    printf '%s\n' "$hits"
+    status=1
+  fi
 fi
 
 [ "$status" -eq 0 ] && echo "kit-adoption guards: clean"
