@@ -1292,8 +1292,37 @@ struct PayInvoiceResp {
     checkout_url: String,
 }
 
+/// MAPPS-775: the page an emailed invoice link opens, gated for a customer
+/// who cannot read invoices before any of the detail's hooks run.
+///
+/// This is where a customer actually lands. The invoice email carries a link
+/// to one invoice, not to the list, so the list's explained state never
+/// reached the person it was for: a contact whose portal access was set up for
+/// tickets followed the Pay link and got "Could not load invoice.", the
+/// server's refusal rendered as a transient failure. That is the dead end this
+/// ticket began from.
+///
+/// A separate component rather than an early return inside the body, because
+/// the body calls a long run of hooks and a return ahead of them is only safe
+/// while the answer can never change during a mount. Splitting keeps the gate
+/// out of that question entirely.
 #[component]
 pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
+    let contact_can_read = crate::hooks::capabilities::use_capability("invoices:read");
+    if crate::hooks::fetch::api::has_contact_session() && !contact_can_read {
+        use_page_title("Invoice");
+        return rsx! {
+            crate::components::PortalAccessRequired {
+                title: "Invoice".to_string(),
+                area: crate::components::INVOICES,
+            }
+        };
+    }
+    rsx! { InvoiceDetailBody { ..props } }
+}
+
+#[component]
+fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     // mokosh-contact-login prompt 006: Edit / Send / Void / Record
     // Payment are staff-only. Contact-facing "Pay now" does not
     // exist in the codebase today; skipped gracefully.

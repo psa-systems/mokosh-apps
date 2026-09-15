@@ -118,6 +118,16 @@ pub fn ContractListPage() -> Element {
     // so the pre-pivot behaviour is preserved for every existing role.
     let contact_can_read = crate::hooks::capabilities::use_capability("contracts:read");
     if !use_can_manage_billing() && !contact_can_read {
+        // MAPPS-775: the portal's own state for a customer, for the reason on
+        // the invoice and quote lists.
+        if crate::hooks::fetch::api::has_contact_session() {
+            return rsx! {
+                crate::components::PortalAccessRequired {
+                    title: "Contracts".to_string(),
+                    area: crate::components::CONTRACTS,
+                }
+            };
+        }
         return rsx! {
             crate::components::PermissionRequired {
                 title: "Contracts".to_string(),
