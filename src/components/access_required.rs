@@ -32,6 +32,13 @@ pub struct AccessArea {
     pub label: &'static str,
 }
 
+/// MAPPS-780: the Payment Methods page's area. The label is what the sentence
+/// needs mid-flow ("does not share saved payment methods with your account"),
+/// and the key is the server's `ACCESS_AREAS` entry for it.
+pub const PAYMENT_METHODS: AccessArea = AccessArea {
+    key: "payment_methods",
+    label: "saved payment methods",
+};
 pub const INVOICES: AccessArea = AccessArea {
     key: "invoices",
     label: "invoices",

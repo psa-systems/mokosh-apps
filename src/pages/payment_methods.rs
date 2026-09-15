@@ -15,16 +15,16 @@
 //!   success. The server detaches on Stripe FIRST, then deletes the row,
 //!   so a failed detach keeps the row and the contact can retry.
 //!
-//! A contact without the cap sees the same `PermissionRequired` splash
-//! the sidebar entry already hides behind, matching the shape
-//! `ContactProfilePage` uses.
+//! A contact without the cap sees the portal's explained state with Ask for
+//! access (MAPPS-780), never the capability's internal name. Nothing links to
+//! this page yet: there is no sidebar entry, so it is reached by URL, and the
+//! staff-copy note that used to sit here described an entry that does not
+//! exist.
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::components::{
-    use_page_title, Button, ButtonVariant, Card, ErrorBanner, PageHeader, PermissionRequired,
-};
+use crate::components::{use_page_title, Button, ButtonVariant, Card, ErrorBanner, PageHeader};
 
 /// One row of `GET /contact/payment-methods`. Serde defaults everywhere
 /// so a server that predates this ticket decodes to a blank row and the
@@ -63,11 +63,36 @@ struct StartAddPaymentMethodResponse {
     checkout_url: String,
 }
 
+/// MAPPS-780: the gate, ahead of anything that fetches.
+///
+/// The page told a customer without the capability to "Ask your MSP to grant
+/// you the payment_methods:manage_own capability" - an internal identifier
+/// they cannot act on, and no way to ask. It now shows the portal's own
+/// explained state with Ask for access.
+///
+/// A wrapper rather than an early return inside the body, because the body's
+/// MAPPS-602 shape calls every hook before its return, including the list
+/// fetch: a contact who could not manage payment methods sent a request that
+/// was refused on every visit. With the gate out here the body, and its fetch,
+/// only mounts for a contact who can use it.
 #[component]
 pub fn ContactPaymentMethodsPage() -> Element {
     use_page_title("Payment Methods");
-    // MAPPS-602: every hook fires BEFORE the not-permitted early return.
     let can_manage = crate::hooks::capabilities::use_capability("payment_methods:manage_own");
+    if !can_manage {
+        return rsx! {
+            crate::components::PortalAccessRequired {
+                title: "Payment Methods".to_string(),
+                area: crate::components::PAYMENT_METHODS,
+            }
+        };
+    }
+    rsx! { ContactPaymentMethodsBody {} }
+}
+
+#[component]
+fn ContactPaymentMethodsBody() -> Element {
+    // MAPPS-602: every hook fires BEFORE any early return.
     let reload_tick = use_signal(|| 0u64);
     let methods_resource = use_resource(move || {
         let _ = reload_tick.read();
@@ -89,15 +114,6 @@ pub fn ContactPaymentMethodsPage() -> Element {
     });
     let mut action_error = use_signal(String::new);
     let mut add_saving = use_signal(|| false);
-
-    if !can_manage {
-        return rsx! {
-            PermissionRequired {
-                title: "Payment Methods".to_string(),
-                body: "Ask your MSP to grant you the payment_methods:manage_own capability.".to_string(),
-            }
-        };
-    }
 
     let snap = methods_resource.read_unchecked();
     let methods: Vec<RemotePaymentMethod> = match &*snap {
