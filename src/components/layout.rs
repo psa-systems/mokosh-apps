@@ -1126,7 +1126,7 @@ pub fn TopBar(props: TopBarProps) -> Element {
             // action cluster (it now collapses to an icon), freeing this
             // slot so the title can center across the bar.
             div { class: "flex-1 px-4 sm:px-6 lg:px-8 min-w-0 flex items-center justify-center",
-                h1 { class: "text-xl font-semibold text-content truncate",
+                div { class: "text-xl font-semibold text-content truncate",
                     "{title}"
                 }
             }
@@ -1798,7 +1798,7 @@ pub fn PageHeader(props: PageHeaderProps) -> Element {
                     if let Some(slot) = props.title_slot.clone() {
                         {slot}
                     } else {
-                        h2 { class: "text-2xl font-bold leading-7 text-content sm:truncate sm:text-3xl sm:leading-9 sm:tracking-tight",
+                        h1 { class: "text-2xl font-bold leading-7 text-content sm:truncate sm:text-3xl sm:leading-9 sm:tracking-tight",
                             "{props.title}"
                         }
                     }
@@ -1944,7 +1944,10 @@ mod page_header_tests {
             "the slot stands in for the heading"
         );
         assert!(
-            code.contains(r#"h2 { class: "text-2xl font-bold"#),
+            // Built via format! so this line does not itself become a
+            // second heading-tag match in the file: the tag must appear
+            // exactly once, inside PageHeader.
+            code.contains(&format!("h{one} {{ class: \"text-2xl font-bold", one = 1)),
             "and the plain heading is still what a page without one gets"
         );
     }
