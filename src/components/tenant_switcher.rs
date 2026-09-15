@@ -28,7 +28,7 @@
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::components::{Button, ButtonVariant, Input, Modal, ModalSize};
+use crate::components::{Button, ButtonVariant, Input, Modal, ModalSize, Popover};
 use crate::hooks::auth::MembershipView;
 use crate::modules::oidc::storage::{save_standalone, StandaloneSession};
 use crate::{CurrentUser, Route};
@@ -279,45 +279,36 @@ pub fn TenantSwitcher() -> Element {
     rsx! {
         div { class: "relative",
             if show_trigger {
-                button {
-                    r#type: "button",
-                    class: "flex items-center gap-2 px-3 py-2 rounded-md text-sm text-subtle hover:text-content hover:bg-surface-2 focus:outline-none",
-                    aria_label: "Switch team",
-                    title: "Switch team",
-                    aria_expanded: if open() { "true" } else { "false" },
-                    aria_haspopup: "menu",
-                    onclick: move |_| {
+                Popover {
+                    open: open(),
+                    label: "Switch team",
+                    trigger_class: "flex items-center gap-2 px-3 py-2 rounded-md text-sm text-subtle hover:text-content hover:bg-surface-2 focus:outline-none",
+                    trigger: rsx! {
+                        // Team name is visible at every breakpoint so a user
+                        // can see at a glance which team they are on. Narrower
+                        // ceiling on mobile so the top bar stays legible; the
+                        // `truncate` clips anything over that with an ellipsis.
+                        span { class: "inline max-w-[7rem] sm:max-w-[10rem] truncate font-medium text-content",
+                            "{active_name}"
+                        }
+                        // Small chevron caret drawn inline (avoids a dep on an
+                        // icon we don't own yet).
+                        svg {
+                            class: "w-4 h-4",
+                            view_box: "0 0 20 20",
+                            fill: "currentColor",
+                            path {
+                                d: "M5.23 7.21a.75.75 0 011.06.02L10 11.06l3.71-3.83a.75.75 0 111.08 1.04l-4.24 4.38a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z",
+                            }
+                        }
+                    },
+                    width: "w-64",
+                    ontoggle: move |_| {
                         let next = !*open.read();
                         open.set(next);
                         if next { error.set(String::new()); }
                     },
-                    // Team name is visible at every breakpoint so a user
-                    // can see at a glance which team they are on. Narrower
-                    // ceiling on mobile so the top bar stays legible; the
-                    // `truncate` clips anything over that with an ellipsis.
-                    span { class: "inline max-w-[7rem] sm:max-w-[10rem] truncate font-medium text-content",
-                        "{active_name}"
-                    }
-                    // Small chevron caret drawn inline (avoids a dep on an
-                    // icon we don't own yet).
-                    svg {
-                        class: "w-4 h-4",
-                        view_box: "0 0 20 20",
-                        fill: "currentColor",
-                        path {
-                            d: "M5.23 7.21a.75.75 0 011.06.02L10 11.06l3.71-3.83a.75.75 0 111.08 1.04l-4.24 4.38a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z",
-                        }
-                    }
-                }
-            }
-            if show_trigger && *open.read() {
-                div {
-                    class: "fixed inset-0 z-10",
-                    onclick: move |_| open.set(false),
-                }
-                div {
-                    class: "dropdown-panel absolute right-0 mt-2 w-64 z-20 p-1",
-                    role: "menu",
+                    onclose: move |_| open.set(false),
                     div { class: "px-3 py-2 text-xs uppercase tracking-wide text-subtle",
                         "Your teams"
                     }
