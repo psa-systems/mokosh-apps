@@ -310,7 +310,10 @@ fn ContactDashboardBody() -> Element {
                             {
                                 let route = activity_route(&item.kind, &item.id);
                                 let kind_label = activity_kind_label(&item.kind);
-                                let when = item.occurred_at.format("%b %-d, %Y %H:%M").to_string();
+                                let when = crate::utils::datetime::fmt_user_dt(
+                                    item.occurred_at,
+                                    Some("%b %-d, %Y %H:%M"),
+                                );
                                 let summary_text = if item.summary.trim().is_empty() {
                                     format!("{kind_label} updated")
                                 } else {
@@ -950,8 +953,14 @@ pub fn DashboardTvPage() -> Element {
                                                 .unwrap_or_else(|| "-".to_string());
                                             let time = format!(
                                                 "{}-{}",
-                                                a.start_time.format("%H:%M"),
-                                                a.end_time.format("%H:%M")
+                                                crate::utils::datetime::fmt_user_dt(
+                                                    a.start_time,
+                                                    Some("%H:%M"),
+                                                ),
+                                                crate::utils::datetime::fmt_user_dt(
+                                                    a.end_time,
+                                                    Some("%H:%M"),
+                                                )
                                             );
                                             let status = if a.status.is_empty() {
                                                 "-".to_string()

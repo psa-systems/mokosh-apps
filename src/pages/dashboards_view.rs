@@ -705,7 +705,8 @@ fn WidgetRecentAuditLog() -> Element {
             TableBody {
                 for e in rows.iter() {
                     {
-                        let when = e.occurred_at.format("%m/%d %H:%M").to_string();
+                        let when =
+                            crate::utils::datetime::fmt_user_dt(e.occurred_at, Some("%m/%d %H:%M"));
                         rsx! {
                             TableRow {
                                 TableCell { class: "text-muted", "{when}" }

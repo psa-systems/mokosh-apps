@@ -251,7 +251,10 @@ pub fn SavedDashboardsPage() -> Element {
                                 let id = row.id;
                                 let row_default = row.is_default;
                                 let row_name = row.name.clone();
-                                let updated = row.updated_at.format("%Y-%m-%d %H:%M UTC").to_string();
+                                let updated = crate::utils::datetime::fmt_user_dt(
+                                    row.updated_at,
+                                    Some("%Y-%m-%d %H:%M %Z"),
+                                );
                                 let on_pin = on_pin_default;
                                 let del_label = row_name.clone();
                                 rsx! {

@@ -2342,7 +2342,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                                 let week_label_row = row_week.format("%b %-d, %Y").to_string();
                                 let decided_at_label = s
                                     .decided_at
-                                    .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
+                                    .map(|d| crate::utils::datetime::fmt_user_dt(d, Some("%b %-d, %Y %H:%M %Z")))
                                     .unwrap_or_default();
                                 let decided_by_label = s
                                     .decided_by_id
@@ -2729,7 +2729,10 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
                             ol { class: "space-y-3",
                                 for (i , ev) in events.iter().enumerate() {
                                     {
-                                        let when = ev.at.format("%b %-d, %Y %H:%M UTC").to_string();
+                                        let when = crate::utils::datetime::fmt_user_dt(
+                                            ev.at,
+                                            Some("%b %-d, %Y %H:%M %Z"),
+                                        );
                                         let kind = ev.kind;
                                         let actor = ev.actor.clone();
                                         // Fold the work item + (for a log event) the hours in

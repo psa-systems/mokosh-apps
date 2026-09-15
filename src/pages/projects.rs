@@ -12,7 +12,7 @@ use crate::components::{
 use crate::components::{ChangeHistoryEntry, ChangeLine};
 // MAPPS-596: the change-history wording lives in one place now; these were
 // three copies across projects, assets and tickets.
-use crate::modules::audit::{fmt_history_dt, headline};
+use crate::modules::audit::headline;
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
@@ -1198,7 +1198,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         .find(|e| e.action == "update")
         .map(|e| {
             let who = actor_name(&users, &e.user_id);
-            let when = fmt_history_dt(e.timestamp);
+            let when = crate::utils::datetime::fmt_user_dt(e.timestamp, Some("%b %-d, %Y %H:%M"));
             if who.is_empty() {
                 format!("Edited {when}")
             } else {
@@ -1663,7 +1663,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                 key: "{e.timestamp}",
                                                 headline: headline(&e.action, &e.changed_fields),
                                                 who: actor_name(&users, &e.user_id),
-                                                when: fmt_history_dt(e.timestamp),
+                                                when: crate::utils::datetime::fmt_user_dt(e.timestamp, Some("%b %-d, %Y %H:%M")),
                                                 changes: change_lines(&e.changes),
                                             }
                                         }
@@ -2350,7 +2350,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
         .unwrap_or_default();
     let task_edited = task_history.iter().find(|e| e.action == "update").map(|e| {
         let who = actor_name(&users, &e.user_id);
-        let when = fmt_history_dt(e.timestamp);
+        let when = crate::utils::datetime::fmt_user_dt(e.timestamp, Some("%b %-d, %Y %H:%M"));
         if who.is_empty() {
             format!("Edited {when}")
         } else {
@@ -2599,7 +2599,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                                     key: "{e.timestamp}",
                                     headline: headline(&e.action, &e.changed_fields),
                                     who: actor_name(&users, &e.user_id),
-                                    when: fmt_history_dt(e.timestamp),
+                                    when: crate::utils::datetime::fmt_user_dt(e.timestamp, Some("%b %-d, %Y %H:%M")),
                                     changes: change_lines(&e.changes),
                                 }
                             }

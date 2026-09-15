@@ -302,7 +302,7 @@ pub fn ApprovalsPage() -> Element {
                         );
                         let when = row
                             .requested_at
-                            .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
+                            .map(|d| crate::utils::datetime::fmt_user_dt(d, Some("%b %-d, %Y %H:%M %Z")))
                             .unwrap_or_default();
                         let notes = row.notes.clone().unwrap_or_default();
                         // Pretty target labels for the badge. Unknown

@@ -417,7 +417,7 @@ async fn resolve_company_names(ids: &[uuid::Uuid]) -> Vec<(String, String)> {
 /// leading `YYYY-MM-DD`. Falls back to the raw string if it is shorter.
 fn date_only(ts: &Option<DateTime<Utc>>) -> String {
     match ts {
-        Some(dt) => dt.format("%Y-%m-%d").to_string(),
+        Some(dt) => crate::utils::datetime::fmt_user_dt(*dt, Some("%Y-%m-%d")),
         None => "-".to_string(),
     }
 }

@@ -395,7 +395,10 @@ fn QuoteListBody() -> Element {
                                     .map(|d| d.format("%b %-d, %Y").to_string())
                                     .unwrap_or_else(|| "No expiry".to_string()),
                                 status: quote.status.clone(),
-                                created: quote.created_at.format("%b %-d, %Y").to_string(),
+                                created: crate::utils::datetime::fmt_user_dt(
+                                    quote.created_at,
+                                    Some("%b %-d, %Y"),
+                                ),
                             }
                         }
                     }
@@ -954,12 +957,22 @@ fn QuoteDetailBody(id: String) -> Element {
                                         }
                                     }
                                     if let Some(sent) = q.sent_at {
-                                        div { dt { class: "text-subtle", "Sent" } dd { "{sent.format(\"%b %-d, %Y\")}" } }
+                                        {
+                                            let sent = crate::utils::datetime::fmt_user_dt(sent, Some("%b %-d, %Y"));
+                                            rsx! {
+                                                div { dt { class: "text-subtle", "Sent" } dd { "{sent}" } }
+                                            }
+                                        }
                                     }
                                     if let Some(decided) = q.decided_at {
-                                        div {
-                                            dt { class: "text-subtle", "Client decided" }
-                                            dd { "{decided.format(\"%b %-d, %Y\")}" }
+                                        {
+                                            let decided = crate::utils::datetime::fmt_user_dt(decided, Some("%b %-d, %Y"));
+                                            rsx! {
+                                                div {
+                                                    dt { class: "text-subtle", "Client decided" }
+                                                    dd { "{decided}" }
+                                                }
+                                            }
                                         }
                                     }
                                     if let Some(notes) = q.decision_notes.clone().filter(|s| !s.is_empty()) {

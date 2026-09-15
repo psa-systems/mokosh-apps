@@ -37,15 +37,11 @@ fn action_variant(action: &str) -> BadgeVariant {
 }
 
 /// Format a UTC timestamp for the table. Honours the per-user format
-/// preference set in the Profile page (PMS-253). When the user has
-/// `None`, falls back to the legacy "%b %-d, %Y %H:%M:%S UTC" shape.
+/// preference set in the Profile page (PMS-253), rendered in the user's
+/// profile timezone (MAPPS-786); falls back to the legacy
+/// "%b %-d, %Y %H:%M:%S" shape, in that same timezone, when unset.
 fn format_timestamp(when: chrono::DateTime<chrono::Utc>) -> String {
-    let pref = crate::utils::datetime::user_format_pref();
-    if let Some(fmt) = pref.as_deref().filter(|s| !s.trim().is_empty()) {
-        crate::utils::datetime::format_user_datetime(when, Some(fmt))
-    } else {
-        when.format("%b %-d, %Y %H:%M:%S UTC").to_string()
-    }
+    crate::utils::datetime::fmt_user_dt(when, Some("%b %-d, %Y %H:%M:%S %Z"))
 }
 
 /// Render an optional UUID as a short hex prefix (first 8 chars) so the

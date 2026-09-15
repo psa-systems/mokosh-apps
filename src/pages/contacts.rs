@@ -7812,11 +7812,7 @@ fn note_author_name(note: &ContactNote) -> String {
 /// Absolute timestamp for a note line, honouring the per-user format pref the
 /// same way the ticket journal's `fmt_datetime` does.
 fn fmt_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
-    let pref = crate::utils::datetime::user_format_pref();
-    crate::utils::datetime::format_user_datetime(
-        dt,
-        pref.as_deref().filter(|s| !s.trim().is_empty()),
-    )
+    crate::utils::datetime::fmt_user_dt(dt, None)
 }
 
 /// MAPPS-568: the notes written on this contact's tickets, so an agent reads
