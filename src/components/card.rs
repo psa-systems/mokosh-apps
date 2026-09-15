@@ -163,6 +163,9 @@ pub struct StatCardProps {
     /// Whether change is positive
     #[props(default = true)]
     change_positive: bool,
+    /// Optional line under the value, e.g. "Logged since Monday."
+    #[props(default)]
+    caption: String,
     /// Additional CSS classes
     #[props(default)]
     class: String,
@@ -206,6 +209,11 @@ pub fn StatCard(props: StatCardProps) -> Element {
                             span { class: "ml-2 text-base font-semibold {change_class}",
                                 "{props.change}"
                             }
+                        }
+                    }
+                    if !props.caption.is_empty() {
+                        p { class: "mt-1 text-sm text-muted",
+                            "{props.caption}"
                         }
                     }
                 }

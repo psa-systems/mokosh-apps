@@ -635,7 +635,7 @@ fn StatementDocument(statement: RemoteStatement) -> Element {
                                             "{c.credit_note_number}"
                                         }
                                     }
-                                    TableCell { "{c.issue_date}" }
+                                    TableCell { time { datetime: "{c.issue_date}", "{c.issue_date}" } }
                                     TableCell { {dash_if_empty(c.invoice_number.as_deref())} }
                                     TableCell { class: "max-w-xs",
                                         span { class: "block truncate", title: "{c.reason}", "{c.reason}" }

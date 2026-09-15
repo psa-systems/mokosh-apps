@@ -111,7 +111,8 @@ pub fn PickTenantPage() -> Element {
                     }
                     Err(ApiError::Status { code: 404, .. }) => {
                         error.set(
-                            "You do not have access to that workspace. Pick another.".to_string(),
+                            "You do not have access to that organization. Pick another."
+                                .to_string(),
                         );
                     }
                     Err(e) => error.set(e.user_message()),
@@ -124,9 +125,9 @@ pub fn PickTenantPage() -> Element {
     rsx! {
         AuthLayout {
             div { class: "text-center mb-6",
-                h1 { class: "text-2xl font-semibold text-content", "Choose a workspace" }
+                h1 { class: "text-2xl font-semibold text-content", "Choose an organization" }
                 p { class: "mt-2 text-sm text-content",
-                    "You belong to more than one Mokosh team. Pick one to sign in to."
+                    "You belong to more than one Mokosh organization. Pick one to sign in to."
                 }
             }
             ul { class: "space-y-2",

@@ -20,7 +20,7 @@
 
 use dioxus::prelude::*;
 
-use crate::hooks::dropdown_nav::{use_dropdown_nav, NavAction};
+use crate::hooks::dropdown_nav::{DropdownNav, NavAction};
 use crate::utils::mentions::{self, ActiveMention, Mention};
 
 #[derive(Props, Clone, PartialEq)]
@@ -44,26 +44,39 @@ fn caret_of(target_id: &str, value: &str) -> u32 {
     caret
 }
 
-#[component]
-pub fn MentionAutocomplete(props: MentionAutocompleteProps) -> Element {
-    // MAPPS-653: deliberately WITHOUT `enter_takes_first_match`. The popover
-    // sits over a textarea where Enter is the newline key, so it only takes a
-    // mention the user has highlighted.
-    let mut nav = use_dropdown_nav("mention-ac");
-    // The fragment being completed, recomputed on every input by the host.
-    let active: Option<ActiveMention> = if props.people.is_empty() {
+/// The fragment being completed, and the rows it matches. Shared between the
+/// popover's own render and `MarkdownEditor`'s `onkeydown`, which needs the
+/// same two values to decide what a keypress does before the popover
+/// re-renders.
+pub(crate) fn active_mention_and_rows(
+    target_id: &str,
+    value: &str,
+    people: &[Mention],
+) -> (Option<ActiveMention>, Vec<Mention>) {
+    let active = if people.is_empty() {
         None
     } else {
-        mentions::active_mention(&props.value, caret_of(&props.target_id, &props.value))
+        mentions::active_mention(value, caret_of(target_id, value))
     };
-
-    let rows: Vec<Mention> = match &active {
-        Some(a) => mentions::matches(&a.fragment, &props.people)
+    let rows = match &active {
+        Some(a) => mentions::matches(&a.fragment, people)
             .into_iter()
             .cloned()
             .collect(),
         None => Vec::new(),
     };
+    (active, rows)
+}
+
+#[component]
+pub fn MentionAutocomplete(props: MentionAutocompleteProps) -> Element {
+    // MAPPS-784: the nav is `MarkdownEditor`'s, not this popover's own. The
+    // field's `onkeydown` has to decide, on the SAME open/active state this
+    // panel renders, whether a key is the popover's or the textarea's, and
+    // that only works with one nav shared through context rather than two
+    // separate `use_dropdown_nav` calls drifting apart.
+    let mut nav = use_context::<DropdownNav>();
+    let (active, rows) = active_mention_and_rows(&props.target_id, &props.value, &props.people);
 
     // Nothing to offer is not an empty list, it is no list. A popover reading
     // "no matches" over every unrecognised word would be noise.
