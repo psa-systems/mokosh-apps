@@ -10,7 +10,7 @@
 # theming, so this guard fails the build when they reappear.
 #
 # Allowed (NOT flagged by the first pass): semantic STATE colors red/rose
-# (danger), green/emerald (success), yellow/amber/orange (warning); blue (a
+# (danger), green/emerald (success), yellow/amber/orange (warning), and blue (a
 # valid INFO/status hue, e.g. AlertType::Info, BadgeVariant::Blue - the brand
 # blue was already migrated to the accent tokens); `text-white` (it sits
 # on colored fills); the theme source itself. The first pass targets only the
@@ -18,12 +18,25 @@
 #
 # The state hues are allowed but not unconditional: a `text-red-*` or
 # `text-green-*` with no `dark:` sibling keeps its light-mode value on the dark
-# surface, where it goes under AA. The second pass enforces the pair.
+# surface, where it goes under AA. The second pass enforces the pair, judging
+# every state hue: red, green, yellow, amber, orange, and blue - no family is
+# exempt just because the guard doesn't name it.
+#
+# Blue carries one more hole the other state hues don't: unlike a `ring-red-*`
+# or `ring-green-*`, which mark a deliberate danger/success confirm action, a
+# `ring-blue-*` names no such state - every focus ring in this design system
+# is the brand accent, so a raw `ring-blue-*` is always unmigrated brand blue,
+# never a genuine INFO treatment. The third pass fails any `ring-blue-*` that
+# isn't paired with `dark:` or marked `theme-guard-allow`, closing that
+# specific hole without re-litigating blue's other, legitimate paired fills
+# (`bg-blue-50 dark:bg-blue-900/20`, `border-blue-200 dark:border-blue-900`,
+# ...), which pass validates separately via the text pairing above.
 #
 # Usage: check-theme-tokens.sh [ROOT | --self-test]
-#   ROOT defaults to `src`. `--self-test` re-runs both passes over generated
-#   fixtures to prove they still reject a hardcoded gray and an unpaired state
-#   hue, so a future edit cannot quietly neuter them.
+#   ROOT defaults to `src`. `--self-test` re-runs all three passes over
+#   generated fixtures to prove they still reject a hardcoded gray, an
+#   unpaired state hue, and an unpaired blue ring, so a future edit cannot
+#   quietly neuter them.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -46,6 +59,7 @@ if [ "${1:-}" = "--self-test" ]; then
   {
     printf '    p { class: "text-sm text-red-600", "boom" }\n'
     printf '    button { class: "text-content hover:text-green-600", "vote" }\n'
+    printf '    span { class: "text-sm text-blue-600", "info" }\n'
   } > "$fixtures/unpaired.rs"
   out=$("$0" "$fixtures" 2>&1) && rc=0 || rc=$?
   if [ "$rc" -eq 0 ]; then
@@ -57,6 +71,17 @@ if [ "${1:-}" = "--self-test" ]; then
   fi
   rm -f "$fixtures/unpaired.rs"
 
+  printf '    button { class: "focus:outline-none focus:ring-2 focus:ring-blue-500", "go" }\n' > "$fixtures/unpaired-blue-ring.rs"
+  out=$("$0" "$fixtures" 2>&1) && rc=0 || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "self-test: FAIL (an unpaired blue ring did not fail the guard)"
+    printf '%s\n' "$out"
+    status=1
+  else
+    echo "self-test: an unpaired blue ring fails the guard (exit $rc)"
+  fi
+  rm -f "$fixtures/unpaired-blue-ring.rs"
+
   {
     printf '    p { class: "text-sm text-red-600 dark:text-red-400", "boom" }\n'
     printf '    button { class: "hover:text-green-600 dark:hover:text-green-400", "v" }\n'
@@ -64,6 +89,8 @@ if [ "${1:-}" = "--self-test" ]; then
     printf '    // a comment naming text-red-600 is prose, not a class string\n'
     printf '    let icon = "text-red-400"; // theme-guard-allow\n'
     printf '    p { class: "bg-red-50 border-red-200", "fills need no text pair" }\n'
+    printf '    p { class: "border border-blue-200 dark:border-blue-900 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300", "info" }\n'
+    printf '    let icon = "focus:ring-blue-500"; // theme-guard-allow\n'
   } > "$fixtures/clean.rs"
   out=$("$0" "$fixtures" 2>&1) && rc=0 || rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -98,27 +125,36 @@ if [ -n "$hits" ]; then
   status=1
 fi
 
-# Pass 2 (MAPPS-444): every red/green TEXT utility carries a dark-mode pair.
+# Pass 2 (MAPPS-444, extended by MAPPS-797): every state-hue TEXT utility
+# carries a dark-mode pair.
 #
 # Tailwind v4's red-600 is #e7000b: 3.07:1 on the dark `--surface` #1e293b,
 # under the 4.5:1 AA floor, so an unpaired light-mode red is unreadable in dark
 # mode. `text-red-600 dark:text-red-400` (5.06:1) is the canonical spelling, and
 # `dark:text-green-400` its success twin. Only `text-*` is judged: a fill
 # (`bg-red-50`) or a border is contrast-checked against what sits on it, not
-# against the surface.
+# against the surface. Every state hue is judged, not just red/green: yellow,
+# amber, orange, and blue keep the same AA floor and the same escape hatch.
 #
 # Line-based, like its siblings, after joining Rust string continuations so a
 # class split over `\` is read as one string. The pair may carry any variant
 # chain (`dark:hover:text-red-400` pairs `hover:text-red-600`). Two separate
 # class strings on one physical line would satisfy each other; no such site
 # exists, and `theme-guard-allow` is the escape hatch either way.
+#
+# Pass 3 (MAPPS-797): every `ring-blue-*` carries a dark-mode pair (or the
+# allow marker). Rings are singled out, not blue's other utilities, because
+# every legitimate focus ring in this design system is the brand accent
+# (`focus:ring-accent`): a raw `ring-blue-*` is always unmigrated brand blue,
+# never a genuine INFO treatment, so it gets no unconditional pass the way
+# `bg-blue-50`/`border-blue-200` INFO fills do.
 hits=$(
   find "$root" -name '*.rs' -print0 | sort -z | xargs -0 awk '
-    # A non-dark `text-<fam>-NNN` with no `dark:...text-<fam>-NNN` anywhere in
-    # the joined line.
-    function unpaired(s, fam,   pat, rest, chain, pre) {
-      if (s ~ ("dark:([a-z-]+:)*text-" fam "-[0-9]{2,3}")) return 0
-      pat = "text-" fam "-[0-9][0-9]?[0-9]?"
+    # A non-dark `<prefix>-<fam>-NNN` with no `dark:...<prefix>-<fam>-NNN`
+    # anywhere in the joined line.
+    function unpaired(s, prefix, fam,   pat, rest, chain, pre) {
+      if (s ~ ("dark:([a-z-]+:)*" prefix "-" fam "-[0-9]{2,3}")) return 0
+      pat = prefix "-" fam "-[0-9][0-9]?[0-9]?"
       rest = s
       while (match(rest, pat)) {
         pre = substr(rest, 1, RSTART - 1)
@@ -140,8 +176,11 @@ hits=$(
       }
       if (line ~ /^[[:space:]]*\/\//) next
       if (index(line, "theme-guard-allow")) next
-      if (unpaired(line, "red") || unpaired(line, "green"))
-        print FILENAME ":" lineno ": " line
+      hit = 0
+      n = split("red green yellow amber orange blue", fams, " ")
+      for (i = 1; i <= n; i++) if (unpaired(line, "text", fams[i])) hit = 1
+      if (unpaired(line, "ring", "blue")) hit = 1
+      if (hit) print FILENAME ":" lineno ": " line
     }
     END { pending = "" }
   '
@@ -149,10 +188,11 @@ hits=$(
 
 if [ -n "$hits" ]; then
   count=$(printf '%s\n' "$hits" | grep -c .)
-  echo "dark-pair guard: FAIL ($count red/green text class(es) with no dark: sibling)"
+  echo "dark-pair guard: FAIL ($count state-hue class(es) with no dark: sibling)"
   echo "Pair every state hue, as components/error_banner.rs and components/card.rs do:"
   echo '  text-red-600  ->  text-red-600 dark:text-red-400'
   echo '  text-green-600  ->  text-green-600 dark:text-green-400'
+  echo '  ring-blue-500  ->  ring-blue-500 dark:ring-blue-400  (or, for the brand accent, focus:ring-accent)'
   printf '%s\n' "$hits"
   status=1
 fi

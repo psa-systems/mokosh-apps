@@ -394,8 +394,13 @@ fn QuoteListBody() -> Element {
                                     .valid_until
                                     .map(|d| d.format("%b %-d, %Y").to_string())
                                     .unwrap_or_else(|| "No expiry".to_string()),
+                                valid_until_iso: quote
+                                    .valid_until
+                                    .map(|d| d.to_string())
+                                    .unwrap_or_default(),
                                 status: quote.status.clone(),
                                 created: quote.created_at.format("%b %-d, %Y").to_string(),
+                                created_iso: quote.created_at.to_rfc3339(),
                             }
                         }
                     }
@@ -413,8 +418,10 @@ struct QuoteRowProps {
     company: String,
     total: String,
     valid_until: String,
+    valid_until_iso: String,
     status: String,
     created: String,
+    created_iso: String,
 }
 
 #[component]
@@ -441,11 +448,17 @@ fn QuoteRow(props: QuoteRowProps) -> Element {
             }
             TableCell { "{props.company}" }
             TableCell { class: "font-medium", "{props.total}" }
-            TableCell { "{props.valid_until}" }
+            TableCell {
+                if props.valid_until_iso.is_empty() {
+                    "{props.valid_until}"
+                } else {
+                    time { datetime: "{props.valid_until_iso}", "{props.valid_until}" }
+                }
+            }
             TableCell {
                 Badge { variant: quote_status_variant(&props.status), "{status::label(&props.status)}" }
             }
-            TableCell { class: "text-subtle", "{props.created}" }
+            TableCell { class: "text-subtle", time { datetime: "{props.created_iso}", "{props.created}" } }
         }
     }
 }
@@ -950,16 +963,20 @@ fn QuoteDetailBody(id: String) -> Element {
                                     div {
                                         dt { class: "text-subtle", "Valid until" }
                                         dd {
-                                            "{q.valid_until.map(|d| d.format(\"%b %-d, %Y\").to_string()).unwrap_or_else(|| \"No expiry\".to_string())}"
+                                            if let Some(valid_until) = q.valid_until {
+                                                time { datetime: "{valid_until}", "{valid_until.format(\"%b %-d, %Y\")}" }
+                                            } else {
+                                                "No expiry"
+                                            }
                                         }
                                     }
                                     if let Some(sent) = q.sent_at {
-                                        div { dt { class: "text-subtle", "Sent" } dd { "{sent.format(\"%b %-d, %Y\")}" } }
+                                        div { dt { class: "text-subtle", "Sent" } dd { time { datetime: "{sent.to_rfc3339()}", "{sent.format(\"%b %-d, %Y\")}" } } }
                                     }
                                     if let Some(decided) = q.decided_at {
                                         div {
                                             dt { class: "text-subtle", "Client decided" }
-                                            dd { "{decided.format(\"%b %-d, %Y\")}" }
+                                            dd { time { datetime: "{decided.to_rfc3339()}", "{decided.format(\"%b %-d, %Y\")}" } }
                                         }
                                     }
                                     if let Some(notes) = q.decision_notes.clone().filter(|s| !s.is_empty()) {
@@ -993,7 +1010,7 @@ fn QuoteDetailBody(id: String) -> Element {
                                                     set_status(qid.clone(), "submitted", version, busy, action_error);
                                                 }
                                             },
-                                            "Submit for approval"
+                                            "Submit for Approval"
                                         }
                                     }
                                     if status::can_approve(&st) {
@@ -1761,7 +1778,7 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
             }
         }
 
-        div { class: "flex justify-end gap-2",
+        div { class: "flex justify-end space-x-3",
             Link {
                 to: cancel_route.clone(),
                 Button { variant: ButtonVariant::Secondary, "Cancel" }

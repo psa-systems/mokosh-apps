@@ -528,9 +528,34 @@ fn grid_style(w: &WidgetSpec) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Per-widget components. Each hits one tiny existing endpoint; loading and
-// error states render plainly. Real data is the AC for PMS-487.
+// Per-widget components. Each hits one tiny existing endpoint through
+// `use_remote_resource` (MAPPS-785) so a request in flight, a failed fetch,
+// and a genuinely empty result render as three distinct states instead of
+// the identical zero a bare `use_resource` + `.ok().unwrap_or_default()`
+// produced for all three.
 // ---------------------------------------------------------------------------
+
+/// Shimmer placeholder shown while a widget's fetch is in flight. Sized to a
+/// tile's body rather than a full page, unlike `CardGridSkeleton` /
+/// `DetailSkeleton`.
+fn widget_loading() -> Element {
+    rsx! {
+        div { class: "space-y-2",
+            div { class: "h-4 w-2/3 bg-surface-2 rounded animate-pulse" }
+            div { class: "h-4 w-1/2 bg-surface-2 rounded animate-pulse" }
+        }
+    }
+}
+
+/// Inline failure shown when a widget's fetch could not load because the
+/// server is unreachable. Scoped to the one tile so a slow/down endpoint
+/// does not blank the whole grid (see the issue's "one shared loading
+/// state" alternative, rejected for the same reason).
+fn widget_failed() -> Element {
+    rsx! {
+        p { class: "text-sm text-red-700 dark:text-red-400", "Couldn't load this widget." }
+    }
+}
 
 #[derive(Clone, Debug, Default, Deserialize)]
 struct DashboardReportLite {
@@ -552,19 +577,16 @@ struct ReportBucket {
 
 #[component]
 fn WidgetTicketsByStatus() -> Element {
-    let report = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        // A default (all-zero) report is what a quiet tenant renders too, so
-        // the failure says it is one.
-        crate::hooks::fetch::api::get_authed::<DashboardReportLite>("/reports/dashboard")
-            .await
-            .inspect_err(|e| {
-                tracing::error!("dashboard widget report load failed, the tile will read zero: {e}")
-            })
-            .ok()
-            .unwrap_or_default()
+    let report = crate::hooks::use_remote_resource(|| async {
+        crate::hooks::fetch::api::get_authed::<DashboardReportLite>("/reports/dashboard").await
     });
-    let r = report.read_unchecked().clone().unwrap_or_default();
+    if report.is_loading() {
+        return widget_loading();
+    }
+    if report.is_unavailable() {
+        return widget_failed();
+    }
+    let r = report.value_or_default();
     if r.open_by_priority.is_empty() {
         return rsx! { p { class: "text-sm text-muted italic", "No open tickets." } };
     }
@@ -595,18 +617,20 @@ fn WidgetTimeThisWeek() -> Element {
     // history. It previously read the server's default 25 rows and summed them
     // as if they were the week, which reports a wrong number of hours rather
     // than no number at all.
-    let entries = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
+    let entries = crate::hooks::use_remote_resource(|| async {
         let week_start = monday_of_week(Utc::now().date_naive());
-        crate::hooks::fetch::list_or_empty(
-            "this week's time entry",
-            crate::hooks::fetch::api::get_all_authed::<TimeEntryLite>(&format!(
-                "/time-entries?date_from={week_start}"
-            ))
-            .await,
-        )
+        crate::hooks::fetch::api::get_all_authed::<TimeEntryLite>(&format!(
+            "/time-entries?date_from={week_start}"
+        ))
+        .await
     });
-    let rows = entries.read_unchecked().clone().unwrap_or_default();
+    if entries.is_loading() {
+        return widget_loading();
+    }
+    if entries.is_unavailable() {
+        return widget_failed();
+    }
+    let rows = entries.value_or_default();
     let week_start = monday_of_week(Utc::now().date_naive());
     let minutes: i64 = rows
         .iter()
@@ -625,22 +649,19 @@ fn WidgetTimeThisWeek() -> Element {
 
 #[component]
 fn WidgetSlaAtRisk() -> Element {
-    let report = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        // A default (all-zero) report is what a quiet tenant renders too, so
-        // the failure says it is one.
-        crate::hooks::fetch::api::get_authed::<DashboardReportLite>("/reports/dashboard")
-            .await
-            .inspect_err(|e| {
-                tracing::error!("dashboard widget report load failed, the tile will read zero: {e}")
-            })
-            .ok()
-            .unwrap_or_default()
+    let report = crate::hooks::use_remote_resource(|| async {
+        crate::hooks::fetch::api::get_authed::<DashboardReportLite>("/reports/dashboard").await
     });
-    let r = report.read_unchecked().clone().unwrap_or_default();
+    if report.is_loading() {
+        return widget_loading();
+    }
+    if report.is_unavailable() {
+        return widget_failed();
+    }
+    let r = report.value_or_default();
     rsx! {
         div { class: "flex justify-between text-sm",
-            span { class: "text-yellow-700", "At risk" }
+            span { class: "text-yellow-700 dark:text-yellow-300", "At risk" }
             span { class: "font-medium", "{r.sla_warnings}" }
         }
         div { class: "flex justify-between text-sm mt-1",
@@ -658,18 +679,20 @@ struct InvoiceLite {
 
 #[component]
 fn WidgetOpenInvoices() -> Element {
-    let invoices = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::list_or_empty(
-            "open invoice widget row",
-            crate::hooks::fetch::api::get_authed::<Paginated<InvoiceLite>>(
-                "/invoices?status=sent&per_page=50",
-            )
-            .await
-            .map(|p| p.data),
+    let invoices = crate::hooks::use_remote_resource(|| async {
+        crate::hooks::fetch::api::get_authed::<Paginated<InvoiceLite>>(
+            "/invoices?status=sent&per_page=50",
         )
+        .await
+        .map(|p| p.data)
     });
-    let rows = invoices.read_unchecked().clone().unwrap_or_default();
+    if invoices.is_loading() {
+        return widget_loading();
+    }
+    if invoices.is_unavailable() {
+        return widget_failed();
+    }
+    let rows = invoices.value_or_default();
     let total: rust_decimal::Decimal = rows
         .iter()
         .filter_map(|i| i.total)
@@ -691,18 +714,20 @@ struct AuditEntryLite {
 
 #[component]
 fn WidgetRecentAuditLog() -> Element {
-    let entries = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::list_or_empty(
-            "recent audit log widget row",
-            crate::hooks::fetch::api::get_authed::<Paginated<AuditEntryLite>>(
-                "/audit-log?page=1&per_page=5",
-            )
-            .await
-            .map(|p| p.data),
+    let entries = crate::hooks::use_remote_resource(|| async {
+        crate::hooks::fetch::api::get_authed::<Paginated<AuditEntryLite>>(
+            "/audit-log?page=1&per_page=5",
         )
+        .await
+        .map(|p| p.data)
     });
-    let rows = entries.read_unchecked().clone().unwrap_or_default();
+    if entries.is_loading() {
+        return widget_loading();
+    }
+    if entries.is_unavailable() {
+        return widget_failed();
+    }
+    let rows = entries.value_or_default();
     if rows.is_empty() {
         return rsx! { p { class: "text-sm text-muted italic", "No audit events yet." } };
     }
@@ -719,9 +744,10 @@ fn WidgetRecentAuditLog() -> Element {
                 for e in rows.iter() {
                     {
                         let when = e.occurred_at.format("%m/%d %H:%M").to_string();
+                        let when_iso = e.occurred_at.to_rfc3339();
                         rsx! {
                             TableRow {
-                                TableCell { class: "text-muted", "{when}" }
+                                TableCell { class: "text-muted", time { datetime: "{when_iso}", "{when}" } }
                                 TableCell { "{e.action}" }
                                 TableCell { "{e.entity_type}" }
                             }

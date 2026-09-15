@@ -530,7 +530,7 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
                         disabled: saving() || !can_mutate,
                         loading: saving(),
                         title: (!can_mutate).then(|| "Can't save changes while the server is unreachable".to_string()),
-                        "Save changes"
+                        "Save Changes"
                     }
                 }
             }
@@ -1243,7 +1243,7 @@ fn ContactPersonalInfoForm(props: ContactPersonalInfoFormProps) -> Element {
                         disabled: saving() || !can_mutate,
                         loading: saving(),
                         title: (!can_mutate).then(|| "Can't save changes while the server is unreachable".to_string()),
-                        "Save changes"
+                        "Save Changes"
                     }
                 }
             }
