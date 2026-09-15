@@ -15,7 +15,9 @@
 
 use dioxus::prelude::*;
 
-use crate::components::{Button, ButtonVariant, Card, IconSize, InformationIcon, PageHeader};
+use crate::components::{
+    Button, ButtonVariant, Card, ErrorBanner, IconSize, InformationIcon, PageHeader,
+};
 
 /// MAPPS-775 / PMS-1187: the portal areas a contact can ask for, keyed the way
 /// the server's `ACCESS_AREAS` keys them.
@@ -195,7 +197,7 @@ pub fn PortalAccessRequired(props: PortalAccessRequiredProps) -> Element {
                         }
                     }
                     if !error.read().is_empty() {
-                        p { class: "mt-2 text-sm text-red-600 dark:text-red-300", "{error}" }
+                        ErrorBanner { class: "mt-2", "{error}" }
                     }
                     div { class: "mt-4",
                         Button {

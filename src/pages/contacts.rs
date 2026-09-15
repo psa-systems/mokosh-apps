@@ -884,7 +884,7 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-8 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load company." }
+                        ErrorBanner { class: "mb-3", "Could not load company." }
                         Link {
                             to: Route::CompanyList {},
                             class: "text-sm text-accent hover:opacity-90",
@@ -2597,7 +2597,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 Card {
                     div {
                         class: "py-8 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load company." }
+                        ErrorBanner { class: "mb-3", "Could not load company." }
                         Link {
                             to: Route::CompanyList {},
                             class: "text-sm text-accent hover:opacity-90",
@@ -6201,7 +6201,7 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-8 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contact." }
+                        ErrorBanner { class: "mb-3", "Could not load contact." }
                         Link {
                             to: Route::ContactList {},
                             class: "text-sm text-accent hover:opacity-90",
@@ -7344,7 +7344,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-8 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contact." }
+                        ErrorBanner { class: "mb-3", "Could not load contact." }
                         Link {
                             to: Route::ContactList {},
                             class: "text-sm text-accent hover:opacity-90",
@@ -8092,7 +8092,7 @@ fn AccessRequestPanel(contact_id: String) -> Element {
         div { class: "space-y-2 rounded-md border border-line p-3",
             span { class: "text-xs font-medium text-content block", "Access requests" }
             if !error.read().is_empty() {
-                p { class: "text-xs text-red-600 dark:text-red-300", "{error}" }
+                ErrorBanner { "{error}" }
             }
             for request in rows {
                 {
