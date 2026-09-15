@@ -3624,7 +3624,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         },
                                     }
                                     if desc_uploading() {
-                                        p { class: "text-xs text-subtle", "Uploading image…" }
+                                        p { class: "text-xs text-subtle", role: "status", "Uploading the image…" }
                                     }
                                     if !desc_upload_error().is_empty() {
                                         p { class: "text-sm text-red-600 dark:text-red-400", "{desc_upload_error}" }
@@ -3788,7 +3788,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             },
                         }
                         if note_uploading() {
-                            p { class: "text-xs text-subtle", "Uploading image…" }
+                            p { class: "text-xs text-subtle", role: "status", "Uploading the image…" }
                         }
                         if !note_upload_error().is_empty() {
                             p { class: "text-sm text-red-600 dark:text-red-400", "{note_upload_error}" }
@@ -4816,7 +4816,7 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                                         },
                                     }
                                     if note_edit_uploading() {
-                                        p { class: "text-xs text-subtle", "Uploading image…" }
+                                        p { class: "text-xs text-subtle", role: "status", "Uploading the image…" }
                                     }
                                     if !note_edit_upload_error().is_empty() {
                                         p { class: "text-sm text-red-600 dark:text-red-400", "{note_edit_upload_error}" }
