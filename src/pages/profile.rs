@@ -959,9 +959,15 @@ fn PreferencesCard() -> Element {
 /// `/contact/auth/me`. Email is display-only ("Managed by your MSP")
 /// per prompt 013a; contacts cannot change identity through the portal.
 ///
-/// Gated on `settings:manage_own` so a contact role without the
-/// capability sees the same `PermissionRequired` splash the sidebar
-/// entry already hides behind.
+/// MAPPS-781: `settings:manage_own` gates EDITING, not reading. The
+/// server requires it on `PUT /contact/auth/me` only; `GET` needs nothing
+/// beyond the contact session. This page used to put the whole profile
+/// behind it and told the refused contact to "Ask your MSP to grant you
+/// the settings:manage_own capability" - an internal identifier, on a page
+/// hiding the customer's own name and phone number from them. Every
+/// Read-Only contact hit it, since that role holds no `settings:manage_own`.
+/// Without the capability the details now render read-only and say who
+/// manages them.
 #[component]
 fn ContactProfilePage() -> Element {
     // MAPPS-602: every hook fires BEFORE the not-permitted early
@@ -982,15 +988,6 @@ fn ContactProfilePage() -> Element {
             )
         }
     });
-    if !can_manage_own {
-        return rsx! {
-            crate::components::PermissionRequired {
-                title: "Profile".to_string(),
-                body: "Ask your MSP to grant you the settings:manage_own capability.".to_string(),
-            }
-        };
-    }
-
     let snap = me_resource.read_unchecked();
 
     rsx! {
@@ -1015,9 +1012,85 @@ fn ContactProfilePage() -> Element {
                     }
                 }
             }
-            Some(Ok(me)) => rsx! {
-                ContactPersonalInfoForm { initial: me.clone() }
-            },
+            Some(Ok(me)) => {
+                if can_manage_own {
+                    rsx! { ContactPersonalInfoForm { initial: me.clone() } }
+                } else {
+                    rsx! { ContactPersonalInfoReadOnly { me: me.clone() } }
+                }
+            }
+        }
+    }
+}
+
+/// MAPPS-781: the sentence above a profile the contact cannot edit.
+///
+/// Names the MSP when the brand supplies one, because "ask Niceguy IT" is
+/// something a customer can do and "ask your administrator" is not. Never
+/// mentions a capability: that is the defect this replaced.
+pub(crate) fn read_only_profile_note(msp_name: Option<&str>) -> String {
+    match msp_name {
+        Some(name) => format!(
+            "{name} manages these details. If anything here is wrong, ask {name} to update it."
+        ),
+        None => {
+            "Your provider manages these details. If anything here is wrong, ask them to update it."
+                .to_string()
+        }
+    }
+}
+
+/// A missing value, said as missing rather than left as an empty cell that
+/// reads like a rendering fault.
+pub(crate) fn profile_value(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "Not set".to_string())
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct ContactPersonalInfoReadOnlyProps {
+    me: ContactMeResponse,
+}
+
+/// MAPPS-781: the contact's own details, for a role that cannot edit them.
+#[component]
+fn ContactPersonalInfoReadOnly(props: ContactPersonalInfoReadOnlyProps) -> Element {
+    let brand = crate::hooks::branding::EFFECTIVE_BRANDING.read().clone();
+    let msp_name = brand
+        .display_name
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| brand.company_name.clone().filter(|s| !s.is_empty()));
+    let note = read_only_profile_note(msp_name.as_deref());
+    let me = props.me;
+    let name = format!("{} {}", me.first_name, me.last_name);
+    let rows: Vec<(&'static str, String)> = vec![
+        ("Name", profile_value(Some(name.as_str()))),
+        ("Email", profile_value(Some(me.email.as_str()))),
+        ("Phone", profile_value(me.phone.as_deref())),
+        ("Mobile", profile_value(me.mobile.as_deref())),
+        ("Timezone", profile_value(Some(me.timezone.as_str()))),
+        ("Company", profile_value(me.company_name.as_deref())),
+    ];
+    rsx! {
+        Card {
+            div { class: "space-y-6 p-6",
+                div {
+                    h2 { class: "text-base font-semibold text-content", "Personal info" }
+                    p { class: "text-sm text-muted", "{note}" }
+                }
+                dl { class: "grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2",
+                    for (label, value) in rows {
+                        div { key: "{label}",
+                            dt { class: "text-xs font-medium text-muted", "{label}" }
+                            dd { class: "mt-1 text-sm text-content", "{value}" }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1336,5 +1409,35 @@ mod tests {
             // this screen renders no tenant metadata.
             tenant_kind,
         );
+    }
+}
+
+/// MAPPS-781: what a contact who cannot edit their profile reads.
+#[cfg(test)]
+mod read_only_profile_tests {
+    use super::{profile_value, read_only_profile_note};
+
+    /// The note names who manages the details, and never a capability: the
+    /// sentence it replaced was "Ask your MSP to grant you the
+    /// settings:manage_own capability".
+    #[test]
+    fn the_note_names_the_msp_and_no_capability() {
+        let note = read_only_profile_note(Some("Niceguy IT"));
+        assert!(note.contains("Niceguy IT"), "{note}");
+        for internal in [":", "capability", "settings", "manage_own"] {
+            assert!(!note.contains(internal), "{internal:?} in {note}");
+        }
+        let anonymous = read_only_profile_note(None);
+        assert!(anonymous.contains("provider"), "{anonymous}");
+        assert!(!anonymous.contains("capability"), "{anonymous}");
+    }
+
+    /// An absent value says so, rather than an empty cell that reads like a
+    /// rendering fault.
+    #[test]
+    fn a_missing_value_reads_as_not_set() {
+        assert_eq!(profile_value(None), "Not set");
+        assert_eq!(profile_value(Some("   ")), "Not set");
+        assert_eq!(profile_value(Some("+1 555 0100")), "+1 555 0100");
     }
 }
