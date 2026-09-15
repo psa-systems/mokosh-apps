@@ -44,6 +44,10 @@ pub const QUOTES: AccessArea = AccessArea {
     key: "quotes",
     label: "quotes",
 };
+pub const CONTRACTS: AccessArea = AccessArea {
+    key: "contracts",
+    label: "contracts",
+};
 
 /// What the page says when a contact cannot see an area.
 ///

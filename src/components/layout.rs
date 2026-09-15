@@ -392,11 +392,20 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
     let show_scheduling_templates =
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
-    let show_contracts = crate::hooks::capabilities::use_capability("contracts:read");
-    let show_quotes = crate::hooks::capabilities::use_capability("quotes:read");
+    // MAPPS-775: Contracts, Quotes and Invoices stay listed for a customer
+    // who cannot read them, and lead to a page that says so and offers to ask.
+    // Hiding them was the dead end: a customer emailed an invoice who finds no
+    // Invoices section at all cannot tell a portal that will not show them
+    // something from a portal that is broken, and has nowhere to ask. These
+    // three are the areas with that explained state; the rest stay trimmed.
+    let portal_contact = crate::hooks::fetch::api::has_contact_session();
+    let show_contracts =
+        crate::hooks::capabilities::use_capability("contracts:read") || portal_contact;
+    let show_quotes = crate::hooks::capabilities::use_capability("quotes:read") || portal_contact;
     let show_rate_cards =
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
-    let show_invoices = crate::hooks::capabilities::use_capability("invoices:read");
+    let show_invoices =
+        crate::hooks::capabilities::use_capability("invoices:read") || portal_contact;
     let show_payments =
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
     let show_assets = crate::hooks::capabilities::use_capability("assets:read");

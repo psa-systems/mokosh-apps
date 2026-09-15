@@ -134,6 +134,18 @@ pub fn QuoteListPage() -> Element {
     // cap) still land on the `PermissionRequired` splash.
     let contact_can_read = crate::hooks::capabilities::use_capability("quotes:read");
     if !use_can_manage_billing() && !contact_can_read {
+        // MAPPS-775: a customer is refused for a different reason than a
+        // technician and needs different words. The staff copy tells them to
+        // ask an administrator about finance roles; a customer has neither,
+        // and the person who can change this is the MSP they hired.
+        if crate::hooks::fetch::api::has_contact_session() {
+            return rsx! {
+                crate::components::PortalAccessRequired {
+                    title: "Quotes".to_string(),
+                    area: crate::components::QUOTES,
+                }
+            };
+        }
         return permission_required();
     }
 
