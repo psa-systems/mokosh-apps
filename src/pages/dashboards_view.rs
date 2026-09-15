@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::components::{
-    use_page_title, AlertType, Button, ButtonVariant, Card, Input, PageHeader, Table, TableBody,
-    TableCell, TableHead, TableHeader, TableRow,
+    use_page_title, AlertType, Button, ButtonVariant, Card, Input, PageHeader, StatCard, Table,
+    TableBody, TableCell, TableHead, TableHeader, TableRow,
 };
 use crate::utils::Paginated;
 
@@ -396,6 +396,16 @@ fn render_widget_cell(w: &WidgetSpec, idx: usize) -> Element {
     let title = entry.map(|e| e.title).unwrap_or("Unknown widget");
     let style = grid_style(w);
     let key = format!("w-{idx}-{}", w.widget_key);
+    // `time_this_week` renders as a `StatCard`, which already carries its own
+    // card chrome (border, shadow, padding) and label, so wrapping it in
+    // another titled `Card` would double up both.
+    if w.widget_key == "time_this_week" {
+        return rsx! {
+            div { key: "{key}", style: "{style}",
+                {render_widget_body(&w.widget_key)}
+            }
+        };
+    }
     rsx! {
         div { key: "{key}", style: "{style}",
             Card { title: title.to_string(),
@@ -605,8 +615,11 @@ fn WidgetTimeThisWeek() -> Element {
         .sum();
     let hours = format!("{:.1}", minutes as f64 / 60.0);
     rsx! {
-        div { class: "text-3xl font-semibold text-content", "{hours} h" }
-        p { class: "text-xs text-muted mt-1", "Logged since Monday." }
+        StatCard {
+            label: "Time this week",
+            value: "{hours} h",
+            caption: "Logged since Monday.",
+        }
     }
 }
 
