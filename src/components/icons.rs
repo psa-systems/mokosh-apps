@@ -972,6 +972,31 @@ pub fn ChevronDownIcon(
 }
 
 #[component]
+pub fn ChevronLeftIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M15.75 19.5 8.25 12l7.5-7.5",
+            }
+        }
+    }
+}
+
+#[component]
 pub fn ChevronRightIcon(
     #[props(default)] size: IconSize,
     #[props(default)] class: String,
