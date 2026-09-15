@@ -133,6 +133,18 @@ mod tests {
         );
     }
 
+    /// MAPPS-779: the quote email's `?next=` is a quote, and a login page that
+    /// dropped it would sign the customer in and leave them on the dashboard,
+    /// one step short of the decision the email asked them to make.
+    #[test]
+    fn a_quote_path_is_accepted() {
+        let target = sanitize("/quotes/2f1c2f1e-0000-4000-8000-00000000abcd");
+        assert!(
+            matches!(target, Some(Route::QuoteDetail { .. })),
+            "{target:?}"
+        );
+    }
+
     /// The value arrives in a URL sent by email and is followed AFTER the
     /// customer authenticates, so anything that could leave the origin turns
     /// the MSP's own domain into a phishing hop.
