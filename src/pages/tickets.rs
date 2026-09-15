@@ -1071,9 +1071,33 @@ fn toggle_ticket_sort(
     page.set(1);
 }
 
-/// Ticket list page
+/// Ticket list page.
+///
+/// MAPPS-783: a contact without `tickets:read` is answered with the portal's
+/// explained state and Ask for access, ahead of the list body so none of its
+/// fetches mount for them. Before this the page had no gate: the sidebar hid
+/// Tickets from such a contact, and one who reached `/tickets` anyway got the
+/// server's 403 rendered as a load failure. The built-in Billing Contact role
+/// holds no ticket capability at all, so the person who pays a customer's
+/// invoices could neither report a problem in the portal nor tell that they
+/// could ask to.
 #[component]
 pub fn TicketListPage() -> Element {
+    let contact_can_read = crate::hooks::capabilities::use_capability("tickets:read");
+    if crate::hooks::fetch::api::has_contact_session() && !contact_can_read {
+        use_page_title("Tickets");
+        return rsx! {
+            crate::components::PortalAccessRequired {
+                title: "Tickets".to_string(),
+                area: crate::components::TICKETS,
+            }
+        };
+    }
+    rsx! { TicketListBody {} }
+}
+
+#[component]
+fn TicketListBody() -> Element {
     use_page_title("Tickets");
     // mokosh-contact-login prompt 006: gate the "New Ticket" CTA on
     // `tickets:write`. Staff / platform sessions always see it (the
@@ -2523,9 +2547,28 @@ fn start_inline_image_upload(
     }
 }
 
+/// MAPPS-783: one ticket, gated for a contact without `tickets:read` before
+/// any of the detail's hooks run - a wrapper rather than an early return,
+/// because the body calls a long run of hooks and a return ahead of them is
+/// only safe while the answer can never change during a mount.
+#[component]
+pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
+    let contact_can_read = crate::hooks::capabilities::use_capability("tickets:read");
+    if crate::hooks::fetch::api::has_contact_session() && !contact_can_read {
+        use_page_title("Ticket");
+        return rsx! {
+            crate::components::PortalAccessRequired {
+                title: "Ticket".to_string(),
+                area: crate::components::TICKETS,
+            }
+        };
+    }
+    rsx! { TicketDetailBody { ..props } }
+}
+
 #[component]
 #[allow(unused_variables)]
-pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
+fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // mokosh-contact-login prompt 006: capability gates. `can_comment`
     // covers the customer-facing reply surface; every other mutation
     // control (Log Time, Delete, inline status/priority/assignee

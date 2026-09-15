@@ -372,7 +372,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
         "invoices:read",
         "quotes:read",
     ]);
-    let show_tickets = crate::hooks::capabilities::use_capability("tickets:read");
+
     let show_time_entries =
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
     let show_timesheets =
@@ -399,6 +399,13 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
     // something from a portal that is broken, and has nowhere to ask. These
     // three are the areas with that explained state; the rest stay trimmed.
     let portal_contact = crate::hooks::fetch::api::has_contact_session();
+    // MAPPS-783: Tickets joins the three above. The built-in Billing Contact
+    // role holds no ticket capability, so hiding the entry left the person
+    // who pays a customer's invoices with no visible way to report a problem;
+    // the page now explains the gap and offers to ask. Projects and Assets
+    // stay trimmed on purpose: most customers never need them, and a locked
+    // tab in every customer's sidebar invites requests nobody wants.
+    let show_tickets = crate::hooks::capabilities::use_capability("tickets:read") || portal_contact;
     let show_contracts =
         crate::hooks::capabilities::use_capability("contracts:read") || portal_contact;
     let show_quotes = crate::hooks::capabilities::use_capability("quotes:read") || portal_contact;
