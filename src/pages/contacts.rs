@@ -1504,7 +1504,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                     }
                 }
 
-                h3 { class: "text-sm font-medium text-content pt-2",
+                h3 { class: "text-sm font-medium text-content",
                     "Address"
                 }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
@@ -3843,7 +3843,7 @@ fn EditPortalRolesButton(
                     if !error.read().is_empty() {
                         p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
                     }
-                    div { class: "flex justify-end gap-2 pt-2",
+                    div { class: "flex justify-end space-x-3 pt-2",
                         Button {
                             variant: ButtonVariant::Secondary,
                             disabled: saving(),
@@ -8571,7 +8571,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                         if !error.read().is_empty() {
                             p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
                         }
-                        div { class: "flex justify-end gap-2 pt-2",
+                        div { class: "flex justify-end space-x-3 pt-2",
                             Button {
                                 variant: ButtonVariant::Secondary,
                                 onclick: move |_| modal_open.set(false),

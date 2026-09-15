@@ -636,6 +636,7 @@ pub fn ProjectListPage() -> Element {
                             None => "bg-gray-400", // theme-guard-allow: neutral status-bar fill, sibling of red/yellow/green
                         };
                         let due = fmt_date(&p.target_end_date);
+                        let due_iso = p.target_end_date.clone().unwrap_or_default();
                         let budget = format_money_f64(p.budget_amount);
                         let pid = p.id.to_string();
                         rsx! {
@@ -677,7 +678,13 @@ pub fn ProjectListPage() -> Element {
                                     div { class: "flex justify-between text-sm",
                                         div {
                                             span { class: "text-muted", "Due: " }
-                                            span { class: "text-content", "{due}" }
+                                            span { class: "text-content",
+                                                if due_iso.is_empty() {
+                                                    "{due}"
+                                                } else {
+                                                    time { datetime: "{due_iso}", "{due}" }
+                                                }
+                                            }
                                         }
                                         div {
                                             span { class: "text-muted", "Budget: " }
@@ -700,6 +707,7 @@ pub fn ProjectListPage() -> Element {
             total_items: total,
             per_page: PER_PAGE,
             onpagechange: move |p| page.set(p),
+            bordered: false,
         }
     }
 }
@@ -1551,11 +1559,23 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     }
                                     div { class: "flex justify-between",
                                         dt { class: "text-sm text-muted", "Start Date" }
-                                        dd { class: "text-sm", "{fmt_date(&p.start_date)}" }
+                                        dd { class: "text-sm",
+                                            if let Some(start_iso) = p.start_date.clone() {
+                                                time { datetime: "{start_iso}", "{fmt_date(&p.start_date)}" }
+                                            } else {
+                                                "{fmt_date(&p.start_date)}"
+                                            }
+                                        }
                                     }
                                     div { class: "flex justify-between",
                                         dt { class: "text-sm text-muted", "Due Date" }
-                                        dd { class: "text-sm", "{fmt_date(&p.target_end_date)}" }
+                                        dd { class: "text-sm",
+                                            if let Some(due_iso) = p.target_end_date.clone() {
+                                                time { datetime: "{due_iso}", "{fmt_date(&p.target_end_date)}" }
+                                            } else {
+                                                "{fmt_date(&p.target_end_date)}"
+                                            }
+                                        }
                                     }
                                     div { class: "flex justify-between",
                                         dt { class: "text-sm text-muted", "Project Manager" }
@@ -1610,6 +1630,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                 headline: headline(&e.action, &e.changed_fields),
                                                 who: actor_name(&users, &e.user_id),
                                                 when: fmt_history_dt(e.timestamp),
+                                                when_iso: e.timestamp.to_rfc3339(),
                                                 changes: change_lines(&e.changes),
                                             }
                                         }
@@ -2103,6 +2124,7 @@ fn ProjectTaskTable(props: ProjectTaskTableProps) -> Element {
                                 let (tv, tl) = task_status_badge(&statuses, &t.status_id);
                                 let who = user_name(&users, &t.assigned_to_id);
                                 let due = fmt_date(&t.due_date);
+                                let due_iso = t.due_date.clone().unwrap_or_default();
                                 // Logged = all non-rejected time (PMS-329),
                                 // visible before approval; approved = the
                                 // approval-gated total; est = the estimate.
@@ -2132,7 +2154,13 @@ fn ProjectTaskTable(props: ProjectTaskTableProps) -> Element {
                                                 "{who}"
                                             }
                                         }
-                                        TableCell { "{due}" }
+                                        TableCell {
+                                            if due_iso.is_empty() {
+                                                "{due}"
+                                            } else {
+                                                time { datetime: "{due_iso}", "{due}" }
+                                            }
+                                        }
                                         TableCell {
                                             div { class: "whitespace-nowrap font-medium", "Logged {logged_h} h" }
                                             div {
@@ -2588,6 +2616,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                                     headline: headline(&e.action, &e.changed_fields),
                                     who: actor_name(&users, &e.user_id),
                                     when: fmt_history_dt(e.timestamp),
+                                    when_iso: e.timestamp.to_rfc3339(),
                                     changes: change_lines(&e.changes),
                                 }
                             }

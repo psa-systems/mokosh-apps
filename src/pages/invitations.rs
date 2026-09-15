@@ -260,7 +260,7 @@ pub fn InvitationsPage() -> Element {
                     ErrorBanner { "{error.read()}" }
                 }
                 div {
-                    class: "grid grid-cols-1 gap-4 sm:grid-cols-3 sm:items-end",
+                    class: if is_org_tenant { "grid grid-cols-1 gap-4 sm:grid-cols-3 sm:items-end" } else { "grid grid-cols-1 gap-4 sm:grid-cols-2 sm:items-end" },
                     Input {
                         name: "email",
                         label: "Email",
@@ -419,7 +419,7 @@ pub fn InvitationsPage() -> Element {
                                     TableCell {
                                         Badge { variant: BadgeVariant::Gray, "{inv.role}" }
                                     }
-                                    TableCell { "{inv.expires_at.format(\"%Y-%m-%d\")}" }
+                                    TableCell { time { datetime: "{inv.expires_at.to_rfc3339()}", "{inv.expires_at.format(\"%Y-%m-%d\")}" } }
                                     TableCell {
                                         Button {
                                             variant: ButtonVariant::Secondary,

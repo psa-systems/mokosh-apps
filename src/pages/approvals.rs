@@ -304,6 +304,7 @@ pub fn ApprovalsPage() -> Element {
                             .requested_at
                             .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
                             .unwrap_or_default();
+                        let when_iso = row.requested_at.map(|d| d.to_rfc3339()).unwrap_or_default();
                         let notes = row.notes.clone().unwrap_or_default();
                         // Pretty target labels for the badge. Unknown
                         // targets fall through to the raw string so a
@@ -375,7 +376,10 @@ pub fn ApprovalsPage() -> Element {
                                         }
                                         p { class: "text-xs text-subtle mt-1", "{approver_label}" }
                                         if !when.is_empty() {
-                                            p { class: "text-xs text-subtle mt-1", "Requested {when}" }
+                                            p { class: "text-xs text-subtle mt-1",
+                                                "Requested "
+                                                time { datetime: "{when_iso}", "{when}" }
+                                            }
                                         }
                                         if !notes.is_empty() {
                                             p { class: "mt-2 text-sm text-muted whitespace-pre-wrap",

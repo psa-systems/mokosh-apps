@@ -706,9 +706,10 @@ fn WidgetRecentAuditLog() -> Element {
                 for e in rows.iter() {
                     {
                         let when = e.occurred_at.format("%m/%d %H:%M").to_string();
+                        let when_iso = e.occurred_at.to_rfc3339();
                         rsx! {
                             TableRow {
-                                TableCell { class: "text-muted", "{when}" }
+                                TableCell { class: "text-muted", time { datetime: "{when_iso}", "{when}" } }
                                 TableCell { "{e.action}" }
                                 TableCell { "{e.entity_type}" }
                             }
