@@ -5,6 +5,8 @@
 
 use dioxus::prelude::*;
 
+use super::popover::Popover;
+
 #[component]
 pub fn OverflowActions(children: Element) -> Element {
     let mut open = use_signal(|| false);
@@ -12,22 +14,17 @@ pub fn OverflowActions(children: Element) -> Element {
         // Inline on >= sm.
         div { class: "hidden sm:flex items-center gap-2", {children.clone()} }
         // Collapsed menu on < sm.
-        div { class: "sm:hidden relative",
-            button {
-                class: "px-2 py-1 text-muted hover:text-content",
+        div { class: "sm:hidden",
+            Popover {
+                open: open(),
+                label: "More actions",
                 title: "More",
-                aria_label: "More actions",
-                onclick: move |_| open.toggle(),
-                "\u{22EF}"
-            }
-            if open() {
-                div {
-                    class: "fixed inset-0 z-40",
-                    onclick: move |_| open.set(false),
-                }
-                div { class: "dropdown-panel absolute right-0 z-50 mt-1 w-48 p-2 flex flex-col gap-2",
-                    {children}
-                }
+                trigger_class: "px-2 py-1 text-muted hover:text-content",
+                trigger: rsx! { "\u{22EF}" },
+                width: "w-48",
+                ontoggle: move |_| open.toggle(),
+                onclose: move |_| open.set(false),
+                div { class: "flex flex-col gap-2", {children} }
             }
         }
     }

@@ -636,6 +636,7 @@ pub fn ProjectListPage() -> Element {
                             None => "bg-gray-400", // theme-guard-allow: neutral status-bar fill, sibling of red/yellow/green
                         };
                         let due = fmt_date(&p.target_end_date);
+                        let due_iso = p.target_end_date.clone().unwrap_or_default();
                         let budget = format_money_f64(p.budget_amount);
                         let pid = p.id.to_string();
                         rsx! {
@@ -677,7 +678,13 @@ pub fn ProjectListPage() -> Element {
                                     div { class: "flex justify-between text-sm",
                                         div {
                                             span { class: "text-muted", "Due: " }
-                                            span { class: "text-content", "{due}" }
+                                            span { class: "text-content",
+                                                if due_iso.is_empty() {
+                                                    "{due}"
+                                                } else {
+                                                    time { datetime: "{due_iso}", "{due}" }
+                                                }
+                                            }
                                         }
                                         div {
                                             span { class: "text-muted", "Budget: " }
@@ -700,6 +707,7 @@ pub fn ProjectListPage() -> Element {
             total_items: total,
             per_page: PER_PAGE,
             onpagechange: move |p| page.set(p),
+            bordered: false,
         }
     }
 }
@@ -1526,65 +1534,11 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 }
                             }
                             Card { title: "Tasks",
-                                if tasks.is_empty() {
-                                    p { class: "text-sm text-subtle italic", "No tasks yet." }
-                                } else {
-                                    div { class: "space-y-3",
-                                        for t in tasks.iter() {
-                                            {
-                                                let (tv, tl) = task_status_badge(&statuses, &t.status_id);
-                                                let who = user_name(&users, &t.assigned_to_id);
-                                                // MAPPS-205: surface logged vs approved vs
-                                                // estimated hours on each task here in the
-                                                // project view, mirroring the task overview, so
-                                                // logged time is reflected on the task without
-                                                // opening the edit modal. logged = all
-                                                // non-rejected time (PMS-329); approved = the
-                                                // approval-gated total (PMS-51); est = estimate.
-                                                let logged_h = fmt_hours(t.logged_hours);
-                                                let approved_h = fmt_hours(t.actual_hours);
-                                                let est_h = fmt_hours(t.estimated_hours);
-                                                // Clicking a row opens the task in the edit modal.
-                                                let task = t.clone();
-                                                let open_task = move |_| selected_task.set(Some(task.clone()));
-                                                rsx! {
-                                                    // MAPPS-569: a real button, not a div with an
-                                                    // onclick. This row contains no link and no
-                                                    // button of its own, so before this there was no
-                                                    // keyboard path to a task's detail from the
-                                                    // project page at all - the action was
-                                                    // mouse-only, not merely slower.
-                                                    //
-                                                    // It can wrap rather than overlay because it has
-                                                    // no interactive children; the calendar cells in
-                                                    // MAPPS-443 could not, which is why they kept
-                                                    // `role="button"` and a key handler instead.
-                                                    // `w-full text-left` keeps the row's appearance,
-                                                    // since a button defaults to neither.
-                                                    button {
-                                                        r#type: "button",
-                                                        class: "w-full text-left flex items-center justify-between p-3 bg-surface rounded-lg cursor-pointer hover:bg-surface-2 transition-colors",
-                                                        onclick: open_task,
-                                                        div {
-                                                            p { class: "font-medium text-content", "{t.title}" }
-                                                            p { class: "text-sm text-muted", "{who}" }
-                                                        }
-                                                        div { class: "flex items-center gap-4",
-                                                            div { class: "text-right",
-                                                                div { class: "text-sm font-medium text-content whitespace-nowrap",
-                                                                    "Logged {logged_h} h"
-                                                                }
-                                                                div { class: "text-xs text-muted whitespace-nowrap",
-                                                                    "Approved {approved_h} h · Est {est_h} h"
-                                                                }
-                                                            }
-                                                            Badge { variant: tv, "{tl}" }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
+                                ProjectTaskTable {
+                                    tasks: tasks.clone(),
+                                    statuses: statuses.clone(),
+                                    users: users.clone(),
+                                    onselect: move |t| selected_task.set(Some(t)),
                                 }
                             }
                         }
@@ -1605,11 +1559,23 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     }
                                     div { class: "flex justify-between",
                                         dt { class: "text-sm text-muted", "Start Date" }
-                                        dd { class: "text-sm", "{fmt_date(&p.start_date)}" }
+                                        dd { class: "text-sm",
+                                            if let Some(start_iso) = p.start_date.clone() {
+                                                time { datetime: "{start_iso}", "{fmt_date(&p.start_date)}" }
+                                            } else {
+                                                "{fmt_date(&p.start_date)}"
+                                            }
+                                        }
                                     }
                                     div { class: "flex justify-between",
                                         dt { class: "text-sm text-muted", "Due Date" }
-                                        dd { class: "text-sm", "{fmt_date(&p.target_end_date)}" }
+                                        dd { class: "text-sm",
+                                            if let Some(due_iso) = p.target_end_date.clone() {
+                                                time { datetime: "{due_iso}", "{fmt_date(&p.target_end_date)}" }
+                                            } else {
+                                                "{fmt_date(&p.target_end_date)}"
+                                            }
+                                        }
                                     }
                                     div { class: "flex justify-between",
                                         dt { class: "text-sm text-muted", "Project Manager" }
@@ -1664,6 +1630,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                 headline: headline(&e.action, &e.changed_fields),
                                                 who: actor_name(&users, &e.user_id),
                                                 when: fmt_history_dt(e.timestamp),
+                                                when_iso: e.timestamp.to_rfc3339(),
                                                 changes: change_lines(&e.changes),
                                             }
                                         }
@@ -2093,6 +2060,125 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
     }
 }
 
+// ============================================================================
+// Shared project task table (MAPPS-791)
+//
+// One table, used by both the "Tasks" card on the project detail page and the
+// full `/projects/:id/tasks` page, so the two surfaces cannot drift apart on
+// columns, hover styling, or keyboard access the way the old hand-rolled card
+// stack and `DataTable` did.
+// ============================================================================
+
+#[derive(Props, Clone, PartialEq)]
+struct ProjectTaskTableProps {
+    tasks: Vec<RemoteTask>,
+    statuses: Vec<RemoteTaskStatus>,
+    users: Vec<RemoteUser>,
+    #[props(default = false)]
+    is_loading: bool,
+    #[props(default = false)]
+    load_failed: bool,
+    onselect: EventHandler<RemoteTask>,
+}
+
+#[component]
+fn ProjectTaskTable(props: ProjectTaskTableProps) -> Element {
+    let tasks = props.tasks;
+    let statuses = props.statuses;
+    let users = props.users;
+    let is_loading = props.is_loading;
+    let load_failed = props.load_failed;
+    let onselect = props.onselect;
+    let total = tasks.len();
+
+    rsx! {
+        DataTable {
+            total_items: total,
+            current_page: 1,
+            per_page: if total == 0 { 25 } else { total },
+            columns: 5,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Task" }
+                        TableHeader { "Status" }
+                        TableHeader { "Assigned To" }
+                        TableHeader { "Due Date" }
+                        TableHeader { "Hours" }
+                    }
+                }
+                TableBody {
+                    if is_loading {
+                        TableRow { TableCell { class: "text-subtle", "Loading…" } }
+                    } else if load_failed {
+                        TableEmptyRow { columns: 5, class: "text-red-600 dark:text-red-300",
+                            "Could not load tasks."
+                        }
+                    } else if tasks.is_empty() {
+                        TableRow {
+                            TableCell { class: "text-subtle italic", "No tasks yet." }
+                        }
+                    } else {
+                        for t in tasks.iter() {
+                            {
+                                let (tv, tl) = task_status_badge(&statuses, &t.status_id);
+                                let who = user_name(&users, &t.assigned_to_id);
+                                let due = fmt_date(&t.due_date);
+                                let due_iso = t.due_date.clone().unwrap_or_default();
+                                // Logged = all non-rejected time (PMS-329),
+                                // visible before approval; approved = the
+                                // approval-gated total; est = the estimate.
+                                let logged_h = fmt_hours(t.logged_hours);
+                                let approved_h = fmt_hours(t.actual_hours);
+                                let est_h = fmt_hours(t.estimated_hours);
+                                let unassigned = t.assigned_to_id.is_none();
+                                let task = t.clone();
+                                rsx! {
+                                    TableRow {
+                                        clickable: true,
+                                        onclick: {
+                                            let task = task.clone();
+                                            move |_| onselect.call(task.clone())
+                                        },
+                                        TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| onselect.call(task.clone()),
+                                            "{t.title}"
+                                        }
+                                        TableCell { Badge { variant: tv, "{tl}" } }
+                                        TableCell {
+                                            if unassigned {
+                                                span { class: "text-subtle italic", "Unassigned" }
+                                            } else {
+                                                "{who}"
+                                            }
+                                        }
+                                        TableCell {
+                                            if due_iso.is_empty() {
+                                                "{due}"
+                                            } else {
+                                                time { datetime: "{due_iso}", "{due}" }
+                                            }
+                                        }
+                                        TableCell {
+                                            div { class: "whitespace-nowrap font-medium", "Logged {logged_h} h" }
+                                            div {
+                                                class: "text-xs text-muted whitespace-nowrap",
+                                                "Approved {approved_h} h · Est {est_h} h"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Project tasks page
 #[derive(Props, Clone, PartialEq)]
 pub struct ProjectTasksPageProps {
@@ -2144,7 +2230,6 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
         .clone()
         .unwrap_or_default();
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
-    let total = tasks.len();
 
     // MAPPS-165: click-to-edit a task via the shared modal.
     let mut selected_task = use_signal(|| None::<RemoteTask>);
@@ -2174,82 +2259,13 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
             },
         }
 
-        DataTable {
-            total_items: total,
-            current_page: 1,
-            per_page: if total == 0 { 25 } else { total },
-            columns: 5,
-            Table {
-                TableHead {
-                    TableRow {
-                        TableHeader { "Task" }
-                        TableHeader { "Status" }
-                        TableHeader { "Assigned To" }
-                        TableHeader { "Due Date" }
-                        TableHeader { "Hours" }
-                    }
-                }
-                TableBody {
-                    if is_loading {
-                        TableRow { TableCell { class: "text-subtle", "Loading…" } }
-                    } else if load_failed {
-                        TableEmptyRow { columns: 5, class: "text-red-600 dark:text-red-300",
-                            "Could not load tasks."
-                        }
-                    } else if tasks.is_empty() {
-                        TableRow {
-                            TableCell { class: "text-subtle italic", "No tasks yet." }
-                        }
-                    } else {
-                        for t in tasks.iter() {
-                            {
-                                let (tv, tl) = task_status_badge(&statuses, &t.status_id);
-                                let who = user_name(&users, &t.assigned_to_id);
-                                let due = fmt_date(&t.due_date);
-                                // Logged = all non-rejected time (PMS-329),
-                                // visible before approval; approved = the
-                                // approval-gated total; est = the estimate.
-                                let logged_h = fmt_hours(t.logged_hours);
-                                let approved_h = fmt_hours(t.actual_hours);
-                                let est_h = fmt_hours(t.estimated_hours);
-                                let unassigned = t.assigned_to_id.is_none();
-                                let task = t.clone();
-                                rsx! {
-                                    TableRow {
-                                        clickable: true,
-                                        onclick: {
-                                            let task = task.clone();
-                                            move |_| selected_task.set(Some(task.clone()))
-                                        },
-                                        TableCell {
-                                            // MAPPS-569: the row's click opens a modal, so there is no
-                                            // route to link to; this cell is the keyboard path instead.
-                                            onactivate: move |_| selected_task.set(Some(task.clone())),
-                                            "{t.title}"
-                                        }
-                                        TableCell { Badge { variant: tv, "{tl}" } }
-                                        TableCell {
-                                            if unassigned {
-                                                span { class: "text-subtle italic", "Unassigned" }
-                                            } else {
-                                                "{who}"
-                                            }
-                                        }
-                                        TableCell { "{due}" }
-                                        TableCell {
-                                            div { class: "whitespace-nowrap font-medium", "Logged {logged_h} h" }
-                                            div {
-                                                class: "text-xs text-muted whitespace-nowrap",
-                                                "Approved {approved_h} h · Est {est_h} h"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        ProjectTaskTable {
+            tasks: tasks.clone(),
+            statuses: statuses.clone(),
+            users: users.clone(),
+            is_loading,
+            load_failed,
+            onselect: move |t| selected_task.set(Some(t)),
         }
 
         if let Some(task) = selected_task() {
@@ -2600,6 +2616,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                                     headline: headline(&e.action, &e.changed_fields),
                                     who: actor_name(&users, &e.user_id),
                                     when: fmt_history_dt(e.timestamp),
+                                    when_iso: e.timestamp.to_rfc3339(),
                                     changes: change_lines(&e.changes),
                                 }
                             }

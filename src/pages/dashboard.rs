@@ -311,6 +311,7 @@ fn ContactDashboardBody() -> Element {
                                 let route = activity_route(&item.kind, &item.id);
                                 let kind_label = activity_kind_label(&item.kind);
                                 let when = item.occurred_at.format("%b %-d, %Y %H:%M").to_string();
+                                let when_iso = item.occurred_at.to_rfc3339();
                                 let summary_text = if item.summary.trim().is_empty() {
                                     format!("{kind_label} updated")
                                 } else {
@@ -330,7 +331,8 @@ fn ContactDashboardBody() -> Element {
                                                     "{kind_label}"
                                                 }
                                             }
-                                            span { class: "text-xs text-muted whitespace-nowrap",
+                                            time { class: "text-xs text-muted whitespace-nowrap",
+                                                datetime: "{when_iso}",
                                                 "{when}"
                                             }
                                         }
@@ -884,15 +886,14 @@ pub fn DashboardTvPage() -> Element {
     appointments.sort_by_key(|a| a.start_time);
 
     rsx! {
-        // Bare, chrome-less full-bleed container. No AppLayout, so no
-        // TopBar / Sidebar / banners / ToastRoot mount above it.
-        div { class: "h-screen w-screen bg-app text-content overflow-hidden flex flex-col p-6",
-            // Header: org + scope, no buttons.
-            div { class: "flex items-end justify-between mb-5",
-                div {
-                    h1 { class: "text-4xl font-bold tracking-tight", "{org_name}" }
-                    p { class: "text-lg text-muted mt-1", "Dispatch & ticket board" }
-                }
+        // Canonical kiosk shell (MAPPS-800): no AppLayout, so no TopBar /
+        // Sidebar / banners / ToastRoot mount above it. `BigLayout` supplies
+        // the full-bleed shell, title strip, and live clock that every other
+        // `/big/*` route uses, instead of a hand-rolled full-viewport div.
+        crate::pages::big_view::BigLayout { title: org_name.clone(),
+            // Sub-header: scope, no buttons.
+            div { class: "flex items-center justify-between mb-5",
+                p { class: "text-lg text-muted", "Dispatch & ticket board" }
                 div { class: "text-right",
                     div { class: "text-sm uppercase tracking-wide text-subtle", "Scope" }
                     div { class: "text-2xl font-semibold", "{scope_label}" }
@@ -948,11 +949,10 @@ pub fn DashboardTvPage() -> Element {
                                                 .clone()
                                                 .filter(|s| !s.trim().is_empty())
                                                 .unwrap_or_else(|| "-".to_string());
-                                            let time = format!(
-                                                "{}-{}",
-                                                a.start_time.format("%H:%M"),
-                                                a.end_time.format("%H:%M")
-                                            );
+                                            let start_time = a.start_time.format("%H:%M").to_string();
+                                            let start_time_iso = a.start_time.to_rfc3339();
+                                            let end_time = a.end_time.format("%H:%M").to_string();
+                                            let end_time_iso = a.end_time.to_rfc3339();
                                             let status = if a.status.is_empty() {
                                                 "-".to_string()
                                             } else {
@@ -964,7 +964,11 @@ pub fn DashboardTvPage() -> Element {
                                                     TableCell { class: "font-medium", "{tech}" }
                                                     TableCell { "{a.title}" }
                                                     TableCell { class: "text-muted", "{loc}" }
-                                                    TableCell { class: "text-muted whitespace-nowrap", "{time}" }
+                                                    TableCell { class: "text-muted whitespace-nowrap",
+                                                        time { datetime: "{start_time_iso}", "{start_time}" }
+                                                        "-"
+                                                        time { datetime: "{end_time_iso}", "{end_time}" }
+                                                    }
                                                     TableCell { "{status}" }
                                                 }
                                             }

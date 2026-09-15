@@ -311,6 +311,7 @@ pub fn TenantManagementPage() -> Element {
                                 mrr: "-".to_string(),
                                 status: humanize_tenant_status(&tenant.status),
                                 created: format_created(tenant.created_at),
+                                created_iso: tenant.created_at.to_rfc3339(),
                                 logo_url: tenant.branding.logo_url.clone(),
                                 editable: true,
                                 // MAPPS-451: pass the id + resource
@@ -369,6 +370,8 @@ struct TenantRowProps {
     mrr: String,
     status: String,
     created: String,
+    /// ISO-8601 form of `created`, for the wrapping `time` element (N5).
+    created_iso: String,
     /// MAPPS-396: when set, rendered as a small avatar next to the
     /// name so the roster shows the MSP's brand at a glance rather
     /// than a plain text row.
@@ -468,7 +471,9 @@ fn TenantRow(props: TenantRowProps) -> Element {
             TableCell { "{props.users}" }
             TableCell { class: "font-medium", "{props.mrr}" }
             TableCell { Badge { variant: status_variant, "{props.status}" } }
-            TableCell { class: "text-muted", "{props.created}" }
+            TableCell { class: "text-muted",
+                time { datetime: "{props.created_iso}", "{props.created}" }
+            }
             TableCell { class: "text-right",
                 if props.editable {
                     div { class: "inline-flex items-center gap-3 justify-end",
