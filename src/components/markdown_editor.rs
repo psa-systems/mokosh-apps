@@ -28,7 +28,7 @@ use dioxus::prelude::*;
 
 use super::form::Textarea;
 use super::markdown_toolbar::{run_action, shortcut_action, MarkdownToolbar};
-use super::mention_autocomplete::MentionAutocomplete;
+use super::mention_autocomplete::{active_mention_and_rows, handle_keydown, MentionAutocomplete};
 use crate::utils::mentions::Mention;
 use crate::utils::validation::Rule;
 
@@ -256,6 +256,18 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
     // to the toolbar, so the request travels as a flag the toolbar consumes.
     let mut link_shortcut = use_signal(|| false);
 
+    // MAPPS-784: the mention list's keyboard contract, same as every other
+    // typeahead (`docs/form-conventions.md`). It lives here, not inside
+    // `MentionAutocomplete`, because the field's `onkeydown` is what has to
+    // call `handle_keydown` and decide whether Down/Enter/Escape belong to
+    // the popover or the textarea; `MentionAutocomplete` reads the same nav
+    // back out through context so its own render agrees with what the field
+    // just decided. Deliberately WITHOUT `enter_takes_first_match`: the
+    // popover sits over a textarea where Enter is the newline key, so it only
+    // takes a mention the user has highlighted.
+    let nav = crate::hooks::dropdown_nav::use_dropdown_nav("mention-ac");
+    use_context_provider(|| nav);
+
     // MAPPS-610: which pane(s) are up. Seeded from the stored preference when
     // the host names one. Held even when `views` is off, so the panes below can
     // read one rule rather than branching twice.
@@ -302,6 +314,22 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
     }
 
     let on_file = props.on_file;
+
+    // MAPPS-784: built once and used both as the popover's `onaccept` prop
+    // and, unchanged, as the handler `handle_keydown` calls when Enter/Tab
+    // accepts a row from the field's own `onkeydown` - one accept path
+    // however the row was taken.
+    let mention_onaccept = EventHandler::new({
+        let target = props.name.clone();
+        move |(text, caret): (String, u32)| {
+            on_change.call(text);
+            let target = target.clone();
+            spawn(async move {
+                crate::platform::timer::sleep_ms(0).await;
+                crate::platform::dom::set_textarea_selection(&target, caret, caret);
+            });
+        }
+    });
 
     rsx! {
         div { class: "space-y-1 {props.class}",
@@ -486,6 +514,15 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                 upload_help: props.upload_help.clone(),
                 onchange: move |next: String| on_change.call(next),
             }
+            // MAPPS-784: the combobox seam, same as `company_picker.rs:213-216`.
+            // The wrapper carries the ARIA, not `Textarea` itself: keydown
+            // bubbles up from the field regardless, and this is the one
+            // `<div>` both the mention list below and the field share.
+            div {
+                role: "combobox",
+                aria_expanded: nav.expanded(),
+                aria_controls: nav.panel_id(),
+                aria_activedescendant: nav.active_descendant(),
             Textarea {
                 name: props.name.clone(),
                 label: props.label.clone(),
@@ -515,7 +552,25 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                 onkeydown: {
                     let target = target.clone();
                     let value = props.value.clone();
+                    let people = props.people.clone();
+                    let mut nav = nav;
                     move |e: KeyboardEvent| {
+                        // MAPPS-784: the mention list gets first look. Down/Up
+                        // move its active row instead of the caret, Enter/Tab
+                        // accept the highlighted mention instead of inserting
+                        // a newline, and Escape closes it - all without
+                        // reaching the shortcut handling below.
+                        let (active, rows) = active_mention_and_rows(&target, &value, &people);
+                        if handle_keydown(
+                            &mut nav,
+                            &e,
+                            &rows,
+                            &value,
+                            active.as_ref(),
+                            &mention_onaccept,
+                        ) {
+                            return;
+                        }
                         let mods = e.modifiers();
                         let chord = mods.ctrl() || mods.meta();
                         let key = match e.key() {
@@ -540,6 +595,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                     }
                 },
             }
+            }
             // MAPPS-580: the mention list, under the field it completes for.
             // Renders nothing unless an `@` is being typed that the RENDERER
             // would also read as a mention.
@@ -547,17 +603,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                 target_id: props.name.clone(),
                 value: props.value.clone(),
                 people: props.people.clone(),
-                onaccept: {
-                    let target = props.name.clone();
-                    move |(text, caret): (String, u32)| {
-                        on_change.call(text);
-                        let target = target.clone();
-                        spawn(async move {
-                            crate::platform::timer::sleep_ms(0).await;
-                            crate::platform::dom::set_textarea_selection(&target, caret, caret);
-                        });
-                    }
-                },
+                onaccept: mention_onaccept,
             }
             }
             if props.views {
@@ -690,6 +736,28 @@ mod tests {
         assert!(
             !code.contains("textarea {"),
             "never a raw element: MAPPS-585 is what that costs"
+        );
+    }
+
+    /// MAPPS-784: the mention list behaves like every other typeahead - the
+    /// field wraps in the same combobox seam `company_picker.rs:213-216`
+    /// uses, and `handle_keydown` runs before the toolbar's own shortcuts so
+    /// Down/Enter/Escape reach the popover instead of the textarea.
+    #[test]
+    fn the_field_carries_the_combobox_attributes_and_calls_handle_keydown() {
+        let code = code_only();
+        for attr in [
+            "role: \"combobox\"",
+            "aria_expanded: nav.expanded()",
+            "aria_controls: nav.panel_id()",
+            "aria_activedescendant: nav.active_descendant()",
+        ] {
+            assert!(code.contains(attr), "missing combobox attribute: {attr}");
+        }
+        assert!(
+            code.contains("handle_keydown(") && code.contains("use_dropdown_nav(\"mention-ac\")"),
+            "the field's onkeydown must call the mention list's handle_keydown \
+             against the nav this component owns"
         );
     }
 }
