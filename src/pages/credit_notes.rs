@@ -400,7 +400,7 @@ fn CreditNoteRow(note: RemoteCreditNote) -> Element {
                 if date.is_empty() {
                     span { class: "text-subtle", "-" }
                 } else {
-                    "{date}"
+                    time { datetime: "{date}", "{date}" }
                 }
             }
             TableCell { class: "max-w-xs",
@@ -692,7 +692,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
                                         div { class: "mb-2",
                                             span { class: "text-sm text-muted", "Issue Date: " }
                                             span { class: "font-medium",
-                                                if issue_date.is_empty() { "-" } else { "{issue_date}" }
+                                                if issue_date.is_empty() { "-" } else { time { datetime: "{issue_date}", "{issue_date}" } }
                                             }
                                         }
                                         if !invoice_id.is_empty() {
@@ -780,7 +780,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
                                     if !voided_at.is_empty() {
                                         div { class: "flex justify-between",
                                             span { class: "text-muted", "Voided" }
-                                            span { class: "font-medium", "{format_voided_at(&voided_at)}" }
+                                            time { class: "font-medium", datetime: "{voided_at}", "{format_voided_at(&voided_at)}" }
                                         }
                                     }
                                 }

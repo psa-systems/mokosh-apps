@@ -1121,7 +1121,9 @@ fn MonthDayCell(props: MonthDayCellProps) -> Element {
                                 let past = past_class(appt);
                                 let appt_clone = appt.clone();
                                 let type_label = appointment_type_label(&appt.appointment_type);
-                                let label = format!("{} {}", time_label(appt.start_time), appt.title);
+                                let chip_time = time_label(appt.start_time);
+                                let chip_time_iso = appt.start_time.to_rfc3339();
+                                let label = format!("{} {}", chip_time, appt.title);
                                 rsx! {
                                     button {
                                         key: "{appt.id}",
@@ -1142,7 +1144,8 @@ fn MonthDayCell(props: MonthDayCellProps) -> Element {
                                             e.stop_propagation();
                                             props.onpick.call(appt_clone.clone());
                                         },
-                                        "{label}"
+                                        time { datetime: "{chip_time_iso}", "{chip_time}" }
+                                        " {appt.title}"
                                     }
                                 }
                             }
@@ -1321,7 +1324,11 @@ fn DayColumn(props: DayColumnProps) -> Element {
                                 let appt_clone = appt.clone();
                                 let type_label = appointment_type_label(&appt.appointment_type);
                                 let label = appt.title.clone();
-                                let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
+                                let start_time = time_label(appt.start_time);
+                                let start_time_iso = appt.start_time.to_rfc3339();
+                                let end_time = time_label(appt.end_time);
+                                let end_time_iso = appt.end_time.to_rfc3339();
+                                let time = format!("{start_time} - {end_time}");
                                 rsx! {
                                     button {
                                         key: "{appt.id}",
@@ -1344,7 +1351,11 @@ fn DayColumn(props: DayColumnProps) -> Element {
                                             props.onpick.call(appt_clone.clone());
                                         },
                                         div { class: "font-medium truncate", "{label}" }
-                                        div { class: "truncate opacity-90", "{time}" }
+                                        div { class: "truncate opacity-90",
+                                            time { datetime: "{start_time_iso}", "{start_time}" }
+                                            " - "
+                                            time { datetime: "{end_time_iso}", "{end_time}" }
+                                        }
                                     }
                                 }
                             }
@@ -1564,7 +1575,11 @@ fn DayGrid(props: DayGridProps) -> Element {
                                     let appt_clone = appt.clone();
                                     let type_label = appointment_type_label(&appt.appointment_type);
                                     let label = appt.title.clone();
-                                    let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
+                                    let start_time = time_label(appt.start_time);
+                                    let start_time_iso = appt.start_time.to_rfc3339();
+                                    let end_time = time_label(appt.end_time);
+                                    let end_time_iso = appt.end_time.to_rfc3339();
+                                    let time = format!("{start_time} - {end_time}");
                                     let location = appt.location.clone().unwrap_or_default();
                                     rsx! {
                                         button {
@@ -1588,7 +1603,11 @@ fn DayGrid(props: DayGridProps) -> Element {
                                                 props.onpick.call(appt_clone.clone());
                                             },
                                             div { class: "font-medium truncate", "{label}" }
-                                            div { class: "opacity-90", "{time}" }
+                                            div { class: "opacity-90",
+                                                time { datetime: "{start_time_iso}", "{start_time}" }
+                                                " - "
+                                                time { datetime: "{end_time_iso}", "{end_time}" }
+                                            }
                                             if !location.is_empty() {
                                                 div { class: "truncate opacity-90", "{location}" }
                                             }
@@ -1642,6 +1661,7 @@ fn AgendaCard(props: AgendaCardProps) -> Element {
                             };
                             let past = past_class(appt);
                             let time = time_label(appt.start_time);
+                            let time_iso = appt.start_time.to_rfc3339();
                             let title = appt.title.clone();
                             let who = props
                                 .users
@@ -1651,7 +1671,7 @@ fn AgendaCard(props: AgendaCardProps) -> Element {
                                 .unwrap_or_default();
                             rsx! {
                                 div { class: "border-l-4 {border} bg-surface-2 p-3 rounded-r {past}",
-                                    p { class: "text-xs text-muted", "{time}" }
+                                    p { class: "text-xs text-muted", time { datetime: "{time_iso}", "{time}" } }
                                     p { class: "font-medium text-content", "{title}" }
                                     if !who.is_empty() {
                                         p { class: "text-xs text-muted", "{who}" }

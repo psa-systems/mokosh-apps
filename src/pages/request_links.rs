@@ -117,6 +117,7 @@ pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Elem
                                         RequestLinkStatus::Expired => BadgeVariant::Gray,
                                     };
                                     let expires = crate::utils::datetime::format_user_datetime(link.expires_at, None);
+                                    let expires_iso = link.expires_at.to_rfc3339();
                                     rsx! {
                                         TableRow { key: "{key}",
                                             TableCell { span { class: "font-medium text-content", "{link.form_name}" } }
@@ -124,7 +125,7 @@ pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Elem
                                             TableCell {
                                                 Badge { variant, "{status.label()}" }
                                             }
-                                            TableCell { class: "text-muted", "{expires}" }
+                                            TableCell { class: "text-muted", time { datetime: "{expires_iso}", "{expires}" } }
                                         }
                                     }
                                 }
@@ -244,6 +245,7 @@ pub fn SentRequestLinksPanel(reload: ReadSignal<u32>) -> Element {
                                             RequestLinkStatus::Expired => BadgeVariant::Gray,
                                         };
                                         let expires = crate::utils::datetime::format_user_datetime(link.expires_at, None);
+                                        let expires_iso = link.expires_at.to_rfc3339();
                                         let company_id = link.company_id.to_string();
                                         rsx! {
                                             TableRow { key: "{key}",
@@ -261,7 +263,7 @@ pub fn SentRequestLinksPanel(reload: ReadSignal<u32>) -> Element {
                                                 }
                                                 TableCell { class: "text-muted", "{link.recipient_email}" }
                                                 TableCell { Badge { variant, "{status.label()}" } }
-                                                TableCell { class: "text-muted", "{expires}" }
+                                                TableCell { class: "text-muted", time { datetime: "{expires_iso}", "{expires}" } }
                                             }
                                         }
                                     }

@@ -252,6 +252,7 @@ pub fn SavedDashboardsPage() -> Element {
                                 let row_default = row.is_default;
                                 let row_name = row.name.clone();
                                 let updated = row.updated_at.format("%Y-%m-%d %H:%M UTC").to_string();
+                                let updated_iso = row.updated_at.to_rfc3339();
                                 let on_pin = on_pin_default;
                                 let del_label = row_name.clone();
                                 rsx! {
@@ -264,7 +265,7 @@ pub fn SavedDashboardsPage() -> Element {
                                                 span { class: "text-muted", "-" }
                                             }
                                         }
-                                        TableCell { "{updated}" }
+                                        TableCell { time { datetime: "{updated_iso}", "{updated}" } }
                                         TableCell { class: "text-right".to_string(),
                                             div { class: "inline-flex gap-2",
                                                 Link {
@@ -322,7 +323,7 @@ pub fn SavedDashboardsPage() -> Element {
                     checked: *new_is_default.read(),
                     onchange: move |e: FormEvent| new_is_default.set(e.checked()),
                 }
-                div { class: "flex justify-end gap-2 pt-2",
+                div { class: "flex justify-end space-x-3 pt-2",
                     Button {
                         variant: ButtonVariant::Secondary,
                         onclick: move |_| show_create.set(false),

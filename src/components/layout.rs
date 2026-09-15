@@ -1588,6 +1588,7 @@ fn NotificationRow(
     let id = item.id;
     let subject = item.subject.clone().unwrap_or_default();
     let when = format_local_datetime(item.created_at);
+    let when_iso = item.created_at.to_rfc3339();
     let unread_bg = if is_unread {
         "bg-accent-50 dark:bg-accent-900/40"
     } else {
@@ -1627,7 +1628,7 @@ fn NotificationRow(
             }
             div { class: "text-sm text-muted", "{item.body}" }
             div { class: "mt-1 flex items-center justify-between text-xs text-subtle",
-                span { "{when}" }
+                time { datetime: "{when_iso}", "{when}" }
                 if has_target {
                     span { class: "text-accent", "Open \u{203a}" }
                 }

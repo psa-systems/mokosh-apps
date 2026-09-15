@@ -577,7 +577,7 @@ fn CompanyRoleEditForm(props: CompanyRoleEditFormProps) -> Element {
                     }
                 }
 
-                div { class: "flex justify-end gap-2 pt-2",
+                div { class: "flex justify-end space-x-3 pt-2",
                     Link {
                         to: back_route.clone(),
                         Button { variant: ButtonVariant::Secondary, "Cancel" }

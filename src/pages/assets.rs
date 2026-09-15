@@ -1590,10 +1590,11 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         latest.map(|e| {
             let who = actor_name(&users, &e.performed_by_id);
             let when = fmt_datetime(&e.performed_at);
+            let when_iso = e.performed_at.clone().unwrap_or_default();
             if who == "-" {
-                format!("Edited {when}")
+                rsx! { "Edited " time { datetime: "{when_iso}", "{when}" } }
             } else {
-                format!("Edited {when} by {who}")
+                rsx! { "Edited " time { datetime: "{when_iso}", "{when}" } " by {who}" }
             }
         })
     } else {
@@ -1713,6 +1714,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                 let serial = a.serial_number.clone().unwrap_or_else(dash);
                 let tag = a.asset_tag.clone().unwrap_or_else(dash);
                 let warranty = fmt_date(&a.warranty_expiry);
+                let warranty_iso = a.warranty_expiry.clone().unwrap_or_default();
                 // MAPPS-305: derive a "Needs refresh" cue from the warranty
                 // date. Expired (date < today) is "Expired"; within 30 days
                 // is "Expires soon". Both signal a refresh / replacement
@@ -1722,6 +1724,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                 // documented next step on the ticket.
                 let warranty_status = warranty_refresh_status(&a.warranty_expiry);
                 let purchased = fmt_date(&a.purchase_date);
+                let purchased_iso = a.purchase_date.clone().unwrap_or_default();
                 // Snapshot used to seed the edit form when opened.
                 let a_edit = a.clone();
                 let open_edit = move |_| {
@@ -1776,7 +1779,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     }
                                 },
                                 if let Some(marker) = edited_marker {
-                                    p { class: "text-xs text-subtle italic mb-3", "{marker}" }
+                                    p { class: "text-xs text-subtle italic mb-3", {marker} }
                                 }
                                 dl { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                     div {
@@ -1844,7 +1847,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                             rsx! {
                                                 div {
                                                     dt { class: "text-sm text-muted", "Installed" }
-                                                    dd { class: "mt-1", "{installed_label}" }
+                                                    dd { class: "mt-1", time { datetime: "{installed}", "{installed_label}" } }
                                                 }
                                             }
                                         }
@@ -2138,7 +2141,13 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     div { class: "flex justify-between items-center",
                                         span { class: "text-muted", "Warranty" }
                                         div { class: "flex items-center gap-2",
-                                            span { class: "font-medium", "{warranty}" }
+                                            span { class: "font-medium",
+                                                if warranty_iso.is_empty() {
+                                                    "{warranty}"
+                                                } else {
+                                                    time { datetime: "{warranty_iso}", "{warranty}" }
+                                                }
+                                            }
                                             // MAPPS-305: surface the refresh cue.
                                             match warranty_status {
                                                 WarrantyRefreshStatus::Expired => rsx! {
@@ -2160,7 +2169,13 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     }
                                     div { class: "flex justify-between",
                                         span { class: "text-muted", "Purchased" }
-                                        span { class: "font-medium", "{purchased}" }
+                                        span { class: "font-medium",
+                                            if purchased_iso.is_empty() {
+                                                "{purchased}"
+                                            } else {
+                                                time { datetime: "{purchased_iso}", "{purchased}" }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -2205,6 +2220,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                         // sentinel is dropped here rather than printed.
                                                         who: if who == "-" { String::new() } else { who },
                                                         when: fmt_datetime(&e.performed_at),
+                                                        when_iso: e.performed_at.clone().unwrap_or_default(),
                                                         changes: change_lines(e),
                                                     }
                                                 }
