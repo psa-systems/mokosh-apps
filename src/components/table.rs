@@ -2,7 +2,8 @@
 
 use dioxus::prelude::*;
 
-use super::icons::ChevronRightIcon;
+use super::icon_button::IconButton;
+use super::icons::{ChevronLeftIcon, ChevronRightIcon};
 
 /// Table container props
 #[derive(Props, Clone, PartialEq)]
@@ -533,15 +534,17 @@ pub fn Pagination(props: PaginationProps) -> Element {
                         // boundary so the disabled state is unambiguously
                         // distinct from the active state (audit: "Looks
                         // identical to active > button").
-                        button {
+                        IconButton {
+                            label: "Previous page",
+                            r#type: "button",
                             class: if props.current_page <= 1 {
-                                "relative inline-flex items-center rounded-l-md px-2 py-2 text-subtle ring-1 ring-inset ring-line cursor-not-allowed bg-app"
+                                "relative rounded-l-md px-2 py-2 text-subtle ring-1 ring-inset ring-line cursor-not-allowed bg-app"
                             } else {
-                                "relative inline-flex items-center rounded-l-md px-2 py-2 text-subtle ring-1 ring-inset ring-line hover:bg-surface-2 focus:z-20 focus:outline-offset-0"
+                                "relative rounded-l-md px-2 py-2 text-subtle ring-1 ring-inset ring-line hover:bg-surface-2 focus:z-20 focus:outline-offset-0"
                             },
                             disabled: props.current_page <= 1,
                             onclick: move |_| props.onpagechange.call(props.current_page - 1),
-                            ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
+                            ChevronLeftIcon { class: "h-5 w-5".to_string() }
                         }
 
                         // Page numbers
@@ -564,11 +567,13 @@ pub fn Pagination(props: PaginationProps) -> Element {
                         }
 
                         // Next button (mirror of prev for P3-22).
-                        button {
+                        IconButton {
+                            label: "Next page",
+                            r#type: "button",
                             class: if props.current_page >= total_pages {
-                                "relative inline-flex items-center rounded-r-md px-2 py-2 text-subtle ring-1 ring-inset ring-line cursor-not-allowed bg-app"
+                                "relative rounded-r-md px-2 py-2 text-subtle ring-1 ring-inset ring-line cursor-not-allowed bg-app"
                             } else {
-                                "relative inline-flex items-center rounded-r-md px-2 py-2 text-subtle ring-1 ring-inset ring-line hover:bg-surface-2 focus:z-20 focus:outline-offset-0"
+                                "relative rounded-r-md px-2 py-2 text-subtle ring-1 ring-inset ring-line hover:bg-surface-2 focus:z-20 focus:outline-offset-0"
                             },
                             disabled: props.current_page >= total_pages,
                             onclick: move |_| props.onpagechange.call(props.current_page + 1),

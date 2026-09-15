@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::{
     use_page_title, Badge, BadgeVariant, BannerTone, Button, ButtonSize, ButtonVariant, Card,
-    Checkbox, ChevronRightIcon, DataTable, ErrorBanner, IconSize, Modal, PageHeader, PlusIcon,
-    Select, SelectOption, StatCard, StatusBanner, Table, TableAlign, TableBody, TableCell,
-    TableEmptyRow, TableHead, TableHeader, TableRow,
+    Checkbox, ChevronLeftIcon, ChevronRightIcon, DataTable, ErrorBanner, IconButton, IconSize,
+    Modal, PageHeader, PlusIcon, Select, SelectOption, StatCard, StatusBanner, Table, TableAlign,
+    TableBody, TableCell, TableEmptyRow, TableHead, TableHeader, TableRow,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
@@ -1516,16 +1516,15 @@ pub fn TimesheetsPage() -> Element {
         // Week selector
         Card { class: "mb-6",
             div { class: "flex items-center justify-between",
-                button {
-                    r#type: "button",
+                IconButton {
+                    label: "Previous week",
                     class: "p-2 text-subtle hover:text-content",
-                    title: "Previous week",
                     onclick: move |_| {
                         action_msg.set(String::new());
                         action_err.set(String::new());
                         week_start.set(week_start() - Duration::days(7));
                     },
-                    ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
+                    ChevronLeftIcon { class: "h-5 w-5".to_string() }
                 }
                 div { class: "flex flex-col items-center gap-1",
                     span { class: "text-lg font-medium text-content",
@@ -1547,10 +1546,9 @@ pub fn TimesheetsPage() -> Element {
                         }
                     }
                 }
-                button {
-                    r#type: "button",
+                IconButton {
+                    label: "Next week",
                     class: "p-2 text-subtle hover:text-content",
-                    title: "Next week",
                     onclick: move |_| {
                         action_msg.set(String::new());
                         action_err.set(String::new());
@@ -2254,16 +2252,15 @@ pub fn TimesheetApprovalsPage() -> Element {
         if !in_range_mode {
         Card { class: "mb-6",
             div { class: "flex items-center justify-between",
-                button {
-                    r#type: "button",
+                IconButton {
+                    label: "Previous week",
                     class: "p-2 text-subtle hover:text-content",
-                    title: "Previous week",
                     onclick: move |_| {
                         action_msg.set(String::new());
                         action_err.set(String::new());
                         week_start.set(week_start() - Duration::days(7));
                     },
-                    ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
+                    ChevronLeftIcon { class: "h-5 w-5".to_string() }
                 }
                 div { class: "flex flex-col items-center gap-1",
                     span { class: "text-lg font-medium text-content",
@@ -2282,10 +2279,9 @@ pub fn TimesheetApprovalsPage() -> Element {
                         }
                     }
                 }
-                button {
-                    r#type: "button",
+                IconButton {
+                    label: "Next week",
                     class: "p-2 text-subtle hover:text-content",
-                    title: "Next week",
                     onclick: move |_| {
                         action_msg.set(String::new());
                         action_err.set(String::new());
