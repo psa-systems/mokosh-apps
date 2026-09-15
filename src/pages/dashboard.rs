@@ -886,15 +886,14 @@ pub fn DashboardTvPage() -> Element {
     appointments.sort_by_key(|a| a.start_time);
 
     rsx! {
-        // Bare, chrome-less full-bleed container. No AppLayout, so no
-        // TopBar / Sidebar / banners / ToastRoot mount above it.
-        div { class: "h-screen w-screen bg-app text-content overflow-hidden flex flex-col p-6",
-            // Header: org + scope, no buttons.
-            div { class: "flex items-end justify-between mb-5",
-                div {
-                    h1 { class: "text-4xl font-bold tracking-tight", "{org_name}" }
-                    p { class: "text-lg text-muted mt-1", "Dispatch & ticket board" }
-                }
+        // Canonical kiosk shell (MAPPS-800): no AppLayout, so no TopBar /
+        // Sidebar / banners / ToastRoot mount above it. `BigLayout` supplies
+        // the full-bleed shell, title strip, and live clock that every other
+        // `/big/*` route uses, instead of a hand-rolled full-viewport div.
+        crate::pages::big_view::BigLayout { title: org_name.clone(),
+            // Sub-header: scope, no buttons.
+            div { class: "flex items-center justify-between mb-5",
+                p { class: "text-lg text-muted", "Dispatch & ticket board" }
                 div { class: "text-right",
                     div { class: "text-sm uppercase tracking-wide text-subtle", "Scope" }
                     div { class: "text-2xl font-semibold", "{scope_label}" }
