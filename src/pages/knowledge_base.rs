@@ -1599,7 +1599,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-8 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load article." }
+                        ErrorBanner { class: "mb-3", "Could not load article." }
                         Link {
                             to: Route::KBHome {},
                             class: "text-sm text-accent hover:opacity-90",
@@ -2056,7 +2056,7 @@ fn LinkedTicketsCard(article_id: String) -> Element {
                     p { class: "text-xs text-subtle", "Loading…" }
                 },
                 Some(None) => rsx! {
-                    p { class: "text-xs text-red-600 dark:text-red-300", "Could not load linked tickets." }
+                    ErrorBanner { "Could not load linked tickets." }
                 },
                 Some(Some(rows)) if rows.is_empty() => rsx! {
                     p { class: "text-xs text-subtle", "No ticket references this article yet." }
@@ -2231,7 +2231,7 @@ fn VersionHistoryCard(
                     p { class: "px-3 py-3 text-xs text-subtle", "Loading…" }
                 },
                 Some(None) => rsx! {
-                    p { class: "px-3 py-3 text-xs text-red-600 dark:text-red-300", "Could not load version history." }
+                    ErrorBanner { "Could not load version history." }
                 },
                 Some(Some(page)) if page.is_empty() => rsx! {
                     p { class: "px-3 py-3 text-xs text-subtle", "No prior versions." }
@@ -2529,7 +2529,7 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-8 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load article." }
+                        ErrorBanner { class: "mb-3", "Could not load article." }
                         Link {
                             to: Route::KBHome {},
                             class: "text-sm text-accent hover:opacity-90",

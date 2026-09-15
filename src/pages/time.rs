@@ -433,11 +433,7 @@ pub fn TimeEntryListPage() -> Element {
         }
 
         if load_failed {
-            Card { class: "mb-6",
-                p { class: "text-sm text-yellow-600 dark:text-yellow-400",
-                    "Could not load time entries from the server."
-                }
-            }
+            ErrorBanner { class: "mb-6", "Could not load time entries from the server." }
         }
 
         DataTable {
@@ -1586,10 +1582,8 @@ pub fn TimesheetsPage() -> Element {
                             }
                         }
                     } else if load_failed {
-                        TableRow {
-                            TableCell { colspan: Some(9), class: "text-center text-red-500 dark:text-red-400",
-                                "Could not load timesheet. The time-tracking service may be unavailable."
-                            }
+                        TableEmptyRow { columns: 9, class: "text-red-600 dark:text-red-300",
+                            "Could not load timesheet. The time-tracking service may be unavailable."
                         }
                     } else if !has_entries {
                         // MAPPS-201: empty-week prompt + one-click path to a new
@@ -2316,10 +2310,8 @@ pub fn TimesheetApprovalsPage() -> Element {
                             TableCell { class: "text-subtle", "Loading…" }
                         }
                     } else if load_failed {
-                        TableRow {
-                            TableCell { class: "text-red-500 dark:text-red-400",
-                                "Could not load timesheets. The time-tracking service may be unavailable."
-                            }
+                        TableEmptyRow { columns: 7, class: "text-red-600 dark:text-red-300",
+                            "Could not load timesheets. The time-tracking service may be unavailable."
                         }
                     } else if rows.is_empty() {
                         // MAPPS-388: centered across the table, not left-aligned.
@@ -2727,9 +2719,7 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
                         p { class: "text-sm text-muted", "Loading history…" }
                     } else {
                         if entries_failed {
-                            p { class: "text-sm text-red-600 dark:text-red-400",
-                                "Could not load the week's entries; showing the decision only."
-                            }
+                            ErrorBanner { "Could not load the week's entries; showing the decision only." }
                         }
                         if events.is_empty() {
                             p { class: "text-sm text-muted italic",

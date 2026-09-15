@@ -2333,9 +2333,7 @@ fn SchedulingSettingsBody() -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-12 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300",
-                            "Could not load scheduling settings. Refresh the page to retry."
-                        }
+                        ErrorBanner { "Could not load scheduling settings. Refresh the page to retry." }
                     }
                 }
             },
@@ -2595,9 +2593,7 @@ fn PaymentRemindersBody() -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-12 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300",
-                            "Could not load payment reminder settings. Refresh the page to retry."
-                        }
+                        ErrorBanner { "Could not load payment reminder settings. Refresh the page to retry." }
                     }
                 }
             },
@@ -2837,9 +2833,7 @@ fn MaxHoursPerDaySettingsBody() -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-12 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300",
-                            "Could not load time tracking settings. Refresh the page to retry."
-                        }
+                        ErrorBanner { "Could not load time tracking settings. Refresh the page to retry." }
                     }
                 }
             },

@@ -6,8 +6,8 @@ use serde::Deserialize;
 use crate::components::{
     clear_on_edit, use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable,
     ErrorBanner, IconSize, Input, Modal, OverflowActions, PageHeader, PencilIcon, PlusIcon,
-    SearchInput, Select, SelectOption, StatCard, Table, TableBody, TableCell, TableHead,
-    TableHeader, TableRow, Textarea,
+    SearchInput, Select, SelectOption, StatCard, Table, TableBody, TableCell, TableEmptyRow,
+    TableHead, TableHeader, TableRow, Textarea,
 };
 use crate::components::{ChangeHistoryEntry, ChangeLine};
 // MAPPS-596: the change-history wording lives in one place now; these were
@@ -1439,9 +1439,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
             crate::components::DetailSkeleton {} // PMS-353
         } else if project.is_none() {
             Card {
-                p { class: "text-sm text-yellow-600 dark:text-yellow-400",
-                    "Could not load this project."
-                }
+                ErrorBanner { "Could not load this project." }
             }
         } else {
             {
@@ -2195,10 +2193,8 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
                     if is_loading {
                         TableRow { TableCell { class: "text-subtle", "Loading…" } }
                     } else if load_failed {
-                        TableRow {
-                            TableCell { class: "text-yellow-600 dark:text-yellow-400",
-                                "Could not load tasks."
-                            }
+                        TableEmptyRow { columns: 5, class: "text-red-600 dark:text-red-300",
+                            "Could not load tasks."
                         }
                     } else if tasks.is_empty() {
                         TableRow {
