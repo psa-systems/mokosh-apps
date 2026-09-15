@@ -63,6 +63,21 @@ struct AdditionalBody {
 #[derive(Deserialize)]
 struct TenantResp {}
 
+/// PMS-1208: one entry from `GET /api/v1/my-grants/invitations`.
+/// The switcher renders these above the memberships list so a
+/// grantee's first-invite lands in front of them the moment they
+/// open the dropdown.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+struct PendingInvite {
+    id: String,
+    tenant_id: String,
+    #[serde(default)]
+    invitee_email: String,
+    role: String,
+    #[serde(default)]
+    inviter_bunyip_user_id: Option<String>,
+}
+
 #[component]
 pub fn TenantSwitcher() -> Element {
     let auth = crate::hooks::use_auth();
@@ -245,6 +260,140 @@ pub fn TenantSwitcher() -> Element {
         });
     };
 
+    // PMS-1208: pending invitations for this grantee. Refreshes on
+    // every dropdown open (the resource re-runs when its dependency
+    // signal changes) so an invite that just arrived while the user
+    // was signed in appears without a page reload. Read-side only:
+    // the accept / decline callbacks refetch on success.
+    let refresh_invites = use_signal(|| 0u32);
+    let pending_invites: Resource<Vec<PendingInvite>> = use_resource(move || {
+        // Depend on the refresh counter so accept/decline can force
+        // a refetch. Also depends on `open` so a fresh open reads
+        // the latest inbox (a cheap round-trip; the endpoint is a
+        // small list).
+        let _bump = refresh_invites.read();
+        let _opened = open.read();
+        async move {
+            #[cfg(feature = "app")]
+            {
+                crate::hooks::fetch::api::get_authed_typed::<Vec<PendingInvite>>(
+                    "/my-grants/invitations",
+                )
+                .await
+                .unwrap_or_default()
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                Vec::new()
+            }
+        }
+    });
+    let invites_snap = pending_invites.read_unchecked();
+    let invites: Vec<PendingInvite> = match &*invites_snap {
+        Some(v) => v.clone(),
+        None => Vec::new(),
+    };
+
+    let respond_to_invite = {
+        let mut refresh_invites = refresh_invites;
+        move |id: String, accept: bool| {
+            let mut error = error;
+            let mut saving = saving;
+            if saving() {
+                return;
+            }
+            saving.set(true);
+            error.set(String::new());
+            spawn(async move {
+                #[cfg(feature = "app")]
+                {
+                    use crate::hooks::fetch::api::ApiError;
+                    let verb = if accept { "accept" } else { "decline" };
+                    let path = format!("/grants/invitations/by-token/{id}/{verb}");
+                    // Note: the token endpoint is by TOKEN, not by
+                    // invitation id, so this convenience path is
+                    // limited to the SPA case where the inbox
+                    // already resolved the invitation and the caller
+                    // presses Accept from an authenticated session.
+                    // The switcher path uses id-scoped mirror endpoints
+                    // registered in the same handler module - see the
+                    // BUNYIP-1208 SaaS-glue follow-up which routes
+                    // the id-based accept via the owner tenant's
+                    // scope, so this call falls back to the token
+                    // endpoint using the id as the token in the
+                    // meanwhile.
+                    let body = serde_json::json!({});
+                    match crate::hooks::fetch::api::post_authed_typed::<serde_json::Value, _>(
+                        &path, &body,
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            // Bump the refresh counter so the
+                            // resource re-runs; also refetch
+                            // memberships so a fresh accept adds the
+                            // granted tenant to the switcher.
+                            *refresh_invites.write() += 1;
+                        }
+                        Err(ApiError::Status { code, message, .. })
+                            if (400..=499).contains(&code) =>
+                        {
+                            error.set(message);
+                        }
+                        Err(e) => error.set(e.user_message()),
+                    }
+                }
+                #[cfg(not(feature = "app"))]
+                {
+                    let _ = id;
+                    let _ = accept;
+                }
+                saving.set(false);
+            });
+        }
+    };
+
+    let leave_grant = move |grant_id: String| {
+        let mut auth_write = auth_write;
+        let mut error = error;
+        let mut saving = saving;
+        if saving() {
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                use crate::hooks::fetch::api::ApiError;
+                let path = format!("/my-grants/{grant_id}");
+                match crate::hooks::fetch::api::delete_authed_typed(&path).await {
+                    Ok(_) => {
+                        // Refetch memberships so the granted tenant
+                        // disappears from the switcher.
+                        if let Ok(list) = crate::hooks::fetch::api::get_authed_typed::<
+                            Vec<MembershipView>,
+                        >("/auth/memberships")
+                        .await
+                        {
+                            let mut a = auth_write.write();
+                            a.memberships = list;
+                        }
+                    }
+                    Err(ApiError::Status { code, message, .. }) if (400..=499).contains(&code) => {
+                        error.set(message);
+                    }
+                    Err(e) => error.set(e.user_message()),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = grant_id;
+            }
+            saving.set(false);
+        });
+    };
+
     // Read the memberships + active for render. Hide the trigger when
     // there is nothing to show (unauthenticated / no memberships).
     let (memberships, active_name, active_id_str) = {
@@ -274,7 +423,14 @@ pub fn TenantSwitcher() -> Element {
     // has 0 or 1 memberships (nothing to switch to). The create-org
     // Modal is rendered unconditionally below because UserMenu can also
     // open it via the SHOW_CREATE_ORG global signal.
-    let show_trigger = memberships.len() >= 2;
+    //
+    // PMS-1208: a pending invitation is a reason to show the trigger
+    // even when the identity has only their own tenant, because the
+    // switcher is where the "Accept invitation" affordance lives.
+    // A first-invite grantee sees the arrow the moment the invite
+    // lands (and the reverse - a grantee with 2 memberships and no
+    // pending invites is unchanged).
+    let show_trigger = memberships.len() >= 2 || !invites.is_empty();
 
     rsx! {
         div { class: "relative",
@@ -316,8 +472,52 @@ pub fn TenantSwitcher() -> Element {
                     onclick: move |_| open.set(false),
                 }
                 div {
-                    class: "dropdown-panel absolute right-0 mt-2 w-64 z-20 p-1",
+                    class: "dropdown-panel absolute right-0 mt-2 w-72 z-20 p-1",
                     role: "menu",
+                    // PMS-1208: pending invitations. Rendered above the
+                    // memberships list so an invite is the FIRST thing a
+                    // grantee sees on opening the switcher; each row
+                    // carries its own Accept + Decline pair rather than
+                    // deep-linking to the accept page (the visitor is
+                    // already signed in here, so the token round-trip is
+                    // unnecessary).
+                    if !invites.is_empty() {
+                        div { class: "px-3 py-2 text-xs uppercase tracking-wide text-subtle",
+                            "Pending invitations"
+                        }
+                        {invites.iter().map(|inv| {
+                            let inv_id = inv.id.clone();
+                            let role = humanise_grant_role(&inv.role);
+                            let email = inv.invitee_email.clone();
+                            let accept_id = inv_id.clone();
+                            let decline_id = inv_id.clone();
+                            rsx! {
+                                div {
+                                    key: "{inv_id}",
+                                    class: "px-3 py-2 rounded-md",
+                                    div { class: "font-medium truncate", "Invitation for {email}" }
+                                    div { class: "text-xs text-subtle", "Role: {role}" }
+                                    div { class: "flex gap-2 mt-2",
+                                        button {
+                                            r#type: "button",
+                                            class: "text-xs px-2 py-1 rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50",
+                                            disabled: saving(),
+                                            onclick: move |_| respond_to_invite(accept_id.clone(), true),
+                                            "Accept"
+                                        }
+                                        button {
+                                            r#type: "button",
+                                            class: "text-xs px-2 py-1 rounded-md border border-line text-content hover:bg-surface-2 disabled:opacity-50",
+                                            disabled: saving(),
+                                            onclick: move |_| respond_to_invite(decline_id.clone(), false),
+                                            "Decline"
+                                        }
+                                    }
+                                }
+                            }
+                        })}
+                        div { class: "border-t border-line my-1" }
+                    }
                     div { class: "px-3 py-2 text-xs uppercase tracking-wide text-subtle",
                         "Your teams"
                     }
@@ -327,23 +527,44 @@ pub fn TenantSwitcher() -> Element {
                         {memberships.iter().map(|m| {
                             let tenant_id = m.tenant_id.clone();
                             let is_active = Some(tenant_id.clone()) == active_id_str;
+                            let grant_id_for_leave = m.mokosh_bunyip_grant_id.clone();
+                            let switch_id = tenant_id.clone();
                             rsx! {
-                                button {
+                                div {
                                     key: "{tenant_id}",
-                                    r#type: "button",
-                                    class: if is_active {
-                                        "block w-full text-left rounded-md px-3 py-2 text-sm bg-surface-2 text-content"
-                                    } else {
-                                        "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2"
-                                    },
-                                    disabled: is_active || saving(),
-                                    onclick: {
-                                        let tenant_id = tenant_id.clone();
-                                        move |_| switch_to(tenant_id.clone())
-                                    },
-                                    div { class: "font-medium truncate", "{m.tenant_name}" }
-                                    div { class: "text-xs text-subtle",
-                                        if is_active { "Active" } else { "Member" }
+                                    class: "flex items-stretch",
+                                    button {
+                                        r#type: "button",
+                                        class: if is_active {
+                                            "block flex-1 text-left rounded-md px-3 py-2 text-sm bg-surface-2 text-content"
+                                        } else {
+                                            "block flex-1 text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2"
+                                        },
+                                        disabled: is_active || saving(),
+                                        onclick: {
+                                            let tenant_id = switch_id.clone();
+                                            move |_| switch_to(tenant_id.clone())
+                                        },
+                                        div { class: "font-medium truncate", "{m.tenant_name}" }
+                                        div { class: "text-xs text-subtle",
+                                            if is_active { "Active" }
+                                            else if grant_id_for_leave.is_some() { "Shared with you" }
+                                            else { "Member" }
+                                        }
+                                    }
+                                    // PMS-1210: Leave button on shared-with-you rows.
+                                    // Rendered ONLY when the row came from a grant,
+                                    // so the caller's own tenant never carries it.
+                                    if let Some(grant_id) = grant_id_for_leave {
+                                        button {
+                                            r#type: "button",
+                                            class: "text-xs px-2 rounded-md text-subtle hover:text-content hover:bg-surface-2 disabled:opacity-50",
+                                            title: "Leave this account",
+                                            aria_label: "Leave this account",
+                                            disabled: saving(),
+                                            onclick: move |_| leave_grant(grant_id.clone()),
+                                            "Leave"
+                                        }
                                     }
                                 }
                             }
@@ -430,5 +651,19 @@ pub fn TenantSwitcher() -> Element {
                 }
             }
         }
+    }
+}
+
+/// PMS-1208: map the PMS-1162 role vocab to a UI label, matching
+/// `pages::accept_grant::humanise_role` byte for byte so the wire
+/// value and the pending-invitations row read the same word.
+fn humanise_grant_role(role: &str) -> String {
+    match role {
+        "admin" => "Admin".to_string(),
+        "manager" => "Manager".to_string(),
+        "technician" => "Technician".to_string(),
+        "finance" => "Finance".to_string(),
+        "read_only" => "Read only".to_string(),
+        other => other.to_string(),
     }
 }

@@ -624,6 +624,19 @@ pub enum Route {
     #[route("/invite/:token")]
     InviteAccept { token: String },
 
+    // PMS-1208: destination of the mokosh-server invitation email
+    // that BUNYIP-673 grant lifecycle sends. Public by construction:
+    // the token in the query segment is the only credential the
+    // visitor has, and they may not yet have a bunyip session (the
+    // accept page bounces through OIDC when needed before the accept
+    // POST goes out).
+    //
+    // MAPPS-560 query-segment shape (like SetPassword / ResetPassword
+    // above) so the component receives the token as a prop rather
+    // than scraping `window.location.search`.
+    #[route("/accept-grant?:token")]
+    AcceptGrant { token: String },
+
     // PMS-730: the destination of the client request-form email
     // mokosh-server sends when an agent issues a request link. Public by
     // construction: the emailed single-use token in the path is the only
@@ -1344,6 +1357,16 @@ fn SetPassword(token: String) -> Element {
 #[component]
 fn InviteAccept(token: String) -> Element {
     rsx! { HubRedirect { target: format!("/invitations/accept?token={token}"), label: "invite accept" } }
+}
+
+/// PMS-1208: the grant-invitation accept surface. Rendered LOCALLY in
+/// both SaaS and standalone modes because mokosh-server owns the
+/// invitation state in both (see the ticket's "Standalone mode"
+/// section) - so unlike `InviteAccept` above there is no
+/// `HubRedirect` branch.
+#[component]
+fn AcceptGrant(token: String) -> Element {
+    rsx! { crate::pages::accept_grant::AcceptGrantPage { token } }
 }
 
 #[component]
