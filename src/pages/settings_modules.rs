@@ -59,7 +59,7 @@ fn ModulesSettingsBody() -> Element {
             match snap {
                 None => rsx! { p { class: "p-6 text-sm text-subtle", "Loading…" } },
                 Some(None) => rsx! {
-                    p { class: "p-6 text-sm text-red-600 dark:text-red-300", "Could not load the module settings." }
+                    div { class: "p-6", ErrorBanner { "Could not load the module settings." } }
                 },
                 Some(Some(configs)) => rsx! {
                     ul { class: "divide-y divide-line",

@@ -433,11 +433,7 @@ pub fn TimeEntryListPage() -> Element {
         }
 
         if load_failed {
-            Card { class: "mb-6",
-                p { class: "text-sm text-yellow-600 dark:text-yellow-400",
-                    "Could not load time entries from the server."
-                }
-            }
+            ErrorBanner { class: "mb-6", "Could not load time entries from the server." }
         }
 
         DataTable {
@@ -1586,10 +1582,8 @@ pub fn TimesheetsPage() -> Element {
                             }
                         }
                     } else if load_failed {
-                        TableRow {
-                            TableCell { colspan: Some(9), class: "text-center text-red-500 dark:text-red-400",
-                                "Could not load timesheet. The time-tracking service may be unavailable."
-                            }
+                        TableEmptyRow { columns: 9, class: "text-red-600 dark:text-red-300",
+                            "Could not load timesheet. The time-tracking service may be unavailable."
                         }
                     } else if !has_entries {
                         // MAPPS-201: empty-week prompt + one-click path to a new
@@ -2316,10 +2310,8 @@ pub fn TimesheetApprovalsPage() -> Element {
                             TableCell { class: "text-subtle", "Loading…" }
                         }
                     } else if load_failed {
-                        TableRow {
-                            TableCell { class: "text-red-500 dark:text-red-400",
-                                "Could not load timesheets. The time-tracking service may be unavailable."
-                            }
+                        TableEmptyRow { columns: 7, class: "text-red-600 dark:text-red-300",
+                            "Could not load timesheets. The time-tracking service may be unavailable."
                         }
                     } else if rows.is_empty() {
                         // MAPPS-388: centered across the table, not left-aligned.
@@ -2348,10 +2340,12 @@ pub fn TimesheetApprovalsPage() -> Element {
                                     _ => (BadgeVariant::Gray, "-"),
                                 };
                                 let week_label_row = row_week.format("%b %-d, %Y").to_string();
+                                let week_label_row_iso = row_week.to_string();
                                 let decided_at_label = s
                                     .decided_at
                                     .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
                                     .unwrap_or_default();
+                                let decided_at_iso = s.decided_at.map(|d| d.to_rfc3339()).unwrap_or_default();
                                 let decided_by_label = s
                                     .decided_by_id
                                     .map(name_of)
@@ -2368,7 +2362,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                                 rsx! {
                                     TableRow { key: "{row_key}",
                                         TableCell { class: "font-medium text-content", "{name}" }
-                                        TableCell { class: "text-muted", "{week_label_row}" }
+                                        TableCell { class: "text-muted", time { datetime: "{week_label_row_iso}", "{week_label_row}" } }
                                         TableCell { Badge { variant: status_variant, "{status_label}" } }
                                         TableCell { "{total}" }
                                         TableCell { class: "text-green-600 dark:text-green-400", "{billable}" }
@@ -2380,7 +2374,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                                                     div { "by {decided_by_label}" }
                                                 }
                                                 if !decided_at_label.is_empty() {
-                                                    div { "{decided_at_label}" }
+                                                    div { time { datetime: "{decided_at_iso}", "{decided_at_label}" } }
                                                 }
                                                 if !rejection.is_empty() {
                                                     div { class: "italic mt-1", "\"{rejection}\"" }
@@ -2700,6 +2694,7 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
         .flatten()
         .unwrap_or_default();
     let week_label = week.format("%b %-d, %Y").to_string();
+    let week_label_iso = week.to_string();
 
     rsx! {
         Modal {
@@ -2717,7 +2712,8 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
             div { class: "space-y-5",
                 p { class: "text-sm text-content",
                     strong { "{employee}" }
-                    " - week of {week_label}"
+                    " - week of "
+                    time { datetime: "{week_label_iso}", "{week_label}" }
                 }
 
                 // AC1: chronological submit/change/approve/reject timeline.
@@ -2727,9 +2723,7 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
                         p { class: "text-sm text-muted", "Loading history…" }
                     } else {
                         if entries_failed {
-                            p { class: "text-sm text-red-600 dark:text-red-400",
-                                "Could not load the week's entries; showing the decision only."
-                            }
+                            ErrorBanner { "Could not load the week's entries; showing the decision only." }
                         }
                         if events.is_empty() {
                             p { class: "text-sm text-muted italic",
@@ -2740,6 +2734,7 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
                                 for (i , ev) in events.iter().enumerate() {
                                     {
                                         let when = ev.at.format("%b %-d, %Y %H:%M UTC").to_string();
+                                        let when_iso = ev.at.to_rfc3339();
                                         let kind = ev.kind;
                                         let actor = ev.actor.clone();
                                         // Fold the work item + (for a log event) the hours in
@@ -2761,7 +2756,7 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
                                                             " - {detail}"
                                                         }
                                                     }
-                                                    p { class: "text-xs text-subtle", "{when}" }
+                                                    p { class: "text-xs text-subtle", time { datetime: "{when_iso}", "{when}" } }
                                                 }
                                             }
                                         }

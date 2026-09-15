@@ -411,10 +411,12 @@ fn ContractListBody() -> Element {
                                 contract_type: contract.contract_type.clone(),
                                 value: format_money_opt(contract.billing_amount),
                                 start: contract.start_date.format("%b %-d, %Y").to_string(),
+                                start_iso: contract.start_date.to_string(),
                                 expires: contract
                                     .end_date
                                     .map(|d| d.format("%b %-d, %Y").to_string())
                                     .unwrap_or_else(|| "Ongoing".to_string()),
+                                expires_iso: contract.end_date.map(|d| d.to_string()).unwrap_or_default(),
                                 status: contract.status.clone(),
                             }
                         }
@@ -432,7 +434,9 @@ struct ContractRowProps {
     contract_type: String,
     value: String,
     start: String,
+    start_iso: String,
     expires: String,
+    expires_iso: String,
     status: String,
 }
 
@@ -459,8 +463,14 @@ fn ContractRow(props: ContractRowProps) -> Element {
                 }
             }
             TableCell { class: "font-medium", "{props.value}" }
-            TableCell { "{props.start}" }
-            TableCell { "{props.expires}" }
+            TableCell { time { datetime: "{props.start_iso}", "{props.start}" } }
+            TableCell {
+                if props.expires_iso.is_empty() {
+                    "{props.expires}"
+                } else {
+                    time { datetime: "{props.expires_iso}", "{props.expires}" }
+                }
+            }
             TableCell {
                 {
                     let (status_variant, status_label) = contract_status_badge(&props.status);
@@ -553,7 +563,7 @@ pub fn ContractEditPage(props: ContractEditPageProps) -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-8 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contract." }
+                        ErrorBanner { class: "mb-3", "Could not load contract." }
                         Link {
                             to: Route::ContractList {},
                             class: "text-sm text-accent hover:opacity-90",
@@ -1764,7 +1774,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-8 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contract." }
+                        ErrorBanner { class: "mb-3", "Could not load contract." }
                         Link {
                             to: Route::ContractList {},
                             class: "text-sm text-accent hover:opacity-90",
@@ -1780,10 +1790,12 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                 let billing_cycle = humanize_billing_cycle(&contract.billing_cycle);
                 let billing_amount = format_money_opt(contract.billing_amount);
                 let start = contract.start_date.format("%b %-d, %Y").to_string();
+                let start_iso = contract.start_date.to_string();
                 let end = contract
                     .end_date
                     .map(|d| d.format("%b %-d, %Y").to_string())
                     .unwrap_or_else(|| "Ongoing".to_string());
+                let end_iso = contract.end_date.map(|d| d.to_string());
                 let auto_renew = if contract.auto_renew { "Yes" } else { "No" };
                 let number = contract.contract_number.clone().unwrap_or_default();
                 let notes = contract.notes.clone().unwrap_or_default();
@@ -1802,11 +1814,17 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                                     }
                                     div {
                                         dt { class: "text-sm text-muted", "Start Date" }
-                                        dd { class: "mt-1", "{start}" }
+                                        dd { class: "mt-1", time { datetime: "{start_iso}", "{start}" } }
                                     }
                                     div {
                                         dt { class: "text-sm text-muted", "End Date" }
-                                        dd { class: "mt-1", "{end}" }
+                                        dd { class: "mt-1",
+                                            if let Some(end_iso) = end_iso.clone() {
+                                                time { datetime: "{end_iso}", "{end}" }
+                                            } else {
+                                                "{end}"
+                                            }
+                                        }
                                     }
                                     div {
                                         dt { class: "text-sm text-muted", "Auto-Renewal" }
@@ -2438,18 +2456,21 @@ fn ContractHourBalanceCard(
                                 for bal in rows.into_iter() {
                                     {
                                         let key = bal.id.to_string();
-                                        let period = format!(
-                                            "{} - {}",
-                                            bal.period_start.format("%b %-d, %Y"),
-                                            bal.period_end.format("%b %-d, %Y"),
-                                        );
+                                        let period_start = bal.period_start.format("%b %-d, %Y").to_string();
+                                        let period_start_iso = bal.period_start.to_string();
+                                        let period_end = bal.period_end.format("%b %-d, %Y").to_string();
+                                        let period_end_iso = bal.period_end.to_string();
                                         let included = bal.hours_included.normalize().to_string();
                                         let used = bal.hours_used.normalize().to_string();
                                         let remaining = bal.hours_remaining.normalize().to_string();
                                         let rollover = bal.rollover_hours.normalize().to_string();
                                         rsx! {
                                             TableRow { key: "{key}",
-                                                TableCell { "{period}" }
+                                                TableCell {
+                                                    time { datetime: "{period_start_iso}", "{period_start}" }
+                                                    " - "
+                                                    time { datetime: "{period_end_iso}", "{period_end}" }
+                                                }
                                                 TableCell { "{included}" }
                                                 TableCell { "{used}" }
                                                 TableCell { class: "font-medium", "{remaining}" }
@@ -2979,7 +3000,7 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
             Some(None) => rsx! {
                 Card {
                     div { class: "py-8 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load rate card." }
+                        ErrorBanner { class: "mb-3", "Could not load rate card." }
                         Link {
                             to: Route::RateCardList {},
                             class: "text-sm text-accent hover:opacity-90",

@@ -510,9 +510,7 @@ pub fn ContactRoleEditPage(id: String) -> Element {
             EditPageChrome { title: title.to_string(), name: String::new(),
                 Card {
                     div { class: "py-12 text-center",
-                        p { class: "text-sm text-red-600 dark:text-red-300",
-                            "Could not load this role. Refresh the page to retry."
-                        }
+                        ErrorBanner { "Could not load this role. Refresh the page to retry." }
                     }
                 }
             }
@@ -850,7 +848,7 @@ fn ContactRoleEditForm(props: ContactRoleEditFormProps) -> Element {
                     }
                 }
 
-                div { class: "flex justify-end gap-2 pt-2",
+                div { class: "flex justify-end space-x-3 pt-2",
                     Link {
                         to: Route::ContactRolesList {},
                         Button { variant: ButtonVariant::Secondary, "Cancel" }

@@ -648,7 +648,7 @@ fn WidgetSlaAtRisk() -> Element {
     let r = report.value_or_default();
     rsx! {
         div { class: "flex justify-between text-sm",
-            span { class: "text-yellow-700", "At risk" }
+            span { class: "text-yellow-700 dark:text-yellow-300", "At risk" }
             span { class: "font-medium", "{r.sla_warnings}" }
         }
         div { class: "flex justify-between text-sm mt-1",
@@ -731,9 +731,10 @@ fn WidgetRecentAuditLog() -> Element {
                 for e in rows.iter() {
                     {
                         let when = e.occurred_at.format("%m/%d %H:%M").to_string();
+                        let when_iso = e.occurred_at.to_rfc3339();
                         rsx! {
                             TableRow {
-                                TableCell { class: "text-muted", "{when}" }
+                                TableCell { class: "text-muted", time { datetime: "{when_iso}", "{when}" } }
                                 TableCell { "{e.action}" }
                                 TableCell { "{e.entity_type}" }
                             }

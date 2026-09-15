@@ -4,8 +4,8 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    use_page_title, BarChart, BarChartDatum, Button, ButtonVariant, Card, ChartIcon, IconSize,
-    PageHeader, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+    use_page_title, BarChart, BarChartDatum, Button, ButtonVariant, Card, ChartIcon, ErrorBanner,
+    IconSize, PageHeader, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 };
 use crate::utils::money::format_money_str;
 use crate::Route;
@@ -764,7 +764,7 @@ fn CustomReportBuilder() -> Element {
     rsx! {
         if load_err {
             Card {
-                p { class: "text-sm text-red-600 dark:text-red-400",
+                ErrorBanner {
                     "Could not load the report catalog. The reports service may be unavailable."
                 }
             }

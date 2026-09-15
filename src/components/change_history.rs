@@ -241,6 +241,9 @@ pub struct ChangeHistoryEntryProps {
     pub who: String,
     /// Formatted timestamp, right-aligned.
     pub when: String,
+    /// ISO-8601 form of `when`, for the wrapping `time` element's
+    /// `datetime` attribute (N5).
+    pub when_iso: String,
     /// The before/after lines.
     #[props(default)]
     pub changes: Vec<ChangeLine>,
@@ -257,7 +260,7 @@ pub fn ChangeHistoryEntry(props: ChangeHistoryEntryProps) -> Element {
                 }
                 ChangeDetails { changes: props.changes.clone() }
             }
-            span { class: "text-subtle whitespace-nowrap", "{props.when}" }
+            time { class: "text-subtle whitespace-nowrap", datetime: "{props.when_iso}", "{props.when}" }
         }
     }
 }
