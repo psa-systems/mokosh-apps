@@ -24,7 +24,7 @@
 use dioxus::prelude::*;
 use serde::Deserialize;
 
-use crate::components::{AuthLayout, Button, ButtonVariant};
+use crate::components::{AuthLayout, Button, ButtonVariant, Input};
 use crate::Route;
 
 /// Length of the 9-digit numeric Company ID (prompt 011 design
@@ -180,33 +180,20 @@ pub fn ContactGenericLoginPage() -> Element {
                     evt.prevent_default();
                     submit(());
                 },
-                div { class: "space-y-1",
-                    label {
-                        r#for: "portal_id_input",
-                        class: "block text-sm font-medium text-content",
-                        "Company ID"
-                        span { class: "text-red-500 dark:text-red-400 ml-1", aria_label: "required", role: "img", "*" }
-                    }
-                    input {
-                        id: "portal_id_input",
-                        name: "portal_id_input",
-                        r#type: "text",
-                        autocomplete: "off",
-                        inputmode: "numeric",
-                        maxlength: PORTAL_ID_DIGITS as i64,
-                        class: "block w-full rounded-md border-line shadow-sm focus:border-accent focus:ring-accent bg-surface text-content sm:text-sm",
-                        placeholder: "555556666",
-                        value: "{portal_id}",
-                        aria_required: "true",
-                        disabled: saving(),
-                        oninput: move |e: FormEvent| {
-                            error.set(String::new());
-                            portal_id.set(e.value());
-                        },
-                    }
-                }
-                if !error().is_empty() {
-                    p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
+                Input {
+                    name: "portal_id_input",
+                    label: "Company ID",
+                    r#type: "text".to_string(),
+                    placeholder: "555556666".to_string(),
+                    maxlength: PORTAL_ID_DIGITS as i64,
+                    value: portal_id(),
+                    required: true,
+                    disabled: saving(),
+                    error: error(),
+                    oninput: move |e: FormEvent| {
+                        error.set(String::new());
+                        portal_id.set(e.value());
+                    },
                 }
                 div { class: "pt-2",
                     Button {

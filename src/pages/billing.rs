@@ -22,7 +22,7 @@ use std::str::FromStr;
 
 use crate::components::{
     clear_on_edit, invoice_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonSize,
-    ButtonVariant, Card, DataTable, ErrorBanner, IconSize, InformationIcon, MailIcon, Modal,
+    ButtonVariant, Card, DataTable, ErrorBanner, IconSize, InformationIcon, Input, MailIcon, Modal,
     ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty,
     TableHead, TableHeader, TableLoading, TableRow,
 };
@@ -1986,20 +1986,15 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                         // and surfaced through `pay_error`.
                         if partial_payment_allowed {
                             div {
-                                class: "flex flex-col gap-1 max-w-[14rem]",
-                                label {
-                                    class: "text-sm text-muted",
-                                    r#for: "pay-amount",
-                                    "Amount to pay"
-                                }
-                                input {
-                                    id: "pay-amount",
-                                    class: "px-3 py-2 border border-line rounded-md bg-surface text-content focus:outline-none focus:ring-2 focus:ring-accent",
-                                    r#type: "text",
-                                    inputmode: "decimal",
-                                    placeholder: "{balance_due_display}",
+                                class: "max-w-[14rem]",
+                                Input {
+                                    name: "pay-amount",
+                                    label: "Amount to pay",
+                                    r#type: "text".to_string(),
+                                    placeholder: balance_due_display.clone(),
                                     disabled: !can_mutate || *pay_saving.read(),
-                                    value: "{pay_amount.read()}",
+                                    value: pay_amount.read().clone(),
+                                    error: pay_error.read().clone(),
                                     oninput: move |e: FormEvent| {
                                         pay_error.set(String::new());
                                         pay_amount.set(e.value());
