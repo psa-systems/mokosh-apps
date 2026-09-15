@@ -4169,27 +4169,21 @@ fn ArticleActionsMenu(
     };
     rsx! {
         div { class: "{wrapper_class}",
-            button {
-                class: "px-2 py-1 text-muted hover:text-content",
+            crate::components::Popover {
+                open: open(),
+                label: "More actions",
                 title: "More",
-                aria_label: "More actions",
-                aria_expanded: if open() { "true" } else { "false" },
-                onclick: move |_| open.toggle(),
-                "\u{22EF}"
-            }
-            if open() {
-                div {
-                    class: "fixed inset-0 z-40",
-                    onclick: move |_| open.set(false),
-                }
-                div { class: "dropdown-panel absolute right-0 z-50 mt-1 w-56 p-2",
-                    ArticleActions {
-                        article_id,
-                        article_title,
-                        confirming_delete,
-                        delete_error,
-                        delete_busy,
-                    }
+                trigger_class: "px-2 py-1 text-muted hover:text-content",
+                trigger: rsx! { "\u{22EF}" },
+                width: "w-56",
+                ontoggle: move |_| open.toggle(),
+                onclose: move |_| open.set(false),
+                ArticleActions {
+                    article_id,
+                    article_title,
+                    confirming_delete,
+                    delete_error,
+                    delete_busy,
                 }
             }
         }
