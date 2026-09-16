@@ -2,8 +2,9 @@
 #
 # Quick start:
 #   1. Copy this file to compose.yml in a fresh directory.
-#   2. Edit the four MOKOSH_* env vars below to point at your own
-#      mokosh-server API and OIDC issuer.
+#   2. Edit the MOKOSH_* env vars below to point at your own mokosh-server
+#      API and OIDC issuer. See docs/self-hosting.md for the full list of
+#      operator-settable variables.
 #   3. docker compose up --detach
 #   4. Browse to http://localhost:8080 (or front with your own TLS
 #      reverse proxy on port 443 - see "Production notes" below).
@@ -35,6 +36,12 @@ services:
       # OAuth public-client ID registered with mokosh-server. Run
       # `just register-client` in mokosh-server to mint one.
       MOKOSH_OIDC_CLIENT_ID: 00000000-0000-0000-0000-000000000000
+
+      # Overrides the OIDC redirect URI. Optional: unset, the SPA derives
+      # <origin>/auth/callback itself. Set this if the deployment is served
+      # from an origin the derived value would not match (for example
+      # behind a path prefix).
+      # MOKOSH_OIDC_REDIRECT_URI: https://msp.example.com/auth/callback
 
       # Origin of the Bunyip hub for legacy login bookmarks. Set to
       # your apex (e.g. https://example.com). Optional: leave unset

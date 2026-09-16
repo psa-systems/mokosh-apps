@@ -581,7 +581,7 @@ pub fn KBHomePage() -> Element {
             subtitle: "Documentation and troubleshooting guides",
             actions: rsx! {
                 // MAPPS-453: example contextual help link. Renders nothing until
-                // a docs subdomain is configured (MOKOSH_DOCS_URL).
+                // a docs subdomain is configured (MOKOSH_DOCS_BASE_URL).
                 ContextualHelpLink { article: "/knowledge-base".to_string() }
                 Button {
                     variant: ButtonVariant::Secondary,
