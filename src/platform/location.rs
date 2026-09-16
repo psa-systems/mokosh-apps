@@ -165,9 +165,12 @@ pub fn host() -> Option<String> {
 /// and the destinations these calls carry (the OP's logout endpoint, the
 /// Bunyip hub) are web pages that belong in a browser anyway.
 ///
-/// Failure is logged rather than returned: every caller reaches this
-/// AFTER it has already cleared local session state, so the app is in
-/// the state the user asked for whether or not the browser opened.
+/// Failure is logged rather than returned: this hands the URL to the OS
+/// and returns without navigating the window, so the app is left in
+/// whatever in-memory state its caller put it in beforehand. Unlike a
+/// browser's `location.replace`, this never resets local session state
+/// itself (MAPPS-815); a caller that needs that has to clear it before
+/// calling this.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn replace(url: &str) {
     if let Err(e) = open::that_detached(url) {
