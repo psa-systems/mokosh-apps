@@ -39,6 +39,14 @@ use crate::{CurrentUser, Route};
 /// the switcher trigger is hidden).
 pub static SHOW_CREATE_ORG: GlobalSignal<bool> = Signal::global(|| false);
 
+/// PMS-1208 SPA half: same shape as [`SHOW_CREATE_ORG`] but for the
+/// "invite someone to see this account" modal. Opened from the
+/// switcher dropdown when the caller is an admin on their OWN
+/// tenant. Standalone and SaaS modes both use this; the SaaS-mode
+/// existence check runs server-side against Bunyip's directory, and
+/// the SPA renders whichever refusal the server returns.
+pub static SHOW_INVITE_MEMBER: GlobalSignal<bool> = Signal::global(|| false);
+
 /// POST /auth/switch-tenant response shape (subset of LoginResponse).
 #[derive(Deserialize)]
 struct SwitchResp {
@@ -78,6 +86,17 @@ struct PendingInvite {
     inviter_bunyip_user_id: Option<String>,
 }
 
+/// PMS-1208: POST body for `/api/v1/grants/invitations` on the
+/// owner-outbox side. The server accepts either the invitee's Bunyip
+/// user id (SaaS-mode machine callers) or the email (both modes); the
+/// SPA collects the email and lets the server resolve the id through
+/// the Bunyip directory in SaaS mode.
+#[derive(Serialize)]
+struct SendInviteBody {
+    invitee_email: String,
+    role: String,
+}
+
 #[component]
 pub fn TenantSwitcher() -> Element {
     let auth = crate::hooks::use_auth();
@@ -89,6 +108,17 @@ pub fn TenantSwitcher() -> Element {
     let mut new_org_slug = use_signal(String::new);
     let mut error = use_signal(String::new);
     let mut saving = use_signal(|| false);
+
+    // PMS-1208 SPA: state for the invite-member modal. `invite_email`
+    // and `invite_role` are cleared on modal close. `invite_error`
+    // renders inline in the modal (as opposed to the switcher's
+    // `error` signal above, which the dropdown renders). `invite_info`
+    // is a one-shot success message so the caller sees the invitation
+    // fired before the modal closes.
+    let mut invite_email = use_signal(String::new);
+    let mut invite_role = use_signal(|| "manager".to_string());
+    let mut invite_error = use_signal(String::new);
+    let mut invite_info = use_signal(String::new);
     // MAPPS-497 item 3: the load-once effect that lived here previously
     // is retired; `crate::hooks::auth::use_memberships_loader`
     // (mounted at the app root) is now the sole loader and hits
@@ -255,6 +285,85 @@ pub fn TenantSwitcher() -> Element {
                     }
                     Err(e) => error.set(e.user_message()),
                 }
+            }
+            saving.set(false);
+        });
+    };
+
+    // PMS-1208 SPA: submit the "invite someone to see this account"
+    // form. Standalone and SaaS modes go through the same
+    // `POST /grants/invitations` endpoint on mokosh-server; the
+    // SaaS-mode existence check runs server-side against Bunyip's
+    // directory and returns 422 with a specific message when the
+    // email is not registered on Bunyip yet, which the SPA renders
+    // verbatim. 409 = duplicate active/pending; 400 = validation.
+    let mut submit_invite = move |_| {
+        if saving() {
+            return;
+        }
+        let email = invite_email.read().trim().to_string();
+        if email.is_empty() {
+            invite_error.set("Enter an email address.".to_string());
+            return;
+        }
+        let role = invite_role.read().clone();
+        saving.set(true);
+        invite_error.set(String::new());
+        invite_info.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                use crate::hooks::fetch::api::ApiError;
+                let body = SendInviteBody {
+                    invitee_email: email.clone(),
+                    role,
+                };
+                // Server returns the created row + plaintext
+                // accept_token; the SPA needs neither on the sender
+                // side (the token rides the invitation email, not
+                // the create response), so we deliberately ignore
+                // the body via `serde_json::Value`.
+                match crate::hooks::fetch::api::post_authed_typed::<serde_json::Value, _>(
+                    "/grants/invitations",
+                    &body,
+                )
+                .await
+                {
+                    Ok(_created) => {
+                        invite_info.set(format!(
+                            "Invitation sent to {email}. They'll receive an email with a link to accept."
+                        ));
+                        invite_email.set(String::new());
+                    }
+                    Err(ApiError::Status {
+                        code: 422, message, ..
+                    }) => {
+                        // SaaS-mode: server ran the Bunyip directory
+                        // lookup and the address is not a registered
+                        // Bunyip user. Message is the server's copy
+                        // (mokosh-server: "This email is not
+                        // registered on Bunyip yet. Ask them to sign
+                        // up first, then send the invitation.").
+                        invite_error.set(message);
+                    }
+                    Err(ApiError::Status {
+                        code: 409, message, ..
+                    }) => {
+                        // Duplicate: either the invitee already has
+                        // an active grant on this account, or a
+                        // pending invitation is already outstanding.
+                        // Server's message names which.
+                        invite_error.set(message);
+                    }
+                    Err(ApiError::Status {
+                        code: 400, message, ..
+                    }) => invite_error.set(message),
+                    Err(e) => invite_error.set(e.user_message()),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = email;
             }
             saving.set(false);
         });
@@ -571,6 +680,28 @@ pub fn TenantSwitcher() -> Element {
                         })}
                     }
                     div { class: "border-t border-line my-1" }
+                    // PMS-1208 SPA: "Invite member" - the sender
+                    // side of the grant lifecycle. Renders only when
+                    // the currently-active tenant is one the caller
+                    // OWNS (not a granted membership); a grantee's
+                    // permissions on a shared account do not include
+                    // re-inviting others. Standalone and SaaS modes
+                    // both use this button; the SaaS-mode existence
+                    // check runs server-side and returns a specific
+                    // 422 the modal renders inline.
+                    if is_owner_of_active_tenant(&memberships, active_id_str.as_deref()) {
+                        button {
+                            class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
+                            r#type: "button",
+                            onclick: move |_| {
+                                *SHOW_INVITE_MEMBER.write() = true;
+                                open.set(false);
+                                invite_error.set(String::new());
+                                invite_info.set(String::new());
+                            },
+                            "Invite member"
+                        }
+                    }
                     button {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
                         r#type: "button",
@@ -650,8 +781,111 @@ pub fn TenantSwitcher() -> Element {
                     }
                 }
             }
+            // PMS-1208 SPA: invite-member modal. Standalone and
+            // SaaS modes both use it; the SaaS-mode "not a Bunyip
+            // user yet" refusal comes back as a 422 the modal
+            // renders inline. On success, the modal shows a
+            // one-shot info line and stays open so the caller can
+            // send several invitations in a row.
+            Modal {
+                open: SHOW_INVITE_MEMBER(),
+                title: "Invite member".to_string(),
+                size: ModalSize::Small,
+                onclose: move |_| {
+                    *SHOW_INVITE_MEMBER.write() = false;
+                    invite_email.set(String::new());
+                    invite_error.set(String::new());
+                    invite_info.set(String::new());
+                },
+                form {
+                    class: "space-y-4",
+                    onsubmit: move |evt: Event<FormData>| {
+                        evt.prevent_default();
+                        submit_invite(());
+                    },
+                    Input {
+                        name: "invitee_email",
+                        label: "Email address",
+                        r#type: "email".to_string(),
+                        value: invite_email(),
+                        required: true,
+                        disabled: saving(),
+                        oninput: move |e: FormEvent| {
+                            invite_error.set(String::new());
+                            invite_info.set(String::new());
+                            invite_email.set(e.value());
+                        },
+                    }
+                    // Role picker: the five PMS-1162 roles.
+                    // Rendered as a native <select> to stay
+                    // consistent with the rest of the switcher
+                    // modal's plain-input feel; a custom
+                    // combobox is overkill for a 5-item vocab.
+                    div { class: "space-y-1",
+                        label { class: "text-sm text-content", "Role" }
+                        select {
+                            class: "block w-full rounded-md border border-line bg-surface-1 px-3 py-2 text-sm text-content focus:outline-none",
+                            value: invite_role(),
+                            disabled: saving(),
+                            onchange: move |e: FormEvent| invite_role.set(e.value()),
+                            option { value: "admin", "Admin" }
+                            option { value: "manager", "Manager" }
+                            option { value: "technician", "Technician" }
+                            option { value: "finance", "Finance" }
+                            option { value: "read_only", "Read only" }
+                        }
+                    }
+                    p { class: "text-xs text-subtle",
+                        "The invitee will receive an email with a link to accept. The invitation expires in 7 days."
+                    }
+                    if !invite_error().is_empty() {
+                        p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{invite_error}" }
+                    }
+                    if !invite_info().is_empty() {
+                        p { class: "text-sm text-content", "{invite_info}" }
+                    }
+                    div { class: "flex gap-2 justify-end pt-2",
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            r#type: "button".to_string(),
+                            disabled: saving(),
+                            onclick: move |_| {
+                                *SHOW_INVITE_MEMBER.write() = false;
+                                invite_email.set(String::new());
+                                invite_error.set(String::new());
+                                invite_info.set(String::new());
+                            },
+                            "Close"
+                        }
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            r#type: "submit".to_string(),
+                            disabled: saving(),
+                            loading: saving(),
+                            "Send invitation"
+                        }
+                    }
+                }
+            }
         }
     }
+}
+
+/// PMS-1208 SPA: whether the currently-active tenant is one the
+/// caller owns (as opposed to one they were granted access to).
+/// True when the active membership row has `mokosh_bunyip_grant_id
+/// = None`; a granted membership is `Some(..)`, and its grantee is
+/// never an admin on the account they see through it. Renders the
+/// Invite affordance only where sending would succeed.
+fn is_owner_of_active_tenant(memberships: &[MembershipView], active_id: Option<&str>) -> bool {
+    let Some(active_id) = active_id else {
+        return false;
+    };
+    memberships
+        .iter()
+        .find(|m| m.tenant_id == active_id)
+        .map(|m| m.mokosh_bunyip_grant_id.is_none())
+        .unwrap_or(false)
 }
 
 /// PMS-1208: map the PMS-1162 role vocab to a UI label, matching
