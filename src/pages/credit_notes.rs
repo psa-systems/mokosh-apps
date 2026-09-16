@@ -489,9 +489,16 @@ fn CreditNoteDetailBody(id: String) -> Element {
 
     // The corrected invoice, fetched once the note says which one. Restarted
     // alongside the note after a void, so the balance on this page moves.
-    let invoice_for_resource = invoice_id.clone();
     let mut invoice_resource = use_resource(move || {
-        let invoice_id = invoice_for_resource.clone();
+        // Read note_resource here, inside this resource's own closure, so
+        // Dioxus's dependency tracker attaches this resource's subscription
+        // to it directly (the same reason active_tenant_generation() is read
+        // here rather than above): a read outside this closure subscribes
+        // the component to a re-render, not this resource to a re-fetch.
+        let invoice_id = match &*note_resource.read_unchecked() {
+            Some(Some(n)) => n.invoice_id.map(|i| i.to_string()).unwrap_or_default(),
+            _ => String::new(),
+        };
         async move {
             if invoice_id.is_empty() {
                 return None;
