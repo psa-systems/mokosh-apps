@@ -264,9 +264,6 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
                     Err(ApiError::Status { code: 401, .. }) => {
                         error.set(super::PORTAL_SIGN_IN_FAILED.to_string());
                     }
-                    Err(ApiError::Status { code: 429, .. }) => {
-                        error.set("Too many attempts; try again shortly.".to_string());
-                    }
                     Err(e) => error.set(e.user_message()),
                 }
             }
