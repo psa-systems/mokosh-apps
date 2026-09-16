@@ -220,11 +220,7 @@ fn fmt_datetime(s: &Option<String>) -> String {
         Some(ts) => chrono::DateTime::parse_from_rfc3339(ts)
             .map(|dt| {
                 let utc = dt.with_timezone(&chrono::Utc);
-                let pref = crate::utils::datetime::user_format_pref();
-                match pref.as_deref().filter(|p| !p.trim().is_empty()) {
-                    Some(fmt) => crate::utils::datetime::format_user_datetime(utc, Some(fmt)),
-                    None => dt.format("%b %-d, %Y %-I:%M %p").to_string(),
-                }
+                crate::utils::datetime::fmt_user_dt(utc, Some("%b %-d, %Y %-I:%M %p"))
             })
             .unwrap_or_else(|_| fmt_date(s)),
         None => "-".to_string(),

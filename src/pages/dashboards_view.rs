@@ -743,7 +743,8 @@ fn WidgetRecentAuditLog() -> Element {
             TableBody {
                 for e in rows.iter() {
                     {
-                        let when = e.occurred_at.format("%m/%d %H:%M").to_string();
+                        let when =
+                            crate::utils::datetime::fmt_user_dt(e.occurred_at, Some("%m/%d %H:%M"));
                         let when_iso = e.occurred_at.to_rfc3339();
                         rsx! {
                             TableRow {

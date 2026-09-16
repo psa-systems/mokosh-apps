@@ -419,7 +419,12 @@ pub fn InvitationsPage() -> Element {
                                     TableCell {
                                         Badge { variant: BadgeVariant::Gray, "{inv.role}" }
                                     }
-                                    TableCell { time { datetime: "{inv.expires_at.to_rfc3339()}", "{inv.expires_at.format(\"%Y-%m-%d\")}" } }
+                                    TableCell {
+                                        time {
+                                            datetime: "{inv.expires_at.to_rfc3339()}",
+                                            "{crate::utils::datetime::fmt_user_dt(inv.expires_at, Some(\"%Y-%m-%d\"))}"
+                                        }
+                                    }
                                     TableCell {
                                         Button {
                                             variant: ButtonVariant::Secondary,

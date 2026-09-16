@@ -316,17 +316,49 @@ pub fn token_warnings(format: &str) -> Vec<String> {
     warnings
 }
 
+/// MAPPS-786: the one function every page routes a timestamp through.
+/// Honours the user's `date_format_string` preference when set (rendered
+/// in their profile timezone, as [`format_user_datetime`] already does).
+/// When unset, renders `no_pref_style` (an strftime pattern) in the
+/// user's profile timezone rather than UTC; `None` falls back to the
+/// generic locale rendering. This is the only function outside this
+/// module allowed to read [`user_format_pref`], so a page can no longer
+/// regrow a copy that forgets the timezone on the `None` arm the way
+/// `fmt_history_dt` did.
+pub fn fmt_user_dt(dt: DateTime<Utc>, no_pref_style: Option<&str>) -> String {
+    fmt_user_dt_in(
+        dt,
+        user_format_pref().as_deref(),
+        user_timezone(),
+        no_pref_style,
+    )
+}
+
+/// Pure core of [`fmt_user_dt`]: takes `pref` and `tz` explicitly so a
+/// test can pin both without a live Dioxus context, matching how
+/// [`format_user_datetime_in`] backs [`format_user_datetime`].
+fn fmt_user_dt_in(
+    dt: DateTime<Utc>,
+    pref: Option<&str>,
+    tz: Tz,
+    no_pref_style: Option<&str>,
+) -> String {
+    match pref.filter(|s| !s.trim().is_empty()) {
+        Some(fmt) => format_user_datetime_in(dt, Some(fmt), tz),
+        None => match no_pref_style {
+            Some(style) => dt.with_timezone(&tz).format(style).to_string(),
+            None => locale_fallback(dt, tz),
+        },
+    }
+}
+
 /// An absolute timestamp for a "created" or "updated" line, in the user's
 /// own format when they set one and "Jun 05, 2026 14:30" otherwise
 /// (PMS-253). MAPPS-739 lifted this out of the ticket page's private copy
 /// so the KB prints its dates the way the rest of the app does instead of
 /// a bare `YYYY-MM-DD`.
 pub fn fmt_datetime_pref(dt: DateTime<Utc>) -> String {
-    let pref = user_format_pref();
-    match pref.as_deref().filter(|s| !s.trim().is_empty()) {
-        Some(fmt) => format_user_datetime(dt, Some(fmt)),
-        None => dt.format("%b %d, %Y %H:%M").to_string(),
-    }
+    fmt_user_dt(dt, Some("%b %d, %Y %H:%M"))
 }
 
 /// "4 months ago", "in 2 days", "just now": the coarse distance from `now`
@@ -628,6 +660,48 @@ mod tests {
         assert!(s.contains("2026"));
         let s = format_user_datetime_in(dt, Some(""), Tz::UTC);
         assert!(s.contains("2026"));
+    }
+
+    #[test]
+    fn mapps786_no_pref_still_renders_in_the_profile_timezone() {
+        // MAPPS-786: with no `date_format_string` set (the default for a
+        // new user), the instant must still render in the profile
+        // timezone, not UTC, whether `fmt_user_dt` falls back to a
+        // caller-supplied strftime style or to the generic locale
+        // rendering.
+        let dt = Utc
+            .with_ymd_and_hms(2026, 6, 11, 18, 30, 0)
+            .single()
+            .unwrap();
+        assert_eq!(
+            fmt_user_dt_in(dt, None, Tz::UTC, Some("%Y-%m-%d %H:%M")),
+            "2026-06-11 18:30"
+        );
+        // Asia/Kolkata is UTC+5:30: crosses into the next day.
+        assert_eq!(
+            fmt_user_dt_in(dt, None, chrono_tz::Asia::Kolkata, Some("%Y-%m-%d %H:%M")),
+            "2026-06-12 00:00"
+        );
+        // The no-style locale fallback is pinned to the same timezone too.
+        assert_eq!(
+            fmt_user_dt_in(dt, None, chrono_tz::Asia::Kolkata, None),
+            locale_fallback(dt, chrono_tz::Asia::Kolkata)
+        );
+        assert_ne!(
+            fmt_user_dt_in(dt, None, Tz::UTC, Some("%Y-%m-%d %H:%M")),
+            fmt_user_dt_in(dt, None, chrono_tz::Asia::Kolkata, Some("%Y-%m-%d %H:%M")),
+        );
+        // A blank (whitespace-only) preference is treated the same as
+        // `None`, not as a literal empty format string.
+        assert_eq!(
+            fmt_user_dt_in(
+                dt,
+                Some("   "),
+                chrono_tz::Asia::Kolkata,
+                Some("%Y-%m-%d %H:%M")
+            ),
+            "2026-06-12 00:00"
+        );
     }
 
     #[test]

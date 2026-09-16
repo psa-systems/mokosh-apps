@@ -12,8 +12,6 @@
 //! because none of the four owns the concept. `single_definition` at the
 //! bottom of this file fails if a copy comes back.
 
-use chrono::{DateTime, Utc};
-
 /// The point past which a value is cut when it is shown WHOLE.
 ///
 /// MAPPS-601 moved the cut off `fmt_change_value` and onto this, because
@@ -137,11 +135,6 @@ pub fn shorten(s: &str) -> String {
     } else {
         s.to_string()
     }
-}
-
-/// `"Feb 28, 2025 15:04"` for a history timestamp.
-pub fn fmt_history_dt(dt: DateTime<Utc>) -> String {
-    dt.format("%b %-d, %Y %H:%M").to_string()
 }
 
 #[cfg(test)]

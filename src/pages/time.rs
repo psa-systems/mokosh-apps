@@ -2343,7 +2343,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                                 let week_label_row_iso = row_week.to_string();
                                 let decided_at_label = s
                                     .decided_at
-                                    .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
+                                    .map(|d| crate::utils::datetime::fmt_user_dt(d, Some("%b %-d, %Y %H:%M %Z")))
                                     .unwrap_or_default();
                                 let decided_at_iso = s.decided_at.map(|d| d.to_rfc3339()).unwrap_or_default();
                                 let decided_by_label = s
@@ -2733,7 +2733,10 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
                             ol { class: "space-y-3",
                                 for (i , ev) in events.iter().enumerate() {
                                     {
-                                        let when = ev.at.format("%b %-d, %Y %H:%M UTC").to_string();
+                                        let when = crate::utils::datetime::fmt_user_dt(
+                                            ev.at,
+                                            Some("%b %-d, %Y %H:%M %Z"),
+                                        );
                                         let when_iso = ev.at.to_rfc3339();
                                         let kind = ev.kind;
                                         let actor = ev.actor.clone();

@@ -569,11 +569,7 @@ type PhraseParts = Vec<(String, Option<String>)>;
 /// phrases a `Phrases` cell wraps between (MAPPS-731).
 /// PMS-253: honours the per-user format pref for the absolute part.
 fn sla_due_parts(due: DateTime<Utc>) -> PhraseParts {
-    let pref = crate::utils::datetime::user_format_pref();
-    let absolute = match pref.as_deref().filter(|s| !s.trim().is_empty()) {
-        Some(fmt) => crate::utils::datetime::format_user_datetime(due, Some(fmt)),
-        None => due.format("%b %-d, %Y %-I:%M %p").to_string(),
-    };
+    let absolute = crate::utils::datetime::fmt_user_dt(due, Some("%b %-d, %Y %-I:%M %p"));
     let hint = remaining_hint(due, Utc::now());
     vec![
         (absolute, Some(due.to_rfc3339())),
@@ -745,11 +741,7 @@ fn humanize_priority(raw: &str) -> String {
 /// Absolute timestamp for created / activity lines, e.g. "Jun 05, 2026 14:30".
 /// PMS-253: honours the per-user format pref when set.
 fn fmt_datetime(dt: DateTime<Utc>) -> String {
-    let pref = crate::utils::datetime::user_format_pref();
-    match pref.as_deref().filter(|s| !s.trim().is_empty()) {
-        Some(fmt) => crate::utils::datetime::format_user_datetime(dt, Some(fmt)),
-        None => dt.format("%b %d, %Y %H:%M").to_string(),
-    }
+    crate::utils::datetime::fmt_user_dt(dt, Some("%b %d, %Y %H:%M"))
 }
 
 /// Resolve a history actor id to a display name; "-" when unknown so the
@@ -5156,12 +5148,22 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                             .unwrap_or_default();
                             let when = row
                                 .requested_at
-                                .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
+                                .map(|d| {
+                                    crate::utils::datetime::fmt_user_dt(
+                                        d,
+                                        Some("%b %-d, %Y %H:%M %Z"),
+                                    )
+                                })
                                 .unwrap_or_default();
                             let when_iso = row.requested_at.map(|d| d.to_rfc3339()).unwrap_or_default();
                             let decided = row
                                 .decided_at
-                                .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
+                                .map(|d| {
+                                    crate::utils::datetime::fmt_user_dt(
+                                        d,
+                                        Some("%b %-d, %Y %H:%M %Z"),
+                                    )
+                                })
                                 .unwrap_or_default();
                             let decided_iso = row.decided_at.map(|d| d.to_rfc3339()).unwrap_or_default();
                             let notes = row.notes.clone().unwrap_or_default();

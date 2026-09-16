@@ -310,7 +310,10 @@ fn ContactDashboardBody() -> Element {
                             {
                                 let route = activity_route(&item.kind, &item.id);
                                 let kind_label = activity_kind_label(&item.kind);
-                                let when = item.occurred_at.format("%b %-d, %Y %H:%M").to_string();
+                                let when = crate::utils::datetime::fmt_user_dt(
+                                    item.occurred_at,
+                                    Some("%b %-d, %Y %H:%M"),
+                                );
                                 let when_iso = item.occurred_at.to_rfc3339();
                                 let summary_text = if item.summary.trim().is_empty() {
                                     format!("{kind_label} updated")
@@ -949,9 +952,15 @@ pub fn DashboardTvPage() -> Element {
                                                 .clone()
                                                 .filter(|s| !s.trim().is_empty())
                                                 .unwrap_or_else(|| "-".to_string());
-                                            let start_time = a.start_time.format("%H:%M").to_string();
+                                            let start_time = crate::utils::datetime::fmt_user_dt(
+                                                a.start_time,
+                                                Some("%H:%M"),
+                                            );
                                             let start_time_iso = a.start_time.to_rfc3339();
-                                            let end_time = a.end_time.format("%H:%M").to_string();
+                                            let end_time = crate::utils::datetime::fmt_user_dt(
+                                                a.end_time,
+                                                Some("%H:%M"),
+                                            );
                                             let end_time_iso = a.end_time.to_rfc3339();
                                             let status = if a.status.is_empty() {
                                                 "-".to_string()

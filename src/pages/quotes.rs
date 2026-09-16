@@ -399,7 +399,10 @@ fn QuoteListBody() -> Element {
                                     .map(|d| d.to_string())
                                     .unwrap_or_default(),
                                 status: quote.status.clone(),
-                                created: quote.created_at.format("%b %-d, %Y").to_string(),
+                                created: crate::utils::datetime::fmt_user_dt(
+                                    quote.created_at,
+                                    Some("%b %-d, %Y"),
+                                ),
                                 created_iso: quote.created_at.to_rfc3339(),
                             }
                         }
@@ -971,12 +974,27 @@ fn QuoteDetailBody(id: String) -> Element {
                                         }
                                     }
                                     if let Some(sent) = q.sent_at {
-                                        div { dt { class: "text-subtle", "Sent" } dd { time { datetime: "{sent.to_rfc3339()}", "{sent.format(\"%b %-d, %Y\")}" } } }
+                                        {
+                                            let sent_iso = sent.to_rfc3339();
+                                            let sent = crate::utils::datetime::fmt_user_dt(sent, Some("%b %-d, %Y"));
+                                            rsx! {
+                                                div {
+                                                    dt { class: "text-subtle", "Sent" }
+                                                    dd { time { datetime: "{sent_iso}", "{sent}" } }
+                                                }
+                                            }
+                                        }
                                     }
                                     if let Some(decided) = q.decided_at {
-                                        div {
-                                            dt { class: "text-subtle", "Client decided" }
-                                            dd { time { datetime: "{decided.to_rfc3339()}", "{decided.format(\"%b %-d, %Y\")}" } }
+                                        {
+                                            let decided_iso = decided.to_rfc3339();
+                                            let decided = crate::utils::datetime::fmt_user_dt(decided, Some("%b %-d, %Y"));
+                                            rsx! {
+                                                div {
+                                                    dt { class: "text-subtle", "Client decided" }
+                                                    dd { time { datetime: "{decided_iso}", "{decided}" } }
+                                                }
+                                            }
                                         }
                                     }
                                     if let Some(notes) = q.decision_notes.clone().filter(|s| !s.is_empty()) {

@@ -1184,8 +1184,7 @@ pub fn WorkDayStrip() -> Element {
 /// preference the server dates a clock-in with), and only the time half is
 /// wanted here: the day is named by the card itself.
 fn clock_time(dt: DateTime<Utc>) -> String {
-    let pref = crate::utils::datetime::user_format_pref();
-    let full = crate::utils::datetime::format_user_datetime(dt, pref.as_deref());
+    let full = crate::utils::datetime::fmt_user_dt(dt, None);
     full.rsplit(' ').next().unwrap_or(&full).to_string()
 }
 
