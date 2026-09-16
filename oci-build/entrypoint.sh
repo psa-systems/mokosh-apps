@@ -210,9 +210,27 @@ fi
 # MAPPS-477: link-preview (OpenGraph / Twitter) metadata. A link-preview
 # crawler does not run the WASM app, so these tags must live in the served
 # HTML. They are stamped from the branding env here, at container start, the
-# same way _mokosh_config.js is; the SPA never sets them. Idempotent (skips if
-# already injected) and best-effort (a read-only rootfs is not fatal).
+# same way _mokosh_config.js is; the SPA never sets them.
+#
+# MAPPS-826: re-stamped on every start, not just the first. A prior block (if
+# any) is deleted first so a restart with changed branding env never leaves
+# stale tags behind, and the served page never carries more than one
+# OG_MARKER. Best-effort throughout (a read-only rootfs is not fatal).
 OG_MARKER='<!-- MAPPS-477 link-preview metadata -->'
+if grep -q -F "$OG_MARKER" "$INDEX"; then
+    og_strip_tmp="$(mktemp 2>/dev/null || echo "${INDEX}.ogstrip")"
+    if awk -v marker="$OG_MARKER" '
+        index($0, marker) { skip=1 }
+        /<\/head>/ { skip=0 }
+        !skip { print }
+    ' "$INDEX" > "$og_strip_tmp" 2>/dev/null && mv "$og_strip_tmp" "$INDEX" 2>/dev/null; then
+        :
+    else
+        echo "[entrypoint] WARN: could not strip stale link-preview metadata from ${INDEX} (read-only fs?); leaving the existing tags in place" >&2
+        rm -f "$og_strip_tmp" 2>/dev/null
+    fi
+fi
+
 if ! grep -q -F "$OG_MARKER" "$INDEX"; then
     og_title="$(escape_html "${MOKOSH_BRAND_NAME:-Mokosh Platform}")"
     og_desc="$(escape_html "${MOKOSH_BRAND_DESCRIPTION:-Mokosh Platform - Professional Services Automation for MSPs}")"

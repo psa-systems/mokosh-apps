@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::{
     use_page_title, AlertType, Badge, BadgeVariant, Button, ButtonVariant, DataTable, Input, Modal,
-    PageHeader, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
-    TableRow,
+    PageHeader, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
+    TableHeader, TableLoading, TableRow,
 };
 
 /// Team row as returned by `GET /api/v1/teams` (mirror of
@@ -46,6 +46,8 @@ struct CreateTeamBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    manager_id: Option<uuid::Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     color: Option<String>,
 }
 
@@ -55,10 +57,42 @@ struct UpdateTeamBody {
     name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
+    // MAPPS-819: `null` (not omission) clears the manager server-side
+    // (mokosh-server UpdateTeamRequest treats every field as "set to this
+    // value", not "set if present"), so this is always sent, never skipped.
+    manager_id: Option<uuid::Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     is_active: Option<bool>,
+}
+
+/// Minimal user projection for the manager picker, from `GET /auth/users`
+/// (mirror of the fields `mokosh_types::auth::User` actually serializes;
+/// see `RemoteTeamMember` above for the same first/last name shape).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+struct UserPickerRow {
+    id: uuid::Uuid,
+    #[serde(default)]
+    first_name: String,
+    #[serde(default)]
+    last_name: String,
+    #[serde(default)]
+    email: String,
+}
+
+fn manager_options(users: &[UserPickerRow]) -> Vec<SelectOption> {
+    let mut options: Vec<SelectOption> = vec![SelectOption::new("", "No manager")];
+    options.extend(users.iter().map(|u| {
+        let name = format!("{} {}", u.first_name, u.last_name);
+        let label = if name.trim().is_empty() {
+            u.email.clone()
+        } else {
+            name
+        };
+        SelectOption::new(u.id.to_string(), label)
+    }));
+    options
 }
 
 #[derive(Serialize)]
@@ -280,9 +314,28 @@ fn TeamRow(props: TeamRowProps) -> Element {
 fn CreateTeamModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Element {
     let mut name = use_signal(String::new);
     let mut description = use_signal(String::new);
+    let mut manager_id = use_signal(String::new);
     let mut color = use_signal(|| String::from("#6366F1"));
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+
+    let users_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        #[cfg(feature = "app")]
+        {
+            crate::hooks::fetch::list_or_empty(
+                "team manager picker option",
+                crate::hooks::fetch::api::get_all_authed::<UserPickerRow>("/auth/users").await,
+            )
+        }
+        #[cfg(not(feature = "app"))]
+        {
+            Vec::<UserPickerRow>::new()
+        }
+    });
+    let users_snap = users_resource.read_unchecked();
+    let users: Vec<UserPickerRow> = users_snap.clone().unwrap_or_default();
+    let manager_select_options = manager_options(&users);
 
     let submit = move |_| {
         if saving() {
@@ -303,6 +356,7 @@ fn CreateTeamModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Elem
                     Some(d)
                 }
             },
+            manager_id: manager_id.read().parse::<uuid::Uuid>().ok(),
             color: Some(color.read().clone()),
         };
         saving.set(true);
@@ -372,6 +426,17 @@ fn CreateTeamModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Elem
                     disabled: saving(),
                     oninput: move |e: FormEvent| { description.set(e.value()); },
                 }
+                Select {
+                    name: "team_manager_id",
+                    label: "Manager (optional)",
+                    options: manager_select_options,
+                    value: manager_id(),
+                    disabled: saving(),
+                    onchange: move |e: FormEvent| { manager_id.set(e.value()); },
+                }
+                p { class: "text-xs text-muted",
+                    "The manager can edit or archive this team without needing an admin role."
+                }
                 Input {
                     name: "team_color",
                     label: "Color (hex, e.g. #6366F1)",
@@ -397,10 +462,30 @@ fn EditTeamModal(
     let team_id = team.id;
     let mut name = use_signal(|| team.name.clone());
     let mut description = use_signal(|| team.description.clone().unwrap_or_default());
+    let mut manager_id =
+        use_signal(|| team.manager_id.map(|id| id.to_string()).unwrap_or_default());
     let mut color = use_signal(|| team.color.clone().unwrap_or_else(|| "#6366F1".into()));
     let mut is_active = use_signal(|| team.is_active);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+
+    let users_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        #[cfg(feature = "app")]
+        {
+            crate::hooks::fetch::list_or_empty(
+                "team manager picker option",
+                crate::hooks::fetch::api::get_all_authed::<UserPickerRow>("/auth/users").await,
+            )
+        }
+        #[cfg(not(feature = "app"))]
+        {
+            Vec::<UserPickerRow>::new()
+        }
+    });
+    let users_snap = users_resource.read_unchecked();
+    let users: Vec<UserPickerRow> = users_snap.clone().unwrap_or_default();
+    let manager_select_options = manager_options(&users);
 
     let submit = move |_| {
         if saving() {
@@ -414,6 +499,7 @@ fn EditTeamModal(
         let body = UpdateTeamBody {
             name: Some(n),
             description: Some(description.read().trim().to_string()),
+            manager_id: manager_id.read().parse::<uuid::Uuid>().ok(),
             color: Some(color.read().clone()),
             is_active: Some(is_active()),
         };
@@ -482,6 +568,17 @@ fn EditTeamModal(
                     value: description(),
                     disabled: saving(),
                     oninput: move |e: FormEvent| { description.set(e.value()); },
+                }
+                Select {
+                    name: "team_manager_id",
+                    label: "Manager (optional)",
+                    options: manager_select_options,
+                    value: manager_id(),
+                    disabled: saving(),
+                    onchange: move |e: FormEvent| { manager_id.set(e.value()); },
+                }
+                p { class: "text-xs text-muted",
+                    "The manager can edit or archive this team without needing an admin role."
                 }
                 Input {
                     name: "team_color",
@@ -689,5 +786,88 @@ fn MembersSection(props: MembersSectionProps) -> Element {
                 }
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // MAPPS-819: `CreateTeamBody`/`UpdateTeamBody` must put `manager_id` on
+    // the wire so mokosh-server's `assert_can_manage_team`
+    // (routes.rs:184, `team.manager_id == Some(user.id)`) has something to
+    // match against; before this change the field was never constructed,
+    // so every SPA-created team's `manager_id` stayed null server-side.
+    #[test]
+    fn create_team_body_serializes_manager_id() {
+        let manager: uuid::Uuid = "11111111-1111-1111-1111-111111111111".parse().unwrap();
+        let body = CreateTeamBody {
+            name: "Support".to_string(),
+            description: None,
+            manager_id: Some(manager),
+            color: None,
+        };
+        let json = serde_json::to_value(&body).expect("serialise");
+        assert_eq!(json["manager_id"], serde_json::json!(manager));
+    }
+
+    #[test]
+    fn create_team_body_omits_manager_id_when_unset() {
+        let body = CreateTeamBody {
+            name: "Support".to_string(),
+            description: None,
+            manager_id: None,
+            color: None,
+        };
+        let json = serde_json::to_value(&body).expect("serialise");
+        assert!(json.get("manager_id").is_none());
+    }
+
+    #[test]
+    fn update_team_body_serializes_manager_id() {
+        let manager: uuid::Uuid = "22222222-2222-2222-2222-222222222222".parse().unwrap();
+        let body = UpdateTeamBody {
+            name: None,
+            description: None,
+            manager_id: Some(manager),
+            color: None,
+            is_active: None,
+        };
+        let json = serde_json::to_value(&body).expect("serialise");
+        assert_eq!(json["manager_id"], serde_json::json!(manager));
+    }
+
+    // `UpdateTeamRequest` treats `manager_id: null` as "clear the manager",
+    // so the field must stay on the wire as an explicit `null` (no
+    // `skip_serializing_if`) rather than being omitted, or picking "No
+    // manager" in the edit form would silently no-op instead of clearing
+    // the self-service edit grant.
+    #[test]
+    fn update_team_body_sends_null_to_clear_manager() {
+        let body = UpdateTeamBody {
+            name: None,
+            description: None,
+            manager_id: None,
+            color: None,
+            is_active: None,
+        };
+        let json = serde_json::to_value(&body).expect("serialise");
+        assert_eq!(json["manager_id"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn manager_options_lists_no_manager_first_then_users() {
+        let uid: uuid::Uuid = "33333333-3333-3333-3333-333333333333".parse().unwrap();
+        let users = vec![UserPickerRow {
+            id: uid,
+            first_name: "Ada".to_string(),
+            last_name: "Lovelace".to_string(),
+            email: "ada@example.com".to_string(),
+        }];
+        let options = manager_options(&users);
+        assert_eq!(options[0].value, "");
+        assert_eq!(options[0].label, "No manager");
+        assert_eq!(options[1].value, uid.to_string());
+        assert_eq!(options[1].label, "Ada Lovelace");
     }
 }
