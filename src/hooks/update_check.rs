@@ -13,19 +13,20 @@
 //!    `build.rs` from the `APP_GIT_HASH` env). That is the build the
 //!    user is currently running.
 //!
-//! 2. **Runtime probe.** `_mokosh_config.js` is generated per-container
-//!    by `oci-build/entrypoint.sh` and now carries a `build_sha` field
-//!    (the `GIT_SHA` env baked into the image at build time). The
-//!    Caddyfile already serves it with `Cache-Control: no-cache`, so a
-//!    fresh fetch always returns the deployed value.
+//! 2. **Runtime probe.** `_mokosh_config.json` is generated per-container
+//!    by `oci-build/entrypoint.sh` (the same field list as the
+//!    `_mokosh_config.js` shim) and carries a `build_sha` field (the
+//!    `GIT_SHA` env baked into the image at build time). The Caddyfile
+//!    already serves it with `Cache-Control: no-cache`, so a fresh
+//!    fetch always returns the deployed value.
 //!
 //! 3. **Detection loop.** Every `POLL_INTERVAL_SECS` (and immediately
 //!    on `visibilitychange` to `visible`, so users coming back to a
-//!    backgrounded tab probe right away), we re-evaluate
-//!    `runtime_config::get("build_sha")`. The browser fetches the
-//!    no-cache `_mokosh_config.js` on the natural reload cycle; for an
-//!    instantaneous check we explicitly re-fetch via fetch API and
-//!    re-evaluate the script.
+//!    backgrounded tab probe right away), we re-check the live
+//!    `build_sha`. The browser fetches the no-cache
+//!    `_mokosh_config.json` for each check via the fetch API and reads
+//!    the field straight out of the parsed JSON, no script evaluation
+//!    involved.
 //!
 //! 4. **Reload at a safe boundary.** When the live build differs from
 //!    the bundle's own hash, we trigger `location.reload()` on the
@@ -66,7 +67,7 @@ const MAX_DEFERRED_SECS: u64 = 30 * 60;
 #[cfg(all(feature = "app", target_arch = "wasm32"))]
 const BUILD_SHA_FIELD: &str = "build_sha";
 #[cfg(all(feature = "app", target_arch = "wasm32"))]
-const CONFIG_JS_PATH: &str = "/_mokosh_config.js";
+const CONFIG_JSON_PATH: &str = "/_mokosh_config.json";
 
 /// MAPPS-428: app-wide "the bundle this tab is running is out of date"
 /// flag. Set once a `build_sha` mismatch is confirmed, never cleared (a
@@ -81,14 +82,14 @@ const CONFIG_JS_PATH: &str = "/_mokosh_config.js";
 pub static UPDATE_PENDING: GlobalSignal<bool> = Signal::global(|| false);
 
 /// MAPPS-428: "the fetch layer just saw a failure that looks like a
-/// version skew; probe `_mokosh_config.js` now". Set by
+/// version skew; probe `_mokosh_config.json` now". Set by
 /// [`note_possible_version_skew`], consumed by the probe resource in
 /// [`use_update_check`], which clears it when the probe finishes.
 ///
 /// Being a flag rather than a counter is what debounces the probe: while
 /// one check is in flight the flag is already `true`, so a burst of
 /// failing requests writes nothing and fans out into exactly one
-/// `_mokosh_config.js` fetch.
+/// `_mokosh_config.json` fetch.
 #[cfg(feature = "app")]
 static SKEW_PROBE_REQUESTED: GlobalSignal<bool> = Signal::global(|| false);
 
@@ -134,53 +135,46 @@ fn baseline_sha() -> Option<String> {
     }
 }
 
-/// Re-fetch `_mokosh_config.js` and re-evaluate it so
-/// `window.__MOKOSH_CONFIG__` reflects the live deploy. Returns the
-/// freshly-read `build_sha` field. The Caddyfile serves the file with
+/// Fetch `_mokosh_config.json` and read its `build_sha` field. Returns
+/// the freshly-read value. The Caddyfile serves the file with
 /// `Cache-Control: no-cache`, so the network request actually round-
 /// trips; the SPA's compiled-in fetch never returns a stale value.
 ///
-/// Why re-eval instead of just fetching JSON? Operators may also use
-/// this file as a JS shim that mutates other globals; the SPA does not
-/// own that contract. Sticking to the existing format (a single
-/// `window.__MOKOSH_CONFIG__ = { ... }` assignment) means we do not
-/// add a second source of truth for the build hash.
+/// The served CSP (`oci-build/Caddyfile`) allows `WebAssembly.instantiate`
+/// only (`script-src 'self' 'wasm-unsafe-eval'`), not `eval()`, so a prior
+/// version of this probe that re-evaluated `_mokosh_config.js` as script
+/// was silently blocked on every deployed image and `UPDATE_PENDING` never
+/// flipped. Reading the same field set from the sibling
+/// `_mokosh_config.json` (emitted by `oci-build/entrypoint.sh` from the
+/// same field list as the JS shim) needs no `eval`.
 #[cfg(all(feature = "app", target_arch = "wasm32"))]
 async fn fetch_live_build_sha() -> Option<String> {
     use crate::platform::http::Request;
-    use wasm_bindgen::JsValue;
 
     // Best-effort, and it runs every POLL_INTERVAL_SECS: a `None` only means
     // this round found no newer build, which is also what a broken poll looks
     // like, so each failure names itself rather than going quiet.
-    let resp = Request::get(CONFIG_JS_PATH)
+    let resp = Request::get(CONFIG_JSON_PATH)
         .send()
         .await
-        .inspect_err(|e| tracing::warn!("update check could not fetch {CONFIG_JS_PATH}: {e}"))
+        .inspect_err(|e| tracing::warn!("update check could not fetch {CONFIG_JSON_PATH}: {e}"))
         .ok()?;
     if !resp.ok() {
         tracing::warn!(
-            "update check got {} from {CONFIG_JS_PATH}, skipping this round",
+            "update check got {} from {CONFIG_JSON_PATH}, skipping this round",
             resp.status()
         );
         return None;
     }
-    let body = resp
-        .text()
+    let cfg = resp
+        .json::<serde_json::Value>()
         .await
-        .inspect_err(|e| tracing::warn!("update check could not read {CONFIG_JS_PATH}: {e}"))
+        .inspect_err(|e| tracing::warn!("update check could not parse {CONFIG_JSON_PATH}: {e}"))
         .ok()?;
-    let win = web_sys::window()?;
-    // `js_sys::eval` is invoked in the SPA's own origin against a
-    // resource the SPA itself controls. The body is fetched no-cache
-    // from the same host that served the SPA bundle, so we are not
-    // crossing a trust boundary. Failure modes (parse error, CSP
-    // block) surface as `None` and the SPA just stays on the current
-    // build.
-    let _ = js_sys::eval(&body).ok()?;
-    let cfg = js_sys::Reflect::get(&win, &JsValue::from_str("__MOKOSH_CONFIG__")).ok()?;
-    let val = js_sys::Reflect::get(&cfg, &JsValue::from_str(BUILD_SHA_FIELD)).ok()?;
-    val.as_string().filter(|s| !s.is_empty())
+    cfg.get(BUILD_SHA_FIELD)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// MAPPS-504: there is nothing to detect on the desktop. The whole
@@ -439,7 +433,7 @@ mod tests {
 
     /// Only statuses that can mean "this bundle is older than the deploy"
     /// kick a probe. A 401/403/409 is ordinary app behaviour and must not
-    /// re-fetch `_mokosh_config.js` on every occurrence.
+    /// re-fetch `_mokosh_config.json` on every occurrence.
     #[test]
     fn only_skew_shaped_statuses_probe() {
         for status in [404, 500, 502, 503, 599] {

@@ -1,22 +1,31 @@
 #!/bin/sh
-# Container entrypoint: render a small JS shim that exposes runtime
-# config to the SPA, then exec the CMD (Caddy by default).
+# Container entrypoint: render a small JS shim (and its JSON sibling)
+# that expose runtime config to the SPA, then exec the CMD (Caddy by
+# default).
 #
 # Why this exists: the Mokosh SPA is a static WASM bundle. Operators
 # self-hosting on a custom hostname need to point it at their own
-# API/OIDC endpoints without rebuilding the image. The shim writes
+# API/OIDC endpoints without rebuilding the image. The JS shim writes
 # `window.__MOKOSH_CONFIG__` from env vars on each container start;
 # the SPA reads it before falling through to its compile-time defaults
 # and the built-in `msp.<tld>` host-prefix derivation.
 #
+# MAPPS-812: the served CSP allows `WebAssembly.instantiate` only, not
+# `eval()`, so the SPA's update probe (`fetch_live_build_sha` in
+# `src/hooks/update_check.rs`) cannot re-evaluate `_mokosh_config.js`
+# as script to read the live `build_sha`. `_mokosh_config.json` is the
+# same field set rendered as data instead of code, from the same
+# `build_config_fields` list below, so the probe can `serde_json` it.
+#
 # Only env vars that are set and non-empty are emitted. In dev (where
-# no entrypoint runs) or when no env vars are set, `_mokosh_config.js`
-# is still served but contains an empty object, and the SPA falls
-# through to its existing behaviour.
+# no entrypoint runs) or when no env vars are set, both files are
+# still served but contain an empty object, and the SPA falls through
+# to its existing behaviour.
 
 set -eu
 
 CONFIG_JS="/usr/share/caddy/_mokosh_config.js"
+CONFIG_JSON="/usr/share/caddy/_mokosh_config.json"
 INDEX="/usr/share/caddy/index.html"
 INCLUDE_TAG='<script src="/_mokosh_config.js"></script>'
 
@@ -44,6 +53,72 @@ emit_field() {
         printf '"%s": "%s"' "$name" "$(escape_js "$val")"
         first=0
     fi
+}
+
+# The one list of runtime-config fields (MAPPS-812): every field the SPA
+# can read at runtime, as "name<TAB>value" lines. `render_config_fields`
+# below is the only consumer, and it drives both `_mokosh_config.js` and
+# `_mokosh_config.json`, so the two files can never drift apart in which
+# fields they carry.
+build_config_fields() {
+    printf 'api_base\t%s\n' "${MOKOSH_API_BASE:-}"
+    printf 'oidc_issuer\t%s\n' "${MOKOSH_OIDC_ISSUER:-}"
+    printf 'oidc_client_id\t%s\n' "${MOKOSH_OIDC_CLIENT_ID:-}"
+    printf 'hub_base_url\t%s\n' "${MOKOSH_HUB_BASE_URL:-}"
+    # MAPPS-649: the single host the portal is served from (e.g.
+    # `portal.psa.systems`). The SPA reads this to (a) decide whether
+    # the current host is the portal host (`on_portal_host()` in
+    # `src/hooks/fetch.rs`) and (b) derive the API base when the SPA
+    # is running there (same fn's `api_base()`). Empty (default) turns
+    # both off and the SPA falls back to its `msp.<tld>` agent-only
+    # derivation. Retires the per-MSP `MOKOSH_PORTAL_HOST_SUFFIX` env;
+    # see docs/dev-docs/portal-single-host-cutover.md in mokosh-server.
+    printf 'portal_host\t%s\n' "${MOKOSH_PORTAL_HOST:-}"
+    # MAPPS-453: documentation subdomain base URL (e.g. https://docs.n.niceguyit.biz).
+    # Unset hides the Documentation menu entry and every contextual help link.
+    printf 'docs_base_url\t%s\n' "${MOKOSH_DOCS_URL:-}"
+    # BUNYIP-142: requested scope string for /oauth2/authorize. Default
+    # compile-time value is "openid email offline_access"; operators
+    # opting in to bunyip's profile/phone claim emission set this to
+    # e.g. "openid email offline_access profile" without rebuilding the
+    # SPA image.
+    printf 'oidc_scopes\t%s\n' "${MOKOSH_OIDC_SCOPES:-}"
+    # MAPPS-329: Team admin nav feature flag. Locked off by default; set
+    # `MOKOSH_TEAM_ENABLED=true` (or `=1`) per deployment to expose the
+    # Team item under the Admin nav section. Route::Team and its API stay
+    # reachable by direct URL regardless of the flag.
+    printf 'team_enabled\t%s\n' "${MOKOSH_TEAM_ENABLED:-}"
+    # MAPPS-509: operator branding. Unset means the SPA keeps its built-in
+    # name and artwork, so a deployment that sets none of these renders
+    # exactly as before. The logo and hero URLs must resolve on the SPA
+    # origin (mount the file into /usr/share/caddy) or on the API origin:
+    # the Caddyfile CSP is `img-src 'self' data: {API origin}`. Everything
+    # outside /assets/* and /wasm/* is served no-cache, so a remounted
+    # file propagates on the next load. See docs/deployment-branding.md.
+    printf 'brand_name\t%s\n' "${MOKOSH_BRAND_NAME:-}"
+    printf 'brand_logo_url\t%s\n' "${MOKOSH_BRAND_LOGO_URL:-}"
+    printf 'brand_hero_url\t%s\n' "${MOKOSH_BRAND_HERO_URL:-}"
+    # build_sha is the git revision the WASM bundle was built from.
+    # Baked into the image at build time via Dockerfile's GIT_SHA build
+    # arg. The SPA polls `_mokosh_config.json` and reloads when this
+    # changes, so a fresh deploy automatically propagates to open tabs
+    # without users having to Ctrl+Shift+R. Emitted even when other
+    # config fields are empty (operator-overridable fields stay opt-in,
+    # but the version field is always-on).
+    printf 'build_sha\t%s\n' "${GIT_SHA:-}"
+}
+
+# Emit every field in `build_config_fields` via `emit_field`, so a
+# caller wrapping this in `window.__MOKOSH_CONFIG__ = { ... };` (JS) or
+# bare `{ ... }` (JSON) always gets the same field set. Resets `first`
+# so callers do not need to manage the comma state themselves.
+render_config_fields() {
+    first=1
+    while IFS="$(printf '\t')" read -r name val; do
+        emit_field "$name" "$val"
+    done <<EOF
+$(build_config_fields)
+EOF
 }
 
 # MAPPS-369: reduce a URL to its origin (scheme://host[:port]), dropping any
@@ -94,55 +169,22 @@ if ! {
     echo "// Generated at container start by oci-build/entrypoint.sh."
     echo "// Operators override these via env vars on the mokosh-www container."
     printf 'window.__MOKOSH_CONFIG__ = {'
-    first=1
-    emit_field api_base "${MOKOSH_API_BASE:-}"
-    emit_field oidc_issuer "${MOKOSH_OIDC_ISSUER:-}"
-    emit_field oidc_client_id "${MOKOSH_OIDC_CLIENT_ID:-}"
-    emit_field hub_base_url "${MOKOSH_HUB_BASE_URL:-}"
-    # MAPPS-649: the single host the portal is served from (e.g.
-    # `portal.psa.systems`). The SPA reads this to (a) decide whether
-    # the current host is the portal host (`on_portal_host()` in
-    # `src/hooks/fetch.rs`) and (b) derive the API base when the SPA
-    # is running there (same fn's `api_base()`). Empty (default) turns
-    # both off and the SPA falls back to its `msp.<tld>` agent-only
-    # derivation. Retires the per-MSP `MOKOSH_PORTAL_HOST_SUFFIX` env;
-    # see docs/dev-docs/portal-single-host-cutover.md in mokosh-server.
-    emit_field portal_host "${MOKOSH_PORTAL_HOST:-}"
-    # MAPPS-453: documentation subdomain base URL (e.g. https://docs.n.niceguyit.biz).
-    # Unset hides the Documentation menu entry and every contextual help link.
-    emit_field docs_base_url "${MOKOSH_DOCS_URL:-}"
-    # BUNYIP-142: requested scope string for /oauth2/authorize. Default
-    # compile-time value is "openid email offline_access"; operators
-    # opting in to bunyip's profile/phone claim emission set this to
-    # e.g. "openid email offline_access profile" without rebuilding the
-    # SPA image.
-    emit_field oidc_scopes "${MOKOSH_OIDC_SCOPES:-}"
-    # MAPPS-329: Team admin nav feature flag. Locked off by default; set
-    # `MOKOSH_TEAM_ENABLED=true` (or `=1`) per deployment to expose the
-    # Team item under the Admin nav section. Route::Team and its API stay
-    # reachable by direct URL regardless of the flag.
-    emit_field team_enabled "${MOKOSH_TEAM_ENABLED:-}"
-    # MAPPS-509: operator branding. Unset means the SPA keeps its built-in
-    # name and artwork, so a deployment that sets none of these renders
-    # exactly as before. The logo and hero URLs must resolve on the SPA
-    # origin (mount the file into /usr/share/caddy) or on the API origin:
-    # the Caddyfile CSP is `img-src 'self' data: {API origin}`. Everything
-    # outside /assets/* and /wasm/* is served no-cache, so a remounted
-    # file propagates on the next load. See docs/deployment-branding.md.
-    emit_field brand_name "${MOKOSH_BRAND_NAME:-}"
-    emit_field brand_logo_url "${MOKOSH_BRAND_LOGO_URL:-}"
-    emit_field brand_hero_url "${MOKOSH_BRAND_HERO_URL:-}"
-    # build_sha is the git revision the WASM bundle was built from.
-    # Baked into the image at build time via Dockerfile's GIT_SHA build
-    # arg. The SPA polls `_mokosh_config.js` and reloads when this
-    # changes, so a fresh deploy automatically propagates to open tabs
-    # without users having to Ctrl+Shift+R. Emitted even when other
-    # config fields are empty (operator-overridable fields stay opt-in,
-    # but the version field is always-on).
-    emit_field build_sha "${GIT_SHA:-}"
+    render_config_fields
     echo '};'
 } > "$CONFIG_JS" 2>/dev/null; then
     echo "[entrypoint] WARN: could not write ${CONFIG_JS} (read-only fs?); SPA will fall back to compile-time config" >&2
+fi
+
+# MAPPS-812: the JSON sibling of `_mokosh_config.js`, same field set
+# (`render_config_fields`), read by `fetch_live_build_sha` in
+# `src/hooks/update_check.rs` since the served CSP forbids the `eval()`
+# that reading the JS shim's `build_sha` at runtime would require.
+if ! {
+    printf '{'
+    render_config_fields
+    printf '}'
+} > "$CONFIG_JSON" 2>/dev/null; then
+    echo "[entrypoint] WARN: could not write ${CONFIG_JSON} (read-only fs?); update check will find no live build_sha" >&2
 fi
 
 # Inject the script tag into <head> if not already present. Idempotent
