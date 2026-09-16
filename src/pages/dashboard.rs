@@ -774,31 +774,28 @@ pub fn DashboardTvPage() -> Element {
         })
     };
 
-    // KPI aggregate. Team-scoped only when a single team is pinned.
-    let report_resource = {
+    // KPI aggregate. Team-scoped only when a single team is pinned. Goes
+    // through `use_remote_resource` (MAPPS-840) so a failed fetch is kept
+    // as an explicit `Unavailable` state instead of collapsing straight to
+    // an all-zero report: an all-zero row is also what a quiet tenant
+    // looks like, so "loaded, zero breaches" and "failed to load" must
+    // render differently on a board meant to alert a room to problems.
+    let report_data = {
         let team = team.clone();
-        use_resource(move || {
+        crate::hooks::use_remote_resource(move || {
             let team = team.clone();
             async move {
-                let _gen = crate::hooks::fetch::active_tenant_generation();
                 let _tick = tick();
                 let path = if team.is_empty() {
                     "/reports/dashboard".to_string()
                 } else {
                     format!("/reports/dashboard?team_id={team}")
                 };
-                // An all-zero KPI row is what a quiet tenant looks like too,
-                // so a failed read says so rather than reading as fact.
-                crate::hooks::fetch::api::get_authed::<DashboardReport>(&path)
-                    .await
-                    .inspect_err(|e| {
-                        tracing::error!("dashboard KPI load failed, the tiles will read zero: {e}")
-                    })
-                    .ok()
-                    .unwrap_or_default()
+                crate::hooks::fetch::api::get_authed::<DashboardReport>(&path).await
             }
         })
     };
+    let sla_unavailable = report_data.is_unavailable();
 
     // Today's dispatch (technicians, locations, appointments).
     let dispatch_resource = use_resource(move || async move {
@@ -863,7 +860,7 @@ pub fn DashboardTvPage() -> Element {
         .read_unchecked()
         .clone()
         .unwrap_or_default();
-    let report = report_resource.read_unchecked().clone().unwrap_or_default();
+    let report = report_data.value_or_default();
     let dispatch = dispatch_resource
         .read_unchecked()
         .clone()
@@ -904,19 +901,11 @@ pub fn DashboardTvPage() -> Element {
             }
 
             // KPI strip.
-            div { class: "grid grid-cols-3 gap-5 mb-6",
-                div { class: "rounded-xl bg-surface p-5",
-                    div { class: "text-sm uppercase tracking-wide text-subtle", "Open Tickets" }
-                    div { class: "text-5xl font-bold mt-1", "{open_tickets}" }
-                }
-                div { class: "rounded-xl bg-surface p-5",
-                    div { class: "text-sm uppercase tracking-wide text-subtle", "SLA At Risk" }
-                    div { class: "text-5xl font-bold mt-1 text-yellow-600 dark:text-yellow-400", "{report.sla_warnings}" }
-                }
-                div { class: "rounded-xl bg-surface p-5",
-                    div { class: "text-sm uppercase tracking-wide text-subtle", "SLA Breached" }
-                    div { class: "text-5xl font-bold mt-1 text-red-600 dark:text-red-400", "{report.sla_breached}" }
-                }
+            TvKpiStrip {
+                open_tickets,
+                sla_warnings: report.sla_warnings,
+                sla_breached: report.sla_breached,
+                sla_unavailable,
             }
 
             // Body: technicians/appointments on the left, ticket status on
@@ -1039,6 +1028,48 @@ fn short_id_str(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
+/// TV board KPI strip (MAPPS-840). A separate component so the "don't show
+/// zero on a failed load" rule is unit-testable via `dioxus_ssr` without
+/// standing up `DashboardTvPage`'s resources. When `sla_unavailable` is set
+/// (the `/reports/dashboard` fetch failed) the SLA tiles render an explicit
+/// stale indicator instead of `report.sla_warnings` / `report.sla_breached`,
+/// which default to 0 on a failed fetch and would otherwise be
+/// indistinguishable from a tenant with zero breaches.
+#[component]
+fn TvKpiStrip(
+    open_tickets: i64,
+    sla_warnings: i64,
+    sla_breached: i64,
+    sla_unavailable: bool,
+) -> Element {
+    rsx! {
+        div { class: "grid grid-cols-3 gap-5 mb-6",
+            div { class: "rounded-xl bg-surface p-5",
+                div { class: "text-sm uppercase tracking-wide text-subtle", "Open Tickets" }
+                div { class: "text-5xl font-bold mt-1", "{open_tickets}" }
+            }
+            if sla_unavailable {
+                div {
+                    class: "rounded-xl bg-surface p-5 col-span-2",
+                    role: "status",
+                    aria_live: "polite",
+                    div { class: "text-sm uppercase tracking-wide text-subtle", "SLA At Risk / Breached" }
+                    div { class: "text-3xl font-bold mt-1 text-red-600 dark:text-red-400", "SLA data unavailable" }
+                }
+            } else {
+                div { class: "rounded-xl bg-surface p-5",
+                    div { class: "text-sm uppercase tracking-wide text-subtle", "SLA At Risk" }
+                    div { class: "text-5xl font-bold mt-1 text-yellow-600 dark:text-yellow-400", "{sla_warnings}" }
+                }
+                div { class: "rounded-xl bg-surface p-5",
+                    div { class: "text-sm uppercase tracking-wide text-subtle", "SLA Breached" }
+                    div { class: "text-5xl font-bold mt-1 text-red-600 dark:text-red-400", "{sla_breached}" }
+                }
+            }
+        }
+    }
+}
+
 // ============================================================================
 // MAPPS-604: pure-function tests for the contact-dashboard classifiers.
 // ============================================================================
@@ -1091,5 +1122,70 @@ mod contact_dashboard_tests {
             activity_route("something_new", &id),
             Route::Dashboard {}
         ));
+    }
+}
+
+// ============================================================================
+// MAPPS-840: the TV board must not show "0" SLA breaches when its data
+// fetch failed.
+// ============================================================================
+
+#[cfg(test)]
+mod tv_kpi_strip_tests {
+    use dioxus::prelude::*;
+
+    use super::{TvKpiStrip, TvKpiStripProps};
+
+    fn render(props: TvKpiStripProps) -> String {
+        let mut dom = VirtualDom::new_with_props(TvKpiStrip, props);
+        dom.rebuild_in_place();
+        dioxus_ssr::render(&dom)
+    }
+
+    /// A failed `/reports/dashboard` fetch defaults `sla_breached` to 0
+    /// (the type default), same as a quiet tenant with nothing breached.
+    /// The strip must not render that 0 as if it were real: it renders the
+    /// explicit "unavailable" state instead, and open tickets (an
+    /// independent, successfully-loaded resource) still renders normally.
+    #[test]
+    fn failed_load_shows_unavailable_not_a_zero_breach_count() {
+        let out = render(TvKpiStripProps {
+            open_tickets: 7,
+            sla_warnings: 0,
+            sla_breached: 0,
+            sla_unavailable: true,
+        });
+        assert!(
+            out.contains("SLA data unavailable"),
+            "a failed load must show an explicit error state; got: {out}"
+        );
+        assert!(
+            !out.contains(">0<"),
+            "a failed load must never render a bare 0 breach/warning count; got: {out}"
+        );
+        assert!(
+            out.contains(">7<"),
+            "an independently-loaded tile (open tickets) still renders; got: {out}"
+        );
+    }
+
+    /// A successful load with genuinely zero breaches renders the real 0,
+    /// unchanged from before MAPPS-840.
+    #[test]
+    fn successful_load_with_zero_breaches_shows_the_real_zero() {
+        let out = render(TvKpiStripProps {
+            open_tickets: 7,
+            sla_warnings: 0,
+            sla_breached: 0,
+            sla_unavailable: false,
+        });
+        assert!(
+            !out.contains("SLA data unavailable"),
+            "a successful load must not show the error state; got: {out}"
+        );
+        assert!(
+            out.contains(">0<"),
+            "a genuinely quiet tenant still shows 0; got: {out}"
+        );
     }
 }

@@ -12,6 +12,26 @@
 
     file_server
 
+    # MAPPS-814: parity fallback for the `msp.<tld>` host-prefix derivation
+    # `src/hooks/fetch.rs::api_base()` and `src/modules/oidc/config.rs::resolve()`
+    # do client-side when no MOKOSH_API_BASE/MOKOSH_OIDC_ISSUER is configured.
+    # entrypoint.sh cannot know that hostname at container start (one image
+    # serves every deployment), but Caddy sees it on every request as the
+    # `Host` header, so these `map`s recompute the same derivation the SPA
+    # would make for THIS request. entrypoint.sh only reaches into
+    # `{mokosh_*_origin_fallback}` when the matching MOKOSH_* var is unset;
+    # an operator-set origin always wins (see MOKOSH_API_ORIGIN/
+    # MOKOSH_OIDC_ORIGIN export in entrypoint.sh). A non-`msp.`-prefixed host
+    # maps to "", same as the SPA deriving nothing.
+    map {http.request.host} {mokosh_api_origin_fallback} {
+        ~^msp\.(.+)$ "https://api.msp.${1}"
+        default ""
+    }
+    map {http.request.host} {mokosh_oidc_origin_fallback} {
+        ~^msp\.(.+)$ "https://api.${1}"
+        default ""
+    }
+
     header {
         # Default: never pin a response in the browser. index.html, the
         # runtime-config shim, and every client-side route (served
@@ -47,10 +67,12 @@
         # would default to a literal "-") at config load. An empty origin drops
         # out, leaving 'self' for the same-origin dev case (relative
         # `/api/v1`). The canonical `msp.<tld>` deploy is cross-origin (SPA
-        # `msp.<tld>` calls API `api.msp.<tld>`), so it must set MOKOSH_API_BASE
-        # (its entrypoint does) for that origin to be allowed here; relying on
-        # the SPA's runtime host-prefix derivation alone would leave connect-src
-        # without the API origin.
+        # `msp.<tld>` calls API `api.msp.<tld>`); when MOKOSH_API_BASE /
+        # MOKOSH_OIDC_ISSUER are unset, entrypoint.sh exports the
+        # `{mokosh_*_origin_fallback}` map placeholders defined above instead
+        # of an empty string, so a zero-config `msp.<tld>` deploy still gets
+        # the SPA's own derived origin here (MAPPS-814) rather than only
+        # 'self'.
         #
         # PMS-758: `img-src` carries the same origin. The tenant logo
         # (MAPPS-429) is served BY the API, and the browser blocked it on

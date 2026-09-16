@@ -18,9 +18,14 @@ app := "mokosh-apps"
 pre_commit_mode := "docker"
 dev_image := "ghcr.io/niceguyit/rust-builder-glibc:v1.0.1-rust1.94-trixie"
 
-# src/main.rs embeds assets/styles.css via asset!(), and that file is gitignored,
-# so Tailwind has to run on the host before any cargo step in the container.
-pre_commit_prepare := "css-build"
+# MAPPS-824: `pre_commit_prepare` is the only host-side hook common.just's
+# shared `pre-commit` exposes before its cargo legs run, so it is where this
+# repo's 30+ check-* guard scripts run too, not just css-build (src/main.rs
+# embeds assets/styles.css via asset!(), and that file is gitignored, so
+# Tailwind still has to run on the host before any cargo step in the
+# container). Without this the git hook passed on a change CI then rejected
+# on any of the guards. See pre-commit-guards below.
+pre_commit_prepare := "pre-commit-guards"
 
 # Mirrors check-clippy and check.yml. The shared default is --all-features,
 # which would turn on `desktop` (linking the system webview) and `single-tenant`
@@ -254,6 +259,27 @@ check-clippy:
 check-fmt:
     cargo fmt --all --check
 
+# MAPPS-824: runs `check`'s check-* dependency list on the host, minus the
+# four cargo-driven members (check-clippy, check-fmt, check-web, check-desktop)
+# that the pre-commit cargo legs already cover in-container, then css-build.
+# Read off the `check:` line itself (the same technique check-ci-parity.sh
+# uses) rather than a copy of the list, so a guard added to `check` and
+# forgotten here cannot happen: this recipe can only drift stale, never
+# incomplete. Wired in as `pre_commit_prepare`, the only host-side hook
+# common.just's shared `pre-commit` exposes before its cargo legs.
+[private]
+[group: 'hooks']
+pre-commit-guards:
+    #!/usr/bin/env nu
+    let cargo_covered = ["check-web" "check-desktop" "check-clippy" "check-fmt"]
+    let deps_line = (open justfile | lines | where {|l| $l starts-with "check:" } | get 0)
+    let guards = ($deps_line | str replace "check:" "" | split row " " | where {|r| $r starts-with "check-" } | where {|r| $r not-in $cargo_covered })
+    for guard in $guards {
+        print $"\n[pre-commit] just ($guard)"
+        ^just $guard
+    }
+    ^just css-build
+
 # Install JS dependencies
 [private]
 [group: 'hooks']
@@ -409,6 +435,11 @@ desktop-bundle: css-build
 check-link-preview:
     bash scripts/check-link-preview.sh --self-test
     bash scripts/check-link-preview.sh
+
+# MAPPS-814: prove the served CSP names the SPA's own `msp.<tld>`-derived API/OIDC origin when no MOKOSH_API_BASE/MOKOSH_OIDC_ISSUER is set, and that an operator's explicit origin still wins. Runs the real entrypoint + Caddyfile in a container, so it needs docker and is not part of `just check`, like check-link-preview above.
+[group: 'check']
+check-csp-host-derived-origin:
+    bash scripts/check-csp-host-derived-origin.sh
 
 # Build OCI image for validation
 [group: 'check']
