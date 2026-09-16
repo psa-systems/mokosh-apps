@@ -381,12 +381,45 @@ fn StaffProfilePage() -> Element {
     }
 }
 
+/// MAPPS-816: what the account-settings corner of the identity strip shows.
+/// `has_issuer` mirrors `OidcConfig::has_issuer()`: when true this is a
+/// bunyip-fronted deployment and the corner links out to the hub's
+/// `/settings` page, where password, 2FA, sessions, and billing are actually
+/// editable. When false this is standalone: mokosh-server's own `/me/*`
+/// surface (`/me/password`, `/me/sessions`, `/me/mfa/*`, `/me/api-keys`) is
+/// unconsumed by this SPA, so rather than link at a Bunyip hub that does not
+/// exist in this deployment, the corner says plainly that this page does not
+/// manage those yet, with no link.
+struct AccountSettingsPanel {
+    /// `Some(url)` renders the Bunyip hub link; `None` renders the note alone.
+    link_url: Option<String>,
+    note: &'static str,
+}
+
+fn account_settings_panel(has_issuer: bool, hub_settings_url: &str) -> AccountSettingsPanel {
+    if has_issuer {
+        AccountSettingsPanel {
+            link_url: Some(hub_settings_url.to_string()),
+            note: "Name, email, password, 2FA, sessions, and billing are owned by Bunyip. Change them there.",
+        }
+    } else {
+        AccountSettingsPanel {
+            link_url: None,
+            note:
+                "Password, two-factor, sessions, and API keys aren't manageable from this page yet.",
+        }
+    }
+}
+
 /// Top-of-page strip. Pulls the user's identity (name, email, role)
 /// from `AuthContext` rather than from the mokosh `/auth/me` payload:
 /// `AuthContext` is hydrated from the OIDC id_token at sign-in and
 /// then refreshed against bunyip's `/v1/auth/me`, so Bunyip stays
 /// authoritative for who the user is. Links over to the Bunyip
-/// Account Settings page where these fields are actually editable.
+/// Account Settings page where these fields are actually editable,
+/// gated on `has_issuer()` (MAPPS-816): standalone deployments have
+/// no Bunyip hub to send anyone to, so they get a linkless note
+/// instead of a dead link.
 ///
 /// Confirmed MAPPS-138: mokosh-server's full settings surface
 /// (`src/modules/settings/routes.rs`) is intentionally hub-only and is
@@ -397,6 +430,7 @@ fn IdentityStrip() -> Element {
     let auth = crate::hooks::use_auth();
     let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
     let account_settings_url = cfg.hub_url("/settings");
+    let settings_panel = account_settings_panel(cfg.has_issuer(), &account_settings_url);
 
     let auth_read = auth.read();
     let (full_name, initials, email, role) = match auth_read.user.as_ref() {
@@ -448,13 +482,15 @@ fn IdentityStrip() -> Element {
                     }
                 }
                 div { class: "flex flex-col items-end gap-1",
-                    a {
-                        href: "{account_settings_url}",
-                        class: "text-sm font-medium text-accent hover:underline",
-                        "Account Settings (Bunyip)"
+                    if let Some(url) = settings_panel.link_url.clone() {
+                        a {
+                            href: "{url}",
+                            class: "text-sm font-medium text-accent hover:underline",
+                            "Account Settings (Bunyip)"
+                        }
                     }
                     p { class: "text-xs text-muted text-right max-w-xs",
-                        "Name, email, password, 2FA, sessions, and billing are owned by Bunyip. Change them there."
+                        "{settings_panel.note}"
                     }
                 }
             }
@@ -1231,6 +1267,31 @@ fn TokenGroupRow(group: &'static TokenGroup, draft: Signal<String>) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod identity_strip_tests {
+    use super::account_settings_panel;
+
+    /// MAPPS-816: with a Bunyip hub configured, the corner links there.
+    #[test]
+    fn links_to_the_bunyip_hub_when_an_issuer_is_configured() {
+        let panel = account_settings_panel(true, "https://hub.example/settings");
+        assert_eq!(
+            panel.link_url.as_deref(),
+            Some("https://hub.example/settings")
+        );
+    }
+
+    /// MAPPS-816: standalone (no issuer) gets no link at all, since there is
+    /// no Bunyip hub for it to point at, and the note says so instead of
+    /// claiming Bunyip owns anything.
+    #[test]
+    fn has_no_link_when_standalone() {
+        let panel = account_settings_panel(false, "https://hub.example/settings");
+        assert_eq!(panel.link_url, None);
+        assert!(!panel.note.contains("Bunyip"));
     }
 }
 
