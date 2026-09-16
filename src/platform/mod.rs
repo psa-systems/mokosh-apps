@@ -26,6 +26,11 @@ pub mod config;
 // currency at their bank's FX rate. Web reads `navigator.language`;
 // the desktop shell has no such signal and returns `None`.
 pub mod currency;
+// MAPPS-817: the per-OS origin dioxus-desktop's webview sends, mirrored
+// here so docs/desktop.md and CORS_ORIGIN name the right value. Native
+// only, like loopback.rs: a browser tab has its own origin already.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod desktop_origin;
 pub mod dom;
 pub mod download;
 pub mod http;

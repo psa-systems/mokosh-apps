@@ -51,9 +51,23 @@ check_recipes() {
 }
 
 # Every command line in a recipe body: the indented lines between the recipe
-# header and the next unindented line, minus comments and blanks.
-recipe_commands() {
-  awk -v recipe="$2" '
+# header and the next unindented line, minus comments and blanks. A body
+# opening with a shebang (`#!/usr/bin/env nu`, etc.) is a script, not a
+# sequence of shell commands, so its lines cannot be matched against
+# `workflow`'s `run:` blocks one for one; what CI must run instead is the
+# recipe itself, so this reports a single synthetic `just <recipe>` command.
+recipe_commands_in() {
+  local file="$1" recipe="$2" first
+  first=$(awk -v recipe="$recipe" '
+    $0 == recipe ":" { found = 1; next }
+    found && /^[ \t]*$/ { next }
+    found { sub(/^[ \t]+/, ""); print; exit }
+  ' "$file")
+  if [ "${first#\#!}" != "$first" ]; then
+    printf 'just %s\n' "$recipe"
+    return
+  fi
+  awk -v recipe="$recipe" '
     $0 == recipe ":" { found = 1; next }
     found && /^[^ \t]/ { exit }
     found && /^[ \t]*#/ { next }
@@ -62,7 +76,29 @@ recipe_commands() {
       sub(/^[ \t]+/, "")
       print
     }
-  ' "$1"
+  ' "$file"
+}
+
+# Same, but falls back to the files the justfile imports (one level:
+# common.just does not nest further) when the recipe is not defined locally.
+# check-justfile is common-owned and lives in common.just, not the root
+# justfile, so a recipe search scoped to the root file alone would report it
+# missing and fail the guard on every repo that depends on it.
+recipe_commands() {
+  local justfile="$1" recipe="$2" dir imp out
+  out=$(recipe_commands_in "$justfile" "$recipe")
+  if [ -n "$out" ]; then
+    printf '%s\n' "$out"
+    return
+  fi
+  dir=$(dirname "$justfile")
+  for imp in $(grep "^import " "$justfile" 2>/dev/null | sed "s/^import '\(.*\)'/\1/"); do
+    out=$(recipe_commands_in "$dir/$imp" "$recipe")
+    if [ -n "$out" ]; then
+      printf '%s\n' "$out"
+      return
+    fi
+  done
 }
 
 compare() {
@@ -167,6 +203,32 @@ EOF
 
     printf 'not-a-justfile:\n' > "$fixtures/empty.justfile"
 
+    # check-justfile's real shape: a shebang-script recipe defined in an
+    # imported file, not the root justfile.
+    cat > "$fixtures/imported.just" <<'EOF'
+check-gamma:
+    #!/usr/bin/env nu
+    let x = 1
+    print $x
+EOF
+
+    cat > "$fixtures/import.justfile" <<'EOF'
+import 'imported.just'
+
+[group: 'check']
+check: check-gamma
+EOF
+
+    cat > "$fixtures/imported-complete.yml" <<'EOF'
+      - name: Gamma guard
+        run: just check-gamma
+EOF
+
+    cat > "$fixtures/imported-missing.yml" <<'EOF'
+      - name: Nothing relevant
+        run: echo hi
+EOF
+
     out=$("$0" --compare "$fixtures/justfile" "$fixtures/complete.yml" 2>&1) && rc=0 || rc=$?
     if [ "$rc" -ne 0 ]; then
       echo "self-test: FAIL (a complete workflow was rejected, exit $rc)"
@@ -209,6 +271,28 @@ EOF
       status=1
     else
       echo "self-test: an unparseable justfile is an error, not a pass"
+    fi
+
+    out=$("$0" --compare "$fixtures/import.justfile" "$fixtures/imported-complete.yml" 2>&1) && rc=0 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo "self-test: FAIL (a shebang recipe defined in an imported file was rejected, exit $rc)"
+      printf '%s\n' "$out"
+      status=1
+    else
+      echo "self-test: a shebang recipe in an imported file matches 'just <recipe>'"
+    fi
+
+    out=$("$0" --compare "$fixtures/import.justfile" "$fixtures/imported-missing.yml" 2>&1) && rc=0 || rc=$?
+    if [ "$rc" -ne 1 ]; then
+      echo "self-test: FAIL (a missing 'just check-gamma' step did not fail the guard, exit $rc)"
+      printf '%s\n' "$out"
+      status=1
+    elif ! printf '%s' "$out" | grep -q 'just check-gamma'; then
+      echo "self-test: FAIL (the failure did not name the missing 'just check-gamma')"
+      printf '%s\n' "$out"
+      status=1
+    else
+      echo "self-test: a dropped 'just check-gamma' step fails the guard and names it"
     fi
 
     [ "$status" -eq 0 ] && echo "CI-parity guard self-test: clean"

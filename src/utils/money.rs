@@ -51,15 +51,17 @@ pub fn format_money_f64(v: Option<f64>) -> String {
 
 /// Format a server-serialized decimal string (billing amounts arrive as
 /// strings, e.g. `"60000.00"`). An empty or unparseable value renders as
-/// `$0.00`, preserving the previous billing-helper behavior.
+/// `-`, matching `format_money_opt`/`format_money_f64`. A call site that
+/// wants a zero default instead of `-` must supply `"0"` explicitly, e.g.
+/// `.unwrap_or_else(|| "0".into())`, before calling this function.
 pub fn format_money_str(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return "$0.00".to_string();
+        return "-".to_string();
     }
     match Decimal::from_str(trimmed) {
         Ok(d) => format_money(d),
-        Err(_) => "$0.00".to_string(),
+        Err(_) => "-".to_string(),
     }
 }
 
@@ -90,7 +92,7 @@ mod tests {
         assert_eq!(format_money_f64(None), "-");
         assert_eq!(format_money_f64(Some(60000.0)), "$60,000.00");
         assert_eq!(format_money_str("60000.00"), "$60,000.00");
-        assert_eq!(format_money_str(""), "$0.00");
-        assert_eq!(format_money_str("not-a-number"), "$0.00");
+        assert_eq!(format_money_str(""), "-");
+        assert_eq!(format_money_str("not-a-number"), "-");
     }
 }

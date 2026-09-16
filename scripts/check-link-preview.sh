@@ -22,6 +22,9 @@
 #                 twitter:card downgraded to `summary`.
 #   3. relative - a root-relative logo with no MOKOSH_PUBLIC_URL: image tags
 #                 omitted (a crawler cannot resolve one) and the reason logged.
+#   4. restart  - MAPPS-826: a second start of the same container filesystem,
+#                 with MOKOSH_BRAND_NAME changed, serves the NEW name and the
+#                 rewritten index.html still carries exactly one OG_MARKER.
 #
 # Usage: check-link-preview.sh [--self-test]
 #   --self-test serves the un-injected index.html and requires the scenario-1
@@ -56,13 +59,18 @@ fail() {
   failures=$((failures + 1))
 }
 
-# Start the serving stack over a fresh copy of index.html and print the host
-# port it listens on. `--entrypoint ""` starts Caddy directly, skipping the
-# injection, which is the --self-test baseline.
+# Start the serving stack and print the host port it listens on.
+# `--entrypoint ""` starts Caddy directly, skipping the injection, which is
+# the --self-test baseline. `copy_fresh=no` reuses whatever is already at
+# $WORKDIR/index.html instead of resetting it from the repo's index.html,
+# which is what a restart of the same container filesystem looks like
+# (scenario 4, MAPPS-826).
 serve() {
-  local use_entrypoint="$1"
-  shift
-  cp index.html "$WORKDIR/index.html" || return 1
+  local use_entrypoint="$1" copy_fresh="$2"
+  shift 2
+  if [ "$copy_fresh" = "yes" ]; then
+    cp index.html "$WORKDIR/index.html" || return 1
+  fi
   remove_container
 
   local entry=(--entrypoint /usr/local/bin/entrypoint.sh)
@@ -155,7 +163,7 @@ WORKDIR="$(mktemp --directory)"
 
 if [ "${1:-}" = "--self-test" ]; then
   QUIET_FAIL="yes"
-  port="$(serve no)" || {
+  port="$(serve no yes)" || {
     echo "check-link-preview: --self-test could not start the un-injected server" >&2
     exit 2
   }
@@ -170,7 +178,7 @@ if [ "${1:-}" = "--self-test" ]; then
 fi
 
 # --- Scenario 1: branded, root URL and a deep client-side route -------------
-port="$(serve yes "${branded_env[@]}")" || {
+port="$(serve yes yes "${branded_env[@]}")" || {
   echo "check-link-preview: could not start the branded server" >&2
   exit 2
 }
@@ -183,8 +191,26 @@ code="$(curl --silent --output /dev/null --write-out '%{http_code}' --user-agent
 [ "$code" = "200" ] || fail "crawler GET /tickets/12345: expected HTTP 200, got $code"
 remove_container
 
+# --- Scenario 4: restart with changed branding (MAPPS-826) ------------------
+# Reuses $WORKDIR/index.html as scenario 1 left it (copy_fresh=no), which is
+# what a restart of the same container filesystem looks like, and changes
+# MOKOSH_BRAND_NAME. A crawler must see the NEW name, not the stale one from
+# scenario 1, and the rewritten file must carry the marker exactly once - a
+# second stamp left alongside the first would satisfy `grep -q` but break the
+# page.
+port="$(serve yes no --env "MOKOSH_BRAND_NAME=Renamed Inc")" || {
+  echo "check-link-preview: could not start the restarted server" >&2
+  exit 2
+}
+body="$(crawl "$port" "/")"
+expect_tag "$body" '<meta property="og:title" content="Renamed Inc">' "restart"
+reject_tag "$body" 'content="Acme &quot;PSA&quot; &amp; Co"' "restart"
+marker_count="$(grep -c -F '<!-- MAPPS-477 link-preview metadata -->' "$WORKDIR/index.html")"
+[ "$marker_count" = "1" ] || fail "restart: expected exactly one OG_MARKER in index.html after a restart, found $marker_count"
+remove_container
+
 # --- Scenario 2: no branding env at all ------------------------------------
-port="$(serve yes)" || {
+port="$(serve yes yes)" || {
   echo "check-link-preview: could not start the default server" >&2
   exit 2
 }
@@ -198,7 +224,7 @@ reject_tag "$body" 'twitter:image' "default"
 remove_container
 
 # --- Scenario 3: relative logo with no MOKOSH_PUBLIC_URL --------------------
-port="$(serve yes --env "MOKOSH_BRAND_LOGO_URL=/branding/logo.svg")" || {
+port="$(serve yes yes --env "MOKOSH_BRAND_LOGO_URL=/branding/logo.svg")" || {
   echo "check-link-preview: could not start the relative-logo server" >&2
   exit 2
 }
