@@ -1051,6 +1051,9 @@ pub enum Route {
     // The OAuth callback and the `contact_sync.failing` mail both land here.
     #[route("/settings/integrations/google-contacts")]
     SettingsGoogleContacts {},
+    // MAPPS-809: choose labels, preview, review, import.
+    #[route("/settings/integrations/google-contacts/import")]
+    SettingsGoogleContactsImport {},
     // MAPPS-364: admin-only tenant data import/export (server PMS-646).
     #[route("/settings/import-export")]
     SettingsImportExport {},
@@ -2202,6 +2205,15 @@ fn SettingsGoogleContacts() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             pages::settings_contact_sync::GoogleContactsSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsGoogleContactsImport() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_contact_sync_import::GoogleContactsImportPage {}
         }
     }
 }
