@@ -45,6 +45,21 @@ pub fn AcceptGrantPage(token: String) -> Element {
     let mut acting = use_signal(|| false);
     let mut done = use_signal(|| false);
 
+    // PMS-1208 SPA: the page is public (the token IS the credential
+    // for the metadata read), but the Accept + Decline POSTs need a
+    // signed-in caller so mokosh-server can bind the invitation to
+    // their identity. A visitor who clicked the email link in a
+    // fresh tab has no in-memory bearer; without the check here the
+    // fetch layer would attach nothing, the server would 401, and
+    // the SPA would render "Your session has ended" - the exact
+    // shape the tester hit. Reading `use_auth()` and bouncing
+    // through OIDC with the current URL as `return_to` when the
+    // caller is not authenticated fixes it: the callback restores
+    // this same `/accept-grant?token=<t>` page after sign-in and
+    // the buttons work.
+    let auth = crate::hooks::use_auth();
+    let is_signed_in = auth.read().is_authenticated();
+
     let token_for_meta = token.clone();
     let metadata: Resource<Option<InvitationMetadata>> = use_resource(move || {
         let token = token_for_meta.clone();
@@ -109,6 +124,23 @@ pub fn AcceptGrantPage(token: String) -> Element {
                     }
                     Err(err) => {
                         error.set(match err {
+                            ApiError::Status { code: 401, .. } => {
+                                // Bearer missing or stale. Send them
+                                // through OIDC again with the current
+                                // URL as return_to so the callback
+                                // brings them back here signed in.
+                                #[cfg(feature = "web")]
+                                {
+                                    let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
+                                    let return_to = crate::modules::oidc::current_return_to();
+                                    if let Err(e) = crate::modules::oidc::start_login(&cfg, return_to) {
+                                        crate::modules::oidc::log_auth_error(&format!(
+                                            "accept-grant: login kickoff failed on 401: {e}"
+                                        ));
+                                    }
+                                }
+                                "Your sign-in expired. Sending you back to sign in again...".to_string()
+                            }
                             ApiError::Status { code: 404, .. } => {
                                 "This invitation link is not valid.".to_string()
                             }
@@ -160,6 +192,23 @@ pub fn AcceptGrantPage(token: String) -> Element {
                     }
                     Err(err) => {
                         error.set(match err {
+                            ApiError::Status { code: 401, .. } => {
+                                #[cfg(feature = "web")]
+                                {
+                                    let cfg =
+                                        crate::modules::oidc::OidcConfig::for_current_origin();
+                                    let return_to = crate::modules::oidc::current_return_to();
+                                    if let Err(e) =
+                                        crate::modules::oidc::start_login(&cfg, return_to)
+                                    {
+                                        crate::modules::oidc::log_auth_error(&format!(
+                                            "accept-grant: login kickoff failed on 401: {e}"
+                                        ));
+                                    }
+                                }
+                                "Your sign-in expired. Sending you back to sign in again..."
+                                    .to_string()
+                            }
                             ApiError::Status { code: 404, .. } => {
                                 "This invitation link is not valid.".to_string()
                             }
@@ -214,18 +263,52 @@ pub fn AcceptGrantPage(token: String) -> Element {
                             p { class: "text-subtle mt-2",
                                 "If you accept, this account will appear in your workspace switcher and you can leave at any time."
                             }
-                            div { class: "flex gap-3 mt-6",
-                                Button {
-                                    variant: ButtonVariant::Primary,
-                                    disabled: acting() || done(),
-                                    onclick: accept,
-                                    "Accept invitation"
+                            if !is_signed_in {
+                                // Not signed in: the accept POST needs a
+                                // bearer, so send them through OIDC first
+                                // with the current URL as `return_to`.
+                                // After sign-in the callback restores this
+                                // exact `/accept-grant?token=<t>` and the
+                                // Accept button below becomes clickable.
+                                p { class: "text-subtle mt-2",
+                                    "Sign in first, then accept the invitation."
                                 }
-                                Button {
-                                    variant: ButtonVariant::Secondary,
-                                    disabled: acting() || done(),
-                                    onclick: decline,
-                                    "Decline"
+                                div { class: "flex gap-3 mt-6",
+                                    Button {
+                                        variant: ButtonVariant::Primary,
+                                        onclick: move |_| {
+                                            #[cfg(feature = "web")]
+                                            {
+                                                let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
+                                                let return_to = crate::modules::oidc::current_return_to();
+                                                if let Err(e) = crate::modules::oidc::start_login(&cfg, return_to) {
+                                                    crate::modules::oidc::log_auth_error(&format!(
+                                                        "accept-grant: login kickoff failed: {e}"
+                                                    ));
+                                                    error.set(
+                                                        "Sign-in failed to start. Reload the page and try again."
+                                                            .to_string(),
+                                                    );
+                                                }
+                                            }
+                                        },
+                                        "Sign in to accept"
+                                    }
+                                }
+                            } else {
+                                div { class: "flex gap-3 mt-6",
+                                    Button {
+                                        variant: ButtonVariant::Primary,
+                                        disabled: acting() || done(),
+                                        onclick: accept,
+                                        "Accept invitation"
+                                    }
+                                    Button {
+                                        variant: ButtonVariant::Secondary,
+                                        disabled: acting() || done(),
+                                        onclick: decline,
+                                        "Decline"
+                                    }
                                 }
                             }
                         }
