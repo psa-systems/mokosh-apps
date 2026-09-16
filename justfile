@@ -410,6 +410,11 @@ check-link-preview:
     bash scripts/check-link-preview.sh --self-test
     bash scripts/check-link-preview.sh
 
+# MAPPS-814: prove the served CSP names the SPA's own `msp.<tld>`-derived API/OIDC origin when no MOKOSH_API_BASE/MOKOSH_OIDC_ISSUER is set, and that an operator's explicit origin still wins. Runs the real entrypoint + Caddyfile in a container, so it needs docker and is not part of `just check`, like check-link-preview above.
+[group: 'check']
+check-csp-host-derived-origin:
+    bash scripts/check-csp-host-derived-origin.sh
+
 # Build OCI image for validation
 [group: 'check']
 check-docker:

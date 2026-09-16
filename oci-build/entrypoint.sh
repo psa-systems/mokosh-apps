@@ -252,8 +252,24 @@ fi
 # MAPPS-369: derive origin-scoped CSP sources from the operator-facing base
 # URLs and export them so the Caddyfile's connect-src (read by the `caddy run`
 # exec'd below) allows the API / OIDC origins without their paths.
-MOKOSH_API_ORIGIN="$(origin_of "${MOKOSH_API_BASE:-}")"
-MOKOSH_OIDC_ORIGIN="$(origin_of "${MOKOSH_OIDC_ISSUER:-}")"
+#
+# MAPPS-814: with no MOKOSH_API_BASE / MOKOSH_OIDC_ISSUER, the SPA still
+# derives an origin at runtime from the browser's `msp.<tld>` host
+# (`src/hooks/fetch.rs::api_base()`, `src/modules/oidc/config.rs::resolve()`),
+# but entrypoint.sh runs once at container start and does not know that host
+# (one image serves every deployment). Export the Caddyfile's `map`
+# placeholder name instead of an empty string in that case, so the CSP header
+# picks up the SAME derivation from the actual request's Host header.
+if [ -n "${MOKOSH_API_BASE:-}" ]; then
+    MOKOSH_API_ORIGIN="$(origin_of "${MOKOSH_API_BASE}")"
+else
+    MOKOSH_API_ORIGIN='{mokosh_api_origin_fallback}'
+fi
+if [ -n "${MOKOSH_OIDC_ISSUER:-}" ]; then
+    MOKOSH_OIDC_ORIGIN="$(origin_of "${MOKOSH_OIDC_ISSUER}")"
+else
+    MOKOSH_OIDC_ORIGIN='{mokosh_oidc_origin_fallback}'
+fi
 export MOKOSH_API_ORIGIN MOKOSH_OIDC_ORIGIN
 
 exec "$@"
