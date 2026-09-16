@@ -258,9 +258,11 @@ dioxus-ssr = "0.7.7"
 # they need a runtime to drive it ON. The app never builds one - dioxus-desktop
 # owns that - which is why this is a dev-dependency and not a feature of the
 # runtime dependency above.
+# MAPPS-847: `macros` and `time` added for the resource-reactivity test's
+# `#[tokio::test]` and `tokio::time::sleep` timeout guard.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies.tokio]
 version = "1"
-features = ["rt-multi-thread"]
+features = ["rt-multi-thread", "macros", "time"]
 
 [profile.release]
 lto = true
