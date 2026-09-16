@@ -48,6 +48,10 @@ struct MeResponse {
     /// browser locale" (the legacy rendering behaviour).
     #[serde(default)]
     date_format_string: Option<String>,
+    /// MAPPS-830: whether mokosh-server's own TOTP second factor is
+    /// enrolled. Was decoded and discarded; now feeds [`MfaCard`].
+    #[serde(default)]
+    mfa_enabled: bool,
 }
 
 /// MAPPS-604: subset of mokosh-server's `ContactMe` the contact-facing
@@ -115,6 +119,51 @@ struct UpdateMeRequest {
     /// PMS-253: send the picked preset back as a non-empty string, or
     /// `None` to clear the pref and fall back to the browser locale.
     date_format_string: Option<String>,
+}
+
+// ── MFA enrolment (MAPPS-830) ───────────────────────────────────────────────
+//
+// mokosh-server mounts `POST /me/mfa/setup`, `/me/mfa/enable`,
+// `/me/mfa/disable` (`mokosh-server/src/modules/auth/routes.rs:115-117`)
+// against its own identity plane, independent of the Bunyip hub. This is the
+// standalone-mode path: gated on `!has_issuer()` at the call site in
+// `StaffProfilePage`, mirroring the hub-link gate MAPPS-816 adds. Each wire
+// shape below is a local mirror rather than `mokosh_types::auth`'s type
+// directly: the server's `MfaSetupResponse` / `MfaEnableResponse` derive only
+// `Serialize` and its `MfaEnableRequest` / `MfaDisableRequest` derive only
+// `Deserialize` (each derives the direction it needs on the server, not the
+// direction a client needs), so this page cannot bind them as-is. Same
+// pattern as `MeResponse` / `UpdateMeRequest` above; the guard functions in
+// the shared-DTO contract module below pin every field against the real type.
+
+/// `POST /me/mfa/setup` response: a freshly generated TOTP secret plus its
+/// `otpauth://` provisioning URI. `mfa_enabled` stays false until confirmed
+/// via [`MfaEnableRequest`].
+#[derive(Clone, Debug, Deserialize)]
+struct MfaSetupResponse {
+    secret: String,
+    provisioning_uri: String,
+}
+
+/// Body for `POST /me/mfa/enable`: the 6-8 digit TOTP code proving
+/// possession of the secret from [`MfaSetupResponse`].
+#[derive(Clone, Debug, Serialize)]
+struct MfaEnableRequest {
+    code: String,
+}
+
+/// `POST /me/mfa/enable` response: 10 single-use recovery codes, shown
+/// exactly once. The server persists only their hashes.
+#[derive(Clone, Debug, Deserialize)]
+struct MfaEnableResponse {
+    recovery_codes: Vec<String>,
+}
+
+/// Body for `POST /me/mfa/disable`: the current password, re-checked
+/// server-side so a stolen session cannot weaken the account silently.
+#[derive(Clone, Debug, Serialize)]
+struct MfaDisableRequest {
+    password: String,
 }
 
 fn optional_field(s: &str) -> Option<String> {
@@ -246,7 +295,7 @@ fn StaffProfilePage() -> Element {
     // bare `None`. The banner below surfaces the real reason so the user
     // can hand a concrete fault back without DevTools digging, and so a
     // future regression is observable from the page itself.
-    let me_resource = use_resource(|| async {
+    let mut me_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         // MAPPS-357: subscribe to reachability so the profile auto-refetches
         // the instant the server comes back (paired with the recovery poll).
@@ -315,6 +364,16 @@ fn StaffProfilePage() -> Element {
             }
             Some(Ok(me)) => rsx! {
                 PersonalInfoForm { initial: me.clone() }
+                // MAPPS-830: mokosh-server's own `/me/mfa/*` routes are the
+                // standalone-mode account-management path; a hub deployment
+                // stays authoritative for MFA (mirrors the profile-hub-link
+                // gate MAPPS-816 adds for the links above).
+                if !crate::modules::oidc::OidcConfig::for_current_origin().has_issuer() {
+                    MfaCard {
+                        mfa_enabled: me.mfa_enabled,
+                        onchange: move |_| me_resource.restart(),
+                    }
+                }
             },
         }
 
@@ -532,6 +591,353 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
                         title: (!can_mutate).then(|| "Can't save changes while the server is unreachable".to_string()),
                         "Save Changes"
                     }
+                }
+            }
+        }
+    }
+}
+
+/// MAPPS-830: standalone-mode second factor, driven against mokosh-server's
+/// own `/me/mfa/*` routes. Rendered by `StaffProfilePage` only when
+/// `!has_issuer()`. `onchange` fires after a successful enable or disable so
+/// the parent can `me_resource.restart()` and pick up the new `mfa_enabled`.
+#[derive(Props, Clone, PartialEq)]
+struct MfaCardProps {
+    mfa_enabled: bool,
+    onchange: EventHandler<()>,
+}
+
+#[component]
+fn MfaCard(props: MfaCardProps) -> Element {
+    let mut show_setup = use_signal(|| false);
+    let mut show_disable = use_signal(|| false);
+    let can_mutate = crate::hooks::use_can_mutate();
+
+    rsx! {
+        Card {
+            div { class: "flex items-center justify-between gap-4 p-6",
+                div {
+                    h2 { class: "text-base font-semibold text-content",
+                        "Two-factor authentication"
+                    }
+                    p { class: "text-sm text-muted",
+                        "A TOTP code from an authenticator app, held on this account directly. Independent of Bunyip."
+                    }
+                    p { class: "mt-1 text-sm font-medium text-content",
+                        if props.mfa_enabled { "Enabled" } else { "Not enabled" }
+                    }
+                }
+                if props.mfa_enabled {
+                    Button {
+                        variant: ButtonVariant::Danger,
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't change MFA while the server is unreachable".to_string()),
+                        onclick: move |_| show_disable.set(true),
+                        "Disable"
+                    }
+                } else {
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't change MFA while the server is unreachable".to_string()),
+                        onclick: move |_| show_setup.set(true),
+                        "Set up"
+                    }
+                }
+            }
+        }
+        MfaSetupModal {
+            open: show_setup(),
+            onclose: move |_| show_setup.set(false),
+            onenabled: move |_| {
+                show_setup.set(false);
+                props.onchange.call(());
+            },
+        }
+        MfaDisableModal {
+            open: show_disable(),
+            onclose: move |_| show_disable.set(false),
+            ondisabled: move |_| {
+                show_disable.set(false);
+                props.onchange.call(());
+            },
+        }
+    }
+}
+
+/// One step of [`MfaSetupModal`]: show the secret + QR URI and collect the
+/// confirmation code, or show the freshly minted recovery codes.
+#[derive(Clone, PartialEq)]
+enum MfaSetupStep {
+    /// `POST /me/mfa/setup` is in flight.
+    Loading,
+    /// Secret issued; waiting on the user's 6-8 digit code.
+    EnterCode {
+        secret: String,
+        provisioning_uri: String,
+    },
+    /// `POST /me/mfa/enable` succeeded; show the one-time recovery codes.
+    Recovery {
+        codes: Vec<String>,
+    },
+    Error(String),
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct MfaSetupModalProps {
+    open: bool,
+    onclose: EventHandler<()>,
+    onenabled: EventHandler<()>,
+}
+
+/// `POST /me/mfa/setup` runs once each time the modal opens (a fresh call
+/// mints a fresh secret server-side, so re-opening after a cancel is safe).
+#[component]
+fn MfaSetupModal(props: MfaSetupModalProps) -> Element {
+    let mut step = use_signal(|| MfaSetupStep::Loading);
+    let mut code = use_signal(String::new);
+    let mut submitting = use_signal(|| false);
+
+    let open = props.open;
+    use_effect(use_reactive!(|open| {
+        if !open {
+            return;
+        }
+        step.set(MfaSetupStep::Loading);
+        code.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                match crate::hooks::fetch::api::post_authed_typed::<MfaSetupResponse, ()>(
+                    "/auth/me/mfa/setup",
+                    &(),
+                )
+                .await
+                {
+                    Ok(resp) => step.set(MfaSetupStep::EnterCode {
+                        secret: resp.secret,
+                        provisioning_uri: resp.provisioning_uri,
+                    }),
+                    Err(e) => step.set(MfaSetupStep::Error(e.user_message())),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                step.set(MfaSetupStep::Error("non-app build".into()));
+            }
+        });
+    }));
+
+    if !props.open {
+        return rsx! {};
+    }
+
+    let onclose = props.onclose;
+    let onenabled = props.onenabled;
+
+    let confirm = move |_| {
+        if submitting() {
+            return;
+        }
+        let MfaSetupStep::EnterCode { .. } = step() else {
+            return;
+        };
+        submitting.set(true);
+        let body = MfaEnableRequest { code: code() };
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                match crate::hooks::fetch::api::post_authed_typed::<MfaEnableResponse, _>(
+                    "/auth/me/mfa/enable",
+                    &body,
+                )
+                .await
+                {
+                    Ok(resp) => step.set(MfaSetupStep::Recovery {
+                        codes: resp.recovery_codes,
+                    }),
+                    Err(e) => step.set(MfaSetupStep::Error(e.user_message())),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = body;
+            }
+            submitting.set(false);
+        });
+    };
+
+    rsx! {
+        Modal {
+            open: true,
+            title: "Set up two-factor authentication".to_string(),
+            onclose: move |_| onclose.call(()),
+            footer: match step() {
+                MfaSetupStep::Recovery { .. } => rsx! {
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        onclick: move |_| onenabled.call(()),
+                        "Done"
+                    }
+                },
+                MfaSetupStep::EnterCode { .. } => rsx! {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        disabled: submitting(),
+                        onclick: move |_| onclose.call(()),
+                        "Cancel"
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        loading: submitting(),
+                        disabled: code().trim().is_empty(),
+                        onclick: confirm,
+                        "Confirm"
+                    }
+                },
+                _ => rsx! {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| onclose.call(()),
+                        "Close"
+                    }
+                },
+            },
+            match step() {
+                MfaSetupStep::Loading => rsx! {
+                    p { class: "text-sm text-muted", "Generating a secret\u{2026}" }
+                },
+                MfaSetupStep::Error(msg) => rsx! {
+                    ErrorBanner { "{msg}" }
+                },
+                MfaSetupStep::EnterCode { secret, provisioning_uri } => rsx! {
+                    div { class: "space-y-4",
+                        p { class: "text-sm text-content",
+                            "Scan this into your authenticator app, or enter the secret manually."
+                        }
+                        div { class: "rounded-md border border-line bg-surface-2 p-3 space-y-2",
+                            p { class: "text-xs uppercase text-muted", "Secret" }
+                            p { class: "font-mono text-sm text-content break-all", "{secret}" }
+                            p { class: "text-xs uppercase text-muted", "Provisioning URI" }
+                            p { class: "font-mono text-xs text-content break-all", "{provisioning_uri}" }
+                        }
+                        Input {
+                            name: "mfa_code",
+                            label: "Code from your authenticator app",
+                            value: code(),
+                            oninput: move |e: FormEvent| code.set(e.value()),
+                        }
+                    }
+                },
+                MfaSetupStep::Recovery { codes } => rsx! {
+                    div { class: "space-y-3",
+                        StatusBanner { tone: BannerTone::Success, "Two-factor authentication is enabled." }
+                        p { class: "text-sm text-content",
+                            "Save these recovery codes now. Each works once, and they will not be shown again."
+                        }
+                        div { class: "rounded-md border border-line bg-surface-2 p-3 font-mono text-sm text-content grid grid-cols-2 gap-2",
+                            for recovery_code in codes {
+                                span { "{recovery_code}" }
+                            }
+                        }
+                    }
+                },
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct MfaDisableModalProps {
+    open: bool,
+    onclose: EventHandler<()>,
+    ondisabled: EventHandler<()>,
+}
+
+#[component]
+fn MfaDisableModal(props: MfaDisableModalProps) -> Element {
+    let mut password = use_signal(String::new);
+    let mut error = use_signal(String::new);
+    let mut submitting = use_signal(|| false);
+
+    let open = props.open;
+    use_effect(use_reactive!(|open| {
+        if open {
+            password.set(String::new());
+            error.set(String::new());
+        }
+    }));
+
+    if !props.open {
+        return rsx! {};
+    }
+
+    let onclose = props.onclose;
+    let ondisabled = props.ondisabled;
+
+    let confirm = move |_| {
+        if submitting() || password().is_empty() {
+            return;
+        }
+        submitting.set(true);
+        error.set(String::new());
+        let body = MfaDisableRequest {
+            password: password(),
+        };
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                match crate::hooks::fetch::api::post_authed_json_no_content(
+                    "/auth/me/mfa/disable",
+                    &body,
+                )
+                .await
+                {
+                    Ok(()) => ondisabled.call(()),
+                    Err(e) => error.set(e.user_message()),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = body;
+            }
+            submitting.set(false);
+        });
+    };
+
+    rsx! {
+        Modal {
+            open: true,
+            title: "Disable two-factor authentication".to_string(),
+            onclose: move |_| onclose.call(()),
+            footer: rsx! {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    disabled: submitting(),
+                    onclick: move |_| onclose.call(()),
+                    "Cancel"
+                }
+                Button {
+                    variant: ButtonVariant::Danger,
+                    loading: submitting(),
+                    disabled: password().is_empty(),
+                    onclick: confirm,
+                    "Disable"
+                }
+            },
+            div { class: "space-y-3",
+                p { class: "text-sm text-content",
+                    "Confirm your password to turn off two-factor authentication."
+                }
+                if !error().is_empty() {
+                    ErrorBanner { "{error}" }
+                }
+                Input {
+                    name: "mfa_disable_password",
+                    label: "Current password",
+                    r#type: "password".to_string(),
+                    value: password(),
+                    oninput: move |e: FormEvent| password.set(e.value()),
                 }
             }
         }
@@ -1253,7 +1659,10 @@ fn ContactPersonalInfoForm(props: ContactPersonalInfoFormProps) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use super::{MeResponse, UpdateMeRequest};
+    use super::{
+        MeResponse, MfaDisableRequest, MfaEnableRequest, MfaEnableResponse, MfaSetupResponse,
+        UpdateMeRequest,
+    };
 
     /// This module's own source, minus this test module: the assertion below
     /// names the very strings it forbids.
@@ -1382,6 +1791,7 @@ mod tests {
             title,
             timezone,
             date_format_string,
+            mfa_enabled,
         };
         // Read from `AuthContext` (the identity strip) or not rendered at all:
         // the names, email and avatar are bunyip's and shown read-only, the
@@ -1399,7 +1809,6 @@ mod tests {
             theme_accent_id,
             role,
             status,
-            mfa_enabled,
             last_login_at,
             created_at,
             profile_completed,
@@ -1409,6 +1818,47 @@ mod tests {
             // this screen renders no tenant metadata.
             tenant_kind,
         );
+    }
+
+    /// MAPPS-830: `POST /me/mfa/setup` answers with
+    /// `mokosh_types::auth::MfaSetupResponse`, narrowed to this page's
+    /// `MfaSetupResponse`. Every field is rendered (secret for manual entry,
+    /// URI for the QR/copy step), so nothing is dropped.
+    #[allow(dead_code)]
+    fn mfa_setup_response_fields_this_page_reads(resp: mokosh_types::auth::MfaSetupResponse) {
+        let mokosh_types::auth::MfaSetupResponse {
+            secret,
+            provisioning_uri,
+        } = resp;
+        let _ = MfaSetupResponse {
+            secret,
+            provisioning_uri,
+        };
+    }
+
+    /// MAPPS-830: `POST /me/mfa/enable` takes
+    /// `mokosh_types::auth::MfaEnableRequest`; this page sends every field.
+    #[allow(dead_code)]
+    fn mfa_enable_request_fields_this_page_sends(req: mokosh_types::auth::MfaEnableRequest) {
+        let mokosh_types::auth::MfaEnableRequest { code } = req;
+        let _ = MfaEnableRequest { code };
+    }
+
+    /// MAPPS-830: `POST /me/mfa/enable` answers with
+    /// `mokosh_types::auth::MfaEnableResponse`; this page renders every field
+    /// (the recovery codes, shown once).
+    #[allow(dead_code)]
+    fn mfa_enable_response_fields_this_page_reads(resp: mokosh_types::auth::MfaEnableResponse) {
+        let mokosh_types::auth::MfaEnableResponse { recovery_codes } = resp;
+        let _ = MfaEnableResponse { recovery_codes };
+    }
+
+    /// MAPPS-830: `POST /me/mfa/disable` takes
+    /// `mokosh_types::auth::MfaDisableRequest`; this page sends every field.
+    #[allow(dead_code)]
+    fn mfa_disable_request_fields_this_page_sends(req: mokosh_types::auth::MfaDisableRequest) {
+        let mokosh_types::auth::MfaDisableRequest { password } = req;
+        let _ = MfaDisableRequest { password };
     }
 }
 
