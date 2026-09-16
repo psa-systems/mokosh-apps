@@ -470,6 +470,11 @@ pub struct PaginationProps {
     per_page: usize,
     /// Page change handler
     onpagechange: EventHandler<usize>,
+    /// Whether the pager renders its top border. Defaults to true, matching
+    /// every `DataTable` pager; a standalone pager below a non-table layout
+    /// (e.g. a card grid) can pass `false` to avoid a doubled-up border.
+    #[props(default = true)]
+    bordered: bool,
 }
 
 #[component]
@@ -498,7 +503,12 @@ pub fn Pagination(props: PaginationProps) -> Element {
     };
 
     rsx! {
-        div { class: "flex items-center justify-between border-t border-line bg-surface px-4 py-3 sm:px-6",
+        div {
+            class: if props.bordered {
+                "flex items-center justify-between border-t border-line bg-surface px-4 py-3 sm:px-6"
+            } else {
+                "flex items-center justify-between bg-surface px-4 py-3 sm:px-6"
+            },
             // Mobile view
             div { class: "flex flex-1 justify-between sm:hidden",
                 button {

@@ -357,7 +357,12 @@ fn VersionEvent(version: KbArticleVersion, previous: Option<KbArticleVersion>) -
                 p { class: "text-content",
                     span { class: "font-medium", "{who}" }
                     " {kind.to_lowercase()} the article (v{n}) "
-                    span { class: "text-subtle", title: "{absolute}", "{when}" }
+                    time {
+                        class: "text-subtle",
+                        title: "{absolute}",
+                        datetime: "{version.created_at.map(|d| d.to_rfc3339()).unwrap_or_default()}",
+                        "{when}"
+                    }
                 }
                 if let Some(note) = note {
                     p { class: "italic text-muted", "\u{201c}{note}\u{201d}" }
@@ -620,7 +625,12 @@ fn CommentBody(
             div { class: "min-w-0 flex-1",
                 div { class: "flex items-center gap-2 text-sm",
                     span { class: "font-medium text-content", "{comment.author_name}" }
-                    span { class: "text-subtle", title: "{absolute}", "{when}" }
+                    time {
+                        class: "text-subtle",
+                        title: "{absolute}",
+                        datetime: "{comment.created_at.to_rfc3339()}",
+                        "{when}"
+                    }
                     if comment.edited_at.is_some() && !comment.deleted {
                         span { class: "text-xs text-subtle", "(edited)" }
                     }

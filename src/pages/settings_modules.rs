@@ -55,13 +55,15 @@ fn ModulesSettingsBody() -> Element {
         if !error().is_empty() {
             ErrorBanner { "{error}" }
         }
-        Card {
-            match snap {
-                None => rsx! { p { class: "p-6 text-sm text-subtle", "Loading…" } },
-                Some(None) => rsx! {
+        match snap {
+            None => rsx! { crate::components::DetailSkeleton {} },
+            Some(None) => rsx! {
+                Card {
                     div { class: "p-6", ErrorBanner { "Could not load the module settings." } }
-                },
-                Some(Some(configs)) => rsx! {
+                }
+            },
+            Some(Some(configs)) => rsx! {
+                Card {
                     ul { class: "divide-y divide-line",
                         for module in GATED_MODULES.iter() {
                             {
@@ -107,8 +109,8 @@ fn ModulesSettingsBody() -> Element {
                             }
                         }
                     }
-                },
-            }
+                }
+            },
         }
     }
 }

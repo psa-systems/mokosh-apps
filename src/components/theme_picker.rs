@@ -199,7 +199,7 @@ pub fn ThemePicker() -> Element {
                         "Tickets"
                     }
                     button { r#type: "button", class: "px-3 py-1.5 rounded-md text-sm font-semibold bg-accent text-on-accent",
-                        "Save changes"
+                        "Save Changes"
                     }
                     a { class: "text-sm font-semibold text-accent underline", "View all" }
                     span { class: "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-accent-100 text-accent-800 dark:bg-accent-900 dark:text-accent-300",

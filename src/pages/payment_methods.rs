@@ -125,10 +125,6 @@ fn ContactPaymentMethodsBody() -> Element {
     let mut removing = use_signal(|| false);
 
     let snap = methods_resource.read_unchecked();
-    let methods: Vec<RemotePaymentMethod> = match &*snap {
-        Some(Ok(v)) => v.clone(),
-        _ => Vec::new(),
-    };
     let load_error = match &*snap {
         Some(Err(e)) => Some(e.user_message()),
         _ => None,
@@ -218,16 +214,27 @@ fn ContactPaymentMethodsBody() -> Element {
                     "Add a card"
                 }
             }
-            if methods.is_empty() {
-                p { class: "text-sm text-muted py-6",
-                    "You have not saved any cards yet. Click Add a card to save one for future invoices."
-                }
-            } else {
-                ul { class: "divide-y divide-line",
-                    for method in methods.iter() {
-                        {render_method_row(method.clone(), reload_tick, action_error, pending_remove)}
+            match &*snap {
+                None => rsx! {
+                    div { class: "space-y-4 py-2",
+                        div { class: "h-4 w-full bg-surface-2 rounded animate-pulse" }
+                        div { class: "h-4 w-full bg-surface-2 rounded animate-pulse" }
+                        div { class: "h-4 w-2/3 bg-surface-2 rounded animate-pulse" }
                     }
-                }
+                },
+                Some(Ok(v)) if v.is_empty() => rsx! {
+                    p { class: "text-sm text-muted py-6",
+                        "You have not saved any cards yet. Click Add a card to save one for future invoices."
+                    }
+                },
+                Some(Ok(v)) => rsx! {
+                    ul { class: "divide-y divide-line",
+                        for method in v.iter() {
+                            {render_method_row(method.clone(), reload_tick, action_error, pending_remove)}
+                        }
+                    }
+                },
+                Some(Err(_)) => rsx! {},
             }
         }
 

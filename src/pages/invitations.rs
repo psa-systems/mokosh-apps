@@ -260,7 +260,7 @@ pub fn InvitationsPage() -> Element {
                     ErrorBanner { "{error.read()}" }
                 }
                 div {
-                    class: "grid grid-cols-1 gap-4 sm:grid-cols-3 sm:items-end",
+                    class: if is_org_tenant { "grid grid-cols-1 gap-4 sm:grid-cols-3 sm:items-end" } else { "grid grid-cols-1 gap-4 sm:grid-cols-2 sm:items-end" },
                     Input {
                         name: "email",
                         label: "Email",
@@ -420,7 +420,10 @@ pub fn InvitationsPage() -> Element {
                                         Badge { variant: BadgeVariant::Gray, "{inv.role}" }
                                     }
                                     TableCell {
-                                        "{crate::utils::datetime::fmt_user_dt(inv.expires_at, Some(\"%Y-%m-%d\"))}"
+                                        time {
+                                            datetime: "{inv.expires_at.to_rfc3339()}",
+                                            "{crate::utils::datetime::fmt_user_dt(inv.expires_at, Some(\"%Y-%m-%d\"))}"
+                                        }
                                     }
                                     TableCell {
                                         Button {

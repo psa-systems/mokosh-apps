@@ -206,17 +206,9 @@ pub fn ContactGenericLoginPage() -> Element {
                     }
                 }
             }
-            // MAPPS-615: cross-plane switch. A visitor who lands here
-            // but actually needs the staff MSP console can jump without
-            // browser-back-buttoning. Sits below the primary form so
-            // the client-portal action stays visually dominant.
-            div { class: "pt-6 mt-6 border-t border-line text-center",
-                Link {
-                    to: Route::Login {},
-                    class: "text-sm text-accent hover:underline",
-                    "MSP staff sign in instead"
-                }
-            }
+            // MAPPS-806: no link to the staff sign-in, for the reason on the
+            // Company ID login: this is a customer page, and the staff login
+            // is a door a customer cannot use.
         }
     }
 }
