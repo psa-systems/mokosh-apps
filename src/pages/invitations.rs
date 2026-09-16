@@ -38,7 +38,21 @@ struct TeamOption {
 #[derive(Clone, Debug, serde::Deserialize)]
 struct PaginatedInvitations {
     data: Vec<RemoteInvitation>,
+    #[serde(default)]
+    meta: PaginationMeta,
 }
+
+/// MAPPS-838: server-side paginated envelope's meta block
+/// (`PaginatedResponse::meta`). Only `total` is read here.
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+struct PaginationMeta {
+    #[serde(default)]
+    total: u64,
+}
+
+/// MAPPS-838: matches the `per_page` sent server-side, so the requested
+/// page size and the `DataTable`'s pager math agree.
+const PER_PAGE: usize = 25;
 
 /// MAPPS-482: `POST /notifications/preview` renders whatever the tenant's
 /// notification rules say, and the invite is not one of them: mokosh-server
@@ -74,6 +88,12 @@ pub fn InvitationsPage() -> Element {
     // server send failure, which has no single field to attach to.
     let mut email_error = use_signal(String::new);
 
+    // MAPPS-838: paging state for the roster. Read inside the resource
+    // closure below (not captured by value) so a page change actually
+    // subscribes the resource and re-fetches, matching the fix MAPPS-148
+    // applied to `contacts.rs`.
+    let mut page = use_signal(|| 1usize);
+
     // Pending invitations for the active tenant. Re-fetches on tenant switch.
     // MAPPS-357: this is the page's primary resource. It keeps a hand-rolled
     // `use_resource` (rather than `use_remote_resource`) because the invite /
@@ -81,20 +101,26 @@ pub fn InvitationsPage() -> Element {
     // so the roster auto-refetches on reconnect. The fetcher keeps `.ok()`
     // (NOT `.unwrap_or_default()`) so a failed load stays distinguishable from
     // an empty roster, letting the outage render `ContentUnavailable` below.
-    let mut invites = use_resource(|| async move {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        let _reachable = crate::hooks::use_server_reachable();
-        #[cfg(feature = "app")]
-        {
-            crate::hooks::fetch::api::get_authed::<PaginatedInvitations>("/invitations")
-                .await
-                .map(|p| p.data)
-                .inspect_err(|e| tracing::error!("team roster load failed: {e}"))
-                .ok()
-        }
-        #[cfg(not(feature = "app"))]
-        {
-            Some(Vec::<RemoteInvitation>::new())
+    let mut invites = use_resource(move || {
+        let current_page = (*page.read()).max(1);
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
+            #[cfg(feature = "app")]
+            {
+                let path = format!("/invitations?page={current_page}&per_page={PER_PAGE}");
+                crate::hooks::fetch::api::get_authed::<PaginatedInvitations>(&path)
+                    .await
+                    .inspect_err(|e| tracing::error!("team roster load failed: {e}"))
+                    .ok()
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                Some(PaginatedInvitations {
+                    data: Vec::new(),
+                    meta: PaginationMeta::default(),
+                })
+            }
         }
     });
 
@@ -218,10 +244,11 @@ pub fn InvitationsPage() -> Element {
     let snapshot = invites.read_unchecked();
     let is_loading = snapshot.is_none();
     let fetch_failed = matches!(*snapshot, Some(None));
-    let rows = match &*snapshot {
-        Some(Some(v)) => v.clone(),
-        _ => Vec::new(),
+    let (rows, total): (Vec<RemoteInvitation>, u64) = match &*snapshot {
+        Some(Some(payload)) => (payload.data.clone(), payload.meta.total),
+        _ => (Vec::new(), 0),
     };
+    let current_page = (*page.read()).max(1);
 
     // MAPPS-357: a failed load while the server is flagged down is an outage,
     // not an empty roster - render the honest unavailable state (which keeps
@@ -390,10 +417,11 @@ pub fn InvitationsPage() -> Element {
         div { class: "mt-6",
             DataTable {
                 loading: is_loading,
-                total_items: rows.len(),
-                current_page: 1,
-                per_page: 25,
+                total_items: total as usize,
+                current_page,
+                per_page: PER_PAGE,
                 columns: 4,
+                onpagechange: move |p| page.set(p),
                 Table {
                     TableHead {
                         TableRow {

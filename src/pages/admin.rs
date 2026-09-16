@@ -60,7 +60,25 @@ struct TenantBrandingWire {
 #[derive(Clone, Debug, Deserialize)]
 struct PaginatedTenants {
     data: Vec<RemoteTenant>,
+    #[serde(default)]
+    meta: PaginationMeta,
 }
+
+/// MAPPS-838: server-side paginated envelope's meta block
+/// (`PaginatedResponse::meta`). Only `total` is read here; the rest of the
+/// envelope (page, per_page, has_next, has_prev) is derivable client-side
+/// from `total` + `PER_PAGE` + the current page signal.
+#[cfg(feature = "multi-tenant")]
+#[derive(Clone, Debug, Default, Deserialize)]
+struct PaginationMeta {
+    #[serde(default)]
+    total: u64,
+}
+
+/// MAPPS-838: matches the `per_page` sent server-side, so the requested
+/// page size and the `DataTable`'s pager math agree.
+#[cfg(feature = "multi-tenant")]
+const PER_PAGE: usize = 25;
 
 #[cfg(feature = "multi-tenant")]
 fn humanize_plan(raw: &Option<String>) -> String {
@@ -161,38 +179,48 @@ pub fn TenantManagementPage() -> Element {
     // with the new state.
     let mut show_create = use_signal(|| false);
     let mut edit_target: Signal<Option<RemoteTenant>> = use_signal(|| None);
+    // MAPPS-838: paging state for the roster. Read inside the resource
+    // closure below (not captured by value) so a page change actually
+    // subscribes the resource and re-fetches, matching the fix MAPPS-148
+    // applied to `contacts.rs`.
+    let mut page = use_signal(|| 1usize);
     // MAPPS-438: render only rows the backend returned. A failed fetch
     // (missing platform bearer, 4xx / 5xx, transport error) resolves to
     // `Some(None)` so `fetch_failed` can render an ErrorBanner over the
     // empty table instead of inventing rows.
-    let mut tenants_resource = use_resource(|| async {
-        // F1: re-fetch on org switch / token swap so the roster reflects
-        // the active scope instead of the prior tenant's cached rows.
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        // MAPPS-351: also refetch on reconnect so the roster fills in once the
-        // real backend answers again.
-        let _reachable = crate::hooks::use_server_reachable();
-        // MAPPS-518: `GET /api/v1/tenants` is now gated on
-        // `RequirePlatformAdmin`; the tenant `ACCESS_TOKEN` is a
-        // guaranteed 401 here. Read the platform bearer stashed by
-        // `/platform/login` instead; the caller (TenantManagementPage)
-        // gates rendering on `platform_bearer_present()`, so an
-        // absent token here reads as a fetch failure.
-        let token = crate::hooks::fetch::api::current_platform_access_token()?;
-        crate::hooks::fetch::api::get_with_auth::<PaginatedTenants>("/tenants", &token)
-            .await
-            .inspect_err(|e| tracing::error!("tenant roster load failed: {e}"))
-            .ok()
-            .map(|page| page.data)
+    let mut tenants_resource = use_resource(move || {
+        let current_page = (*page.read()).max(1);
+        async move {
+            // F1: re-fetch on org switch / token swap so the roster reflects
+            // the active scope instead of the prior tenant's cached rows.
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-351: also refetch on reconnect so the roster fills in once the
+            // real backend answers again.
+            let _reachable = crate::hooks::use_server_reachable();
+            // MAPPS-518: `GET /api/v1/tenants` is now gated on
+            // `RequirePlatformAdmin`; the tenant `ACCESS_TOKEN` is a
+            // guaranteed 401 here. Read the platform bearer stashed by
+            // `/platform/login` instead; the caller (TenantManagementPage)
+            // gates rendering on `platform_bearer_present()`, so an
+            // absent token here reads as a fetch failure.
+            let token = crate::hooks::fetch::api::current_platform_access_token()?;
+            let path = format!("/tenants?page={current_page}&per_page={PER_PAGE}");
+            crate::hooks::fetch::api::get_with_auth::<PaginatedTenants>(&path, &token)
+                .await
+                .inspect_err(|e| tracing::error!("tenant roster load failed: {e}"))
+                .ok()
+        }
     });
 
     let resource_snapshot = tenants_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
     let fetch_failed = matches!(*resource_snapshot, Some(None));
-    let remote_tenants: Vec<RemoteTenant> = resource_snapshot
-        .as_ref()
-        .and_then(|o| o.clone())
-        .unwrap_or_default();
+    let (remote_tenants, total_tenants_count): (Vec<RemoteTenant>, u64) =
+        match resource_snapshot.as_ref().and_then(|o| o.clone()) {
+            Some(payload) => (payload.data, payload.meta.total),
+            None => (Vec::new(), 0),
+        };
+    let current_page = (*page.read()).max(1);
 
     // MAPPS-357 / MAPPS-602: block create / edit writes while the
     // server is unreachable. Hoisted above the outage early return so
@@ -216,8 +244,7 @@ pub fn TenantManagementPage() -> Element {
     // 42/38/4 literals. MRR has no source field on the tenants API (per-row
     // MRR is "-" too), so it is shown as "-" rather than a fabricated dollar
     // figure.
-    let (total_tenants, active_count, trial_count) = (
-        remote_tenants.len(),
+    let (active_count, trial_count) = (
         remote_tenants
             .iter()
             .filter(|t| humanize_tenant_status(&t.status) == "Active")
@@ -234,7 +261,13 @@ pub fn TenantManagementPage() -> Element {
             n.to_string()
         }
     };
-    let total_tenants_label = stat(total_tenants);
+    // MAPPS-838: the real total across every page, not `remote_tenants.len()`
+    // (the current page's row count).
+    let total_tenants_label = if is_loading {
+        "-".to_string()
+    } else {
+        total_tenants_count.to_string()
+    };
     let active_label = stat(active_count);
     let trial_label = stat(trial_count);
 
@@ -270,10 +303,11 @@ pub fn TenantManagementPage() -> Element {
 
         DataTable {
             loading: is_loading,
-            total_items: remote_tenants.len(),
-            current_page: 1,
-            per_page: 25,
+            total_items: total_tenants_count as usize,
+            current_page,
+            per_page: PER_PAGE,
             columns: 7,
+            onpagechange: move |p| page.set(p),
             Table {
                 TableHead {
                     TableRow {

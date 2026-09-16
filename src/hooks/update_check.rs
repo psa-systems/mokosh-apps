@@ -471,4 +471,41 @@ mod tests {
     fn stale_flag_is_a_global_signal() {
         assert!(production_src().contains("pub static UPDATE_PENDING: GlobalSignal<bool>"));
     }
+
+    /// MAPPS-813: `fetch_live_build_sha` compares the container's live
+    /// `build_sha` against the desktop build's baseline directly (`live
+    /// != baseline`), so the two sides must emit the same-length sha or
+    /// the comparison is never equal. `build.rs` bakes the baseline with
+    /// `.take(12)`; `entrypoint.sh` must truncate to the same length.
+    #[test]
+    fn container_and_desktop_agree_on_the_build_sha_length() {
+        let build_rs = include_str!("../../build.rs");
+        let take_len = build_rs
+            .split_once(".chars().take(")
+            .expect("build.rs still truncates the baked sha with .chars().take(N)")
+            .1
+            .split_once(')')
+            .expect("take(N) call is closed")
+            .0
+            .parse::<usize>()
+            .expect("take(N) argument is a plain integer");
+
+        let entrypoint_sh = include_str!("../../oci-build/entrypoint.sh");
+        let emit_line = entrypoint_sh
+            .lines()
+            .find(|line| line.contains("printf") && line.contains("build_sha\\t"))
+            .expect("entrypoint.sh still emits build_sha via printf");
+        let precision = emit_line
+            .split_once("%.")
+            .map(|(_, rest)| rest.split_once('s').expect("printf format closes with s").0)
+            .expect("entrypoint.sh must truncate build_sha with a printf precision (%.Ns)")
+            .parse::<usize>()
+            .expect("printf precision is a plain integer");
+
+        assert_eq!(
+            take_len, precision,
+            "build.rs takes {take_len} chars but entrypoint.sh emits {precision}: \
+             the update probe compares them directly and must see the same length"
+        );
+    }
 }

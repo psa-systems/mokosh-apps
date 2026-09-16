@@ -677,14 +677,22 @@ struct InvoiceLite {
     total: Option<rust_decimal::Decimal>,
 }
 
+/// True count and sum across every row handed to it. Split out of
+/// `WidgetOpenInvoices` so a test can feed it more rows than one page holds
+/// and check nothing here re-introduces a page-sized cap of its own.
+fn open_invoices_totals(rows: &[InvoiceLite]) -> (usize, rust_decimal::Decimal) {
+    let total = rows.iter().filter_map(|i| i.total).sum();
+    (rows.len(), total)
+}
+
 #[component]
 fn WidgetOpenInvoices() -> Element {
+    // MAPPS-842: `get_all_authed` pages through the whole filtered
+    // collection (the same pattern `WidgetTimeThisWeek` uses to sum a
+    // window it can't just take the first page of), so both the count and
+    // the sum below are true totals rather than one page's length and sum.
     let invoices = crate::hooks::use_remote_resource(|| async {
-        crate::hooks::fetch::api::get_authed::<Paginated<InvoiceLite>>(
-            "/invoices?status=sent&per_page=50",
-        )
-        .await
-        .map(|p| p.data)
+        crate::hooks::fetch::api::get_all_authed::<InvoiceLite>("/invoices?status=sent").await
     });
     if invoices.is_loading() {
         return widget_loading();
@@ -693,12 +701,9 @@ fn WidgetOpenInvoices() -> Element {
         return widget_failed();
     }
     let rows = invoices.value_or_default();
-    let total: rust_decimal::Decimal = rows
-        .iter()
-        .filter_map(|i| i.total)
-        .sum::<rust_decimal::Decimal>();
+    let (count, total) = open_invoices_totals(&rows);
     rsx! {
-        div { class: "text-3xl font-semibold text-content", "{rows.len()}" }
+        div { class: "text-3xl font-semibold text-content", "{count}" }
         p { class: "text-xs text-muted mt-1", "Outstanding invoices, total {total}." }
     }
 }
@@ -771,4 +776,68 @@ fn monday_of_week(date: chrono::NaiveDate) -> chrono::NaiveDate {
         Weekday::Sun => 6,
     };
     date - Duration::days(offset)
+}
+
+#[cfg(test)]
+mod open_invoices_tests {
+    use super::{open_invoices_totals, InvoiceLite};
+    use rust_decimal::Decimal;
+
+    /// This module's own source, minus this test module: the assertion below
+    /// names the very call it requires, so scanning the whole file would make
+    /// it match itself.
+    fn production_src() -> &'static str {
+        const SRC: &str = include_str!("dashboards_view.rs");
+        SRC.split_once("#[cfg(test)]")
+            .map(|(before, _)| before)
+            .expect("this file has a test module")
+    }
+
+    /// MAPPS-842 recurrence guard: `WidgetOpenInvoices` must read the whole
+    /// filtered collection through the `get_all_*` paging helper, never a
+    /// single `get_authed` page - that is exactly the bug this issue fixed
+    /// (a page's length and sum stood in for the collection's).
+    #[test]
+    fn widget_open_invoices_reads_the_whole_collection() {
+        let body = production_src()
+            .split("fn WidgetOpenInvoices")
+            .nth(1)
+            .expect("WidgetOpenInvoices is defined in this file");
+        let body = &body[..body.find("\nfn ").unwrap_or(body.len())];
+        assert!(
+            body.contains("get_all_authed"),
+            "must page through every open invoice, not one page of them: {body}"
+        );
+        assert!(
+            !body.contains("per_page"),
+            "the get_all_* helpers own per_page; a call site spelling it out \
+             again is a sign the page-truncation bug came back: {body}"
+        );
+    }
+
+    /// MAPPS-842 acceptance criterion: with more open invoices than a single
+    /// page (`MAX_PER_PAGE` is 100), the displayed count and sum must be the
+    /// full collection's, not the first page's.
+    #[test]
+    fn totals_cover_every_row_past_one_page() {
+        let per_page_cap = crate::utils::PaginationParams::MAX_PER_PAGE as usize;
+        let row_count = per_page_cap + 37;
+        let rows: Vec<InvoiceLite> = (0..row_count)
+            .map(|_| InvoiceLite {
+                total: Some(Decimal::new(1000, 2)), // $10.00
+            })
+            .collect();
+
+        let (count, total) = open_invoices_totals(&rows);
+
+        assert_eq!(
+            count, row_count,
+            "the count must be every open invoice, not just one page's worth"
+        );
+        assert_eq!(
+            total,
+            Decimal::new(1000, 2) * Decimal::from(row_count as u64),
+            "the sum must cover every open invoice, not just one page's worth"
+        );
+    }
 }

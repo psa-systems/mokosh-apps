@@ -47,10 +47,16 @@ pub use config::OidcConfig;
 
 /// MAPPS-368: true when no OIDC issuer is configured for this deployment, so
 /// the SPA presents standalone username/password login (against mokosh-server's
-/// `/api/v1/auth/login`) instead of the bunyip OIDC redirect. Convenience
-/// wrapper over [`OidcConfig::has_issuer`] for the login trigger sites.
+/// `/api/v1/auth/login`) instead of the bunyip OIDC redirect.
+///
+/// MAPPS-822: also true when the issuer is configured but no client id is,
+/// since that combination is a sign-in button that would redirect to the OP
+/// with a client id it has never registered. Convenience wrapper over
+/// [`OidcConfig::has_issuer`] and [`OidcConfig::has_client_id`] for the login
+/// trigger sites.
 pub fn is_standalone() -> bool {
-    !OidcConfig::for_current_origin().has_issuer()
+    let cfg = OidcConfig::for_current_origin();
+    !cfg.has_issuer() || !cfg.has_client_id()
 }
 
 /// MAPPS-432: one line for an auth-flow failure the user is not shown.

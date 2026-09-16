@@ -278,12 +278,20 @@ fn StatementBody() -> Element {
     let company_text = company_id.read().trim().to_string();
     let ready = !company_text.is_empty() && period_err.is_none();
 
-    let query_for_resource = period::query(&company_text, &start_text, &end_text);
-    let ready_for_resource = ready;
     let statement_resource = use_resource(move || {
-        let query = query_for_resource.clone();
+        // Read company_id/period_start/period_end here, inside the
+        // resource's own closure, so Dioxus's dependency tracker attaches
+        // the resource's subscription to them directly (the same reason
+        // active_tenant_generation() is read here rather than above): a read
+        // outside this closure subscribes the component to a re-render, not
+        // the resource to a re-fetch.
+        let company_text = company_id.read().trim().to_string();
+        let start_text = period_start.read().clone();
+        let end_text = period_end.read().clone();
+        let ready = !company_text.is_empty() && period::error(&start_text, &end_text).is_none();
+        let query = period::query(&company_text, &start_text, &end_text);
         async move {
-            if !ready_for_resource {
+            if !ready {
                 return None;
             }
             let _gen = crate::hooks::fetch::active_tenant_generation();
