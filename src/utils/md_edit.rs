@@ -485,8 +485,15 @@ fn wrap(src: &str, a: usize, b: usize, marker: &str, placeholder: &str) -> EditR
     }
 
     // Already wrapped, markers outside the selection. Same run guard.
+    //
+    // `a - m` and `b + m` are byte arithmetic on an ASCII-length marker; if a
+    // multi-byte character sits right before `a` or right after `b`, those
+    // offsets can land inside it. `is_char_boundary` rejects that case before
+    // any slice runs, instead of panicking on a non-boundary index.
     if a >= m
         && b + m <= src.len()
+        && src.is_char_boundary(a - m)
+        && src.is_char_boundary(b + m)
         && src[a - m..a] == *marker
         && src[b..b + m] == *marker
         && run_len_rev(&src[..a], mc) == m
@@ -1035,6 +1042,28 @@ mod tests {
             reversed.text, "s**hor**t",
             "a backwards selection is normalised"
         );
+    }
+
+    /// MAPPS-839: a multi-byte character sitting right before the selection
+    /// used to make the "markers outside the selection" check slice `m` bytes
+    /// back from the selection start without checking that the landing byte
+    /// was a character boundary. "日" is three UTF-8 bytes but one UTF-16
+    /// unit, and the bold marker is two bytes, so stepping back two bytes
+    /// from just after "日" lands inside it and used to panic.
+    #[test]
+    fn a_multibyte_character_before_the_selection_does_not_panic() {
+        let r = run("日bold text", (1, 5), Action::Bold);
+        assert_eq!(r.text, "日**bold** text");
+        assert_eq!(selected(&r), "bold");
+    }
+
+    /// Same shape, but the multi-byte character trails the selection instead
+    /// of leading it, exercising the mirrored `b + m` slice.
+    #[test]
+    fn a_multibyte_character_after_the_selection_does_not_panic() {
+        let r = run("text bold日", (5, 9), Action::Bold);
+        assert_eq!(r.text, "text **bold**日");
+        assert_eq!(selected(&r), "bold");
     }
 }
 
