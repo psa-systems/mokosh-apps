@@ -161,7 +161,7 @@ mod tests {
                 "branding reads {field} from runtime config"
             );
             assert!(
-                ENTRYPOINT.contains(&format!("emit_field {field} \"${{{env}:-}}\"")),
+                ENTRYPOINT.contains(&format!("printf '{field}\\t%s\\n' \"${{{env}:-}}\"")),
                 "entrypoint.sh emits {field} from {env}"
             );
         }
