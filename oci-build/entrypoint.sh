@@ -105,7 +105,12 @@ build_config_fields() {
     # without users having to Ctrl+Shift+R. Emitted even when other
     # config fields are empty (operator-overridable fields stay opt-in,
     # but the version field is always-on).
-    printf 'build_sha\t%s\n' "${GIT_SHA:-}"
+    # MAPPS-813: truncated to 12 characters to match build.rs:29's
+    # `.take(12)`, which is what the desktop build bakes as its baseline.
+    # `fetch_live_build_sha` compares this value against that baseline
+    # directly, so the two sides must carry the same-length sha or the
+    # comparison is never equal.
+    printf 'build_sha\t%.12s\n' "${GIT_SHA:-}"
 }
 
 # Emit every field in `build_config_fields` via `emit_field`, so a
