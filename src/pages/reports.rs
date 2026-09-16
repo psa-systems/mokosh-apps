@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::components::{
     use_page_title, BarChart, BarChartDatum, Button, ButtonVariant, Card, ChartIcon, ErrorBanner,
-    IconSize, PageHeader, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+    IconSize, PageHeader, StatCard, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 };
 use crate::utils::money::format_money_str;
 use crate::Route;
@@ -430,10 +430,7 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
                 } else {
                     div { class: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4",
                         for (label , value) in view.summary.iter() {
-                            div { class: "text-center p-4 bg-app rounded-lg",
-                                p { class: "text-sm text-muted", "{label}" }
-                                p { class: "text-3xl font-bold text-content", "{value}" }
-                            }
+                            StatCard { label: "{label}", value: "{value}" }
                         }
                     }
                 }

@@ -11,20 +11,26 @@ use dioxus::prelude::*;
 
 use crate::components::Card;
 
-/// Placeholder grid that mirrors the project-card list layout
-/// (`grid-cols-1 md:grid-cols-2 lg:grid-cols-3`) so the loading state matches
-/// the populated grid shape instead of a single text line.
+/// Placeholder grid that mirrors the board it precedes, so the loading state
+/// matches the populated grid shape instead of a single text line. Defaults
+/// to the project-card list layout (`grid-cols-1 md:grid-cols-2 lg:grid-cols-3`);
+/// callers whose board declares a different grid should pass `grid_class` set
+/// to that same grid so the two never drift apart.
 #[derive(Props, Clone, PartialEq)]
 pub struct CardGridSkeletonProps {
     /// How many placeholder cards to render.
     #[props(default = 6)]
     pub count: usize,
+    /// Grid-column (and gap) classes, kept identical to the board's own
+    /// grid classes.
+    #[props(default = "grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6".to_string())]
+    pub grid_class: String,
 }
 
 #[component]
 pub fn CardGridSkeleton(props: CardGridSkeletonProps) -> Element {
     rsx! {
-        div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6",
+        div { class: "grid {props.grid_class}",
             for _ in 0..props.count {
                 div {
                     class: "rounded-lg border border-line bg-surface p-6 space-y-4",

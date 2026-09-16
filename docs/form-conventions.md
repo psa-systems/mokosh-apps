@@ -83,7 +83,12 @@ The mechanics that go with it:
 - ARIA comes with the hook: `role="combobox"` with `aria-expanded` and
   `aria-controls` on the field wrapper, `role="listbox"` on the panel,
   `role="option"` plus `aria-selected` on the rows, and `aria-activedescendant`
-  naming the active row.
+  naming the active row. `MentionAutocomplete` is the one exception to "the
+  wrapper owns the nav" (MAPPS-784): the nav lives in `MarkdownEditor`, whose
+  `Textarea` wrapper carries the four attributes, because the popover's
+  `onkeydown` has to run on the textarea itself rather than a `div` around a
+  separate `Input`. `MentionAutocomplete` reads the same nav back out through
+  context, so its own render never drifts from what the field just decided.
 - A failed search is its own panel state: "Could not search. Try again.",
   distinct from "Searching…" and "No matches.", logged at `warn`. No picker
   drops the fetch error.

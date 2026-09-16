@@ -265,6 +265,8 @@ pub fn Input(props: InputProps) -> Element {
                 aria_label: if props.aria_label.is_empty() { None } else { Some(props.aria_label.clone()) },
                 disabled: props.disabled,
                 autofocus: autofocus,
+                aria_invalid: if shown_error.is_empty() { "false" } else { "true" },
+                aria_describedby: if shown_error.is_empty() { None } else { Some(format!("{}-error", props.name)) },
                 "data-testid": props.data_testid.as_deref(),
                 // MAPPS-694: the focus a dynamically-inserted field actually
                 // gets. Same mechanism the modal panel uses to take focus on
@@ -290,7 +292,10 @@ pub fn Input(props: InputProps) -> Element {
                 },
             }
             if !shown_error.is_empty() {
-                p { class: "text-sm leading-5 text-red-600 dark:text-red-400",
+                p {
+                    id: "{props.name}-error",
+                    class: "text-sm leading-5 text-red-600 dark:text-red-400",
+                    role: "alert",
                     "{shown_error}"
                 }
             } else if !props.help.is_empty() {
@@ -473,6 +478,8 @@ pub fn Textarea(props: TextareaProps) -> Element {
                 rows: "{props.rows}",
                 maxlength: props.maxlength,
                 aria_required: if props.required { "true" } else { "false" },
+                aria_invalid: if shown_error.is_empty() { "false" } else { "true" },
+                aria_describedby: if shown_error.is_empty() { None } else { Some(format!("{}-error", props.name)) },
                 disabled: props.disabled,
                 // MAPPS-582: same choke point as `Input`. A textarea has no
                 // password variant, so there is nothing to exempt.
@@ -496,7 +503,10 @@ pub fn Textarea(props: TextareaProps) -> Element {
                 onblur: move |_| touched.set(true),
             }
             if !shown_error.is_empty() {
-                p { class: "text-sm leading-5 text-red-600 dark:text-red-400",
+                p {
+                    id: "{props.name}-error",
+                    class: "text-sm leading-5 text-red-600 dark:text-red-400",
+                    role: "alert",
                     "{shown_error}"
                 }
             } else if !props.help.is_empty() {
@@ -609,6 +619,8 @@ pub fn Select(props: SelectProps) -> Element {
                 // would surface the browser-native tooltip on submit, which
                 // the form's own validation already replaces inline.
                 aria_required: if props.required { "true" } else { "false" },
+                aria_invalid: if shown_error.is_empty() { "false" } else { "true" },
+                aria_describedby: if shown_error.is_empty() { None } else { Some(format!("{}-error", props.name)) },
                 disabled: props.disabled,
                 value: "{props.value}",
                 onchange: move |e| props.onchange.call(e),
@@ -629,7 +641,10 @@ pub fn Select(props: SelectProps) -> Element {
                 }
             }
             if !shown_error.is_empty() {
-                p { class: "text-sm leading-5 text-red-600 dark:text-red-400",
+                p {
+                    id: "{props.name}-error",
+                    class: "text-sm leading-5 text-red-600 dark:text-red-400",
+                    role: "alert",
                     "{shown_error}"
                 }
             } else if !props.help.is_empty() {
@@ -684,6 +699,8 @@ pub fn Checkbox(props: CheckboxProps) -> Element {
                     class: "{class}",
                     checked: props.checked,
                     disabled: props.disabled,
+                    aria_invalid: if props.error.is_empty() { "false" } else { "true" },
+                    aria_describedby: if props.error.is_empty() { None } else { Some(format!("{}-error", props.name)) },
                     onchange: move |e| props.onchange.call(e),
                 }
             }
@@ -694,7 +711,10 @@ pub fn Checkbox(props: CheckboxProps) -> Element {
                     "{props.label}"
                 }
                 if !props.error.is_empty() {
-                    p { class: "mt-1 text-sm leading-5 text-red-600 dark:text-red-400",
+                    p {
+                        id: "{props.name}-error",
+                        class: "mt-1 text-sm leading-5 text-red-600 dark:text-red-400",
+                        role: "alert",
                         "{props.error}"
                     }
                 } else if !props.help.is_empty() {
@@ -783,12 +803,19 @@ pub fn FileField(props: FileFieldProps) -> Element {
                 accept: if props.accept.is_empty() { None } else { Some(props.accept.clone()) },
                 disabled: props.disabled,
                 class: "block w-full text-sm text-content file:mr-3 file:rounded-md file:border-0 file:bg-surface-2 file:px-3 file:py-1.5 file:text-sm file:font-medium",
+                aria_invalid: if props.error.is_empty() { "false" } else { "true" },
+                aria_describedby: if props.error.is_empty() { None } else { Some(format!("{}-error", props.name)) },
                 onchange: move |e| props.onchange.call(e),
             }
             if !props.status.is_empty() {
                 p { class: "text-xs text-muted", "{props.status}" }
             } else if !props.error.is_empty() {
-                p { class: "text-xs text-red-600 dark:text-red-400", role: "alert", "{props.error}" }
+                p {
+                    id: "{props.name}-error",
+                    class: "text-xs text-red-600 dark:text-red-400",
+                    role: "alert",
+                    "{props.error}"
+                }
             } else if !props.help.is_empty() {
                 p { class: "text-xs text-muted", "{props.help}" }
             }

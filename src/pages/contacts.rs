@@ -1504,7 +1504,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                     }
                 }
 
-                h3 { class: "text-sm font-medium text-content pt-2",
+                h3 { class: "text-sm font-medium text-content",
                     "Address"
                 }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
@@ -3100,27 +3100,23 @@ fn RowActions(
     };
 
     rsx! {
-        div { class: "relative flex justify-end transition-opacity {trigger_class}",
-            button {
-                r#type: "button",
-                class: "px-2 py-1 text-muted hover:text-content rounded",
+        div { class: "flex justify-end transition-opacity {trigger_class}",
+            crate::components::Popover {
+                open: open(),
+                label: "Row actions",
                 title: "Actions",
-                aria_label: "Row actions",
-                onclick: move |e: MouseEvent| {
+                trigger_class: "px-2 py-1 text-muted hover:text-content rounded",
+                trigger: rsx! { "\u{22EF}" },
+                width: "w-32",
+                ontoggle: move |e: MouseEvent| {
                     e.stop_propagation();
                     open.toggle();
                 },
-                "\u{22EF}"
-            }
-            if open() {
-                div {
-                    class: "fixed inset-0 z-40",
-                    onclick: move |e: MouseEvent| {
-                        e.stop_propagation();
-                        open.set(false);
-                    },
-                }
-                div { class: "dropdown-panel absolute right-0 top-full z-50 mt-1 w-32 py-1 flex flex-col",
+                onclose: move |e: MouseEvent| {
+                    e.stop_propagation();
+                    open.set(false);
+                },
+                div { class: "flex flex-col",
                     button {
                         r#type: "button",
                         class: "px-3 py-1.5 text-left text-sm text-content hover:bg-surface-2",
@@ -3847,7 +3843,7 @@ fn EditPortalRolesButton(
                     if !error.read().is_empty() {
                         p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
                     }
-                    div { class: "flex justify-end gap-2 pt-2",
+                    div { class: "flex justify-end space-x-3 pt-2",
                         Button {
                             variant: ButtonVariant::Secondary,
                             disabled: saving(),
@@ -8575,7 +8571,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                         if !error.read().is_empty() {
                             p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
                         }
-                        div { class: "flex justify-end gap-2 pt-2",
+                        div { class: "flex justify-end space-x-3 pt-2",
                             Button {
                                 variant: ButtonVariant::Secondary,
                                 onclick: move |_| modal_open.set(false),

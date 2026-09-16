@@ -205,7 +205,7 @@ pub fn BigTicketsPage() -> Element {
                 // MAPPS-404: shimmer card grid while the first fetch is in
                 // flight, instead of the "No tickets match" empty board that
                 // then pops to real cards once the queue resolves.
-                crate::components::CardGridSkeleton {}
+                crate::components::CardGridSkeleton { grid_class: "grid-cols-1 lg:grid-cols-2 gap-4".to_string() }
             } else if total == 0 {
                 div { class: "py-16 text-center text-2xl text-muted",
                     "No tickets match the current filter."

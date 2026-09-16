@@ -93,6 +93,10 @@ pub fn SlaManagementPage() -> Element {
 #[derive(Props, Clone, PartialEq)]
 struct SlaShellProps {
     tab: Signal<SlaTab>,
+    /// CF-16: the active tab's "New ..." control, rendered in the shared
+    /// `PageHeader` rather than in a right-aligned row below it.
+    #[props(default)]
+    actions: Option<Element>,
     children: Element,
 }
 
@@ -105,6 +109,7 @@ fn SlaShell(props: SlaShellProps) -> Element {
         PageHeader {
             title: "SLA Management",
             subtitle: "Define service-level policies, business hours, and holiday calendars",
+            actions: props.actions,
         }
 
         // Tab bar
@@ -208,16 +213,16 @@ fn SlaPoliciesTab(tab: Signal<SlaTab>) -> Element {
 
     rsx! {
         SlaShell { tab,
-        div { class: "mb-4 flex justify-end",
-            Button {
-                variant: ButtonVariant::Primary,
-                // MAPPS-357: block create while the server is unreachable.
-                disabled: !can_mutate,
-                title: (!can_mutate).then(|| "Can't create a policy while the server is unreachable".to_string()),
-                onclick: move |_| editing.set(Some(PolicyFormState::new())),
-                "New Policy"
-            }
-        }
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block create while the server is unreachable.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't create a policy while the server is unreachable".to_string()),
+                    onclick: move |_| editing.set(Some(PolicyFormState::new())),
+                    "New Policy"
+                }
+            },
 
         if fetch_failed {
             ErrorBanner { class: "mb-3", "Could not load SLA policies. Refresh the page to retry." }
@@ -988,16 +993,16 @@ fn BusinessHoursTab(tab: Signal<SlaTab>) -> Element {
 
     rsx! {
         SlaShell { tab,
-        div { class: "mb-4 flex justify-end",
-            Button {
-                variant: ButtonVariant::Primary,
-                // MAPPS-357: block create while the server is unreachable.
-                disabled: !can_mutate,
-                title: (!can_mutate).then(|| "Can't create business hours while the server is unreachable".to_string()),
-                onclick: move |_| editing.set(Some(BusinessHoursFormState::new())),
-                "New Business Hours"
-            }
-        }
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block create while the server is unreachable.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't create business hours while the server is unreachable".to_string()),
+                    onclick: move |_| editing.set(Some(BusinessHoursFormState::new())),
+                    "New Business Hours"
+                }
+            },
 
         if fetch_failed {
             ErrorBanner { class: "mb-3",
@@ -1359,16 +1364,16 @@ fn HolidayCalendarsTab(tab: Signal<SlaTab>) -> Element {
 
     rsx! {
         SlaShell { tab,
-        div { class: "mb-4 flex justify-end",
-            Button {
-                variant: ButtonVariant::Primary,
-                // MAPPS-357: block create while the server is unreachable.
-                disabled: !can_mutate,
-                title: (!can_mutate).then(|| "Can't create a holiday calendar while the server is unreachable".to_string()),
-                onclick: move |_| editing.set(Some(HolidayFormState::new())),
-                "New Holiday Calendar"
-            }
-        }
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block create while the server is unreachable.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't create a holiday calendar while the server is unreachable".to_string()),
+                    onclick: move |_| editing.set(Some(HolidayFormState::new())),
+                    "New Holiday Calendar"
+                }
+            },
 
         if fetch_failed {
             ErrorBanner { class: "mb-3",

@@ -560,18 +560,25 @@ impl SlaStatus {
     }
 }
 
+/// A `Phrases` cell's parts: display text paired with an ISO `datetime` for
+/// the phrases that are timestamps, `None` for the ones that are not.
+type PhraseParts = Vec<(String, Option<String>)>;
+
 /// An SLA due date as an absolute timestamp plus a coarse remaining/overdue
 /// hint, e.g. "Jan 15, 2025 5:00 PM" and "(2 hours left)", as the two
 /// phrases a `Phrases` cell wraps between (MAPPS-731).
 /// PMS-253: honours the per-user format pref for the absolute part.
-fn sla_due_parts(due: DateTime<Utc>) -> Vec<String> {
+fn sla_due_parts(due: DateTime<Utc>) -> PhraseParts {
     let pref = crate::utils::datetime::user_format_pref();
     let absolute = match pref.as_deref().filter(|s| !s.trim().is_empty()) {
         Some(fmt) => crate::utils::datetime::format_user_datetime(due, Some(fmt)),
         None => due.format("%b %-d, %Y %-I:%M %p").to_string(),
     };
     let hint = remaining_hint(due, Utc::now());
-    vec![absolute, format!("({hint})")]
+    vec![
+        (absolute, Some(due.to_rfc3339())),
+        (format!("({hint})"), None),
+    ]
 }
 
 /// The coarse "2 hr left" / "3 days overdue" hint behind `sla_due_parts`,
@@ -642,15 +649,18 @@ fn sla_leg(
 /// "Due <due> (<hint>)" or "<at> (met, due <due>)"; every timestamp is a
 /// phrase of its own, so a narrow card breaks the line beside it and not
 /// through it.
-fn sla_leg_parts(leg: &SlaLeg, fmt: impl Fn(DateTime<Utc>) -> String) -> Vec<String> {
+fn sla_leg_parts(leg: &SlaLeg, fmt: impl Fn(DateTime<Utc>) -> String) -> PhraseParts {
     match leg {
-        SlaLeg::Pending { due, hint } => vec![format!("Due {}", fmt(*due)), format!("({hint})")],
+        SlaLeg::Pending { due, hint } => vec![
+            (format!("Due {}", fmt(*due)), Some(due.to_rfc3339())),
+            (format!("({hint})"), None),
+        ],
         SlaLeg::Reached { at, due, met } => {
             let verdict = if *met { "met" } else { "missed" };
             vec![
-                fmt(*at),
-                format!("({verdict}, due"),
-                format!("{})", fmt(*due)),
+                (fmt(*at), Some(at.to_rfc3339())),
+                (format!("({verdict}, due"), None),
+                (format!("{})", fmt(*due)), Some(due.to_rfc3339())),
             ]
         }
     }
@@ -658,11 +668,12 @@ fn sla_leg_parts(leg: &SlaLeg, fmt: impl Fn(DateTime<Utc>) -> String) -> Vec<Str
 
 /// The Created row's phrases: the timestamp, then who created the ticket
 /// when that is known (MAPPS-731).
-fn created_parts(created: String, by: &str) -> Vec<String> {
+fn created_parts(created: String, created_iso: String, by: &str) -> PhraseParts {
+    let created_part = (created, Some(created_iso));
     if by.is_empty() {
-        vec![created]
+        vec![created_part]
     } else {
-        vec![created, format!("by {by}")]
+        vec![created_part, (format!("by {by}"), None)]
     }
 }
 
@@ -2987,10 +2998,18 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
         .map(|e| {
             let who = actor_name(&users, &e.user_id);
             let when = fmt_datetime(e.timestamp);
+            let when_iso = e.timestamp.to_rfc3339();
             if who == "-" {
-                format!("Edited {when}")
+                rsx! {
+                    "Edited "
+                    time { datetime: "{when_iso}", "{when}" }
+                }
             } else {
-                format!("Edited {when} by {who}")
+                rsx! {
+                    "Edited "
+                    time { datetime: "{when_iso}", "{when}" }
+                    " by {who}"
+                }
             }
         });
     let notes_snap = notes_resource.read_unchecked().clone();
@@ -3716,7 +3735,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     p { class: "text-sm text-subtle italic", "No description provided." }
                                 }
                                 if let Some(m) = marker {
-                                    p { class: "text-xs text-subtle italic mt-3", "{m}" }
+                                    p { class: "text-xs text-subtle italic mt-3", {m} }
                                 }
                             } else {
                                 p { class: "text-sm text-subtle", "Loading…" }
@@ -3968,6 +3987,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             user: entry.who.clone(),
                                             action: entry.action.clone(),
                                             time: fmt_datetime(entry.at),
+                                            time_iso: entry.at.to_rfc3339(),
                                             content: entry.body.clone(),
                                             changes: entry.changes.clone(),
                                             editable_note: entry.editable_note,
@@ -4493,7 +4513,11 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                 DetailItem { label: "Queue", value: rsx!(span { "{t.queue_name}" }) }
                             }
                             {
-                                let created = created_parts(fmt_datetime(t.created_at), &t.created_by_name);
+                                let created = created_parts(
+                                    fmt_datetime(t.created_at),
+                                    t.created_at.to_rfc3339(),
+                                    &t.created_by_name,
+                                );
                                 rsx! {
                                     DetailItem { label: "Created", value: rsx!(Phrases { parts: created }) }
                                 }
@@ -4510,7 +4534,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             {
                                 let now = Utc::now();
                                 let badge = sla.as_ref().map(|s| s.status).unwrap_or(t.sla_status).badge();
-                                let rows: Vec<(&'static str, Vec<String>)> = match sla.as_ref() {
+                                let rows: Vec<(&'static str, PhraseParts)> = match sla.as_ref() {
                                     Some(s) => [
                                         ("First response", sla_leg(s.first_response_due, s.first_response_at, now)),
                                         ("Resolution", sla_leg(s.resolution_due, s.resolved_at, now)),
@@ -4597,11 +4621,15 @@ struct DetailItemProps {
 /// after it, and a value wider than the sidebar was clipped at the card's
 /// edge: "Aug 28, 2026 12:39 PM (9 days overdue" with no closing bracket.
 #[component]
-fn Phrases(parts: Vec<String>) -> Element {
+fn Phrases(parts: PhraseParts) -> Element {
     rsx! {
         span { class: "flex flex-wrap justify-end gap-x-1",
-            for part in parts {
-                span { "{part}" }
+            for (text, iso) in parts {
+                if let Some(iso) = iso {
+                    time { datetime: "{iso}", "{text}" }
+                } else {
+                    span { "{text}" }
+                }
             }
         }
     }
@@ -4633,6 +4661,9 @@ struct TimelineItemProps {
     user: String,
     action: String,
     time: String,
+    /// ISO-8601 form of `time`, for the wrapping `time` element's `datetime`
+    /// attribute (N5).
+    time_iso: String,
     content: Option<String>,
     /// MAPPS-596: an edit's before/after, which collapses behind a `Details`
     /// toggle when it is large. Empty for a note or a time entry, whose text
@@ -4861,7 +4892,7 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                             }
                             ChangeDetails { changes: props.changes.clone() }
                         }
-                        div { class: "whitespace-nowrap text-right text-sm text-muted",
+                        time { class: "whitespace-nowrap text-right text-sm text-muted", datetime: "{props.time_iso}",
                             "{props.time}"
                         }
                     }
@@ -5127,10 +5158,12 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                                 .requested_at
                                 .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
                                 .unwrap_or_default();
+                            let when_iso = row.requested_at.map(|d| d.to_rfc3339()).unwrap_or_default();
                             let decided = row
                                 .decided_at
                                 .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
                                 .unwrap_or_default();
+                            let decided_iso = row.decided_at.map(|d| d.to_rfc3339()).unwrap_or_default();
                             let notes = row.notes.clone().unwrap_or_default();
                             let decision = row.decision.clone().unwrap_or_default();
                             let decision_notes = row.decision_notes.clone().unwrap_or_default();
@@ -5144,7 +5177,10 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                                         p { class: "text-xs text-subtle mt-1", "Requested by {requester}" }
                                     }
                                     if !when.is_empty() {
-                                        p { class: "text-xs text-subtle", "Requested {when}" }
+                                        p { class: "text-xs text-subtle",
+                                            "Requested "
+                                            time { datetime: "{when_iso}", "{when}" }
+                                        }
                                     }
                                     if !notes.is_empty() {
                                         p { class: "text-sm text-muted mt-2 whitespace-pre-wrap", "{notes}" }
@@ -5153,7 +5189,10 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                                         p { class: "text-xs text-subtle mt-2",
                                             "Decision: " strong { "{decision}" }
                                             if !decided_by.is_empty() { " by {decided_by}" }
-                                            if !decided.is_empty() { " on {decided}" }
+                                            if !decided.is_empty() {
+                                                " on "
+                                                time { datetime: "{decided_iso}", "{decided}" }
+                                            }
                                         }
                                     }
                                     if !decision_notes.is_empty() {
@@ -6331,12 +6370,18 @@ mod mapps734_sla_panel_tests {
         let now = Utc.with_ymd_and_hms(2026, 9, 8, 12, 0, 0).unwrap();
         let ahead = sla_leg(Some(at("2026-09-08T14:30:00Z")), None, now).expect("leg");
         assert_eq!(
-            sla_leg_parts(&ahead, fixed),
+            sla_leg_parts(&ahead, fixed)
+                .into_iter()
+                .map(|(t, _)| t)
+                .collect::<Vec<_>>(),
             ["Due 2026-09-08 14:30", "(2 hr left)"]
         );
         let behind = sla_leg(Some(at("2026-09-05T12:00:00Z")), None, now).expect("leg");
         assert_eq!(
-            sla_leg_parts(&behind, fixed),
+            sla_leg_parts(&behind, fixed)
+                .into_iter()
+                .map(|(t, _)| t)
+                .collect::<Vec<_>>(),
             ["Due 2026-09-05 12:00", "(3 days overdue)"]
         );
     }
@@ -6355,12 +6400,18 @@ mod mapps734_sla_panel_tests {
             }
         );
         assert_eq!(
-            sla_leg_parts(&met, fixed),
+            sla_leg_parts(&met, fixed)
+                .into_iter()
+                .map(|(t, _)| t)
+                .collect::<Vec<_>>(),
             ["2026-09-08 10:00", "(met, due", "2026-09-08 10:00)"]
         );
         let missed = sla_leg(Some(due), Some(at("2026-09-08T10:00:01Z")), now).expect("leg");
         assert_eq!(
-            sla_leg_parts(&missed, fixed),
+            sla_leg_parts(&missed, fixed)
+                .into_iter()
+                .map(|(t, _)| t)
+                .collect::<Vec<_>>(),
             ["2026-09-08 10:00", "(missed, due", "2026-09-08 10:00)"]
         );
     }
@@ -6402,12 +6453,18 @@ mod mapps731_detail_row_tests {
 
         let pending = sla_leg(Some(due), None, now).expect("leg");
         assert_eq!(
-            sla_leg_parts(&pending, fmt),
+            sla_leg_parts(&pending, fmt)
+                .into_iter()
+                .map(|(t, _)| t)
+                .collect::<Vec<_>>(),
             ["Due Aug 28, 2026 12:39 PM", "(10 days overdue)"]
         );
         let reached = sla_leg(Some(due), Some(at), now).expect("leg");
         assert_eq!(
-            sla_leg_parts(&reached, fmt),
+            sla_leg_parts(&reached, fmt)
+                .into_iter()
+                .map(|(t, _)| t)
+                .collect::<Vec<_>>(),
             [
                 "Aug 28, 2026 12:00 PM",
                 "(met, due",
@@ -6415,11 +6472,25 @@ mod mapps731_detail_row_tests {
             ]
         );
         assert_eq!(
-            created_parts("Aug 27, 2026 12:39".into(), "Long Le"),
+            created_parts(
+                "Aug 27, 2026 12:39".into(),
+                "2026-08-27T12:39:00Z".into(),
+                "Long Le",
+            )
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect::<Vec<_>>(),
             ["Aug 27, 2026 12:39", "by Long Le"]
         );
         assert_eq!(
-            created_parts("Aug 27, 2026 12:39".into(), ""),
+            created_parts(
+                "Aug 27, 2026 12:39".into(),
+                "2026-08-27T12:39:00Z".into(),
+                "",
+            )
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect::<Vec<_>>(),
             ["Aug 27, 2026 12:39"]
         );
     }
@@ -6433,12 +6504,20 @@ mod mapps731_detail_row_tests {
         let due = Utc.with_ymd_and_hms(2026, 9, 8, 10, 0, 0).unwrap();
         let reached = sla_leg(Some(due), Some(due), now).expect("leg");
         assert_eq!(
-            sla_leg_parts(&reached, fmt).join(" "),
+            sla_leg_parts(&reached, fmt)
+                .into_iter()
+                .map(|(t, _)| t)
+                .collect::<Vec<_>>()
+                .join(" "),
             "2026-09-08 10:00 (met, due 2026-09-08 10:00)"
         );
         let pending = sla_leg(Some(due), None, now).expect("leg");
         assert_eq!(
-            sla_leg_parts(&pending, fmt).join(" "),
+            sla_leg_parts(&pending, fmt)
+                .into_iter()
+                .map(|(t, _)| t)
+                .collect::<Vec<_>>()
+                .join(" "),
             "Due 2026-09-08 10:00 (2 hr overdue)"
         );
     }
