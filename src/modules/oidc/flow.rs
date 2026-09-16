@@ -401,14 +401,43 @@ pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowEr
         _ => return Err(FlowError::NonceMismatch),
     }
 
+    let granted_scope = body.scope.unwrap_or_default();
+    warn_on_dropped_scopes(cfg.scopes, &granted_scope);
+
     let tokens = Tokens {
         access_token: body.access_token,
         id_token,
         refresh_token: body.refresh_token,
         expires_at: Utc::now() + Duration::seconds(body.expires_in.max(0)),
-        scope: body.scope.unwrap_or_default(),
+        scope: granted_scope,
     };
     Ok((tokens, pending.return_to))
+}
+
+/// MAPPS-823: the OP is free to narrow the requested scope (RFC 6749
+/// 3.3), and bunyip's `allowed_scopes` registration for this client
+/// currently drops `profile` silently. Neither the operator (who added
+/// `profile` to `MOKOSH_OIDC_SCOPES` per the documented override) nor
+/// anyone debugging missing claims has any signal that happened, so log
+/// a warning naming every requested scope the granted set omits. Split
+/// out from `complete_login` so the comparison is unit-testable without
+/// a token exchange.
+fn dropped_scopes<'a>(requested: &'a str, granted: &str) -> Vec<&'a str> {
+    let granted: std::collections::HashSet<&str> = granted.split_whitespace().collect();
+    requested
+        .split_whitespace()
+        .filter(|s| !granted.contains(s))
+        .collect()
+}
+
+fn warn_on_dropped_scopes(requested: &str, granted: &str) {
+    let dropped = dropped_scopes(requested, granted);
+    if !dropped.is_empty() {
+        tracing::warn!(
+            "OP granted a narrower scope than requested; dropped: {}",
+            dropped.join(" ")
+        );
+    }
 }
 
 /// Exchange a refresh token for a fresh pair via `/oauth2/token`.
@@ -614,9 +643,37 @@ fn urlencode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_flow_error, classify_return_to, sanitize_return_to, CallbackRecovery, FlowError,
-        ReturnTarget,
+        classify_flow_error, classify_return_to, dropped_scopes, sanitize_return_to,
+        CallbackRecovery, FlowError, ReturnTarget,
     };
+
+    // MAPPS-823: `profile` requested via MOKOSH_OIDC_SCOPES, but bunyip's
+    // current `allowed_scopes` registration for this client has no
+    // `profile` entry, so the OP drops it. This is the reproduction of
+    // the report, exercised without a live token exchange.
+    #[test]
+    fn dropped_scopes_names_profile_against_bunyips_current_registration() {
+        assert_eq!(
+            dropped_scopes(
+                "openid email offline_access profile",
+                "openid email offline_access"
+            ),
+            vec!["profile"]
+        );
+    }
+
+    #[test]
+    fn dropped_scopes_empty_when_op_grants_everything_requested() {
+        assert!(dropped_scopes("openid email", "openid email offline_access").is_empty());
+    }
+
+    #[test]
+    fn dropped_scopes_can_name_more_than_one() {
+        assert_eq!(
+            dropped_scopes("openid email profile offline_access", "openid"),
+            vec!["email", "profile", "offline_access"]
+        );
+    }
 
     fn token_endpoint(error: &str) -> FlowError {
         FlowError::TokenEndpoint {
