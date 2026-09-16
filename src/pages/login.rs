@@ -57,7 +57,28 @@ struct LoginBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     approval_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    device_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tenant_slug: Option<String>,
+}
+
+/// MAPPS-821: stable per-browser device identifier for mokosh-server's
+/// suspicious-login device signal (`LoginRequest::device_id`, PMS-658 /
+/// MAPPS-373). Generated once with UUID v4 and persisted via
+/// `crate::utils::prefs` (`localStorage` in the browser, the per-user
+/// config file on desktop) so it survives reloads and future logins.
+#[cfg(feature = "app")]
+const DEVICE_ID_KEY: &str = "mokosh_device_id";
+
+#[cfg(feature = "app")]
+fn device_id() -> String {
+    let existing = crate::utils::prefs::get_str(DEVICE_ID_KEY, "");
+    if !existing.is_empty() {
+        return existing;
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    crate::utils::prefs::set_str(DEVICE_ID_KEY, &id);
+    id
 }
 
 /// MAPPS-513 / MAPPS-520: sessionStorage key `/platform/login` (now
@@ -320,6 +341,7 @@ pub fn StandaloneLogin() -> Element {
                                 remember_me: false,
                                 mfa_code: None,
                                 approval_code: None,
+                                device_id: Some(device_id()),
                                 // MAPPS-553: apex-only path (the
                                 // outer `!on_portal` guard prevents
                                 // reaching here on a subdomain), so
@@ -425,6 +447,7 @@ pub fn StandaloneLogin() -> Element {
                     remember_me: false,
                     mfa_code: mfa.clone(),
                     approval_code: approval.clone(),
+                    device_id: Some(device_id()),
                     // MAPPS-553: `Some(slug)` on the tenant subdomain
                     // (drives `AuthService::login` -> tenant-scoped
                     // verify against `users.password_hash`);
@@ -749,6 +772,9 @@ mod tests {
             remember_me,
             mfa_code,
             approval_code,
+            // MAPPS-821: SPA now DOES send device_id (a stable
+            // per-browser id persisted via `crate::utils::prefs`).
+            device_id,
             // MAPPS-553: SPA now DOES send tenant_slug when running
             // on a tenant subdomain. The apex flow still sends
             // `None` here, but the field is on the wire so the
@@ -756,9 +782,8 @@ mod tests {
             tenant_slug,
         };
         // Deliberately not sent by the standalone form. MAPPS-492 phase 3
-        // dropped tenant_id, and MAPPS-397 doesn't wire recovery_code /
-        // device_id into the standalone form yet.
-        let _ = (recovery_code, device_id, tenant_id);
+        // dropped tenant_id, and recovery_code has no UI path yet.
+        let _ = (recovery_code, tenant_id);
     }
 
     #[test]

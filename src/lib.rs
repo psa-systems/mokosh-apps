@@ -1047,6 +1047,10 @@ pub enum Route {
     SettingsRmmDeviceMappings {},
     #[route("/settings/rmm/alert-rules")]
     SettingsRmmAlertRules {},
+    // MAPPS-808: Google Contacts import (server PSA-70, PMS-1211..1215, 1241).
+    // The OAuth callback and the `contact_sync.failing` mail both land here.
+    #[route("/settings/integrations/google-contacts")]
+    SettingsGoogleContacts {},
     // MAPPS-364: admin-only tenant data import/export (server PMS-646).
     #[route("/settings/import-export")]
     SettingsImportExport {},
@@ -2194,6 +2198,15 @@ fn SettingsModules() -> Element {
 }
 
 #[component]
+fn SettingsGoogleContacts() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_contact_sync::GoogleContactsSettingsPage {}
+        }
+    }
+}
+
+#[component]
 fn SettingsNoteEditing() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
@@ -2586,6 +2599,17 @@ mod emailed_link_routes {
         // Where that `?next=` lands after sign-in. The login page restores it
         // only if it parses as a route, so the target is checked in its own
         // right rather than assumed.
+        // src/modules/contact_sync/runs.rs: the `contact_sync.failing` mail
+        // (PMS-1215), and service.rs: where Google's consent screen returns
+        // the browser (PMS-1241).
+        (
+            "contact_sync::notify_failing",
+            "/settings/integrations/google-contacts",
+        ),
+        (
+            "contact_sync::complete_connect",
+            "/settings/integrations/google-contacts?contact_sync=connected",
+        ),
         (
             "quotes::send_quote (the next target)",
             "/quotes/2f1c2f1e-0000-4000-8000-00000000abcd",

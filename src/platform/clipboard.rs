@@ -66,8 +66,12 @@ pub fn on_paste_image(id: &str, on_file: EventHandler<(String, String, Vec<u8>)>
         let name = file.name();
         let mime = file.type_();
         wasm_bindgen_futures::spawn_local(async move {
-            if let Some(bytes) = read_bytes(&file).await {
-                on_file.call((name, mime, bytes));
+            match read_bytes(&file).await {
+                Some(bytes) => on_file.call((name, mime, bytes)),
+                None => crate::hooks::toast::push_toast(
+                    crate::components::AlertType::Error,
+                    "The pasted image could not be read.",
+                ),
             }
         });
     }) as Box<dyn FnMut(web_sys::Event)>);
@@ -113,8 +117,9 @@ fn first_image(evt: &web_sys::ClipboardEvent) -> Option<web_sys::File> {
 async fn read_bytes(file: &web_sys::File) -> Option<Vec<u8>> {
     let buffer = wasm_bindgen_futures::JsFuture::from(file.array_buffer())
         .await
-        // A `None` here silently drops the pasted image: nothing is uploaded
-        // and nothing is said, so the reason has to reach the console.
+        // A `None` here drops the pasted image: nothing is uploaded, so the
+        // reason has to reach the console, and the caller turns it into a
+        // toast so the user is not left staring at a paste that did nothing.
         .inspect_err(|e| tracing::warn!("pasted image could not be read: {e:?}"))
         .ok()?;
     // `Uint8Array::new` takes the buffer as a `JsValue`, which is what the
@@ -187,7 +192,13 @@ pub fn on_paste_image(id: &str, on_file: dioxus::prelude::EventHandler<(String, 
                     Ok(bytes) => on_file.call((image.name, image.mime, bytes)),
                     // Nothing else would say why: the paste was intercepted, so
                     // the author sees neither their image nor their text.
-                    Err(e) => tracing::error!("a pasted image arrived undecodable: {e}"),
+                    Err(e) => {
+                        tracing::error!("a pasted image arrived undecodable: {e}");
+                        crate::hooks::toast::push_toast(
+                            crate::components::AlertType::Error,
+                            "The pasted image could not be read.",
+                        );
+                    }
                 },
                 Err(e) => {
                     // Pasting an image would silently do nothing again, which
