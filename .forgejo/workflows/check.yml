@@ -254,6 +254,14 @@ jobs:
           bash scripts/check-fetch-error-logging.sh --self-test
           bash scripts/check-fetch-error-logging.sh
 
+      # MAPPS-789: a busy surface renders TableLoading or DetailSkeleton, never
+      # a hand-rolled "Loading…" string. Fourth report of the class, and the
+      # copied shape kept regrowing between audits, so the guard runs here too.
+      - name: Loading-skeleton guard
+        run: |
+          bash scripts/check-loading-recipe.sh --self-test
+          bash scripts/check-loading-recipe.sh
+
       # MAPPS-584: @tailwindcss/typography writes .prose into `@layer utilities`
       # and the MAPPS-573 corrections were written into `@layer components`, so
       # the plugin won every declaration the two shared and the whole block
