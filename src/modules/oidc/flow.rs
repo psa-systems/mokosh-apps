@@ -83,6 +83,9 @@ pub(super) fn authorize_url(cfg: &OidcConfig, return_to: String) -> Result<Strin
     let redirect_uri = cfg
         .resolve_redirect_uri()
         .map_err(|e| FlowError::Config(e.to_string()))?;
+    let client_id = cfg
+        .require_client_id()
+        .map_err(|e| FlowError::Config(e.to_string()))?;
 
     save_pending(&mut PendingFlow {
         code_verifier: verifier,
@@ -100,7 +103,7 @@ pub(super) fn authorize_url(cfg: &OidcConfig, return_to: String) -> Result<Strin
     url.push('?');
     let q = [
         ("response_type", "code"),
-        ("client_id", cfg.client_id),
+        ("client_id", client_id),
         ("redirect_uri", &redirect_uri),
         ("scope", cfg.scopes),
         ("state", &state),
@@ -339,6 +342,9 @@ pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowEr
     let redirect_uri = cfg
         .resolve_redirect_uri()
         .map_err(|e| FlowError::Config(e.to_string()))?;
+    let client_id = cfg
+        .require_client_id()
+        .map_err(|e| FlowError::Config(e.to_string()))?;
 
     // POST to /oauth2/token (form-encoded).
     let body = form_encode(&[
@@ -346,7 +352,7 @@ pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowEr
         ("code", &code),
         ("redirect_uri", &redirect_uri),
         ("code_verifier", &pending.code_verifier),
-        ("client_id", cfg.client_id),
+        ("client_id", client_id),
     ]);
     let issuer = cfg.issuer.trim_end_matches('/');
     let url = format!("{issuer}/oauth2/token");
@@ -428,10 +434,13 @@ pub async fn refresh_tokens(
     refresh_token: &str,
     prior_id_token: &str,
 ) -> Result<Tokens, FlowError> {
+    let client_id = cfg
+        .require_client_id()
+        .map_err(|e| FlowError::Config(e.to_string()))?;
     let body = form_encode(&[
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh_token),
-        ("client_id", cfg.client_id),
+        ("client_id", client_id),
     ]);
     let issuer = cfg.issuer.trim_end_matches('/');
     let url = format!("{issuer}/oauth2/token");
@@ -548,10 +557,13 @@ pub async fn issuer_post_authed<T: serde::de::DeserializeOwned, B: serde::Serial
 /// the refresh-token family server-side before the browser navigates
 /// away.
 pub async fn revoke_refresh_token(cfg: &OidcConfig, refresh_token: &str) -> Result<(), FlowError> {
+    let client_id = cfg
+        .require_client_id()
+        .map_err(|e| FlowError::Config(e.to_string()))?;
     let body = form_encode(&[
         ("token", refresh_token),
         ("token_type_hint", "refresh_token"),
-        ("client_id", cfg.client_id),
+        ("client_id", client_id),
     ]);
     let issuer = cfg.issuer.trim_end_matches('/');
     let url = format!("{issuer}/oauth2/revoke");
