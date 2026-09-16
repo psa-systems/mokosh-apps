@@ -1074,6 +1074,77 @@ fn toggle_ticket_sort(
     page.set(1);
 }
 
+/// MAPPS-837: setting a new search term must reset the page too, for the same
+/// reason `toggle_ticket_sort` above resets it: the list is paged server-side,
+/// and re-running the search while on page N > 1 of the OLD results would
+/// otherwise hand back page N of the NEW results, which can be past the end of
+/// a smaller result set and render an empty list even though page one has
+/// matches.
+fn set_ticket_search(search: &mut Signal<String>, page: &mut Signal<usize>, value: String) {
+    search.set(value);
+    page.set(1);
+}
+
+/// MAPPS-837: exercises `set_ticket_search` (the ticket list search box's
+/// `oninput` handler) against real `Signal`s inside a bare `VirtualDom`,
+/// mirroring `mapps847_reactive_dependency_tests` in `products.rs` - a unit
+/// test cannot make the network fetch the real page's `use_resource` performs,
+/// but the page reset is pure signal state, so it needs no fetch to verify.
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
+mod mapps837_search_resets_page_tests {
+    use super::set_ticket_search;
+    use dioxus::dioxus_core::NoOpMutations;
+    use dioxus::prelude::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn changing_the_search_term_from_page_two_resets_to_page_one() {
+        let final_page = Rc::new(Cell::new(0usize));
+
+        let mut dom = VirtualDom::new_with_props(
+            |final_page: Rc<Cell<usize>>| {
+                let mut search = use_signal(String::new);
+                let mut page = use_signal(|| 1usize);
+
+                // Stands in for the user paging forward before starting a new
+                // search.
+                use_future(move || async move {
+                    page.set(2);
+                });
+
+                let final_page = final_page.clone();
+                use_future(move || {
+                    let final_page = final_page.clone();
+                    async move {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        set_ticket_search(&mut search, &mut page, "widget".to_string());
+                        final_page.set(*page.read());
+                    }
+                });
+
+                rsx! {}
+            },
+            final_page.clone(),
+        );
+
+        dom.rebuild_in_place();
+        tokio::select! {
+            _ = dom.wait_for_work() => {}
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+        };
+        dom.render_immediate(&mut NoOpMutations);
+
+        assert_eq!(
+            final_page.get(),
+            1,
+            "changing the search term from page two must reset the list to page one"
+        );
+    }
+}
+
 /// Ticket list page.
 ///
 /// MAPPS-783: a contact without `tickets:read` is answered with the portal's
@@ -1334,7 +1405,7 @@ fn TicketListBody() -> Element {
                     SearchInput {
                         value: search.read().clone(),
                         placeholder: "Search tickets…",
-                        oninput: move |e: FormEvent| search.set(e.value()),
+                        oninput: move |e: FormEvent| set_ticket_search(&mut search, &mut page, e.value()),
                     }
                 }
                 div { class: "flex gap-4",
@@ -1554,7 +1625,7 @@ fn TicketListBody() -> Element {
                                 Button {
                                     variant: ButtonVariant::Secondary,
                                     onclick: move |_| {
-                                        search.set(String::new());
+                                        set_ticket_search(&mut search, &mut page, String::new());
                                         status_filter.set(String::new());
                                         priority_filter.set(String::new());
                                     },
