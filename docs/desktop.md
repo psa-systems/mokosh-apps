@@ -74,8 +74,23 @@ same way a hosted deployment does, down to the OS window title. See
 the container-side half of that document (Caddy, `entrypoint.sh`,
 `index.html`) does not apply here.
 
-mokosh-server has to accept the desktop client's requests through CORS; the
-webview does not send a same-origin `Origin` header.
+mokosh-server has to accept the desktop client's requests through CORS.
+`mokosh-server`'s CORS allowlist is exact-match and credentialed (no wildcard
+with credentials on), so `CORS_ORIGIN` needs the desktop webview's document
+origin verbatim, not the browser SPA's origin. `dioxus-desktop` 0.7.7 (see
+`Cargo.lock`) fixes that origin per OS at compile time
+(`dioxus-desktop-0.7.7/src/protocol.rs:15-22`, mirrored in
+`src/platform/desktop_origin.rs`), so add the origin for the OS the desktop
+build targets:
+
+| OS                    | `CORS_ORIGIN` value          |
+| --------------------- | ----------------------------- |
+| Windows                | `http://dioxus.index.html`    |
+| Android                | `https://dioxus.index.html`   |
+| macOS, Linux, iOS      | `dioxus://index.html`         |
+
+A desktop install pointed at a `CORS_ORIGIN` that only names the browser
+origin may load nothing.
 
 ## Signing in
 

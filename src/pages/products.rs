@@ -141,9 +141,13 @@ fn ProductsSettingsBody() -> Element {
     let current_page = (*page.read()).max(1);
     let search_text = search.read().clone();
     let status_text = status.read().clone();
-    let path_for_resource = list_path(current_page, &search_text, &status_text);
     let mut resource = use_resource(move || {
-        let path = path_for_resource.clone();
+        // Read page/search/status here, inside the resource's own closure, so
+        // Dioxus's dependency tracker attaches the resource's subscription to
+        // them directly (the same reason active_tenant_generation() is read
+        // here rather than above): a read outside this closure subscribes the
+        // component to a re-render, not the resource to a re-fetch.
+        let path = list_path((*page.read()).max(1), &search.read(), &status.read());
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             // MAPPS-357: subscribe to reachability so the list auto-refetches
@@ -694,6 +698,98 @@ mod tests {
             list_path(2, " ws ", "retired"),
             "/products?page=2&per_page=25&q=ws&is_active=false"
         );
+    }
+
+    /// MAPPS-847: `page`, `search` and `status` must be read inside the list
+    /// resource's own closure so Dioxus's dependency tracker attaches the
+    /// resource's own subscription to them. This reproduces that shape with
+    /// the real `list_path` helper the resource calls, standing in for the
+    /// network fetch (which a unit test cannot make), and proves that
+    /// flipping one signal, with nothing else touched, restarts the
+    /// resource on its own account rather than by riding an unrelated
+    /// re-render.
+    ///
+    /// `tokio` is only a dev-dependency on non-wasm targets (it drives the
+    /// `just check-desktop` / native test run), so this module is skipped on
+    /// `check-web`'s wasm32 target rather than failing there for a crate it
+    /// cannot see.
+    #[cfg(not(target_arch = "wasm32"))]
+    mod mapps847_reactive_dependency_tests {
+        use super::super::list_path;
+        use dioxus::dioxus_core::NoOpMutations;
+        use dioxus::prelude::*;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use std::time::Duration;
+
+        #[derive(Default)]
+        struct RunCounter {
+            component: usize,
+            resource: usize,
+        }
+
+        #[tokio::test]
+        async fn changing_status_alone_restarts_the_list_resource() {
+            let counter = Rc::new(RefCell::new(RunCounter::default()));
+
+            let mut dom = VirtualDom::new_with_props(
+                |counter: Rc<RefCell<RunCounter>>| {
+                    counter.borrow_mut().component += 1;
+
+                    let page = use_signal(|| 1usize);
+                    let search = use_signal(String::new);
+                    let mut status = use_signal(String::new);
+
+                    let _resource = {
+                        let counter = counter.clone();
+                        use_resource(move || {
+                            // Mirrors the fixed shape in `ProductsSettingsBody`:
+                            // the reads happen here, inside the resource's own
+                            // closure, so a write to `status` alone restarts
+                            // this resource on its own account.
+                            let _path =
+                                list_path((*page.read()).max(1), &search.read(), &status.read());
+                            counter.borrow_mut().resource += 1;
+                            async move {}
+                        })
+                    };
+
+                    // Stands in for a status-filter change landing on the page
+                    // some time after the initial render, with nothing else on
+                    // the page prompting a re-render.
+                    use_future(move || async move {
+                        status.set("retired".to_string());
+                    });
+
+                    rsx! {}
+                },
+                counter.clone(),
+            );
+
+            dom.rebuild_in_place();
+            // `wait_for_work` drives the resource's own restart-watching task
+            // to completion as a side effect of polling it, but only returns
+            // once new renderable mutations are pending; since none of this
+            // harness's own scopes ever go dirty, it never resolves on its
+            // own, so its completion is not the signal to wait for (mirrors
+            // dioxus's own `effects_rerun_without_rerender` test).
+            tokio::select! {
+                _ = dom.wait_for_work() => {}
+                _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+            };
+            dom.render_immediate(&mut NoOpMutations);
+
+            let final_counts = counter.borrow();
+            assert_eq!(
+                final_counts.component, 1,
+                "the component itself must not have re-rendered"
+            );
+            assert_eq!(
+                final_counts.resource, 2,
+                "changing status alone, with nothing else re-rendering, must restart \
+                 the resource on its own account"
+            );
+        }
     }
 
     /// Blank SKU and description go as `null`, because an empty SKU is a

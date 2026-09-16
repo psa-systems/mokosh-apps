@@ -3100,6 +3100,69 @@ pub mod api {
         handle_response(resp).await
     }
 
+    /// MAPPS-830: authed POST with a JSON body that answers 200 with no body
+    /// (`POST /auth/me/mfa/disable`). [`post_authed_typed`] would fail to
+    /// decode the empty payload, so this variant only inspects the status,
+    /// mirroring [`put_portal_authed_json_no_content`] for the bearer-authed
+    /// family.
+    #[cfg(feature = "app")]
+    pub async fn post_authed_json_no_content<B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<(), ApiError> {
+        ensure_fresh_access_token().await;
+        let url = format!("{}{}", api_base(), path);
+        let mut req = Request::post(&url).header("Content-Type", "application/json");
+        let bearer = current_access_token();
+        if let Some(t) = &bearer {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let resp = req
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        let status = resp.status();
+        super::note_response_status(status);
+        if bearer.is_some() && status == 401 {
+            note_agent_unauthorized().await;
+        }
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
+        let body_text = resp.text().await.unwrap_or_default();
+        let (message, fields, envelope_code, envelope_body) =
+            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
+                Ok(env) => {
+                    let code = env.error.code.clone();
+                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
+                    (
+                        env.error.message,
+                        env.error.errors.unwrap_or_default(),
+                        code,
+                        raw,
+                    )
+                }
+                Err(_) => (
+                    body_text.chars().take(200).collect(),
+                    Vec::new(),
+                    String::new(),
+                    None,
+                ),
+            };
+        Err(ApiError::Status {
+            code: status,
+            message,
+            fields,
+            envelope_code,
+            envelope_body,
+        })
+    }
+
     /// MAPPS-368: unauthed typed POST, for the standalone login form. Same as
     /// [`post_authed_typed`] but sends no bearer (the user is not signed in
     /// yet), so the caller can inspect `ApiError::Status { code, .. }` and map
