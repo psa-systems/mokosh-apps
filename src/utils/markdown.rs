@@ -660,77 +660,46 @@ pub fn render_markdown_interactive_with_mentions(
     sanitize(&out)
 }
 
+/// Byte offset of the marker char (the space/x/X inside `[ ]`) for every
+/// GFM task-list item in `src`, in document order.
+///
+/// This walks the same `Parser`/`render_options()` pulldown-cmark uses to
+/// build the HTML in [`to_html`], and keys on its `Event::TaskListMarker`
+/// (MAPPS-835): a line only counts here if pulldown-cmark's own task-list
+/// rules also turn it into a checkbox in `render_markdown_interactive`. A
+/// hand-rolled line-scanner used to do this counting separately and
+/// disagreed with the renderer on edge cases (blank-line-terminated items,
+/// items nested inside other blocks), so the reported count and the
+/// checkboxes that actually appeared could differ.
+fn task_marker_offsets(src: &str) -> Vec<usize> {
+    Parser::new_ext(src, render_options())
+        .into_offset_iter()
+        .filter_map(|(event, range)| match event {
+            Event::TaskListMarker(_) => src[range.clone()].find('[').map(|i| range.start + i + 1),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Number of GFM task-list markers in `src` that render as an interactive
+/// checkbox, i.e. the same count `render_markdown_interactive` would produce
+/// (MAPPS-835).
+pub fn count_tasks(src: &str) -> usize {
+    task_marker_offsets(src).len()
+}
+
 /// Toggle the `index`-th GFM task-list item in `src` (`- [ ]` <-> `- [x]`),
 /// counting markers in document order to match the rendered checkbox order
-/// (PMS-348). Returns the updated source, or `None` if `index` is out of
-/// range. Only the bracket marker flips; the rest of the line is untouched.
+/// (PMS-348, MAPPS-835). Returns the updated source, or `None` if `index` is
+/// out of range. Only the bracket marker flips; the rest of the line is
+/// untouched.
 pub fn toggle_task(src: &str, index: usize) -> Option<String> {
-    let mut seen = 0usize;
-    let mut out: Vec<String> = Vec::new();
-    let mut toggled = false;
-    for line in src.split_inclusive('\n') {
-        // Split off a trailing newline so we can edit the content then re-add.
-        let (content, nl) = match line.strip_suffix('\n') {
-            Some(c) => (c, "\n"),
-            None => (line, ""),
-        };
-        if let Some(new_content) = toggle_task_line(content, seen, index) {
-            out.push(format!("{new_content}{nl}"));
-            toggled = true;
-            seen += 1;
-        } else if is_task_line(content) {
-            // A task line that is not the target: keep it, advance the count.
-            out.push(line.to_string());
-            seen += 1;
-        } else {
-            out.push(line.to_string());
-        }
-    }
-    toggled.then(|| out.concat())
-}
-
-/// If `content` is a task-list line and `seen == target`, return the line with
-/// its marker flipped; otherwise `None`.
-fn toggle_task_line(content: &str, seen: usize, target: usize) -> Option<String> {
-    let pos = task_marker_pos(content)?;
-    if seen != target {
-        return None;
-    }
-    let bytes = content.as_bytes();
+    let pos = *task_marker_offsets(src).get(index)?;
+    let bytes = src.as_bytes();
     let new_char = if bytes[pos] == b' ' { 'x' } else { ' ' };
-    let mut s = content.to_string();
+    let mut s = src.to_string();
     s.replace_range(pos..pos + 1, &new_char.to_string());
     Some(s)
-}
-
-fn is_task_line(content: &str) -> bool {
-    task_marker_pos(content).is_some()
-}
-
-/// Byte offset of the marker char inside a GFM task line's `[ ]` / `[x]`, i.e.
-/// the position of the space/x. A task line is `<indent>[-*+] [<marker>] ...`.
-fn task_marker_pos(content: &str) -> Option<usize> {
-    let trimmed_start = content.len() - content.trim_start().len();
-    let rest = &content[trimmed_start..];
-    let bytes = rest.as_bytes();
-    // bullet + at least one space + "[x]" or "[ ]"
-    if bytes.len() < 4 || !matches!(bytes[0], b'-' | b'*' | b'+') || bytes[1] != b' ' {
-        return None;
-    }
-    // skip the bullet and following spaces
-    let mut i = 1;
-    while i < bytes.len() && bytes[i] == b' ' {
-        i += 1;
-    }
-    if i + 2 < bytes.len()
-        && bytes[i] == b'['
-        && matches!(bytes[i + 1], b' ' | b'x' | b'X')
-        && bytes[i + 2] == b']'
-    {
-        Some(trimmed_start + i + 1)
-    } else {
-        None
-    }
 }
 
 /// The byte range of each top-level block in `src`, in document order.
@@ -935,6 +904,23 @@ mod tests {
     fn toggle_task_out_of_range_is_none() {
         assert!(toggle_task("- [ ] only", 1).is_none());
         assert!(toggle_task("no tasks here", 0).is_none());
+    }
+
+    /// MAPPS-835: GFM requires whitespace right after the `]`, so `- [ ]done`
+    /// (no space before the text) is not a task marker to pulldown-cmark - it
+    /// renders as a plain list item whose text happens to start with `[ ]`.
+    /// `count_tasks` has to agree with `render_markdown_interactive`, which
+    /// only turns a real `Event::TaskListMarker` into a checkbox.
+    #[test]
+    fn count_tasks_matches_the_rendered_checkboxes() {
+        let src = "- [ ]done\n- [ ] real\n- [x] also real\n";
+        let out = render_markdown_interactive(src);
+        assert_eq!(
+            count_tasks(src),
+            out.matches("type=\"checkbox\"").count(),
+            "{out}"
+        );
+        assert_eq!(count_tasks(src), 2, "the space-less marker does not count");
     }
 
     // MAPPS-573 -------------------------------------------------------------
