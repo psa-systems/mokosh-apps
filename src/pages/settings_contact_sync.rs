@@ -115,6 +115,9 @@ pub struct Run {
     pub queued_for_review: i32,
     #[serde(default)]
     pub failed_records: i32,
+    /// What did not land, per record (capped by the server at 50).
+    #[serde(default)]
+    pub failures: Vec<RunFailure>,
     #[serde(default)]
     pub error: Option<String>,
     #[serde(default)]
@@ -122,6 +125,42 @@ pub struct Run {
     #[serde(default)]
     pub finished_at: Option<DateTime<Utc>>,
 }
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct RunFailure {
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// The reasons records did not land, each once with how many it stopped, most
+/// frequent first. A reason is the server's own words for one record; the
+/// record itself is a Google id nobody here would recognise, so it is not
+/// shown.
+pub fn failure_reasons(run: &Run) -> Vec<(String, usize)> {
+    let mut counted: Vec<(String, usize)> = Vec::new();
+    for failure in &run.failures {
+        match counted
+            .iter_mut()
+            .find(|(reason, _)| *reason == failure.reason)
+        {
+            Some((_, n)) => *n += 1,
+            None => counted.push((failure.reason.clone(), 1)),
+        }
+    }
+    counted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    counted
+}
+
+/// What the admin is agreeing to, shown before Google's consent screen
+/// (PSA-70 K): what is read, that nothing is written back, where it goes and
+/// who sees it.
+pub const CONSENT_POINTS: &[&str] = &[
+    "Read: names, email addresses, phone numbers, company, job title and department, and which labels each contact carries. Photos, addresses, birthdays and notes are not read.",
+    "Nothing is written back. Mokosh asks Google for read-only access, so it cannot change or delete anything in Google Contacts.",
+    "Where it goes: contacts you choose to import are stored in this organization's Mokosh CRM. Nothing is imported until you pick labels and start an import.",
+    "Who sees it: everyone in your organization who can see contacts in Mokosh. Your clients' portal users do not.",
+    "You can disconnect at any time. Imported contacts stay as local records, and a person's imported data can be removed on request.",
+];
 
 impl Run {
     fn active(&self) -> bool {
@@ -339,7 +378,7 @@ pub fn copy_for(state: &CardState) -> StateCopy {
             badge: "Connected",
             tone: BadgeVariant::Green,
             headline: format!("Connected to {account}."),
-            next_step: "No Google labels are chosen yet, so nothing is imported. Choose which labels to bring in before the first import.".to_string(),
+            next_step: "No Google labels are chosen yet, so nothing is imported. Choose which labels hold your business contacts; you see what the import would do before anything is written.".to_string(),
         },
         CardState::Healthy { account, .. } => StateCopy {
             badge: "Connected",
@@ -377,6 +416,9 @@ pub struct Actions {
     pub reconnect: bool,
     pub sync_now: bool,
     pub disconnect: bool,
+    /// Open the label picker (MAPPS-809): the primary action when nothing is
+    /// chosen, a secondary one once imports run.
+    pub choose_labels: bool,
 }
 
 pub fn actions_for(state: &CardState) -> Actions {
@@ -397,6 +439,7 @@ pub fn actions_for(state: &CardState) -> Actions {
         },
         CardState::NoLabelsChosen { .. } => Actions {
             disconnect: true,
+            choose_labels: true,
             ..Actions::default()
         },
         CardState::Throttled { .. }
@@ -406,6 +449,7 @@ pub fn actions_for(state: &CardState) -> Actions {
         | CardState::Healthy { .. } => Actions {
             sync_now: true,
             disconnect: true,
+            choose_labels: true,
             ..Actions::default()
         },
     }
@@ -454,6 +498,8 @@ fn GoogleContactsSettingsBody() -> Element {
     let mut busy = use_signal(|| false);
     let mut confirm_disconnect = use_signal(|| false);
     let mut confirm_off = use_signal(|| false);
+    let mut confirm_connect = use_signal(|| false);
+    let navigator = use_navigator();
     let can_mutate = crate::hooks::use_can_mutate();
 
     let snap = overview.read_unchecked().clone();
@@ -495,7 +541,7 @@ fn GoogleContactsSettingsBody() -> Element {
         });
     };
 
-    let connect = move |_| {
+    let connect = move || {
         busy.set(true);
         error.set(String::new());
         spawn(async move {
@@ -606,14 +652,29 @@ fn GoogleContactsSettingsBody() -> Element {
                             if let CardState::Syncing { run, .. } = &state {
                                 RunProgress { run: run.clone() }
                             }
+                            if let Some(run) = connection
+                                .as_ref()
+                                .and_then(|c| c.latest_run.clone())
+                                .filter(|r| !r.active() && r.failed_records > 0)
+                            {
+                                FailureList { run }
+                            }
                             if let Some(connection) = connection.as_ref() {
                                 ConnectionFacts { connection: connection.clone() }
                             }
                             div { class: "flex flex-wrap gap-3 pt-2",
+                                if actions.choose_labels && matches!(state, CardState::NoLabelsChosen { .. }) {
+                                    Button {
+                                        disabled,
+                                        onclick: move |_| { navigator.push(Route::SettingsGoogleContactsImport {}); },
+                                        data_testid: "contact-sync-choose-labels",
+                                        "Choose labels to import"
+                                    }
+                                }
                                 if actions.connect {
                                     Button {
                                         disabled,
-                                        onclick: connect,
+                                        onclick: move |_| confirm_connect.set(true),
                                         data_testid: "contact-sync-connect",
                                         "Connect Google account"
                                     }
@@ -621,7 +682,7 @@ fn GoogleContactsSettingsBody() -> Element {
                                 if actions.reconnect {
                                     Button {
                                         disabled,
-                                        onclick: connect,
+                                        onclick: move |_| confirm_connect.set(true),
                                         data_testid: "contact-sync-reconnect",
                                         "Reconnect"
                                     }
@@ -633,6 +694,15 @@ fn GoogleContactsSettingsBody() -> Element {
                                         onclick: move |_| post("/integrations/contact-sync/runs".to_string(), "Could not start an import"),
                                         data_testid: "contact-sync-now",
                                         "Sync now"
+                                    }
+                                }
+                                if actions.choose_labels && !matches!(state, CardState::NoLabelsChosen { .. }) {
+                                    Button {
+                                        variant: ButtonVariant::Secondary,
+                                        disabled,
+                                        onclick: move |_| { navigator.push(Route::SettingsGoogleContactsImport {}); },
+                                        data_testid: "contact-sync-change-labels",
+                                        "Change labels"
                                     }
                                 }
                                 if actions.disconnect {
@@ -664,6 +734,26 @@ fn GoogleContactsSettingsBody() -> Element {
                                 },
                             }
                         }
+                    }
+                    ConfirmDialog {
+                        open: confirm_connect(),
+                        title: "Connect Google Contacts?",
+                        message: "Before Google asks you to sign in, here is what connecting means for this organization.",
+                        confirm_text: "Continue to Google",
+                        loading: busy(),
+                        body: rsx! {
+                            ul { class: "list-disc space-y-2 pl-5 text-sm text-muted",
+                                for point in CONSENT_POINTS {
+                                    li { "{point}" }
+                                }
+                            }
+                        },
+                        onconfirm: move |_| {
+                            confirm_connect.set(false);
+                            let mut connect = connect;
+                            connect();
+                        },
+                        oncancel: move |_| confirm_connect.set(false),
                     }
                     ConfirmDialog {
                         open: confirm_disconnect(),
@@ -775,6 +865,32 @@ fn RunProgress(run: Run) -> Element {
                 }
             }
             p { class: "text-xs text-muted", "{label}" }
+        }
+    }
+}
+
+/// What did not land in the last import (MAPPS-809): each reason once, with
+/// how many records it stopped. Beside what DID land, which the facts below
+/// already count.
+#[component]
+fn FailureList(run: Run) -> Element {
+    let reasons = failure_reasons(&run);
+    let unlisted = usize::try_from(run.failed_records)
+        .unwrap_or(0)
+        .saturating_sub(run.failures.len());
+    rsx! {
+        div { class: "rounded-md border border-line p-3",
+            p { class: "text-sm font-medium text-content",
+                "{run.failed_records} could not be imported"
+            }
+            ul { class: "mt-2 space-y-1 text-sm text-muted",
+                for (reason, count) in reasons {
+                    li { "{count} × {reason}" }
+                }
+                if unlisted > 0 {
+                    li { "{unlisted} more not listed" }
+                }
+            }
         }
     }
 }
@@ -990,6 +1106,83 @@ mod tests {
         assert!(matches!(state, CardState::ReconnectRequired { .. }));
         let actions = actions_for(&state);
         assert!(actions.reconnect && actions.disconnect && !actions.connect && !actions.sync_now);
+    }
+
+    /// The label picker is offered once there is a connection to import from,
+    /// and never while an import runs or the integration is off.
+    #[test]
+    fn choose_labels_is_offered_only_to_a_connected_idle_tenant() {
+        for (state, offered) in [
+            (
+                CardState::NoLabelsChosen {
+                    account: "a@b".into(),
+                },
+                true,
+            ),
+            (
+                CardState::Healthy {
+                    account: "a@b".into(),
+                    last_sync_at: None,
+                },
+                true,
+            ),
+            (CardState::NeverConnected, false),
+            (
+                CardState::TurnedOff {
+                    connected_account: Some("a@b".into()),
+                },
+                false,
+            ),
+            (
+                CardState::ReconnectRequired {
+                    account: "a@b".into(),
+                },
+                false,
+            ),
+        ] {
+            assert_eq!(actions_for(&state).choose_labels, offered, "{state:?}");
+        }
+    }
+
+    /// Consent names what is read, that nothing is written back, where it
+    /// goes and who sees it (PSA-70 K), and it is shown before Google's
+    /// screen, not after.
+    #[test]
+    fn consent_covers_what_where_who_and_one_way() {
+        let all = CONSENT_POINTS.join(" ");
+        for needle in [
+            "Read:",
+            "Nothing is written back",
+            "Where it goes",
+            "Who sees it",
+        ] {
+            assert!(all.contains(needle), "{needle}");
+        }
+        let src = include_str!("settings_contact_sync.rs");
+        let head = &src[..src.find("mod tests").expect("this module")];
+        assert!(
+            !head.contains("onclick: connect"),
+            "Connect must open the consent dialog, not go straight to Google"
+        );
+        assert!(head.contains("onclick: move |_| confirm_connect.set(true)"));
+    }
+
+    #[test]
+    fn failure_reasons_are_counted_most_frequent_first() {
+        let run: Run = serde_json::from_value(serde_json::json!({
+            "id": "2f1c2f1e-0000-4000-8000-00000000beef", "status": "failed",
+            "failed_records": 3,
+            "failures": [
+                {"external_id": "people/c1", "reason": "b"},
+                {"external_id": "people/c2", "reason": "a"},
+                {"external_id": "people/c3", "reason": "a"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            failure_reasons(&run),
+            vec![("a".to_string(), 2), ("b".to_string(), 1)]
+        );
     }
 
     /// Connect is offered only where connecting can work.
