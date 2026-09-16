@@ -100,20 +100,29 @@ pub fn preset_label(now: DateTime<Utc>, fmt: &str) -> String {
 }
 
 /// Walk the format string left to right; replace the longest matching
-/// token at each position, copy any other byte verbatim.
+/// token at each position, copy any other char verbatim. `i` always
+/// advances to a char boundary: tokens are ASCII, so consuming
+/// `tok.len()` bytes from a boundary lands on the next boundary, and the
+/// fallback arm advances by the current char's own UTF-8 length instead
+/// of a fixed single byte (MAPPS-833: a non-ASCII literal, e.g. from a
+/// non-English locale format, previously left `i` mid-character, and the
+/// next `format[i..]` slice panicked).
 fn render_format<T: TimeZone>(local: DateTime<T>, format: &str) -> String {
-    let bytes = format.as_bytes();
     let mut out = String::with_capacity(format.len() + 8);
     let mut i = 0;
-    while i < bytes.len() {
+    while i < format.len() {
         match longest_token_at(format, i) {
             Some(tok) => {
                 out.push_str(&render_token(tok, &local));
                 i += tok.len();
             }
             None => {
-                out.push(bytes[i] as char);
-                i += 1;
+                let ch = format[i..]
+                    .chars()
+                    .next()
+                    .expect("i < format.len() implies a char remains");
+                out.push(ch);
+                i += ch.len_utf8();
             }
         }
     }
@@ -566,6 +575,16 @@ mod tests {
             render_format(sample(), "YYYY.MM.DD - HH:mm"),
             "2026.06.11 - 08:40"
         );
+    }
+
+    #[test]
+    fn renders_non_ascii_literal_without_panicking() {
+        // MAPPS-833: a multi-byte UTF-8 literal (e.g. from a non-English
+        // locale format) used to land `longest_token_at`'s byte index
+        // mid-character and panic on the slice. `日` is 3 bytes, `ü` is
+        // 2, both straddling token boundaries here.
+        assert_eq!(render_format(sample(), "YYYY年MM月DD日"), "2026年06月11日");
+        assert_eq!(render_format(sample(), "über-YYYY"), "über-2026");
     }
 
     #[test]

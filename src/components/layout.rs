@@ -1234,14 +1234,15 @@ fn UserMenu() -> Element {
                     .await;
                 });
             }
-            crate::hooks::fetch::api::clear_contact_session();
             // Route back to a contact-flavoured login page. Prefer the
             // 9-digit portal_id (prompt 011 primary URL) when we
             // captured it on the way in; fall back to the legacy slug
             // shape from prompt 005 for a mid-transition returning
             // visitor; last resort is the generic three-field entry
             // page (prompt 011 secondary URL) which the visitor can
-            // sign into by re-typing all three fields.
+            // sign into by re-typing all three fields. Read these hints
+            // before clearing the session below: clear_contact_session()
+            // invalidates the storage they read from.
             let dest = if let Some(pid) = crate::hooks::fetch::api::current_contact_last_portal_id()
             {
                 format!("/portal/{pid}/login")
@@ -1250,6 +1251,7 @@ fn UserMenu() -> Element {
             } else {
                 "/portal/login".to_string()
             };
+            crate::hooks::fetch::api::clear_contact_session();
             #[cfg(target_arch = "wasm32")]
             if let Some(win) = web_sys::window() {
                 let _ = win.location().replace(&dest);
