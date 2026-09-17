@@ -21,6 +21,13 @@ asset_dir = "assets"
 # is the entire tab title.
 title = ""
 
+# MAPPS-867: dx's own default for a release web build already runs wasm-opt
+# at "z", so this line changes nothing at build time. It exists so the size
+# tradeoff is a decision on disk, not an implicit toolchain default someone
+# could accidentally lose (e.g. by pinning an older dx that defaults elsewhere).
+[web.wasm_opt]
+level = "z"
+
 # CSS is included via asset!() macro in Rust code
 [web.resource]
 
