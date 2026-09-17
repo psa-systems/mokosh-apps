@@ -16,6 +16,10 @@ pub fn HomePage() -> Element {
     let brand = crate::branding::product_name();
     let hero = crate::branding::hero_src();
     let hero_alt = crate::branding::hero_alt();
+    let hero_srcset = crate::branding::hero_srcset();
+    let hero_dimensions = crate::branding::hero_dimensions();
+    let hero_width = hero_dimensions.map(|(width, _)| width as usize);
+    let hero_height = hero_dimensions.map(|(_, height)| height as usize);
     rsx! {
         div { class: "min-h-screen bg-gradient-to-br from-blue-600 to-indigo-900",
             // Navigation
@@ -93,7 +97,13 @@ pub fn HomePage() -> Element {
                     div { class: "flex flex-col items-center",
                         img {
                             src: "{hero}",
+                            srcset: hero_srcset,
+                            sizes: "(min-width: 1024px) 28rem, 100vw",
                             alt: "{hero_alt}",
+                            width: hero_width,
+                            height: hero_height,
+                            loading: "eager",
+                            fetchpriority: "high",
                             class: "w-full max-w-md h-auto drop-shadow-2xl",
                         }
                         p { class: "relative z-10 -mt-24 rounded-full border border-blue-100 bg-white px-5 py-2 text-sm italic text-blue-700 shadow-lg whitespace-nowrap", // theme-guard-allow: marketing hero tagline pill on brand gradient

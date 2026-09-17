@@ -32,6 +32,13 @@ const DEFAULT_PRODUCT_NAME: &str = "Mokosh Platform";
 /// artwork is what renders, hence [`hero_alt`].
 const DEFAULT_HERO_ALT: &str = "Mokosh, the weaver goddess, at her loom";
 
+/// Intrinsic pixel dimensions of the built-in hero artwork
+/// (`assets/mokosh-hero.png`), pinned here so [`hero_dimensions`] can
+/// reserve the correct box before the image loads (MAPPS-861). Only correct
+/// while that artwork is what renders, same caveat as [`DEFAULT_HERO_ALT`].
+const DEFAULT_HERO_WIDTH: u32 = 642;
+const DEFAULT_HERO_HEIGHT: u32 = 760;
+
 /// Pick the operator's value, falling back when it is absent or blank.
 fn or_default(configured: Option<String>, fallback: &str) -> String {
     configured
@@ -50,9 +57,54 @@ fn default_hero_src() -> String {
     asset!("/assets/mokosh-hero.png").to_string()
 }
 
+/// Smaller renditions of the built-in hero, generated at build time by
+/// `asset!()`'s image pipeline (MAPPS-861) so the `srcset` below can serve a
+/// mobile viewport fewer bytes than the 642px original.
+fn default_hero_src_320w() -> String {
+    asset!(
+        "/assets/mokosh-hero.png",
+        ImageAssetOptions::new().with_size(ImageSize::Manual {
+            width: 320,
+            height: 379
+        })
+    )
+    .to_string()
+}
+
+fn default_hero_src_480w() -> String {
+    asset!(
+        "/assets/mokosh-hero.png",
+        ImageAssetOptions::new().with_size(ImageSize::Manual {
+            width: 480,
+            height: 568
+        })
+    )
+    .to_string()
+}
+
+/// `srcset` for the built-in hero: the two downscaled renditions plus the
+/// original, each labeled with its width so the browser picks the smallest
+/// one that still fills the rendered box.
+fn default_hero_srcset() -> String {
+    format!(
+        "{} 320w, {} 480w, {} 642w",
+        default_hero_src_320w(),
+        default_hero_src_480w(),
+        default_hero_src()
+    )
+}
+
+/// Whether the hero renders the built-in artwork rather than an operator's
+/// `brand_hero_url`. The dimensions, `srcset`, and alt text below are only
+/// correct for the built-in artwork: an operator's image is a single URL of
+/// unknown size, so none of those are derivable for it.
+fn using_default_hero(configured_hero: Option<String>) -> bool {
+    or_default(configured_hero, "").is_empty()
+}
+
 /// Alt text for whichever hero image is actually rendering.
 fn hero_alt_for(configured_hero: Option<String>, brand: &str) -> String {
-    if or_default(configured_hero, "").is_empty() {
+    if using_default_hero(configured_hero) {
         DEFAULT_HERO_ALT.to_string()
     } else {
         brand.to_string()
@@ -86,6 +138,23 @@ pub fn hero_src() -> String {
 /// gets the brand name instead.
 pub fn hero_alt() -> String {
     hero_alt_for(runtime_config::get("brand_hero_url"), &product_name())
+}
+
+/// Intrinsic width/height for the hero `img` tag, so the browser reserves
+/// its box before the image loads instead of shifting layout in underneath
+/// it (MAPPS-861). `None` for an operator-configured hero: its dimensions
+/// aren't known here, and a wrong guess would reserve the wrong box for it.
+pub fn hero_dimensions() -> Option<(u32, u32)> {
+    using_default_hero(runtime_config::get("brand_hero_url"))
+        .then_some((DEFAULT_HERO_WIDTH, DEFAULT_HERO_HEIGHT))
+}
+
+/// `srcset` for the hero image, so a small viewport downloads a smaller
+/// rendition instead of the full 642px artwork (MAPPS-861). `None` for an
+/// operator-configured hero: it is a single URL, so there is nothing to
+/// build a `srcset` from.
+pub fn hero_srcset() -> Option<String> {
+    using_default_hero(runtime_config::get("brand_hero_url")).then(default_hero_srcset)
 }
 
 #[cfg(test)]
@@ -142,6 +211,32 @@ mod tests {
             hero_alt_for(Some("/branding/hero.png".into()), "PSA Systems"),
             "PSA Systems"
         );
+    }
+
+    /// The built-in hero's `width`/`height` reserve its intrinsic box
+    /// (MAPPS-861 CLS fix); an operator-configured hero is a single URL of
+    /// unknown size, so guessing at a box for it would be wrong instead of
+    /// merely absent.
+    #[test]
+    fn hero_dimensions_are_only_known_for_the_built_in_hero() {
+        assert!(using_default_hero(None));
+        assert!(!using_default_hero(Some("/branding/hero.png".into())));
+    }
+
+    /// `srcset` only makes sense for the built-in hero: it is the only one
+    /// with pre-generated smaller renditions (MAPPS-861).
+    #[test]
+    fn hero_srcset_lists_the_built_in_renditions_smallest_first() {
+        let srcset = default_hero_srcset();
+        let widths: Vec<&str> = srcset
+            .split(", ")
+            .map(|part| {
+                part.rsplit(' ')
+                    .next()
+                    .expect("each entry ends in a width descriptor")
+            })
+            .collect();
+        assert_eq!(widths, ["320w", "480w", "642w"]);
     }
 
     /// The helpers read the runtime-config fields the container entrypoint
