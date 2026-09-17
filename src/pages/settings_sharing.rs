@@ -384,7 +384,19 @@ pub fn SettingsSharingPage() -> Element {
                 if loading {
                     div { class: "p-4 text-sm text-subtle", "Loading..." }
                 } else if pending_view.is_empty() {
-                    div { class: "p-4 text-sm text-subtle", "No pending invitations." }
+                    div { class: "p-4 flex items-center justify-between gap-4",
+                        p { class: "text-sm text-subtle",
+                            "No pending invitations."
+                        }
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            r#type: "button".to_string(),
+                            onclick: move |_| {
+                                *crate::components::SHOW_INVITE_MEMBER.write() = true;
+                            },
+                            "Invite member"
+                        }
+                    }
                 } else {
                     ul { class: "divide-y divide-line",
                         {pending_view.iter().map(|inv| {
@@ -429,7 +441,19 @@ pub fn SettingsSharingPage() -> Element {
                 if loading {
                     div { class: "p-4 text-sm text-subtle", "Loading..." }
                 } else if active_view.is_empty() {
-                    div { class: "p-4 text-sm text-subtle", "You haven't shared this account with anyone." }
+                    div { class: "p-4 flex items-center justify-between gap-4",
+                        p { class: "text-sm text-subtle",
+                            "You haven't shared this account with anyone."
+                        }
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            r#type: "button".to_string(),
+                            onclick: move |_| {
+                                *crate::components::SHOW_INVITE_MEMBER.write() = true;
+                            },
+                            "Invite member"
+                        }
+                    }
                 } else {
                     ul { class: "divide-y divide-line",
                         {active_view.iter().map(|grant| {
