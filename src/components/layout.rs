@@ -1299,6 +1299,23 @@ fn UserMenu() -> Element {
                         "System Status"
                     }
                     div { class: "border-t border-line my-1" }
+                    // PMS-1208: "Invite member" is the sender side of
+                    // the grant lifecycle. Put it in the UserMenu
+                    // (not just the switcher dropdown) so a single-
+                    // team identity - whose switcher trigger is
+                    // hidden per MAPPS-497 - can still invite. Same
+                    // global signal the switcher renders on; the
+                    // modal is mounted inside TenantSwitcher and
+                    // opens against the CURRENTLY-ACTIVE tenant.
+                    button {
+                        r#type: "button",
+                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
+                        onclick: move |_| {
+                            *crate::components::tenant_switcher::SHOW_INVITE_MEMBER.write() = true;
+                            open.set(false);
+                        },
+                        "Invite member"
+                    }
                     // MAPPS-497 item 1: create-org lives here too so a
                     // single-membership identity (switcher trigger
                     // hidden) can still start a new org from the top

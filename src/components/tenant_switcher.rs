@@ -871,21 +871,44 @@ pub fn TenantSwitcher() -> Element {
     }
 }
 
-/// PMS-1208 SPA: whether the currently-active tenant is one the
-/// caller owns (as opposed to one they were granted access to).
-/// True when the active membership row has `mokosh_bunyip_grant_id
-/// = None`; a granted membership is `Some(..)`, and its grantee is
-/// never an admin on the account they see through it. Renders the
-/// Invite affordance only where sending would succeed.
+/// PMS-1208 SPA: whether the caller can plausibly send an
+/// invitation from the switcher.
+///
+/// The Invite affordance previously gated on the CURRENTLY-ACTIVE
+/// row being owned, which failed on initial page load because
+/// `AuthContext.active_tenant_id` populates a tick after
+/// `memberships` does; the button only appeared after the user
+/// switched teams (any switch, incl. to the same team) because
+/// `install_session` writes `active_tenant_id` in that path. Two
+/// fixes:
+///
+/// 1. Fall back to "the caller owns AT LEAST ONE membership" when
+///    the active id is not yet known. That resolves to true for
+///    every owner as soon as memberships have loaded, so the
+///    button appears on first render.
+///
+/// 2. When the active id IS known, keep the strict check (the
+///    active row is owned) so a grantee-scope session does not
+///    render an affordance the server would refuse. The invite
+///    posts to `/grants/invitations` scoped by the caller's
+///    current tenant on the server side; a grantee-active caller
+///    is not an admin there and gets 403.
 fn is_owner_of_active_tenant(memberships: &[MembershipView], active_id: Option<&str>) -> bool {
-    let Some(active_id) = active_id else {
-        return false;
-    };
-    memberships
-        .iter()
-        .find(|m| m.tenant_id == active_id)
-        .map(|m| m.mokosh_bunyip_grant_id.is_none())
-        .unwrap_or(false)
+    match active_id {
+        Some(active_id) => memberships
+            .iter()
+            .find(|m| m.tenant_id == active_id)
+            .map(|m| m.mokosh_bunyip_grant_id.is_none())
+            .unwrap_or(false),
+        // Fallback for first render before `active_tenant_id` is
+        // written: any owned membership at all is enough to show
+        // the button. The server still gates on RequireAdminUser
+        // against the caller's actual tenant scope, so this cannot
+        // over-authorize.
+        None => memberships
+            .iter()
+            .any(|m| m.mokosh_bunyip_grant_id.is_none()),
+    }
 }
 
 /// PMS-1208: map the PMS-1162 role vocab to a UI label, matching
