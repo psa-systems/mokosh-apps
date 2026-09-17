@@ -771,12 +771,21 @@ pub fn TenantSwitcher() -> Element {
                         // outbox (pending + active, with Cancel and
                         // Revoke). Sits between Invite and Create so
                         // the flow is invite -> manage -> create.
+                        //
+                        // MAPPS-877: repointed at `/settings/members`,
+                        // the unified access-management page. Label
+                        // stays "Manage sharing" during phase 2 so
+                        // the scaffold change ships without a visible
+                        // rename; phase 6 renames it to "Manage
+                        // members" alongside the sidebar entry.
                         button {
                             class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
                             r#type: "button",
                             onclick: move |_| {
                                 open.set(false);
-                                nav.replace(Route::SettingsSharing {});
+                                nav.replace(Route::MembersPage {
+                                    tab: "people".to_string(),
+                                });
                             },
                             "Manage sharing"
                         }

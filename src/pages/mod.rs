@@ -68,7 +68,10 @@ pub mod settings_branding;
 // LOC file stays intact.
 pub mod settings_contact_roles;
 // MAPPS-875: owner-side grant management (`/settings/sharing`).
+// MAPPS-877: now a redirect stub. Feature lives in `pub mod members`.
 pub mod settings_sharing;
+// MAPPS-877: unified access-management page (People / Teams / Invitations).
+pub mod members;
 pub mod sla;
 pub mod statements;
 pub mod system_status;

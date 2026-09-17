@@ -990,10 +990,11 @@ pub enum Route {
     /// detail page instead (MAPPS-619).
     #[route("/settings/portal-branding")]
     ContactPortalBranding {},
-    /// MAPPS-875: owner-side grant management. Lists pending
-    /// invitations and active grants, with Cancel and Revoke
-    /// actions per row. Gated on `role.is_admin()` in the page;
-    /// the server routes are admin-only on top.
+    /// MAPPS-875: owner-side grant management. Superseded by
+    /// `MembersPage` (MAPPS-877); this variant is now a one-tick
+    /// redirect stub that sends the caller to
+    /// `/settings/members?tab=people`. Kept defined because inbound
+    /// bookmarks, emails, and PR links target it.
     #[route("/settings/sharing")]
     SettingsSharing {},
     // MAPPS-258: per-group landing routes. The index lists these four
@@ -1151,9 +1152,23 @@ pub enum Route {
     TeamLegacyRedirect {},
     // PMS-791 phase 2: the actual teams management page (list + create +
     // edit + membership).
+    //
+    // MAPPS-877: this route is now a one-tick redirect stub that
+    // sends the caller to `/settings/members?tab=teams`. The variant
+    // stays defined because inbound bookmarks, emails, and PR links
+    // still target it. Delete-follow-up is filed as a separate ticket
+    // gated on 90 days of zero traffic.
     #[cfg(feature = "multi-tenant")]
     #[route("/admin/teams")]
     Teams {},
+
+    /// MAPPS-877: unified access-management page. Three tabs (People,
+    /// Teams, Invitations). Supersedes `/admin/teams` and
+    /// `/settings/sharing`; both remain as redirect stubs (see the
+    /// route-variant comments there).
+    #[cfg(feature = "multi-tenant")]
+    #[route("/settings/members?:tab")]
+    MembersPage { tab: String },
 
     // mokosh-contact-login: /admin/tenants (Clients tab / TenantManagement)
     // retired on this branch (prompt 001).
@@ -2008,12 +2023,28 @@ fn SettingsBranding() -> Element {
     }
 }
 
-/// MAPPS-875: owner-side grant management page.
+/// MAPPS-875 / MAPPS-877: legacy `/settings/sharing` route. Renders
+/// the redirect stub `SettingsSharingPage`, which navs to
+/// `/settings/members?tab=people` on mount.
 #[component]
 fn SettingsSharing() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             pages::settings_sharing::SettingsSharingPage {}
+        }
+    }
+}
+
+/// MAPPS-877: unified access-management page. Reads `tab` from the
+/// query string (`?tab=people | teams | invitations`); the default is
+/// `people`. The tab shell + gates live inside `MembersPage`; each
+/// pane fetches its own resources lazily.
+#[cfg(feature = "multi-tenant")]
+#[component]
+fn MembersPage(tab: String) -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::members::MembersPage { tab }
         }
     }
 }
