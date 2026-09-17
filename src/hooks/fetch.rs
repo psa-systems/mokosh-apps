@@ -245,6 +245,24 @@ pub mod api {
     ///      server can proxy to a local backend.
     #[cfg(feature = "app")]
     pub fn api_base() -> String {
+        static RESOLVED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        RESOLVED.get_or_init(resolve_api_base).clone()
+    }
+
+    /// MAPPS-858: counts calls to [`resolve_api_base`], the parse/config-read
+    /// path [`api_base`] used to run on every call. Test-only: it exists so
+    /// `api_base_resolves_the_parse_path_only_once` can prove the `OnceLock`
+    /// in `api_base` keeps that count at 1 across many calls.
+    #[cfg(all(test, feature = "app"))]
+    static RESOLVE_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    /// MAPPS-858: the actual resolution, run once per process lifetime and
+    /// cached by [`api_base`]. Split out so the `OnceLock` wrapper stays a
+    /// one-liner and every early `return` below still lands in the cache.
+    #[cfg(feature = "app")]
+    fn resolve_api_base() -> String {
+        #[cfg(test)]
+        RESOLVE_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Some(injected) = crate::modules::runtime_config::get("api_base") {
             return normalize_api_base(&injected);
         }
@@ -3416,6 +3434,27 @@ pub mod api {
                 envelope_code,
                 envelope_body,
             })
+        }
+    }
+
+    /// MAPPS-858: `api_base()` used to re-run its parse/config-read path on
+    /// every one of its 54 call sites. This proves the `OnceLock` added to
+    /// cache it actually gates the work down to one resolution per process.
+    #[cfg(all(test, feature = "app"))]
+    mod api_base_cache_tests {
+        use super::{api_base, RESOLVE_CALLS};
+
+        #[test]
+        fn api_base_resolves_the_parse_path_only_once() {
+            for _ in 0..5 {
+                api_base();
+            }
+            assert_eq!(
+                RESOLVE_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "api_base() must resolve the parse/config-read path once per process, not \
+                 once per call"
+            );
         }
     }
 }
