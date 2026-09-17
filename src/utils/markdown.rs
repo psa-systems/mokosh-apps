@@ -3,6 +3,8 @@
 //! the same content feeds the public portal feed, so the HTML is always
 //! scrubbed with ammonia before it reaches a browser.
 
+use std::sync::LazyLock;
+
 use pulldown_cmark::{html, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use crate::utils::highlight;
@@ -523,55 +525,63 @@ pub fn absolutize_attachment(dest: &str, api_origin: &str) -> String {
 /// `add_tag_attributes` would let the generic allowlist win and pass any value
 /// (e.g. `type="text"`). `data-ti` carries the task index for interactive
 /// toggling (PMS-348).
+///
+/// MAPPS-859: the allowlist below is static configuration with no
+/// per-call variation, so the `Builder` is built once behind a
+/// `LazyLock` and reused across every `sanitize` call instead of being
+/// reconstructed (and its whole allowlist reapplied) per render.
 fn sanitize(html: &str) -> String {
-    let mut builder = ammonia::Builder::default();
-    builder
-        // MAPPS-741: headings carry the id the renderer gave them, and only
-        // headings carry an id at all. `id_prefix` puts `kb-` on every id
-        // AND on every `#fragment` href, so an in-article link keeps working
-        // and an author-written id cannot name a page element.
-        .add_tag_attributes("h1", ["id"])
-        .add_tag_attributes("h2", ["id"])
-        .add_tag_attributes("h3", ["id"])
-        .add_tag_attributes("h4", ["id"])
-        .add_tag_attributes("h5", ["id"])
-        .add_tag_attributes("h6", ["id"])
-        .id_prefix(Some(ID_PREFIX))
-        .add_tags(["input"])
-        .add_tag_attributes("input", ["checked", "disabled", "data-ti"])
-        .add_tag_attribute_values("input", "type", ["checkbox"])
-        // MAPPS-573: the highlighter's token classes. `add_allowed_classes`
-        // permits these VALUES on `class` and nothing else, so an author who
-        // writes raw `<span class="...">` in an article cannot reach for an
-        // arbitrary app style; the tag also has to be one we already allow.
-        // MAPPS-578: the mention chip, alongside the highlighter's tokens.
-        .add_allowed_classes(
-            "span",
-            highlight::CLASSES.iter().copied().chain(["mention"]),
-        )
-        // `data-mention` carries the user id for the delegated click listener;
-        // `title` carries the name and email the chip shows on hover. Both are
-        // scoped to `span`, so nothing else in an article gains them.
-        .add_tag_attributes("span", ["data-mention", "title"])
-        // The language marker pulldown puts on a fenced block. Kept for the
-        // block styling and so a reader can see what the fence claimed, even
-        // though the colours come from the spans inside.
-        .add_allowed_classes("code", LANGUAGE_CLASSES.iter().copied())
-        .add_tag_attributes("span", ["style"])
-        // MAPPS-573: authors colour text with `<span style="color:red">`, which
-        // the default allowlist dropped entirely. Blanket `style` is a CSS
-        // injection surface and this content also feeds the public portal, so
-        // the attribute is permitted and then filtered down to a single
-        // property with a value shape that cannot carry a URL, an expression or
-        // a second declaration. Anything else is dropped, not sanitized in
-        // place, so a rejected style leaves no half-applied rule behind.
-        .attribute_filter(|_tag, attr, value| {
-            if attr != "style" {
-                return Some(value.into());
-            }
-            safe_color_style(value).map(Into::into)
-        });
-    builder.clean(html).to_string()
+    static SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
+        let mut builder = ammonia::Builder::default();
+        builder
+            // MAPPS-741: headings carry the id the renderer gave them, and only
+            // headings carry an id at all. `id_prefix` puts `kb-` on every id
+            // AND on every `#fragment` href, so an in-article link keeps working
+            // and an author-written id cannot name a page element.
+            .add_tag_attributes("h1", ["id"])
+            .add_tag_attributes("h2", ["id"])
+            .add_tag_attributes("h3", ["id"])
+            .add_tag_attributes("h4", ["id"])
+            .add_tag_attributes("h5", ["id"])
+            .add_tag_attributes("h6", ["id"])
+            .id_prefix(Some(ID_PREFIX))
+            .add_tags(["input"])
+            .add_tag_attributes("input", ["checked", "disabled", "data-ti"])
+            .add_tag_attribute_values("input", "type", ["checkbox"])
+            // MAPPS-573: the highlighter's token classes. `add_allowed_classes`
+            // permits these VALUES on `class` and nothing else, so an author who
+            // writes raw `<span class="...">` in an article cannot reach for an
+            // arbitrary app style; the tag also has to be one we already allow.
+            // MAPPS-578: the mention chip, alongside the highlighter's tokens.
+            .add_allowed_classes(
+                "span",
+                highlight::CLASSES.iter().copied().chain(["mention"]),
+            )
+            // `data-mention` carries the user id for the delegated click listener;
+            // `title` carries the name and email the chip shows on hover. Both are
+            // scoped to `span`, so nothing else in an article gains them.
+            .add_tag_attributes("span", ["data-mention", "title"])
+            // The language marker pulldown puts on a fenced block. Kept for the
+            // block styling and so a reader can see what the fence claimed, even
+            // though the colours come from the spans inside.
+            .add_allowed_classes("code", LANGUAGE_CLASSES.iter().copied())
+            .add_tag_attributes("span", ["style"])
+            // MAPPS-573: authors colour text with `<span style="color:red">`, which
+            // the default allowlist dropped entirely. Blanket `style` is a CSS
+            // injection surface and this content also feeds the public portal, so
+            // the attribute is permitted and then filtered down to a single
+            // property with a value shape that cannot carry a URL, an expression or
+            // a second declaration. Anything else is dropped, not sanitized in
+            // place, so a rejected style leaves no half-applied rule behind.
+            .attribute_filter(|_tag, attr, value| {
+                if attr != "style" {
+                    return Some(value.into());
+                }
+                safe_color_style(value).map(Into::into)
+            });
+        builder
+    });
+    SANITIZER.clean(html).to_string()
 }
 
 /// `class` values permitted on a fenced code block: `language-<name>` for the

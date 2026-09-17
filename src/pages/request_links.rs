@@ -70,6 +70,9 @@ pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Elem
     };
     let can_mutate = crate::hooks::use_can_mutate();
     let now = Utc::now();
+    // MAPPS-859: resolve once for the whole row list, not once per
+    // "Expires" cell.
+    let tz = crate::utils::datetime::user_timezone();
 
     rsx! {
         CollapsibleCard {
@@ -116,7 +119,7 @@ pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Elem
                                         RequestLinkStatus::Awaiting => BadgeVariant::Blue,
                                         RequestLinkStatus::Expired => BadgeVariant::Gray,
                                     };
-                                    let expires = crate::utils::datetime::format_user_datetime(link.expires_at, None);
+                                    let expires = crate::utils::datetime::format_user_datetime_in(link.expires_at, None, tz);
                                     let expires_iso = link.expires_at.to_rfc3339();
                                     rsx! {
                                         TableRow { key: "{key}",
@@ -199,6 +202,9 @@ pub fn SentRequestLinksPanel(reload: ReadSignal<u32>) -> Element {
 
     let snap = links.read_unchecked();
     let now = Utc::now();
+    // MAPPS-859: resolve once for the whole row list, not once per
+    // "Expires" cell.
+    let tz = crate::utils::datetime::user_timezone();
 
     rsx! {
         Card {
@@ -244,7 +250,7 @@ pub fn SentRequestLinksPanel(reload: ReadSignal<u32>) -> Element {
                                             RequestLinkStatus::Awaiting => BadgeVariant::Blue,
                                             RequestLinkStatus::Expired => BadgeVariant::Gray,
                                         };
-                                        let expires = crate::utils::datetime::format_user_datetime(link.expires_at, None);
+                                        let expires = crate::utils::datetime::format_user_datetime_in(link.expires_at, None, tz);
                                         let expires_iso = link.expires_at.to_rfc3339();
                                         let company_id = link.company_id.to_string();
                                         rsx! {
