@@ -28,6 +28,19 @@ pub struct MembershipView {
     pub tenant_name: String,
     #[serde(default)]
     pub mokosh_bunyip_grant_id: Option<String>,
+    /// PMS-1208 finding 4: bunyip's source-of-truth grant id. This
+    /// is a DIFFERENT UUID than `mokosh_bunyip_grant_id` above:
+    /// mokosh's mirror row has its own primary key (used by
+    /// `DELETE /api/v1/my-grants/{id}` on mokosh-server) and stores
+    /// bunyip's id verbatim as a second column. The tenant switcher
+    /// uses THIS id when it calls bunyip's
+    /// `POST /v1/grants/{id}/access-token`, because bunyip's
+    /// `mokosh_account_grants` table has never seen the mokosh
+    /// mirror id and looks up by its own key. Sending the wrong id
+    /// returns 404. `#[serde(default)]` for compatibility with a
+    /// server that has not yet been redeployed.
+    #[serde(default)]
+    pub bunyip_grant_id: Option<String>,
 }
 
 /// MAPPS-661: whether the identity provider has confirmed, during THIS page
@@ -641,6 +654,7 @@ pub fn use_memberships_loader() {
                             tenant_id: t.id,
                             tenant_name: t.name,
                             mokosh_bunyip_grant_id: None,
+                            bunyip_grant_id: None,
                         }];
                         a.memberships_loaded = true;
                     }
@@ -1324,6 +1338,7 @@ mod tests {
                 tenant_id: id.to_string(),
                 tenant_name: name.to_string(),
                 mokosh_bunyip_grant_id: None,
+                bunyip_grant_id: None,
             }],
             memberships_loaded: true,
             ..Default::default()
@@ -1369,6 +1384,7 @@ mod tests {
             tenant_id: uuid::Uuid::from_u128(0xbeef).to_string(),
             tenant_name: "Someone else".to_string(),
             mokosh_bunyip_grant_id: None,
+            bunyip_grant_id: None,
         });
         assert!(ctx.set_active_org_name("Niceguy IT"));
         assert_eq!(ctx.memberships[0].tenant_name, "Niceguy IT");

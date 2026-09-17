@@ -695,7 +695,13 @@ pub fn TenantSwitcher() -> Element {
                         {memberships.iter().map(|m| {
                             let tenant_id = m.tenant_id.clone();
                             let is_active = Some(tenant_id.clone()) == active_id_str;
+                            // PMS-1210: mokosh mirror id, for DELETE /my-grants/{id}.
                             let grant_id_for_leave = m.mokosh_bunyip_grant_id.clone();
+                            // PMS-1208 finding 4: bunyip's own grant id, for
+                            // POST {issuer}/v1/grants/{id}/access-token. Sending
+                            // the mokosh mirror id there 404s: the two ids live
+                            // in different tables on different servers.
+                            let bunyip_grant_id_for_mint = m.bunyip_grant_id.clone();
                             let switch_id = tenant_id.clone();
                             rsx! {
                                 div {
@@ -711,8 +717,8 @@ pub fn TenantSwitcher() -> Element {
                                         disabled: is_active || saving(),
                                         onclick: {
                                             let tenant_id = switch_id.clone();
-                                            let grant_id = grant_id_for_leave.clone();
-                                            move |_| switch_to(tenant_id.clone(), grant_id.clone())
+                                            let bunyip_grant_id = bunyip_grant_id_for_mint.clone();
+                                            move |_| switch_to(tenant_id.clone(), bunyip_grant_id.clone())
                                         },
                                         div { class: "font-medium truncate", "{m.tenant_name}" }
                                         div { class: "text-xs text-subtle",
