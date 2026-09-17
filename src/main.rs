@@ -64,7 +64,7 @@ fn launch() {
     use dioxus::desktop::{Config, LogicalSize, WindowBuilder, WindowCloseBehaviour};
 
     let mut window = WindowBuilder::new()
-        .with_title("Mokosh Platform")
+        .with_title(mokosh_apps::branding::product_name())
         .with_inner_size(LogicalSize::new(1440.0, 900.0))
         .with_min_inner_size(LogicalSize::new(1024.0, 680.0));
 
