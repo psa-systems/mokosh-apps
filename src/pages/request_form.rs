@@ -204,8 +204,6 @@ pub fn RequestFormPage(token: String) -> Element {
                         Err(ApiError::Status { code: 400, .. }) => {
                             terminal.set(Some(Terminal::Unusable))
                         }
-                        Err(ApiError::Status { code: 429, .. }) => form_error
-                            .set("Too many attempts. Wait a moment and try again.".to_string()),
                         Err(e) => form_error.set(e.user_message()),
                     }
                 }
