@@ -22,20 +22,29 @@ set -u
 cd "$(dirname "$0")/.." || exit 2
 
 # Report `<file>:<line>: <hook>` for every hook call that follows a
-# function-body-level `return` inside a `#[component]` function.
+# function-body-level `return` inside a `#[component]` function or a custom
+# hook (a `fn use_*` that itself calls other hooks, by naming convention).
 run_guard() {
   local root="$1"
   find "$root" -name '*.rs' -type f -print0 | while IFS= read -r -d '' file; do
     awk -v file="$file" '
       # A component starts at #[component] and ends at the first column-0 "}".
-      /^#\[component\]/ { in_comp = 1; seen_return = 0; next }
-      in_comp && /^\}/  { in_comp = 0; seen_return = 0; next }
-      !in_comp { next }
+      /^#\[component\]/ { in_scope = 1; seen_return = 0; next }
+
+      # A custom hook starts at its `fn use_*` signature line. Skip a stub
+      # whose whole body is `{}` on that same line, since it has no return to
+      # guard and no closing "}" of its own to end the scope on.
+      /^(pub(\([a-z]+\))? )?(async )?fn use_[A-Za-z0-9_]*\(/ && !/\{\}[[:space:]]*$/ {
+        in_scope = 1; seen_return = 0; next
+      }
+
+      in_scope && /^\}/  { in_scope = 0; seen_return = 0; next }
+      !in_scope { next }
 
       # Strip line comments so a `return` or `use_x(` inside prose does not count.
       { line = $0; sub(/[[:space:]]*\/\/.*$/, "", line) }
 
-      # Indentation is what separates the component body from a closure inside
+      # Indentation is what separates the function body from a closure inside
       # it. An early return is written at the body (4) or inside an `if` at the
       # body (8); a `return` deeper than that is inside a `use_memo`, an
       # `EventHandler` or an async block, where it exits the closure and not the
@@ -91,6 +100,39 @@ EOF
   rm -f "$tmp/bad.rs"
   if [ -n "$(run_guard "$tmp")" ]; then
     echo "hook-order guard: SELF-TEST FAIL (the corrected order was rejected)"
+    status=1
+  fi
+
+  cat > "$tmp/bad_hook.rs" <<'EOF'
+pub fn use_broken(enabled: bool) -> bool {
+    let a = use_signal(|| 0);
+    if !enabled {
+        return false;
+    }
+    let auth = crate::hooks::use_auth();
+    *a.read() && auth.read().is_some()
+}
+EOF
+  if [ -z "$(run_guard "$tmp")" ]; then
+    echo "hook-order guard: SELF-TEST FAIL (a hook after an early return in a custom hook was not caught)"
+    status=1
+  fi
+
+  rm -f "$tmp/bad_hook.rs"
+  cat > "$tmp/good_hook.rs" <<'EOF'
+pub fn use_fine(enabled: bool) -> bool {
+    let a = use_signal(|| 0);
+    let auth = crate::hooks::use_auth();
+    if !enabled {
+        return false;
+    }
+    *a.read() && auth.read().is_some()
+}
+
+pub fn use_stub() {}
+EOF
+  if [ -n "$(run_guard "$tmp")" ]; then
+    echo "hook-order guard: SELF-TEST FAIL (a correctly-ordered custom hook, or an empty stub, was rejected)"
     status=1
   fi
 
