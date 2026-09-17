@@ -2898,6 +2898,10 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // Same list the renderer already resolves a chip from, so a mention typed
     // here is one the reader will see resolved.
     let mention_directory = crate::hooks::use_mention_directory(true);
+    // MAPPS-856: one directory fetch for the whole journal, not one per
+    // entry. Every `TimelineItem` below gets this resolved list as a prop
+    // instead of fetching its own copy of the same directory.
+    let journal_people = crate::hooks::mention_people(&mention_directory);
     let id_for_save = props.id.clone();
 
     // MAPPS-313: delete-ticket affordance on the detail page. The
@@ -4062,6 +4066,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 nr.restart();
                                             },
                                             is_last: i + 1 == shown_journal_count,
+                                            people: journal_people.clone(),
                                         }
                                             }
                                         }
@@ -4751,6 +4756,12 @@ struct TimelineItemProps {
     #[props(default)]
     on_saved: EventHandler<()>,
     is_last: bool,
+    /// MAPPS-856: the staff directory the inline note editor completes `@`
+    /// against and the entry's own body resolves a mention chip from,
+    /// fetched once by the ticket detail page and handed down here instead
+    /// of each of up to 50 journal entries fetching its own copy.
+    #[props(default)]
+    people: Vec<crate::utils::mentions::Mention>,
 }
 
 #[component]
@@ -4764,12 +4775,6 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
     let note_edit_uploading = use_signal(|| false);
     let note_edit_upload_error = use_signal(String::new);
     let mut saving = use_signal(|| false);
-    // MAPPS-610: the directory the inline editor completes `@` against. The
-    // hook shares one fetch across the page, so a journal of thirty entries
-    // still makes one request. MAPPS-602: it is a hook, so it sits with the
-    // others at the top, above anything that can return early.
-    let mention_directory = crate::hooks::use_mention_directory(true);
-
     let original = props.content.clone().unwrap_or_default();
     let original_for_open = original.clone();
     let note_dom_id = props
@@ -4885,7 +4890,7 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                                         rules: vec![Rule::Required],
                                         error: edit_error.read().clone(),
                                         value: draft.read().clone(),
-                                        people: crate::hooks::mention_people(&mention_directory),
+                                        people: props.people.clone(),
                                         // MAPPS-733: a correction can carry an
                                         // image the way the note could.
                                         on_file: {
@@ -4950,7 +4955,7 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                                 // sanitized either way, and `@handle` now
                                 // resolves (MAPPS-578), which is the upside.
                                 div { class: "mt-2 bg-surface-2 rounded-md p-3",
-                                    crate::components::Markdown { content: content.clone() }
+                                    crate::components::Markdown { content: content.clone(), people: Some(props.people.clone()) }
                                 }
                             }
                             ChangeDetails { changes: props.changes.clone() }
@@ -5728,7 +5733,9 @@ mod mapps592_description_editor_tests {
     fn a_note_is_rendered_as_markdown_not_as_raw_text() {
         let code = code_only();
         assert!(
-            code.contains("crate::components::Markdown { content: content.clone() }"),
+            code.contains(
+                "crate::components::Markdown { content: content.clone(), people: Some(props.people.clone()) }"
+            ),
             "the journal renders a note through the shared renderer"
         );
         assert!(
@@ -5746,13 +5753,20 @@ mod mapps592_description_editor_tests {
         assert_eq!(
             code.matches("crate::hooks::use_mention_directory(true)")
                 .count(),
-            3,
-            "one per component that hosts an editor: the list page's create form, \
-             the detail page, and the journal entry with the inline note editor"
+            2,
+            "one per page-level component that hosts an editor: the list \
+             page's create form and the detail page. MAPPS-856: the journal \
+             entry no longer hosts its own call - it receives the detail \
+             page's directory as a `people` prop instead, so up to 50 \
+             entries share the one fetch."
         );
         assert!(
             code.contains("people: crate::hooks::mention_people(&mention_directory)"),
             "and it is what the editor completes against"
+        );
+        assert!(
+            code.contains("let journal_people = crate::hooks::mention_people(&mention_directory);"),
+            "and the detail page resolves it once for the whole journal too"
         );
     }
 

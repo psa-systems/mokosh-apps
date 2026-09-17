@@ -686,8 +686,12 @@ fn CommentBody(
                     }
                 } else {
                     // The same renderer and sanitizer as the article.
+                    // MAPPS-856: `people` is the directory `ArticleActivity`
+                    // already fetched once for the whole page, handed down
+                    // instead of this comment's `Markdown` fetching its own
+                    // copy.
                     div { class: "mt-1 text-sm",
-                        crate::components::Markdown { content: comment.body.clone() }
+                        crate::components::Markdown { content: comment.body.clone(), people: Some(people.clone()) }
                     }
                 }
                 if !comment.deleted && !editing() {
@@ -931,7 +935,9 @@ mod tests {
         let src = include_str!("kb_activity.rs");
         let head = &src[..src.find("mod tests").expect("this module")];
         assert!(head.contains("placeholder: \"Write a comment, @mention people\".to_string(),"));
-        assert!(head.contains("crate::components::Markdown { content: comment.body.clone() }"));
+        assert!(head.contains(
+            "crate::components::Markdown { content: comment.body.clone(), people: Some(people.clone()) }"
+        ));
         assert!(
             !head.contains("dangerous_inner_html"),
             "no second render path"
