@@ -13,9 +13,10 @@
 //!
 //! `similar` is the obvious candidate and does far more than this needs
 //! (character diffs, unified output, inline refinement), all of which lands in
-//! a WASM bundle that is already 10MB. What is actually required is an LCS over
-//! word tokens, which is textbook and fits in a page. It is also pure, so it is
-//! tested on strings with no browser involved.
+//! a WASM bundle that is, as of MAPPS-867's `opt-level = "z"` release build,
+//! already ~12MB raw (~3.9MB gzipped). What is actually required is an LCS
+//! over word tokens, which is textbook and fits in a page. It is also pure,
+//! so it is tested on strings with no browser involved.
 //!
 //! ## Shape
 //!

@@ -265,6 +265,7 @@ version = "1"
 features = ["rt-multi-thread", "macros", "time"]
 
 [profile.release]
+opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
