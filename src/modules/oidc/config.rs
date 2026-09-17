@@ -7,7 +7,13 @@
 #[derive(Debug, Clone)]
 pub struct OidcConfig {
     pub issuer: &'static str,
-    pub client_id: &'static str,
+    /// `None` when no client id is configured (no `MOKOSH_OIDC_CLIENT_ID`
+    /// at compile time, no `oidc_client_id` runtime injection). A
+    /// deployment in this state has no working OIDC redirect target, so
+    /// [`has_client_id`](Self::has_client_id) reports it and
+    /// [`super::is_standalone`] falls back to the local sign-in form
+    /// instead of sending the user to a client id the OP will reject.
+    pub client_id: Option<&'static str>,
     /// If `None`, the runtime default is `<origin>/auth/callback`.
     pub redirect_uri: Option<&'static str>,
     pub scopes: &'static str,
@@ -36,10 +42,10 @@ impl OidcConfig {
                 // username/password login instead of a dead `/oauth2/authorize`.
                 None => "",
             },
-            client_id: match option_env!("MOKOSH_OIDC_CLIENT_ID") {
-                Some(s) => s,
-                None => "00000000-0000-0000-0000-000000000000",
-            },
+            // No fallback: an unconfigured client id must be `None`, not a
+            // placeholder UUID the OP has never registered, so
+            // `has_client_id` can tell "unconfigured" from "configured".
+            client_id: option_env!("MOKOSH_OIDC_CLIENT_ID"),
             redirect_uri: option_env!("MOKOSH_OIDC_REDIRECT_URI"),
             scopes: match option_env!("MOKOSH_OIDC_SCOPES") {
                 Some(s) => s,
@@ -137,7 +143,7 @@ impl OidcConfig {
         }
 
         if let Some(client_id) = injected_client_id {
-            cfg.client_id = Box::leak(client_id.into_boxed_str());
+            cfg.client_id = Some(Box::leak(client_id.into_boxed_str()));
         }
 
         if let Some(hub) = injected_hub {
@@ -169,6 +175,26 @@ impl OidcConfig {
     /// `/api/v1/auth/login` instead of redirecting to `/oauth2/authorize`.
     pub fn has_issuer(&self) -> bool {
         !self.issuer.trim().is_empty()
+    }
+
+    /// MAPPS-822: whether a real OIDC client id is configured. `None`
+    /// (unset `MOKOSH_OIDC_CLIENT_ID`, no `oidc_client_id` injection) and an
+    /// all-whitespace value both count as unconfigured, so a deployment
+    /// that copies `compose.example.yml` without filling this in falls
+    /// back to standalone sign-in instead of a client id the OP has never
+    /// registered.
+    pub fn has_client_id(&self) -> bool {
+        self.client_id.is_some_and(|s| !s.trim().is_empty())
+    }
+
+    /// Resolve the client id, or fail loud when none is configured. Used
+    /// at the token/authorize call sites, which only run once
+    /// [`super::is_standalone`] has already confirmed `has_client_id()`;
+    /// this is the last-line guard against a caller that skips that check.
+    pub fn require_client_id(&self) -> Result<&'static str, &'static str> {
+        self.client_id
+            .filter(|s| !s.trim().is_empty())
+            .ok_or("no OIDC client id is configured")
     }
 
     /// MAPPS-453: absolute URL to a documentation article on the docs
@@ -216,6 +242,28 @@ impl OidcConfig {
 #[cfg(test)]
 mod tests {
     use super::OidcConfig;
+
+    /// MAPPS-822: the compile-time default (no `MOKOSH_OIDC_CLIENT_ID`
+    /// baked in) is unconfigured, not the old nil-UUID placeholder, so a
+    /// deploy that never sets it falls back to standalone sign-in instead
+    /// of a client id the OP has never registered.
+    #[test]
+    fn no_client_id_env_leaves_it_unconfigured() {
+        let cfg = OidcConfig::from_env();
+        assert_eq!(cfg.client_id, None);
+        assert!(!cfg.has_client_id());
+        assert!(cfg.require_client_id().is_err());
+    }
+
+    #[test]
+    fn has_client_id_rejects_blank_and_accepts_a_real_value() {
+        let mut cfg = OidcConfig::from_env();
+        cfg.client_id = Some("   ");
+        assert!(!cfg.has_client_id());
+        cfg.client_id = Some("a-real-client-id");
+        assert!(cfg.has_client_id());
+        assert_eq!(cfg.require_client_id(), Ok("a-real-client-id"));
+    }
 
     fn with_docs(base: &'static str) -> OidcConfig {
         let mut cfg = OidcConfig::from_env();

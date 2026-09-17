@@ -438,41 +438,51 @@ struct Found {
 /// so a URL at the end of a sentence does not swallow the full stop, and of an
 /// unbalanced closing paren so a URL inside `(see https://x)` stays intact.
 fn find_url(s: &str) -> Option<Found> {
-    let start = ["https://", "http://"]
+    let mut at = 0usize;
+    while let Some(rel_start) = ["https://", "http://"]
         .iter()
-        .filter_map(|scheme| s.find(scheme))
-        .min()?;
-    // A scheme glued to the end of a word (`xhttps://y`) is not a link.
-    if start > 0 {
-        let prev = s[..start].chars().next_back().unwrap_or(' ');
-        if prev.is_alphanumeric() {
-            return None;
+        .filter_map(|scheme| s[at..].find(scheme))
+        .min()
+    {
+        let start = at + rel_start;
+        // A scheme glued to the end of a word (`xhttps://y`) is not a link;
+        // skip just this candidate and keep scanning the rest of `s`, the
+        // way `find_mention` does, rather than giving up on the whole run.
+        if start > 0 {
+            let prev = s[..start].chars().next_back().unwrap_or(' ');
+            if prev.is_alphanumeric() {
+                at = start + 1;
+                continue;
+            }
         }
-    }
-    let mut end = s[start..]
-        .find(|c: char| c.is_whitespace() || c == '<' || c == '"')
-        .map(|p| start + p)
-        .unwrap_or(s.len());
-    let body = &s[start..end];
-    // Nothing after the scheme is not a URL.
-    let scheme_len = if body.starts_with("https://") { 8 } else { 7 };
-    if body.len() <= scheme_len {
-        return None;
-    }
-    let mut trimmed = body;
-    while let Some(last) = trimmed.chars().next_back() {
-        let drop = matches!(last, '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '*' | '_')
-            || (last == ')' && trimmed.matches(')').count() > trimmed.matches('(').count());
-        if !drop {
-            break;
+        let mut end = s[start..]
+            .find(|c: char| c.is_whitespace() || c == '<' || c == '"')
+            .map(|p| start + p)
+            .unwrap_or(s.len());
+        let body = &s[start..end];
+        // Nothing after the scheme is not a URL.
+        let scheme_len = if body.starts_with("https://") { 8 } else { 7 };
+        if body.len() <= scheme_len {
+            at = start + 1;
+            continue;
         }
-        trimmed = &trimmed[..trimmed.len() - last.len_utf8()];
+        let mut trimmed = body;
+        while let Some(last) = trimmed.chars().next_back() {
+            let drop = matches!(last, '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '*' | '_')
+                || (last == ')' && trimmed.matches(')').count() > trimmed.matches('(').count());
+            if !drop {
+                break;
+            }
+            trimmed = &trimmed[..trimmed.len() - last.len_utf8()];
+        }
+        if trimmed.len() <= scheme_len {
+            at = start + 1;
+            continue;
+        }
+        end = start + trimmed.len();
+        return Some(Found { start, end });
     }
-    if trimmed.len() <= scheme_len {
-        return None;
-    }
-    end = start + trimmed.len();
-    Some(Found { start, end })
+    None
 }
 
 /// Join a server-supplied attachment path onto the API origin (MAPPS-595).
@@ -1044,6 +1054,22 @@ mod tests {
         assert!(
             out.contains(r#"<a href="https://example.com/a?b=1""#),
             "{out}"
+        );
+    }
+
+    /// A scheme glued to a preceding word disqualifies only that candidate;
+    /// scanning continues and finds a real URL later in the same run instead
+    /// of abandoning the whole run.
+    #[test]
+    fn a_glued_scheme_is_skipped_and_a_later_url_still_links() {
+        let out = render_markdown("xhttps://not-a-link.example then https://example.com/ok");
+        assert!(
+            !out.contains(r#"href="https://not-a-link.example""#),
+            "the glued candidate must not become a link: {out}"
+        );
+        assert!(
+            out.contains(r#"href="https://example.com/ok""#),
+            "a later, well-formed URL must still link: {out}"
         );
     }
 
