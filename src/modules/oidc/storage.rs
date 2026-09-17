@@ -36,7 +36,7 @@
 const STATE_KEY: &str = "mokosh_oidc_flow_v1";
 const AUTH_KEY: &str = "mokosh_auth_bundle_v1";
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct StoredTokens {
     pub access_token: String,
     pub id_token: String,
@@ -45,24 +45,58 @@ pub struct StoredTokens {
     pub scope: String,
 }
 
+// MAPPS-863: `load_auth` used to re-parse `AUTH_KEY` out of `sessionStorage`
+// on every one of the ~455 authed call sites that end up asking
+// `persisted_expiry` for the held bearer's expiry. The bundle only ever
+// changes through `save_auth` or `clear_auth` (both defined in this
+// module, so every write is visible here), so the parsed value is cached
+// here and invalidated on those writes rather than re-derived on every read.
+//
+// `None` means "not yet asked this session"; `Some(None)` means "asked, and
+// nothing is persisted" - both are cache HITS, distinct from "go parse it".
+thread_local! {
+    static AUTH_CACHE: std::cell::RefCell<Option<Option<StoredTokens>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+// MAPPS-863: counts the actual `sessionStorage` read + JSON parse inside
+// `load_auth`, i.e. a cache MISS. Test-only, same intent as `RESOLVE_CALLS`
+// in `hooks::fetch` (MAPPS-858); thread-local (like `AUTH_CACHE` itself) so
+// it starts fresh on the new thread a test spawns rather than being shared
+// with whatever else `cargo test` is running concurrently.
+#[cfg(test)]
+thread_local! {
+    static AUTH_PARSE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub fn save_auth(t: &StoredTokens) {
     if let Ok(storage) = session_storage() {
         if let Ok(json) = serde_json::to_string(t) {
             let _ = storage.set_item(AUTH_KEY, &json);
         }
     }
+    AUTH_CACHE.with(|c| *c.borrow_mut() = Some(Some(t.clone())));
 }
 
 pub fn load_auth() -> Option<StoredTokens> {
-    let storage = session_storage().ok()?;
-    let raw = storage.get_item(AUTH_KEY).ok().flatten()?;
-    serde_json::from_str(&raw).ok()
+    if let Some(cached) = AUTH_CACHE.with(|c| c.borrow().clone()) {
+        return cached;
+    }
+    #[cfg(test)]
+    AUTH_PARSE_CALLS.with(|c| c.set(c.get() + 1));
+    let parsed = session_storage().ok().and_then(|storage| {
+        let raw = storage.get_item(AUTH_KEY).ok().flatten()?;
+        serde_json::from_str(&raw).ok()
+    });
+    AUTH_CACHE.with(|c| *c.borrow_mut() = Some(parsed.clone()));
+    parsed
 }
 
 pub fn clear_auth() {
     if let Ok(storage) = session_storage() {
         let _ = storage.remove_item(AUTH_KEY);
     }
+    AUTH_CACHE.with(|c| *c.borrow_mut() = Some(None));
     // MAPPS-368: also drop any standalone (non-OIDC) session so logout is
     // complete regardless of which path signed the user in; otherwise the
     // stored standalone session would rehydrate the user right after logout.
@@ -77,12 +111,19 @@ const STANDALONE_KEY: &str = "mokosh_standalone_session_v1";
 /// [`StoredTokens`] there is no `id_token` to rebuild the user from, so the
 /// `CurrentUser` view model is stored directly alongside the tokens. Rehydrated
 /// at boot by `crate::hooks::auth`.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct StandaloneSession {
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub expires_at: chrono::DateTime<chrono::Utc>,
     pub user: crate::CurrentUser,
+}
+
+// MAPPS-863: the standalone-session counterpart to `AUTH_CACHE`. Same
+// invalidate-on-write, cache-on-read shape.
+thread_local! {
+    static STANDALONE_CACHE: std::cell::RefCell<Option<Option<StandaloneSession>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 pub fn save_standalone(s: &StandaloneSession) {
@@ -91,18 +132,26 @@ pub fn save_standalone(s: &StandaloneSession) {
             let _ = storage.set_item(STANDALONE_KEY, &json);
         }
     }
+    STANDALONE_CACHE.with(|c| *c.borrow_mut() = Some(Some(s.clone())));
 }
 
 pub fn load_standalone() -> Option<StandaloneSession> {
-    let storage = session_storage().ok()?;
-    let raw = storage.get_item(STANDALONE_KEY).ok().flatten()?;
-    serde_json::from_str(&raw).ok()
+    if let Some(cached) = STANDALONE_CACHE.with(|c| c.borrow().clone()) {
+        return cached;
+    }
+    let parsed = session_storage().ok().and_then(|storage| {
+        let raw = storage.get_item(STANDALONE_KEY).ok().flatten()?;
+        serde_json::from_str(&raw).ok()
+    });
+    STANDALONE_CACHE.with(|c| *c.borrow_mut() = Some(parsed.clone()));
+    parsed
 }
 
 pub fn clear_standalone() {
     if let Ok(storage) = session_storage() {
         let _ = storage.remove_item(STANDALONE_KEY);
     }
+    STANDALONE_CACHE.with(|c| *c.borrow_mut() = Some(None));
 }
 
 /// MAPPS-432: consecutive login restarts kicked off by a recoverable
@@ -210,4 +259,52 @@ pub fn take_pending() -> Result<PendingFlow, String> {
 /// nothing here survives the app closing.
 fn session_storage() -> Result<crate::platform::store::Store, String> {
     crate::platform::store::session()
+}
+
+/// MAPPS-863: `load_auth` used to re-parse `AUTH_KEY` out of the session
+/// store on every one of the ~455 authed call sites that funnel through
+/// `hooks::fetch::persisted_expiry`. This proves the cache added above
+/// actually gates that parse down to once per token change instead of once
+/// per read.
+// A single test function: both cases write `AUTH_KEY` in the shared
+// session store (an in-process map on non-wasm, see `platform::store`), so
+// splitting them across `#[test]` fns that `cargo test` runs concurrently
+// would let one test's `save_auth`/`clear_auth` race the other's read.
+#[cfg(test)]
+mod token_bundle_cache_tests {
+    use super::*;
+
+    #[test]
+    fn load_auth_caches_the_parse_and_clear_auth_invalidates_it() {
+        save_auth(&StoredTokens {
+            access_token: "a1".to_string(),
+            id_token: "id1".to_string(),
+            refresh_token: None,
+            expires_at: chrono::Utc::now(),
+            scope: "openid".to_string(),
+        });
+        // A fresh thread starts with an empty `AUTH_CACHE`, so its first
+        // `load_auth` is the one that has to go parse the bundle
+        // `save_auth` above just wrote to the shared session store; every
+        // read after that must be served from that thread's own cache.
+        std::thread::spawn(|| {
+            for _ in 0..5 {
+                assert_eq!(load_auth().map(|t| t.access_token), Some("a1".to_string()));
+            }
+            assert_eq!(
+                AUTH_PARSE_CALLS.with(|c| c.get()),
+                1,
+                "load_auth must parse the persisted bundle once per token change, not once \
+                 per read"
+            );
+        })
+        .join()
+        .unwrap();
+
+        clear_auth();
+        assert!(
+            load_auth().is_none(),
+            "clear_auth must invalidate the cached bundle, not leave the old one readable"
+        );
+    }
 }

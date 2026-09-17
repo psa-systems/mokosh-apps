@@ -10,6 +10,7 @@ pub mod auth;
 pub mod branding;
 pub mod capabilities;
 pub mod contact_auth;
+pub mod debounce;
 pub mod modules;
 // `fetch` is `pub` (not `mod`) because its inner `api` submodule is
 // referenced from places outside hooks/* (oidc callback, login handler)
@@ -35,6 +36,7 @@ pub mod user_roster;
 pub mod version_cache;
 
 pub use auth::*;
+pub use debounce::use_debounced_signal;
 pub use dropdown_nav::{use_dropdown_nav, DropdownNav, NavAction, NavRows};
 pub use edit_queue::{use_replay_pending_edits, PendingEdit};
 pub use fetch::*;

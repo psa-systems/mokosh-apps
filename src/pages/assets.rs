@@ -379,8 +379,12 @@ pub fn AssetListPage() -> Element {
     // Every reactive input is read INSIDE the closure: Dioxus only re-runs a
     // resource when a signal read within it changes, so a value captured
     // outside would leave the resource serving page 1 for ever (MAPPS-148).
+    // MAPPS-855: debounce the search dependency so a burst of keystrokes
+    // fires one full-page refetch per pause in typing rather than one per
+    // keystroke.
+    let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let mut assets_resource = use_resource(move || {
-        let q = search.read().trim().to_string();
+        let q = search_debounced.read().trim().to_string();
         let current_page = (*page.read()).max(1);
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();

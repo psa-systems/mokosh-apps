@@ -160,11 +160,14 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
     // subscribes the resource to it and re-fetches on every keystroke
     // (same pattern as the Company/Asset pickers).
     let query_text = query.read().trim().to_string();
+    // MAPPS-855: debounce the resource's dependency so a burst of keystrokes
+    // fires one request per pause in typing rather than one per keystroke.
+    let query_debounced = crate::hooks::use_debounced_signal(query, 300);
     let results = use_resource(move || {
         let company_filter = company_filter.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            let q = query.read().trim().to_string();
+            let q = query_debounced.read().trim().to_string();
             let mut path = String::from("/contacts/contacts?per_page=20");
             if !q.is_empty() {
                 path.push_str(&format!("&q={}", urlencoding_minimal(&q)));
