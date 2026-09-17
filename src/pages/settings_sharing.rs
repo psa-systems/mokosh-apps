@@ -6,14 +6,13 @@
 //! Cancel calls `DELETE /api/v1/grants/invitations/{id}` (PMS-1208
 //! route); Revoke calls `DELETE /api/v1/grants/{id}` (MAPPS-875 route).
 //!
-//! Role-change on an active grant is a "Revoke and re-invite" flow:
-//! the modal takes the new role, then in sequence calls
-//! `DELETE /api/v1/grants/{id}` and `POST /api/v1/grants/invitations`
-//! with the same email at the new role. Grantee receives a fresh
-//! invitation email; access is transiently lost between accept and
-//! re-accept, which is why BUNYIP-748 replaces this with a proper
-//! `PATCH /v1/grants/{id}` in a follow-up ticket (linked from
-//! MAPPS-875's ticket body).
+//! Role-change on an active grant fires an in-place `PATCH
+//! /api/v1/grants/{id}` (BUNYIP-748). The grantee's access continues
+//! uninterrupted; their next request re-reads the mirror's role and
+//! picks up the new value without re-authenticating. Same idempotency
+//! shape as the other change verbs on this page: on failure the
+//! error surfaces at the top and the modal stays open so the owner
+//! can retry.
 //!
 //! Gate: `role.is_admin()` mirrors the sibling settings pages. The
 //! server also gates every route on `RequireAdminUser`, so a non-admin
@@ -24,12 +23,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::{Button, ButtonVariant, Card, ContentUnavailable, Modal, ModalSize};
 
-/// Request body for the sibling PMS-1208 create-invitation route,
-/// reused here for the "re-invite at new role" half of the change-
-/// role flow.
+/// BUNYIP-748: request body for `PATCH /api/v1/grants/{id}`. The
+/// grantee's role is the only field the endpoint moves; owner and
+/// account are inferred from the URL and the caller's auth.
 #[derive(Serialize)]
-struct SendInviteBody {
-    invitee_email: String,
+struct UpdateGrantRoleBody {
     role: String,
 }
 
@@ -255,19 +253,16 @@ pub fn SettingsSharingPage() -> Element {
         }
     };
 
-    // MAPPS-875 v2: submit the "Revoke and re-invite at new role"
-    // change-role form. Runs DELETE then POST in sequence; if the
-    // DELETE fails the re-invite never fires (a false-success on
-    // re-invite would leave two active grants on the same triple).
-    // If the DELETE succeeds and the re-invite fails, the row is
-    // gone from the active list but the pending list stays empty
-    // and the error surfaces at the top of the page - the owner
-    // can retry the invite manually.
+    // BUNYIP-748: submit the in-place role change. One PATCH; the
+    // grantee's session stays valid, and the mirror re-syncs via
+    // bunyip's `mokosh_grant_changed` webhook so the new role is
+    // visible on the grantee's next request without them having to
+    // re-authenticate.
     //
-    // Deliberately not optimistic: the row moves from active to
-    // pending, so a client-side prediction of "gone" without a
-    // matching insertion would flash empty state. The refetch on
-    // completion is the source of truth.
+    // Optimistic: mutate the local `outbox_data.active` row's role
+    // in place so the modal-close refetch is cosmetic rather than a
+    // visible flicker. On failure the row is restored from the
+    // fetched shape (the refresh_counter bump triggers a refetch).
     let submit_change_role = {
         let mut refresh_counter = refresh_counter;
         let mut error = error;
@@ -289,57 +284,41 @@ pub fn SettingsSharingPage() -> Element {
                 *change_role_target.write() = None;
                 return;
             }
-            let Some(invitee_email) = grant.grantee_email.clone() else {
-                error.set(
-                    "Can't change this grant's role without the grantee's email address. \
-                     Revoke and re-invite them manually."
-                        .to_string(),
-                );
-                *change_role_target.write() = None;
-                return;
-            };
             saving.set(true);
             error.set(String::new());
             let grant_id = grant.id.clone();
             spawn(async move {
                 #[cfg(feature = "app")]
                 {
-                    // Step 1: revoke the current grant.
-                    let revoke_path = format!("/grants/{grant_id}");
-                    if let Err(e) =
-                        crate::hooks::fetch::api::delete_authed_typed(&revoke_path).await
+                    let path = format!("/grants/{grant_id}");
+                    let body = UpdateGrantRoleBody {
+                        role: new_role.clone(),
+                    };
+                    // `patch_authed_typed` expects the response to
+                    // decode into T; our handler returns 204 with no
+                    // body, so `serde_json::Value` accepts an empty
+                    // body via serde's null-on-empty behavior. The
+                    // caller doesn't need the returned shape - the
+                    // refetch is the source of truth.
+                    if let Err(e) = crate::hooks::fetch::api::patch_authed_typed::<
+                        serde_json::Value,
+                        _,
+                    >(&path, &body)
+                    .await
                     {
                         error.set(format!(
-                            "Couldn't revoke the current grant: {}",
+                            "Couldn't change this grant's role: {}",
                             e.user_message()
                         ));
                         saving.set(false);
                         return;
-                    }
-                    // Step 2: re-invite at the new role. Ignores the
-                    // returned invitation - the pending row shows up
-                    // on the refetch.
-                    let body = SendInviteBody {
-                        invitee_email,
-                        role: new_role,
-                    };
-                    if let Err(e) = crate::hooks::fetch::api::post_authed_typed::<
-                        serde_json::Value,
-                        _,
-                    >("/grants/invitations", &body)
-                    .await
-                    {
-                        error.set(format!(
-                            "Revoked, but couldn't send the new invitation: {}. \
-                             You can re-invite from the switcher.",
-                            e.user_message()
-                        ));
                     }
                     *refresh_counter.write() += 1;
                 }
                 #[cfg(not(feature = "app"))]
                 {
                     let _ = grant_id;
+                    let _ = new_role;
                 }
                 *change_role_target.write() = None;
                 *role_pick.write() = String::new();
@@ -470,12 +449,15 @@ pub fn SettingsSharingPage() -> Element {
                                 .clone()
                                 .or_else(|| grant.grantee_email.clone())
                                 .unwrap_or_else(|| "Shared account".to_string());
-                            // MAPPS-875 v2: "Change role" is only useful when
-                            // we have the grantee's email (needed for the
-                            // re-invite half of the interim flow). Without it
-                            // the button would open a modal that could not
-                            // finish the sequence.
-                            let can_change_role = grant.grantee_email.is_some();
+                            // BUNYIP-748: "Change role" is always available on
+                            // an active grant now that the flow is an in-place
+                            // PATCH; the previous email-gate was for the
+                            // interim revoke + re-invite that needed the email
+                            // to re-send the invitation. PATCH takes only the
+                            // grant id, so a row with no `grantee_email`
+                            // (a legacy grant, or one whose grantee row was
+                            // soft-deleted) still surfaces the button.
+                            let can_change_role = true;
                             rsx! {
                                 li {
                                     key: "{grant.id}",
@@ -632,7 +614,7 @@ pub fn SettingsSharingPage() -> Element {
                                 }
                             }
                             p { class: "text-xs text-subtle",
-                                "The current grant will be revoked and a fresh invitation sent at the new role. They will need to accept the invitation again."
+                                "Their access changes to the new role immediately. They stay signed in and will see the new permissions on their next request."
                             }
                             div { class: "flex gap-2 justify-end pt-2",
                                 Button {
@@ -659,9 +641,6 @@ pub fn SettingsSharingPage() -> Element {
                 }
             }
 
-            p { class: "text-xs text-subtle",
-                "Changing a role currently revokes and re-invites the grantee; the grantee must accept the new invitation before they can access the account again."
-            }
         }
     }
 }
