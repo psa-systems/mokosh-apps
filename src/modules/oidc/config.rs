@@ -25,7 +25,9 @@ pub struct OidcConfig {
     pub hub_base_url: &'static str,
     /// MAPPS-453: base URL of the documentation subdomain (e.g.
     /// `https://docs.n.niceguyit.biz`), runtime-injected via
-    /// `window.__MOKOSH_CONFIG__.docs_base_url` (`MOKOSH_DOCS_URL`). Empty when
+    /// `window.__MOKOSH_CONFIG__.docs_base_url` (`MOKOSH_DOCS_BASE_URL` on
+    /// both the container and desktop; MAPPS-831 renamed the container and
+    /// compile-time vars from `MOKOSH_DOCS_URL` to match). Empty when
     /// unconfigured, which hides the Documentation menu entry and the help
     /// links. No trailing slash.
     pub docs_base_url: &'static str,
@@ -55,11 +57,11 @@ impl OidcConfig {
                 Some(s) => s,
                 None => "http://localhost:4400",
             },
-            // MAPPS-453: empty by default. Set via MOKOSH_DOCS_URL /
+            // MAPPS-453: empty by default. Set via MOKOSH_DOCS_BASE_URL /
             // window.__MOKOSH_CONFIG__.docs_base_url; unset means no docs
             // subdomain, so the menu entry and help links stay hidden rather
             // than pointing somewhere wrong.
-            docs_base_url: match option_env!("MOKOSH_DOCS_URL") {
+            docs_base_url: match option_env!("MOKOSH_DOCS_BASE_URL") {
                 Some(s) => s,
                 None => "",
             },
@@ -144,6 +146,14 @@ impl OidcConfig {
 
         if let Some(client_id) = injected_client_id {
             cfg.client_id = Some(Box::leak(client_id.into_boxed_str()));
+        }
+
+        // MAPPS-831: runtime lever for redirect_uri, matching every other
+        // OIDC field. Without this a path-prefixed or otherwise non-default
+        // deployment had no way to override redirect_uri short of rebuilding
+        // the image with MOKOSH_OIDC_REDIRECT_URI baked in at compile time.
+        if let Some(redirect_uri) = crate::modules::runtime_config::get("oidc_redirect_uri") {
+            cfg.redirect_uri = Some(Box::leak(redirect_uri.into_boxed_str()));
         }
 
         if let Some(hub) = injected_hub {

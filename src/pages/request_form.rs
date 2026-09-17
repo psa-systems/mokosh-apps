@@ -204,8 +204,6 @@ pub fn RequestFormPage(token: String) -> Element {
                         Err(ApiError::Status { code: 400, .. }) => {
                             terminal.set(Some(Terminal::Unusable))
                         }
-                        Err(ApiError::Status { code: 429, .. }) => form_error
-                            .set("Too many attempts. Wait a moment and try again.".to_string()),
                         Err(e) => form_error.set(e.user_message()),
                     }
                 }
@@ -518,13 +516,19 @@ fn required_by_rule(rules: &[PublicRule], field: &str, answers: &HashMap<String,
 fn build_payload(def: &PublicForm, answers: &HashMap<String, String>) -> serde_json::Value {
     let mut out = serde_json::Map::new();
     for f in &def.fields {
+        if f.field_type == FieldType::Boolean {
+            // The checkbox renders unchecked (false) when the client never
+            // touched it, same as `FieldInput`'s `value == "true"` check, so
+            // an absent answer must send `false` here too rather than being
+            // skipped: omitting it would let the server default the field to
+            // something other than what the checkbox showed the client.
+            let checked = answers.get(&f.name).map(|v| v == "true").unwrap_or(false);
+            out.insert(f.name.clone(), serde_json::Value::Bool(checked));
+            continue;
+        }
         let Some(raw) = answers.get(&f.name) else {
             continue;
         };
-        if f.field_type == FieldType::Boolean {
-            out.insert(f.name.clone(), serde_json::Value::Bool(raw == "true"));
-            continue;
-        }
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             // The server treats blank as absent; sending "" would just make it
@@ -622,6 +626,39 @@ mod tests {
         assert!(
             blank.get("employee_name").is_none(),
             "a whitespace-only answer is omitted, matching the server's own trim"
+        );
+    }
+
+    /// MAPPS-843 regression: a checkbox the client never toggles still
+    /// renders unchecked (`FieldInput`'s `value == "true"` is false for a
+    /// missing answer), so the payload must send `false` for it too instead
+    /// of omitting the field, which used to let the server default it to a
+    /// value the checkbox never showed.
+    #[test]
+    fn an_untouched_checkbox_sends_false_rather_than_being_omitted() {
+        let payload = build_payload(&form(), &HashMap::new());
+        assert_eq!(
+            payload["equipment_moves"],
+            serde_json::json!(false),
+            "an untouched checkbox shows unchecked on screen, so the payload must say false, not omit the field"
+        );
+    }
+
+    /// MAPPS-843 acceptance criterion: toggling the checkbox is reflected
+    /// exactly in the submitted payload, in both directions.
+    #[test]
+    fn toggling_the_checkbox_flips_the_submitted_value() {
+        let mut answers = HashMap::new();
+        answers.insert("equipment_moves".to_string(), "true".to_string());
+        assert_eq!(
+            build_payload(&form(), &answers)["equipment_moves"],
+            serde_json::json!(true)
+        );
+
+        answers.insert("equipment_moves".to_string(), "false".to_string());
+        assert_eq!(
+            build_payload(&form(), &answers)["equipment_moves"],
+            serde_json::json!(false)
         );
     }
 

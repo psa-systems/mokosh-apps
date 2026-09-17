@@ -1273,6 +1273,13 @@ pub mod api {
         // is what gets reported; an unreadable body only costs the server's own
         // message, and the status-class fallback is used in its place.
         let body = response.text().await.unwrap_or_default();
+        // MAPPS-818: mokosh-server's 429 body is `{"error":"rate_limited",...}`,
+        // a string `error` rather than the canonical `{code,message}` object, so
+        // it never parses as `ErrorResponse` below. Read the wait here, once,
+        // before that parse is attempted.
+        if status == 429 {
+            return rate_limited_message(&body);
+        }
         match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
             Ok(env) => {
                 // MAPPS-348: 410 Gone with `ACCOUNT_DELETED` is the terminal
@@ -1377,9 +1384,22 @@ pub mod api {
             404 => "The requested resource was not found.".into(),
             409 => "The change conflicts with another update. Please refresh and retry.".into(),
             422 => "Validation failed. Please check the form fields.".into(),
-            429 => "Too many requests. Please try again shortly.".into(),
+            // 429 is handled earlier, at the single point that has the raw
+            // body (`rate_limited_message`), so it never reaches here.
             500..=599 => "The server hit an error. Please try again.".into(),
             _ => format!("Request failed ({status})."),
+        }
+    }
+
+    /// MAPPS-818: the one place a 429's body is read for its wait, shared by
+    /// the string-returning helpers ([`status_error`]) and the typed ones
+    /// ([`handle_response`]). Falls back to the generic phrasing when the
+    /// body carries no usable `retry_after_seconds`.
+    #[cfg(feature = "app")]
+    fn rate_limited_message(body: &str) -> String {
+        match crate::utils::rate_limit::retry_after_phrase(body) {
+            Some(wait) => format!("Too many requests. Try again {wait}."),
+            None => "Too many requests. Please wait a moment and try again.".into(),
         }
     }
 
@@ -2802,7 +2822,10 @@ pub mod api {
                         .collect::<Vec<_>>()
                         .join("; "),
                     422 if !message.is_empty() => message.clone(),
-                    429 => "Too many requests. Please try again shortly.".into(),
+                    // MAPPS-818: `message` is already the wait-aware text
+                    // `handle_response` built from the body, the single
+                    // place a 429's `retry_after_seconds` is read.
+                    429 => message.clone(),
                     500..=599 => "The server hit an error. Please try again.".into(),
                     _ if !message.is_empty() => message.clone(),
                     _ => format!("Request failed ({}).", code),
@@ -2876,6 +2899,18 @@ pub mod api {
         // is what gets reported; an unreadable body only costs the server's own
         // message, and the status-class fallback is used in its place.
         let body = response.text().await.unwrap_or_default();
+        // MAPPS-818: same shape mismatch `status_error` handles above - the
+        // 429 body never parses as `ErrorResponse`, so its wait is read here
+        // directly rather than falling through to the generic envelope path.
+        if status == 429 {
+            return Err(ApiError::Status {
+                code: status,
+                message: rate_limited_message(&body),
+                fields: Vec::new(),
+                envelope_code: String::new(),
+                envelope_body: None,
+            });
+        }
         let (message, fields, envelope_code, envelope_body) =
             match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
                 Ok(env) => {
@@ -3098,6 +3133,69 @@ pub mod api {
             note_agent_unauthorized().await;
         }
         handle_response(resp).await
+    }
+
+    /// MAPPS-830: authed POST with a JSON body that answers 200 with no body
+    /// (`POST /auth/me/mfa/disable`). [`post_authed_typed`] would fail to
+    /// decode the empty payload, so this variant only inspects the status,
+    /// mirroring [`put_portal_authed_json_no_content`] for the bearer-authed
+    /// family.
+    #[cfg(feature = "app")]
+    pub async fn post_authed_json_no_content<B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<(), ApiError> {
+        ensure_fresh_access_token().await;
+        let url = format!("{}{}", api_base(), path);
+        let mut req = Request::post(&url).header("Content-Type", "application/json");
+        let bearer = current_access_token();
+        if let Some(t) = &bearer {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let resp = req
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        let status = resp.status();
+        super::note_response_status(status);
+        if bearer.is_some() && status == 401 {
+            note_agent_unauthorized().await;
+        }
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
+        let body_text = resp.text().await.unwrap_or_default();
+        let (message, fields, envelope_code, envelope_body) =
+            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
+                Ok(env) => {
+                    let code = env.error.code.clone();
+                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
+                    (
+                        env.error.message,
+                        env.error.errors.unwrap_or_default(),
+                        code,
+                        raw,
+                    )
+                }
+                Err(_) => (
+                    body_text.chars().take(200).collect(),
+                    Vec::new(),
+                    String::new(),
+                    None,
+                ),
+            };
+        Err(ApiError::Status {
+            code: status,
+            message,
+            fields,
+            envelope_code,
+            envelope_body,
+        })
     }
 
     /// MAPPS-368: unauthed typed POST, for the standalone login form. Same as

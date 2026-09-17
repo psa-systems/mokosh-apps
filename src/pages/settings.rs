@@ -243,7 +243,9 @@ impl SettingsGroupKey {
                 "SLA, scheduling, time tracking, rate cards, taxes, gateways, and payment terms."
             }
             SettingsGroupKey::Tickets => "Statuses, priorities, types, queues, and categories.",
-            SettingsGroupKey::Integrations => "RMM connections, device mappings, and alert rules.",
+            SettingsGroupKey::Integrations => {
+                "Google Contacts import, and RMM connections, device mappings and alert rules."
+            }
             SettingsGroupKey::Data => {
                 "Your organization's name, and exporting or importing this tenant's data."
             }
@@ -523,6 +525,16 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Tickets,
         advanced: true,
         visibility: SurfaceVisibility::Always,
+    },
+    // MAPPS-808: listed first in the group and not advanced: it is the one an
+    // MSP without an RMM still has a use for.
+    SettingsSurface {
+        route: Route::SettingsGoogleContacts {},
+        title: "Google Contacts",
+        description: "Import contacts from your organization's Google account. Read-only: nothing is written back.",
+        group: SettingsGroupKey::Integrations,
+        advanced: false,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsRmmConnections {},
