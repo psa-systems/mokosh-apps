@@ -6,20 +6,32 @@
 //! Cancel calls `DELETE /api/v1/grants/invitations/{id}` (PMS-1208
 //! route); Revoke calls `DELETE /api/v1/grants/{id}` (MAPPS-875 route).
 //!
-//! Role-change on an active grant is a "Revoke and re-invite" flow: the
-//! MVP calls Revoke, then opens the switcher's invite modal pre-filled
-//! with the same email at the new role. A proper `PATCH /v1/grants/{id}`
-//! is deferred to a follow-up ticket (bunyip's `mokosh_account_grants`
-//! has no in-place update path today).
+//! Role-change on an active grant is a "Revoke and re-invite" flow:
+//! the modal takes the new role, then in sequence calls
+//! `DELETE /api/v1/grants/{id}` and `POST /api/v1/grants/invitations`
+//! with the same email at the new role. Grantee receives a fresh
+//! invitation email; access is transiently lost between accept and
+//! re-accept, which is why BUNYIP-748 replaces this with a proper
+//! `PATCH /v1/grants/{id}` in a follow-up ticket (linked from
+//! MAPPS-875's ticket body).
 //!
 //! Gate: `role.is_admin()` mirrors the sibling settings pages. The
 //! server also gates every route on `RequireAdminUser`, so a non-admin
 //! bypassing this SPA check still sees 403 from the fetch.
 
 use dioxus::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::components::{Button, ButtonVariant, Card, ContentUnavailable, Modal, ModalSize};
+
+/// Request body for the sibling PMS-1208 create-invitation route,
+/// reused here for the "re-invite at new role" half of the change-
+/// role flow.
+#[derive(Serialize)]
+struct SendInviteBody {
+    invitee_email: String,
+    role: String,
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 struct OwnerOutbox {
@@ -121,6 +133,14 @@ pub fn SettingsSharingPage() -> Element {
     // invitation stays one-click because the invitee has not been
     // granted anything yet.
     let confirm_revoke: Signal<Option<ActiveGrantView>> = use_signal(|| None);
+    // MAPPS-875 v2: change-role modal. Open state is a
+    // `Some(grant)` signal so the modal body can render the current
+    // role beside the picker, and `role_pick` holds what the owner
+    // is about to submit; keeping the picker's value on a separate
+    // signal (rather than on the grant snapshot) means clicking the
+    // picker between renders doesn't overwrite the row identity.
+    let change_role_target: Signal<Option<ActiveGrantView>> = use_signal(|| None);
+    let role_pick: Signal<String> = use_signal(String::new);
 
     let is_admin = auth.read().is_admin();
     if !is_admin {
@@ -235,6 +255,99 @@ pub fn SettingsSharingPage() -> Element {
         }
     };
 
+    // MAPPS-875 v2: submit the "Revoke and re-invite at new role"
+    // change-role form. Runs DELETE then POST in sequence; if the
+    // DELETE fails the re-invite never fires (a false-success on
+    // re-invite would leave two active grants on the same triple).
+    // If the DELETE succeeds and the re-invite fails, the row is
+    // gone from the active list but the pending list stays empty
+    // and the error surfaces at the top of the page - the owner
+    // can retry the invite manually.
+    //
+    // Deliberately not optimistic: the row moves from active to
+    // pending, so a client-side prediction of "gone" without a
+    // matching insertion would flash empty state. The refetch on
+    // completion is the source of truth.
+    let submit_change_role = {
+        let mut refresh_counter = refresh_counter;
+        let mut error = error;
+        let mut saving = saving;
+        let mut change_role_target = change_role_target;
+        let mut role_pick = role_pick;
+        move || {
+            if saving() {
+                return;
+            }
+            let Some(grant) = change_role_target.read().clone() else {
+                return;
+            };
+            let new_role = role_pick.read().clone();
+            if new_role.is_empty() || new_role == grant.role {
+                // Nothing to do; the Save button should have been
+                // disabled but a keyboard submit could still land
+                // here. Close the modal quietly.
+                *change_role_target.write() = None;
+                return;
+            }
+            let Some(invitee_email) = grant.grantee_email.clone() else {
+                error.set(
+                    "Can't change this grant's role without the grantee's email address. \
+                     Revoke and re-invite them manually."
+                        .to_string(),
+                );
+                *change_role_target.write() = None;
+                return;
+            };
+            saving.set(true);
+            error.set(String::new());
+            let grant_id = grant.id.clone();
+            spawn(async move {
+                #[cfg(feature = "app")]
+                {
+                    // Step 1: revoke the current grant.
+                    let revoke_path = format!("/grants/{grant_id}");
+                    if let Err(e) =
+                        crate::hooks::fetch::api::delete_authed_typed(&revoke_path).await
+                    {
+                        error.set(format!(
+                            "Couldn't revoke the current grant: {}",
+                            e.user_message()
+                        ));
+                        saving.set(false);
+                        return;
+                    }
+                    // Step 2: re-invite at the new role. Ignores the
+                    // returned invitation - the pending row shows up
+                    // on the refetch.
+                    let body = SendInviteBody {
+                        invitee_email,
+                        role: new_role,
+                    };
+                    if let Err(e) = crate::hooks::fetch::api::post_authed_typed::<
+                        serde_json::Value,
+                        _,
+                    >("/grants/invitations", &body)
+                    .await
+                    {
+                        error.set(format!(
+                            "Revoked, but couldn't send the new invitation: {}. \
+                             You can re-invite from the switcher.",
+                            e.user_message()
+                        ));
+                    }
+                    *refresh_counter.write() += 1;
+                }
+                #[cfg(not(feature = "app"))]
+                {
+                    let _ = grant_id;
+                }
+                *change_role_target.write() = None;
+                *role_pick.write() = String::new();
+                saving.set(false);
+            });
+        }
+    };
+
     rsx! {
         div { class: "container mx-auto max-w-4xl px-4 py-6 space-y-6",
             div {
@@ -320,8 +433,11 @@ pub fn SettingsSharingPage() -> Element {
                 } else {
                     ul { class: "divide-y divide-line",
                         {active_view.iter().map(|grant| {
-                            let grant_for_modal = grant.clone();
+                            let grant_for_revoke = grant.clone();
+                            let grant_for_change_role = grant.clone();
                             let mut confirm_revoke = confirm_revoke;
+                            let mut change_role_target = change_role_target;
+                            let mut role_pick = role_pick;
                             let granted = fmt_ts(&grant.granted_at);
                             // Display name: prefer explicit name, else email,
                             // else "Someone" (SaaS-mode rows carry neither today).
@@ -330,6 +446,12 @@ pub fn SettingsSharingPage() -> Element {
                                 .clone()
                                 .or_else(|| grant.grantee_email.clone())
                                 .unwrap_or_else(|| "Shared account".to_string());
+                            // MAPPS-875 v2: "Change role" is only useful when
+                            // we have the grantee's email (needed for the
+                            // re-invite half of the interim flow). Without it
+                            // the button would open a modal that could not
+                            // finish the sequence.
+                            let can_change_role = grant.grantee_email.is_some();
                             rsx! {
                                 li {
                                     key: "{grant.id}",
@@ -343,19 +465,34 @@ pub fn SettingsSharingPage() -> Element {
                                             }
                                         }
                                     }
-                                    Button {
-                                        variant: ButtonVariant::Secondary,
-                                        r#type: "button".to_string(),
-                                        disabled: saving(),
-                                        // MAPPS-875 v2: two-step revoke.
-                                        // Clicking Revoke opens the confirm
-                                        // modal (below), which then calls
-                                        // `revoke_grant` on Confirm. Cancel
-                                        // is one-click by design.
-                                        onclick: move |_| {
-                                            *confirm_revoke.write() = Some(grant_for_modal.clone());
-                                        },
-                                        "Revoke"
+                                    div { class: "flex gap-2",
+                                        if can_change_role {
+                                            Button {
+                                                variant: ButtonVariant::Secondary,
+                                                r#type: "button".to_string(),
+                                                disabled: saving(),
+                                                onclick: move |_| {
+                                                    let current = grant_for_change_role.role.clone();
+                                                    *role_pick.write() = current;
+                                                    *change_role_target.write() = Some(grant_for_change_role.clone());
+                                                },
+                                                "Change role"
+                                            }
+                                        }
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            r#type: "button".to_string(),
+                                            disabled: saving(),
+                                            // MAPPS-875 v2: two-step revoke.
+                                            // Clicking Revoke opens the confirm
+                                            // modal (below), which then calls
+                                            // `revoke_grant` on Confirm. Cancel
+                                            // is one-click by design.
+                                            onclick: move |_| {
+                                                *confirm_revoke.write() = Some(grant_for_revoke.clone());
+                                            },
+                                            "Revoke"
+                                        }
                                     }
                                 }
                             }
@@ -418,8 +555,88 @@ pub fn SettingsSharingPage() -> Element {
                 }
             }
 
+            // MAPPS-875 v2: change-role modal. The AC named a form
+            // with the current role shown + a picker for the new
+            // one; today's submit runs revoke + re-invite in
+            // sequence (BUNYIP-748 replaces this with a proper
+            // PATCH). Rendering under both modals so the DOM order
+            // matches the visual "confirm first, then act" flow.
+            {
+                let target = change_role_target.read().clone();
+                let is_open = target.is_some();
+                let display = target.as_ref().map(|g| {
+                    g.grantee_name.clone()
+                        .or_else(|| g.grantee_email.clone())
+                        .unwrap_or_else(|| "this account".to_string())
+                }).unwrap_or_default();
+                let current_role = target.as_ref().map(|g| g.role.clone()).unwrap_or_default();
+                let pick = role_pick();
+                let unchanged = pick.is_empty() || pick == current_role;
+                let mut change_role_close = change_role_target;
+                let mut role_pick = role_pick;
+                let mut submit = submit_change_role;
+                rsx! {
+                    Modal {
+                        open: is_open,
+                        title: "Change role".to_string(),
+                        size: ModalSize::Small,
+                        onclose: move |_| {
+                            *change_role_close.write() = None;
+                            *role_pick.write() = String::new();
+                        },
+                        div { class: "space-y-4",
+                            p { class: "text-sm text-content",
+                                "Change the role for "
+                                span { class: "font-medium", "{display}" }
+                                "."
+                            }
+                            div { class: "space-y-1",
+                                label { class: "text-xs text-subtle",
+                                    "Current role: {humanise_role(&current_role)}"
+                                }
+                                label { class: "text-sm text-content", "New role" }
+                                select {
+                                    class: "block w-full rounded-md border border-line bg-surface-1 px-3 py-2 text-sm text-content focus:outline-none",
+                                    value: pick.clone(),
+                                    disabled: saving(),
+                                    onchange: move |e: FormEvent| role_pick.set(e.value()),
+                                    option { value: "admin", "Admin" }
+                                    option { value: "manager", "Manager" }
+                                    option { value: "technician", "Technician" }
+                                    option { value: "finance", "Finance" }
+                                    option { value: "read_only", "Read only" }
+                                }
+                            }
+                            p { class: "text-xs text-subtle",
+                                "The current grant will be revoked and a fresh invitation sent at the new role. They will need to accept the invitation again."
+                            }
+                            div { class: "flex gap-2 justify-end pt-2",
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    r#type: "button".to_string(),
+                                    disabled: saving(),
+                                    onclick: move |_| {
+                                        *change_role_close.write() = None;
+                                        *role_pick.write() = String::new();
+                                    },
+                                    "Cancel"
+                                }
+                                Button {
+                                    variant: ButtonVariant::Primary,
+                                    r#type: "button".to_string(),
+                                    disabled: saving() || unchanged,
+                                    loading: saving(),
+                                    onclick: move |_| submit(),
+                                    "Change role"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             p { class: "text-xs text-subtle",
-                "To change someone's role, revoke their access and re-invite them at the new role."
+                "Changing a role currently revokes and re-invites the grantee; the grantee must accept the new invitation before they can access the account again."
             }
         }
     }
