@@ -4,10 +4,11 @@ use dioxus::prelude::*;
 use mokosh_apps::components::{use_page_title_provider, CloseConfirmModal};
 use mokosh_apps::hooks::{
     use_active_org_loader, use_apply_theme, use_auth_heartbeat, use_auth_provider,
-    use_bfcache_invalidator, use_current_user_loader, use_server_status_monitor,
-    use_session_end_watch, use_sidebar_collapsed_provider, use_sidebar_provider,
-    use_sidebar_scroll_provider, use_standalone_token_refresh, use_theme_sync, use_token_refresh,
-    use_update_check, use_version_cache_provider,
+    use_bfcache_invalidator, use_current_user_loader, use_mention_directory_provider,
+    use_server_status_monitor, use_session_end_watch, use_sidebar_collapsed_provider,
+    use_sidebar_provider, use_sidebar_scroll_provider, use_standalone_token_refresh,
+    use_theme_sync, use_token_refresh, use_update_check, use_user_roster_provider,
+    use_version_cache_provider,
 };
 use mokosh_apps::Route;
 
@@ -121,6 +122,14 @@ fn App() -> Element {
     // 200ms reserve-then-collapse animation that goes with the
     // resource's None -> Some(...) transition) on every page navigation.
     use_version_cache_provider();
+    // MAPPS-860: cache the user roster (and other reference lists) at the App
+    // root so the 14+ pages that need it share one fetch per session instead
+    // of refetching on every mount.
+    use_user_roster_provider();
+    // MAPPS-860: cache the mention directory at App root the same way, so
+    // sibling `Markdown` instances on the same page (a ticket's journal, a
+    // KB article's comments) share one fetch instead of one each.
+    use_mention_directory_provider();
     // Background loop: rotates access tokens before expiry. No-op when
     // the user is not signed in. Mounted once at the app root so it
     // keeps running across navigations.

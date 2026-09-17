@@ -1784,34 +1784,6 @@ struct ApprovalSummary {
     rejection_reason: Option<String>,
 }
 
-/// A user for resolving a summary's `user_id` to a name on the queue
-/// (`GET /auth/users`, server-gated to Admin / Manager).
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-struct ApprovalUser {
-    id: uuid::Uuid,
-    #[serde(default)]
-    full_name: String,
-    #[serde(default)]
-    first_name: String,
-    #[serde(default)]
-    last_name: String,
-}
-
-impl ApprovalUser {
-    fn display_name(&self) -> String {
-        if !self.full_name.trim().is_empty() {
-            return self.full_name.clone();
-        }
-        let joined = format!("{} {}", self.first_name, self.last_name);
-        let joined = joined.trim();
-        if joined.is_empty() {
-            "Unknown user".to_string()
-        } else {
-            joined.to_string()
-        }
-    }
-}
-
 // ============================================================================
 // MAPPS-340: reviewable submit / change / approve / reject history.
 //
@@ -2053,25 +2025,14 @@ pub fn TimesheetApprovalsPage() -> Element {
             .ok()
     });
 
-    // Names for the user_ids in the summaries.
-    let users_resource = use_resource(move || async move {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        let can = auth
-            .read()
-            .user
-            .as_ref()
-            .is_some_and(|u| u.role.can_manage_users());
-        if !can {
-            return Vec::<ApprovalUser>::new();
-        }
-        crate::hooks::fetch::api::get_all_authed::<ApprovalUser>("/auth/users")
-            .await
-            .unwrap_or_else(|e| {
-                // Best-effort: rows fall back to the bare user id.
-                tracing::warn!("approval user-name load failed: {e}");
-                Vec::new()
-            })
-    });
+    // Names for the user_ids in the summaries. MAPPS-860: shared roster
+    // cache, not a per-page fetch.
+    let can_see_users = auth
+        .read()
+        .user
+        .as_ref()
+        .is_some_and(|u| u.role.can_manage_users());
+    let users_resource = crate::hooks::use_user_roster(can_see_users);
 
     // MAPPS-377: read reachability before the manager / outage early returns
     // below so the hook set stays stable across renders. Both only read global
@@ -2127,7 +2088,7 @@ pub fn TimesheetApprovalsPage() -> Element {
         users
             .iter()
             .find(|u| u.id == uid)
-            .map(|u| u.display_name())
+            .and_then(|u| u.display_name())
             .unwrap_or_else(|| format!("User {}", short_id(uid)))
     };
 

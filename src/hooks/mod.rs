@@ -31,13 +31,14 @@ pub mod toast;
 pub mod tv_view;
 pub mod unsaved_guard;
 pub mod update_check;
+pub mod user_roster;
 pub mod version_cache;
 
 pub use auth::*;
 pub use dropdown_nav::{use_dropdown_nav, DropdownNav, NavAction, NavRows};
 pub use edit_queue::{use_replay_pending_edits, PendingEdit};
 pub use fetch::*;
-pub use mentions::{mention_people, use_mention_directory};
+pub use mentions::{mention_people, use_mention_directory, use_mention_directory_provider};
 pub use remote_data::{classify_remote, use_remote_resource, RemoteData};
 pub use server_status::{
     use_can_mutate, use_server_reachable, use_server_status_monitor, use_update_pending,
@@ -48,4 +49,5 @@ pub use theme_sync::use_theme_sync;
 pub use toast::*;
 pub use unsaved_guard::use_unsaved_guard;
 pub use update_check::use_update_check;
+pub use user_roster::{use_user_roster, use_user_roster_provider, UserRow};
 pub use version_cache::{use_version_cache, use_version_cache_provider, CachedVersion};
