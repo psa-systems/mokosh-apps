@@ -699,7 +699,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     // Invitations item below). Org tenants only per Q4
                     // default = A. The `team_enabled` runtime flag was
                     // retired: Teams is now core, not a preview.
-                    TeamsNavItem { visible: is_org_tenant, collapsed }
+                    MembersNavItem { visible: is_org_tenant, collapsed }
                     NavItem { to: Route::Invitations {}, icon: rsx!(MailIcon {}), label: "Invitations", collapsed }
                     NavItem { to: Route::AuditLog {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Audit Log", collapsed }
                     NavItem { to: Route::FormsBuilder {}, icon: rsx!(InboxArrowDownIcon {}), label: "Request Forms", collapsed }
@@ -940,31 +940,35 @@ fn NavItem(props: NavItemProps) -> Element {
 // section above. It was already a no-op after the Clients-tab
 // retirement (prompt 001) and had no live callers on this branch.
 
-/// PMS-791 phase 2 / MAPPS-463: Teams nav item. Cfg-gated on
-/// `multi-tenant` so a `single-tenant` build does not need to know
-/// Route::Teams exists (the retired `TenantsNavItem` used the same
-/// pattern before it went away with the Platform section).
+/// MAPPS-877: Members nav item (was "Teams", PMS-791 phase 2 /
+/// MAPPS-463). Renamed and repointed at the unified
+/// `/settings/members` page. Cfg-gated on `multi-tenant`.
 #[derive(Props, Clone, PartialEq)]
-struct TeamsNavItemProps {
+struct MembersNavItemProps {
     visible: bool,
     collapsed: bool,
 }
 
 #[cfg(feature = "multi-tenant")]
 #[component]
-fn TeamsNavItem(props: TeamsNavItemProps) -> Element {
-    let TeamsNavItemProps { visible, collapsed } = props;
+fn MembersNavItem(props: MembersNavItemProps) -> Element {
+    let MembersNavItemProps { visible, collapsed } = props;
     if !visible {
         return rsx! {};
     }
     rsx! {
-        NavItem { to: Route::Teams {}, icon: rsx!(UserGroupIcon {}), label: "Teams", collapsed }
+        NavItem {
+            to: Route::MembersPage { tab: "people".to_string() },
+            icon: rsx!(UserGroupIcon {}),
+            label: "Members",
+            collapsed,
+        }
     }
 }
 
 #[cfg(not(feature = "multi-tenant"))]
 #[component]
-fn TeamsNavItem(props: TeamsNavItemProps) -> Element {
+fn MembersNavItem(props: MembersNavItemProps) -> Element {
     let _ = props;
     rsx! {}
 }
