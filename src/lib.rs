@@ -990,6 +990,12 @@ pub enum Route {
     /// detail page instead (MAPPS-619).
     #[route("/settings/portal-branding")]
     ContactPortalBranding {},
+    /// MAPPS-875: owner-side grant management. Lists pending
+    /// invitations and active grants, with Cancel and Revoke
+    /// actions per row. Gated on `role.is_admin()` in the page;
+    /// the server routes are admin-only on top.
+    #[route("/settings/sharing")]
+    SettingsSharing {},
     // MAPPS-258: per-group landing routes. The index lists these four
     // groups; each landing lists only its own leaf surfaces. The leaf
     // routes below stay flat so existing deep links keep resolving.
@@ -1998,6 +2004,16 @@ fn SettingsBranding() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             pages::settings_branding::SettingsBrandingPage {}
+        }
+    }
+}
+
+/// MAPPS-875: owner-side grant management page.
+#[component]
+fn SettingsSharing() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_sharing::SettingsSharingPage {}
         }
     }
 }

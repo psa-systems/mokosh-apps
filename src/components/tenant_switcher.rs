@@ -767,6 +767,19 @@ pub fn TenantSwitcher() -> Element {
                             },
                             "Invite member"
                         }
+                        // MAPPS-875: owner-only entry into the sharing
+                        // outbox (pending + active, with Cancel and
+                        // Revoke). Sits between Invite and Create so
+                        // the flow is invite -> manage -> create.
+                        button {
+                            class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
+                            r#type: "button",
+                            onclick: move |_| {
+                                open.set(false);
+                                nav.replace(Route::SettingsSharing {});
+                            },
+                            "Manage sharing"
+                        }
                     }
                     button {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
