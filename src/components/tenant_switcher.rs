@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::{Button, ButtonVariant, Input, Modal, ModalSize};
 use crate::hooks::auth::MembershipView;
-use crate::modules::oidc::storage::{save_standalone, StandaloneSession};
+use crate::modules::oidc::storage::{clear_oidc_bundle, save_standalone, StandaloneSession};
 use crate::{CurrentUser, Route};
 
 /// MAPPS-497 item 1: global signal so the create-org modal can be
@@ -147,6 +147,17 @@ pub fn TenantSwitcher() -> Element {
                                 expires_at: chrono::DateTime<chrono::Utc>,
                                 user: CurrentUser| {
         crate::hooks::fetch::api::set_access_token(Some(access_token.clone()));
+        // PMS-1208: drop the OIDC bundle so a page reload rehydrates
+        // from the standalone bundle we're about to write (the
+        // switched session), rather than from the stale home-tenant
+        // OIDC bundle the callback left behind. The 30-second refresh
+        // loop reads the same storage and would otherwise renew the
+        // caller's OIDC session, replacing our switched bearer with a
+        // fresh home-tenant one and quietly reverting the active
+        // team. `clear_auth` is deliberately NOT used here because it
+        // also wipes the standalone bundle we're overwriting a line
+        // later.
+        clear_oidc_bundle();
         save_standalone(&StandaloneSession {
             access_token,
             refresh_token,
@@ -538,17 +549,37 @@ pub fn TenantSwitcher() -> Element {
         let mut list = a.memberships.clone();
         let active_id = a.active_tenant_id.map(|u| u.to_string());
         let derived_name = a.active_org_name().map(str::to_string);
-        let active_name = derived_name.unwrap_or_else(|| {
-            list.iter()
-                .find(|m| Some(m.tenant_id.clone()) == active_id)
-                .map(|m| m.tenant_name.clone())
-                .unwrap_or_default()
-        });
         list.sort_by(|a, b| {
             a.tenant_name
                 .to_ascii_lowercase()
                 .cmp(&b.tenant_name.to_ascii_lowercase())
         });
+        // PMS-1208: the trigger button renders `active_name` next to
+        // the chevron so the caller can see which team is currently
+        // active at a glance. Three sources, tried in order: the
+        // active membership's name (populated once memberships have
+        // loaded AND active_tenant_id matches one of them); the first
+        // membership row by sort order (a reasonable stand-in on the
+        // ~1 tick window between rehydrate and the memberships list
+        // landing, and the correct answer when the active_tenant_id
+        // seeded from a stale id_token points at a row the caller no
+        // longer has); and finally the label "Team" so the button is
+        // never rendered as a lonely chevron with no accessible name
+        // beside it. Empty string is the ONE thing we never leave in
+        // the DOM here, because that is what the tester saw.
+        let derived_from_list = || {
+            list.iter()
+                .find(|m| Some(m.tenant_id.clone()) == active_id)
+                .map(|m| m.tenant_name.clone())
+        };
+        let first_membership_name = || list.first().map(|m| m.tenant_name.clone());
+        let active_name = derived_name
+            .filter(|s| !s.trim().is_empty())
+            .or_else(derived_from_list)
+            .filter(|s| !s.trim().is_empty())
+            .or_else(first_membership_name)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "Team".to_string());
         (list, active_name, active_id)
     };
 

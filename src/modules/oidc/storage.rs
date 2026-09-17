@@ -69,6 +69,21 @@ pub fn clear_auth() {
     clear_standalone();
 }
 
+/// PMS-1208: drop ONLY the OIDC bundle (`AUTH_KEY`) and leave any
+/// standalone bundle alone. Used by the tenant switcher after a
+/// successful switch: the switched session's access token, tenant id
+/// and user live in the standalone bundle from that point on, and
+/// letting a stale home-tenant OIDC bundle rehydrate on the next reload
+/// (or drive the 30-second refresh loop through mokosh's OP) would
+/// silently revert the caller's active team. `clear_auth` is not the
+/// right call here because it also wipes the standalone bundle, which
+/// is exactly the state we want to preserve.
+pub fn clear_oidc_bundle() {
+    if let Ok(storage) = session_storage() {
+        let _ = storage.remove_item(AUTH_KEY);
+    }
+}
+
 /// MAPPS-368: standalone (non-OIDC) session key. Kept separate from `AUTH_KEY`
 /// so the two rehydrate paths never collide.
 const STANDALONE_KEY: &str = "mokosh_standalone_session_v1";
