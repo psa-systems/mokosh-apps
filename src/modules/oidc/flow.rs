@@ -513,6 +513,19 @@ pub async fn issuer_get_authed<T: serde::de::DeserializeOwned>(
 /// structured `{"error":"..."}` payloads. (`Network` is a
 /// transport-shaped variant by name, but in practice it's how the
 /// codebase already smuggles error bodies through.)
+///
+/// PMS-1208 finding 6: bunyip wraps every `/v1/*` response in a
+/// `{success, data, meta}` envelope. The one type parameter this
+/// helper takes is the SHAPE OF `data`, so a `MintResp` caller
+/// gets a `MintResp` back rather than a "missing field
+/// `access_token` at line 1 column N" as serde walks past the
+/// wrapper's keys. `/oauth2/*` endpoints return bare RFC-shaped
+/// JSON (token, refresh, revoke), but those go through
+/// `exchange_code` / `refresh_tokens` and never through this
+/// helper, so unwrapping here is safe. If a future caller ever
+/// points this helper at an `/oauth2/*` endpoint, the `data` key
+/// will be absent and serde will refuse it loudly. See the
+/// production-code guard in `crate::hooks::auth`.
 pub async fn issuer_post_authed<T: serde::de::DeserializeOwned, B: serde::Serialize>(
     cfg: &OidcConfig,
     path: &str,
@@ -537,8 +550,13 @@ pub async fn issuer_post_authed<T: serde::de::DeserializeOwned, B: serde::Serial
         let raw = resp.text().await.unwrap_or_default();
         return Err(FlowError::Network(raw));
     }
-    resp.json::<T>()
+    #[derive(serde::Deserialize)]
+    struct Envelope<T> {
+        data: T,
+    }
+    resp.json::<Envelope<T>>()
         .await
+        .map(|e| e.data)
         .map_err(|e| FlowError::Network(format!("body: {e}")))
 }
 
