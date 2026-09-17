@@ -11,12 +11,17 @@
 //! `on_toggle` so the host can flip the source marker and persist it
 //! (PMS-348).
 //!
-//! MAPPS-578: `@handle` resolves against the tenant's staff directory, which
-//! this component fetches once and shares across every instance on the page.
-//! A resolved mention renders as a chip naming the person; anything that does
+//! MAPPS-578: `@handle` resolves against the tenant's staff directory. A
+//! resolved mention renders as a chip naming the person; anything that does
 //! not resolve stays the plain text the author wrote. The chip routes to the
 //! team roster on click, but only for a viewer who can open it, so a reader
 //! without access gets an informative chip rather than a link that 403s.
+//!
+//! MAPPS-856: a page that renders many instances of this component (a
+//! ticket's journal, a KB article's comments) fetches the directory once
+//! itself and hands it down through the `people` prop, so only the page
+//! makes the request. A caller with no such directory (most of them, still)
+//! leaves `people` unset and this component fetches its own, as before.
 
 use dioxus::prelude::*;
 
@@ -41,6 +46,14 @@ pub struct MarkdownProps {
     /// out; every in-app caller wants it on.
     #[props(default = true)]
     mentions: bool,
+    /// MAPPS-856: a directory the host page already fetched once, handed
+    /// down instead of this component fetching its own. A page that renders
+    /// many `Markdown` instances (a ticket's journal, a KB article's
+    /// comments) fetches once and passes the same list to every instance
+    /// through this prop. `None` keeps the old behavior: this component
+    /// fetches its own copy through [`crate::hooks::use_mention_directory`].
+    #[props(default)]
+    people: Option<Vec<Mention>>,
 }
 
 #[component]
@@ -53,13 +66,21 @@ pub fn Markdown(props: MarkdownProps) -> Element {
         format!("md-{}", NEXT.fetch_add(1, Ordering::Relaxed))
     });
 
-    // MAPPS-578: one fetch per page, not one per Markdown instance. A ticket
-    // page renders several of these, and the directory is the same for all of
-    // them. A failure leaves it empty, which renders every `@` as the plain
-    // text it already was, so a technician who cannot read `/auth/users` (it is
-    // manager-gated) sees exactly what shipped before this.
-    let directory = crate::hooks::use_mention_directory(props.mentions);
-    let people: Vec<Mention> = crate::hooks::mention_people(&directory);
+    // MAPPS-856: `props.people` carries an already-fetched directory down
+    // from a page that renders many `Markdown` instances, so only the page
+    // fetches. The hook is still called unconditionally (Rules of Hooks:
+    // `props.people`'s presence is fixed for a given call site, so the
+    // `enabled` argument does not change across this instance's renders),
+    // just disabled when a directory was handed down, so it makes no
+    // request. A failure leaves the directory empty, which renders every
+    // `@` as the plain text it already was, so a technician who cannot read
+    // `/auth/users` (it is manager-gated) sees exactly what shipped before
+    // this.
+    let directory = crate::hooks::use_mention_directory(props.mentions && props.people.is_none());
+    let people: Vec<Mention> = match &props.people {
+        Some(people) => people.clone(),
+        None => crate::hooks::mention_people(&directory),
+    };
 
     // MAPPS-595: the origin an attachment path is joined onto. Empty in dev,
     // where the SPA and the API already share one; the API's own origin on a
@@ -364,8 +385,11 @@ mod mention_wiring_tests {
     fn the_directory_comes_from_the_shared_hook() {
         let code = code_only();
         assert!(
-            code.contains("crate::hooks::use_mention_directory(props.mentions)"),
-            "the fetch is not this component's to own"
+            code.contains(
+                "crate::hooks::use_mention_directory(props.mentions && props.people.is_none())"
+            ),
+            "the fetch is not this component's to own, and is skipped when a \
+             host page hands a directory down through `people`"
         );
         assert!(
             !code.contains("get_all_authed"),
