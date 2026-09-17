@@ -85,8 +85,10 @@ impl ChangeLine {
     /// they do not.
     ///
     /// MAPPS-601: computed at render rather than stored on the struct, which
-    /// stays cheap to clone and compare. Every entry runs it at most twice, and
-    /// the values are the ones the audit row already holds.
+    /// stays cheap to clone and compare. `ChangeDetails` calls this once per
+    /// line and reuses the result for both the collapse decision and the
+    /// expanded view (MAPPS-864); this method itself may still be called
+    /// again from tests or other callers that need only one of the two.
     pub fn render(&self) -> Rendering {
         match crate::utils::word_diff::diff_words(&self.old, &self.new) {
             Some(pieces) => Rendering::Diff(crate::utils::word_diff::elide(pieces, CONTEXT_WORDS)),
@@ -108,13 +110,21 @@ impl ChangeLine {
     /// entry that renders as three words, which is both worse for the reader
     /// and plainly wrong.
     fn weight(&self) -> usize {
-        match self.render() {
-            Rendering::Diff(pieces) => pieces
-                .iter()
-                .map(|p| p.text().chars().count())
-                .sum::<usize>(),
-            Rendering::Replacement { old, new } => old.chars().count() + new.chars().count(),
-        }
+        weight_of(&self.render())
+    }
+}
+
+/// Characters a rendering contributes to the size decision. Split out of
+/// [`ChangeLine::weight`] so the collapse decision and the expanded view can
+/// share a single [`ChangeLine::render`] call per entry rather than each
+/// triggering their own `diff_words`.
+fn weight_of(rendering: &Rendering) -> usize {
+    match rendering {
+        Rendering::Diff(pieces) => pieces
+            .iter()
+            .map(|p| p.text().chars().count())
+            .sum::<usize>(),
+        Rendering::Replacement { old, new } => old.chars().count() + new.chars().count(),
     }
 }
 
@@ -163,7 +173,11 @@ pub fn ChangeDetails(props: ChangeDetailsProps) -> Element {
         return rsx! {};
     }
 
-    let collapsed = is_large(&props.changes);
+    // Computed once per entry render and reused for both the collapse
+    // decision and the expanded view below, rather than each calling
+    // `ChangeLine::render` (and so `diff_words`) on its own.
+    let renderings: Vec<Rendering> = props.changes.iter().map(ChangeLine::render).collect();
+    let collapsed = renderings.iter().map(weight_of).sum::<usize>() > DETAIL_CHARS;
     let show = !collapsed || open();
 
     rsx! {
@@ -187,10 +201,10 @@ pub fn ChangeDetails(props: ChangeDetailsProps) -> Element {
         }
         if show {
             div { id: "{body_id}",
-                for c in props.changes.iter() {
+                for (c , rendering) in props.changes.iter().zip(renderings.into_iter()) {
                     p { class: "text-xs text-muted mt-1 whitespace-pre-wrap",
                         span { class: "font-medium", "{c.field}: " }
-                        match c.render() {
+                        match rendering {
                             Rendering::Replacement { old, new } => rsx! {
                                 span { class: "line-through text-subtle", "{old}" }
                                 " → "
@@ -489,6 +503,39 @@ mod tests {
                  ChangeHistoryEntry or ChangeDetails instead"
             );
         }
+    }
+
+    /// MAPPS-864: the word diff for a field used to run twice per entry
+    /// render, once for the collapse decision and once for the expanded
+    /// view. Rendering a real entry through `ChangeDetails` must call
+    /// `diff_words` exactly once per line, not twice.
+    #[test]
+    fn the_word_diff_runs_once_per_line_per_render() {
+        use crate::utils::word_diff::CALL_COUNT;
+
+        #[component]
+        fn Entry() -> Element {
+            let changes = vec![
+                line(
+                    "Description",
+                    "Rachel's email is not working today.",
+                    "Rachel's email is not working this week.",
+                ),
+                line("Status", "Open", "Closed"),
+            ];
+            rsx! { ChangeDetails { changes } }
+        }
+
+        CALL_COUNT.with(|c| c.set(0));
+        let mut dom = VirtualDom::new(Entry);
+        dom.rebuild_in_place();
+        let _ = dioxus_ssr::render(&dom);
+
+        assert_eq!(
+            CALL_COUNT.with(|c| c.get()),
+            2,
+            "two lines, each diffed once"
+        );
     }
 
     /// The toggle is a real button carrying its state, not a clickable span.
