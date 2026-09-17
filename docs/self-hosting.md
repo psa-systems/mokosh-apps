@@ -47,10 +47,11 @@ non-empty are emitted. Restart the container to pick up a change.
 | `MOKOSH_API_BASE` | API base URL the SPA calls, for example `https://api.example.com/api/v1`. The mokosh-server instance it names must allow this SPA's origin through its `CORS_ORIGIN`. |
 | `MOKOSH_OIDC_ISSUER` | OIDC issuer the SPA authenticates against, usually the same host as the API. |
 | `MOKOSH_OIDC_CLIENT_ID` | The OAuth public-client id registered with mokosh-server. Unset (alongside `MOKOSH_OIDC_ISSUER`) falls back to standalone username/password sign-in instead of an OIDC redirect with a client id the OP has never registered. |
+| `MOKOSH_OIDC_REDIRECT_URI` | Overrides the OIDC redirect URI. Optional: unset, the SPA derives `<origin>/auth/callback` itself. Set this for a deployment served from a non-default origin (for example behind a path prefix) that the derived value would not match. |
 | `MOKOSH_OIDC_SCOPES` | Requested scope string for `/oauth2/authorize`. Defaults to the compile-time `openid email offline_access`; set it to add a scope without rebuilding the image. |
 | `MOKOSH_HUB_BASE_URL` | Origin of the Bunyip hub, for legacy login bookmarks. Optional. |
 | `MOKOSH_PORTAL_HOST` | The single host the client portal is served from, typically `portal.<apex>`. The SPA uses it to decide whether the current host is the portal host and to derive the API base when it is. Unset turns both off. |
-| `MOKOSH_DOCS_URL` | Base URL of the documentation site. Unset hides the Documentation menu entry and every contextual help link. |
+| `MOKOSH_DOCS_BASE_URL` | Base URL of the documentation site. Unset hides the Documentation menu entry and every contextual help link. `MOKOSH_DOCS_URL` is a deprecated fallback for the same field. |
 | `MOKOSH_TEAM_ENABLED` | Set to `true` or `1` to expose the Team item under the Admin nav section. The route and its API stay reachable by direct URL either way. |
 | `MOKOSH_PUBLIC_URL` | Public base URL of this site. Only the link preview needs it, to resolve a root-relative brand logo into an absolute `og:image`. |
 

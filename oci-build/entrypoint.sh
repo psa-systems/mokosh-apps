@@ -29,6 +29,13 @@ CONFIG_JSON="/usr/share/caddy/_mokosh_config.json"
 INDEX="/usr/share/caddy/index.html"
 INCLUDE_TAG='<script src="/_mokosh_config.js"></script>'
 
+# MAPPS-831: MOKOSH_DOCS_URL was renamed to MOKOSH_DOCS_BASE_URL to match the
+# desktop build's env var for the same field. Still honoured as a fallback,
+# but warn so operators migrate.
+if [ -z "${MOKOSH_DOCS_BASE_URL:-}" ] && [ -n "${MOKOSH_DOCS_URL:-}" ]; then
+    echo "[entrypoint] WARN: MOKOSH_DOCS_URL is deprecated; set MOKOSH_DOCS_BASE_URL instead" >&2
+fi
+
 # JSON-escape backslash and double-quote so a value containing either
 # does not break the emitted JS object literal. Operators set these
 # env vars themselves so this is not an attacker boundary, but
@@ -64,6 +71,12 @@ build_config_fields() {
     printf 'api_base\t%s\n' "${MOKOSH_API_BASE:-}"
     printf 'oidc_issuer\t%s\n' "${MOKOSH_OIDC_ISSUER:-}"
     printf 'oidc_client_id\t%s\n' "${MOKOSH_OIDC_CLIENT_ID:-}"
+    # MAPPS-831: runtime lever for the redirect URI, matching every other
+    # OIDC field above. Without this, a path-prefixed or otherwise
+    # non-default deployment had no way to override redirect_uri short of
+    # rebuilding the image with MOKOSH_OIDC_REDIRECT_URI baked in at
+    # compile time.
+    printf 'oidc_redirect_uri\t%s\n' "${MOKOSH_OIDC_REDIRECT_URI:-}"
     printf 'hub_base_url\t%s\n' "${MOKOSH_HUB_BASE_URL:-}"
     # MAPPS-649: the single host the portal is served from (e.g.
     # `portal.psa.systems`). The SPA reads this to (a) decide whether
@@ -76,7 +89,12 @@ build_config_fields() {
     printf 'portal_host\t%s\n' "${MOKOSH_PORTAL_HOST:-}"
     # MAPPS-453: documentation subdomain base URL (e.g. https://docs.n.niceguyit.biz).
     # Unset hides the Documentation menu entry and every contextual help link.
-    printf 'docs_base_url\t%s\n' "${MOKOSH_DOCS_URL:-}"
+    # MAPPS-831: renamed from MOKOSH_DOCS_URL to MOKOSH_DOCS_BASE_URL to match
+    # the desktop build's env var for the same field (see
+    # src/modules/runtime_config.rs, which derives MOKOSH_<FIELD> from the
+    # runtime-config field name). MOKOSH_DOCS_URL is read as a deprecated
+    # fallback for operators who have not migrated yet.
+    printf 'docs_base_url\t%s\n' "${MOKOSH_DOCS_BASE_URL:-${MOKOSH_DOCS_URL:-}}"
     # BUNYIP-142: requested scope string for /oauth2/authorize. Default
     # compile-time value is "openid email offline_access"; operators
     # opting in to bunyip's profile/phone claim emission set this to
