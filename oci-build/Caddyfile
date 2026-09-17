@@ -107,4 +107,12 @@
     # immutable block (a later matching header directive wins).
     @stable-asset path /assets/theme-init.js
     header @stable-asset Cache-Control "no-cache, no-store, must-revalidate"
+    # MAPPS-852: root-path icons (favicon.svg, apple-touch-icon.png, the PWA
+    # manifest's icon-*.png set) are not content-hashed, so they cannot join
+    # @immutable above - a future icon change needs to propagate. But they
+    # are also not the SPA shell, so they do not need the no-store default's
+    # revalidate-on-redeploy guarantee either. A day-long max-age still cuts
+    # the refetch on every navigation without risking a long-lived stale copy.
+    @icons path /favicon.svg /icon-*.png /apple-touch-icon.png
+    header @icons Cache-Control "max-age=86400"
 }
