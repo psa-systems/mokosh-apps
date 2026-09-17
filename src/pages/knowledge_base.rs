@@ -1011,8 +1011,14 @@ pub fn KBArticleListPage(
     // values captured by value never subscribe (mirrors the contacts list,
     // MAPPS-148). When a tag filter is active the server cannot narrow on
     // tags, so we read every page and filter client-side below.
+    // MAPPS-855: debounce the search dependency so a burst of keystrokes
+    // fires one refetch per pause in typing rather than one per keystroke.
+    // This is also the tag view's fetch (the `tag_filter` branch below), so
+    // debouncing here covers both the KB tag view's `get_all_with_auth` pull
+    // of the whole corpus and the plain article search.
+    let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let articles_resource = use_resource(move || {
-        let q = search.read().trim().to_string();
+        let q = search_debounced.read().trim().to_string();
         let category_id = category_filter.read().clone();
         let tag = tag_filter.read().trim().to_string();
         let current_page = (*page.read()).max(1);

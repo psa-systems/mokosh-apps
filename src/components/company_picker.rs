@@ -113,9 +113,12 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
     // showed the unfiltered initial result list regardless of what the
     // user had typed.
     let query_text = query.read().trim().to_string();
+    // MAPPS-855: debounce the resource's dependency so a burst of keystrokes
+    // fires one request per pause in typing rather than one per keystroke.
+    let query_debounced = crate::hooks::use_debounced_signal(query, 300);
     let results = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        let q = query.read().trim().to_string();
+        let q = query_debounced.read().trim().to_string();
         // MAPPS-575: active companies only. Archiving is meant to take a
         // company out of day-to-day use, and this picker IS day-to-day use: an
         // archived company still offered here would keep being attached to new

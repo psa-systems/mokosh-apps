@@ -541,8 +541,12 @@ pub fn CompanyListPage() -> Element {
     // signals here subscribes the resource so a page change fetches and
     // binds the requested page. `active_tenant_generation` stays read so
     // an org switch / token swap still re-fetches.
+    // MAPPS-855: debounce the search dependency so a burst of keystrokes
+    // fires one full-page refetch per pause in typing rather than one per
+    // keystroke.
+    let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let companies_resource = use_resource(move || {
-        let q = search.read().trim().to_string();
+        let q = search_debounced.read().trim().to_string();
         let type_filter = type_filter.read().clone();
         let status_filter = status_filter.read().clone();
         let sort = company_sort_query(*sort.read());
@@ -5725,8 +5729,12 @@ pub fn ContactListPage() -> Element {
     // resource subscribes to them and re-fetches when they change. Values
     // captured by value never re-trigger a Dioxus resource, which is why
     // paging only moved the footer label and never loaded the next page.
+    // MAPPS-855: debounce the search dependency so a burst of keystrokes
+    // fires one full-page refetch per pause in typing rather than one per
+    // keystroke.
+    let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let contacts_resource = use_resource(move || {
-        let q = search.read().trim().to_string();
+        let q = search_debounced.read().trim().to_string();
         let contact_type = contact_type_filter.read().clone();
         let portal = portal_filter.read().clone();
         let sort = contact_sort_query(*sort.read());

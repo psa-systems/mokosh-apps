@@ -132,9 +132,12 @@ pub fn ProductPicker(props: ProductPickerProps) -> Element {
     // PMS-371: read the query INSIDE the resource closure so the fetch
     // subscribes to it.
     let query_text = query.read().trim().to_string();
+    // MAPPS-855: debounce the resource's dependency so a burst of keystrokes
+    // fires one request per pause in typing rather than one per keystroke.
+    let query_debounced = crate::hooks::use_debounced_signal(query, 300);
     let results = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        let q = query.read().trim().to_string();
+        let q = query_debounced.read().trim().to_string();
         let path = if q.is_empty() {
             "/products?is_active=true&per_page=20".to_string()
         } else {

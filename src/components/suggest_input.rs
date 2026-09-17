@@ -59,6 +59,9 @@ pub fn SuggestInput(props: SuggestInputProps) -> Element {
     let mut query = use_signal(|| props.value.clone());
     let static_mode = !props.suggestions.is_empty();
     let field = props.field.clone();
+    // MAPPS-855: debounce the resource's dependency so a burst of keystrokes
+    // fires one request per pause in typing rather than one per keystroke.
+    let query_debounced = crate::hooks::use_debounced_signal(query, 300);
 
     let results = use_resource(move || {
         let field = field.clone();
@@ -68,7 +71,7 @@ pub fn SuggestInput(props: SuggestInputProps) -> Element {
                 return Ok(Vec::new());
             }
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            let q = query.read().trim().to_string();
+            let q = query_debounced.read().trim().to_string();
             let path = format!(
                 "/contacts/field-values?field={}&q={}",
                 urlencoding_minimal(&field),
