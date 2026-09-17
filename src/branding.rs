@@ -174,6 +174,7 @@ mod tests {
     #[test]
     fn every_render_site_reads_the_helper() {
         for (file, src) in [
+            ("main.rs", include_str!("main.rs")),
             ("layout.rs", include_str!("components/layout.rs")),
             (
                 "update_available_banner.rs",

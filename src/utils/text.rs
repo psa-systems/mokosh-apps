@@ -2,9 +2,9 @@
 //!
 //! `str::trim` is not enough. It removes characters where `char::is_whitespace`
 //! is true, and the characters that break a field while looking like nothing at
-//! all are Unicode format characters (general category `Cf`) plus the soft
-//! hyphen, none of which are whitespace. `char::is_control` does not help
-//! either: it is true only for `Cc`, so it answers `false` for U+200B and
+//! all are drawn from Unicode format characters (general category `Cf`) plus
+//! the soft hyphen, none of which are whitespace. `char::is_control` does not
+//! help either: it is true only for `Cc`, so it answers `false` for U+200B and
 //! U+FEFF. A value carrying one of those survives every check in the app and is
 //! then stored, so `Acme\u{200B}` and `Acme` become two records that look
 //! identical in every list, search box and picker.
@@ -12,11 +12,16 @@
 /// Characters that render as nothing, so a value carrying one is
 /// indistinguishable from a value without it.
 ///
-/// ZWJ (U+200D) and ZWNJ (U+200C) are deliberately absent: they are meaningful
-/// inside Persian, Arabic and Indic text and inside emoji sequences, so
-/// removing them from free text corrupts legitimate names. They are removed
-/// only by [`clean_strict`], for fields whose grammar (a phone number, a postal
-/// code, a UUID) admits no such character anywhere.
+/// This is a curated subset of `Cf`, not the full category: only the code
+/// points known to reach this app in practice are listed, so an unfamiliar
+/// `Cf` character (an Arabic number sign, a musical or tag format control)
+/// passes through un-stripped rather than being guessed at.
+///
+/// ZWJ (U+200D) and ZWNJ (U+200C) are deliberately absent even though they are
+/// `Cf`: they are meaningful inside Persian, Arabic and Indic text and inside
+/// emoji sequences, so removing them from free text corrupts legitimate names.
+/// They are removed only by [`clean_strict`], for fields whose grammar (a
+/// phone number, a postal code, a UUID) admits no such character anywhere.
 fn is_invisible(c: char) -> bool {
     matches!(c,
         '\u{00AD}'                  // soft hyphen
