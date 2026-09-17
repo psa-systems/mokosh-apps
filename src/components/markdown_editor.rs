@@ -627,21 +627,31 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                     // the delegated click listener and giving a shared component
                     // a second identity for one caller is how it starts serving
                     // a page.
-                    div {
-                        id: "{preview_box}",
-                        // PMS-949: `flex-1 min-h-0`, not `h-full`. The pane is a
-                        // flex column holding a label and this box, so `h-full`
-                        // asked for the whole pane and overshot it by the
-                        // label's height even once the pane itself was bounded.
-                        // It also measures as nothing during min-content sizing,
-                        // which is half of why the pane grew in the first place.
-                        class: "p-2 border border-line rounded flex-1 min-h-0 overflow-y-auto",
-                        crate::components::Markdown {
-                            // No floor of its own: the panel sets the height and
-                            // the row stretches both columns to it. Two competing
-                            // minimums is what made the tab swap shrink the
-                            // document (MAPPS-573).
-                            content: props.value.clone(),
+                    //
+                    // MAPPS-854: the box was built even while `body_pane_class`
+                    // hid it with `display: none`, so `Markdown` still ran a
+                    // full parse and sanitize pass on every keystroke with
+                    // nobody looking at the result. Gated behind the same
+                    // `shows_preview` check that picks the CSS class, so the
+                    // box - and the parse it triggers - only exists while the
+                    // preview is actually on screen.
+                    if showing.shows_preview() {
+                        div {
+                            id: "{preview_box}",
+                            // PMS-949: `flex-1 min-h-0`, not `h-full`. The pane is a
+                            // flex column holding a label and this box, so `h-full`
+                            // asked for the whole pane and overshot it by the
+                            // label's height even once the pane itself was bounded.
+                            // It also measures as nothing during min-content sizing,
+                            // which is half of why the pane grew in the first place.
+                            class: "p-2 border border-line rounded flex-1 min-h-0 overflow-y-auto",
+                            crate::components::Markdown {
+                                // No floor of its own: the panel sets the height and
+                                // the row stretches both columns to it. Two competing
+                                // minimums is what made the tab swap shrink the
+                                // document (MAPPS-573).
+                                content: props.value.clone(),
+                            }
                         }
                     }
                 }
@@ -1006,6 +1016,25 @@ mod view_switcher_tests {
         assert!(
             window.contains("crate::components::Markdown {"),
             "and the renderer sits inside it: {window}"
+        );
+    }
+
+    /// MAPPS-854: the preview box was built on every render, hidden only with
+    /// `display: none`, which still ran a full Markdown parse and sanitize
+    /// pass on each keystroke while nobody could see the result. The box's
+    /// construction has to sit behind the same `shows_preview` check that
+    /// picks the CSS class, so the parse only runs while the pane is actually
+    /// on screen.
+    #[test]
+    fn the_preview_box_is_not_built_while_hidden() {
+        let code = code_only();
+        let gate = code
+            .find("if showing.shows_preview() { div { id: \"{preview_box}\",")
+            .expect("the preview box's construction is gated on shows_preview");
+        let window = &code[gate..code.len().min(gate + 900)];
+        assert!(
+            window.contains("crate::components::Markdown {"),
+            "the renderer sits inside the gated block, not outside it: {window}"
         );
     }
 
