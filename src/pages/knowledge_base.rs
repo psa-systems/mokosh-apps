@@ -12,8 +12,10 @@
 //!
 //! A `client_specific` article carries a company scope (`company_ids`,
 //! PMS-341): the article form submits it, the edit form reads it back and
-//! resolves each id to a name through `GET /contacts/companies/{id}`, and the
-//! detail page and list badge show what an article is scoped to (MAPPS-515).
+//! resolves the ids to names through one `GET /contacts/companies` call
+//! (MAPPS-857 batched this; it used to be one `GET /contacts/companies/{id}`
+//! per scoped company), and the detail page and list badge show what an
+//! article is scoped to (MAPPS-515).
 //!
 //! Structure and conventions mirror `crate::pages::contacts`: every
 //! list/detail view reads `active_tenant_generation()` inside its
@@ -377,39 +379,49 @@ fn company_scope_clear_note(visibility: &str, companies: &[(String, String)]) ->
     )
 }
 
-/// One company name, the subset of the server's `CompanyResponse` the KB
+/// One company row, the subset of the server's `CompanyResponse` the KB
 /// pages read when resolving a `client_specific` article's scope (MAPPS-515).
 #[derive(Clone, Debug, serde::Deserialize)]
 struct CompanyNameRow {
+    id: uuid::Uuid,
     #[serde(default)]
     name: String,
 }
 
-/// MAPPS-515: resolve `company_ids` to `(id, name)` pairs, in the order the
-/// server returned them, through the same `GET /contacts/companies/{id}` call
-/// `ContextFilterBanner` makes.
+/// MAPPS-515/MAPPS-857: resolve `company_ids` to `(id, name)` pairs, in the
+/// order `ids` was given, from a single `GET /contacts/companies` call - the
+/// same "fetch the whole list, look up by id" pattern `ProjectsPage` and
+/// `AssetsPage` already use for their company filters. The server has no
+/// `id IN (...)`-shaped filter on this endpoint, so one unfiltered list call
+/// is the one-request answer; it also returns archived companies (no
+/// `status` filter is sent), matching what the old per-id `GET
+/// /contacts/companies/{id}` resolved.
 ///
-/// A lookup that fails keeps the id with an empty name (logged at `warn`, and
-/// the caller labels the row with the id and says the name is unavailable).
-/// Dropping the id instead would silently revoke that client's access to the
-/// article on the next save.
+/// A lookup that fails (the whole list call errors, or an id is not in the
+/// list) keeps the id with an empty name (logged at `warn`, and the caller
+/// labels the row with the id and says the name is unavailable). Dropping the
+/// id instead would silently revoke that client's access to the article on
+/// the next save.
 async fn resolve_company_names(ids: &[uuid::Uuid]) -> Vec<(String, String)> {
-    let mut rows = Vec::with_capacity(ids.len());
-    for id in ids {
-        let name = match crate::hooks::fetch::api::get_authed::<CompanyNameRow>(&format!(
-            "/contacts/companies/{id}"
-        ))
-        .await
-        {
-            Ok(row) => row.name,
-            Err(err) => {
-                tracing::warn!("company name lookup failed for {id}: {err}");
-                String::new()
-            }
-        };
-        rows.push((id.to_string(), name));
+    if ids.is_empty() {
+        return Vec::new();
     }
-    rows
+    let companies =
+        crate::hooks::fetch::api::get_all_authed::<CompanyNameRow>("/contacts/companies")
+            .await
+            .inspect_err(|err| tracing::warn!("company name lookup failed: {err}"))
+            .unwrap_or_default();
+    let by_id: std::collections::HashMap<uuid::Uuid, String> =
+        companies.into_iter().map(|c| (c.id, c.name)).collect();
+    ids.iter()
+        .map(|id| {
+            let name = by_id.get(id).cloned().unwrap_or_else(|| {
+                tracing::warn!("company name lookup missing for {id}");
+                String::new()
+            });
+            (id.to_string(), name)
+        })
+        .collect()
 }
 
 /// Truncate an ISO timestamp to its date portion for compact display.
@@ -4540,6 +4552,43 @@ mod tests {
         // Whitespace-only, comma-only, and control-character-only entries drop out.
         assert_eq!(sanitize_tags("  , \t , a , "), vec!["a".to_string()]);
         assert!(sanitize_tags("").is_empty());
+    }
+
+    /// MAPPS-857: `resolve_company_names` used to issue one `GET
+    /// /contacts/companies/{id}` per scoped company (N requests to render N
+    /// scope badges). A source scan, not a runtime request count: like the
+    /// `archive_scope_tests` module in `pages::contacts`, `use_resource` only
+    /// runs under the `app` feature, so no host test can observe the actual
+    /// HTTP calls a render makes. What is pinned instead is the shape of the
+    /// function: exactly one network call, not one per loop iteration over
+    /// `ids`, and that call is the batched list endpoint.
+    #[test]
+    fn resolve_company_names_issues_one_batched_request_not_one_per_id() {
+        let src = include_str!("knowledge_base.rs");
+        let body = src
+            .split("async fn resolve_company_names")
+            .nth(1)
+            .expect("resolve_company_names not found")
+            .split_once("\n}\n")
+            .expect("function body not closed")
+            .0;
+        let network_calls = body.matches("fetch::api::get").count();
+        assert_eq!(
+            network_calls, 1,
+            "resolve_company_names must issue exactly one network call \
+             regardless of how many company ids are resolved (a 5+ company \
+             article must cost one request, not five); found {network_calls} \
+             call(s) in:\n{body}"
+        );
+        assert!(
+            body.contains("get_all_authed"),
+            "resolve_company_names must fetch companies through one batched \
+             list call (get_all_authed), not a per-id GET"
+        );
+        assert!(
+            !body.contains("/contacts/companies/{id}") && !body.contains("/contacts/companies/{"),
+            "resolve_company_names must not build a per-id company URL"
+        );
     }
 
     // MAPPS-515: the company-scope rules.
