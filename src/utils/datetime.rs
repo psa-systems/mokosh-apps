@@ -80,8 +80,12 @@ pub fn format_user_datetime(dt: DateTime<Utc>, format: Option<&str>) -> String {
 
 /// Pure core of [`format_user_datetime`]: render `dt` in an explicit
 /// `tz`. Split out so it can be unit-tested without a live Dioxus
-/// context (the public wrapper reads the timezone off the AuthContext).
-fn format_user_datetime_in(dt: DateTime<Utc>, format: Option<&str>, tz: Tz) -> String {
+/// context (the public wrapper reads the timezone off the AuthContext),
+/// and so a caller rendering many timestamps in one render pass (a
+/// table of rows, a set of format-preview tokens) can resolve
+/// [`user_timezone`] once and reuse it instead of re-deriving it per
+/// timestamp (MAPPS-859).
+pub(crate) fn format_user_datetime_in(dt: DateTime<Utc>, format: Option<&str>, tz: Tz) -> String {
     let local = dt.with_timezone(&tz);
     match format {
         Some(fmt) if !fmt.trim().is_empty() => render_format(local, fmt),
