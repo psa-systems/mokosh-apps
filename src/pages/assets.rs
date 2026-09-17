@@ -166,12 +166,8 @@ enum AuditPanelState {
 }
 
 /// User option for resolving audit actor ids to display names (`/auth/users`).
-#[derive(Clone, Debug, Deserialize)]
-struct UserOpt {
-    id: uuid::Uuid,
-    #[serde(default)]
-    full_name: String,
-}
+/// MAPPS-860: the shared roster row, not a page-local fetch shape.
+type UserOpt = crate::hooks::UserRow;
 
 /// PMS-344: shallow ticket row for the "Related Tickets" section on the
 /// asset detail page. Hits `GET /tickets?asset_id=<id>` and renders the
@@ -1392,13 +1388,8 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                 .map(|p| p.data),
         )
     });
-    let users_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::list_or_empty(
-            "asset user option",
-            crate::hooks::fetch::api::get_all_authed::<UserOpt>("/auth/users").await,
-        )
-    });
+    // MAPPS-860: shared roster cache, not a per-page fetch.
+    let users_resource = crate::hooks::use_user_roster(true);
 
     // On-demand audited reveals, keyed by item id.
     let revealed_creds = use_signal(HashMap::<uuid::Uuid, RevealedCred>::new);

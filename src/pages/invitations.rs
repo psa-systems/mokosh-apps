@@ -270,10 +270,12 @@ pub fn InvitationsPage() -> Element {
 
     // MAPPS-482: what the invite form already holds. The accept link and the
     // expiry are the server's to fill at send time.
-    let preview_context = serde_json::json!({
-        "recipient_email": email.read().trim(),
-        "role": role.read().clone(),
-    });
+    let preview_context = move || {
+        serde_json::json!({
+            "recipient_email": email.read().trim(),
+            "role": role.read().clone(),
+        })
+    };
 
     rsx! {
         PageHeader {

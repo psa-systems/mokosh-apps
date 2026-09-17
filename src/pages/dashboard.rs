@@ -667,36 +667,6 @@ fn StaffDashboardBody() -> Element {
 // MAPPS-256: full-screen, team-scoped wall-monitor "TV view".
 // ============================================================================
 
-/// Minimal user row from `GET /api/v1/auth/users`, used to resolve an
-/// appointment's `assigned_to_id` to a technician name on the board. The
-/// endpoint is server-gated to Admin / Manager; lower roles get an empty
-/// list and the board falls back to a short id.
-#[derive(Clone, Debug, Default, Deserialize)]
-struct TvUser {
-    id: uuid::Uuid,
-    #[serde(default)]
-    full_name: String,
-    #[serde(default)]
-    first_name: String,
-    #[serde(default)]
-    last_name: String,
-}
-
-impl TvUser {
-    fn display_name(&self) -> String {
-        if !self.full_name.trim().is_empty() {
-            return self.full_name.clone();
-        }
-        let joined = format!("{} {}", self.first_name, self.last_name);
-        let joined = joined.trim();
-        if joined.is_empty() {
-            "Unknown".to_string()
-        } else {
-            joined.to_string()
-        }
-    }
-}
-
 /// Empty dispatch payload used as the loading / error fallback so the
 /// board renders an empty table rather than blanking out.
 fn empty_dispatch() -> DispatchResponse {
@@ -835,26 +805,11 @@ pub fn DashboardTvPage() -> Element {
         }
     });
 
-    // Technician names. Gated to Admin / Manager server-side; an empty
-    // list just falls the board back to short ids.
-    let users_resource = use_resource(move || async move {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        let _tick = tick();
-        #[cfg(feature = "app")]
-        {
-            crate::hooks::fetch::api::get_all_authed::<TvUser>("/auth/users")
-                .await
-                .unwrap_or_else(|e| {
-                    // Best-effort: the board falls back to short ids.
-                    tracing::warn!("technician-name load failed: {e}");
-                    Vec::new()
-                })
-        }
-        #[cfg(not(feature = "app"))]
-        {
-            Vec::<TvUser>::new()
-        }
-    });
+    // Technician names. Gated to Admin / Manager server-side (the roster
+    // cache attempts the fetch regardless; a non-privileged viewer just gets
+    // an empty cached roster back). MAPPS-860: shared roster cache, not a
+    // per-page fetch re-run on every kiosk auto-refresh tick.
+    let users_resource = crate::hooks::use_user_roster(true);
 
     let tickets = tickets_resource
         .read_unchecked()
@@ -867,8 +822,15 @@ pub fn DashboardTvPage() -> Element {
         .unwrap_or_else(empty_dispatch);
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
 
-    let users_map: std::collections::HashMap<uuid::Uuid, String> =
-        users.iter().map(|u| (u.id, u.display_name())).collect();
+    let users_map: std::collections::HashMap<uuid::Uuid, String> = users
+        .iter()
+        .map(|u| {
+            (
+                u.id,
+                u.display_name().unwrap_or_else(|| "Unknown".to_string()),
+            )
+        })
+        .collect();
 
     let open_tickets: i64 = report.open_by_priority.iter().map(|b| b.count).sum();
     let scope_label = if team.is_empty() {

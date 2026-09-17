@@ -104,9 +104,12 @@ pub fn EmailPreview(
     /// The notification event type the send dispatches, e.g.
     /// `forms.request_link`.
     event_type: String,
-    /// The context this form already holds. Anything it cannot supply comes
-    /// back in `unresolved` and is shown as filled in when sent.
-    context: serde_json::Value,
+    /// Builds the context this form already holds, called once when the
+    /// preview opens rather than on every render, so a page that reads a
+    /// signal here (e.g. the composed body) does not rebuild the request on
+    /// every keystroke. Anything it cannot supply comes back in `unresolved`
+    /// and is shown as filled in when sent.
+    context: Callback<(), serde_json::Value>,
     /// Optional extra sentence under the empty-response line, for a trigger
     /// whose message does not come from a notification rule at all.
     #[props(default)]
@@ -121,17 +124,17 @@ pub fn EmailPreview(
     let mut error = use_signal(String::new);
     let mut entries = use_signal(Vec::<EmailPreviewEntry>::new);
 
-    let request = serde_json::json!({ "event_type": event_type, "context": context });
     let is_builtin = builtin.is_some();
 
     let on_open = move |_| {
-        let request = request.clone();
         open.set(true);
         error.set(String::new());
         entries.set(Vec::new());
         if is_builtin {
             return;
         }
+        let request =
+            serde_json::json!({ "event_type": event_type.clone(), "context": context.call(()) });
         loading.set(true);
         spawn(async move {
             match crate::hooks::fetch::api::post_authed_typed::<Vec<EmailPreviewEntry>, _>(

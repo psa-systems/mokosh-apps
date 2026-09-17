@@ -67,21 +67,7 @@ struct UpdateTeamBody {
     is_active: Option<bool>,
 }
 
-/// Minimal user projection for the manager picker, from `GET /auth/users`
-/// (mirror of the fields `mokosh_types::auth::User` actually serializes;
-/// see `RemoteTeamMember` above for the same first/last name shape).
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-struct UserPickerRow {
-    id: uuid::Uuid,
-    #[serde(default)]
-    first_name: String,
-    #[serde(default)]
-    last_name: String,
-    #[serde(default)]
-    email: String,
-}
-
-fn manager_options(users: &[UserPickerRow]) -> Vec<SelectOption> {
+fn manager_options(users: &[crate::hooks::UserRow]) -> Vec<SelectOption> {
     let mut options: Vec<SelectOption> = vec![SelectOption::new("", "No manager")];
     options.extend(users.iter().map(|u| {
         let name = format!("{} {}", u.first_name, u.last_name);
@@ -319,22 +305,10 @@ fn CreateTeamModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Elem
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
 
-    let users_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        #[cfg(feature = "app")]
-        {
-            crate::hooks::fetch::list_or_empty(
-                "team manager picker option",
-                crate::hooks::fetch::api::get_all_authed::<UserPickerRow>("/auth/users").await,
-            )
-        }
-        #[cfg(not(feature = "app"))]
-        {
-            Vec::<UserPickerRow>::new()
-        }
-    });
+    // MAPPS-860: shared roster cache, not a per-modal fetch.
+    let users_resource = crate::hooks::use_user_roster(true);
     let users_snap = users_resource.read_unchecked();
-    let users: Vec<UserPickerRow> = users_snap.clone().unwrap_or_default();
+    let users: Vec<crate::hooks::UserRow> = users_snap.clone().unwrap_or_default();
     let manager_select_options = manager_options(&users);
 
     let submit = move |_| {
@@ -469,22 +443,10 @@ fn EditTeamModal(
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
 
-    let users_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        #[cfg(feature = "app")]
-        {
-            crate::hooks::fetch::list_or_empty(
-                "team manager picker option",
-                crate::hooks::fetch::api::get_all_authed::<UserPickerRow>("/auth/users").await,
-            )
-        }
-        #[cfg(not(feature = "app"))]
-        {
-            Vec::<UserPickerRow>::new()
-        }
-    });
+    // MAPPS-860: shared roster cache, not a per-modal fetch.
+    let users_resource = crate::hooks::use_user_roster(true);
     let users_snap = users_resource.read_unchecked();
-    let users: Vec<UserPickerRow> = users_snap.clone().unwrap_or_default();
+    let users: Vec<crate::hooks::UserRow> = users_snap.clone().unwrap_or_default();
     let manager_select_options = manager_options(&users);
 
     let submit = move |_| {
@@ -858,11 +820,12 @@ mod tests {
     #[test]
     fn manager_options_lists_no_manager_first_then_users() {
         let uid: uuid::Uuid = "33333333-3333-3333-3333-333333333333".parse().unwrap();
-        let users = vec![UserPickerRow {
+        let users = vec![crate::hooks::UserRow {
             id: uid,
             first_name: "Ada".to_string(),
             last_name: "Lovelace".to_string(),
             email: "ada@example.com".to_string(),
+            ..Default::default()
         }];
         let options = manager_options(&users);
         assert_eq!(options[0].value, "");
