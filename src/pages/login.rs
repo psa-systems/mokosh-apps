@@ -578,11 +578,6 @@ pub fn StandaloneLogin() -> Element {
                     Err(ApiError::Status { code: 401, .. }) => {
                         error.set("Invalid email or password.".to_string());
                     }
-                    Err(ApiError::Status { code: 429, .. }) => {
-                        error.set(
-                            "Too many attempts. Please wait a moment and try again.".to_string(),
-                        );
-                    }
                     Err(e) => error.set(e.user_message()),
                 }
             }

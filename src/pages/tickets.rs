@@ -2849,11 +2849,13 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // invoice/contract/company detail pages.
     // MAPPS-594: `read_unchecked`, deliberately, and NOT because it is best.
     //
-    // It skips the reactive subscription, so `restart()` refetches the ticket
-    // and this component does not re-render from the result: after a save the
-    // page shows the OLD description until a reload. That is a real defect and
-    // it is not fixed here, because both obvious fixes are worse and were
-    // measured to be, in a browser against a real server:
+    // MAPPS-834: despite the name, `read_unchecked` DOES subscribe the
+    // current reactive scope, the same as `read` (dioxus-signals 0.7.7:
+    // `Readable::read_unchecked` at `src/read.rs:96` subscribes; only `peek`
+    // does not). So `restart()` refetching the ticket does re-render this
+    // component from the result. `read_unchecked` is kept over the two
+    // alternatives below, which were measured to be worse in a browser
+    // against a real server:
     //
     //   * `read()` suspends while the fetch is in flight, which aborts this
     //     render part-way through its hook list. The next render then panics in
@@ -2863,9 +2865,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     //     stopped the Edit button opening the editor.
     //
     // `read_unchecked` on a resource is the pattern this whole codebase uses
-    // (13 reads in contracts.rs, 13 in assets.rs, and so on), so the staleness
-    // is app-wide rather than this page's, and picking at it inside a UX ticket
-    // is how a layout change takes a detail page down. Filed separately.
+    // (13 reads in contracts.rs, 13 in assets.rs, and so on).
     let ticket_snapshot = ticket_resource.read_unchecked().clone();
     let ticket_fetch_failed = matches!(ticket_snapshot, Some(None));
     let ticket = ticket_snapshot.flatten();

@@ -446,13 +446,18 @@ fn confirmation_gates_render(
 ///   [`crate::hooks::fetch::api::renew_access_token`], the same single flight
 ///   the request path uses (MAPPS-435), so a confirmation that coincides with
 ///   a page fetch shares one flight instead of racing it into the OP's
-///   refresh-token reuse detection.
+///   refresh-token reuse detection. [`refresh_user_from_me`] runs right after
+///   that renewal resolves, tied to the renewal this call just performed or
+///   joined (MAPPS-841): [`use_current_user_loader`]'s own `/me` fetch fires
+///   at mount off `is_authenticated`, not off this renewal, so it can land
+///   before the rotation does and reconcile the cache against the session as
+///   it stood before the renewal that was actually confirmed here - which is
+///   the "wrong renewal" case this closes, not a redundant round-trip.
 /// - Access token still comfortably valid: the shell renders, and the answer
 ///   comes from the `GET /api/v1/auth/me` that [`use_current_user_loader`]
 ///   already fires on this same mount. [`refresh_user_from_me`] records the
-///   outcome, and a 401 there ends the session through the fetch layer. Asking
-///   again from here would spend a second round-trip on an answer already in
-///   flight.
+///   outcome, and a 401 there ends the session through the fetch layer. No
+///   renewal ran here to tie a second reconcile to.
 async fn confirm_restored_session(auth: &mut Signal<AuthContext>) {
     if auth.peek().confirmation != SessionConfirmation::Unconfirmed {
         return;
@@ -481,6 +486,10 @@ async fn confirm_restored_session(auth: &mut Signal<AuthContext>) {
                 mirror_rotated_bundle(auth);
             }
             mark_session_confirmed(auth);
+            // MAPPS-841: reconcile the cache against the renewal that just
+            // ran, rather than leaving it to whichever `/me` fetch happens to
+            // land next.
+            refresh_user_from_me(auth).await;
         }
         Err(e) if renewal_is_unrecoverable(&e) => {
             if standalone {
@@ -1029,6 +1038,78 @@ fn redirect_to_login() {
     }
 }
 
+/// Body of `GET /api/v1/auth/me`, the authoritative reconcile point for the
+/// cached [`CurrentUser`]. Named at module scope (rather than nested inside
+/// [`refresh_user_from_me`]) so [`apply_me_response`] can be exercised
+/// directly by a test with no network layer underneath it.
+#[derive(serde::Deserialize)]
+struct MeBody {
+    id: String,
+    email: String,
+    first_name: Option<String>,
+    last_name: Option<String>,
+    timezone: String,
+    avatar_url: Option<String>,
+    role: String,
+    // `false` until the user confirms first + last name via the
+    // onboarding screen. Default `true` for backwards-compat with
+    // older server builds.
+    #[serde(default = "default_true_me")]
+    profile_completed: bool,
+    #[serde(default)]
+    date_format_string: Option<String>,
+    // PMS-413: the tenant's own-company id, used to attribute a
+    // General / overhead time entry. `None` on a pre-backfill tenant.
+    #[serde(default)]
+    own_company_id: Option<uuid::Uuid>,
+    // PMS-791 / MAPPS-462: owning tenant's `kind` column
+    // ("org" | "personal"). Empty string on older server responses
+    // that predate the field; AuthState::is_org_tenant() treats
+    // empty as org (fail-open UI).
+    #[serde(default)]
+    tenant_kind: String,
+}
+
+fn default_true_me() -> bool {
+    true
+}
+
+/// Reconcile `user` against a `/api/v1/auth/me` response: MAPPS-841's fix
+/// point. Pulled out of [`refresh_user_from_me`] as a pure function so the
+/// reconcile itself - the part that must match the renewal that actually
+/// produced `me`, not some other one - is testable without a network layer.
+///
+/// The role is sourced from the API on purpose. The OIDC id_token cannot be
+/// trusted for the *mokosh* role: bunyip mints its own `bunyip_role`
+/// (`subscriber` / `admin`), and the mapping to a mokosh role (`admin` ->
+/// `super_admin`, etc.) is applied server-side (PMS-172). `/api/v1/auth/me`
+/// returns the already-translated role, so it is the single source of truth
+/// here. An unrecognized value is handled explicitly (warn + keep the current
+/// role) rather than silently coerced to the Technician default (PMS-158).
+fn apply_me_response(user: &mut CurrentUser, me: MeBody) {
+    if let Ok(id) = me.id.parse::<uuid::Uuid>() {
+        user.id = id;
+    }
+    user.email = me.email;
+    user.first_name = me.first_name.unwrap_or_default();
+    user.last_name = me.last_name.unwrap_or_default();
+    user.timezone = me.timezone;
+    user.avatar_url = me.avatar_url;
+    match crate::modules::auth::UserRole::from_str(&me.role) {
+        Some(role) => user.role = role,
+        None => tracing::warn!(
+            "unrecognized role {:?} from /api/v1/auth/me; keeping cached role",
+            me.role
+        ),
+    }
+    user.profile_completed = me.profile_completed;
+    user.date_format_string = me.date_format_string;
+    user.own_company_id = me.own_company_id;
+    // PMS-791 / MAPPS-462: reconcile tenant_kind from /me so Teams nav
+    // visibility flips off within a tick on personal tenants.
+    user.tenant_kind = me.tenant_kind;
+}
+
 /// Pull the authoritative current user from mokosh-server
 /// `GET /api/v1/auth/me` and merge fresh fields onto `auth.user`.
 ///
@@ -1042,36 +1123,6 @@ fn redirect_to_login() {
 ///
 /// Best-effort: on error we leave the cached user as-is.
 async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
-    #[derive(serde::Deserialize)]
-    struct MeBody {
-        id: String,
-        email: String,
-        first_name: Option<String>,
-        last_name: Option<String>,
-        timezone: String,
-        avatar_url: Option<String>,
-        role: String,
-        // `false` until the user confirms first + last name via the
-        // onboarding screen. Default `true` for backwards-compat with
-        // older server builds.
-        #[serde(default = "default_true_me")]
-        profile_completed: bool,
-        #[serde(default)]
-        date_format_string: Option<String>,
-        // PMS-413: the tenant's own-company id, used to attribute a
-        // General / overhead time entry. `None` on a pre-backfill tenant.
-        #[serde(default)]
-        own_company_id: Option<uuid::Uuid>,
-        // PMS-791 / MAPPS-462: owning tenant's `kind` column
-        // ("org" | "personal"). Empty string on older server responses
-        // that predate the field; AuthState::is_org_tenant() treats
-        // empty as org (fail-open UI).
-        #[serde(default)]
-        tenant_kind: String,
-    }
-    fn default_true_me() -> bool {
-        true
-    }
     let me = match crate::hooks::fetch::api::get_authed_typed::<MeBody>("/auth/me").await {
         Ok(m) => m,
         // MAPPS-368: a 401 with no refreshable token is an expired standalone
@@ -1108,38 +1159,9 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
             return;
         }
     };
-    // Parse via UserRole::from_str. An unrecognized value is handled
-    // explicitly (warn + keep the current role) rather than silently
-    // coerced to the Technician default (PMS-158).
-    let new_role = match crate::modules::auth::UserRole::from_str(&me.role) {
-        Some(r) => Some(r),
-        None => {
-            tracing::warn!(
-                "unrecognized role {:?} from /api/v1/auth/me; keeping cached role",
-                me.role
-            );
-            None
-        }
-    };
     let mut a = auth.write();
     if let Some(u) = a.user.as_mut() {
-        if let Ok(id) = me.id.parse::<uuid::Uuid>() {
-            u.id = id;
-        }
-        u.email = me.email;
-        u.first_name = me.first_name.unwrap_or_default();
-        u.last_name = me.last_name.unwrap_or_default();
-        u.timezone = me.timezone;
-        u.avatar_url = me.avatar_url;
-        if let Some(role) = new_role {
-            u.role = role;
-        }
-        u.profile_completed = me.profile_completed;
-        u.date_format_string = me.date_format_string;
-        u.own_company_id = me.own_company_id;
-        // PMS-791 / MAPPS-462: reconcile tenant_kind from /me so Teams
-        // nav visibility flips off within a tick on personal tenants.
-        u.tenant_kind = me.tenant_kind;
+        apply_me_response(u, me);
     }
     // MAPPS-317: flip the gate so AuthGuard's onboarding-redirect
     // check now trusts profile_completed. Must run AFTER the user
@@ -1562,6 +1584,97 @@ mod tests {
             // default the auth models use.
             tenant_kind: String::new(),
         }
+    }
+
+    /// MAPPS-841: build the `/api/v1/auth/me` body a renewal cycle's follow-up
+    /// fetch actually returns, so the reconcile step can be exercised against
+    /// it directly rather than against whatever the cached user happened to
+    /// hold before.
+    fn a_renewal_response() -> super::MeBody {
+        super::MeBody {
+            id: uuid::Uuid::from_u128(0xf00d).to_string(),
+            email: "renewed@example.com".to_string(),
+            first_name: Some("Renewed".to_string()),
+            last_name: Some("User".to_string()),
+            timezone: "America/Chicago".to_string(),
+            avatar_url: Some("https://example.com/avatar.png".to_string()),
+            role: "admin".to_string(),
+            profile_completed: true,
+            date_format_string: Some("YYYY-MM-DD".to_string()),
+            own_company_id: Some(uuid::Uuid::from_u128(0xc0ffee)),
+            tenant_kind: "org".to_string(),
+        }
+    }
+
+    /// MAPPS-841: the reconcile a renewal cycle drives must land the data
+    /// from the renewal's own `/me` response onto the cached user, not leave
+    /// it holding whatever an unrelated renewal (or none at all) left behind.
+    #[test]
+    fn a_renewal_cycle_reconciles_the_cached_user_to_match_its_own_response() {
+        let mut user = a_user();
+        // Starts on the Technician default, with none of the response's
+        // fields, so the assertions below cannot pass on a no-op merge.
+        assert_eq!(user.role, crate::modules::auth::UserRole::default());
+
+        let response = a_renewal_response();
+        super::apply_me_response(&mut user, a_renewal_response());
+
+        assert_eq!(user.email, response.email);
+        assert_eq!(user.first_name, response.first_name.unwrap());
+        assert_eq!(user.last_name, response.last_name.unwrap());
+        assert_eq!(user.timezone, response.timezone);
+        assert_eq!(user.avatar_url, response.avatar_url);
+        assert_eq!(user.role, crate::modules::auth::UserRole::Admin);
+        assert_eq!(user.profile_completed, response.profile_completed);
+        assert_eq!(user.date_format_string, response.date_format_string);
+        assert_eq!(user.own_company_id, response.own_company_id);
+        assert_eq!(user.tenant_kind, response.tenant_kind);
+    }
+
+    /// MAPPS-841 recurrence guard. An unrecognized role in the response means
+    /// the response was not what it claimed (PMS-158's contract on
+    /// `/api/v1/auth/me`), so the fix for reconciling against the actual
+    /// renewal must not regress into trusting it anyway.
+    #[test]
+    fn an_unrecognized_role_in_the_response_keeps_the_cached_role() {
+        let mut user = a_user();
+        user.role = crate::modules::auth::UserRole::Admin;
+        let mut response = a_renewal_response();
+        response.role = "not_a_real_role".to_string();
+        super::apply_me_response(&mut user, response);
+        assert_eq!(user.role, crate::modules::auth::UserRole::Admin);
+    }
+
+    /// MAPPS-841 recurrence guard. [`confirm_restored_session`] is the
+    /// renewal that runs for a restored tab with a spent token, so the cache
+    /// reconcile has to be tied to ITS renewal call directly rather than left
+    /// to `use_current_user_loader`'s independently-triggered `/me` fetch,
+    /// which fires off `is_authenticated` and can land before or after this
+    /// renewal resolves and reconcile the cache against the wrong one. A
+    /// source scan because the function needs a browser to actually run.
+    #[test]
+    fn the_mount_confirmation_reconciles_the_cache_against_its_own_renewal() {
+        let src = production_src();
+        let confirmation = src
+            .split_once("async fn confirm_restored_session")
+            .map(|(_, after)| after)
+            .expect("this file owns the mount confirmation");
+        let renewal_ok = confirmation
+            .split_once("Ok(()) => {")
+            .map(|(_, after)| after)
+            .expect("the renewal's success arm");
+        // Scoped to the success arm only, cut off at the next match arm, so
+        // this does not just match the call further down in the same
+        // function's error handling.
+        let renewal_ok = renewal_ok
+            .split_once("Err(e) if renewal_is_unrecoverable")
+            .map(|(before, _)| before)
+            .unwrap_or(renewal_ok);
+        assert!(
+            renewal_ok.contains("refresh_user_from_me(auth).await"),
+            "a successful renewal here must reconcile the cache with its own \
+             /me fetch, not leave it to whichever one happens to land next"
+        );
     }
 
     /// MAPPS-661 recurrence guard, in the shape of the MAPPS-435 and MAPPS-522

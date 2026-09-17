@@ -46,7 +46,7 @@ non-empty are emitted. Restart the container to pick up a change.
 | --- | --- |
 | `MOKOSH_API_BASE` | API base URL the SPA calls, for example `https://api.example.com/api/v1`. The mokosh-server instance it names must allow this SPA's origin through its `CORS_ORIGIN`. |
 | `MOKOSH_OIDC_ISSUER` | OIDC issuer the SPA authenticates against, usually the same host as the API. |
-| `MOKOSH_OIDC_CLIENT_ID` | The OAuth public-client id registered with mokosh-server. |
+| `MOKOSH_OIDC_CLIENT_ID` | The OAuth public-client id registered with mokosh-server. Unset (alongside `MOKOSH_OIDC_ISSUER`) falls back to standalone username/password sign-in instead of an OIDC redirect with a client id the OP has never registered. |
 | `MOKOSH_OIDC_REDIRECT_URI` | Overrides the OIDC redirect URI. Optional: unset, the SPA derives `<origin>/auth/callback` itself. Set this for a deployment served from a non-default origin (for example behind a path prefix) that the derived value would not match. |
 | `MOKOSH_OIDC_SCOPES` | Requested scope string for `/oauth2/authorize`. Defaults to the compile-time `openid email offline_access`; set it to add a scope without rebuilding the image. |
 | `MOKOSH_HUB_BASE_URL` | Origin of the Bunyip hub, for legacy login bookmarks. Optional. |

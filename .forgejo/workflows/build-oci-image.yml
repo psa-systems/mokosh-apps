@@ -211,6 +211,19 @@ jobs:
               .
           )
 
+      # MAPPS-827: the link-preview contract's only automated check
+      # (scripts/check-link-preview.sh, documented as the verification for
+      # the whole contract in docs/deployment-branding.md) had never run
+      # outside a developer typing `just check-link-preview`. It needs
+      # docker, which `just check` does not have, so this is the workflow
+      # that builds the image and already has it. --self-test first, so a
+      # guard that has stopped guarding fails loudly rather than reporting
+      # clean.
+      - name: Link-preview guard
+        run: |
+          bash scripts/check-link-preview.sh --self-test
+          bash scripts/check-link-preview.sh
+
       - name: Mirror image to public registry
         # MAPPS-421: a branch tag is a staging-only artifact, so it is never
         # mirrored. The public owner carries main and release tags only.

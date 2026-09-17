@@ -86,14 +86,24 @@ async fn revoke_provider_refresh_token() {
 /// signed in to the SPA because revocation failed is worse than a stale
 /// session elsewhere.
 ///
-/// The local clear happens last, after both revokes have read what they need,
-/// and the hard navigation (rather than a router push) is what resets the
-/// in-memory auth state: writing to the auth signal first would re-render into
-/// the route guard, which pushes `/login` and races the redirect.
+/// The local clear happens last, after both revokes have read what they need.
+/// On browser this is belt-and-suspenders: the hard navigation already resets
+/// the in-memory auth state. On desktop [`crate::platform::location::replace`]
+/// hands the URL to the OS and returns without navigating the window, so
+/// without an explicit clear here the window would keep rendering the
+/// signed-in app on a bearer token the server has just revoked (MAPPS-815).
+/// `set_access_token(None)` drops the token immediately; `note_session_ended`
+/// raises the same flag a 401-driven sign-out uses, which the app-root watcher
+/// ([`crate::hooks::auth::use_session_end_watch`]) picks up to clear
+/// `AuthContext`.
 pub async fn sign_out() {
     revoke_mokosh_session().await;
     revoke_provider_refresh_token().await;
     storage::clear_auth();
+    #[cfg(feature = "app")]
+    crate::hooks::fetch::api::set_access_token(None);
+    #[cfg(all(feature = "app", not(target_arch = "wasm32")))]
+    crate::hooks::fetch::note_session_ended();
     crate::platform::location::replace(&logout_redirect_url());
 }
 
@@ -148,10 +158,18 @@ async fn revoke_portal_session() {
 ///
 /// Same failure posture as [`sign_out`]: a failed revoke is logged and does
 /// not block the exit.
+///
+/// Also raises `note_session_ended` for the same desktop reason as
+/// [`sign_out`]: an agent who opened `/portal/login` and signed in as a
+/// contact holds both a portal token and an agent bearer in the one window,
+/// so clearing `AuthContext` here too is what leaves that window fully signed
+/// out rather than still rendering the agent's app underneath.
 pub async fn sign_out_portal() {
     revoke_portal_session().await;
     #[cfg(feature = "app")]
     crate::hooks::fetch::api::set_portal_access_token(None);
+    #[cfg(all(feature = "app", not(target_arch = "wasm32")))]
+    crate::hooks::fetch::note_session_ended();
     crate::platform::location::replace(&portal_login_url());
 }
 

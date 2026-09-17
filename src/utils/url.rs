@@ -172,14 +172,20 @@ fn decode_component(s: &str) -> String {
                 i += 1;
             }
             b'%' if i + 2 < bytes.len() => {
-                match u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                    Ok(byte) => {
-                        out.push(byte);
+                // Read the two escape digits as bytes, not via `&s[..]`: that
+                // slices the `&str` and panics if the offsets don't land on a
+                // char boundary, which they won't when `%` sits next to a
+                // multi-byte UTF-8 character.
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                match (hi, lo) {
+                    (Some(hi), Some(lo)) => {
+                        out.push((hi * 16 + lo) as u8);
                         i += 3;
                     }
                     // Not a valid escape: pass the `%` through as a
                     // literal, which is what browsers do.
-                    Err(_) => {
+                    _ => {
                         out.push(b'%');
                         i += 1;
                     }
@@ -237,6 +243,16 @@ mod tests {
     fn encode_uri_component_percent_encodes_utf8_bytes() {
         // encodeURIComponent("é") === "%C3%A9"
         assert_eq!(encode_uri_component("\u{e9}"), "%C3%A9");
+    }
+
+    #[test]
+    fn decode_component_does_not_panic_next_to_a_multibyte_character() {
+        // "é%41" - the `%` escape sits immediately after a 2-byte UTF-8
+        // character, so the naive `&s[i + 1..i + 3]` slice lands mid-character
+        // and panics. Byte-oriented decoding must not care about that.
+        assert_eq!(decode_component("\u{e9}%41"), "\u{e9}A");
+        // Same shape with a lone `%` that has no valid hex digits after it.
+        assert_eq!(decode_component("\u{e9}%"), "\u{e9}%");
     }
 
     #[test]

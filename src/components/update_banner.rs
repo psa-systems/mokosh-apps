@@ -114,8 +114,8 @@ pub fn UpdateBanner() -> Element {
     // `Reserving` row, so the transition never runs.
     //
     // Resolution order: cached -> live resource -> Reserving.
-    // `read()` (not `read_unchecked()`) so the component re-renders when
-    // either signal transitions.
+    // `read()` here for its checked lifetime; `read_unchecked()` would
+    // subscribe identically (MAPPS-834), so this is not a reactivity choice.
     enum BannerState {
         /// Version check in flight: reserve height, paint nothing.
         Reserving,
