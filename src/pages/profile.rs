@@ -1232,6 +1232,9 @@ fn CustomFormatBuilder(value: Signal<String>, open: Signal<bool>) -> Element {
 fn TokenGroupRow(group: &'static TokenGroup, draft: Signal<String>) -> Element {
     let mut draft = draft;
     let preview_now = chrono::Utc::now();
+    // MAPPS-859: resolve once for the whole row of token previews, not
+    // once per token.
+    let tz = crate::utils::datetime::user_timezone();
     rsx! {
         div { class: "flex items-start gap-3 py-1",
             div { class: "w-20 shrink-0 text-xs text-muted pt-1.5",
@@ -1247,7 +1250,7 @@ fn TokenGroupRow(group: &'static TokenGroup, draft: Signal<String>) -> Element {
                             // tokenizer would just pass them through.
                             if token == " " { "\u{2423}".to_string() } else { token.to_string() }
                         } else {
-                            format_user_datetime(preview_now, Some(token))
+                            crate::utils::datetime::format_user_datetime_in(preview_now, Some(token), tz)
                         };
                         rsx! {
                             button {

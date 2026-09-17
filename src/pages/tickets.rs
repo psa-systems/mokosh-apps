@@ -249,18 +249,9 @@ struct RemoteTicketLookup {
     name: String,
 }
 
-/// MAPPS-296: minimal user-row shape for the New Ticket assignee
-/// dropdown. The server's user list lives at `/auth/users`. `full_name`
-/// is the precomputed `first last` projection; we fall back to `email`
-/// when it is empty.
-#[derive(Clone, Debug, Deserialize)]
-struct RemoteUserLookup {
-    id: uuid::Uuid,
-    #[serde(default)]
-    full_name: String,
-    #[serde(default)]
-    email: String,
-}
+/// User option for resolving history actor ids to names (`/auth/users`).
+/// MAPPS-860: the shared roster row, not a page-local fetch shape.
+type UserOpt = crate::hooks::UserRow;
 
 /// A ticket note (`GET /tickets/:id/notes`), rendered as a journal entry.
 #[derive(Clone, Debug, Deserialize)]
@@ -502,14 +493,6 @@ struct FieldChange {
     old: Option<serde_json::Value>,
     #[serde(default)]
     new: Option<serde_json::Value>,
-}
-
-/// User option for resolving history actor ids to names (`/auth/users`).
-#[derive(Clone, Debug, Deserialize)]
-struct UserOpt {
-    id: uuid::Uuid,
-    #[serde(default)]
-    full_name: String,
 }
 
 /// A time entry (`GET /time-entries?ticket_id=:id`), summed into Time Logged.
@@ -1939,15 +1922,8 @@ pub fn TicketNewPage() -> Element {
                 Vec::new()
             })
     });
-    let users_resource = use_resource(|| async move {
-        crate::hooks::fetch::api::get_all_authed::<RemoteUserLookup>("/auth/users")
-            .await
-            .unwrap_or_else(|e| {
-                // Best-effort: the assignee picker stays empty.
-                tracing::warn!("assignee lookup failed: {e}");
-                Vec::new()
-            })
-    });
+    // MAPPS-860: shared roster cache, not a per-page fetch.
+    let users_resource = crate::hooks::use_user_roster(true);
 
     let type_options: Vec<SelectOption> = {
         let mut opts = vec![SelectOption::new("", "(none)")];
@@ -2830,13 +2806,8 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
             .ok()
         }
     });
-    let users_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::list_or_empty(
-            "ticket assignee option",
-            crate::hooks::fetch::api::get_all_authed::<UserOpt>("/auth/users").await,
-        )
-    });
+    // MAPPS-860: shared roster cache, not a per-page fetch.
+    let users_resource = crate::hooks::use_user_roster(true);
     // PMS-359: the tenant's ticket statuses + priorities, fetched once
     // and reused by the three inline editors on the sidebar. Same
     // Paginated envelope the New Ticket form's priorities fetch uses
@@ -5012,15 +4983,6 @@ struct TicketApprovalRow {
     decided_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-struct UserPickerRow {
-    id: uuid::Uuid,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    email: String,
-}
-
 /// PMS-675: the approvals surface is polymorphic server-side
 /// (`target` = ticket | change_request | quote | time_entry), so this
 /// section is parameterised by entity rather than forked per entity.
@@ -5063,13 +5025,8 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
             .ok()
         }
     });
-    let users_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::list_or_empty(
-            "approver picker option",
-            crate::hooks::fetch::api::get_all_authed::<UserPickerRow>("/auth/users").await,
-        )
-    });
+    // MAPPS-860: shared roster cache, not a per-page fetch.
+    let users_resource = crate::hooks::use_user_roster(true);
 
     let snap = approvals_resource.read_unchecked();
     let rows: Vec<TicketApprovalRow> = match &*snap {
@@ -5157,16 +5114,15 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
         });
     };
 
+    // MAPPS-870: the approver picker's label always used a `name` field
+    // `/auth/users` never sends, so it fell straight to `email` every time.
+    // Preserving that behavior on the shared roster row here; `full_name`
+    // going unused everywhere else this list is used elsewhere in this file
+    // (see actor_name / journal_actor) makes clear the row does carry a real
+    // display name that just was not wired to this specific dropdown.
     let mut user_options: Vec<SelectOption> = users
         .iter()
-        .map(|u| {
-            let label = if u.name.trim().is_empty() {
-                u.email.clone()
-            } else {
-                u.name.clone()
-            };
-            SelectOption::new(u.id.to_string(), label)
-        })
+        .map(|u| SelectOption::new(u.id.to_string(), u.email.clone()))
         .collect();
     user_options.insert(0, SelectOption::new("", "- Pick approver -"));
 

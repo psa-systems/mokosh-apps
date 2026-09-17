@@ -119,12 +119,8 @@ struct RemoteTaskStatus {
 }
 
 /// A user, used to resolve `assigned_to_id` / `project_manager_id` to a name.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-struct RemoteUser {
-    id: uuid::Uuid,
-    #[serde(default)]
-    full_name: String,
-}
+/// MAPPS-860: the shared roster row, not a page-local fetch shape.
+type RemoteUser = crate::hooks::UserRow;
 
 /// Resolve a task status id to a (badge colour, label). Completed
 /// statuses are green; everything else is blue (in-flight).
@@ -761,13 +757,8 @@ pub fn ProjectNewPage() -> Element {
     // server is unreachable.
     // PMS-361: users list for the Project Manager Select. Same endpoint
     // and shape the Edit modal uses on the detail page.
-    let users_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::list_or_empty(
-            "project manager option",
-            crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users").await,
-        )
-    });
+    // MAPPS-860: shared roster cache, not a per-page fetch.
+    let users_resource = crate::hooks::use_user_roster(true);
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
     let mut manager_options = vec![SelectOption::new("", "Unassigned")];
     manager_options.extend(
@@ -1132,13 +1123,8 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
             crate::hooks::fetch::api::get_all_authed::<RemoteTaskStatus>("/task-statuses").await,
         )
     });
-    let users_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::list_or_empty(
-            "project task assignee option",
-            crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users").await,
-        )
-    });
+    // MAPPS-860: shared roster cache, not a per-page fetch.
+    let users_resource = crate::hooks::use_user_roster(true);
 
     // PMS-184 project-edit modal state.
     let mut show_proj_modal = use_signal(|| false);
@@ -2213,13 +2199,8 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
             crate::hooks::fetch::api::get_all_authed::<RemoteTaskStatus>("/task-statuses").await,
         )
     });
-    let users_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::list_or_empty(
-            "task board assignee option",
-            crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users").await,
-        )
-    });
+    // MAPPS-860: shared roster cache, not a per-page fetch.
+    let users_resource = crate::hooks::use_user_roster(true);
 
     let snapshot = tasks_resource.read_unchecked().clone();
     let is_loading = snapshot.is_none();

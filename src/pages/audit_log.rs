@@ -68,13 +68,8 @@ fn pretty_json(value: &Option<serde_json::Value>) -> String {
 }
 
 /// A user row used to resolve FK ids in the diff to a display name (PMS-365).
-/// Reuses the shape and `/auth/users` endpoint the project pickers already use.
-#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
-struct RemoteUser {
-    id: uuid::Uuid,
-    #[serde(default)]
-    full_name: String,
-}
+/// MAPPS-860: the shared roster row, not a page-local fetch shape.
+type RemoteUser = crate::hooks::UserRow;
 
 /// Field keys whose values are user ids the SPA can resolve to a name. Other
 /// FK ids (companies, contacts, etc.) stay as their raw value because the
@@ -301,25 +296,11 @@ fn AuditLogContent() -> Element {
         }
     });
 
-    // PMS-365: fetch the tenant's users once so the diff can resolve user-FK
-    // ids (project_manager_id, assigned_to_id, ...) to names. Re-fetches on org
-    // switch via the generation read; an error just leaves ids unresolved.
-    let users_resource = use_resource(move || async move {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        // PMS-584: pull every user so the user-name filter dropdown (and the
-        // diff FK resolution) cover the whole tenant, not just the default
-        // page. MAPPS-528: the old `per_page=200` was clamped to 100.
-        crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users")
-            .await
-            // Best-effort: the diff falls back to raw ids and the name filter
-            // to an empty dropdown.
-            .inspect_err(|e| tracing::warn!("audit log user directory load failed: {e}"))
-            .ok()
-    });
-    let users: Vec<RemoteUser> = match &*users_resource.read_unchecked() {
-        Some(Some(rows)) => rows.clone(),
-        _ => Vec::new(),
-    };
+    // PMS-365 / MAPPS-860: the diff resolves user-FK ids (project_manager_id,
+    // assigned_to_id, ...) and the name filter dropdown from the shared
+    // roster cache instead of its own fetch.
+    let users_resource = crate::hooks::use_user_roster(true);
+    let users: Vec<RemoteUser> = users_resource.read_unchecked().clone().unwrap_or_default();
 
     // PMS-584: user filter as a pick-by-name dropdown (value = user id). A
     // selected id that isn't in the fetched list (deleted / paged out) is kept
@@ -877,6 +858,7 @@ mod tests {
         RemoteUser {
             id: uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
             full_name: "Jane Doe".to_string(),
+            ..Default::default()
         }
     }
 

@@ -21,7 +21,14 @@
 //! ticket's journal, a KB article's comments) fetches the directory once
 //! itself and hands it down through the `people` prop, so only the page
 //! makes the request. A caller with no such directory (most of them, still)
-//! leaves `people` unset and this component fetches its own, as before.
+//! leaves `people` unset and this component fetches its own through
+//! `use_mention_directory`.
+//!
+//! MAPPS-860: "fetches its own" no longer means "fetches again". Every
+//! instance that leaves `people` unset shares the one App-root cache
+//! `use_mention_directory` reads from (see `crate::hooks::mentions`), so a
+//! page with many sibling instances and no `people` prop still makes one
+//! request, not one per instance.
 
 use dioxus::prelude::*;
 
