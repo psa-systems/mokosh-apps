@@ -3896,14 +3896,18 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             if note_will_email {
                                 crate::components::EmailPreview {
                                     event_type: "ticket.note".to_string(),
-                                    context: serde_json::json!({
-                                        "ticket_number": ticket
+                                    context: {
+                                        let ticket_number = ticket
                                             .as_ref()
                                             .map(|t| t.ticket_number.clone())
-                                            .unwrap_or_default(),
-                                        "title": header_title.clone(),
-                                        "content": note_content.read().clone(),
-                                    }),
+                                            .unwrap_or_default();
+                                        let title = header_title.clone();
+                                        move || serde_json::json!({
+                                            "ticket_number": ticket_number.clone(),
+                                            "title": title.clone(),
+                                            "content": note_content.read().clone(),
+                                        })
+                                    },
                                     empty_note: NOTE_PREVIEW_NOTE.to_string(),
                                 }
                             }

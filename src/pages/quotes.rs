@@ -1073,13 +1073,22 @@ fn QuoteDetailBody(id: String) -> Element {
                                         // in `unresolved`.
                                         crate::components::EmailPreview {
                                             event_type: "quote.sent".to_string(),
-                                            context: serde_json::json!({
-                                                "quote_id": q.id.to_string(),
-                                                "quote_number": q.quote_number.clone().unwrap_or_default(),
-                                                "title": q.title.clone(),
-                                                "total": format_money(q.total),
-                                                "company_name": q.company_name.clone().unwrap_or_default(),
-                                            }),
+                                            context: {
+                                                let quote_id = q.id.to_string();
+                                                let quote_number =
+                                                    q.quote_number.clone().unwrap_or_default();
+                                                let title = q.title.clone();
+                                                let total = format_money(q.total);
+                                                let company_name =
+                                                    q.company_name.clone().unwrap_or_default();
+                                                move || serde_json::json!({
+                                                    "quote_id": quote_id.clone(),
+                                                    "quote_number": quote_number.clone(),
+                                                    "title": title.clone(),
+                                                    "total": total.clone(),
+                                                    "company_name": company_name.clone(),
+                                                })
+                                            },
                                             empty_note: QUOTE_PREVIEW_NOTE.to_string(),
                                         }
                                         p { class: "text-xs text-subtle",

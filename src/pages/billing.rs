@@ -2264,24 +2264,30 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                     // never gates the send; it sits beside it.
                     crate::components::EmailPreview {
                         event_type: "billing.invoice_pay_now".to_string(),
-                        context: serde_json::json!({
-                            "invoice_number": invoice
+                        context: {
+                            let invoice_number = invoice
                                 .as_ref()
                                 .map(|i| i.invoice_number.clone())
-                                .unwrap_or_default(),
-                            "company_name": invoice
+                                .unwrap_or_default();
+                            let company_name = invoice
                                 .as_ref()
                                 .and_then(|i| i.company_name.clone())
-                                .unwrap_or_default(),
-                            "total": invoice
+                                .unwrap_or_default();
+                            let total = invoice
                                 .as_ref()
                                 .map(|i| i.total.clone())
-                                .unwrap_or_default(),
-                            "due_date": invoice
+                                .unwrap_or_default();
+                            let due_date = invoice
                                 .as_ref()
                                 .and_then(|i| i.due_date.clone())
-                                .unwrap_or_default(),
-                        }),
+                                .unwrap_or_default();
+                            move || serde_json::json!({
+                                "invoice_number": invoice_number.clone(),
+                                "company_name": company_name.clone(),
+                                "total": total.clone(),
+                                "due_date": due_date.clone(),
+                            })
+                        },
                         // MAPPS-642: the server-built message, with the
                         // conditions under which Send mails nobody.
                         builtin: invoice.as_ref().map(|inv| {

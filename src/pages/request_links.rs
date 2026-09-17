@@ -503,32 +503,39 @@ pub(crate) fn SendRequestLinkModal(
     // its link and the tenant's own identity only exist at send time, so they
     // come back in `unresolved` and the modal shows them as filled in when
     // sent rather than pretending to a value it does not have.
-    let preview_recipient = {
-        let typed = email.read().trim().to_string();
-        if typed.is_empty() {
-            let chosen = contact_id.read().trim().to_string();
-            contact_rows
-                .iter()
-                .find(|c| c.id.to_string() == chosen)
-                .and_then(|c| c.email.clone())
-                .unwrap_or_default()
-        } else {
-            typed
+    let preview_context = {
+        let form_options = form_options.clone();
+        let contact_rows = contact_rows.clone();
+        let company_name = company_name.clone();
+        move || {
+            let preview_recipient = {
+                let typed = email.read().trim().to_string();
+                if typed.is_empty() {
+                    let chosen = contact_id.read().trim().to_string();
+                    contact_rows
+                        .iter()
+                        .find(|c| c.id.to_string() == chosen)
+                        .and_then(|c| c.email.clone())
+                        .unwrap_or_default()
+                } else {
+                    typed
+                }
+            };
+            let preview_form_name = {
+                let chosen = form_id.read().trim().to_string();
+                form_options
+                    .iter()
+                    .find(|o| o.value == chosen)
+                    .map(|o| o.label.clone())
+                    .unwrap_or_default()
+            };
+            serde_json::json!({
+                "recipient_email": preview_recipient,
+                "company_name": company_name.clone(),
+                "form_name": preview_form_name,
+            })
         }
     };
-    let preview_form_name = {
-        let chosen = form_id.read().trim().to_string();
-        form_options
-            .iter()
-            .find(|o| o.value == chosen)
-            .map(|o| o.label.clone())
-            .unwrap_or_default()
-    };
-    let preview_context = serde_json::json!({
-        "recipient_email": preview_recipient,
-        "company_name": company_name.clone(),
-        "form_name": preview_form_name,
-    });
 
     let footer = rsx! {
         Button { variant: ButtonVariant::Secondary, onclick: move |_| onclose.call(()), "Cancel" }
