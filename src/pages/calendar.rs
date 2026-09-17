@@ -114,31 +114,8 @@ struct PaginatedAppointments {
 
 /// One user as returned by `GET /api/v1/users` (subset). Used to label
 /// appointments by technician and to populate the assignee dropdown.
-#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
-struct RemoteUser {
-    id: uuid::Uuid,
-    #[serde(default)]
-    full_name: String,
-    #[serde(default)]
-    first_name: String,
-    #[serde(default)]
-    last_name: String,
-}
-
-impl RemoteUser {
-    fn display_name(&self) -> String {
-        if !self.full_name.trim().is_empty() {
-            return self.full_name.clone();
-        }
-        let joined = format!("{} {}", self.first_name, self.last_name);
-        let joined = joined.trim();
-        if joined.is_empty() {
-            "Unknown".to_string()
-        } else {
-            joined.to_string()
-        }
-    }
-}
+/// MAPPS-860: the shared roster row, not a page-local fetch shape.
+type RemoteUser = crate::hooks::UserRow;
 
 /// Add `delta` months to `date`, anchored on day 1 of the result (the
 /// grid is regenerated from the month, so the day-of-month is moot).
@@ -669,31 +646,13 @@ fn use_templates_resource(kind: Option<&'static str>) -> Resource<Vec<Scheduling
 /// only self-assign anyway. Saves a noisy console error per page load.
 fn use_users_resource() -> Resource<Vec<RemoteUser>> {
     let auth = crate::hooks::use_auth();
-    use_resource(move || async move {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        let can_manage = auth
-            .read()
-            .user
-            .as_ref()
-            .is_some_and(|u| u.role.can_manage_users());
-        if !can_manage {
-            return Vec::<RemoteUser>::new();
-        }
-        #[cfg(feature = "app")]
-        {
-            crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users")
-                .await
-                .unwrap_or_else(|e| {
-                    // Best-effort: the dropdown falls back to "Me".
-                    tracing::warn!("user load failed: {e}");
-                    Vec::new()
-                })
-        }
-        #[cfg(not(feature = "app"))]
-        {
-            Vec::<RemoteUser>::new()
-        }
-    })
+    let can_manage = auth
+        .read()
+        .user
+        .as_ref()
+        .is_some_and(|u| u.role.can_manage_users());
+    // MAPPS-860: shared roster cache, not a per-page fetch.
+    crate::hooks::use_user_roster(can_manage)
 }
 
 // ============================================================================
@@ -1663,7 +1622,7 @@ fn AgendaCard(props: AgendaCardProps) -> Element {
                                 .users
                                 .iter()
                                 .find(|u| u.id == appt.assigned_to_id)
-                                .map(|u| u.display_name())
+                                .and_then(|u| u.display_name())
                                 .unwrap_or_default();
                             rsx! {
                                 div { class: "border-l-4 {border} bg-surface-2 p-3 rounded-r {past}",
@@ -1868,7 +1827,10 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
     let assignee_options: Vec<SelectOption> = {
         let mut opts = vec![SelectOption::new("", "Select technician…")];
         for u in props.users.iter() {
-            opts.push(SelectOption::new(u.id.to_string(), u.display_name()));
+            opts.push(SelectOption::new(
+                u.id.to_string(),
+                u.display_name().unwrap_or_else(|| "Unknown".to_string()),
+            ));
         }
         opts
     };
@@ -2729,7 +2691,7 @@ fn OnCallBanner(props: OnCallBannerProps) -> Element {
                         let who = entry
                             .on_call_user_id
                             .and_then(|id| props.users.iter().find(|u| u.id == id))
-                            .map(|u| u.display_name())
+                            .and_then(|u| u.display_name())
                             .unwrap_or_else(|| "Unassigned".to_string());
                         let name = entry.schedule_name.clone();
                         rsx! {
@@ -2779,7 +2741,7 @@ fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
             .users
             .iter()
             .find(|u| u.id == id)
-            .map(|u| u.display_name())
+            .and_then(|u| u.display_name())
             .unwrap_or_else(|| "Unknown".to_string())
     };
     user_ids.sort_by_key(|id| name_for(*id));

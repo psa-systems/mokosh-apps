@@ -4,10 +4,80 @@
 //! renderer, to turn a handle into a chip; the KB editor, to complete one while
 //! it is typed; and now the ticket description editor. The endpoint choice is
 //! the part worth sharing rather than the request.
+//!
+//! MAPPS-860: sharing the endpoint choice was not sharing the fetch. Every
+//! `Markdown` instance without an explicit `people` prop still ran its own
+//! `use_resource`, so a page rendering many instances (a ticket's journal, a
+//! KB article's comments) fired one request per instance despite a comment
+//! here claiming otherwise. [`use_mention_directory`] is now backed by a
+//! single App-root resource (see [`use_mention_directory_provider`]),
+//! mirroring [`crate::hooks::user_roster`]: the first caller to pass
+//! `enabled = true` triggers the one fetch, and every sibling instance,
+//! including ones that mount later, reads the same cached result.
 
 use dioxus::prelude::*;
 
 use crate::utils::mentions::Mention;
+
+/// Shared "has any consumer asked for the directory yet" flag, mirroring
+/// [`crate::hooks::user_roster`]'s `RosterWanted`.
+type DirectoryWanted = Signal<bool>;
+
+/// Provide the shared mention-directory resource and its `enabled` flag at
+/// the App root. Call once, alongside
+/// [`crate::hooks::user_roster::use_user_roster_provider`].
+pub fn use_mention_directory_provider() {
+    let wanted = use_signal(|| false);
+    use_context_provider::<DirectoryWanted>(|| wanted);
+
+    let resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        if !*wanted.read() {
+            return None;
+        }
+        fetch_directory().await
+    });
+    use_context_provider::<Resource<Option<Vec<Mention>>>>(|| resource);
+}
+
+async fn fetch_directory() -> Option<Vec<Mention>> {
+    #[cfg(feature = "app")]
+    {
+        #[derive(serde::Deserialize)]
+        struct DirectoryEntry {
+            id: uuid::Uuid,
+            #[serde(default)]
+            name: String,
+            #[serde(default)]
+            handle: String,
+        }
+        let rows = crate::hooks::fetch::api::get_all_authed::<DirectoryEntry>("/auth/directory")
+            .await
+            // Best-effort: the autocomplete offers no names and the
+            // typed handle is submitted as written.
+            .inspect_err(|e| tracing::warn!("mention directory load failed: {e}"))
+            .ok()?;
+        Some(
+            rows.into_iter()
+                .map(|u| Mention {
+                    id: u.id.to_string(),
+                    // The KB editor's copy fell back to the handle for a row
+                    // with no name, and the renderer's did not. Keeping the
+                    // fallback: a chip reading "@" and nothing else names
+                    // nobody.
+                    display: if u.name.trim().is_empty() {
+                        u.handle.clone()
+                    } else {
+                        u.name
+                    },
+                    handle: u.handle,
+                })
+                .collect(),
+        )
+    }
+    #[cfg(not(feature = "app"))]
+    None
+}
 
 /// Everyone who can be mentioned, or `None` when the list could not be read.
 ///
@@ -25,52 +95,18 @@ use crate::utils::mentions::Mention;
 /// for any reader whose own fetch succeeded. Nothing about a mention is worth
 /// blocking a page over.
 ///
-/// `enabled` is for a surface that renders text of unknown provenance and wants
-/// mentions off; a disabled hook makes no request.
+/// `enabled` is each caller's own gate (a surface that renders text of
+/// unknown provenance and wants mentions off), unchanged from before
+/// MAPPS-860. Passing `true` from any single mount is enough to trigger (and
+/// thereafter share, via [`use_mention_directory_provider`]) the one
+/// underlying fetch; passing `false` never blocks a directory another
+/// consumer already cached.
 pub fn use_mention_directory(enabled: bool) -> Resource<Option<Vec<Mention>>> {
-    use_resource(move || async move {
-        if !enabled {
-            return None;
-        }
-        #[cfg(feature = "app")]
-        {
-            let _gen = crate::hooks::fetch::active_tenant_generation();
-            #[derive(serde::Deserialize)]
-            struct DirectoryEntry {
-                id: uuid::Uuid,
-                #[serde(default)]
-                name: String,
-                #[serde(default)]
-                handle: String,
-            }
-            let rows =
-                crate::hooks::fetch::api::get_all_authed::<DirectoryEntry>("/auth/directory")
-                    .await
-                    // Best-effort: the autocomplete offers no names and the
-                    // typed handle is submitted as written.
-                    .inspect_err(|e| tracing::warn!("mention directory load failed: {e}"))
-                    .ok()?;
-            Some(
-                rows.into_iter()
-                    .map(|u| Mention {
-                        id: u.id.to_string(),
-                        // The KB editor's copy fell back to the handle for a row
-                        // with no name, and the renderer's did not. Keeping the
-                        // fallback: a chip reading "@" and nothing else names
-                        // nobody.
-                        display: if u.name.trim().is_empty() {
-                            u.handle.clone()
-                        } else {
-                            u.name
-                        },
-                        handle: u.handle,
-                    })
-                    .collect(),
-            )
-        }
-        #[cfg(not(feature = "app"))]
-        None
-    })
+    let mut wanted = use_context::<DirectoryWanted>();
+    if enabled && !*wanted.read() {
+        wanted.set(true);
+    }
+    use_context::<Resource<Option<Vec<Mention>>>>()
 }
 
 /// The list itself, flattened: a failed or still-running fetch is an empty

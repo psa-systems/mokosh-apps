@@ -165,35 +165,6 @@ struct RemoteWorkDay {
     breakdown: RemoteBreakdown,
 }
 
-/// A staff user for the admin's picker (`GET /auth/users`).
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-struct DayUser {
-    id: uuid::Uuid,
-    #[serde(default)]
-    full_name: String,
-    #[serde(default)]
-    first_name: String,
-    #[serde(default)]
-    last_name: String,
-    #[serde(default)]
-    email: String,
-}
-
-impl DayUser {
-    fn display_name(&self) -> String {
-        if !self.full_name.trim().is_empty() {
-            return self.full_name.clone();
-        }
-        let joined = format!("{} {}", self.first_name, self.last_name);
-        let joined = joined.trim();
-        if joined.is_empty() {
-            self.email.clone()
-        } else {
-            joined.to_string()
-        }
-    }
-}
-
 /// What the strip loaded: the day, or nothing because the modules are off.
 #[derive(Clone, Debug, PartialEq)]
 enum DayLoad {
@@ -510,18 +481,8 @@ pub fn WorkDayStrip() -> Element {
         }
     });
 
-    let users_resource = use_resource(move || async move {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        if !is_admin {
-            return Vec::<DayUser>::new();
-        }
-        crate::hooks::fetch::api::get_all_authed::<DayUser>("/auth/users")
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!("work day user list load failed: {e}");
-                Vec::new()
-            })
-    });
+    // MAPPS-860: shared roster cache, not a per-page fetch.
+    let users_resource = crate::hooks::use_user_roster(is_admin);
 
     let snap = day_resource.read_unchecked().clone();
     // MAPPS-753: hold the day the last load produced. A resource that has
@@ -697,7 +658,8 @@ pub fn WorkDayStrip() -> Element {
         .unwrap_or_else(|_| date_value.clone());
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
     let viewing_name = picked_user()
-        .and_then(|id| users.iter().find(|u| u.id == id).map(|u| u.display_name()))
+        .and_then(|id| users.iter().find(|u| u.id == id))
+        .and_then(|u| u.display_name())
         .unwrap_or_default();
     let disabled_title =
         (!can_mutate).then(|| "Can't change the day while the server is unreachable".to_string());
@@ -747,7 +709,7 @@ pub fn WorkDayStrip() -> Element {
                                     option {
                                         value: "{u.id}",
                                         selected: picked_user() == Some(u.id),
-                                        "{u.display_name()}"
+                                        "{u.display_name().unwrap_or_default()}"
                                     }
                                 }
                             }
