@@ -1,8 +1,8 @@
 //! MAPPS-298: top-bar global search.
 //!
 //! A search box that lives in the TopBar between the page title and
-//! the action chips. Each keystroke (debounced ~250ms via signal
-//! coalescing) fires `GET /api/v1/search?q=...` and renders a grouped
+//! the action chips. Typing (debounced 300ms, MAPPS-855) fires
+//! `GET /api/v1/search?q=...` and renders a grouped
 //! dropdown of the top matches across tickets / contacts / companies
 //! / assets / projects. Selecting a row navigates to the entity's
 //! detail page.
@@ -88,13 +88,14 @@ pub fn GlobalSearch() -> Element {
         }
     });
 
-    // Reading the query signal inside the resource closure subscribes
-    // the resource to it so each keystroke re-fetches (same pattern as
-    // CompanyPicker / ContactPicker). The empty / very-short branches
-    // short-circuit without hitting the network.
+    // MAPPS-855: debounce the query before it reaches the resource so a
+    // burst of keystrokes fires one request per pause in typing instead of
+    // one per keystroke. `query` itself still updates immediately (the field
+    // stays responsive); only the resource's dependency is debounced.
+    let query_debounced = crate::hooks::use_debounced_signal(query, 300);
     let results = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        let q = query.read().trim().to_string();
+        let q = query_debounced.read().trim().to_string();
         if q.len() < 2 {
             // Two-char minimum keeps the dropdown out of "I just clicked the
             // field" noise. The server tolerates short queries but the SPA

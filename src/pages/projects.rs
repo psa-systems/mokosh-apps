@@ -414,8 +414,12 @@ pub fn ProjectListPage() -> Element {
     // Every reactive input is read INSIDE the closure, so the resource
     // subscribes to it (MAPPS-148): a value captured outside would leave this
     // serving page 1 for ever while the footer label changed.
+    // MAPPS-855: debounce the search dependency so a burst of keystrokes
+    // fires one full-page refetch per pause in typing rather than one per
+    // keystroke.
+    let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let projects_resource = crate::hooks::use_remote_resource(move || {
-        let q = search.read().trim().to_string();
+        let q = search_debounced.read().trim().to_string();
         let status = status_filter.read().clone();
         let current_page = (*page.read()).max(1);
         async move {

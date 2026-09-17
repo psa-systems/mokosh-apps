@@ -1241,8 +1241,12 @@ fn TicketListBody() -> Element {
     // contact bearer to drive this fetch, using `get_authed_any` so a
     // signed-in contact sees only their Company's tickets (server scopes on
     // `typ: "contact"`). Staff sessions still use the workspace bearer.
+    // MAPPS-855: debounce the search dependency so a burst of keystrokes
+    // fires one full-page refetch per pause in typing rather than one per
+    // keystroke.
+    let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let mut tickets_resource = use_resource(move || {
-        let q = search.read().trim().to_string();
+        let q = search_debounced.read().trim().to_string();
         let status_id = status_filter.read().clone();
         let priority_id = priority_filter.read().clone();
         let sort_snapshot = *sort.read();
