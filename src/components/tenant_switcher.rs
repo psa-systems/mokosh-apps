@@ -187,7 +187,19 @@ pub fn TenantSwitcher() -> Element {
         }
     };
 
-    let mut switch_to = move |tenant_id: String| {
+    // PMS-1208: switching to a granted tenant is a different wire
+    // path than switching to your own. An owned membership uses the
+    // legacy `POST /api/v1/auth/switch-tenant/{id}` on mokosh-server,
+    // which re-mints the caller's OWN session bound to a different
+    // tenant. A granted membership needs a GRANT-SCOPED at+jwt from
+    // bunyip (`POST {issuer}/v1/grants/{grant_id}/access-token`),
+    // whose `mokosh_grant_*` claims are what BUNYIP-674 option B's
+    // placement path reads to scope the request to the granted
+    // tenant. The mokosh switch-tenant path returns 403 for a
+    // granted membership because the caller has no owner-level
+    // users row there (that is the "no permission" toast the tester
+    // saw).
+    let mut switch_to = move |tenant_id: String, grant_id: Option<String>| {
         if saving() {
             return;
         }
@@ -198,6 +210,22 @@ pub fn TenantSwitcher() -> Element {
             #[cfg(feature = "app")]
             {
                 use crate::hooks::fetch::api::ApiError;
+                if let Some(grant_id) = grant_id {
+                    // Grant path: mint the grant-scoped at+jwt on
+                    // bunyip, then fetch `/auth/me` on mokosh with
+                    // the new bearer to build a `CurrentUser` for
+                    // the AuthContext.
+                    match switch_to_grant(grant_id).await {
+                        Ok((access_token, expires_at, user)) => {
+                            install_session(access_token, None, expires_at, user);
+                            open.set(false);
+                        }
+                        Err(msg) => error.set(msg),
+                    }
+                    saving.set(false);
+                    return;
+                }
+                // Own-tenant path: unchanged legacy switch.
                 let path = format!("/auth/switch-tenant/{tenant_id}");
                 match crate::hooks::fetch::api::post_authed_typed::<SwitchResp, ()>(&path, &())
                     .await
@@ -652,7 +680,8 @@ pub fn TenantSwitcher() -> Element {
                                         disabled: is_active || saving(),
                                         onclick: {
                                             let tenant_id = switch_id.clone();
-                                            move |_| switch_to(tenant_id.clone())
+                                            let grant_id = grant_id_for_leave.clone();
+                                            move |_| switch_to(tenant_id.clone(), grant_id.clone())
                                         },
                                         div { class: "font-medium truncate", "{m.tenant_name}" }
                                         div { class: "text-xs text-subtle",
@@ -664,7 +693,7 @@ pub fn TenantSwitcher() -> Element {
                                     // PMS-1210: Leave button on shared-with-you rows.
                                     // Rendered ONLY when the row came from a grant,
                                     // so the caller's own tenant never carries it.
-                                    if let Some(grant_id) = grant_id_for_leave {
+                                    if let Some(grant_id) = grant_id_for_leave.clone() {
                                         button {
                                             r#type: "button",
                                             class: "text-xs px-2 rounded-md text-subtle hover:text-content hover:bg-surface-2 disabled:opacity-50",
@@ -923,4 +952,59 @@ fn humanise_grant_role(role: &str) -> String {
         "read_only" => "Read only".to_string(),
         other => other.to_string(),
     }
+}
+
+/// PMS-1208: mint a grant-scoped at+jwt from bunyip and build a
+/// `CurrentUser` from mokosh's `/auth/me` under the new bearer.
+///
+/// The wire path in SaaS mode: bunyip mints an at+jwt whose
+/// `mokosh_grant_*` extras carry the grant id, role, and target
+/// mokosh_account_id. That token replaces the caller's own-session
+/// bearer in the SPA's in-memory store, and the next request to
+/// mokosh's `/auth/me` runs through BUNYIP-674 option B's placement
+/// path: the grant gate reads the mirror, the account slug resolves
+/// to the tenant, the caller is placed as the JIT users row for
+/// that (bunyip_user_id, tenant_id) pair, and the response carries
+/// the CurrentUser scoped to the granted tenant. Setting the bearer
+/// BEFORE the /auth/me call is required because `get_authed_typed`
+/// reads it from the same store.
+#[cfg(feature = "app")]
+async fn switch_to_grant(
+    grant_id: String,
+) -> Result<(String, chrono::DateTime<chrono::Utc>, CurrentUser), String> {
+    use crate::modules::oidc::OidcConfig;
+    let cfg = OidcConfig::for_current_origin();
+    if cfg.client_id.trim().is_empty() {
+        return Err(
+            "Cannot switch into a shared account without a Bunyip client id configured."
+                .to_string(),
+        );
+    }
+    #[derive(serde::Serialize)]
+    struct MintReq<'a> {
+        client_id: &'a str,
+    }
+    #[derive(serde::Deserialize)]
+    struct MintResp {
+        access_token: String,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    }
+    let path = format!("/v1/grants/{grant_id}/access-token");
+    let resp: MintResp = crate::modules::oidc::issuer_post_authed(
+        &cfg,
+        &path,
+        &MintReq {
+            client_id: cfg.client_id,
+        },
+    )
+    .await
+    .map_err(|e| format!("{e}"))?;
+
+    // Attach the new bearer BEFORE the /auth/me call - the fetch
+    // helper reads it from the process-wide holder we just wrote.
+    crate::hooks::fetch::api::set_access_token(Some(resp.access_token.clone()));
+    let user: CurrentUser = crate::hooks::fetch::api::get_authed_typed("/auth/me")
+        .await
+        .map_err(|e| e.user_message())?;
+    Ok((resp.access_token, resp.expires_at, user))
 }

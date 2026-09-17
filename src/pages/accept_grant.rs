@@ -24,6 +24,8 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{AuthLayout, Button, ButtonVariant};
+use crate::hooks::auth::MembershipView;
+use crate::Route;
 
 #[derive(Deserialize, Clone, Debug)]
 struct InvitationMetadata {
@@ -58,7 +60,9 @@ pub fn AcceptGrantPage(token: String) -> Element {
     // this same `/accept-grant?token=<t>` page after sign-in and
     // the buttons work.
     let auth = crate::hooks::use_auth();
+    let mut auth_write = auth;
     let is_signed_in = auth.read().is_authenticated();
+    let nav = use_navigator();
 
     let token_for_meta = token.clone();
     let metadata: Resource<Option<InvitationMetadata>> = use_resource(move || {
@@ -110,17 +114,27 @@ pub fn AcceptGrantPage(token: String) -> Element {
                 .await
                 {
                     Ok(_) => {
-                        info.set("Invitation accepted. Redirecting to the account.".to_string());
+                        info.set("Invitation accepted. Taking you to your workspace.".to_string());
                         done.set(true);
-                        // A hard nav is safer than a router push here:
-                        // the OIDC session should refetch memberships so
-                        // the new tenant appears in the switcher, and the
-                        // simplest way to make that reliable is a full
-                        // page load.
-                        #[cfg(target_arch = "wasm32")]
-                        if let Some(win) = web_sys::window() {
-                            let _ = win.location().replace("/");
+                        // PMS-1208 fix (tester report round 2): a
+                        // hard nav here tears down the WASM tree,
+                        // and if the OIDC bearer isn't stable in
+                        // sessionStorage at that moment the rebuilt
+                        // AuthContext sees no session and immediately
+                        // fires start_login again - the "multiple
+                        // pages then back to home" the tester saw.
+                        // Instead: refetch memberships (so the
+                        // freshly granted account appears in the
+                        // switcher), then soft-nav to Dashboard.
+                        if let Ok(list) = crate::hooks::fetch::api::get_authed_typed::<
+                            Vec<MembershipView>,
+                        >("/auth/memberships")
+                        .await
+                        {
+                            let mut a = auth_write.write();
+                            a.memberships = list;
                         }
+                        nav.replace(Route::Dashboard {});
                     }
                     Err(err) => {
                         error.set(match err {
