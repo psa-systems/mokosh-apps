@@ -90,12 +90,25 @@ fn tokenize(s: &str) -> Vec<&str> {
     out
 }
 
+#[cfg(test)]
+thread_local! {
+    // Test-only call counter (MAPPS-864), so a test can assert a render path
+    // calls this at most once per field rather than recomputing the diff for
+    // a summary and again for the expanded view. Thread-local: `cargo test`
+    // runs each test on its own thread, and this crate's tests run in
+    // parallel by default, so a process-wide counter would pick up calls
+    // from unrelated tests running at the same time.
+    pub static CALL_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Diff `old` against `new` at word granularity.
 ///
 /// Returns `None` when the two share too little for a diff to be more readable
 /// than saying one replaced the other; the caller then renders them whole, the
 /// way every change-history entry did before this.
 pub fn diff_words(old: &str, new: &str) -> Option<Vec<Piece>> {
+    #[cfg(test)]
+    CALL_COUNT.with(|c| c.set(c.get() + 1));
     if old == new {
         return Some(vec![Piece::Same(old.to_string())]);
     }
