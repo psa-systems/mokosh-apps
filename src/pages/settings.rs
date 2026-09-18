@@ -1018,6 +1018,15 @@ const ORGANIZATION_PATH: &str = "/tenants/current/organization";
 /// multipart and lands immediately, rather than riding the JSON body above.
 const TENANT_LOGO_PATH: &str = "/tenants/current/logo";
 
+/// MAPPS-885 (PMS-789): the deployment-wide product name, a system value
+/// shared by every tenant on the box rather than a per-tenant field, so it is
+/// its own endpoint and its own save cycle on this page rather than riding
+/// [`TENANT_PATH`] or [`ORGANIZATION_PATH`].
+const APP_NAME_PATH: &str = "/settings/app-name";
+
+/// Mirrors `MAX_APP_NAME_LEN` on mokosh-server.
+const MAX_APP_NAME_LEN: i64 = 64;
+
 /// Trim, and treat blank as absent. A branding field saved as `""` would read
 /// back as "there is a contact, and it is empty".
 fn optional_text(raw: &str) -> Option<String> {
@@ -1194,6 +1203,26 @@ struct OrganizationProfileBody {
     phone: Option<String>,
     email: Option<String>,
     website: Option<String>,
+}
+
+/// `GET`/`PUT /settings/app-name`, for mokosh-server's `AppNameView`
+/// (MAPPS-885 / PMS-789). `app_name` is `None` when no operator has set an
+/// override; `effective` is what the deployment currently renders (the
+/// override, or the built-in default).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+struct AppNameView {
+    #[serde(default)]
+    app_name: Option<String>,
+    #[serde(default)]
+    effective: String,
+}
+
+/// `PUT /settings/app-name`, for mokosh-server's `AppNameInput`. An empty
+/// string clears the override and restores the default, mirroring the
+/// server-side behaviour.
+#[derive(Debug, Serialize)]
+struct AppNameBody {
+    app_name: String,
 }
 
 /// `POST /api/v1/work-types` and `PUT /api/v1/work-types/{id}`, for
@@ -1426,6 +1455,73 @@ fn OrganizationSettingsBody() -> Element {
     // resource refresh after saving) cannot overwrite what is being typed.
     let mut seeded = use_signal(|| false);
 
+    // MAPPS-885: the deployment-wide app name lives on its own resource and
+    // save cycle, since APP_NAME_PATH is a distinct endpoint from TENANT_PATH
+    // and ORGANIZATION_PATH and changes are effective for every tenant.
+    let mut app_name_value = use_signal(String::new);
+    let mut app_name_effective = use_signal(String::new);
+    let mut app_name_seeded = use_signal(|| false);
+    let mut app_name_saving = use_signal(|| false);
+    let mut app_name_error = use_signal(String::new);
+
+    let app_name_resource = use_resource(move || async move {
+        let _reachable = crate::hooks::use_server_reachable();
+        crate::hooks::fetch::api::get_authed::<AppNameView>(APP_NAME_PATH)
+            .await
+            .inspect_err(|e| tracing::error!("app name load failed: {e}"))
+            .ok()
+    });
+    let app_name_snap = app_name_resource.read_unchecked();
+    if !app_name_seeded() {
+        if let Some(Some(view)) = &*app_name_snap {
+            app_name_value.set(view.app_name.clone().unwrap_or_default());
+            app_name_effective.set(view.effective.clone());
+            app_name_seeded.set(true);
+        }
+    }
+
+    let handle_save_app_name = move |_| {
+        if app_name_saving() {
+            return;
+        }
+        app_name_error.set(String::new());
+        let trimmed = app_name_value.read().trim().to_string();
+        if trimmed.chars().count() > MAX_APP_NAME_LEN as usize {
+            app_name_error.set(format!("Use {MAX_APP_NAME_LEN} characters or fewer."));
+            return;
+        }
+        app_name_saving.set(true);
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                match crate::hooks::fetch::api::put_authed_typed::<AppNameView, _>(
+                    APP_NAME_PATH,
+                    &AppNameBody { app_name: trimmed },
+                )
+                .await
+                {
+                    Ok(saved) => {
+                        app_name_value.set(saved.app_name.clone().unwrap_or_default());
+                        app_name_effective.set(saved.effective);
+                        crate::hooks::push_toast(
+                            crate::components::AlertType::Success,
+                            "App name saved. Applies to every tenant on this deployment.",
+                        );
+                    }
+                    Err(err) => {
+                        crate::hooks::push_api_error(&err);
+                        if let Some(m) = err.field_message("app_name") {
+                            app_name_error.set(m);
+                        } else {
+                            app_name_error.set(err.user_message());
+                        }
+                    }
+                }
+            }
+            app_name_saving.set(false);
+        });
+    };
+
     let tenant = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
@@ -1626,6 +1722,43 @@ fn OrganizationSettingsBody() -> Element {
 
         if fetch_failed {
             LoadError { what: "your organization" }
+        }
+
+        // MAPPS-885: a deployment-wide value (PMS-789), not a per-tenant one,
+        // so it gets its own Card and its own Save rather than joining the
+        // organisation form below.
+        Card {
+            div { class: "space-y-4 max-w-xl",
+                h2 { class: "text-lg font-semibold text-content", "App name" }
+                if !app_name_error().is_empty() {
+                    ErrorBanner { "{app_name_error()}" }
+                }
+                Input {
+                    name: "app_name",
+                    label: "App name",
+                    value: app_name_value(),
+                    maxlength: MAX_APP_NAME_LEN,
+                    disabled: app_name_saving(),
+                    help: format!(
+                        "Shown in email this deployment sends and on its error pages, for every tenant. Left blank, it renders \"{}\".",
+                        if app_name_effective().is_empty() { "Mokosh".to_string() } else { app_name_effective() },
+                    ),
+                    oninput: move |e: FormEvent| {
+                        app_name_error.set(String::new());
+                        app_name_value.set(e.value());
+                    },
+                }
+                div { class: "flex justify-end",
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        loading: app_name_saving(),
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
+                        onclick: handle_save_app_name,
+                        "Save Changes"
+                    }
+                }
+            }
         }
 
         Card {
