@@ -113,6 +113,13 @@ build_config_fields() {
     # the Caddyfile CSP is `img-src 'self' data: {API origin}`. Everything
     # outside /assets/* and /wasm/* is served no-cache, so a remounted
     # file propagates on the next load. See docs/deployment-branding.md.
+    # MAPPS-880: the server's KB attachment size cap
+    # (`KB_ATTACHMENT_MAX_BYTES`, operator-tunable there too). Unset means
+    # the SPA keeps its compile-time 5 MiB default, so a deployment that
+    # sets neither renders exactly as before. Set this to the SAME value
+    # as the server's `KB_ATTACHMENT_MAX_BYTES` env var, or the client's
+    # pre-upload check and the server's actual limit drift apart again.
+    printf 'kb_attachment_max_bytes\t%s\n' "${MOKOSH_KB_ATTACHMENT_MAX_BYTES:-}"
     printf 'brand_name\t%s\n' "${MOKOSH_BRAND_NAME:-}"
     printf 'brand_logo_url\t%s\n' "${MOKOSH_BRAND_LOGO_URL:-}"
     printf 'brand_hero_url\t%s\n' "${MOKOSH_BRAND_HERO_URL:-}"

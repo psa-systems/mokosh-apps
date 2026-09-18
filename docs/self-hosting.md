@@ -54,6 +54,7 @@ non-empty are emitted. Restart the container to pick up a change.
 | `MOKOSH_DOCS_BASE_URL` | Base URL of the documentation site. Unset hides the Documentation menu entry and every contextual help link. `MOKOSH_DOCS_URL` is a deprecated fallback for the same field. |
 | `MOKOSH_TEAM_ENABLED` | Set to `true` or `1` to expose the Team item under the Admin nav section. The route and its API stay reachable by direct URL either way. |
 | `MOKOSH_PUBLIC_URL` | Public base URL of this site. Only the link preview needs it, to resolve a root-relative brand logo into an absolute `og:image`. |
+| `MOKOSH_KB_ATTACHMENT_MAX_BYTES` | Knowledge base attachment size cap, in bytes. Set this to the SAME value as the mokosh-server `KB_ATTACHMENT_MAX_BYTES` env var, so the client's pre-upload check matches what the server will actually accept. Unset falls back to the compile-time 5 MiB default. |
 
 The visitor addresses their Company from the URL path
 (`/portal/{portal_id}/...`), so `MOKOSH_PORTAL_HOST` needs one A or AAAA record

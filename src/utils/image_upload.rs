@@ -14,10 +14,19 @@
 /// What the server accepts. Kept in the same order as `ALLOWED_MIME` there.
 pub const ALLOWED_MIME: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif"];
 
-/// The server's default cap. It can be raised by an operator, so a file over
-/// this is refused locally only because refusing it here is faster and clearer
-/// than a 400 after uploading five megabytes.
-pub const MAX_BYTES: usize = 5 * 1024 * 1024;
+/// The server's default cap, used only when the deployment has not set
+/// `kb_attachment_max_bytes` via runtime config (MAPPS-880). A file over
+/// the effective limit ([`max_bytes`]) is refused locally only because
+/// refusing it here is faster and clearer than a 400 after uploading.
+pub const DEFAULT_MAX_BYTES: usize = 5 * 1024 * 1024;
+
+/// The limit to enforce: the operator's `KB_ATTACHMENT_MAX_BYTES`, read
+/// through runtime config so a deployment that raises or lowers it gets
+/// a client that agrees with the server, falling back to
+/// [`DEFAULT_MAX_BYTES`] when the deployment has not set it (MAPPS-880).
+pub fn max_bytes() -> usize {
+    crate::modules::runtime_config::kb_attachment_max_bytes().unwrap_or(DEFAULT_MAX_BYTES)
+}
 
 /// The `accept` attribute for a file input, so the picker offers the same set
 /// this module enforces rather than a list that has to be kept in step by hand.
@@ -41,11 +50,12 @@ pub fn check(mime: &str, len: usize) -> Result<(), String> {
             }
         ));
     }
-    if len > MAX_BYTES {
+    let max_bytes = max_bytes();
+    if len > max_bytes {
         return Err(format!(
             "That image is {}. The limit is {}.",
             human_size(len),
-            human_size(MAX_BYTES)
+            human_size(max_bytes)
         ));
     }
     if len == 0 {
@@ -127,7 +137,7 @@ mod tests {
 
     #[test]
     fn an_oversized_image_names_both_numbers() {
-        let err = check("image/png", MAX_BYTES + 1).unwrap_err();
+        let err = check("image/png", DEFAULT_MAX_BYTES + 1).unwrap_err();
         assert!(err.contains("5.0 MB"), "the limit: {err}");
     }
 
@@ -139,7 +149,7 @@ mod tests {
     #[test]
     fn a_normal_image_passes() {
         assert!(check("image/png", 1024).is_ok());
-        assert!(check("image/jpeg", MAX_BYTES).is_ok());
+        assert!(check("image/jpeg", DEFAULT_MAX_BYTES).is_ok());
     }
 
     #[test]

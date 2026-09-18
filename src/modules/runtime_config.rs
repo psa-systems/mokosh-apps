@@ -40,6 +40,15 @@ pub fn flag_enabled(field: &str) -> bool {
     get(field).is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
 }
 
+/// MAPPS-880: the server's KB attachment size cap
+/// (`KB_ATTACHMENT_MAX_BYTES`), operator-tunable independently of the
+/// client build. Returns `None` when the field is absent, empty, or not
+/// a valid byte count, so the caller falls back to its own compile-time
+/// default rather than a bogus limit.
+pub fn kb_attachment_max_bytes() -> Option<usize> {
+    get("kb_attachment_max_bytes")?.parse().ok()
+}
+
 /// MAPPS-649: resolve the single portal host (typically
 /// `portal.<apex>`) the running deploy serves the portal from. Checks
 /// (in order) the container-emitted `window.__MOKOSH_CONFIG__.portal_host`
