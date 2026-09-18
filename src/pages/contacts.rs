@@ -7285,6 +7285,14 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
         Some(None) => "Contact not found".to_string(),
     };
     use_page_title(&header_title);
+    // MAPPS-882: mokosh-server locks `first_name`/`last_name` the same way as
+    // the 5 fields already marked below (`contact_sync/sync.rs`'s
+    // `fields::ALL`), so the name needs the same on-page indicator.
+    let name_locked = provenance
+        .read()
+        .clone()
+        .flatten()
+        .is_some_and(|p| p.is_locked("first_name") || p.is_locked("last_name"));
 
     let navigator = use_navigator();
     let mut deleting = use_signal(|| false);
@@ -7365,6 +7373,15 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
         }
         PageHeader {
             title: "{header_title}",
+            // MAPPS-882: mirror the default `h1` PageHeader renders so the
+            // name gets the same lock marker the other locked fields show,
+            // without changing how the loading/not-found titles render.
+            title_slot: matches!(*snap, Some(Some(_))).then(|| rsx! {
+                h1 { class: "text-2xl font-bold leading-7 text-content sm:truncate sm:text-3xl sm:leading-9 sm:tracking-tight",
+                    "{header_title}"
+                    crate::pages::contact_provenance::LockMarker { locked: name_locked }
+                }
+            }),
             // PMS-746: a route back to the list, matching CompanyDetailPage.
             // The trail stays flat (`Contacts > <name>`) even though a contact
             // also belongs to a company: a company-aware parent would have to
@@ -11142,6 +11159,38 @@ mod shared_dto_guard_tests {
         assert!(
             !gate.contains("default_billing_contact_id:"),
             "the company read gate is feeding default_billing_contact_id a literal again"
+        );
+    }
+}
+
+/// MAPPS-882: mokosh-server locks `first_name`/`last_name` on the same
+/// footing as the 5 fields already marked (`email`, `phones`, `title`,
+/// `department`, `company_name`), so the header needs the same `LockMarker`.
+#[cfg(test)]
+mod mapps882_name_lock_marker_tests {
+    const SRC: &str = include_str!("contacts.rs");
+
+    #[test]
+    fn the_name_lock_flag_checks_both_name_fields() {
+        assert!(
+            SRC.contains(r#"p.is_locked("first_name") || p.is_locked("last_name")"#),
+            "name_locked no longer checks both first_name and last_name"
+        );
+    }
+
+    #[test]
+    fn the_header_slot_renders_a_lock_marker_beside_the_name() {
+        let start = SRC
+            .find("title_slot: matches!(*snap, Some(Some(_)))")
+            .expect("the PageHeader title_slot is part of this file");
+        let end = start
+            + SRC[start..]
+                .find("breadcrumbs:")
+                .expect("breadcrumbs follows the slot");
+        let slot = &SRC[start..end];
+        assert!(
+            slot.contains("LockMarker { locked: name_locked }"),
+            "the header title_slot no longer renders the name's LockMarker"
         );
     }
 }
