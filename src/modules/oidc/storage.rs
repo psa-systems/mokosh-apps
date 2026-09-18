@@ -54,9 +54,28 @@ pub struct StoredTokens {
 //
 // `None` means "not yet asked this session"; `Some(None)` means "asked, and
 // nothing is persisted" - both are cache HITS, distinct from "go parse it".
+//
+// MAPPS-881: on `wasm32` the runtime is single-threaded, so a `thread_local!`
+// is equivalent to a global and stays cheap. On desktop it is not: dioxus-desktop
+// runs component tasks on a multi-threaded tokio runtime with no thread-pinning
+// (`dioxus::LaunchBuilder::desktop()`, `src/main.rs`), so a `thread_local!` here
+// let a `save_auth`/`clear_auth` on one OS thread leave another thread's cache
+// stale. `platform::store`'s underlying map is already a process-wide
+// `Mutex<HashMap>` for exactly this reason; the cache in front of it now
+// matches.
+#[cfg(target_arch = "wasm32")]
 thread_local! {
     static AUTH_CACHE: std::cell::RefCell<Option<Option<StoredTokens>>> =
         const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+static AUTH_CACHE: std::sync::OnceLock<std::sync::Mutex<Option<Option<StoredTokens>>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(not(target_arch = "wasm32"))]
+fn auth_cache() -> &'static std::sync::Mutex<Option<Option<StoredTokens>>> {
+    AUTH_CACHE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
 // MAPPS-863: counts the actual `sessionStorage` read + JSON parse inside
@@ -69,17 +88,40 @@ thread_local! {
     static AUTH_PARSE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+#[cfg(target_arch = "wasm32")]
+fn auth_cache_get() -> Option<Option<StoredTokens>> {
+    AUTH_CACHE.with(|c| c.borrow().clone())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn auth_cache_set(value: Option<Option<StoredTokens>>) {
+    AUTH_CACHE.with(|c| *c.borrow_mut() = value);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn auth_cache_get() -> Option<Option<StoredTokens>> {
+    auth_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn auth_cache_set(value: Option<Option<StoredTokens>>) {
+    *auth_cache().lock().unwrap_or_else(|e| e.into_inner()) = value;
+}
+
 pub fn save_auth(t: &StoredTokens) {
     if let Ok(storage) = session_storage() {
         if let Ok(json) = serde_json::to_string(t) {
             let _ = storage.set_item(AUTH_KEY, &json);
         }
     }
-    AUTH_CACHE.with(|c| *c.borrow_mut() = Some(Some(t.clone())));
+    auth_cache_set(Some(Some(t.clone())));
 }
 
 pub fn load_auth() -> Option<StoredTokens> {
-    if let Some(cached) = AUTH_CACHE.with(|c| c.borrow().clone()) {
+    if let Some(cached) = auth_cache_get() {
         return cached;
     }
     #[cfg(test)]
@@ -88,7 +130,7 @@ pub fn load_auth() -> Option<StoredTokens> {
         let raw = storage.get_item(AUTH_KEY).ok().flatten()?;
         serde_json::from_str(&raw).ok()
     });
-    AUTH_CACHE.with(|c| *c.borrow_mut() = Some(parsed.clone()));
+    auth_cache_set(Some(parsed.clone()));
     parsed
 }
 
@@ -96,7 +138,7 @@ pub fn clear_auth() {
     if let Ok(storage) = session_storage() {
         let _ = storage.remove_item(AUTH_KEY);
     }
-    AUTH_CACHE.with(|c| *c.borrow_mut() = Some(None));
+    auth_cache_set(Some(None));
     // MAPPS-368: also drop any standalone (non-OIDC) session so logout is
     // complete regardless of which path signed the user in; otherwise the
     // stored standalone session would rehydrate the user right after logout.
@@ -120,10 +162,44 @@ pub struct StandaloneSession {
 }
 
 // MAPPS-863: the standalone-session counterpart to `AUTH_CACHE`. Same
-// invalidate-on-write, cache-on-read shape.
+// invalidate-on-write, cache-on-read shape, and MAPPS-881's same
+// shared-lock-on-desktop / thread-local-on-wasm32 split.
+#[cfg(target_arch = "wasm32")]
 thread_local! {
     static STANDALONE_CACHE: std::cell::RefCell<Option<Option<StandaloneSession>>> =
         const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+static STANDALONE_CACHE: std::sync::OnceLock<std::sync::Mutex<Option<Option<StandaloneSession>>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(not(target_arch = "wasm32"))]
+fn standalone_cache() -> &'static std::sync::Mutex<Option<Option<StandaloneSession>>> {
+    STANDALONE_CACHE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn standalone_cache_get() -> Option<Option<StandaloneSession>> {
+    STANDALONE_CACHE.with(|c| c.borrow().clone())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn standalone_cache_set(value: Option<Option<StandaloneSession>>) {
+    STANDALONE_CACHE.with(|c| *c.borrow_mut() = value);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn standalone_cache_get() -> Option<Option<StandaloneSession>> {
+    standalone_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn standalone_cache_set(value: Option<Option<StandaloneSession>>) {
+    *standalone_cache().lock().unwrap_or_else(|e| e.into_inner()) = value;
 }
 
 pub fn save_standalone(s: &StandaloneSession) {
@@ -132,18 +208,18 @@ pub fn save_standalone(s: &StandaloneSession) {
             let _ = storage.set_item(STANDALONE_KEY, &json);
         }
     }
-    STANDALONE_CACHE.with(|c| *c.borrow_mut() = Some(Some(s.clone())));
+    standalone_cache_set(Some(Some(s.clone())));
 }
 
 pub fn load_standalone() -> Option<StandaloneSession> {
-    if let Some(cached) = STANDALONE_CACHE.with(|c| c.borrow().clone()) {
+    if let Some(cached) = standalone_cache_get() {
         return cached;
     }
     let parsed = session_storage().ok().and_then(|storage| {
         let raw = storage.get_item(STANDALONE_KEY).ok().flatten()?;
         serde_json::from_str(&raw).ok()
     });
-    STANDALONE_CACHE.with(|c| *c.borrow_mut() = Some(parsed.clone()));
+    standalone_cache_set(Some(parsed.clone()));
     parsed
 }
 
@@ -151,7 +227,7 @@ pub fn clear_standalone() {
     if let Ok(storage) = session_storage() {
         let _ = storage.remove_item(STANDALONE_KEY);
     }
-    STANDALONE_CACHE.with(|c| *c.borrow_mut() = Some(None));
+    standalone_cache_set(Some(None));
 }
 
 /// MAPPS-432: consecutive login restarts kicked off by a recoverable
@@ -283,19 +359,19 @@ mod token_bundle_cache_tests {
             expires_at: chrono::Utc::now(),
             scope: "openid".to_string(),
         });
-        // A fresh thread starts with an empty `AUTH_CACHE`, so its first
-        // `load_auth` is the one that has to go parse the bundle
-        // `save_auth` above just wrote to the shared session store; every
-        // read after that must be served from that thread's own cache.
+        // MAPPS-881: `AUTH_CACHE` is process-wide on non-wasm32, so the
+        // `save_auth` above already populated it; a fresh thread's first
+        // `load_auth` is served from that shared cache and never has to
+        // parse the bundle itself.
         std::thread::spawn(|| {
             for _ in 0..5 {
                 assert_eq!(load_auth().map(|t| t.access_token), Some("a1".to_string()));
             }
             assert_eq!(
                 AUTH_PARSE_CALLS.with(|c| c.get()),
-                1,
-                "load_auth must parse the persisted bundle once per token change, not once \
-                 per read"
+                0,
+                "a fresh thread must be served from the shared cache another thread's \
+                 save_auth already populated, not parse the bundle again itself"
             );
         })
         .join()
@@ -305,6 +381,41 @@ mod token_bundle_cache_tests {
         assert!(
             load_auth().is_none(),
             "clear_auth must invalidate the cached bundle, not leave the old one readable"
+        );
+
+        // MAPPS-881: regression coverage for the thread-local cache that used
+        // to sit in front of `platform::store`'s process-wide
+        // `Mutex<HashMap>`. On desktop, dioxus-desktop's multi-threaded tokio
+        // runtime can resume a component task on a different OS thread than
+        // the one that started it, so a cache invisible across threads could
+        // serve a stale or just-cleared token bundle. `AUTH_CACHE` must now
+        // be shared: a write on one OS thread is immediately visible to a
+        // read on another. Kept in this same test function, not a separate
+        // `#[test]` fn, for the reason given above: every case here shares
+        // `AUTH_KEY` in the same process-wide store and cache, so a second
+        // test function running concurrently would race this one.
+        std::thread::spawn(|| {
+            save_auth(&StoredTokens {
+                access_token: "cross-thread".to_string(),
+                id_token: "id-cross".to_string(),
+                refresh_token: None,
+                expires_at: chrono::Utc::now(),
+                scope: "openid".to_string(),
+            });
+        })
+        .join()
+        .unwrap();
+        assert_eq!(
+            load_auth().map(|t| t.access_token),
+            Some("cross-thread".to_string()),
+            "a save_auth on one OS thread must be visible to load_auth on another"
+        );
+
+        std::thread::spawn(clear_auth).join().unwrap();
+        assert!(
+            load_auth().is_none(),
+            "a clear_auth on one OS thread must invalidate the cache another thread reads, \
+             not leave it serving the cleared bundle"
         );
     }
 }
