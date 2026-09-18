@@ -526,6 +526,16 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         advanced: true,
         visibility: SurfaceVisibility::Always,
     },
+    // MAPPS-887: the deployment-wide SMTP settings (PMS-638/788/1013),
+    // previously reachable only through the API with an admin bearer.
+    SettingsSurface {
+        route: Route::SettingsEmail {},
+        title: "Email",
+        description: "The SMTP server this deployment sends mail through. Test-send and verify without leaving the page.",
+        group: SettingsGroupKey::Integrations,
+        advanced: false,
+        visibility: SurfaceVisibility::StaffAdmin,
+    },
     // MAPPS-808: listed first in the group and not advanced: it is the one an
     // MSP without an RMM still has a use for.
     SettingsSurface {

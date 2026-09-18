@@ -45,6 +45,7 @@ pub mod pick_tenant;
 pub mod platform_login;
 pub mod settings_contact_sync;
 pub mod settings_contact_sync_import;
+pub mod settings_email;
 pub mod settings_modules;
 pub mod settings_note_editing;
 pub mod settings_timesheet_editing;

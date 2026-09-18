@@ -394,6 +394,13 @@ struct UpdateNoteBody {
 /// the original in their inbox, and a `time_entry` note is edited through its
 /// time entry. The permission half: the author, or an admin, which is the
 /// server's own default policy.
+///
+/// MAPPS-888: this rule mirrors mokosh-server's PMS-974 enforcement
+/// (`src/modules/tickets/service.rs`, `src/modules/tickets/routes.rs`),
+/// which is NOT part of the shared `mokosh-types` crate this app already
+/// depends on; it lives in the server's own binary crate. Moving it into
+/// `mokosh-types` is therefore a change to the mokosh-server repo, out of
+/// scope for a mokosh-apps PR; tracked as MAPPS-891.
 fn note_is_editable(note: &RemoteNote, viewer: Option<uuid::Uuid>, viewer_is_admin: bool) -> bool {
     if let Some(server) = note.can_edit {
         return server;

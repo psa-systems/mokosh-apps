@@ -219,6 +219,13 @@ struct RemoteCompany {
 /// held one until MAPPS-577, and that copy went stale the moment PMS-919
 /// changed the rules: the dialog kept warning about projects, appointments and
 /// sub-companies long after those started unlinking instead of blocking.
+///
+/// MAPPS-888: this mirrors mokosh-server's `CompanyDeletionPreview`
+/// (`src/modules/contacts/service.rs`), which is NOT part of the shared
+/// `mokosh-types` crate this app already depends on; it lives in the
+/// server's own binary crate. Moving it into `mokosh-types` is therefore a
+/// change to the mokosh-server repo, out of scope for a mokosh-apps PR;
+/// tracked as MAPPS-891.
 #[derive(Clone, Debug, Default, Deserialize)]
 struct DeletionPreview {
     #[serde(default)]
