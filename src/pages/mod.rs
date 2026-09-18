@@ -22,6 +22,7 @@ pub mod calendar;
 // of Company-scoped roles lives on the `CompanyRolesCard` inside
 // `contacts.rs`.
 pub mod company_role_edit;
+pub mod contact_provenance;
 pub mod contact_sync_review;
 pub mod contacts;
 pub mod contracts;

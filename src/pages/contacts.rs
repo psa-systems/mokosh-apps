@@ -333,6 +333,10 @@ struct RemoteContact {
     phones: Vec<RemotePhone>,
     #[serde(default)]
     companies: Vec<RemoteCompanyLink>,
+    /// MAPPS-811 (PMS-1260): where an imported contact came from, `None` for
+    /// one entered by hand. `#[serde(default)]` so an older server decodes.
+    #[serde(default)]
+    imported_from: Option<crate::pages::contact_provenance::ImportedFrom>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -5703,6 +5707,8 @@ pub fn ContactListPage() -> Element {
     let mut search = use_signal(String::new);
     let mut contact_type_filter = use_signal(String::new);
     let mut portal_filter = use_signal(String::new);
+    // MAPPS-811: where the contact came from (PMS-1260 `origin`).
+    let mut origin_filter = use_signal(String::new);
     let mut sort = use_signal(|| None::<(ContactSortKey, SortDirection)>);
     let mut page = use_signal(|| 1usize);
 
@@ -5718,10 +5724,16 @@ pub fn ContactListPage() -> Element {
         SelectOption::new("true", "Portal users only"),
         SelectOption::new("false", "Non-portal only"),
     ];
+    let origin_options = vec![
+        SelectOption::new("", "Any source"),
+        SelectOption::new("google", "Imported from Google"),
+        SelectOption::new("manual", "Entered in Mokosh"),
+    ];
 
     let search_text = search.read().trim().to_string();
     let type_text = contact_type_filter.read().clone();
     let portal_text = portal_filter.read().clone();
+    let origin_text = origin_filter.read().clone();
     let current_page = (*page.read()).max(1);
     let sort_snapshot = *sort.read();
 
@@ -5737,6 +5749,7 @@ pub fn ContactListPage() -> Element {
         let q = search_debounced.read().trim().to_string();
         let contact_type = contact_type_filter.read().clone();
         let portal = portal_filter.read().clone();
+        let origin = origin_filter.read().clone();
         let sort = contact_sort_query(*sort.read());
         let current_page = (*page.read()).max(1);
         async move {
@@ -5763,6 +5776,9 @@ pub fn ContactListPage() -> Element {
             if !portal.is_empty() {
                 path.push_str(&format!("&is_portal_user={portal}"));
             }
+            if !origin.is_empty() {
+                path.push_str(&format!("&origin={}", urlencoding_minimal(&origin)));
+            }
             if let Some((field, dir)) = sort {
                 path.push_str(&format!("&sort={field}&sort_dir={dir}"));
             }
@@ -5780,7 +5796,10 @@ pub fn ContactListPage() -> Element {
         Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
         _ => (Vec::new(), 0),
     };
-    let has_filters = !search_text.is_empty() || !type_text.is_empty() || !portal_text.is_empty();
+    let has_filters = !search_text.is_empty()
+        || !type_text.is_empty()
+        || !portal_text.is_empty()
+        || !origin_text.is_empty();
 
     use_page_title("Contacts");
 
@@ -5856,6 +5875,15 @@ pub fn ContactListPage() -> Element {
                         page.set(1);
                     },
                 }
+                Select {
+                    name: "origin",
+                    options: origin_options,
+                    value: origin_filter.read().clone(),
+                    onchange: move |e: FormEvent| {
+                        origin_filter.set(e.value());
+                        page.set(1);
+                    },
+                }
             }
         }
 
@@ -5904,6 +5932,7 @@ pub fn ContactListPage() -> Element {
                                         search.set(String::new());
                                         contact_type_filter.set(String::new());
                                         portal_filter.set(String::new());
+                                        origin_filter.set(String::new());
                                     },
                                     "Clear filters"
                                 }
@@ -5961,6 +5990,7 @@ pub fn ContactListPage() -> Element {
                                         role: humanize_contact_type(
                                             contact.contact_type.as_deref().unwrap_or_default(),
                                         ),
+                                        origin: contact.imported_from.clone(),
                                     }
                                 }
                             }
@@ -5986,6 +6016,9 @@ struct ContactRowProps {
     /// separators, because the cell shows one of a list rather than a field.
     phone: String,
     role: String,
+    /// MAPPS-811: the provenance badge after the name.
+    #[props(default)]
+    origin: Option<crate::pages::contact_provenance::ImportedFrom>,
 }
 
 #[component]
@@ -6003,6 +6036,7 @@ fn ContactRow(props: ContactRowProps) -> Element {
                     class: "font-medium text-accent hover:opacity-90",
                     "{props.name}"
                 }
+                crate::pages::contact_provenance::ProvenanceBadge { origin: props.origin.clone() }
             }
             TableCell {
                 // MAPPS-251: a freeform-only contact carries an empty company_id;
@@ -7182,6 +7216,22 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     // MAPPS-357: the contact record is this detail page's primary resource
     // (the tickets list below is secondary and keeps degrading to its own
     // card). Subscribe to reachability so it auto-refetches on reconnect.
+    // MAPPS-811: where the contact came from and which fields are locked
+    // (PMS-1214). Its own resource: a hand-entered contact answers an empty
+    // link list, and the card and the lock markers both read it.
+    let id_for_provenance = contact_id_str.clone();
+    let mut provenance = use_resource(move || {
+        let id = id_for_provenance.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<crate::pages::contact_provenance::Provenance>(
+                &format!("/contacts/contacts/{id}/sync"),
+            )
+            .await
+            .inspect_err(|e| tracing::warn!("contact provenance load failed for {id}: {e}"))
+            .ok()
+        }
+    });
     let mut contact = use_resource(move || {
         let id = id_for_resource.clone();
         async move {
@@ -7373,6 +7423,17 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                 let notes = c.notes.clone().unwrap_or_default();
                 let is_portal_user = c.is_portal_user;
                 let portal_id = id_for_portal.clone();
+                // MAPPS-811: locked-field markers and the import card.
+                let prov = provenance.read().clone().flatten();
+                let locked = |field: &str| prov.as_ref().is_some_and(|p| p.is_locked(field));
+                let (lock_email, lock_phones, lock_title, lock_department, lock_company) = (
+                    locked("email"),
+                    locked("phones"),
+                    locked("title"),
+                    locked("department"),
+                    locked("company_name"),
+                );
+                let provenance_contact_id = id_for_portal.clone();
                 // MAPPS-481: every phone and every company link, each as its
                 // own row. Empty lists keep the pre-PMS-806 scalar rendering
                 // below, which is also the freeform-company path (MAPPS-484).
@@ -7480,7 +7541,9 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                     if let Some(email) = email {
                                         if !email.is_empty() {
                                             div {
-                                                dt { class: "text-sm text-muted", "Email" }
+                                                dt { class: "text-sm text-muted", "Email",
+                                                    crate::pages::contact_provenance::LockMarker { locked: lock_email }
+                                                }
                                                 dd { class: "mt-1",
                                                     a {
                                                         href: "mailto:{email}",
@@ -7501,6 +7564,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                                     if entry.is_primary {
                                                         span { class: "text-subtle ml-1", "(primary)" }
                                                     }
+                                                    crate::pages::contact_provenance::LockMarker { locked: lock_phones }
                                                 }
                                                 // MAPPS-283: render with separators.
                                                 dd { class: "mt-1",
@@ -7531,7 +7595,9 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                     if let Some(title) = title {
                                         if !title.is_empty() {
                                             div {
-                                                dt { class: "text-sm text-muted", "Title" }
+                                                dt { class: "text-sm text-muted", "Title",
+                                                    crate::pages::contact_provenance::LockMarker { locked: lock_title }
+                                                }
                                                 dd { class: "mt-1", "{title}" }
                                             }
                                         }
@@ -7539,7 +7605,9 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                     if let Some(dept) = department {
                                         if !dept.is_empty() {
                                             div {
-                                                dt { class: "text-sm text-muted", "Department" }
+                                                dt { class: "text-sm text-muted", "Department",
+                                                    crate::pages::contact_provenance::LockMarker { locked: lock_department }
+                                                }
                                                 dd { class: "mt-1", "{dept}" }
                                             }
                                         }
@@ -7584,7 +7652,9 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                         }
                                     } else if !company_name.is_empty() {
                                         div {
-                                            dt { class: "text-sm text-muted", "Company" }
+                                            dt { class: "text-sm text-muted", "Company",
+                                                crate::pages::contact_provenance::LockMarker { locked: lock_company }
+                                            }
                                             dd { class: "mt-1",
                                                 // MAPPS-251: link only when an FK-linked CRM
                                                 // company exists; a freeform company name has
@@ -7627,6 +7697,17 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                 }
                             }
 
+                            // MAPPS-811: where it came from, what is locked,
+                            // and Unlink / Remove imported data. Nothing for a
+                            // hand-entered contact.
+                            crate::pages::contact_provenance::ImportCard {
+                                contact_id: provenance_contact_id,
+                                provenance: prov.clone(),
+                                on_change: move |_| {
+                                    provenance.restart();
+                                    contact.restart();
+                                },
+                            }
                             ContactPortalCard {
                                 contact_id: portal_id,
                                 // MAPPS-590 (prompt 012): thread the
@@ -10713,6 +10794,9 @@ mod shared_dto_tests {
             is_portal_user,
             phones: Vec::new(),
             companies: Vec::new(),
+            // MAPPS-811: bound to `ContactResponse.imported_from` by the
+            // mokosh-types pin bump that follows PMS-1260.
+            imported_from: None,
         };
         let _ = ContactEditPayload {
             first_name: first_name.clone(),
