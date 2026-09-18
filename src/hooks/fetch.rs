@@ -1240,11 +1240,7 @@ pub mod api {
     pub async fn get<T: DeserializeOwned>(path: &str) -> Result<T, String> {
         let url = format!("{}{}", api_base(), path);
 
-        let response = Request::get(&url)
-            .header("Content-Type", "application/json")
-            .send()
-            .await
-            .map_err(transport_err)?;
+        let response = Request::get(&url).send().await.map_err(transport_err)?;
 
         if response.ok() {
             response.json::<T>().await.map_err(|e| e.to_string())
@@ -1428,7 +1424,6 @@ pub mod api {
         let (agent_lane, token) = agent_lane_bearer(token).await;
 
         let response = Request::get(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {}", token))
             .send()
             .await
@@ -1507,7 +1502,6 @@ pub mod api {
         let url = format!("{}{}", api_base(), path);
 
         let response = Request::post(&url)
-            .header("Content-Type", "application/json")
             .json(body)
             .map_err(|e| e.to_string())?
             .send()
@@ -1532,7 +1526,6 @@ pub mod api {
         let (agent_lane, token) = agent_lane_bearer(token).await;
 
         let response = Request::post(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {}", token))
             .json(body)
             .map_err(|e| e.to_string())?
@@ -1561,7 +1554,6 @@ pub mod api {
         let (agent_lane, token) = agent_lane_bearer(token).await;
 
         let response = Request::put(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {}", token))
             .json(body)
             .map_err(|e| e.to_string())?
@@ -1595,7 +1587,6 @@ pub mod api {
         let (agent_lane, token) = agent_lane_bearer(token).await;
 
         let response = Request::patch(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {}", token))
             .json(body)
             .map_err(|e| e.to_string())?
@@ -1620,7 +1611,6 @@ pub mod api {
         let (agent_lane, token) = agent_lane_bearer(token).await;
 
         let response = Request::delete(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {}", token))
             .send()
             .await
@@ -1869,7 +1859,6 @@ pub mod api {
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::post(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {t}"))
             .json(body)
             .map_err(|e| ApiError::Network(e.to_string()))?
@@ -1975,7 +1964,6 @@ pub mod api {
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::put(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {t}"))
             .json(body)
             .map_err(|e| ApiError::Network(e.to_string()))?
@@ -2038,7 +2026,6 @@ pub mod api {
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::patch(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {t}"))
             .json(body)
             .map_err(|e| ApiError::Network(e.to_string()))?
@@ -2097,7 +2084,6 @@ pub mod api {
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::post(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {t}"))
             .send()
             .await
@@ -2244,7 +2230,6 @@ pub mod api {
         let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::get(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {t}"))
             .send()
             .await
@@ -2260,7 +2245,6 @@ pub mod api {
         let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::post(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {t}"))
             .json(body)
             .map_err(|e| ApiError::Network(e.to_string()))?
@@ -2275,7 +2259,6 @@ pub mod api {
         let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::post(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {t}"))
             .send()
             .await
@@ -2326,7 +2309,6 @@ pub mod api {
         let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::put(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {t}"))
             .send()
             .await
@@ -2376,7 +2358,6 @@ pub mod api {
         let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::put(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {t}"))
             .json(body)
             .map_err(|e| ApiError::Network(e.to_string()))?
@@ -2399,7 +2380,6 @@ pub mod api {
         let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::patch(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {t}"))
             .json(body)
             .map_err(|e| ApiError::Network(e.to_string()))?
@@ -2414,7 +2394,6 @@ pub mod api {
         let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::delete(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {t}"))
             .send()
             .await
@@ -2510,7 +2489,7 @@ pub mod api {
     #[cfg(feature = "app")]
     pub async fn get_authed_any_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
         let url = format!("{}{}", api_base(), path);
-        let mut req = Request::get(&url).header("Content-Type", "application/json");
+        let mut req = Request::get(&url);
         let bearer = current_contact_access_token().or_else(current_access_token);
         if let Some(t) = bearer {
             req = req.header("Authorization", &format!("Bearer {t}"));
@@ -2533,7 +2512,7 @@ pub mod api {
         body: &B,
     ) -> Result<T, ApiError> {
         let url = format!("{}{}", api_base(), path);
-        let mut req = Request::post(&url).header("Content-Type", "application/json");
+        let mut req = Request::post(&url);
         let bearer = current_contact_access_token().or_else(current_access_token);
         if let Some(t) = bearer {
             req = req.header("Authorization", &format!("Bearer {t}"));
@@ -2561,7 +2540,7 @@ pub mod api {
         body: &B,
     ) -> Result<T, ApiError> {
         let url = format!("{}{}", api_base(), path);
-        let mut req = Request::patch(&url).header("Content-Type", "application/json");
+        let mut req = Request::patch(&url);
         let bearer = current_contact_access_token().or_else(current_access_token);
         if let Some(t) = bearer {
             req = req.header("Authorization", &format!("Bearer {t}"));
@@ -2709,7 +2688,6 @@ pub mod api {
         let t = current_platform_access_token().ok_or_else(platform_not_signed_in_api)?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::get(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {t}"))
             .send()
             .await
@@ -2725,7 +2703,6 @@ pub mod api {
         let t = current_platform_access_token().ok_or_else(platform_not_signed_in_api)?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::post(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {t}"))
             .json(body)
             .map_err(|e| ApiError::Network(e.to_string()))?
@@ -2743,7 +2720,6 @@ pub mod api {
         let t = current_platform_access_token().ok_or_else(platform_not_signed_in_api)?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::put(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {t}"))
             .json(body)
             .map_err(|e| ApiError::Network(e.to_string()))?
@@ -2973,7 +2949,7 @@ pub mod api {
     pub async fn get_authed_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
         ensure_fresh_access_token().await;
         let url = format!("{}{}", api_base(), path);
-        let mut req = Request::get(&url).header("Content-Type", "application/json");
+        let mut req = Request::get(&url);
         let bearer = current_access_token();
         if let Some(t) = &bearer {
             req = req.header("Authorization", &format!("Bearer {t}"));
@@ -3136,7 +3112,7 @@ pub mod api {
     ) -> Result<T, ApiError> {
         ensure_fresh_access_token().await;
         let url = format!("{}{}", api_base(), path);
-        let mut req = Request::post(&url).header("Content-Type", "application/json");
+        let mut req = Request::post(&url);
         let bearer = current_access_token();
         if let Some(t) = &bearer {
             req = req.header("Authorization", &format!("Bearer {t}"));
@@ -3165,7 +3141,7 @@ pub mod api {
     ) -> Result<(), ApiError> {
         ensure_fresh_access_token().await;
         let url = format!("{}{}", api_base(), path);
-        let mut req = Request::post(&url).header("Content-Type", "application/json");
+        let mut req = Request::post(&url);
         let bearer = current_access_token();
         if let Some(t) = &bearer {
             req = req.header("Authorization", &format!("Bearer {t}"));
@@ -3226,7 +3202,7 @@ pub mod api {
         body: &B,
     ) -> Result<T, ApiError> {
         let url = format!("{}{}", api_base(), path);
-        let mut req = Request::post(&url).header("Content-Type", "application/json");
+        let mut req = Request::post(&url);
         if let Some(host) = current_forwarded_host() {
             req = req.header("X-Forwarded-Host", &host);
         }
@@ -3247,7 +3223,7 @@ pub mod api {
     #[cfg(feature = "app")]
     pub async fn get_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
         let url = format!("{}{}", api_base(), path);
-        let mut req = Request::get(&url).header("Content-Type", "application/json");
+        let mut req = Request::get(&url);
         if let Some(host) = current_forwarded_host() {
             req = req.header("X-Forwarded-Host", &host);
         }
@@ -3272,7 +3248,7 @@ pub mod api {
     #[cfg(feature = "web")]
     pub async fn post_typed_no_content<B: Serialize>(path: &str, body: &B) -> Result<(), ApiError> {
         let url = format!("{}{}", api_base(), path);
-        let mut req = Request::post(&url).header("Content-Type", "application/json");
+        let mut req = Request::post(&url);
         if let Some(host) = current_forwarded_host() {
             req = req.header("X-Forwarded-Host", &host);
         }
@@ -3334,7 +3310,6 @@ pub mod api {
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::put(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {t}"))
             .json(body)
             .map_err(|e| ApiError::Network(e.to_string()))?
@@ -3366,7 +3341,6 @@ pub mod api {
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::patch(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {t}"))
             .json(body)
             .map_err(|e| ApiError::Network(e.to_string()))?
@@ -3391,7 +3365,6 @@ pub mod api {
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::delete(&url)
-            .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {t}"))
             .send()
             .await

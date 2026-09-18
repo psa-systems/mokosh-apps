@@ -32,7 +32,6 @@ app = []
 web = ["app", "dioxus/web"]
 desktop = ["app", "dioxus/desktop"]
 multi-tenant = []
-single-tenant = []
 server = []
 # MAPPS-338: opt-in dev shortcut that auto-signs the WASM in as Admin
 # from `ADMIN_EMAIL` + `ADMIN_PASSWORD` compile-time env. Off by default

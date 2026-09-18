@@ -16,14 +16,8 @@
 //!
 //! Following the `modules/contacts` convention, only the DTOs ship in
 //! the client crate; the server-only `routes`/`service` halves stay in
-//! mokosh-server. The stub `routes`/`service` modules below exist purely
-//! so the `#[cfg(feature = "server")]` layout matches the sibling
-//! modules when the workspace is built with the server feature.
+//! mokosh-server.
 
 mod models;
-#[cfg(feature = "server")]
-mod routes;
-#[cfg(feature = "server")]
-mod service;
 
 pub use models::*;

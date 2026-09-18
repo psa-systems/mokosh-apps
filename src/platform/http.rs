@@ -128,6 +128,43 @@ mod imp {
         body: Body,
     }
 
+    /// Builds the `reqwest::Request` `send()` would fire, without
+    /// performing any I/O. Split out so a test can inspect the headers
+    /// `reqwest` ends up with (the boundary it picks for multipart, the
+    /// `Content-Type` this module sets for JSON) without needing a live
+    /// server.
+    fn build_reqwest_request(
+        client: &reqwest::Client,
+        builder: RequestBuilder,
+        body: Body,
+    ) -> Result<reqwest::Request, Error> {
+        let mut req = client.request(builder.method, &builder.url);
+        for (k, v) in &builder.headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+        req = match body {
+            Body::Empty => req,
+            Body::Raw(bytes) => req.body(bytes),
+            Body::Json(bytes) => req.header("Content-Type", "application/json").body(bytes),
+            Body::Multipart {
+                file_name,
+                mime,
+                bytes,
+            } => {
+                let part = reqwest::multipart::Part::bytes(bytes)
+                    .file_name(file_name)
+                    .mime_str(&mime)
+                    .map_err(|e| Error::new(format!("could not prepare the upload: {e}")))?;
+                // reqwest writes `Content-Type` with the boundary it
+                // generated; anything we set by hand is dropped here
+                // for the same reason the browser path leaves it alone.
+                req.multipart(reqwest::multipart::Form::new().part("file", part))
+            }
+        };
+        req.build()
+            .map_err(|e| Error::new(format!("could not build the request: {e}")))
+    }
+
     impl Request {
         pub fn get(url: &str) -> RequestBuilder {
             RequestBuilder::new(reqwest::Method::GET, url)
@@ -147,29 +184,8 @@ mod imp {
 
         pub async fn send(self) -> Result<Response, Error> {
             let Self { builder, body } = self;
-            let mut req = client()?.request(builder.method, &builder.url);
-            for (k, v) in &builder.headers {
-                req = req.header(k.as_str(), v.as_str());
-            }
-            req = match body {
-                Body::Empty => req,
-                Body::Raw(bytes) | Body::Json(bytes) => req.body(bytes),
-                Body::Multipart {
-                    file_name,
-                    mime,
-                    bytes,
-                } => {
-                    let part = reqwest::multipart::Part::bytes(bytes)
-                        .file_name(file_name)
-                        .mime_str(&mime)
-                        .map_err(|e| Error::new(format!("could not prepare the upload: {e}")))?;
-                    // reqwest writes `Content-Type` with the boundary it
-                    // generated; anything we set by hand is dropped here
-                    // for the same reason the browser path leaves it alone.
-                    req.multipart(reqwest::multipart::Form::new().part("file", part))
-                }
-            };
-            let resp = req.send().await.map_err(Error::new)?;
+            let req = build_reqwest_request(client()?, builder, body)?;
+            let resp = client()?.execute(req).await.map_err(Error::new)?;
             let status = resp.status().as_u16();
             // Header names are lowercased so `get` is case-insensitive
             // the way `gloo_net`'s is; a value that is not valid UTF-8 is
@@ -316,6 +332,30 @@ mod imp {
 
         pub async fn binary(&self) -> Result<Vec<u8>, Error> {
             Ok(self.body.clone())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// CF-21: a `.json()` call with no explicit `.header("Content-Type", ...)`
+        /// still ends up with the header set, the way the browser build's
+        /// `gloo_net::Request::json()` already does implicitly.
+        #[test]
+        fn json_request_sets_content_type_without_explicit_header() {
+            let client = reqwest::Client::new();
+            let builder = RequestBuilder::new(reqwest::Method::POST, "https://example.invalid/x");
+            let body = Body::Json(serde_json::to_vec(&serde_json::json!({"a": 1})).unwrap());
+
+            let req = build_reqwest_request(&client, builder, body).unwrap();
+
+            assert_eq!(
+                req.headers()
+                    .get("content-type")
+                    .map(|v| v.to_str().unwrap()),
+                Some("application/json"),
+            );
         }
     }
 }
