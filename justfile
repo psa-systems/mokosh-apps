@@ -28,8 +28,8 @@ dev_image := "ghcr.io/niceguyit/rust-builder-glibc:v1.0.1-rust1.94-trixie"
 pre_commit_prepare := "pre-commit-guards"
 
 # Mirrors check-clippy and check.yml. The shared default is --all-features,
-# which would turn on `desktop` (linking the system webview) and `single-tenant`
-# alongside `multi-tenant`, neither of which this repo compiles anywhere else.
+# which would turn on `desktop` (linking the system webview) alongside
+# `multi-tenant`, which this repo does not compile anywhere else.
 clippy_args := "--all-targets -- -D warnings"
 
 # The clippy pass above is this repo's host-target typecheck, so the container
@@ -339,7 +339,7 @@ dev-release:
 #   App: https://{USER}-mokosh.a8n.run
 # Run `just dev-sso` here AND in mokosh-server. The overlay requires
 # MOKOSH_OIDC_CLIENT_ID set in .env (or the shell), which comes from
-# `just register-client` in mokosh-server. The compose file fails loud
+# `just register-dev-clients` in bunyip. The compose file fails loud
 # if it's missing.
 [doc("Start the SSO dev stack (Traefik-routed at *.a8n.run)")]
 [group: 'dev']
