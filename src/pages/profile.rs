@@ -378,6 +378,11 @@ fn StaffProfilePage() -> Element {
         }
 
         PreferencesCard {}
+
+        // MAPPS-889: unconditional, unlike MfaCard above. `/auth/logout-all`
+        // revokes this SPA's own session table, which exists in every
+        // deployment mode, so there is no hub-delegates-this branch here.
+        SignOutEverywhereCard {}
     }
 }
 
@@ -975,6 +980,71 @@ fn MfaDisableModal(props: MfaDisableModalProps) -> Element {
                     value: password(),
                     oninput: move |e: FormEvent| password.set(e.value()),
                 }
+            }
+        }
+    }
+}
+
+/// MAPPS-889: end every session this user holds, on every device, including
+/// this one. Calls mokosh-server's `POST /auth/logout-all` (PMS-880's
+/// remediation) through `sign_out::sign_out_everywhere`, the same shared
+/// helper the profile page's other sign-out never bypasses (MAPPS-522).
+/// Confirmed behind a modal since the click ends this tab's session too:
+/// there is no "everywhere but here" middle ground to soften it with.
+#[component]
+fn SignOutEverywhereCard() -> Element {
+    let mut show_confirm = use_signal(|| false);
+    let mut submitting = use_signal(|| false);
+
+    let confirm = move |_| {
+        if submitting() {
+            return;
+        }
+        submitting.set(true);
+        spawn(async move {
+            crate::modules::auth::sign_out::sign_out_everywhere().await;
+        });
+    };
+
+    rsx! {
+        Card {
+            div { class: "flex items-center justify-between gap-4 p-6",
+                div {
+                    h2 { class: "text-base font-semibold text-content",
+                        "Sign out everywhere"
+                    }
+                    p { class: "text-sm text-muted",
+                        "Ends every session on every device, including this one."
+                    }
+                }
+                Button {
+                    variant: ButtonVariant::Danger,
+                    onclick: move |_| show_confirm.set(true),
+                    "Sign out everywhere"
+                }
+            }
+        }
+        Modal {
+            open: show_confirm(),
+            title: "Sign out everywhere?".to_string(),
+            onclose: move |_| show_confirm.set(false),
+            footer: rsx! {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    disabled: submitting(),
+                    onclick: move |_| show_confirm.set(false),
+                    "Cancel"
+                }
+                Button {
+                    variant: ButtonVariant::Danger,
+                    loading: submitting(),
+                    onclick: confirm,
+                    "Sign out everywhere"
+                }
+            },
+            p { class: "text-sm text-content",
+                "This ends every session on every device, including this one. \
+                 You'll be signed out now and need to sign in again."
             }
         }
     }

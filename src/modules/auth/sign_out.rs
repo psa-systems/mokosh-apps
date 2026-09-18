@@ -65,6 +65,27 @@ async fn revoke_mokosh_session() {
     }
 }
 
+/// Revoke every mokosh session this user holds, not just this one
+/// (MAPPS-889's "sign out everywhere"), with the bearer the SPA still holds.
+///
+/// Same quiet-return posture as [`revoke_mokosh_session`]: nothing to revoke
+/// when no agent bearer is held.
+async fn revoke_all_mokosh_sessions() {
+    #[cfg(feature = "app")]
+    {
+        use crate::hooks::fetch::api;
+
+        if api::current_access_token().is_none() {
+            return;
+        }
+        if let Err(e) = api::post_authed_no_content("/auth/logout-all").await {
+            crate::platform::log::error(&format!(
+                "sign-out-everywhere: revoking every mokosh session failed, signing out anyway: {e}"
+            ));
+        }
+    }
+}
+
 /// Revoke the OP's refresh-token family (MAPPS-336) so a leaked refresh token
 /// does not survive the user clicking "Log out".
 async fn revoke_provider_refresh_token() {
@@ -98,6 +119,27 @@ async fn revoke_provider_refresh_token() {
 /// `AuthContext`.
 pub async fn sign_out() {
     revoke_mokosh_session().await;
+    revoke_provider_refresh_token().await;
+    storage::clear_auth();
+    #[cfg(feature = "app")]
+    crate::hooks::fetch::api::set_access_token(None);
+    #[cfg(all(feature = "app", not(target_arch = "wasm32")))]
+    crate::hooks::fetch::note_session_ended();
+    crate::platform::location::replace(&logout_redirect_url());
+}
+
+/// End every session this user holds, everywhere, then leave for
+/// [`logout_redirect_url`] (MAPPS-889).
+///
+/// Same shape and failure posture as [`sign_out`]: the revoke needs the
+/// bearer that local state is about to clear, so it runs first; a failed
+/// revoke is logged and does not block the redirect. The provider
+/// refresh-token revoke still runs too: `POST /auth/logout-all` only reaches
+/// mokosh-server's own session table, not the OP's refresh-token family, so
+/// skipping it would leave that token valid for the rest of its own life
+/// (MAPPS-336).
+pub async fn sign_out_everywhere() {
+    revoke_all_mokosh_sessions().await;
     revoke_provider_refresh_token().await;
     storage::clear_auth();
     #[cfg(feature = "app")]
@@ -273,6 +315,35 @@ mod tests {
             revoked < cleared && cleared < left,
             "the revoke needs the token it is revoking, and the navigation never \
              returns control to this SPA, so the order is revoke, clear, leave"
+        );
+    }
+
+    /// MAPPS-889: the revoke is the point of the change. Without the call
+    /// every other session outlives the click, which is the defect the
+    /// issue exists to close.
+    #[test]
+    fn sign_out_everywhere_revokes_every_session_before_it_clears_and_leaves() {
+        let revoke = body_of("revoke_all_mokosh_sessions");
+        assert!(
+            revoke.contains("/auth/logout-all"),
+            "nothing calls the logout-all endpoint"
+        );
+
+        let everywhere = body_of("sign_out_everywhere");
+        let revoked = everywhere
+            .find("revoke_all_mokosh_sessions")
+            .expect("sign_out_everywhere revokes every session");
+        let cleared = everywhere
+            .find("clear_auth")
+            .expect("sign_out_everywhere clears local auth state");
+        let left = everywhere
+            .find("location::replace")
+            .expect("sign_out_everywhere leaves the page");
+        assert!(
+            revoked < cleared && cleared < left,
+            "the revoke needs the token it is revoking, and the navigation \
+             never returns control to this SPA, so the order is revoke, \
+             clear, leave"
         );
     }
 
