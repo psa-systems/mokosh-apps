@@ -455,8 +455,13 @@ pub fn user_today() -> chrono::NaiveDate {
 /// The calendar date a UTC instant falls on in the user's profile
 /// timezone (PMS-360); buckets an appointment/entry into the same day
 /// cell the rest of the app uses, matching the records' timezone.
+///
+/// MAPPS-888: delegates to the shared crate's bucketing rule
+/// (`mokosh_types::datetime::user_local_date`) instead of reimplementing
+/// it, so `mokosh-server` SQL aggregates and this render bucket a UTC
+/// instant onto the same day.
 pub fn user_local_date(dt: DateTime<Utc>) -> chrono::NaiveDate {
-    dt.with_timezone(&user_timezone()).date_naive()
+    mokosh_types::datetime::user_local_date(dt, user_timezone().name())
 }
 
 #[cfg(test)]
