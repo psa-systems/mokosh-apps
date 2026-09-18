@@ -815,6 +815,11 @@ pub enum Route {
     #[route("/contacts/new")]
     ContactNew {},
 
+    // MAPPS-810: Google contacts the import was not sure about. Static, so it
+    // resolves ahead of `/contacts/:id` the way `/contacts/new` does.
+    #[route("/contacts/import-review")]
+    ContactImportReview {},
+
     #[route("/contacts/:id")]
     ContactDetail { id: String },
 
@@ -2196,6 +2201,15 @@ fn SettingsModules() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             pages::settings_modules::ModulesSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn ContactImportReview() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::contact_sync_review::ContactImportReviewPage {}
         }
     }
 }
