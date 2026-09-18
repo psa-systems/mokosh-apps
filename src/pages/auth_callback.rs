@@ -193,6 +193,20 @@ pub fn AuthCallbackPage() -> Element {
                     a.is_loading = false;
                     a.error = None;
                     a.tokens = Some(tokens);
+                    // MAPPS-877: a fresh OIDC sign-in must land the
+                    // caller on their OWN tenant, never on whatever
+                    // shared tenant was active in a prior session.
+                    // The id_token's `tenant_id` claim IS the home
+                    // tenant for bunyip's owner path (a grant-scoped
+                    // token comes from the switcher, not from a
+                    // sign-in flow), so seeding `active_tenant_id`
+                    // from it here removes the None gap between the
+                    // callback and the first tick of the memberships
+                    // loader that used to leave the switcher's
+                    // fallback-to-first-membership picking the
+                    // alphabetically-earliest shared team as the
+                    // display's active row.
+                    a.active_tenant_id = Some(tenant_id);
                 }
                 // Land back on the originally requested page (MAPPS-323).
                 // `classify_return_to` (unit-tested) decides:

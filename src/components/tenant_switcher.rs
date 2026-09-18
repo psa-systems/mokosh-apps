@@ -587,10 +587,27 @@ pub fn TenantSwitcher() -> Element {
                 .find(|m| Some(m.tenant_id.clone()) == active_id)
                 .map(|m| m.tenant_name.clone())
         };
+        // MAPPS-877: the "first membership" fallback used to pick the
+        // alphabetically-earliest row, which would name a shared team
+        // as the active one when the caller had a shared workspace
+        // sorting before their own name. A shared team is NEVER the
+        // right default at this fallback level; the caller's own
+        // workspaces are (`mokosh_bunyip_grant_id.is_none()`),
+        // ordered alphabetically among themselves. If somehow the
+        // caller holds only granted memberships (unusual, but
+        // possible if their own tenant was deleted), fall back to the
+        // plain first row so the trigger is not blank.
+        let first_owned_name = || {
+            list.iter()
+                .find(|m| m.mokosh_bunyip_grant_id.is_none())
+                .map(|m| m.tenant_name.clone())
+        };
         let first_membership_name = || list.first().map(|m| m.tenant_name.clone());
         let active_name = derived_name
             .filter(|s| !s.trim().is_empty())
             .or_else(derived_from_list)
+            .filter(|s| !s.trim().is_empty())
+            .or_else(first_owned_name)
             .filter(|s| !s.trim().is_empty())
             .or_else(first_membership_name)
             .filter(|s| !s.trim().is_empty())

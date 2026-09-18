@@ -305,11 +305,30 @@ fn row_role(row: &MemberRow) -> String {
     }
 }
 
+/// MAPPS-877: whether the row represents the currently signed-in user.
+/// `me_id` is None during the brief window between mount and auth
+/// rehydrate; the safe default is "not me" so no protections apply
+/// until the id is known.
+fn row_matches_self(row: &MemberRow, me_id: Option<uuid::Uuid>) -> bool {
+    let Some(me) = me_id else { return false };
+    match row {
+        MemberRow::User { user_id, .. } => *user_id == me,
+        // An UnplacedGuest is by definition a grant that has never
+        // been JIT-placed, so the caller cannot be them.
+        MemberRow::UnplacedGuest { .. } => false,
+    }
+}
+
 #[component]
 fn PeoplePane() -> Element {
     let mut q = use_signal(String::new);
     let mut kind = use_signal(|| "everyone".to_string());
     let refresh = use_signal(|| 0u32);
+    // MAPPS-877: self-row protection. Reading `auth.user.id` here
+    // gives every row a way to answer "is this me" so Change role
+    // and Deactivate are withheld on the caller's own row (a user
+    // cannot lock themselves out of their own workspace).
+    let me_id: Option<uuid::Uuid> = crate::hooks::use_auth().read().user.as_ref().map(|u| u.id);
 
     let members: Resource<Option<MembersResponse>> = use_resource(move || {
         let _bump = refresh.read();
@@ -397,7 +416,7 @@ fn PeoplePane() -> Element {
                 div { class: "flex flex-col",
                     label { class: "text-xs text-subtle mb-1", "Show" }
                     select {
-                        class: "block rounded-md border border-line bg-surface-1 px-3 py-2 text-sm text-content focus:outline-none",
+                        class: "block rounded-md border border-line bg-surface text-content px-3 py-2 text-sm focus:border-accent focus:ring-accent shadow-sm",
                         value: kind(),
                         onchange: move |e: FormEvent| kind.set(e.value()),
                         option { value: "everyone", "Everyone" }
@@ -435,6 +454,7 @@ fn PeoplePane() -> Element {
                         MemberRowItem {
                             key: "{row_key(row)}",
                             row: row.clone(),
+                            is_self: row_matches_self(row, me_id),
                             on_change_role: {
                                 let mut confirm_change = confirm_change;
                                 let mut role_pick = role_pick;
@@ -496,6 +516,7 @@ fn row_key(row: &MemberRow) -> String {
 #[component]
 fn MemberRowItem(
     row: MemberRow,
+    is_self: bool,
     on_change_role: EventHandler<()>,
     on_remove: EventHandler<()>,
 ) -> Element {
@@ -503,10 +524,21 @@ fn MemberRowItem(
     let name = display_name(&row);
     let email = row_email(&row);
     let role = row_role(&row);
-    let source_badge = match kind {
-        RowKind::Direct => rsx! { Badge { variant: BadgeVariant::Gray, "Direct" } },
-        RowKind::Guest => rsx! { Badge { variant: BadgeVariant::Green, "Guest" } },
-        RowKind::Awaiting => rsx! { Badge { variant: BadgeVariant::Yellow, "Awaiting sign-in" } },
+    // MAPPS-877: the caller's own row reads "Self" rather than
+    // "Direct" so the roster names the reader explicitly. A guest
+    // row can never be `is_self` (unplaced guests have no `users`
+    // row for `me_id` to match, and a placed guest signed in as
+    // themselves would already be labelled Self here).
+    let source_badge = if is_self {
+        rsx! { Badge { variant: BadgeVariant::Blue, "Self" } }
+    } else {
+        match kind {
+            RowKind::Direct => rsx! { Badge { variant: BadgeVariant::Gray, "Direct" } },
+            RowKind::Guest => rsx! { Badge { variant: BadgeVariant::Green, "Guest" } },
+            RowKind::Awaiting => {
+                rsx! { Badge { variant: BadgeVariant::Yellow, "Awaiting sign-in" } }
+            }
+        }
     };
 
     let teams: Vec<TeamChip> = match &row {
@@ -548,18 +580,28 @@ fn MemberRowItem(
                     }
                 }
             }
-            div { class: "flex gap-2",
-                Button {
-                    variant: ButtonVariant::Secondary,
-                    r#type: "button".to_string(),
-                    onclick: move |_| on_change_role.call(()),
-                    "Change role"
-                }
-                Button {
-                    variant: ButtonVariant::Secondary,
-                    r#type: "button".to_string(),
-                    onclick: move |_| on_remove.call(()),
-                    if matches!(kind, RowKind::Direct) { "Deactivate" } else { "Revoke" }
+            // MAPPS-877: withhold Change role and Deactivate on the
+            // caller's own row. A user must not be able to lock
+            // themselves out of their own workspace, and role
+            // demotion of self would leave the tenant with no admin
+            // capable of undoing it. The label reads "You" instead
+            // so the row is not a silent empty slot.
+            if is_self {
+                span { class: "text-xs text-subtle italic", "You" }
+            } else {
+                div { class: "flex gap-2",
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        r#type: "button".to_string(),
+                        onclick: move |_| on_change_role.call(()),
+                        "Change role"
+                    }
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        r#type: "button".to_string(),
+                        onclick: move |_| on_remove.call(()),
+                        if matches!(kind, RowKind::Direct) { "Deactivate" } else { "Revoke" }
+                    }
                 }
             }
         }
@@ -679,7 +721,7 @@ fn ChangeRoleModal(
                 div {
                     label { class: "text-sm text-content mb-1 block", "New role" }
                     select {
-                        class: "block w-full rounded-md border border-line bg-surface-1 px-3 py-2 text-sm text-content focus:outline-none",
+                        class: "block w-full rounded-md border border-line bg-surface text-content px-3 py-2 text-sm focus:border-accent focus:ring-accent shadow-sm",
                         value: pick.clone(),
                         disabled: saving,
                         onchange: move |e: FormEvent| {
