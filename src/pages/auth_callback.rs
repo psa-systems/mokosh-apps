@@ -138,6 +138,19 @@ pub fn AuthCallbackPage() -> Element {
                         scope: tokens.scope.clone(),
                     },
                 );
+                // MAPPS-877: also stash the bunyip credential in its own
+                // slot so `issuer_post_authed` can present a bunyip
+                // at+jwt after a tenant switch clears the OIDC bundle.
+                // Kept in step with the OIDC bundle on refresh (see
+                // `renew_persisted_session` in `hooks/fetch.rs`).
+                crate::modules::oidc::storage::save_bunyip_credential(
+                    &crate::modules::oidc::storage::BunyipCredential {
+                        access_token: tokens.access_token.clone(),
+                        id_token: tokens.id_token.clone(),
+                        refresh_token: tokens.refresh_token.clone(),
+                        expires_at: tokens.expires_at,
+                    },
+                );
                 // MAPPS-432: a completed exchange ends the recoverable-failure
                 // streak, so a reload later in this tab gets a full budget.
                 if let Err(e) = clear_callback_retry() {

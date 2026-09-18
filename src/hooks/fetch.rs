@@ -621,10 +621,20 @@ pub mod api {
                 .map_err(|e| e.to_string())?;
             storage::save_auth(&storage::StoredTokens {
                 access_token: fresh.access_token.clone(),
+                id_token: fresh.id_token.clone(),
+                refresh_token: fresh.refresh_token.clone(),
+                expires_at: fresh.expires_at,
+                scope: fresh.scope,
+            });
+            // MAPPS-877: keep the bunyip-credential slot in step with
+            // the OIDC bundle. The two carry the same access_token
+            // while the caller is on their home tenant; after a switch
+            // this slot survives and the AUTH_KEY does not.
+            storage::save_bunyip_credential(&storage::BunyipCredential {
+                access_token: fresh.access_token.clone(),
                 id_token: fresh.id_token,
                 refresh_token: fresh.refresh_token,
                 expires_at: fresh.expires_at,
-                scope: fresh.scope,
             });
             // Last, because the generation bump re-drives every mounted
             // resource: the new token must already be persisted when they go.

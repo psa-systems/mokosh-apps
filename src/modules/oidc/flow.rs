@@ -531,8 +531,15 @@ pub async fn issuer_post_authed<T: serde::de::DeserializeOwned, B: serde::Serial
     path: &str,
     body: &B,
 ) -> Result<T, FlowError> {
-    let token = crate::hooks::fetch::api::current_access_token()
-        .ok_or_else(|| FlowError::Network("not signed in".into()))?;
+    // MAPPS-877: call bunyip with a BUNYIP at+jwt, not whatever the
+    // shared `set_access_token` slot happens to hold. After a switch
+    // to one of the caller's own teams, that slot has mokosh's legacy
+    // HS256 session token (`typ: JWT`), which bunyip refuses with
+    // `OidcInvalidToken("JWT typ must be at+jwt")`. The bunyip
+    // credential lives in its own storage slot that the switcher does
+    // not clear; refreshed on demand here when the access token is
+    // close to expiry.
+    let token = current_bunyip_credential(cfg).await?;
     let issuer = cfg.issuer.trim_end_matches('/');
     let url = format!("{issuer}{path}");
     let resp = Request::post(&url)
@@ -558,6 +565,51 @@ pub async fn issuer_post_authed<T: serde::de::DeserializeOwned, B: serde::Serial
         .await
         .map(|e| e.data)
         .map_err(|e| FlowError::Network(format!("body: {e}")))
+}
+
+/// MAPPS-877: return a bunyip at+jwt suitable for calling one of
+/// bunyip's authenticated `/v1/*` endpoints. Reads from the dedicated
+/// `bunyip_credential` slot rather than the shared per-tenant API
+/// bearer, refreshing via the OIDC refresh token when the access
+/// token is within 30 seconds of expiry so a stale credential does
+/// not fail a switch the caller could have completed.
+///
+/// A missing bunyip credential means the caller either never signed
+/// in via bunyip (a standalone-only session) or signed out. Both are
+/// terminal for switching into a shared team; the caller upstream
+/// surfaces the message as-is.
+async fn current_bunyip_credential(cfg: &OidcConfig) -> Result<String, FlowError> {
+    use crate::modules::oidc::storage;
+
+    let Some(cred) = storage::load_bunyip_credential() else {
+        return Err(FlowError::Network(
+            "not signed in with bunyip; sign in via SSO to switch into a shared team".into(),
+        ));
+    };
+
+    let now = chrono::Utc::now();
+    if cred.expires_at - now > chrono::Duration::seconds(30) {
+        // Still good; hand it back untouched.
+        return Ok(cred.access_token);
+    }
+
+    // Expired or about to expire. Refresh via the stored refresh
+    // token; that mint returns a fresh at+jwt bound to the same
+    // bunyip identity. A refresh failure surfaces to the caller with
+    // the bunyip error body untouched.
+    let Some(refresh) = cred.refresh_token.clone() else {
+        return Err(FlowError::Network(
+            "bunyip credential is expired and no refresh token is stored".into(),
+        ));
+    };
+    let fresh = refresh_tokens(cfg, &refresh, &cred.id_token).await?;
+    storage::save_bunyip_credential(&storage::BunyipCredential {
+        access_token: fresh.access_token.clone(),
+        id_token: fresh.id_token,
+        refresh_token: fresh.refresh_token,
+        expires_at: fresh.expires_at,
+    });
+    Ok(fresh.access_token)
 }
 
 /// RFC 7009 token revocation. Best-effort: the spec requires the OP

@@ -67,6 +67,9 @@ pub fn clear_auth() {
     // complete regardless of which path signed the user in; otherwise the
     // stored standalone session would rehydrate the user right after logout.
     clear_standalone();
+    // MAPPS-877: sign-out clears the bunyip credential too; unlike a
+    // tenant switch, a sign-out ends the bunyip identity.
+    clear_bunyip_credential();
 }
 
 /// PMS-1208: drop ONLY the OIDC bundle (`AUTH_KEY`) and leave any
@@ -117,6 +120,51 @@ pub fn load_standalone() -> Option<StandaloneSession> {
 pub fn clear_standalone() {
     if let Ok(storage) = session_storage() {
         let _ = storage.remove_item(STANDALONE_KEY);
+    }
+}
+
+/// MAPPS-877: the caller's bunyip OIDC credential, held separately
+/// from `AUTH_KEY` so it survives a tenant switch. `AUTH_KEY` is
+/// cleared by the switcher's `install_session` (rehydrate must not
+/// revert the active team on reload; the 30-second OIDC refresh loop
+/// must not fight the standalone loop for the shared `set_access_token`
+/// slot). The bunyip identity is a separate concern: it is what
+/// `issuer_post_authed` presents when the SPA calls bunyip's
+/// `POST /v1/grants/{id}/access-token` to switch INTO a shared team.
+/// Before this slot existed the switcher was sending mokosh's HS256
+/// session token (whatever `set_access_token` last received) and
+/// bunyip refused with `OidcInvalidToken("JWT typ must be at+jwt")`.
+const BUNYIP_CREDENTIAL_KEY: &str = "mokosh_bunyip_credential_v1";
+
+/// A stored bunyip OIDC credential. Same fields as [`StoredTokens`]
+/// minus the `scope` (which the bunyip mint endpoint does not read).
+/// Refreshed on demand by `issuer_post_authed` when the access token
+/// is close to expiry.
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct BunyipCredential {
+    pub access_token: String,
+    pub id_token: String,
+    pub refresh_token: Option<String>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+pub fn save_bunyip_credential(c: &BunyipCredential) {
+    if let Ok(storage) = session_storage() {
+        if let Ok(json) = serde_json::to_string(c) {
+            let _ = storage.set_item(BUNYIP_CREDENTIAL_KEY, &json);
+        }
+    }
+}
+
+pub fn load_bunyip_credential() -> Option<BunyipCredential> {
+    let storage = session_storage().ok()?;
+    let raw = storage.get_item(BUNYIP_CREDENTIAL_KEY).ok().flatten()?;
+    serde_json::from_str(&raw).ok()
+}
+
+pub fn clear_bunyip_credential() {
+    if let Ok(storage) = session_storage() {
+        let _ = storage.remove_item(BUNYIP_CREDENTIAL_KEY);
     }
 }
 
