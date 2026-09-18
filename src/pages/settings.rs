@@ -1006,6 +1006,14 @@ pub fn DataGroupPage() -> Element {
 /// and fail to load. The server resolves the tenant from the session instead.
 const TENANT_PATH: &str = "/tenants/current";
 
+/// MAPPS-886: the organisation record, submitted whole. PMS-896 split this
+/// off `TENANT_PATH` as the one surface that states which fields an account
+/// must supply (phone and email are required here; `TENANT_PATH`'s branding
+/// merge does not enforce that). This page owns both writers: the contact
+/// fields below go through here, the invoice identity below that still goes
+/// through `TENANT_PATH` because this endpoint carries no field for it.
+const ORGANIZATION_PATH: &str = "/tenants/current/organization";
+
 /// MAPPS-429: the tenant logo endpoint. Its own path because a file is PUT as
 /// multipart and lands immediately, rather than riding the JSON body above.
 const TENANT_LOGO_PATH: &str = "/tenants/current/logo";
@@ -1143,14 +1151,49 @@ fn address_lines_error(raw: &str) -> Option<String> {
 
 /// `PUT /api/v1/tenants/current`, for
 /// `mokosh_types::tenants::UpdateTenantRequest`.
+///
+/// MAPPS-886: no longer carries the organisation contact fields
+/// (`support_contact_name` / `support_phone` / `support_email` / `website`);
+/// those move to [`OrganizationProfileBody`] on `ORGANIZATION_PATH`. This
+/// struct sends only the invoice identity, so the merge document does not
+/// re-null the contact keys the other call just set.
 #[derive(Debug, Serialize)]
 struct UpdateTenantBody {
     name: Option<String>,
     /// The shared DTO types this as a raw `serde_json::Value` on purpose
     /// (PMS-758: a merge document with three writers). This page owns exactly
-    /// the [`BrandingView`] keys, so it sends those; the destructuring function
-    /// is where the DTO's own type for the field is pinned.
-    branding: BrandingView,
+    /// the [`InvoiceIdentityBranding`] keys, so it sends those; the
+    /// destructuring function is where the DTO's own type for the field is
+    /// pinned.
+    branding: InvoiceIdentityBranding,
+}
+
+/// The invoice-identity subset of [`BrandingView`] this page still writes
+/// through `TENANT_PATH`'s merge document (MAPPS-886). A key omitted here
+/// simply is not part of the patch, unlike [`BrandingView`]'s full set, which
+/// would send the organisation contact keys back as null and clobber what
+/// [`OrganizationProfileBody`] just wrote.
+#[derive(Debug, Default, Serialize)]
+struct InvoiceIdentityBranding {
+    legal_name: Option<String>,
+    tax_id: Option<String>,
+    postal_address: Option<String>,
+    primary_color: Option<String>,
+    invoice_template: Option<String>,
+}
+
+/// `PUT /api/v1/tenants/current/organization`, for
+/// `mokosh_types::tenants::OrganizationProfileRequest` (MAPPS-886). The
+/// organisation record submitted whole: `phone` and `email` are required
+/// server-side, `contact_name` and `website` are optional and cleared when
+/// omitted.
+#[derive(Debug, Serialize)]
+struct OrganizationProfileBody {
+    name: Option<String>,
+    contact_name: Option<String>,
+    phone: Option<String>,
+    email: Option<String>,
+    website: Option<String>,
 }
 
 /// `POST /api/v1/work-types` and `PUT /api/v1/work-types/{id}`, for
@@ -1375,6 +1418,10 @@ fn OrganizationSettingsBody() -> Element {
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
     let mut name_error = use_signal(String::new);
+    // MAPPS-886: ORGANIZATION_PATH requires both, unlike TENANT_PATH's
+    // branding merge.
+    let mut phone_error = use_signal(String::new);
+    let mut email_error = use_signal(String::new);
     // Set once the fetched name has seeded the input, so a re-render (or a
     // resource refresh after saving) cannot overwrite what is being typed.
     let mut seeded = use_signal(|| false);
@@ -1431,6 +1478,8 @@ fn OrganizationSettingsBody() -> Element {
         }
         error.set(String::new());
         name_error.set(String::new());
+        phone_error.set(String::new());
+        email_error.set(String::new());
         postal_address_error.set(String::new());
         website_error.set(String::new());
         primary_color_error.set(String::new());
@@ -1447,6 +1496,16 @@ fn OrganizationSettingsBody() -> Element {
             name_error.set("Use 255 characters or fewer.".to_string());
             return;
         }
+        // MAPPS-886: ORGANIZATION_PATH requires both; checking here keeps a
+        // blank submit from costing a round-trip.
+        if contact_phone.read().trim().is_empty() {
+            phone_error.set("Enter a phone number clients can reach you on.".to_string());
+            return;
+        }
+        if contact_email.read().trim().is_empty() {
+            email_error.set("Enter an email address clients can reach you on.".to_string());
+            return;
+        }
         if let Some(message) = address_lines_error(&postal_address.read()) {
             postal_address_error.set(message);
             return;
@@ -1459,26 +1518,19 @@ fn OrganizationSettingsBody() -> Element {
                 // The logo is not in this body: it is uploaded on its own,
                 // immediately, because a file input that only takes effect on a
                 // later Save is a file input people forget to save.
+                //
+                // MAPPS-886: the organisation record (name and contact) is its
+                // own whole-record submission on ORGANIZATION_PATH; the
+                // invoice identity is a separate merge patch on TENANT_PATH
+                // below, so neither call re-nulls the other's keys.
                 match crate::hooks::fetch::api::put_authed_typed::<TenantView, _>(
-                    TENANT_PATH,
-                    &UpdateTenantBody {
+                    ORGANIZATION_PATH,
+                    &OrganizationProfileBody {
                         name: Some(trimmed),
-                        // PMS-758: the server MERGES this into the branding
-                        // document, so an emptied field has to be sent as an
-                        // explicit null to clear, and a key this page does not
-                        // own (the logo) is simply not sent.
-                        branding: BrandingView {
-                            support_contact_name: optional_text(&contact_name.read()),
-                            support_email: optional_text(&contact_email.read()),
-                            support_phone: optional_text(&contact_phone.read()),
-                            legal_name: optional_text(&legal_name.read()),
-                            tax_id: optional_text(&tax_id.read()),
-                            postal_address: optional_text(&postal_address.read()),
-                            website: optional_text(&website.read()),
-                            primary_color: optional_text(&primary_color.read()),
-                            invoice_template: Some(invoice_template.read().clone()),
-                            logo_url: None,
-                        },
+                        contact_name: optional_text(&contact_name.read()),
+                        phone: optional_text(&contact_phone.read()),
+                        email: optional_text(&contact_email.read()),
+                        website: optional_text(&website.read()),
                     },
                 )
                 .await
@@ -1490,24 +1542,65 @@ fn OrganizationSettingsBody() -> Element {
                         // though the rename only half took. The server's own
                         // value, not `trimmed`: it is the one that was stored.
                         auth.write().set_active_org_name(&saved.name);
-                        crate::hooks::push_toast(
-                            crate::components::AlertType::Success,
-                            "Organization name saved. New emails will use it.",
-                        );
+
+                        match crate::hooks::fetch::api::put_authed_typed::<TenantView, _>(
+                            TENANT_PATH,
+                            &UpdateTenantBody {
+                                // The organisation record just wrote the name;
+                                // this call touches only the invoice identity.
+                                name: None,
+                                // PMS-758: the server MERGES this into the
+                                // branding document, so an emptied field has to
+                                // be sent as an explicit null to clear, and a
+                                // key this page does not own (the logo, and now
+                                // the ORGANIZATION_PATH contact fields) is
+                                // simply not sent.
+                                branding: InvoiceIdentityBranding {
+                                    legal_name: optional_text(&legal_name.read()),
+                                    tax_id: optional_text(&tax_id.read()),
+                                    postal_address: optional_text(&postal_address.read()),
+                                    primary_color: optional_text(&primary_color.read()),
+                                    invoice_template: Some(invoice_template.read().clone()),
+                                },
+                            },
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                crate::hooks::push_toast(
+                                    crate::components::AlertType::Success,
+                                    "Organization saved. New emails will use it.",
+                                );
+                            }
+                            Err(err) => {
+                                crate::hooks::push_api_error(&err);
+                                // The server names a rejected branding key
+                                // `branding.{key}`; hang the message on the
+                                // field rather than only in the banner at the
+                                // top.
+                                if let Some(m) = err.field_message("branding.postal_address") {
+                                    postal_address_error.set(m);
+                                } else if let Some(m) = err.field_message("branding.primary_color")
+                                {
+                                    primary_color_error.set(m);
+                                } else {
+                                    error.set(err.user_message());
+                                }
+                            }
+                        }
                     }
                     Err(err) => {
                         crate::hooks::push_api_error(&err);
-                        // The server names a rejected branding key
-                        // `branding.{key}`; hang the message on the field
-                        // rather than only in the banner at the top.
+                        // ORGANIZATION_PATH names a rejected field by its own
+                        // name, not `branding.{key}` (MAPPS-886).
                         if let Some(m) = err.field_message("name") {
                             name_error.set(m);
-                        } else if let Some(m) = err.field_message("branding.postal_address") {
-                            postal_address_error.set(m);
-                        } else if let Some(m) = err.field_message("branding.website") {
+                        } else if let Some(m) = err.field_message("phone") {
+                            phone_error.set(m);
+                        } else if let Some(m) = err.field_message("email") {
+                            email_error.set(m);
+                        } else if let Some(m) = err.field_message("website") {
                             website_error.set(m);
-                        } else if let Some(m) = err.field_message("branding.primary_color") {
-                            primary_color_error.set(m);
                         } else {
                             error.set(err.user_message());
                         }
@@ -1568,9 +1661,14 @@ fn OrganizationSettingsBody() -> Element {
                     name: "contact_phone",
                     label: "Contact phone",
                     value: contact_phone(),
+                    required: true,
                     disabled: is_loading || saving(),
-                    help: "Optional. Shown next to the contact name, so a client can ask before they answer.".to_string(),
-                    oninput: move |e: FormEvent| contact_phone.set(e.value()),
+                    error: phone_error(),
+                    help: "Shown next to the contact name, so a client can ask before they answer.".to_string(),
+                    oninput: move |e: FormEvent| {
+                        phone_error.set(String::new());
+                        contact_phone.set(e.value());
+                    },
                 }
 
                 Input {
@@ -1578,9 +1676,14 @@ fn OrganizationSettingsBody() -> Element {
                     label: "Contact email",
                     r#type: "email".to_string(),
                     value: contact_email(),
+                    required: true,
                     disabled: is_loading || saving(),
-                    help: "Optional. Offered alongside the phone number, and usually the one a client reaches for first.".to_string(),
-                    oninput: move |e: FormEvent| contact_email.set(e.value()),
+                    error: email_error(),
+                    help: "Offered alongside the phone number, and usually the one a client reaches for first.".to_string(),
+                    oninput: move |e: FormEvent| {
+                        email_error.set(String::new());
+                        contact_email.set(e.value());
+                    },
                 }
 
                 // PMS-911: what an invoice has to carry beyond a trading name.
@@ -8834,17 +8937,41 @@ mod tests {
         } = req;
         let _ = UpdateTenantBody {
             name,
-            branding: BrandingView::default(),
+            branding: InvoiceIdentityBranding::default(),
         };
-        // `branding` IS sent, as the typed `BrandingView` above rather than as
-        // the shared DTO's raw merge document (PMS-758), so the annotation is
-        // what pins the DTO's own type for the field.
+        // `branding` IS sent, as the typed `InvoiceIdentityBranding` above
+        // rather than as the shared DTO's raw merge document (PMS-758), so the
+        // annotation is what pins the DTO's own type for the field.
         let _branding: Option<serde_json::Value> = branding;
-        // Deliberately not sent: the billing contact and address belong to the
-        // billing surfaces, `settings` is written per key by the settings rows
-        // rather than as a whole document from this form, and the MAPPS-449
-        // slug rename is the super-admin's, in `admin.rs`'s EditTenantModal.
+        // Deliberately not sent from here: the billing contact and address
+        // belong to the billing surfaces, `settings` is written per key by the
+        // settings rows rather than as a whole document from this form, and
+        // the MAPPS-449 slug rename is the super-admin's, in `admin.rs`'s
+        // EditTenantModal. `name` above is `None` on this call (MAPPS-886):
+        // `OrganizationProfileRequest` below is what actually renames it.
         let _ = (billing_email, billing_contact_name, settings, slug);
+    }
+
+    /// `mokosh_types::tenants::OrganizationProfileRequest`, for
+    /// `ORGANIZATION_PATH` (MAPPS-886).
+    #[allow(dead_code)]
+    fn organization_profile_request_fields_are_all_considered(
+        req: mokosh_types::tenants::OrganizationProfileRequest,
+    ) {
+        let mokosh_types::tenants::OrganizationProfileRequest {
+            name,
+            contact_name,
+            phone,
+            email,
+            website,
+        } = req;
+        let _ = OrganizationProfileBody {
+            name,
+            contact_name,
+            phone,
+            email,
+            website,
+        };
     }
 
     #[allow(dead_code)]
