@@ -225,8 +225,10 @@ pub fn TenantSwitcher() -> Element {
                     // Grant path: mint the grant-scoped at+jwt on
                     // bunyip, then fetch `/auth/me` on mokosh with
                     // the new bearer to build a `CurrentUser` for
-                    // the AuthContext.
-                    match switch_to_grant(grant_id).await {
+                    // the AuthContext. `tenant_id` is threaded down
+                    // so `switch_to_grant` can supply it defensively
+                    // even if the server response ever omits it.
+                    match switch_to_grant(grant_id, tenant_id.clone()).await {
                         Ok((access_token, expires_at, user)) => {
                             install_session(access_token, None, expires_at, user);
                             open.set(false);
@@ -1040,6 +1042,7 @@ fn humanise_grant_role(role: &str) -> String {
 #[cfg(feature = "app")]
 async fn switch_to_grant(
     grant_id: String,
+    granted_tenant_id: String,
 ) -> Result<(String, chrono::DateTime<chrono::Utc>, CurrentUser), String> {
     use crate::modules::oidc::OidcConfig;
     let cfg = OidcConfig::for_current_origin();
@@ -1072,8 +1075,75 @@ async fn switch_to_grant(
     // Attach the new bearer BEFORE the /auth/me call - the fetch
     // helper reads it from the process-wide holder we just wrote.
     crate::hooks::fetch::api::set_access_token(Some(resp.access_token.clone()));
-    let user: CurrentUser = crate::hooks::fetch::api::get_authed_typed("/auth/me")
+
+    // MAPPS-877: decode into a purpose-built body rather than
+    // `CurrentUser` directly. Every other caller of `/auth/me` on
+    // this branch does the same (see `refresh_user_from_me` in
+    // `hooks/auth.rs` which uses its own `MeBody`, and `profile.rs`
+    // which decodes into `serde_json::Value`); `CurrentUser` requires
+    // `tenant_id` with no serde default, and while the server-side
+    // fix adds `tenant_id` to the `/auth/me` response, decoding
+    // through a local body means this call site does not care whether
+    // the server has been redeployed. `granted_tenant_id` is the
+    // authoritative source anyway - the caller already knows it from
+    // the switcher row's `MembershipView.tenant_id` - so we supply it
+    // here rather than reading it from a payload we might or might
+    // not receive it in.
+    #[derive(serde::Deserialize)]
+    struct MeBody {
+        id: uuid::Uuid,
+        email: String,
+        first_name: String,
+        last_name: String,
+        role: String,
+        #[serde(default)]
+        timezone: String,
+        #[serde(default)]
+        avatar_url: Option<String>,
+        #[serde(default = "default_true_me")]
+        profile_completed: bool,
+        #[serde(default)]
+        date_format_string: Option<String>,
+        #[serde(default)]
+        theme_base_mode: Option<String>,
+        #[serde(default)]
+        theme_accent_id: Option<String>,
+        #[serde(default)]
+        own_company_id: Option<uuid::Uuid>,
+        #[serde(default)]
+        tenant_kind: String,
+    }
+    fn default_true_me() -> bool {
+        true
+    }
+    let me = crate::hooks::fetch::api::get_authed_typed::<MeBody>("/auth/me")
         .await
         .map_err(|e| e.user_message())?;
+    let tenant_id = uuid::Uuid::parse_str(&granted_tenant_id).map_err(|e| {
+        format!("Could not parse granted tenant id \"{granted_tenant_id}\": {e}")
+    })?;
+    let role = crate::modules::auth::UserRole::from_str(&me.role).unwrap_or_else(|| {
+        tracing::warn!(
+            "unrecognised role \"{}\" from /auth/me on grant switch; defaulting to Technician",
+            me.role
+        );
+        crate::modules::auth::UserRole::Technician
+    });
+    let user = CurrentUser {
+        id: me.id,
+        tenant_id,
+        email: me.email,
+        first_name: me.first_name,
+        last_name: me.last_name,
+        role,
+        timezone: me.timezone,
+        avatar_url: me.avatar_url,
+        profile_completed: me.profile_completed,
+        date_format_string: me.date_format_string,
+        theme_base_mode: me.theme_base_mode,
+        theme_accent_id: me.theme_accent_id,
+        own_company_id: me.own_company_id,
+        tenant_kind: me.tenant_kind,
+    };
     Ok((resp.access_token, resp.expires_at, user))
 }
