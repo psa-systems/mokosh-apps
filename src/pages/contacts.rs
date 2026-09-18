@@ -10776,6 +10776,7 @@ mod shared_dto_tests {
             status,
             phones,
             companies,
+            imported_from,
             created_at,
         } = resp;
         let _ = RemoteContact {
@@ -10794,9 +10795,22 @@ mod shared_dto_tests {
             is_portal_user,
             phones: Vec::new(),
             companies: Vec::new(),
-            // MAPPS-811: bound to `ContactResponse.imported_from` by the
-            // mokosh-types pin bump that follows PMS-1260.
-            imported_from: None,
+            // MAPPS-811: the list's provenance badge (PMS-1260), decoded into
+            // its own struct field for field so a server rename fails here.
+            imported_from: imported_from.map(|o| {
+                let mokosh_types::contacts::ContactOrigin {
+                    provider,
+                    account_email,
+                    linked,
+                    deleted_in_source,
+                } = o;
+                crate::pages::contact_provenance::ImportedFrom {
+                    provider,
+                    account_email,
+                    linked,
+                    deleted_in_source,
+                }
+            }),
         };
         let _ = ContactEditPayload {
             first_name: first_name.clone(),
