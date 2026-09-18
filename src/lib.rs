@@ -1052,6 +1052,10 @@ pub enum Route {
     SettingsRmmDeviceMappings {},
     #[route("/settings/rmm/alert-rules")]
     SettingsRmmAlertRules {},
+    // MAPPS-887: deployment-wide SMTP settings (server PMS-638/788/1013),
+    // previously reachable only through the API with an admin bearer.
+    #[route("/settings/email")]
+    SettingsEmail {},
     // MAPPS-808: Google Contacts import (server PSA-70, PMS-1211..1215, 1241).
     // The OAuth callback and the `contact_sync.failing` mail both land here.
     #[route("/settings/integrations/google-contacts")]
@@ -2210,6 +2214,15 @@ fn ContactImportReview() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             pages::contact_sync_review::ContactImportReviewPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsEmail() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_email::EmailSettingsPage {}
         }
     }
 }
