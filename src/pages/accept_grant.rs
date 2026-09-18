@@ -116,25 +116,29 @@ pub fn AcceptGrantPage(token: String) -> Element {
                     Ok(_) => {
                         info.set("Invitation accepted. Taking you to your workspace.".to_string());
                         done.set(true);
-                        // PMS-1208 fix (tester report round 2): a
-                        // hard nav here tears down the WASM tree,
-                        // and if the OIDC bearer isn't stable in
-                        // sessionStorage at that moment the rebuilt
-                        // AuthContext sees no session and immediately
-                        // fires start_login again - the "multiple
-                        // pages then back to home" the tester saw.
-                        // Instead: refetch memberships (so the
-                        // freshly granted account appears in the
-                        // switcher), then soft-nav to Dashboard.
-                        if let Ok(list) = crate::hooks::fetch::api::get_authed_typed::<
-                            Vec<MembershipView>,
-                        >("/auth/memberships")
-                        .await
-                        {
-                            let mut a = auth_write.write();
-                            a.memberships = list;
-                        }
+                        // MAPPS-877 fix (tester report 2026-09-18): the
+                        // accept page lingered because the memberships
+                        // refetch was awaited BEFORE the nav, so the
+                        // user saw the invite page again with the info
+                        // message while the fetch was in flight ("the
+                        // page redirects to itself"). Nav first (soft;
+                        // sessionStorage stays intact per the PMS-1208
+                        // round-two fix), then refetch memberships in
+                        // the background so the freshly granted tenant
+                        // appears in the switcher on the next render.
                         nav.replace(Route::Dashboard {});
+                        spawn(async move {
+                            if let Ok(list) = crate::hooks::fetch::api::get_authed_typed::<
+                                Vec<MembershipView>,
+                            >(
+                                "/auth/memberships"
+                            )
+                            .await
+                            {
+                                let mut a = auth_write.write();
+                                a.memberships = list;
+                            }
+                        });
                     }
                     Err(err) => {
                         error.set(match err {

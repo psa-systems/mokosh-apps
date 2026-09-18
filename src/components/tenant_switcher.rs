@@ -444,6 +444,7 @@ pub fn TenantSwitcher() -> Element {
 
     let respond_to_invite = {
         let mut refresh_invites = refresh_invites;
+        let mut auth_write = auth_write;
         move |id: String, accept: bool| {
             let mut error = error;
             let mut saving = saving;
@@ -456,20 +457,19 @@ pub fn TenantSwitcher() -> Element {
                 #[cfg(feature = "app")]
                 {
                     use crate::hooks::fetch::api::ApiError;
+                    // MAPPS-877 fix: id-scoped grantee endpoint. The
+                    // pending-inbox row carries the invitation id but
+                    // not the plaintext token (that lives in the
+                    // email), so the previous by-token URL with the id
+                    // as token 404'd every accept from the switcher.
+                    // The server-side `/my-grants/invitations/{id}/{
+                    // accept|decline}` route authenticates the grantee
+                    // through RequireAuth and gates on
+                    // `invitee_bunyip_user_id = caller.id` inside the
+                    // service, matching what the by-token path proved
+                    // via the token secret.
                     let verb = if accept { "accept" } else { "decline" };
-                    let path = format!("/grants/invitations/by-token/{id}/{verb}");
-                    // Note: the token endpoint is by TOKEN, not by
-                    // invitation id, so this convenience path is
-                    // limited to the SPA case where the inbox
-                    // already resolved the invitation and the caller
-                    // presses Accept from an authenticated session.
-                    // The switcher path uses id-scoped mirror endpoints
-                    // registered in the same handler module - see the
-                    // BUNYIP-1208 SaaS-glue follow-up which routes
-                    // the id-based accept via the owner tenant's
-                    // scope, so this call falls back to the token
-                    // endpoint using the id as the token in the
-                    // meanwhile.
+                    let path = format!("/my-grants/invitations/{id}/{verb}");
                     let body = serde_json::json!({});
                     match crate::hooks::fetch::api::post_authed_typed::<serde_json::Value, _>(
                         &path, &body,
@@ -477,11 +477,24 @@ pub fn TenantSwitcher() -> Element {
                     .await
                     {
                         Ok(_) => {
-                            // Bump the refresh counter so the
-                            // resource re-runs; also refetch
-                            // memberships so a fresh accept adds the
-                            // granted tenant to the switcher.
+                            // Refresh the pending-invitations resource.
                             *refresh_invites.write() += 1;
+                            // On accept, refetch memberships so the
+                            // freshly granted tenant appears in the
+                            // switcher without a page reload. Skip on
+                            // decline; nothing new to show.
+                            if accept {
+                                if let Ok(list) = crate::hooks::fetch::api::get_authed_typed::<
+                                    Vec<MembershipView>,
+                                >(
+                                    "/auth/memberships"
+                                )
+                                .await
+                                {
+                                    let mut a = auth_write.write();
+                                    a.memberships = list;
+                                }
+                            }
                         }
                         Err(ApiError::Status { code, message, .. })
                             if (400..=499).contains(&code) =>
