@@ -705,6 +705,14 @@ fn GoogleContactsSettingsBody() -> Element {
                                         "Change labels"
                                     }
                                 }
+                                if connection.as_ref().is_some_and(|c| c.open_reviews > 0) {
+                                    Button {
+                                        variant: ButtonVariant::Secondary,
+                                        onclick: move |_| { navigator.push(Route::ContactImportReview {}); },
+                                        data_testid: "contact-sync-review",
+                                        "Review {connection.as_ref().map(|c| c.open_reviews).unwrap_or(0)} waiting"
+                                    }
+                                }
                                 if actions.disconnect {
                                     Button {
                                         variant: ButtonVariant::Danger,

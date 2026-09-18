@@ -5804,6 +5804,9 @@ pub fn ContactListPage() -> Element {
             title: "Contacts",
             subtitle: "Manage customer contacts",
             actions: rsx! {
+                // MAPPS-810: shown only while Google contacts wait for review.
+                div { class: "flex flex-wrap items-center gap-3",
+                crate::pages::contact_sync_review::ImportReviewLink {}
                 Link {
                     to: Route::ContactNew {},
                     Button {
@@ -5811,6 +5814,7 @@ pub fn ContactListPage() -> Element {
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Contact"
                     }
+                }
                 }
             },
         }
