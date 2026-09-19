@@ -3,11 +3,12 @@
 //! `AuthLayout` painter (prompt 005) reads on every render.
 //!
 //! Types are shadowed here rather than pulled from the `mokosh-types`
-//! crate so the client compiles regardless of which server branch the
-//! `Cargo.toml` pin currently tracks (MAPPS-617's new fields have not
-//! landed on `mokosh-client-login` yet). Wire shape is the SAME
-//! `EffectiveBranding` / `TenantBranding` / `CompanyBranding` the
-//! server returns; `serde(default)` on every field lets a legacy
+//! crate because the client and server crates are still built and
+//! released independently (the `Cargo.toml` pin followed the server's
+//! `mokosh-contact-login` branch during MAPPS-617 through MAPPS-621's
+//! rollout and now follows `main` again per MAPPS-726). Wire shape is
+//! the SAME `EffectiveBranding` / `TenantBranding` / `CompanyBranding`
+//! the server returns; `serde(default)` on every field lets a legacy
 //! response deserialize cleanly.
 
 #![allow(dead_code)]

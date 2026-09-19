@@ -12,7 +12,7 @@ set allow-duplicate-recipes := true
 app := "mokosh-apps"
 
 # No compose.dev.yml here, so the shared pre-commit runs the checks in a bare
-# `docker run`. The image matches ci-build/Dockerfile so `just pre-commit` and
+# `docker run`. The image matches oci-build/Dockerfile so `just pre-commit` and
 # the Forgejo `check.yml` job run a toolchain compatible with the
 # rust-builder-glibc image the client is built against.
 pre_commit_mode := "docker"
@@ -55,7 +55,9 @@ default:
 
 # -- Checks ----------------------------------------------------------------------
 
-# Umbrella check: build + clippy + fmt + docker builder stage.
+# Umbrella check: runs every check-* recipe below (justfile, ci-parity, web,
+# desktop, clippy, fmt, and the rest of the project's linting/consistency
+# checks).
 [group: 'check']
 check: check-justfile check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging check-loading-recipe check-company-id-copy
 
@@ -389,8 +391,8 @@ down:
     if (do { ^docker network inspect $net } | complete | get exit_code) != 0 {
         ^docker network create $net out> /dev/null
     }
-    # MOKOSH_OIDC_CLIENT_ID is a `${...:?}` required var in compose.yml; supply a
-    # harmless placeholder so teardown interpolates even before it is set in .env.
+    # MOKOSH_OIDC_CLIENT_ID is a `${...:?}` required var in compose.dev-sso.yml;
+    # supply a harmless placeholder so teardown interpolates even before it is set in .env.
     with-env { HOST_IP: "127.0.0.1", USER: $user_name, MOKOSH_OIDC_CLIENT_ID: "teardown-placeholder" } {
         docker compose --file compose.yml --file compose.dev-sso.yml down --remove-orphans
     }
