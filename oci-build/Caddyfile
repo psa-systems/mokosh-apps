@@ -51,12 +51,6 @@
         #   - X-Content-Type-Options nosniff: stop MIME-type sniffing.
         #   - Referrer-Policy: do not leak full URLs (which may carry the
         #     return_to path / state) to cross-origin destinations.
-        # A full content CSP (script-src/connect-src) is intentionally NOT
-        # set here: connect-src must allow the OIDC provider and API origins,
-        # which entrypoint.sh injects into _mokosh_config.js at container
-        # start and are therefore unknown at build time. Hardcoding a strict
-        # connect-src would break sign-in. The residual risk (a permissive
-        # connect-src) was reviewed and risk-accepted in the 2026-06-25 security audit.
         # MAPPS-338 / MAPPS-369: full content CSP from runtime env. connect-src
         # must allow the API and OIDC ORIGINS (scheme://host[:port]) so every
         # sub-path matches; a source that carries a path (e.g. ".../api/v1") is
