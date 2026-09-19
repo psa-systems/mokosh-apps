@@ -32,6 +32,7 @@ the convention is broken.
 | Page | Purpose |
 | --- | --- |
 | [`form-conventions.md`](form-conventions.md) | Create and edit forms: modal against full page, and which reference picker a field takes. |
+| [`markdown-editor.md`](markdown-editor.md) | The shared `MarkdownEditor` component: what it is, where it is used, and its three guard scripts. |
 | [`button-variants.md`](button-variants.md) | One correct button variant per action. `/dev/buttons` renders every one of them. |
 | [`destructive-actions.md`](destructive-actions.md) | Every destructive action confirms before it mutates, and reports the server's refusal. |
 | [`email-actions.md`](email-actions.md) | Every click that makes the server email someone is marked as such and offers a preview first. |
