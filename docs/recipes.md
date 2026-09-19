@@ -115,6 +115,16 @@ Three are deliberately outside `just check`:
   `crates/mokosh-types`. It is allowed to be red; the weekly
   `types-pin-drift.yml` workflow is what runs it.
 
+## Claude auto-fix
+
+[`.forgejo/workflows/claude-fix.yml`](../.forgejo/workflows/claude-fix.yml) is
+manually dispatched from the Actions UI (or, later, by a comment-trigger
+workflow) with a PR number and, optionally, a failed run ID and extra
+instructions. It checks out that PR's branch, gathers the failing CI context,
+runs Claude Code against it in headless mode, and, if Claude makes a change,
+commits and pushes it with a bot PAT so CI re-runs, then comments on the PR
+with the outcome either way. It is not a recipe, so it has no `just` entry.
+
 ## Hooks
 
 | Recipe | What it does |

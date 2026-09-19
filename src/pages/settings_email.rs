@@ -113,16 +113,22 @@ fn EmailSettingsForm() -> Element {
 
     let settings_resource = use_resource(move || async move {
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_authed::<EmailSettingsView>(EMAIL_PATH)
-            .await
-            .inspect_err(|e| tracing::error!("email settings load failed: {e}"))
-            .ok()
+        crate::pages::settings::load_operator_setting::<EmailSettingsView>(
+            EMAIL_PATH,
+            "email settings",
+        )
+        .await
     });
     let snap = settings_resource.read_unchecked();
     let is_loading = snap.is_none();
-    let fetch_failed = matches!(*snap, Some(None));
+    let fetch_failed = matches!(*snap, Some(crate::pages::settings::OperatorLoad::Failed));
+    // PMS-1280: the relay belongs to the deployment's operator.
+    let not_operator = matches!(
+        *snap,
+        Some(crate::pages::settings::OperatorLoad::NotOperator)
+    );
     if !seeded() {
-        if let Some(Some(view)) = &*snap {
+        if let Some(crate::pages::settings::OperatorLoad::Loaded(view)) = &*snap {
             host.set(view.host.clone().unwrap_or_default());
             port.set(view.port.map(|p| p.to_string()).unwrap_or_default());
             username.set(view.username.clone().unwrap_or_default());
@@ -295,6 +301,13 @@ fn EmailSettingsForm() -> Element {
                 div { class: "p-6", ErrorBanner { "Could not load the email settings." } }
             }
         }
+        if not_operator {
+            Card {
+                p { class: "text-sm text-muted",
+                    "Email for this deployment is set up by whoever runs it. Every organisation on the deployment sends through it, so only its operator can see or change these settings."
+                }
+            }
+        } else {
 
         Card {
             div { class: "space-y-4 max-w-xl",
@@ -432,6 +445,7 @@ fn EmailSettingsForm() -> Element {
                     }
                 }
             }
+        }
         }
     }
 }

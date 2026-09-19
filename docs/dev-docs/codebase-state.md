@@ -10,8 +10,7 @@
 > the `mokosh-contact-login` line: the `/portal/*` rows and every
 > "GET-leak P0" reference describe pages that no longer exist. Traffic
 > at those URLs now reaches the contact-plane pages under
-> `src/pages/contact_portal/*` (see `docs/mokosh-client-login/remaining.md`
-> for the current punch list). The agent-side rows are also drifting: a
+> `src/pages/contact_portal/*`. The agent-side rows are also drifting: a
 > lot of "501" / "stub" / "mock" entries below have shipped since. A
 > re-audit is a follow-up; do not use this as an authoritative map of
 > what does or doesn't work today.
