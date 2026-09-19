@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
-# MAPPS-398 runner-label guard.
+# MAPPS-398 / DEV-769 runner-label guard.
 #
-# check.yml compiles Rust on the runner, so it must request the dev label
-# (its image ships cc/gcc/ld) instead of installing a C toolchain at run
-# time on the base image. This guard fails if either half regresses.
+# check.yml compiles Rust on the runner, so it must request the heavy label
+# (dev image with cc/gcc/ld) instead of installing a C toolchain at run time.
+# No workflow may use the retired *_LATEST labels. This guard fails on either.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
 workflow='.forgejo/workflows/check.yml'
 status=0
 
-if ! grep -qF 'vars.RUNS_ON_OPENSUSE_DEV_LATEST' "$workflow"; then
-  echo "runner-label guard: FAIL ($workflow must run on RUNS_ON_OPENSUSE_DEV_LATEST)"
+if ! grep -qF 'vars.RUNS_ON_OPENSUSE_BASE_HEAVY' "$workflow"; then
+  echo "runner-label guard: FAIL ($workflow must run on RUNS_ON_OPENSUSE_BASE_HEAVY)"
+  status=1
+fi
+
+retired=$(grep -nE 'RUNS_ON_OPENSUSE_(BASE|DEV)_LATEST' .forgejo/workflows/*.yml)
+if [ -n "$retired" ]; then
+  echo "runner-label guard: FAIL (retired *_LATEST label; use BASE_HEAVY or BASE_MEDIUM)"
+  printf '%s\n' "$retired"
   status=1
 fi
 

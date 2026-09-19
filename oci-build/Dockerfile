@@ -10,13 +10,11 @@ FROM --platform=$BUILDPLATFORM ghcr.io/niceguyit/rust-builder-glibc:v1.0.1-rust1
 
 WORKDIR /build
 
-# Cap concurrent rustc / build-script processes. CI sets this to the
-# full host nproc since this is the only build on the runner. The
-# default keeps ad-hoc local builds from oversubscribing a small
-# laptop. Overridable via `--build-arg CARGO_BUILD_JOBS=N`.
-ARG CARGO_BUILD_JOBS=2
+# Cargo build parallelism. CI passes the runner's value; `default` is cargo's
+# own choice for an ad-hoc local build.
+ARG CARGO_BUILD_JOBS=default
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
-RUN echo "build parallelism: CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} (host nproc=$(nproc))"
+RUN echo "build parallelism: CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}"
 
 # Pre-stage wasm-opt so `dx build --release` never downloads it from a GitHub
 # release: that download has failed CI with "connection reset", and in MAPPS-381
