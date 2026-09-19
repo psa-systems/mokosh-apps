@@ -1,7 +1,7 @@
 # KB UI/UX Overhaul - Design
 
 Date: 2026-06-05
-Status: Proposed (awaiting review)
+Status: implemented (see MAPPS-423); design superseded in part, see the note below
 Area: `src/pages/knowledge_base.rs`, `src/modules/kb/`, `Cargo.toml`
 
 > **Historical record.** Parts of the article-detail layout below were superseded
