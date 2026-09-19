@@ -60,8 +60,8 @@ single immutable digest) instead of `:latest`.
 
 Where the pin lives: the per-host compose for the LB-fronted hosts is
 in the deployment repo `dev.a8n.run/NiceGuyIT/docker`, not in this
-`mokosh-apps` source repo. See `docs/dev-docs/CHANGELOG.md` for
-the host map. The relevant files are:
+`mokosh-apps` source repo. See that repo for the host map. The relevant
+files are:
 
 - `docker/server/c-01/mokosh-apps/compose-variables.yml` (the host
   flagged in MAPPS-315 as still on `:latest`).
