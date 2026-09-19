@@ -67,6 +67,43 @@ documentation set: every relative Markdown link has to resolve to a path that
 exists. It enumerates tracked files, so a new page has to be staged before the
 guard can see it.
 
+Every guard, named and one-line described (source: each script's own header
+comment):
+
+| Script | What it guards |
+| --- | --- |
+| `check-auth-error-prose.sh` | The `/auth/callback` failure classifies on the `FlowError` variant, never by matching the rendered error string. |
+| `check-cancel-routes.sh` | A shared create/edit form's Cancel routes back to the record being edited, plus the global pointer-cursor rule. |
+| `check-ci-parity.sh` | Every command a `check` recipe runs, including its `--self-test`, has a matching step in `.forgejo/workflows/check.yml`. |
+| `check-class-omissions.sh` | Three specific Tailwind class omissions (auth heading, form-grid breakpoint, table name-cell colour) stay fixed. |
+| `check-company-id-copy.sh` | No "Portal ID" copy under `src/pages/contact_portal/`; the user-facing name is "Company ID". |
+| `check-confirm-destructive.sh` | A destructive mutation never fires straight from a button `onclick`. |
+| `check-csp-host-derived-origin.sh` | The served Content-Security-Policy header names the same host-derived origin the app derives itself. |
+| `check-defined-colors.sh` | No class references a Tailwind colour token nobody defined. |
+| `check-delete-result.sh` | A delete's `Result` is never discarded; a server refusal reaches the user. |
+| `check-dev-sso-scheme.sh` | The dev-SSO overlay bakes in `https://` URLs only, never `http://`. |
+| `check-doc-links.sh` | Every relative Markdown link under `docs/` resolves to a path that exists. |
+| `check-ellipsis-glyph.sh` | Rendered text uses the single ellipsis glyph (`…`), never three ASCII periods. |
+| `check-email-affordance.sh` | Every action that emails someone renders the mail icon and an `EmailPreview`. |
+| `check-empty-state.sh` | Settings type-editor lists render the full `EmptyState`, never `TableEmpty`'s bare-message mode. |
+| `check-fetch-error-logging.sh` | An awaited fetch that fails logs why before the error is discarded. |
+| `check-field-value-binding.sh` | A form field's value is set as an attribute, never as a text child. |
+| `check-hooks-before-return.sh` | Every hook in a component runs before any early return. |
+| `check-kit-adoption.sh` | No DaisyUI classes, and the shared layout, file field, and dropdown-panel recipes stay in use. |
+| `check-link-preview.sh` | The served page carries its link-preview tags, verified against a real Caddy and entrypoint stack. |
+| `check-loading-recipe.sh` | A busy surface renders the shared `TableLoading`/`DetailSkeleton`, never a hand-rolled "Loading…" string. |
+| `check-no-demo-rows.sh` | A page renders only backend rows; a failed fetch never falls back to seeded demo rows. |
+| `check-nu-interpolation.sh` | An unescaped `(` inside a Nushell interpolated string is caught before it runs as a subexpression. |
+| `check-page-width.sh` | The page-width cap lives on the page component, never back on `AppShell`. |
+| `check-per-page-cap.sh` | No call site requests a page size at or above the server's `per_page` cap. |
+| `check-prose-layer.sh` | The Markdown prose corrections stay in a cascade layer that outranks the typography plugin. |
+| `check-runner-labels.sh` | CI's Rust build runs on the dev runner label, not the base image. |
+| `check-sort-keys.sh` | No page hardcodes a `?sort=` value outside the shared `sort_keys` module. |
+| `check-status-banner.sh` | Every inline status banner uses `components::StatusBanner`, never a hand-rolled recipe. |
+| `check-theme-storage-key.sh` | The first-paint theme script and the app agree on the same `localStorage` key. |
+| `check-theme-tokens.sh` | Components use the semantic theme token utilities, never hardcoded neutral or brand colours. |
+| `check-types-pin.sh` | The `mokosh-types` git pin does not silently drift behind the server's default branch. |
+
 Three are deliberately outside `just check`:
 
 - `just check-docker` builds the production image, and the check runner has no
