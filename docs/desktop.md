@@ -167,6 +167,12 @@ Everything the app needs from its host lives in `src/platform/`, split on
 | `timer` | `gloo-timers` | `tokio::time` |
 | `tz` | `Intl.DateTimeFormat` | `iana-time-zone` |
 | `clock` | `chrono` (`wasmbind`) | `chrono` |
+| `anchor_dom` | `web-sys` reads and mutates the document directly to wrap and unwrap inline-comment `<mark>`s | the same logic evaluated as a script in the webview, answers read back over the `eval` channel |
+| `clipboard` | a real `paste` event listener reads a pasted image from `clipboardData.items` | an injected script attaches the paste listener in the webview and posts each image back as base64 over the `eval` channel |
+| `currency` | `navigator.language`'s region subtag looked up in a hand-maintained region-to-currency map | no browser locale to read; always answers `None` |
+| `desktop_origin` | not used (the browser's own origin applies) | hand-mirrored constants of `dioxus-desktop`'s per-OS `BASE_URI`, so `CORS_ORIGIN` can be set to the webview's real origin |
+| `scroll_sync` | `web-sys` scroll listeners on both panes, linked with an echo guard | the same link and guards evaluated as a script in the webview |
+| `window_close` | not used (the browser prompts for itself via `beforeunload`) | intercepts `WindowEvent::CloseRequested` via `tao` and raises the app's own confirmation modal when there are unsaved changes |
 
 Internal navigation goes through a router `Link` or the `Navigator`, never a raw
 `a { href: "/..." }`. The webview's navigation handler refuses every
