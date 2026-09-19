@@ -27,6 +27,10 @@ on:
       - "package.json"
       - "bun.lock"
       - "oci-build/**"
+      # MAPPS-911: the Link-preview guard step runs this script, so a change
+      # to it must rebuild or the fix is never exercised (#851 merged and no
+      # build ran).
+      - "scripts/check-link-preview.sh"
       - ".forgejo/workflows/build-oci-image.yml"
   workflow_dispatch:
     inputs:
