@@ -818,9 +818,8 @@ pub mod api {
     /// pre-563 in-memory-only shape, but a full HttpOnly-cookie
     /// implementation crosses tenant subdomain <-> API subdomain and
     /// requires CORS + Domain=.<apex> cookie work that we don't have
-    /// today. The follow-up ticket to move this to a cookie is filed
-    /// as a note in `docs/mokosh-client-login/dashboard-overhaul-1.md`
-    /// under B2.
+    /// today. The follow-up ticket to move this to a cookie has not
+    /// been filed yet.
     #[cfg(target_arch = "wasm32")]
     const PORTAL_REFRESH_STORAGE_KEY: &str = "mokosh:portal_refresh_token";
 
