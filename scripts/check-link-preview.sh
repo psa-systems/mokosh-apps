@@ -14,6 +14,13 @@
 # than a `dx build` output because the injection keys off `</head>`, which both
 # carry; `just check-docker` builds the real image.
 #
+# Nothing is bind-mounted and nothing is published to the host (MAPPS-911). In
+# CI the job runs in a container that drives the HOST's docker daemon over its
+# socket, so a `--volume` source is resolved on the host, where the job's
+# checkout does not exist, and the job's 127.0.0.1 is not the host's. The files
+# go in with `docker cp` and the crawler is a curl container that joins the
+# server's network namespace, which behaves the same on a laptop and a runner.
+#
 # Scenarios, matching the acceptance criteria:
 #   1. branded  - every og:/twitter: tag carries the operator's values, on the
 #                 root URL and on a deep client-side route, with og:image
@@ -33,6 +40,7 @@ set -u
 cd "$(dirname "$0")/.." || exit 2
 
 CADDY_IMAGE="caddy:2-alpine"
+CURL_IMAGE="curlimages/curl:8.16.0"
 CRAWLER_UA="facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
 CONTAINER="mokosh-link-preview-$$"
 WORKDIR=""
@@ -43,9 +51,24 @@ failures=0
 # the suppressed output is the "no such container" case before the first
 # scenario starts one; nothing downstream reads the result.
 remove_container() {
+  snapshot_index
   docker stop --timeout 2 "$CONTAINER" >/dev/null 2>&1
   docker rm "$CONTAINER" >/dev/null 2>&1
   return 0
+}
+
+# Copy the served index.html back out to $WORKDIR/caddy/index.html, which is
+# what the next copy_fresh=no start reuses and what the marker count reads.
+# Silent when there is no container yet, as in remove_container.
+snapshot_index() {
+  docker cp "$CONTAINER:/usr/share/caddy/index.html" "$WORKDIR/caddy/index.html" >/dev/null 2>&1
+  return 0
+}
+
+# curl run inside the server's network namespace, so 127.0.0.1:8080 is the
+# server whether the daemon is local or behind a CI job's mounted socket.
+ns_curl() {
+  docker run --rm --network "container:$CONTAINER" "$CURL_IMAGE" "$@"
 }
 
 cleanup() {
@@ -59,45 +82,47 @@ fail() {
   failures=$((failures + 1))
 }
 
-# Start the serving stack and print the host port it listens on.
+# Start the serving stack and print the port it listens on inside its own
+# network namespace (always 8080; see ns_curl).
 # `--entrypoint ""` starts Caddy directly, skipping the injection, which is
 # the --self-test baseline. `copy_fresh=no` reuses whatever is already at
-# $WORKDIR/index.html instead of resetting it from the repo's index.html,
+# $WORKDIR/caddy/index.html instead of resetting it from the repo's index.html,
 # which is what a restart of the same container filesystem looks like
 # (scenario 4, MAPPS-826).
 serve() {
   local use_entrypoint="$1" copy_fresh="$2"
   shift 2
   if [ "$copy_fresh" = "yes" ]; then
-    cp index.html "$WORKDIR/index.html" || return 1
+    cp index.html "$WORKDIR/caddy/index.html" || return 1
   fi
   remove_container
 
   local entry=(--entrypoint /usr/local/bin/entrypoint.sh)
   [ "$use_entrypoint" = "no" ] && entry=(--entrypoint "")
 
-  # Non-root, like the real image's `appuser`: it keeps the rewritten
-  # index.html owned by the invoking user so the next scenario can replace it.
-  docker run --detach --name "$CONTAINER" \
+  # Non-root, like the real image's `appuser`, so the entrypoint's rewrite of
+  # index.html runs with the permissions it has in production.
+  docker create --name "$CONTAINER" \
     --user "$(id -u):$(id -g)" \
     --env XDG_CONFIG_HOME=/tmp --env XDG_DATA_HOME=/tmp \
-    --volume "$WORKDIR:/usr/share/caddy" \
-    --volume "$PWD/oci-build/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro" \
-    --volume "$PWD/oci-build/Caddyfile:/etc/caddy/Caddyfile:ro" \
-    --publish 127.0.0.1::8080 \
     --env PORT=8080 \
     "$@" \
     "${entry[@]}" \
     "$CADDY_IMAGE" caddy run --config /etc/caddy/Caddyfile >/dev/null || return 1
 
-  local port
-  port="$(docker port "$CONTAINER" 8080/tcp | head -1 | sed 's/.*://')"
-  [ -n "$port" ] || return 1
+  # The archive carries the `caddy` directory entry itself, owned by the
+  # container user, because the entrypoint writes its temp-and-rename output
+  # into that directory and the image ships it owned by root.
+  tar --create --directory "$WORKDIR" --owner="$(id -u)" --group="$(id -g)" --numeric-owner --file - caddy |
+    docker cp --archive - "$CONTAINER:/usr/share" || return 1
+  docker cp oci-build/entrypoint.sh "$CONTAINER:/usr/local/bin/entrypoint.sh" >/dev/null || return 1
+  docker cp oci-build/Caddyfile "$CONTAINER:/etc/caddy/Caddyfile" >/dev/null || return 1
+  docker start "$CONTAINER" >/dev/null || return 1
 
   local i
   for i in $(seq 1 60); do
-    if curl --silent --fail --output /dev/null "http://127.0.0.1:$port/"; then
-      printf '%s' "$port"
+    if ns_curl --silent --fail --output /dev/null "http://127.0.0.1:8080/"; then
+      printf '8080'
       return 0
     fi
     sleep 0.25
@@ -107,7 +132,7 @@ serve() {
 
 # Fetch as a crawler does: plain HTTP GET, no JavaScript engine.
 crawl() {
-  curl --silent --show-error --user-agent "$CRAWLER_UA" "http://127.0.0.1:$1$2"
+  ns_curl --silent --show-error --user-agent "$CRAWLER_UA" "http://127.0.0.1:$1$2"
 }
 
 expect_tag() {
@@ -155,11 +180,14 @@ command -v docker >/dev/null 2>&1 || {
   echo "check-link-preview: docker is required (it runs the real Caddy serving stack)" >&2
   exit 2
 }
-docker image inspect "$CADDY_IMAGE" >/dev/null 2>&1 || docker pull "$CADDY_IMAGE" >/dev/null || {
-  echo "check-link-preview: could not obtain $CADDY_IMAGE" >&2
-  exit 2
-}
+for image in "$CADDY_IMAGE" "$CURL_IMAGE"; do
+  docker image inspect "$image" >/dev/null 2>&1 || docker pull "$image" >/dev/null || {
+    echo "check-link-preview: could not obtain $image" >&2
+    exit 2
+  }
+done
 WORKDIR="$(mktemp --directory)"
+mkdir "$WORKDIR/caddy"
 
 if [ "${1:-}" = "--self-test" ]; then
   QUIET_FAIL="yes"
@@ -187,12 +215,12 @@ assert_branded "$port" "/"
 # answers through `try_files ... /index.html`. The crawler must see the tags
 # there too, else only a bare root link ever unfurls.
 assert_branded "$port" "/tickets/12345"
-code="$(curl --silent --output /dev/null --write-out '%{http_code}' --user-agent "$CRAWLER_UA" "http://127.0.0.1:$port/tickets/12345")"
+code="$(ns_curl --silent --output /dev/null --write-out '%{http_code}' --user-agent "$CRAWLER_UA" "http://127.0.0.1:$port/tickets/12345")"
 [ "$code" = "200" ] || fail "crawler GET /tickets/12345: expected HTTP 200, got $code"
 remove_container
 
 # --- Scenario 4: restart with changed branding (MAPPS-826) ------------------
-# Reuses $WORKDIR/index.html as scenario 1 left it (copy_fresh=no), which is
+# Reuses $WORKDIR/caddy/index.html as scenario 1 left it (copy_fresh=no), which is
 # what a restart of the same container filesystem looks like, and changes
 # MOKOSH_BRAND_NAME. A crawler must see the NEW name, not the stale one from
 # scenario 1, and the rewritten file must carry the marker exactly once - a
@@ -205,7 +233,8 @@ port="$(serve yes no --env "MOKOSH_BRAND_NAME=Renamed Inc")" || {
 body="$(crawl "$port" "/")"
 expect_tag "$body" '<meta property="og:title" content="Renamed Inc">' "restart"
 reject_tag "$body" 'content="Acme &quot;PSA&quot; &amp; Co"' "restart"
-marker_count="$(grep -c -F '<!-- MAPPS-477 link-preview metadata -->' "$WORKDIR/index.html")"
+snapshot_index
+marker_count="$(grep -c -F '<!-- MAPPS-477 link-preview metadata -->' "$WORKDIR/caddy/index.html")"
 [ "$marker_count" = "1" ] || fail "restart: expected exactly one OG_MARKER in index.html after a restart, found $marker_count"
 remove_container
 
