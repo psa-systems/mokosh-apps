@@ -14,10 +14,13 @@
 //!   are layout owned by that page, and a ticket description is edited in a
 //!   modal that has nowhere to put a second pane. Left out on the reporter's
 //!   own instruction.
-//! - **Uploading.** `on_file` is passed through to the toolbar and is `None`
-//!   for every host but the KB editor, because the upload route belongs to an
-//!   article and a ticket description has nothing to attach a file to. The
-//!   toolbar's Image dialog stays URL-only when it is absent.
+//! - **Uploading.** `on_file` is passed through to the toolbar and is wired
+//!   for the KB editor and, since MAPPS-733, for the ticket description,
+//!   note, and note-correction editors too, all posting through
+//!   `start_inline_image_upload` (tickets.rs:2549) to
+//!   `/tickets/{ticket_id}/attachments/inline`. It is `None` only where there
+//!   is no saved entity yet to attach a file to, such as the ticket create
+//!   form. The toolbar's Image dialog stays URL-only when it is absent.
 //!
 //! The field is still a plain `<textarea>` holding Markdown source. That is the
 //! MAPPS-579 decision and it has not changed: the source is the single source
