@@ -34,8 +34,8 @@ services:
       MOKOSH_OIDC_ISSUER: https://api.example.com
 
       # OAuth public-client ID registered with mokosh-server. Run
-      # `just register-client` in mokosh-server to mint one and paste it
-      # here. Leave unset (not a placeholder UUID) to fall back to
+      # `just register-dev-clients` in the bunyip repo to mint one and
+      # paste it here. Leave unset (not a placeholder UUID) to fall back to
       # standalone username/password sign-in instead of a client id the
       # OP has never registered.
       # MOKOSH_OIDC_CLIENT_ID: replace-with-your-registered-client-id

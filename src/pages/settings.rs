@@ -85,6 +85,34 @@ pub(crate) fn AdminOnlyNotice(title: String) -> Element {
 /// Open ticket; a display preference is not an action on an article, and
 /// this is where the user's other display preferences live. Same `kb_density`
 /// key in `prefs`, so nobody's choice moves.
+/// PMS-1280: how a deployment-wide setting (the SMTP relay, the app name)
+/// loaded. Those belong to the deployment's operator, and the server answers
+/// any other organisation's admin with 403: that is not a failure to show,
+/// it is a section this admin does not own.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum OperatorLoad<T> {
+    Loaded(T),
+    NotOperator,
+    Failed,
+}
+
+pub(crate) async fn load_operator_setting<T: serde::de::DeserializeOwned>(
+    path: &str,
+    what: &str,
+) -> OperatorLoad<T> {
+    match crate::hooks::fetch::api::get_authed_typed::<T>(path).await {
+        Ok(value) => OperatorLoad::Loaded(value),
+        Err(crate::hooks::fetch::api::ApiError::Status { code: 403, .. }) => {
+            tracing::debug!("{what}: this admin is not the deployment's operator");
+            OperatorLoad::NotOperator
+        }
+        Err(e) => {
+            tracing::error!("{what} load failed: {e:?}");
+            OperatorLoad::Failed
+        }
+    }
+}
+
 #[component]
 pub fn AppearanceSettingsPage() -> Element {
     // MAPPS-357: N/A - per-user appearance (theme + accent) has no server-backed
@@ -1476,14 +1504,14 @@ fn OrganizationSettingsBody() -> Element {
 
     let app_name_resource = use_resource(move || async move {
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_authed::<AppNameView>(APP_NAME_PATH)
-            .await
-            .inspect_err(|e| tracing::error!("app name load failed: {e}"))
-            .ok()
+        load_operator_setting::<AppNameView>(APP_NAME_PATH, "app name").await
     });
     let app_name_snap = app_name_resource.read_unchecked();
+    // PMS-1280: only the deployment's operator owns the app name; any other
+    // organisation's admin does not see the card at all.
+    let app_name_owned = !matches!(*app_name_snap, Some(OperatorLoad::NotOperator));
     if !app_name_seeded() {
-        if let Some(Some(view)) = &*app_name_snap {
+        if let Some(OperatorLoad::Loaded(view)) = &*app_name_snap {
             app_name_value.set(view.app_name.clone().unwrap_or_default());
             app_name_effective.set(view.effective.clone());
             app_name_seeded.set(true);
@@ -1737,6 +1765,7 @@ fn OrganizationSettingsBody() -> Element {
         // MAPPS-885: a deployment-wide value (PMS-789), not a per-tenant one,
         // so it gets its own Card and its own Save rather than joining the
         // organisation form below.
+        if app_name_owned {
         Card {
             div { class: "space-y-4 max-w-xl",
                 h2 { class: "text-lg font-semibold text-content", "App name" }
@@ -1769,6 +1798,7 @@ fn OrganizationSettingsBody() -> Element {
                     }
                 }
             }
+        }
         }
 
         Card {
