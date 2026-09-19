@@ -58,15 +58,15 @@ pub struct PendingEdit {
 }
 
 /// The offline edit queue. Empty in the shipped build (nothing enqueues
-/// yet). A `GlobalSignal` so the (future) enqueue sites in the fetch layer
-/// (plain async fns that cannot reach a context signal) can push to it,
-/// exactly like `SERVER_REACHABLE`.
+/// yet). A `GlobalSignal` so the enqueue sites in the fetch layer, once
+/// MAPPS-910 builds them (plain async fns that cannot reach a context
+/// signal), can push to it, exactly like `SERVER_REACHABLE`.
 #[cfg(feature = "app")]
 pub static EDIT_QUEUE: GlobalSignal<Vec<PendingEdit>> = Signal::global(Vec::new);
 
 /// Append an edit to the offline queue. The mutation guard would call this
-/// instead of blocking once hold-and-replay lands; today it is unused
-/// (writes are blocked at the button while down).
+/// instead of blocking once MAPPS-910 lands hold-and-replay; today it is
+/// unused (writes are blocked at the button while down).
 #[cfg(feature = "app")]
 pub fn enqueue_pending_edit(edit: PendingEdit) {
     EDIT_QUEUE.write().push(edit);
