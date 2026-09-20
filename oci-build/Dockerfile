@@ -1,12 +1,12 @@
 # Mokosh Platform client - Dioxus WASM web bundle.
-# Base image bundles Rust 1.94 + WASM target + bun + cargo-binstall + dioxus-cli
+# Base image bundles Rust 1.98.1 + WASM target + bun + cargo-binstall + dioxus-cli
 # (pinned). See niceguyit/oci-images/rust-builder.
 #
 # BUILDPLATFORM pins the builder stage to the runner's native arch.
 # The WASM bundle it produces is arch-agnostic, so it is built once
 # and copied into per-arch runtime stages. Building cargo under arm64
 # emulation would be slow and gains nothing for a WASM artifact.
-FROM --platform=$BUILDPLATFORM ghcr.io/niceguyit/rust-builder-glibc:v1.0.1-rust1.94-trixie AS builder
+FROM --platform=$BUILDPLATFORM ghcr.io/niceguyit/rust-builder-glibc:v1.2.0-rust1.98.1-trixie AS builder
 
 WORKDIR /build
 
