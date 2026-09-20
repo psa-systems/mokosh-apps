@@ -29,10 +29,9 @@ on:
 jobs:
   drift:
     name: how far behind is the pin
-    # Dev label: this job runs `cargo update`, which needs a cargo the base
-    # image does not carry. It compiles nothing, so the C toolchain that label
-    # also brings is incidental here.
-    runs-on: ${{ vars.RUNS_ON_OPENSUSE_DEV_LATEST }}
+    # Medium label: `cargo update` and git reads only; the base image ships
+    # cargo and nothing here compiles or links.
+    runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_MEDIUM }}
 
     steps:
       - name: Clone the repository

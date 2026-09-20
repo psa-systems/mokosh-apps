@@ -1,22 +1,20 @@
 # Mokosh Platform client - Dioxus WASM web bundle.
-# Base image bundles Rust 1.94 + WASM target + bun + cargo-binstall + dioxus-cli
+# Base image bundles Rust 1.98.1 + WASM target + bun + cargo-binstall + dioxus-cli
 # (pinned). See niceguyit/oci-images/rust-builder.
 #
 # BUILDPLATFORM pins the builder stage to the runner's native arch.
 # The WASM bundle it produces is arch-agnostic, so it is built once
 # and copied into per-arch runtime stages. Building cargo under arm64
 # emulation would be slow and gains nothing for a WASM artifact.
-FROM --platform=$BUILDPLATFORM ghcr.io/niceguyit/rust-builder-glibc:v1.0.1-rust1.94-trixie AS builder
+FROM --platform=$BUILDPLATFORM ghcr.io/niceguyit/rust-builder-glibc:v1.2.0-rust1.98.1-trixie AS builder
 
 WORKDIR /build
 
-# Cap concurrent rustc / build-script processes. CI sets this to the
-# full host nproc since this is the only build on the runner. The
-# default keeps ad-hoc local builds from oversubscribing a small
-# laptop. Overridable via `--build-arg CARGO_BUILD_JOBS=N`.
-ARG CARGO_BUILD_JOBS=2
+# Cargo build parallelism. CI passes the runner's value; `default` is cargo's
+# own choice for an ad-hoc local build.
+ARG CARGO_BUILD_JOBS=default
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
-RUN echo "build parallelism: CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} (host nproc=$(nproc))"
+RUN echo "build parallelism: CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}"
 
 # Pre-stage wasm-opt so `dx build --release` never downloads it from a GitHub
 # release: that download has failed CI with "connection reset", and in MAPPS-381

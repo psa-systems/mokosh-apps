@@ -16,7 +16,7 @@ app := "mokosh-apps"
 # the Forgejo `check.yml` job run a toolchain compatible with the
 # rust-builder-glibc image the client is built against.
 pre_commit_mode := "docker"
-dev_image := "ghcr.io/niceguyit/rust-builder-glibc:v1.0.1-rust1.94-trixie"
+dev_image := "ghcr.io/niceguyit/rust-builder-glibc:v1.2.0-rust1.98.1-trixie"
 
 # MAPPS-824: `pre_commit_prepare` is the only host-side hook common.just's
 # shared `pre-commit` exposes before its cargo legs run, so it is where this
@@ -127,7 +127,7 @@ check-defined-colors:
     bash scripts/check-defined-colors.sh --self-test
     bash scripts/check-defined-colors.sh
 
-# MAPPS-398: keep check.yml on the dev runner label and free of run-time package installs
+# MAPPS-398 / DEV-769: keep check.yml on the heavy runner label, no *_LATEST labels, no run-time package installs
 [group: 'check']
 check-runner-labels:
     bash scripts/check-runner-labels.sh
