@@ -62,7 +62,7 @@ trigger, so that stops being true.
 | Trigger | File | Event type |
 | --- | --- | --- |
 | Send a request form to a client | `src/pages/request_links.rs` (`SendRequestLinkModal`, reached directly from the company page and via `SendFormToClientModal` from the form builder) | `forms.request_link` |
-| Invite a colleague | `src/pages/team.rs` | `invitations.created` |
+| Invite a colleague | `src/pages/invitations.rs` | `invitations.created` |
 | Send a quote to the client | `src/pages/quotes.rs` | `quote.sent` |
 | Send an invoice to the client | `src/pages/billing.rs` (`InvoiceDetailPage`) | `billing.invoice_pay_now` |
 | Email a ticket note to the client | `src/pages/tickets.rs` (the journal composer on `TicketDetailPage`) | `ticket.note` |

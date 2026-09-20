@@ -311,7 +311,7 @@ jobs:
       # field name and legitimately appears in comments elsewhere in
       # src/. Only the customer-facing surface is guarded.
       - name: Company ID copy guard
-        run: bash scripts/check-company-id-copy.sh
+        run: just check-company-id-copy
 
       - name: Check formatting
         run: cargo fmt --all --check

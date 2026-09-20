@@ -331,7 +331,7 @@ fn render_with_editor(d: SavedDashboardRow, mut version: Signal<u32>, can_mutate
             // MAPPS-357: the add-widget buttons, the per-widget coord inputs,
             // and Remove all mutate the in-memory `draft` only (never the
             // server); they are persisted solely by the disabled Save, so they
-            // stay enabled while down - mirroring team.rs, where the invite
+            // stay enabled while down - mirroring invitations.rs, where the invite
             // form inputs stay editable and only the submit is blocked.
             Card { title: "Add widget".to_string(),
                 div { class: "flex flex-wrap gap-2",
