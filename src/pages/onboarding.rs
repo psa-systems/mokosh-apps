@@ -31,7 +31,7 @@
 //! MAPPS-524: the organisation half of that is asked only of admins.
 //! `PUT /tenants/current` is admin-gated on mokosh-server (PMS-751: the name
 //! is customer-facing, so it is tenant-wide configuration), and every invite
-//! goes out as the lowest-privilege role (`src/pages/team.rs`). A technician
+//! goes out as the lowest-privilege role (`src/pages/invitations.rs`). A technician
 //! with no bunyip name claims therefore filled this screen in, read "Could not
 //! save: Access denied" from the org save, and never reached the stamp that
 //! releases the AuthGuard: MAPPS-430's failure mode, narrowed to the

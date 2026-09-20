@@ -1347,7 +1347,8 @@ fn SetPassword(token: String) -> Element {
     // ResetPassword above. HubRedirect for bunyip-configured deploys
     // keeps the token in the URL so bunyip's own set-password surface
     // (when one exists) can pick it up; today it falls back to the
-    // same /reset-password shape until a hub-side companion lands.
+    // same /reset-password shape until the hub-side companion (MAPPS-910)
+    // lands.
     if crate::modules::oidc::is_standalone() {
         return rsx! { crate::pages::set_password::SetPasswordPage { token } };
     }

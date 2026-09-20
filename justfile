@@ -59,7 +59,7 @@ default:
 # desktop, clippy, fmt, and the rest of the project's linting/consistency
 # checks).
 [group: 'check']
-check: check-justfile check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging check-loading-recipe
+check: check-justfile check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging check-loading-recipe check-company-id-copy
 
 # MAPPS-682: clippy, not check, and `-D warnings`, so the browser target fails
 # on a finding instead of printing it. Mirrors check-clippy and check.yml.
@@ -206,6 +206,13 @@ check-email-affordance:
 check-dev-sso-scheme:
     bash scripts/check-dev-sso-scheme.sh --self-test
     bash scripts/check-dev-sso-scheme.sh
+
+# MAPPS-650 / PMS-946: keep "Portal ID" from regressing back into the customer-facing contact-plane pages (David asked for "Company ID"). A shebang body, like check-justfile, so check.yml invokes it as `just check-company-id-copy` rather than duplicating the script path.
+[group: 'check']
+check-company-id-copy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    scripts/check-company-id-copy.sh
 
 # MAPPS-527: no page hardcodes a `?sort=` value; every fragment is a const in src/utils/sort_keys.rs that a test checks against the server's allow-list. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']
