@@ -52,7 +52,7 @@ The broad ones:
 
 | Recipe | What it does |
 | --- | --- |
-| `just check` | Everything below except `check-docker`, `check-link-preview` and `check-types-pin-strict`. |
+| `just check` | Everything below except `check-docker`, `check-link-preview`, `check-types-pin-strict` and `check-csp-host-derived-origin`. |
 | `just check-web` | `cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings`. |
 | `just check-desktop` | Type-check the native desktop build. |
 | `just check-clippy` | `cargo clippy --all-targets -- -D warnings` on the host target. |
@@ -104,12 +104,15 @@ comment):
 | `check-theme-tokens.sh` | Components use the semantic theme token utilities, never hardcoded neutral or brand colours. |
 | `check-types-pin.sh` | The `mokosh-types` git pin does not silently drift behind the server's default branch. |
 
-Three are deliberately outside `just check`:
+Four are deliberately outside `just check`:
 
 - `just check-docker` builds the production image, and the check runner has no
   Docker.
 - `just check-link-preview` runs the real entrypoint and Caddyfile in a
   container and fetches the result with `curl`, for the same reason.
+- `just check-csp-host-derived-origin` runs the real entrypoint and Caddyfile
+  in a container and asserts the CSP against a live request, for the same
+  reason.
 - `just check-types-pin-strict` treats any lock move on mokosh-server as a
   finding, where `check-types-pin` narrows that to moves that actually change
   `crates/mokosh-types`. It is allowed to be red; the weekly

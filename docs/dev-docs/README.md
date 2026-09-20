@@ -13,7 +13,10 @@ which are not. The same audit produced matching documentation in
 
 | Document | Purpose |
 | --- | --- |
+| [`CHANGELOG.md`](CHANGELOG.md) | **Maintained.** Internal, name-free history of mokosh-apps: retired point-in-time docs (milestone handoffs, audit reports) distilled into dated entries, newest-first. |
 | [`codebase-state.md`](codebase-state.md) | **Historical.** The record of a 2026-05-06 walk through every route: cross-cutting bugs, 27 ranked UI/UX issues, per-page findings and the proposed fixes (`F1..F19`). Not a description of the client now. |
+| [`kb-ui-overhaul-design.md`](kb-ui-overhaul-design.md) | **Historical.** The design for the Knowledge Base UI/UX overhaul (implemented, see MAPPS-423); parts of the article-header layout were superseded afterward. |
+| [`kb-ui-overhaul-plan.md`](kb-ui-overhaul-plan.md) | **Historical.** The task-by-task implementation plan for the KB UI/UX overhaul; the article-header layout it builds was superseded, see the note in `kb-ui-overhaul-design.md`. |
 | [`../client-server-integration.md`](../client-server-integration.md) | **Maintained.** How this client reaches the server (`crate::hooks::fetch::api`, the base-URL resolution, the bearer and its renewal, how a failure reaches the user) and what the two repositories share on the wire: which modules re-export `mokosh-types`, how the pin is guarded, and where the copies the compiler cannot see still are. Its status content was retired in MAPPS-540. |
 | [`versioning.md`](../versioning.md) | Where the displayed version comes from (build-time wiring in `build.rs` -> footer/banner) and how staging-vs-production update targets work. |
 | [`spa-rollout-runbook.md`](../spa-rollout-runbook.md) | How to roll the SPA so the load balancer never serves two builds at once: pin a versioned image tag per deploy, roll replicas in lockstep, and verify a single `build_sha` from `_mokosh_config.js`. |

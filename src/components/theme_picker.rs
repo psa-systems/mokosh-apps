@@ -99,13 +99,13 @@ pub fn ThemePicker() -> Element {
                         }
                     }
                 }
-                // Phase-2 named palettes, locked.
+                // Phase-2 named palettes, locked. Owning issue: MAPPS-910.
                 div { class: "flex gap-2 pt-1",
                     for name in ["Sepia", "Midnight", "Forest"] {
                         div {
                             key: "{name}",
                             class: "flex-1 rounded-lg border border-dashed border-line px-3 py-2 text-center text-xs font-medium text-subtle",
-                            title: "Named palettes are coming in a later phase",
+                            title: "Named palettes: tracked as MAPPS-910",
                             "{name} "
                             span { class: "opacity-60", "(later)" }
                         }
