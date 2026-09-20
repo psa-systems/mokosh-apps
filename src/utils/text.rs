@@ -9,37 +9,9 @@
 //! then stored, so `Acme\u{200B}` and `Acme` become two records that look
 //! identical in every list, search box and picker.
 
-/// Characters that render as nothing, so a value carrying one is
-/// indistinguishable from a value without it.
-///
-/// This is a curated subset of `Cf`, not the full category: only the code
-/// points known to reach this app in practice are listed, so an unfamiliar
-/// `Cf` character (an Arabic number sign, a musical or tag format control)
-/// passes through un-stripped rather than being guessed at.
-///
-/// ZWJ (U+200D) and ZWNJ (U+200C) are deliberately absent even though they are
-/// `Cf`: they are meaningful inside Persian, Arabic and Indic text and inside
-/// emoji sequences, so removing them from free text corrupts legitimate names.
-/// They are removed only by [`clean_strict`], for fields whose grammar (a
-/// phone number, a postal code, a UUID) admits no such character anywhere.
-fn is_invisible(c: char) -> bool {
-    matches!(c,
-        '\u{00AD}'                  // soft hyphen
-        | '\u{200B}'                // zero width space
-        | '\u{200E}' | '\u{200F}'   // left-to-right / right-to-left mark
-        | '\u{202A}'..='\u{202E}'   // bidi embeddings and overrides
-        | '\u{2060}'..='\u{2064}'   // word joiner, invisible operators
-        | '\u{2066}'..='\u{2069}'   // bidi isolates
-        | '\u{FEFF}'                // BOM / zero width no-break space
-    )
-}
-
-/// A whitespace character that is not plain ASCII (U+00A0, U+202F, U+2007,
-/// U+3000, ...). These are visible as a gap but are not the space every
-/// validator's character set was written against.
-fn is_exotic_space(c: char) -> bool {
-    c.is_whitespace() && !c.is_ascii()
-}
+// MAPPS-879: the character classes are mokosh-server's, re-exported so the
+// client cannot drift from them. `is_removed` keeps its local name here.
+pub use mokosh_types::text::{is_exotic_space, is_removed as is_invisible, sanitize_invisible};
 
 /// Whether [`strip_invisible`] would change `raw`.
 ///
@@ -81,6 +53,26 @@ pub fn clean_strict(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MAPPS-879: fails if a local copy of a predicate `mokosh_types::text`
+    /// exports comes back, instead of being re-exported.
+    #[test]
+    fn predicates_are_not_reimplemented_locally() {
+        let src = include_str!("text.rs");
+        let production = &src[..src.find("#[cfg(test)]").unwrap()];
+        for name in [
+            "is_removed",
+            "is_invisible",
+            "is_exotic_space",
+            "sanitize_invisible",
+        ] {
+            let needle = format!("fn {name}");
+            assert!(
+                !production.contains(&needle),
+                "`{needle}` must be re-exported from mokosh_types::text, not redefined"
+            );
+        }
+    }
 
     /// Every character the MAPPS-582 table measured as surviving `.trim()` and
     /// every validator downstream of it.
