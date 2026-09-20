@@ -144,7 +144,7 @@ last mile, since each platform decides its own layout from these tags.
 
 ## Runtime config env vars
 
-Set on the `mokosh-www` container. All three are optional; an unset or
+Set on the `mokosh-www` container. All four are optional; an unset or
 empty variable is omitted from `_mokosh_config.js` entirely and the SPA
 falls back to its built-in value.
 
@@ -155,7 +155,10 @@ falls back to its built-in value.
 | `MOKOSH_BRAND_HERO_URL` | `brand_hero_url` | built-in `mokosh-hero.png` | The illustration on the marketing landing page. Setting it also replaces the alt text, which otherwise describes artwork that is no longer on the page. |
 | `MOKOSH_DOCS_BASE_URL` | `docs_base_url` | none (hidden) | The documentation subdomain base URL (e.g. `https://docs.n.niceguyit.biz`). Set it to show a top-level **Documentation** entry in the sidebar and to activate the contextual help links (each deep-links to an article under this base). Unset, both stay hidden so no link points at a missing site (MAPPS-453). `MOKOSH_DOCS_URL` is a deprecated fallback for the same field. |
 
-`src/branding.rs` is the single reader; every render site calls it.
+`src/branding.rs` is the single reader for the three brand vars
+(`MOKOSH_BRAND_NAME`, `MOKOSH_BRAND_LOGO_URL`, `MOKOSH_BRAND_HERO_URL`); every
+render site calls it. `MOKOSH_DOCS_BASE_URL` is read separately, in
+`src/modules/oidc/config.rs`.
 
 ### Where the logo and hero may be served from
 

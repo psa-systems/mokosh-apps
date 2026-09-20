@@ -51,6 +51,9 @@ const STATUS_PATH: &str = "/integrations/contact-sync";
 const SETTING_CATEGORY: &str = "integrations";
 const SETTING_KEY: &str = "google_contacts_enabled";
 
+/// The not-configured next step for the one person who can fix it.
+const NOT_CONFIGURED_EDITABLE: &str = "Enter this deployment's Google sign-in client below. It only has to be done once, for every organisation on the deployment.";
+
 /// Failed runs in a row before the card calls it failing repeatedly. The
 /// server mails an admin at the same count (`runs::NOTIFY_AFTER`).
 const FAILING_AFTER: i32 = 3;
@@ -72,6 +75,9 @@ pub struct Overview {
     pub configured: bool,
     #[serde(default)]
     pub connection: Option<Connection>,
+    /// The caller may set the deployment's Google client (PMS-1264).
+    #[serde(default)]
+    pub client_editable: bool,
 }
 
 /// The connection half of the status read (PMS-1212, PMS-1215).
@@ -312,7 +318,7 @@ pub fn copy_for(state: &CardState) -> StateCopy {
             badge: "Not available",
             tone: BadgeVariant::Gray,
             headline: "This deployment has no Google sign-in client configured.".to_string(),
-            next_step: "Ask whoever runs this deployment to set GOOGLE_CONTACTS_CLIENT_ID and GOOGLE_CONTACTS_CLIENT_SECRET. Nothing here can be connected until then.".to_string(),
+            next_step: "Ask whoever runs this deployment to set up its Google sign-in client. Nothing here can be connected until then.".to_string(),
         },
         CardState::NeverConnected => StateCopy {
             badge: "Not connected",
@@ -630,7 +636,12 @@ fn GoogleContactsSettingsBody() -> Element {
                 Card { ErrorBanner { "Could not load the Google Contacts connection." } }
             },
             (Some(Some(data)), Some(state)) => {
-                let copy = copy_for(&state);
+                let mut copy = copy_for(&state);
+                // PMS-1264: the person who CAN set the client is told where.
+                if state == CardState::NotConfigured && data.client_editable {
+                    copy.next_step = NOT_CONFIGURED_EDITABLE.to_string();
+                }
+                let client_editable = data.client_editable;
                 let actions = actions_for(&state);
                 let disabled = busy() || !can_mutate;
                 let connection = data.connection.clone();
@@ -723,6 +734,11 @@ fn GoogleContactsSettingsBody() -> Element {
                                     }
                                 }
                             }
+                        }
+                    }
+                    if client_editable {
+                        crate::pages::settings_contact_sync_client::GoogleClientForm {
+                            on_change: move |_| overview.restart(),
                         }
                     }
                     Card { class: "mt-6",
