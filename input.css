@@ -142,6 +142,18 @@
   --hl-ins: #15803d;
   --hl-del: #b91c1c;
   --hl-mta: #7c3aed;
+
+  /* MAPPS-658: select chevron drawn with a token-derived stroke so it
+     follows the base mode. @tailwindcss/forms ships the arrow as a
+     `background-image` data URI whose stroke is a hardcoded oklch literal,
+     and its `resolveChevronColor` rejects any value containing var(), so
+     the plugin cannot be told a token. The application's own `select` rule
+     later in this file already outranks the plugin's background-color and
+     border-color at specificity 0,0,1; setting `background-image` there
+     to var(--select-chevron) wins the same way. Stroke matches the number
+     spinner's muted register (MAPPS-655's --muted weight), so the two
+     read at the same level. */
+  --select-chevron: url("data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20fill='none'%20viewBox='0%200%2020%2020'%3E%3Cpath%20stroke='%23475569'%20stroke-linecap='round'%20stroke-linejoin='round'%20stroke-width='1.5'%20d='m6%208%204%204%204-4'/%3E%3C/svg%3E");
 }
 
 .dark {
@@ -175,6 +187,11 @@
   --hl-ins: #86efac;
   --hl-del: #fca5a5;
   --hl-mta: #c4b5fd;
+
+  /* MAPPS-658: dark-mode chevron stroke = --muted (dark) = #94a3b8. See
+     the note in :root for why the token is a data URI with the colour
+     baked in rather than a var() inside the SVG. */
+  --select-chevron: url("data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20fill='none'%20viewBox='0%200%2020%2020'%3E%3Cpath%20stroke='%2394a3b8'%20stroke-linecap='round'%20stroke-linejoin='round'%20stroke-width='1.5'%20d='m6%208%204%204%204-4'/%3E%3C/svg%3E");
 }
 
 /* Keyframes */
@@ -273,6 +290,21 @@
     @apply block w-full rounded-md border-line bg-surface text-content shadow-sm
            focus:border-accent focus:ring-accent
            sm:text-sm;
+  }
+
+  /* MAPPS-658: draw the select chevron with a token-derived stroke. The
+     later `select` rule above outranks the plugin's own selector, so this
+     wins without a new selector. background-position, background-size and
+     padding-right stay with the plugin; only the image changes. */
+  select {
+    background-image: var(--select-chevron);
+  }
+
+  /* Mirror the plugin's own reset: a multiple or size>1 select keeps no
+     chevron, otherwise the override above would put one back on those. */
+  select:where([multiple]),
+  select:where([size]:not([size="1"])) {
+    background-image: initial;
   }
 
   /* MAPPS-655: the browser paints the number spinner itself, so `color-scheme` on
