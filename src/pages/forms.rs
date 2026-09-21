@@ -17,10 +17,10 @@ use std::collections::HashSet;
 use dioxus::prelude::*;
 
 use crate::components::{
-    use_page_title, ArrowDownIcon, ArrowUpIcon, Badge, BadgeVariant, Button, ButtonVariant, Card,
-    Checkbox, ChevronDownIcon, ChevronRightIcon, DataTable, DragHandleIcon, ErrorBanner,
-    IconButton, IconSize, Input, PageHeader, Select, SelectOption, Table, TableBody, TableCell,
-    TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, TrashIcon,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, Checkbox, ChevronDownIcon,
+    ChevronRightIcon, DataTable, DragHandleIcon, ErrorBanner, IconButton, IconSize, Input,
+    PageHeader, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
+    TableHeader, TableLoading, TableRow, Textarea, TrashIcon,
 };
 use crate::modules::forms::FieldTypeExt;
 use crate::modules::forms::{
@@ -2719,31 +2719,26 @@ fn FieldRowEditor(
                     }
                 }
                 div { class: "flex shrink-0 items-center gap-1",
-                    // PMS-760: two icons rather than three text links. Through
-                    // `IconButton`, which requires the accessible name the text
-                    // used to be, so shrinking the control does not silently
-                    // remove it for a screen reader.
-                    IconButton {
-                        label: "Move field up".to_string(),
-                        class: "p-1 text-subtle hover:text-content".to_string(),
-                        disabled: disabled || index == 0,
-                        onclick: move |_| {
+                    // PMS-760 + MAPPS-367: one component owns the up/down
+                    // pair, using rounded-triangle icons that read as
+                    // actuators rather than direction indicators. Edges are
+                    // computed inside ReorderButtons from index + total so a
+                    // caller cannot forget one.
+                    crate::components::ReorderButtons {
+                        index,
+                        total,
+                        disabled,
+                        label_noun: "field".to_string(),
+                        on_up: move |_| {
                             fields.write().swap(index, index - 1);
                             let moved = expansion_after_swap(&expanded_fields.read().clone(), index, index - 1);
                             expanded_fields.set(moved);
                         },
-                        ArrowUpIcon { size: IconSize::Small }
-                    }
-                    IconButton {
-                        label: "Move field down".to_string(),
-                        class: "p-1 text-subtle hover:text-content".to_string(),
-                        disabled: disabled || index + 1 >= total,
-                        onclick: move |_| {
+                        on_down: move |_| {
                             fields.write().swap(index, index + 1);
                             let moved = expansion_after_swap(&expanded_fields.read().clone(), index, index + 1);
                             expanded_fields.set(moved);
                         },
-                        ArrowDownIcon { size: IconSize::Small }
                     }
                     IconButton {
                         // The name opens with the action either way: the label
