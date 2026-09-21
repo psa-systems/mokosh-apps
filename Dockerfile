@@ -28,7 +28,7 @@ RUN bun install --frozen-lockfile
 RUN mkdir src \
     && echo "fn main() {}" > src/main.rs \
     && echo "" > src/lib.rs \
-    && cargo build --target wasm32-unknown-unknown \
+    && cargo build --locked --target wasm32-unknown-unknown \
     && rm -rf src
 
 # Source code is mounted via volumes in compose

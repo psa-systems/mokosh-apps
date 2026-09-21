@@ -66,14 +66,14 @@ check: check-justfile check-ci-parity check-doc-links check-web check-desktop ch
 [doc("Lint the web/WASM build, failing on any warning (MAPPS-682).")]
 [group: 'check']
 check-web:
-    cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings
+    cargo clippy --locked --all-targets --target wasm32-unknown-unknown -- -D warnings
 
 # MAPPS-504: check the native desktop build. `--no-default-features` drops the
 # `web` renderer so dioxus links the desktop renderer alone; `desktop` pulls in
 # the `app` runtime gate itself (see Cargo.toml).
 [group: 'check']
 check-desktop:
-    cargo check --no-default-features --features desktop,multi-tenant
+    cargo check --locked --no-default-features --features desktop,multi-tenant
 
 # MAPPS-259: fail on hardcoded neutral/brand color classes (use tokens). MAPPS-444: and on a red/green text class with no dark: pair. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']
@@ -261,7 +261,7 @@ check-types-pin-strict:
 # Run clippy lints
 [group: 'check']
 check-clippy:
-    cargo clippy --all-targets -- -D warnings
+    cargo clippy --locked --all-targets -- -D warnings
 
 # Check formatting
 [group: 'check']
