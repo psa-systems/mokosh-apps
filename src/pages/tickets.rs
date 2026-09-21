@@ -2541,8 +2541,12 @@ fn inline_image_url(att: &TicketInlineAttachment) -> String {
 }
 
 /// MAPPS-733: the wording under the picker's file field on this page.
-const TICKET_UPLOAD_HELP: &str =
-    "PNG, JPEG, WebP or GIF, up to 5 MB. It is stored with this ticket and anyone holding the link can view it.";
+fn ticket_upload_help() -> String {
+    format!(
+        "PNG, JPEG, WebP or GIF, up to {}. It is stored with this ticket and anyone holding the link can view it.",
+        crate::utils::image_upload::human_size(crate::utils::image_upload::max_bytes())
+    )
+}
 
 /// MAPPS-733: put a picked or pasted image into a Markdown field on the
 /// ticket page. The KB editor has had this since MAPPS-587; a ticket's
@@ -3685,7 +3689,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 )
                                             })
                                         },
-                                        upload_help: Some(TICKET_UPLOAD_HELP.to_string()),
+                                        upload_help: Some(ticket_upload_help()),
                                         oninput: move |next: String| {
                                             e_desc_error.set(String::new());
                                             e_desc.set(next);
@@ -3849,7 +3853,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     )
                                 })
                             },
-                            upload_help: Some(TICKET_UPLOAD_HELP.to_string()),
+                            upload_help: Some(ticket_upload_help()),
                             oninput: move |next: String| {
                                 note_content_error.set(String::new());
                                 note_content.set(next);
@@ -4894,7 +4898,7 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                                                 )
                                             })
                                         },
-                                        upload_help: Some(TICKET_UPLOAD_HELP.to_string()),
+                                        upload_help: Some(ticket_upload_help()),
                                         oninput: move |next: String| {
                                             edit_error.set(String::new());
                                             draft.set(next);
@@ -7143,7 +7147,7 @@ mod mapps686_shared_dto_tests {
 /// reach an article.
 #[cfg(test)]
 mod mapps733_inline_image_tests {
-    use super::{inline_image_url, TicketInlineAttachment, TICKET_UPLOAD_HELP};
+    use super::{inline_image_url, ticket_upload_help, TicketInlineAttachment};
 
     #[test]
     fn the_inserted_path_is_the_servers_else_the_public_read_for_the_id() {
@@ -7204,7 +7208,7 @@ mod mapps733_inline_image_tests {
         for (n, block) in blocks.iter().enumerate().skip(1) {
             assert!(block.contains("on_file:"), "editor {n} takes a file");
             assert!(
-                block.contains("upload_help: Some(TICKET_UPLOAD_HELP.to_string()),"),
+                block.contains("upload_help: Some(ticket_upload_help()),"),
                 "editor {n} words it for a ticket"
             );
         }
@@ -7214,6 +7218,6 @@ mod mapps733_inline_image_tests {
             "one definition, three call sites"
         );
         assert!(head.contains("format!(\"/tickets/{ticket_id}/attachments/inline\")"));
-        assert!(TICKET_UPLOAD_HELP.contains("anyone holding the link can view it"));
+        assert!(ticket_upload_help().contains("anyone holding the link can view it"));
     }
 }

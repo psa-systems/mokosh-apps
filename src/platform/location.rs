@@ -82,6 +82,31 @@ fn query_of(route: &str) -> Option<String> {
     (!query.is_empty()).then(|| format!("?{query}"))
 }
 
+/// Rewrite the address bar to `url` without adding a history entry, so a
+/// credential that arrived in the URL does not linger in browser history
+/// (MAPPS-336, MAPPS-919). Browser-only: a desktop window has no URL bar.
+#[cfg(target_arch = "wasm32")]
+pub fn replace_state(url: &str) {
+    if let Some(history) = web_sys::window().and_then(|w| w.history().ok()) {
+        let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(url));
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn replace_state(_url: &str) {}
+
+/// Drop the query string from the address bar, keeping the path. For the
+/// routes whose token arrives as `?token=`.
+#[cfg(target_arch = "wasm32")]
+pub fn strip_url_query() {
+    if let Some(path) = pathname() {
+        replace_state(&path);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn strip_url_query() {}
+
 /// Scheme + host + port, e.g. `https://msp.example.com`.
 #[cfg(target_arch = "wasm32")]
 pub fn origin() -> Option<String> {
