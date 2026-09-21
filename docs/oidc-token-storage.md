@@ -68,3 +68,7 @@ This is the decision point held open by MAPPS-362; it is deferred, not chosen.
 ## Does the browser actually need the refresh token? (MAPPS-362 AC)
 
 Yes, in the current architecture. The SPA performs its **own** silent renewal in the browser: `use_token_refresh` (`src/hooks/auth.rs`) reads the stored refresh token and calls `refresh_tokens` with `grant_type=refresh_token` (`src/modules/oidc/flow.rs`) to mint a fresh access token before expiry, and `offline_access` is requested by default in `OidcConfig::from_env` (`src/modules/oidc/config.rs`) precisely to obtain that refresh token. There is no backend session to hold it on the SPA's behalf. Therefore the refresh token **cannot** be moved server-side without adopting the BFF above; browser custody is a property of the public-client model, and removing it is exactly the BFF migration. Confirmed: the browser-held refresh token is required by the current design, and the only way to relocate it is the deferred BFF option.
+
+## Portal and contact refresh tokens (MAPPS-917)
+
+The portal (`mokosh:portal_refresh_token`) and contact (`mokosh:contact_refresh_token`) refresh tokens are mirrored to `sessionStorage`, never `localStorage` (`src/hooks/fetch.rs`, guarded by `scripts/check-refresh-token-storage.sh`). A hard reload of `/portal/*` in the same tab re-mints the access token from the stored refresh token; a new tab or a reopened browser has no token and lands on the sign-in page. The full fix, an HttpOnly cookie issued by mokosh-server, is a server-side change tracked in MAPPS-920.
