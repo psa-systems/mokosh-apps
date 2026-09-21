@@ -1373,13 +1373,7 @@ pub fn TimesheetsPage() -> Element {
     let grand_total: i64 = daily_totals.iter().sum();
     let has_entries = !rows.is_empty();
 
-    let week_label = format!(
-        "Week of {} {}-{}, {}",
-        crate::utils::datetime::month_name(start.month()),
-        start.day(),
-        end.day(),
-        start.year()
-    );
+    let week_label = week_range_label(start, end);
 
     // Week-level approval status -> badge.
     let approval = summary_resource
@@ -2058,13 +2052,7 @@ pub fn TimesheetApprovalsPage() -> Element {
     let end = start + Duration::days(6);
     let current_week = monday_of_week(today);
     let is_current_week = start == current_week;
-    let week_label = format!(
-        "Week of {} {}-{}, {}",
-        crate::utils::datetime::month_name(start.month()),
-        start.day(),
-        end.day(),
-        start.year()
-    );
+    let week_label = week_range_label(start, end);
 
     let snapshot = summaries_resource.read_unchecked().clone();
     // `None` while loading; `Some(None)` on fetch failure; `Some(Some(rows))`.
@@ -3881,5 +3869,68 @@ mod tests {
             "a day here must come from crate::utils::datetime::user_today(), \
              which reads the user's own timezone"
         );
+    }
+}
+
+/// "Week of May 4-10, 2026", or "Week of Apr 27 - May 3, 2026" when the week
+/// crosses a month boundary (and "Dec 29, 2025 - Jan 4, 2026" across a year).
+fn week_range_label(start: NaiveDate, end: NaiveDate) -> String {
+    let month = |d: NaiveDate| crate::utils::datetime::month_name(d.month());
+    if start.year() != end.year() {
+        format!(
+            "Week of {} {}, {} - {} {}, {}",
+            month(start),
+            start.day(),
+            start.year(),
+            month(end),
+            end.day(),
+            end.year()
+        )
+    } else if start.month() != end.month() {
+        format!(
+            "Week of {} {} - {} {}, {}",
+            month(start),
+            start.day(),
+            month(end),
+            end.day(),
+            start.year()
+        )
+    } else {
+        format!(
+            "Week of {} {}-{}, {}",
+            month(start),
+            start.day(),
+            end.day(),
+            start.year()
+        )
+    }
+}
+
+#[cfg(test)]
+mod week_label_tests {
+    use super::*;
+
+    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    #[test]
+    fn same_month() {
+        assert_eq!(
+            week_range_label(d(2026, 5, 4), d(2026, 5, 10)),
+            "Week of May 4-10, 2026"
+        );
+    }
+
+    #[test]
+    fn crossing_month_names_both() {
+        let l = week_range_label(d(2026, 4, 27), d(2026, 5, 3));
+        assert!(l.contains("April") && l.contains("May"), "{l}");
+    }
+
+    #[test]
+    fn crossing_year_names_both_years() {
+        let l = week_range_label(d(2025, 12, 29), d(2026, 1, 4));
+        assert!(l.contains("2025") && l.contains("2026"), "{l}");
     }
 }
