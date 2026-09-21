@@ -87,7 +87,7 @@ pub fn alt_from_file_name(file_name: &str) -> String {
     }
 }
 
-fn human_size(bytes: usize) -> String {
+pub fn human_size(bytes: usize) -> String {
     const MIB: usize = 1024 * 1024;
     const KIB: usize = 1024;
     if bytes >= MIB {

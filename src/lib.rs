@@ -1325,6 +1325,7 @@ fn ForgotPassword() -> Element {
 
 #[component]
 fn ResetPassword(token: String) -> Element {
+    use_hook(|| crate::platform::location::replace_state("/reset-password"));
     // MAPPS-510: standalone deploys own the reset flow locally (the
     // token was minted by mokosh-server's `AuthService::reset_password`
     // path, and no bunyip is running to redeem it).
@@ -1343,6 +1344,7 @@ fn ResetPassword(token: String) -> Element {
 // welcome recipient used to see.
 #[component]
 fn SetPassword(token: String) -> Element {
+    use_hook(|| crate::platform::location::replace_state("/set-password"));
     // Standalone deploys own the setup flow locally, same posture as
     // ResetPassword above. HubRedirect for bunyip-configured deploys
     // keeps the token in the URL so bunyip's own set-password surface
@@ -1357,6 +1359,7 @@ fn SetPassword(token: String) -> Element {
 
 #[component]
 fn InviteAccept(token: String) -> Element {
+    use_hook(|| crate::platform::location::replace_state("/invite"));
     rsx! { HubRedirect { target: format!("/invitations/accept?token={token}"), label: "invite accept" } }
 }
 
@@ -1367,6 +1370,7 @@ fn Signup() -> Element {
 
 #[component]
 fn SignupComplete(token: String) -> Element {
+    use_hook(|| crate::platform::location::replace_state("/signup"));
     rsx! { HubRedirect { target: format!("/signup/{token}"), label: "sign up" } }
 }
 
@@ -2481,6 +2485,7 @@ fn ContactHandleLogin(handle: String) -> Element {
 
 #[component]
 fn ContactSetPassword(slug: String, token: String) -> Element {
+    use_hook(crate::platform::location::strip_url_query);
     rsx! { contact_portal::set_password::ContactSetPasswordPage { slug, token } }
 }
 
@@ -2491,6 +2496,7 @@ fn ContactForgotPassword(slug: String) -> Element {
 
 #[component]
 fn ContactResetPassword(slug: String, token: String) -> Element {
+    use_hook(crate::platform::location::strip_url_query);
     rsx! { contact_portal::reset_password::ContactResetPasswordPage { slug, token } }
 }
 
@@ -2506,6 +2512,7 @@ fn ContactMagicLinkLogin(email: String) -> Element {
 
 #[component]
 fn ContactPicker(token: String) -> Element {
+    use_hook(crate::platform::location::strip_url_query);
     rsx! { contact_portal::picker::ContactPickerPage { token } }
 }
 
@@ -2516,6 +2523,7 @@ fn ContactPicker(token: String) -> Element {
 
 #[component]
 fn RequestForm(token: String) -> Element {
+    use_hook(|| crate::platform::location::replace_state("/request-forms"));
     rsx! { request_form::RequestFormPage { token } }
 }
 
@@ -3251,4 +3259,42 @@ pub mod prelude {
     pub use serde::{Deserialize, Serialize};
     pub use uuid::Uuid;
     pub use validator::Validate;
+}
+
+/// MAPPS-919: every token-bearing route wrapper strips the token from the
+/// address bar, and the upload help text does not hardcode the limit.
+#[cfg(test)]
+mod url_token_strip {
+    #[test]
+    fn token_routes_strip_the_url() {
+        let src = include_str!("lib.rs");
+        for sig in [
+            "fn ResetPassword(",
+            "fn SetPassword(",
+            "fn InviteAccept(",
+            "fn SignupComplete(",
+            "fn RequestForm(",
+            "fn ContactSetPassword(",
+            "fn ContactResetPassword(",
+            "fn ContactPicker(",
+        ] {
+            let start = src.find(sig).unwrap_or_else(|| panic!("{sig} missing"));
+            let body: String = src[start..].lines().take(3).collect();
+            assert!(
+                body.contains("location::replace_state(")
+                    || body.contains("location::strip_url_query"),
+                "{sig} must strip its token from the URL"
+            );
+        }
+    }
+
+    #[test]
+    fn upload_help_has_no_literal_limit() {
+        for src in [
+            include_str!("components/markdown_toolbar.rs"),
+            include_str!("pages/tickets.rs"),
+        ] {
+            assert!(!src.contains("up to 5 MB"));
+        }
+    }
 }
