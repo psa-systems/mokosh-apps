@@ -3068,7 +3068,11 @@ fn RowActions(
     /// Fired after a successful delete so the caller can refresh its resource.
     on_deleted: EventHandler<()>,
 ) -> Element {
-    let mut open = use_signal(|| false);
+    // MAPPS-508: shared keyboard contract via use_dropdown_nav in menu
+    // mode - Escape closes, Up/Down move the internal highlight.
+    let mut nav = crate::hooks::dropdown_nav::use_dropdown_nav("row-actions").menu();
+    // Two menu rows: Edit + Delete.
+    const ROW_ACTION_ROWS: usize = 2;
     let mut confirming = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     // MAPPS-574: the server's reason for refusing this row's delete.
@@ -3079,7 +3083,7 @@ fn RowActions(
 
     // Keep the trigger visible while its menu is open; otherwise reveal it only
     // on row hover (or keyboard focus within the cell, for accessibility).
-    let trigger_class = if open() {
+    let trigger_class = if nav.is_open() {
         "opacity-100"
     } else {
         "opacity-0 group-hover:opacity-100 focus-within:opacity-100"
@@ -3104,7 +3108,7 @@ fn RowActions(
                 match crate::hooks::fetch::api::delete_authed(&path).await {
                     Ok(()) => {
                         confirming.set(false);
-                        open.set(false);
+                        nav.close();
                         on_deleted.call(());
                     }
                     Err(err) => delete_error.set(err),
@@ -3117,7 +3121,7 @@ fn RowActions(
     rsx! {
         div { class: "flex justify-end transition-opacity {trigger_class}",
             crate::components::Popover {
-                open: open(),
+                open: nav.is_open(),
                 label: "Row actions",
                 title: "Actions",
                 trigger_class: "px-2 py-1 text-muted hover:text-content rounded",
@@ -3125,32 +3129,41 @@ fn RowActions(
                 width: "w-32",
                 ontoggle: move |e: MouseEvent| {
                     e.stop_propagation();
-                    open.toggle();
+                    if nav.is_open() {
+                        nav.close();
+                    } else {
+                        nav.open();
+                    }
                 },
                 onclose: move |e: MouseEvent| {
                     e.stop_propagation();
-                    open.set(false);
+                    nav.close();
+                },
+                onkeydown: move |e: KeyboardEvent| {
+                    nav.keydown_menu(&e, ROW_ACTION_ROWS);
                 },
                 div { class: "flex flex-col",
                     button {
                         r#type: "button",
+                        role: "menuitem",
                         class: "px-3 py-1.5 text-left text-sm text-content hover:bg-surface-2",
                         onclick: move |e: MouseEvent| {
                             e.stop_propagation();
-                            open.set(false);
+                            nav.close();
                             on_edit.call(());
                         },
                         "Edit"
                     }
                     button {
                         r#type: "button",
+                        role: "menuitem",
                         class: "px-3 py-1.5 text-left text-sm text-red-600 dark:text-red-400 hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed",
                         // MAPPS-357: block delete while the server is down.
                         disabled: !can_mutate,
                         title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                         onclick: move |e: MouseEvent| {
                             e.stop_propagation();
-                            open.set(false);
+                            nav.close();
                             confirming.set(true);
                         },
                         "Delete"

@@ -1170,7 +1170,13 @@ pub fn TopBar(props: TopBarProps) -> Element {
 /// leaving users hunting for Logout / Profile.
 #[component]
 fn UserMenu() -> Element {
-    let mut open = use_signal(|| false);
+    // MAPPS-508: shared keyboard contract via use_dropdown_nav in menu
+    // mode - Escape closes, Up/Down move the internal highlight, Tab and
+    // Enter fall through to the browser.
+    let mut nav = crate::hooks::dropdown_nav::use_dropdown_nav("user-menu").menu();
+    // Five menu rows: Profile, Account Settings, System Status, Create
+    // new team, Logout. Keep in step with the rsx! block below.
+    const USER_MENU_ROWS: usize = 5;
     // MAPPS-384: dismiss the dropdown on navigation. UserMenu lives in the
     // persistent AppShell (MAPPS-366), so a route change re-renders the routed
     // subtree WITHOUT re-mounting this component; without this the menu would
@@ -1178,12 +1184,11 @@ fn UserMenu() -> Element {
     // current route changes, and only then.
     let route: Route = use_route();
     use_effect(use_reactive!(|route| {
-        // `route` is the reactive dependency: every navigation changes it and
-        // re-fires this effect to close the menu. `peek` reads `open` without
-        // subscribing the effect to it (which would defeat the purpose).
+        // `route` is the reactive dependency: every navigation changes it
+        // and re-fires this effect to close the menu.
         let _ = &route;
-        if *open.peek() {
-            open.set(false);
+        if nav.is_open() {
+            nav.close();
         }
     }));
     // No `mut auth` binding here on purpose. `use_auth` is the read-only
@@ -1211,7 +1216,7 @@ fn UserMenu() -> Element {
     // menu and the account-deleted overlay. It runs on a task so the closure
     // stays sync; every step is awaited before it navigates away.
     let logout = move |_| {
-        open.set(false);
+        nav.close();
         // MAPPS-605: a contact-plane session goes through its own
         // logout endpoint + destination. Route BEFORE touching the
         // staff/OIDC path so the two never cross: a staff session's
@@ -1278,7 +1283,7 @@ fn UserMenu() -> Element {
         // visually diverge from the `rounded-full` top-bar icons this is
         // meant to sit beside, so matching the sibling convention wins.
         Popover {
-            open: open(),
+            open: nav.is_open(),
             label: "User menu",
             trigger_class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2 focus:outline-none",
             trigger: rsx! {
@@ -1291,10 +1296,16 @@ fn UserMenu() -> Element {
             },
             width: "w-52",
             ontoggle: move |_| {
-                let next = !*open.read();
-                open.set(next);
+                if nav.is_open() {
+                    nav.close();
+                } else {
+                    nav.open();
+                }
             },
-            onclose: move |_| open.set(false),
+            onclose: move |_| nav.close(),
+            onkeydown: move |e: KeyboardEvent| {
+                nav.keydown_menu(&e, USER_MENU_ROWS);
+            },
             {
                 rsx! {
                     // Profile is a mokosh-side route, served by this
@@ -1302,8 +1313,9 @@ fn UserMenu() -> Element {
                     // internal transition instead of a full reload.
                     Link {
                         to: Route::Profile {},
+                        role: "menuitem",
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
-                        onclick: move |_| open.set(false),
+                        onclick: move |_| nav.close(),
                         "Profile"
                     }
                     // Account Settings lives on the bunyip hub;
@@ -1311,6 +1323,7 @@ fn UserMenu() -> Element {
                     // navigates instead of resolving against this
                     // SPA's Route enum.
                     a {
+                        role: "menuitem",
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
                         href: "{hub_account_settings}",
                         "Account Settings"
@@ -1322,11 +1335,12 @@ fn UserMenu() -> Element {
                     // internally with `Link` (PMS-237).
                     Link {
                         to: Route::SystemStatus {},
+                        role: "menuitem",
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
-                        onclick: move |_| open.set(false),
+                        onclick: move |_| nav.close(),
                         "System Status"
                     }
-                    div { class: "border-t border-line my-1" }
+                    div { class: "border-t border-line my-1", role: "separator" }
                     // MAPPS-497 item 1: create-org lives here too so a
                     // single-membership identity (switcher trigger
                     // hidden) can still start a new org from the top
@@ -1335,15 +1349,17 @@ fn UserMenu() -> Element {
                     // TenantSwitcher and reacts to the signal.
                     button {
                         r#type: "button",
+                        role: "menuitem",
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
                         onclick: move |_| {
                             *crate::components::tenant_switcher::SHOW_CREATE_ORG.write() = true;
-                            open.set(false);
+                            nav.close();
                         },
                         "Create new team"
                     }
-                    div { class: "border-t border-line my-1" }
+                    div { class: "border-t border-line my-1", role: "separator" }
                     button {
+                        role: "menuitem",
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-surface-2",
                         onclick: logout,
                         "Logout"
@@ -1423,7 +1439,9 @@ fn format_local_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
 /// stub. Clicking an unread item POSTs `.../{id}/read` and refetches.
 #[component]
 fn NotificationBell() -> Element {
-    let mut open = use_signal(|| false);
+    // MAPPS-508: shared keyboard contract via use_dropdown_nav in menu
+    // mode - Escape closes, Up/Down move the internal highlight.
+    let mut nav = crate::hooks::dropdown_nav::use_dropdown_nav("notification-bell").menu();
     // `use_resource` runs on mount and whenever `.restart()` is called
     // (after marking an item read). A failed fetch degrades to an empty
     // inbox rather than surfacing an error in the top bar.
@@ -1451,10 +1469,11 @@ fn NotificationBell() -> Element {
 
     let items = inbox.read_unchecked().clone().unwrap_or_default();
     let unread = items.iter().filter(|i| i.read_at.is_none()).count();
+    let row_count = items.len();
 
     rsx! {
         Popover {
-            open: open(),
+            open: nav.is_open(),
             label: "Notifications",
             trigger_class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2 relative",
             trigger: rsx! {
@@ -1470,10 +1489,16 @@ fn NotificationBell() -> Element {
             },
             width: "w-80 max-h-96 overflow-y-auto",
             ontoggle: move |_| {
-                let next = !*open.read();
-                open.set(next);
+                if nav.is_open() {
+                    nav.close();
+                } else {
+                    nav.open();
+                }
             },
-            onclose: move |_| open.set(false),
+            onclose: move |_| nav.close(),
+            onkeydown: move |e: KeyboardEvent| {
+                nav.keydown_menu(&e, row_count);
+            },
             div { class: "px-4 py-2 border-b border-line text-sm font-semibold text-content",
                 "Notifications"
             }
@@ -1488,7 +1513,7 @@ fn NotificationBell() -> Element {
                         on_read: move |_| inbox.restart(),
                         // MAPPS-743: a row that navigates closes the panel
                         // behind it; the page it lands on is the point.
-                        on_navigate: move |_| open.set(false),
+                        on_navigate: move |_| nav.close(),
                     }
                 }
             }
@@ -2301,7 +2326,10 @@ mod notification_link_tests {
         assert!(row.contains("if let Some(target) = target.clone() {\n                    on_navigate.call(());\n                    navigator.push(target);"));
         assert!(row.contains("r#type: \"button\","), "still a button");
         assert!(
-            head.contains("on_navigate: move |_| open.set(false),"),
+            // MAPPS-508: the panel is now driven by `use_dropdown_nav`
+            // in menu mode, so a navigated row closes it via nav.close()
+            // instead of a private `open` signal.
+            head.contains("on_navigate: move |_| nav.close(),"),
             "the panel closes"
         );
     }
