@@ -807,19 +807,19 @@ pub mod api {
         PORTAL_ACCESS_TOKEN.with(|t| t.borrow().is_some())
     }
 
-    /// MAPPS-563: `localStorage` key under which the portal refresh token
-    /// is persisted so it survives a hard refresh / deep-link cold-load.
-    /// Distinct from the platform-admin `mokosh:platform_token`
-    /// (`sessionStorage`) and the standalone-agent session keys so a
-    /// stale value from another plane cannot cross-populate this one.
+    /// MAPPS-563 / MAPPS-917: `sessionStorage` key under which the portal
+    /// refresh token is persisted so it survives a hard refresh of the
+    /// same tab. Distinct from the platform-admin `mokosh:platform_token`
+    /// and the standalone-agent session keys so a stale value from
+    /// another plane cannot cross-populate this one.
     ///
-    /// XSS trade-off: the refresh token becomes readable by scripts
-    /// running on the portal origin. That is strictly worse than the
-    /// pre-563 in-memory-only shape, but a full HttpOnly-cookie
-    /// implementation crosses tenant subdomain <-> API subdomain and
-    /// requires CORS + Domain=.<apex> cookie work that we don't have
-    /// today. The follow-up ticket to move this to a cookie has not
-    /// been filed yet.
+    /// XSS trade-off (MAPPS-917; cookie flow: MAPPS-920): the refresh token is readable
+    /// by scripts running on the portal origin. `sessionStorage` bounds
+    /// the exposure to the tab lifetime, so a new tab needs a fresh
+    /// sign-in and a hard reload of `/portal/*` either recovers the
+    /// session from this key or lands on the sign-in page. The full fix
+    /// is an HttpOnly cookie, which needs server-side CORS and cookie
+    /// scoping work across the tenant and API subdomains.
     #[cfg(target_arch = "wasm32")]
     const PORTAL_REFRESH_STORAGE_KEY: &str = "mokosh:portal_refresh_token";
 
@@ -838,7 +838,7 @@ pub mod api {
         // site data), so degrade to in-memory-only on failure.
         #[cfg(target_arch = "wasm32")]
         if let Some(win) = web_sys::window() {
-            if let Ok(Some(storage)) = win.local_storage() {
+            if let Ok(Some(storage)) = win.session_storage() {
                 match token.as_deref() {
                     Some(value) => {
                         let _ = storage.set_item(PORTAL_REFRESH_STORAGE_KEY, value);
@@ -872,7 +872,7 @@ pub mod api {
         #[cfg(target_arch = "wasm32")]
         {
             let win = web_sys::window()?;
-            let storage = win.local_storage().ok().flatten()?;
+            let storage = win.session_storage().ok().flatten()?;
             let stored = storage
                 .get_item(PORTAL_REFRESH_STORAGE_KEY)
                 .ok()
@@ -897,7 +897,7 @@ pub mod api {
     // either identity) does not accidentally cross the two: the
     // `_contact_authed` helpers read ONLY this slot, and the staff
     // helpers read ONLY `ACCESS_TOKEN`. Refresh mirror lives in
-    // localStorage under `CONTACT_REFRESH_STORAGE_KEY` so a hard
+    // sessionStorage under `CONTACT_REFRESH_STORAGE_KEY` (MAPPS-917) so a hard
     // refresh / deep-link cold-load can re-mint via
     // `POST /contact/auth/refresh` before AuthGuard bounces.
     #[cfg(feature = "app")]
@@ -983,7 +983,7 @@ pub mod api {
         CONTACT_REFRESH_TOKEN.with(|t| *t.borrow_mut() = token.clone());
         #[cfg(target_arch = "wasm32")]
         if let Some(win) = web_sys::window() {
-            if let Ok(Some(storage)) = win.local_storage() {
+            if let Ok(Some(storage)) = win.session_storage() {
                 match token.as_deref() {
                     Some(value) => {
                         let _ = storage.set_item(CONTACT_REFRESH_STORAGE_KEY, value);
@@ -1010,7 +1010,7 @@ pub mod api {
         #[cfg(target_arch = "wasm32")]
         {
             let win = web_sys::window()?;
-            let storage = win.local_storage().ok().flatten()?;
+            let storage = win.session_storage().ok().flatten()?;
             let stored = storage
                 .get_item(CONTACT_REFRESH_STORAGE_KEY)
                 .ok()

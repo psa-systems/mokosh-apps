@@ -14,6 +14,12 @@
 //!
 //! A deletion in Google is a STATE here ("Deleted in Google"), never a
 //! removal: the contact is kept (PSA-70 I).
+//!
+//! MAPPS-916: a contact can also come from an uploaded vCard file (PMS-1290,
+//! provider `vcard`). A file is imported once rather than synced, so its card
+//! says which file, who uploaded it and when, instead of an account and a last
+//! sync, and every sentence that used to say "Google" names the source it is
+//! about.
 
 use chrono::{DateTime, Utc};
 use dioxus::prelude::*;
@@ -63,6 +69,13 @@ pub struct ProvenanceLink {
     pub suggested_company_id: Option<Uuid>,
     #[serde(default)]
     pub suggested_company_name: Option<String>,
+    /// PMS-1290: the upload a `vcard` link came from.
+    #[serde(default)]
+    pub import_file_name: Option<String>,
+    #[serde(default)]
+    pub import_file_uploaded_by_name: Option<String>,
+    #[serde(default)]
+    pub import_file_uploaded_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -89,7 +102,24 @@ impl Provenance {
 pub fn provider_name(provider: &str) -> &str {
     match provider {
         "google" => "Google",
+        "vcard" => "vCard",
         other => other,
+    }
+}
+
+/// An uploaded file rather than a synced directory (PMS-1290): imported once,
+/// never synced, never "deleted there".
+pub fn is_file(provider: &str) -> bool {
+    provider == "vcard"
+}
+
+/// What a source does to an unlocked field later, in words: a directory syncs
+/// it, a file only changes it if someone imports a file again.
+fn later_update(provider: &str) -> String {
+    if is_file(provider) {
+        "a later vCard import".to_string()
+    } else {
+        format!("the next {} sync", provider_name(provider))
     }
 }
 
@@ -104,6 +134,7 @@ pub fn field_label(field: &str) -> &str {
         "company_name" => "Company",
         "phones" => "Phone numbers",
         "tags" => "Tags",
+        "notes" => "Notes",
         other => other,
     }
 }
@@ -120,6 +151,8 @@ pub fn link_state(link: &ProvenanceLink) -> (&'static str, BadgeVariant) {
             ),
             _ => ("Unlinked, kept as a local record", BadgeVariant::Gray),
         }
+    } else if is_file(&link.provider) {
+        ("Imported from a file", BadgeVariant::Blue)
     } else {
         ("Synced", BadgeVariant::Green)
     }
@@ -151,11 +184,15 @@ pub fn ProvenanceBadge(origin: Option<ImportedFrom>) -> Element {
         BadgeVariant::Gray
     };
     let text = badge_text(&origin);
-    let explained = format!(
-        "Imported from {} ({})",
-        provider_name(&origin.provider),
-        origin.account_email
-    );
+    let explained = if is_file(&origin.provider) {
+        format!("Imported from the vCard file {}", origin.account_email)
+    } else {
+        format!(
+            "Imported from {} ({})",
+            provider_name(&origin.provider),
+            origin.account_email
+        )
+    };
     rsx! {
         span { title: "{explained}", class: "ml-2 align-middle",
             Badge { variant, "{text}" }
@@ -230,7 +267,29 @@ pub fn ImportCard(
 
     let (state, tone) = link_state(&link);
     let live = link.unlinked_at.is_none();
+    let from_file = is_file(&link.provider);
     let provider = provider_name(&link.provider).to_string();
+    let later = later_update(&link.provider);
+    let card_title = if from_file {
+        "vCard import".to_string()
+    } else {
+        format!("{provider} Contacts")
+    };
+    let file_name = link
+        .import_file_name
+        .clone()
+        .unwrap_or_else(|| link.source_account_email.clone());
+    let imported_by = match (
+        link.import_file_uploaded_by_name.clone(),
+        link.import_file_uploaded_at,
+    ) {
+        (Some(who), Some(at)) => {
+            format!("{who}, {}", crate::utils::datetime::fmt_datetime_pref(at))
+        }
+        (None, Some(at)) => crate::utils::datetime::fmt_datetime_pref(at),
+        (Some(who), None) => who,
+        (None, None) => "Not recorded".to_string(),
+    };
     let last_synced = link
         .last_synced_at
         .map(crate::utils::datetime::fmt_datetime_pref)
@@ -312,7 +371,7 @@ pub fn ImportCard(
     };
 
     rsx! {
-        Card { title: "{provider} Contacts",
+        Card { title: "{card_title}",
             div { class: "space-y-4 text-sm",
                 if !error().is_empty() {
                     ErrorBanner { "{error}" }
@@ -321,17 +380,30 @@ pub fn ImportCard(
                     Badge { variant: tone, "{state}" }
                 }
                 dl { class: "space-y-3",
-                    div {
-                        dt { class: "text-muted", "Account" }
-                        dd { class: "mt-1 text-content break-words", "{link.source_account_email}" }
+                    if from_file {
+                        div {
+                            dt { class: "text-muted", "File" }
+                            dd { class: "mt-1 text-content break-words", "{file_name}" }
+                        }
+                        div {
+                            dt { class: "text-muted", "Uploaded by" }
+                            dd { class: "mt-1 text-content", "{imported_by}" }
+                        }
+                    } else {
+                        div {
+                            dt { class: "text-muted", "Account" }
+                            dd { class: "mt-1 text-content break-words", "{link.source_account_email}" }
+                        }
                     }
                     div {
                         dt { class: "text-muted", "Origin" }
                         dd { class: "mt-1 text-content", "{origin}" }
                     }
-                    div {
-                        dt { class: "text-muted", "Last synced" }
-                        dd { class: "mt-1 text-content", "{last_synced}" }
+                    if !from_file {
+                        div {
+                            dt { class: "text-muted", "Last synced" }
+                            dd { class: "mt-1 text-content", "{last_synced}" }
+                        }
                     }
                     if let (Some(id), Some(name)) = (link.suggested_company_id, link.suggested_company_name.clone()) {
                         div {
@@ -343,7 +415,7 @@ pub fn ImportCard(
                                     "{name}"
                                 }
                                 p { class: "text-xs text-subtle",
-                                    "The Google organisation matches this company. It is not linked until someone links it."
+                                    "The organisation named in {provider} matches this company. It is not linked until someone links it."
                                 }
                             }
                         }
@@ -353,7 +425,7 @@ pub fn ImportCard(
                     div { class: "border-t border-line pt-4",
                         h4 { class: "font-medium text-content", "Locked fields" }
                         p { class: "mt-1 text-muted",
-                            "Someone edited these in Mokosh, so the import leaves them alone. Release one to let {provider} update it again."
+                            "Someone edited these in Mokosh, so the import leaves them alone. Release one to let {later} update it again."
                         }
                         ul { class: "mt-3 space-y-2",
                             for lock in provenance.locks.clone() {
@@ -413,7 +485,7 @@ pub fn ImportCard(
         ConfirmDialog {
             open: confirm_release().is_some(),
             title: "Release this lock?",
-            message: release_message(confirm_release().as_deref().unwrap_or_default(), &provider),
+            message: release_message(confirm_release().as_deref().unwrap_or_default(), &link.provider),
             confirm_text: "Release",
             loading: busy(),
             onconfirm: move |_| {
@@ -428,7 +500,7 @@ pub fn ImportCard(
         ConfirmDialog {
             open: confirm_unlink(),
             title: "Unlink from {provider}?",
-            message: "This contact stays exactly as it is, as a local record. {provider} stops updating it, and the import will not link it again.",
+            message: "This contact stays exactly as it is, as a local record. It will not be updated by {later}, and the import will not link it again.",
             confirm_text: "Unlink",
             loading: busy(),
             onconfirm: move |_| {
@@ -441,7 +513,7 @@ pub fn ImportCard(
         ConfirmDialog {
             open: confirm_remove(),
             title: "Remove this person's imported data?",
-            message: remove_message(link.origin.as_deref()),
+            message: remove_message(link.origin.as_deref(), &link.provider),
             confirm_text: "Remove",
             destructive: true,
             loading: busy(),
@@ -471,20 +543,23 @@ pub fn ImportCard(
 /// What releasing a lock lets happen, stated first: the edit it protects can
 /// be overwritten.
 pub fn release_message(field: &str, provider: &str) -> String {
+    let name = provider_name(provider);
     format!(
-        "{} will follow {provider} again: the next sync may replace the value someone typed here with the one in {provider}.",
-        field_label(field)
+        "{} will follow {name} again: {} may replace the value someone typed here with the one in {name}.",
+        field_label(field),
+        later_update(provider)
     )
 }
 
 /// What removal will do, stated before it happens (PSA-70 K).
-pub fn remove_message(origin: Option<&str>) -> String {
+pub fn remove_message(origin: Option<&str>, provider: &str) -> String {
     let what = match origin {
         Some("created") => "The import created this contact, so the contact is deleted.",
         _ => "This contact was already in Mokosh, so it is kept; only what the import attached is removed.",
     };
     format!(
-        "{what} Its link to Google and anything the review queue holds about it are removed, and it will not be imported again. The audit log records that it happened and why, not the removed details. If tickets or invoices refer to it, nothing is removed."
+        "{what} Its link to {} and anything the review queue holds about it are removed, and it will not be imported again. The audit log records that it happened and why, not the removed details. If tickets or invoices refer to it, nothing is removed.",
+        provider_name(provider)
     )
 }
 
@@ -547,6 +622,7 @@ mod tests {
             "company_name",
             "phones",
             "tags",
+            "notes",
         ] {
             assert_ne!(field_label(field), field, "{field} has no label");
         }
@@ -554,12 +630,43 @@ mod tests {
 
     #[test]
     fn the_removal_message_depends_on_whether_the_import_created_it() {
-        assert!(remove_message(Some("created")).contains("the contact is deleted"));
-        assert!(remove_message(Some("linked")).contains("it is kept"));
+        assert!(remove_message(Some("created"), "google").contains("the contact is deleted"));
+        assert!(remove_message(Some("linked"), "google").contains("it is kept"));
         assert!(
-            remove_message(None).contains("it is kept"),
+            remove_message(None, "google").contains("it is kept"),
             "unknown origin keeps the contact, as the server does"
         );
+    }
+
+    /// MAPPS-916: a file import is an import, not a sync, and every sentence
+    /// names the source it is about rather than Google.
+    #[test]
+    fn a_vcard_link_reads_as_a_file_import() {
+        let file = link(serde_json::json!({
+            "provider": "vcard",
+            "source_account_email": "Office contacts.vcf",
+            "import_file_name": "Office contacts.vcf",
+            "import_file_uploaded_by_name": "Ada Admin",
+            "import_file_uploaded_at": "2026-09-21T10:00:00Z",
+        }));
+        assert_eq!(link_state(&file).0, "Imported from a file");
+        assert_eq!(
+            file.import_file_uploaded_by_name.as_deref(),
+            Some("Ada Admin")
+        );
+        let origin = ImportedFrom {
+            provider: "vcard".into(),
+            account_email: "Office contacts.vcf".into(),
+            linked: true,
+            deleted_in_source: false,
+        };
+        assert_eq!(badge_text(&origin), "vCard");
+        let release = release_message("title", "vcard");
+        assert!(release.contains("a later vCard import"), "{release}");
+        assert!(!release.contains("sync"), "{release}");
+        assert!(remove_message(Some("created"), "vcard").contains("link to vCard"));
+        assert!(!remove_message(Some("created"), "vcard").contains("Google"));
+        assert!(release_message("title", "google").contains("the next Google sync"));
     }
 
     #[test]
