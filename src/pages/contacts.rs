@@ -5734,6 +5734,8 @@ pub fn ContactListPage() -> Element {
     let origin_options = vec![
         SelectOption::new("", "Any source"),
         SelectOption::new("google", "Imported from Google"),
+        // MAPPS-916: an uploaded .vcf file (PMS-1290).
+        SelectOption::new("vcard", "Imported from a vCard file"),
         SelectOption::new("manual", "Entered in Mokosh"),
     ];
 
@@ -7457,6 +7459,15 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                     locked("department"),
                     locked("company_name"),
                 );
+                // MAPPS-916: an imported NOTE is lockable too (PMS-1288).
+                let lock_notes = locked("notes");
+                // A note that still holds what an import wrote came from an
+                // untrusted file or account, so it renders as text, never as
+                // Markdown's HTML. Once a person edits it the lock says it is
+                // theirs, and it renders like any other note.
+                let notes_as_text = prov
+                    .as_ref()
+                    .is_some_and(|p| !p.links.is_empty() && !p.is_locked("notes"));
                 let provenance_contact_id = id_for_portal.clone();
                 // MAPPS-481: every phone and every company link, each as its
                 // own row. Empty lists keep the pre-PMS-806 scalar rendering
@@ -7555,7 +7566,18 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                             // Hidden when empty, like the company card.
                             if !notes.trim().is_empty() {
                                 Card { title: "Notes",
-                                    crate::components::Markdown { content: notes.clone() }
+                                    if lock_notes {
+                                        p { class: "mb-2",
+                                            crate::pages::contact_provenance::LockMarker { locked: lock_notes }
+                                        }
+                                    }
+                                    if notes_as_text {
+                                        p { class: "whitespace-pre-wrap break-words text-sm text-content",
+                                            "{notes}"
+                                        }
+                                    } else {
+                                        crate::components::Markdown { content: notes.clone() }
+                                    }
                                 }
                             }
                         }
