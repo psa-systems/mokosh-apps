@@ -1063,6 +1063,9 @@ pub enum Route {
     // MAPPS-809: choose labels, preview, review, import.
     #[route("/settings/integrations/google-contacts/import")]
     SettingsGoogleContactsImport {},
+    // MAPPS-915: upload a .vcf file into the same import (server PMS-1290).
+    #[route("/settings/integrations/vcard-import")]
+    SettingsVcardImport {},
     // MAPPS-364: admin-only tenant data import/export (server PMS-646).
     #[route("/settings/import-export")]
     SettingsImportExport {},
@@ -2246,6 +2249,15 @@ fn SettingsGoogleContactsImport() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             pages::settings_contact_sync_import::GoogleContactsImportPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsVcardImport() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_contact_sync_vcard::VcardImportPage {}
         }
     }
 }

@@ -241,6 +241,12 @@ jobs:
           bash scripts/check-theme-storage-key.sh --self-test
           bash scripts/check-theme-storage-key.sh
 
+      # MAPPS-917: the portal and contact refresh tokens stay out of localStorage.
+      - name: Refresh-token storage guard
+        run: |
+          bash scripts/check-refresh-token-storage.sh --self-test
+          bash scripts/check-refresh-token-storage.sh
+
       # MAPPS-624: the width cap lives on each route component, not on AppShell.
       # Putting a max-w back on the shell re-caps the page that opted out, and a
       # route added without its own wrapper is full width by accident.

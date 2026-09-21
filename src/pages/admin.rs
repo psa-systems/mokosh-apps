@@ -306,26 +306,25 @@ pub fn TenantManagementPage() -> Element {
             total_items: total_tenants_count as usize,
             current_page,
             per_page: PER_PAGE,
-            columns: 7,
+            columns: 6,
             onpagechange: move |p| page.set(p),
             Table {
                 TableHead {
                     TableRow {
-                        TableHeader { sortable: true, "Client" }
+                        TableHeader { "Client" }
                         TableHeader { "Plan" }
-                        TableHeader { sortable: true, "Users" }
                         TableHeader { "MRR" }
                         TableHeader { "Status" }
-                        TableHeader { sortable: true, "Created" }
+                        TableHeader { "Created" }
                         // MAPPS-396: per-row edit affordance
                         TableHeader { "" }
                     }
                 }
                 if is_loading {
-                    TableLoading { columns: 7, rows: 4 }
+                    TableLoading { columns: 6, rows: 4 }
                 } else if !fetch_failed && remote_tenants.is_empty() {
                     TableEmpty {
-                        columns: 7,
+                        columns: 6,
                         title: "No tenants yet".to_string(),
                         description: "Clients will appear here once they sign up or are provisioned.".to_string(),
                     }
@@ -337,7 +336,6 @@ pub fn TenantManagementPage() -> Element {
                                 name: tenant.name.clone(),
                                 domain: tenant.slug.clone(),
                                 plan: humanize_plan(&tenant.subscription_plan),
-                                users: 0,
                                 mrr: "-".to_string(),
                                 status: humanize_tenant_status(&tenant.status),
                                 created: format_created(tenant.created_at),
@@ -396,7 +394,6 @@ struct TenantRowProps {
     name: String,
     domain: String,
     plan: String,
-    users: u32,
     mrr: String,
     status: String,
     created: String,
@@ -498,7 +495,6 @@ fn TenantRow(props: TenantRowProps) -> Element {
                 }
             }
             TableCell { Badge { variant: plan_variant, "{props.plan}" } }
-            TableCell { "{props.users}" }
             TableCell { class: "font-medium", "{props.mrr}" }
             TableCell { Badge { variant: status_variant, "{props.status}" } }
             TableCell { class: "text-muted",

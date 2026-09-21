@@ -574,6 +574,16 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         advanced: false,
         visibility: SurfaceVisibility::StaffAdmin,
     },
+    // MAPPS-915: a .vcf file through the same import (server PMS-1290).
+    // Beside Google Contacts and not advanced, for the same reason.
+    SettingsSurface {
+        route: Route::SettingsVcardImport {},
+        title: "vCard Import",
+        description: "Import contacts from a .vcf file exported from a phone, Outlook or any address book.",
+        group: SettingsGroupKey::Integrations,
+        advanced: false,
+        visibility: SurfaceVisibility::StaffAdmin,
+    },
     SettingsSurface {
         route: Route::SettingsRmmConnections {},
         title: "RMM Connections",
@@ -9168,6 +9178,7 @@ mod tests {
             favicon_url,
             primary_color,
             secondary_color,
+            accent_color,
             company_name,
             support_email,
             support_phone,
@@ -9229,6 +9240,9 @@ mod tests {
             background_url,
             background_mime,
             display_name,
+            // The deprecated alias of `secondary_color` the settings endpoint
+            // still writes (PMS-703 F18); nothing here reads or sends it.
+            accent_color,
         );
     }
 
