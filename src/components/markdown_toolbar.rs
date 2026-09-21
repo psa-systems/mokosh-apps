@@ -340,7 +340,7 @@ pub fn MarkdownToolbar(props: MarkdownToolbarProps) -> Element {
                                         name: "md_image_file",
                                         label: "Upload an image",
                                         accept: crate::utils::image_upload::accept_attribute(),
-                                        help: props.upload_help.clone().unwrap_or_else(|| "PNG, JPEG, WebP or GIF, up to 5 MB. It is stored with this article.".to_string()),
+                                        help: props.upload_help.clone().unwrap_or_else(|| format!("PNG, JPEG, WebP or GIF, up to {}. It is stored with this article.", crate::utils::image_upload::human_size(crate::utils::image_upload::max_bytes()))),
                                         onchange: move |evt: FormEvent| {
                                             let Some(file) = evt.files().into_iter().next() else {
                                                 return;
