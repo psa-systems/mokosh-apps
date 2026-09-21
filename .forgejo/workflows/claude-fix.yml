@@ -98,7 +98,7 @@ jobs:
       # unresolved import instead of on the CI failure it was sent to fix.
       # ---------------------------------------------------------------------
       - name: Checkout PR branch
-        uses: https://code.forgejo.org/actions/checkout@v5
+        uses: https://code.forgejo.org/actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ steps.pr.outputs.branch }}
           token: ${{ secrets.CLAUDE_BOT_PAT }}
@@ -152,7 +152,7 @@ jobs:
       # ---------------------------------------------------------------------
       - name: Setup Node.js
         if: steps.logs.outputs.skip != 'true'
-        uses: https://code.forgejo.org/actions/setup-node@v5
+        uses: https://code.forgejo.org/actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "20"
 
