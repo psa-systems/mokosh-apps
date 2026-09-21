@@ -49,11 +49,53 @@ const RESOLVE_PATH: &str = "/integrations/contact-sync/review-queue/resolve";
 /// One record waiting on a reviewer (`ReviewItem`, PMS-1215).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct ReviewItem {
+    /// MAPPS-916: the source the record waits in (PMS-1290). The queue spans
+    /// Google and uploaded vCard files, and an answer names it back.
+    #[serde(default)]
+    pub connection_id: Option<Uuid>,
+    /// `google` or `vcard`.
+    #[serde(default)]
+    pub provider: String,
+    /// The Google account, or the uploaded file's name.
+    #[serde(default)]
+    pub source_label: String,
     pub external_id: String,
     #[serde(default)]
     pub source: SourceSnapshot,
     #[serde(default)]
     pub candidates: Vec<Candidate>,
+}
+
+impl ReviewItem {
+    /// One key per record per source: the same external id could wait in two.
+    pub fn key(&self) -> String {
+        match self.connection_id {
+            Some(id) => format!("{id}:{}", self.external_id),
+            None => self.external_id.clone(),
+        }
+    }
+
+    pub fn from_file(&self) -> bool {
+        self.provider == "vcard"
+    }
+
+    /// The source's column heading and the word for it in a sentence.
+    pub fn source_word(&self) -> &'static str {
+        if self.from_file() {
+            "File"
+        } else {
+            "Google"
+        }
+    }
+
+    /// What the card heading calls the record.
+    pub fn kind(&self) -> String {
+        if self.from_file() {
+            format!("Card from {}", self.source_label)
+        } else {
+            "Google contact".to_string()
+        }
+    }
 }
 
 /// The Google record as the import saw it (`source_snapshot`, PMS-1213).
@@ -311,12 +353,18 @@ enum ResolveBody {
     Link {
         external_id: String,
         contact_id: Uuid,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        connection_id: Option<Uuid>,
     },
     Create {
         external_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        connection_id: Option<Uuid>,
     },
     Skip {
         external_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        connection_id: Option<Uuid>,
     },
 }
 
@@ -360,7 +408,7 @@ pub fn ContactImportReviewPage() -> Element {
         };
         let candidate = chosen
             .peek()
-            .get(&item.external_id)
+            .get(&item.key())
             .copied()
             .or_else(|| item.candidates.first().map(|c| c.contact_id));
         let target_name = candidate.and_then(|id| {
@@ -374,14 +422,17 @@ pub fn ContactImportReviewPage() -> Element {
                 Some(contact_id) => ResolveBody::Link {
                     external_id: item.external_id.clone(),
                     contact_id,
+                    connection_id: item.connection_id,
                 },
                 None => return,
             },
             Decision::Create => ResolveBody::Create {
                 external_id: item.external_id.clone(),
+                connection_id: item.connection_id,
             },
             Decision::Skip => ResolveBody::Skip {
                 external_id: item.external_id.clone(),
+                connection_id: item.connection_id,
             },
         };
         busy.set(true);
@@ -397,7 +448,7 @@ pub fn ContactImportReviewPage() -> Element {
                 match result {
                     Ok(_) => {
                         let mut next = items().unwrap_or_default();
-                        next.retain(|i| i.external_id != item.external_id);
+                        next.retain(|i| i.key() != item.key());
                         let remaining = next.len();
                         announced.set(announcement(
                             decision,
@@ -480,19 +531,19 @@ pub fn ContactImportReviewPage() -> Element {
                     div { class: "space-y-6",
                         for (index, item) in list.into_iter().enumerate() {
                             ReviewCard {
-                                key: "{item.external_id}",
+                                key: "{item.key()}",
                                 index,
                                 total,
                                 item: item.clone(),
                                 shared: shared.clone(),
                                 chosen: chosen
                                     .read()
-                                    .get(&item.external_id)
+                                    .get(&item.key())
                                     .copied()
                                     .or_else(|| item.candidates.first().map(|c| c.contact_id)),
                                 disabled: busy() || !can_mutate,
-                                onchoose: move |(external_id, contact_id): (String, Uuid)| {
-                                    chosen.write().insert(external_id, contact_id);
+                                onchoose: move |(key, contact_id): (String, Uuid)| {
+                                    chosen.write().insert(key, contact_id);
                                 },
                                 ondecide: move |decision: Decision| {
                                     if decision == Decision::Skip {
@@ -509,8 +560,8 @@ pub fn ContactImportReviewPage() -> Element {
         }
         ConfirmDialog {
             open: confirm_skip().is_some(),
-            title: "Skip this Google contact?",
-            message: "It will not be imported, now or on any later sync, and it will not be asked about again. Nothing in Google or in Mokosh is changed.",
+            title: "Skip this contact?",
+            message: "It will not be imported, now or by any later sync or file import, and it will not be asked about again. Nothing in the source or in Mokosh is changed.",
             confirm_text: "Skip it",
             loading: busy(),
             onconfirm: move |_| {
@@ -541,6 +592,13 @@ fn ReviewCard(
     ondecide: EventHandler<Decision>,
 ) -> Element {
     let name = item.source.name();
+    let kind = item.kind();
+    let source = item.source_word();
+    let in_source = if item.from_file() {
+        "the file"
+    } else {
+        "Google"
+    };
     let group = format!("import-review-{index}-candidates");
     let can_link = chosen.is_some() && !item.candidates.is_empty();
     rsx! {
@@ -569,7 +627,7 @@ fn ReviewCard(
                     id: heading_id(index),
                     tabindex: "-1",
                     class: "text-base font-medium text-content focus:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded",
-                    "Google contact {index + 1} of {total}: {name}"
+                    "{kind} {index + 1} of {total}: {name}"
                 }
                 for label in item.source.labels.iter() {
                     Badge { variant: BadgeVariant::Blue, "{label}" }
@@ -592,7 +650,7 @@ fn ReviewCard(
                                 .saturating_sub(1);
                             let input_id = format!("{group}-{}", candidate.contact_id);
                             let rows = comparison(&item.source, &candidate);
-                            let external_id = item.external_id.clone();
+                            let item_key = item.key();
                             let contact_id = candidate.contact_id;
                             rsx! {
                                 div {
@@ -606,7 +664,7 @@ fn ReviewCard(
                                             class: "mt-1 h-4 w-4 border-line text-accent focus:ring-2 focus:ring-accent",
                                             checked: chosen == Some(contact_id),
                                             disabled,
-                                            onchange: move |_| onchoose.call((external_id.clone(), contact_id)),
+                                            onchange: move |_| onchoose.call((item_key.clone(), contact_id)),
                                         }
                                         div { class: "min-w-0 flex-1 space-y-2",
                                             label { r#for: "{input_id}", class: "block text-sm font-medium text-content",
@@ -617,22 +675,22 @@ fn ReviewCard(
                                             }
                                             if candidate.already_linked {
                                                 p { class: "text-sm text-amber-700 dark:text-amber-300",
-                                                    "Already linked to a different Google contact. Linking this one too joins two Google entries to one Mokosh contact."
+                                                    "Already linked to a different record from this source. Linking this one too joins two entries to one Mokosh contact."
                                                 }
                                             }
                                             if others > 0 {
                                                 p { class: "text-sm text-muted",
-                                                    "Also proposed for {others} other Google contact"
+                                                    "Also proposed for {others} other record"
                                                     if others > 1 { "s" }
                                                     " in this queue."
                                                 }
                                             }
                                             table { class: "w-full text-sm",
-                                                caption { class: "sr-only", "{name} in Google beside {candidate.name()} in Mokosh" }
+                                                caption { class: "sr-only", "{name} in {in_source} beside {candidate.name()} in Mokosh" }
                                                 thead {
                                                     tr {
                                                         th { scope: "col", class: "w-24 py-1 pr-3 text-left font-normal text-muted", span { class: "sr-only", "Field" } }
-                                                        th { scope: "col", class: "py-1 pr-3 text-left font-medium text-muted", "Google" }
+                                                        th { scope: "col", class: "py-1 pr-3 text-left font-medium text-muted", "{source}" }
                                                         th { scope: "col", class: "py-1 text-left font-medium text-muted", "Mokosh" }
                                                     }
                                                 }
@@ -787,11 +845,17 @@ mod tests {
     fn one_contact_proposed_twice_is_counted() {
         let items = vec![
             ReviewItem {
+                connection_id: None,
+                provider: "google".into(),
+                source_label: "ops@msp.example".into(),
                 external_id: "people/a".into(),
                 source: source(),
                 candidates: vec![candidate(1, "phone"), candidate(2, "phone")],
             },
             ReviewItem {
+                connection_id: None,
+                provider: "google".into(),
+                source_label: "ops@msp.example".into(),
                 external_id: "people/b".into(),
                 source: source(),
                 candidates: vec![candidate(1, "phone")],
@@ -800,6 +864,47 @@ mod tests {
         let counts = proposals_per_contact(&items);
         assert_eq!(counts[&Uuid::from_u128(1)], 2);
         assert_eq!(counts[&Uuid::from_u128(2)], 1);
+    }
+
+    /// MAPPS-916: a record from an uploaded file says which file, is keyed per
+    /// source, and its answer names the source back; a Google record's answer
+    /// stays the shape it was.
+    #[test]
+    fn a_file_record_names_its_file_and_its_source() {
+        let item: ReviewItem = serde_json::from_value(serde_json::json!({
+            "connection_id": "00000000-0000-0000-0000-000000000007",
+            "provider": "vcard",
+            "source_label": "apollo.vcf",
+            "external_id": "mh-1",
+            "source": { "first_name": "M.", "last_name": "Hamilton" },
+            "candidates": [],
+        }))
+        .unwrap();
+        assert_eq!(item.kind(), "Card from apollo.vcf");
+        assert_eq!(item.source_word(), "File");
+        assert_eq!(item.key(), "00000000-0000-0000-0000-000000000007:mh-1");
+        let body = serde_json::to_value(ResolveBody::Skip {
+            external_id: item.external_id.clone(),
+            connection_id: item.connection_id,
+        })
+        .unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "action": "skip",
+                "external_id": "mh-1",
+                "connection_id": "00000000-0000-0000-0000-000000000007",
+            })
+        );
+        let google = serde_json::to_value(ResolveBody::Create {
+            external_id: "people/c1".into(),
+            connection_id: None,
+        })
+        .unwrap();
+        assert_eq!(
+            google,
+            serde_json::json!({ "action": "create", "external_id": "people/c1" })
+        );
     }
 
     #[test]
