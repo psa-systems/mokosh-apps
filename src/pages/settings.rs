@@ -9168,6 +9168,7 @@ mod tests {
             favicon_url,
             primary_color,
             secondary_color,
+            accent_color,
             company_name,
             support_email,
             support_phone,
@@ -9229,6 +9230,9 @@ mod tests {
             background_url,
             background_mime,
             display_name,
+            // The deprecated alias of `secondary_color` the settings endpoint
+            // still writes (PMS-703 F18); nothing here reads or sends it.
+            accent_color,
         );
     }
 
