@@ -867,7 +867,10 @@ pub fn ArrowDownIcon(#[props(default)] size: IconSize, #[props(default)] class: 
 /// glance. Stroke matches `stroke-linejoin: round` so the tip and base
 /// corners round softly rather than reading as a sharp arrowhead.
 #[component]
-pub fn TriangleUpIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+pub fn TriangleUpIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
     let size_class = size.class();
     let class = format!("{} {}", size_class, class);
 
