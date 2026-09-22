@@ -21,9 +21,8 @@ use dioxus::prelude::*;
 
 use crate::components::{
     clear_on_edit, use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card,
-    DataTable,
-    ErrorBanner, PageHeader, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
-    TableLoading, TableRow,
+    DataTable, ErrorBanner, PageHeader, Table, TableBody, TableCell, TableEmpty, TableHead,
+    TableHeader, TableLoading, TableRow,
 };
 use crate::modules::sla::{
     BusinessHours, HolidayCalendar, SlaPolicy, SlaTarget, TicketPriorityOption,
