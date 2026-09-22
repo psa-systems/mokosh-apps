@@ -3079,7 +3079,8 @@ pub fn SchedulingTemplatesPage() -> Element {
                                     }
                                     div { class: "flex items-center gap-2 shrink-0",
                                         Button {
-                                            variant: ButtonVariant::Secondary,
+                                            variant: ButtonVariant::Ghost,
+                                            size: ButtonSize::Small,
                                             onclick: move |_| form_state.set(Some(Some(edit_row.clone()))),
                                             PencilIcon { size: IconSize::Small, class: "mr-1".to_string() }
                                             "Edit"

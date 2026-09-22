@@ -165,14 +165,6 @@ struct TicketOption {
     company_id: uuid::Uuid,
 }
 
-/// A work type (`GET /api/v1/work-types`) for the required `work_type_id`.
-#[derive(Clone, Debug, Deserialize)]
-struct WorkTypeOption {
-    id: uuid::Uuid,
-    #[serde(default)]
-    name: String,
-}
-
 /// A project (`GET /api/v1/projects`) offered as a work item. Only
 /// projects with a `company_id` are pickable, since a time entry needs a
 /// company and a project's is optional.
@@ -333,21 +325,11 @@ pub fn TimeEntryListPage() -> Element {
     // MAPPS-166: click-to-edit a time entry via the modal below.
     let mut selected_entry = use_signal(|| None::<RemoteTimeEntry>);
 
-    // MAPPS-202: resolve each entry's `work_type_id` to the work type's human
-    // name for display, so the list shows e.g. "On-site Support" rather than a
-    // bare UUID. Mirrors how the timesheet resolves ticket/project names
-    // client-side from a fetched lookup list.
-    let work_types_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<WorkTypeOption>("/work-types")
-            .await
-            .unwrap_or_else(|e| {
-                // Best-effort: entries still render, with a bare id for the
-                // work type instead of its name.
-                tracing::warn!("work-type load failed: {e}");
-                Vec::new()
-            })
-    });
+    // Resolve each entry's `work_type_id` to the work type's human name for
+    // display, so the list shows e.g. "On-site Support" rather than a bare
+    // UUID. Reads through the shared session cache so sibling pages that
+    // also need the list do not refetch.
+    let work_types_resource = crate::hooks::use_work_types(true);
     let work_type_name_by_id: std::collections::HashMap<uuid::Uuid, String> = work_types_resource
         .read_unchecked()
         .clone()
@@ -659,17 +641,7 @@ pub fn TimeEntryNewPage() -> Element {
                 Vec::new()
             })
     });
-    let work_types_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<WorkTypeOption>("/work-types")
-            .await
-            .unwrap_or_else(|e| {
-                // Best-effort: entries still render, with a bare id for the
-                // work type instead of its name.
-                tracing::warn!("work-type load failed: {e}");
-                Vec::new()
-            })
-    });
+    let work_types_resource = crate::hooks::use_work_types(true);
     // Tasks for the selected project (only when a project work item is
     // picked); re-runs when `work_item` changes.
     let tasks_resource = use_resource(move || {
@@ -2795,17 +2767,7 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
     let onclose = props.onclose;
     let onsaved = props.onsaved;
 
-    let work_types_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<WorkTypeOption>("/work-types")
-            .await
-            .unwrap_or_else(|e| {
-                // Best-effort: entries still render, with a bare id for the
-                // work type instead of its name.
-                tracing::warn!("work-type load failed: {e}");
-                Vec::new()
-            })
-    });
+    let work_types_resource = crate::hooks::use_work_types(true);
     let work_types = work_types_resource
         .read_unchecked()
         .clone()
@@ -3692,7 +3654,7 @@ mod tests {
             is_active,
             sort_order,
         } = resp;
-        let _ = WorkTypeOption { id, name };
+        let _ = crate::hooks::WorkTypeRow { id, name };
         // The Work Type select needs a value and a label; the rest is the
         // Settings page's business.
         let _ = (

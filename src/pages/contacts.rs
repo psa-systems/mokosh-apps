@@ -7954,8 +7954,12 @@ fn fmt_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
     crate::utils::datetime::fmt_user_dt(dt, None)
 }
 
-/// MAPPS-568: the notes written on this contact's tickets, so an agent reads
-/// the conversation history without opening each ticket.
+/// MAPPS-568: the public comments this contact has posted on tickets, so an
+/// agent reads the customer's side of the conversation without opening each
+/// ticket.
+///
+/// The feed is contact-authored only, so the title and empty state say so
+/// rather than promising a two-sided history the endpoint does not serve.
 ///
 /// The resource keeps its `Result` rather than `.ok()`-ing it: a failed fetch
 /// renders the server's reason, because "no notes" and "could not read the
@@ -7964,18 +7968,18 @@ fn fmt_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
 fn ContactNotesCard(notes_resource: Resource<Result<Vec<ContactNote>, String>>) -> Element {
     let snap = notes_resource.read_unchecked();
     rsx! {
-        Card { title: "Ticket Notes",
+        Card { title: "Comments From This Contact",
             match &*snap {
                 None => rsx! {
-                    p { class: "text-sm text-muted", "Loading notes…" }
+                    p { class: "text-sm text-muted", "Loading comments…" }
                 },
                 Some(Err(err)) => rsx! {
                     p { class: "text-sm text-red-600 dark:text-red-300",
-                        "Could not load notes for this contact: {err}"
+                        "Could not load comments for this contact: {err}"
                     }
                 },
                 Some(Ok(rows)) if rows.is_empty() => rsx! {
-                    p { class: "text-sm text-muted", "No notes from this contact's tickets yet." }
+                    p { class: "text-sm text-muted", "This contact has not commented on any tickets yet." }
                 },
                 Some(Ok(rows)) => {
                     let rows = notes_newest_first(rows.clone());
@@ -10236,11 +10240,11 @@ mod mapps568_contact_notes_tests {
             "the notes resource keeps its Result: {window}"
         );
         assert!(
-            code.contains("\"Could not load notes for this contact: {err}\""),
+            code.contains("\"Could not load comments for this contact: {err}\""),
             "the failure renders the server's reason inline"
         );
         assert!(
-            code.contains("\"No notes from this contact's tickets yet.\""),
+            code.contains("\"This contact has not commented on any tickets yet.\""),
             "an empty feed has its own wording, distinct from the error"
         );
     }
