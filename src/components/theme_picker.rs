@@ -105,7 +105,7 @@ pub fn ThemePicker() -> Element {
                         div {
                             key: "{name}",
                             class: "flex-1 rounded-lg border border-dashed border-line px-3 py-2 text-center text-xs font-medium text-subtle",
-                            title: "Named palettes: tracked as MAPPS-910",
+                            title: "Named palettes are coming in a later phase",
                             "{name} "
                             span { class: "opacity-60", "(later)" }
                         }
