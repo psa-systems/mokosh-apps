@@ -8069,12 +8069,12 @@ struct PortalGrantOutcomeWire {
     portal_slug: String,
     #[serde(default)]
     portal_id: Option<i64>,
-    /// PMS-1327: the server used to return the setup URL (`setup_link`)
-    /// so this page could copy it to the clipboard; that handed
-    /// password-setup capability to anyone reading the markup. The URL
-    /// is gone from the wire; this flag says whether the setup email
-    /// went out so the toast can still distinguish a fresh grant from
-    /// a role-only edit without rendering the token.
+    /// The server used to return the setup URL (`setup_link`) so this
+    /// page could copy it to the clipboard, which handed password-setup
+    /// capability to anyone reading the markup. The URL is gone from
+    /// the wire; this flag says whether the setup email went out so
+    /// the toast can still distinguish a fresh grant from a role-only
+    /// edit without rendering the token.
     #[serde(default)]
     password_email_queued: bool,
 }
@@ -8441,10 +8441,10 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
             .await
             {
                 Ok(outcome) => {
-                    // MAPPS-635 C / PMS-1327: the server no longer returns
-                    // the setup link; it says whether the invite email went
-                    // out via `password_email_queued`, which stays false on
-                    // a role-only edit and is what the toast keys on.
+                    // The server no longer returns the setup link; it says
+                    // whether the invite email went out via
+                    // `password_email_queued`, which stays false on a
+                    // role-only edit and is what the toast keys on.
                     let is_role_only_edit = !outcome.password_email_queued;
                     last_portal_id.set(outcome.portal_id);
                     let toast_msg = if is_role_only_edit {
@@ -8575,13 +8575,12 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                             code { class: "text-xs", "{pid}" }
                         }
                     }
-                    // PMS-1327: the setup URL used to render here as a
-                    // copy-friendly `<code>` block, but the token in it
-                    // was password-set capability handed to anyone
-                    // reading the markup. The link now reaches the
-                    // customer only through the setup email; "Resend
-                    // invitation" below re-issues it if they say
-                    // nothing arrived.
+                    // The setup URL used to render here as a copy-friendly
+                    // `<code>` block, but the token in it was password-set
+                    // capability handed to anyone reading the markup. The
+                    // link now reaches the customer only through the setup
+                    // email; "Resend invitation" below re-issues it if
+                    // they say nothing arrived.
                     p { class: "text-xs text-muted",
                         "This contact can sign in to your client portal. The invitation link is emailed and works for 72 hours; use Resend invitation if they never received it."
                     }
