@@ -942,18 +942,33 @@ struct ViewToggleButtonProps {
 
 #[component]
 fn ViewToggleButton(props: ViewToggleButtonProps) -> Element {
-    let class = if props.active {
-        "px-3 py-1 text-sm bg-accent text-on-accent"
+    // route the active state through Button variant Primary
+    // so the accent recipe is not hand-rolled here. The inactive branch
+    // keeps its Ghost-flavoured hover shape (bare text with a surface-2
+    // hover), which Button's Ghost variant matches. `rounded-none` on
+    // both extra classes so the segmented row keeps the shared corners
+    // it had before, and `aria_pressed` mirrors this control's state
+    // (button-with-toggle semantics, not the tab semantics Button
+    // otherwise implies).
+    if props.active {
+        rsx! {
+            Button {
+                variant: ButtonVariant::Primary,
+                size: ButtonSize::Small,
+                class: "rounded-none".to_string(),
+                onclick: move |e| props.onclick.call(e),
+                "{props.label}"
+            }
+        }
     } else {
-        "px-3 py-1 text-sm text-content hover:bg-surface-2"
-    };
-    rsx! {
-        button {
-            r#type: "button",
-            class: "{class}",
-            aria_pressed: props.active,
-            onclick: move |e| props.onclick.call(e),
-            "{props.label}"
+        rsx! {
+            Button {
+                variant: ButtonVariant::Ghost,
+                size: ButtonSize::Small,
+                class: "rounded-none text-content".to_string(),
+                onclick: move |e| props.onclick.call(e),
+                "{props.label}"
+            }
         }
     }
 }
