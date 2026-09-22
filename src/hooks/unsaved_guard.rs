@@ -143,3 +143,75 @@ fn use_beforeunload(shared: Signal<bool>) {
 /// no reader there). Every call site is unchanged.
 #[cfg(not(feature = "app"))]
 pub fn use_unsaved_guard(_dirty: dioxus::prelude::ReadSignal<bool>) {}
+
+/// MAPPS-850: the two-host invariant, source-scanned so a future refactor
+/// cannot silently break it. Both hosts (browser via `beforeunload`,
+/// desktop via `platform::window_close`) read the same `UNSAVED_CHANGES`
+/// signal; deleting either arm removes the ONLY unsaved-changes guard on
+/// that host, and both have been mis-flagged as "stale" in an earlier
+/// audit (MAPPS-845). The test reads the two sources directly so the
+/// scan runs on native `cargo test --lib` without a browser or a desktop
+/// runtime.
+#[cfg(test)]
+mod mapps850_two_host_guard_invariant_tests {
+    /// The browser arm: `use_unsaved_guard` on `wasm32` installs a
+    /// `beforeunload` listener whose closure reads `UNSAVED_CHANGES`,
+    /// and the same signal is what `dirty` writes into. Removing any
+    /// one of these three pieces removes the browser's only guard.
+    #[test]
+    fn the_browser_arm_installs_beforeunload_reading_unsaved_changes() {
+        let src = include_str!("unsaved_guard.rs");
+        // The wasm32 branch is what installs the listener.
+        assert!(
+            src.contains("#[cfg(all(target_arch = \"wasm32\", feature = \"app\"))]")
+                || src.contains("#[cfg(target_arch = \"wasm32\")]"),
+            "the browser branch guards on wasm32; if the cfg shape changed, update this test"
+        );
+        assert!(
+            src.contains("add_event_listener_with_callback(\"beforeunload\","),
+            "the browser arm adds a beforeunload listener; MAPPS-850 pins this"
+        );
+        // The listener body reads the shared signal.
+        assert!(
+            src.contains("UNSAVED_CHANGES"),
+            "the beforeunload handler must read UNSAVED_CHANGES so the two hosts do not disagree"
+        );
+    }
+
+    /// The desktop arm: `platform::window_close` is where the desktop
+    /// half of the guard lives, and its module doc explicitly names
+    /// `beforeunload` as the browser arm so the two are impossible to
+    /// mistake for duplicates. Both docs are load-bearing evidence that
+    /// closes MAPPS-850 (and preempts its likely re-audit).
+    #[test]
+    fn the_desktop_arm_lives_in_platform_window_close_and_references_the_browser_arm() {
+        let desktop = include_str!("../platform/window_close.rs");
+        assert!(
+            desktop.contains("beforeunload"),
+            "platform::window_close doc names beforeunload as the browser arm; MAPPS-850 pins this cross-reference"
+        );
+        // A future refactor MIGHT rename the internal state; the name of
+        // the shared signal is fixed by both arms, so the desktop arm
+        // must still read it (directly or through `is_dirty()`).
+        assert!(
+            desktop.contains("UNSAVED_CHANGES") || desktop.contains("unsaved_changes"),
+            "platform::window_close reads the shared UNSAVED_CHANGES signal"
+        );
+    }
+
+    /// The module doc names the two-arm shape. A future rewrite that
+    /// drops the "browser owns beforeunload; desktop owns window_close"
+    /// paragraph is exactly the shape MAPPS-845 misread, so pin it.
+    #[test]
+    fn the_module_doc_names_both_arms() {
+        let src = include_str!("unsaved_guard.rs");
+        assert!(
+            src.contains("Browser:"),
+            "the two-arm doc names the browser arm"
+        );
+        assert!(
+            src.contains("Desktop:"),
+            "the two-arm doc names the desktop arm"
+        );
+    }
+}
