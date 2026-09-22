@@ -2133,12 +2133,16 @@ mod tests {
             "the badge must gate on approvals:decide"
         );
         assert!(
-            body.contains("get_authed_any::<Vec<serde_json::Value>>(\"/approvals/pending\")"),
-            "the badge must read through get_authed_any"
+            body.contains("get_authed_any::<ApprovalsCount>(\"/approvals/pending/count\")"),
+            "the badge must read the count-only endpoint through get_authed_any"
         );
         assert!(
             !src.contains("get_authed::<Vec<serde_json::Value>>(\"/approvals/pending\")"),
             "no staff-only read of the queue may remain"
+        );
+        assert!(
+            !body.contains("\"/approvals/pending\""),
+            "the badge must not fetch the full pending list"
         );
         let entry = src
             .find("label: \"My Approvals\"")
