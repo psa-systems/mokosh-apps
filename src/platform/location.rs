@@ -56,7 +56,9 @@ pub fn current_query() -> Option<String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn current_query() -> Option<String> {
-    router_route_string("current query string").as_deref().and_then(query_of)
+    router_route_string("current query string")
+        .as_deref()
+        .and_then(query_of)
 }
 
 /// The route string the app is currently on, or `None` when it cannot be
@@ -106,7 +108,11 @@ fn query_of(route: &str) -> Option<String> {
 /// so with a `warn`.
 fn path_of(route: &str) -> String {
     let route = route.split('#').next().unwrap_or(route);
-    route.split_once('?').map(|(p, _)| p).unwrap_or(route).to_string()
+    route
+        .split_once('?')
+        .map(|(p, _)| p)
+        .unwrap_or(route)
+        .to_string()
 }
 
 /// Rewrite the address bar to `url` without adding a history entry, so a
@@ -205,7 +211,9 @@ pub fn reload() -> bool {
 /// resolve is the exact defect this closes.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn pathname() -> Option<String> {
-    router_route_string("current pathname").as_deref().map(path_of)
+    router_route_string("current pathname")
+        .as_deref()
+        .map(path_of)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -337,22 +345,34 @@ mod tests {
     // shape drifted.
     #[test]
     fn path_of_drops_a_query() {
-        assert_eq!(super::path_of("/onboarding/profile?next=/home"), "/onboarding/profile");
+        assert_eq!(
+            super::path_of("/onboarding/profile?next=/home"),
+            "/onboarding/profile"
+        );
     }
 
     #[test]
     fn path_of_drops_a_fragment() {
-        assert_eq!(super::path_of("/onboarding/profile#step-2"), "/onboarding/profile");
+        assert_eq!(
+            super::path_of("/onboarding/profile#step-2"),
+            "/onboarding/profile"
+        );
     }
 
     #[test]
     fn path_of_drops_a_query_and_a_fragment() {
         // A fragment ends the query on the wire, so cutting `#` first
         // and then `?` matches how a browser would parse the string.
-        assert_eq!(super::path_of("/onboarding/profile?next=/home#top"), "/onboarding/profile");
+        assert_eq!(
+            super::path_of("/onboarding/profile?next=/home#top"),
+            "/onboarding/profile"
+        );
         // The reverse order in the source is unusual but stripping `#`
         // first still recovers the path.
-        assert_eq!(super::path_of("/onboarding/profile#top?next=/home"), "/onboarding/profile");
+        assert_eq!(
+            super::path_of("/onboarding/profile#top?next=/home"),
+            "/onboarding/profile"
+        );
     }
 
     #[test]
