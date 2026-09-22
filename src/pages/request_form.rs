@@ -550,6 +550,8 @@ mod tests {
     fn form() -> PublicForm {
         PublicForm {
             name: "Departure".into(),
+            people: 1,
+            person_number: 1,
             description: None,
             tenant_name: "Acme IT".into(),
             contact_info: None,

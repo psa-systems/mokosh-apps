@@ -464,6 +464,7 @@ pub(crate) fn SendRequestLinkModal(
             company_id: company_uuid,
             contact_id: chosen_contact,
             recipient_email: (!typed_email.is_empty()).then_some(typed_email),
+            people: None,
         };
 
         spawn(async move {
@@ -772,6 +773,10 @@ mod tests {
             expires_at: Utc::now() + expires_in,
             used_at: used.then(Utc::now),
             submission_id: None,
+            people: 1,
+            submissions_remaining: if used { 0 } else { 1 },
+            parent_ticket_id: None,
+            parent_ticket_number: None,
         }
     }
 
