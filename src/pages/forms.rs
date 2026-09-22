@@ -834,7 +834,7 @@ fn load_local_draft(id: Option<&str>) -> Option<(DraftForm, f64)> {
 /// by, and a network write cannot be made synchronous on unload (`sendBeacon`
 /// cannot carry the bearer token this SPA authenticates with).
 ///
-/// MAPPS-873: takes `form` by reference and serialises it through a
+/// takes `form` by reference and serialises it through a
 /// borrowing wrapper, so the local-storage write does NOT clone the form
 /// into `StoredDraft`. serde_json only ever reads through `&form`, so
 /// the caller's snapshot stays alive and can also flow into the debounce
@@ -1426,7 +1426,7 @@ fn FormEditorModal(
     // successful write, because the first write on a new form is what creates
     // the row.
     let mut server_draft_id = use_signal(|| server_draft.as_ref().map(|d| d.id.clone()));
-    // MAPPS-873: the most recent snapshot, stored behind an Rc so this
+    // the most recent snapshot, stored behind an Rc so this
     // signal, the local-draft write, and the spawned server write all
     // share ONE constructed value per keystroke instead of deep-cloning
     // it three times. `None` while nothing has been written yet - the
@@ -1437,7 +1437,7 @@ fn FormEditorModal(
     {
         let key = draft_key.clone();
         let definition_id = save_id.clone();
-        // MAPPS-873: gate the effect on the pre-existing `dirty` flag
+        // gate the effect on the pre-existing `dirty` flag
         // (`current != saved`, computed at forms.rs:1403 without any
         // clones because `!=` borrows both sides). Before this, the
         // effect built a fresh `DraftForm` for `current` AND for `saved`
@@ -1458,7 +1458,7 @@ fn FormEditorModal(
                 crate::utils::prefs::clear(&key);
                 return;
             }
-            // MAPPS-873: build the snapshot ONCE per keystroke and share it
+            // build the snapshot ONCE per keystroke and share it
             // through `Rc`. `store_local_draft` reads through a borrow, so
             // the local-storage write does not clone. The signal and the
             // spawned task hold their own `Rc` clones (ref-count bumps, not
@@ -1476,7 +1476,7 @@ fn FormEditorModal(
                     // whose snapshot has been superseded by the time they wake
                     // up drop out, so a burst of typing costs one request.
                     crate::platform::timer::sleep_ms(DRAFT_DEBOUNCE_MS).await;
-                    // MAPPS-873: supersede check via pointer equality on the
+                    // supersede check via pointer equality on the
                     // shared `Rc`. A later keystroke replaces the signal's
                     // Rc, so the ptr no longer matches ours and this task
                     // bails out without touching the network.
@@ -3827,7 +3827,7 @@ mod tests {
     }
 }
 
-/// MAPPS-873: the autosave effect's clone accounting. Source-level rather
+/// the autosave effect's clone accounting. Source-level rather
 /// than a runtime instrument because the wins are structural (a paired
 /// `from_state` disappearing, `store_local_draft` moving to a borrow,
 /// snapshot flowing through an `Rc`); a source scan catches a future
