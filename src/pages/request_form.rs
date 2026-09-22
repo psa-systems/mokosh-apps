@@ -53,6 +53,10 @@ struct SubmitBody {
 #[derive(Debug, Clone, Deserialize)]
 struct Receipt {
     ticket_number: String,
+    /// MAPPS-934: people still to fill in on this link (PMS-737). Zero, and
+    /// absent against a server that predates it, for an ordinary link.
+    #[serde(default)]
+    submissions_remaining: i32,
 }
 
 /// Terminal states the page can land in, each with its own copy. Kept as an
@@ -60,8 +64,9 @@ struct Receipt {
 /// and a terminal message at the same time.
 #[derive(Debug, Clone, PartialEq)]
 enum Terminal {
-    /// Submitted successfully; carries the ticket number to quote.
-    Submitted(String),
+    /// Submitted successfully; carries the ticket number to quote and, for a
+    /// link covering several people (MAPPS-934), how many are still to come.
+    Submitted(String, i32),
     /// 410: this link has already been used.
     AlreadySubmitted,
     /// 400: expired, unknown or malformed.
@@ -75,14 +80,14 @@ pub fn RequestFormPage(token: String) -> Element {
     // The form definition, loaded once from the token.
     let form = use_signal(|| None::<PublicForm>);
     let loading = use_signal(|| true);
-    let terminal = use_signal(|| None::<Terminal>);
+    let mut terminal = use_signal(|| None::<Terminal>);
 
     // Answers keyed by field name. Booleans are held as "true"/"false" strings
     // so one map covers every field type; `build_payload` converts them back to
     // real JSON types on submit, because the server type-checks each field.
-    let answers = use_signal(HashMap::<String, String>::new);
-    let field_errors = use_signal(HashMap::<String, String>::new);
-    let form_error = use_signal(String::new);
+    let mut answers = use_signal(HashMap::<String, String>::new);
+    let mut field_errors = use_signal(HashMap::<String, String>::new);
+    let mut form_error = use_signal(String::new);
     let submitting = use_signal(|| false);
 
     // Load the form behind the link.
@@ -177,7 +182,10 @@ pub fn RequestFormPage(token: String) -> Element {
                     )
                     .await
                     {
-                        Ok(r) => terminal.set(Some(Terminal::Submitted(r.ticket_number))),
+                        Ok(r) => terminal.set(Some(Terminal::Submitted(
+                            r.ticket_number,
+                            r.submissions_remaining,
+                        ))),
                         // Per-field rules the client could not check (pattern,
                         // option set, date-not-in-past) come back here and are
                         // routed to their inputs, so the client fixes the field
@@ -220,13 +228,38 @@ pub fn RequestFormPage(token: String) -> Element {
         AuthLayout {
             max_w: "sm:max-w-xl",
             match terminal() {
-                Some(Terminal::Submitted(number)) => rsx! {
+                Some(Terminal::Submitted(number, remaining)) => rsx! {
                     div { class: "text-center", role: "status", aria_live: "polite",
                         h1 { class: "text-2xl font-semibold text-content", "Request received" }
                         p { class: "mt-2 text-sm text-content",
                             "Thanks. Your request is with us as ticket "
                             span { class: "font-mono font-medium", "{number}" }
                             ". Quote that number if you need to follow it up."
+                        }
+                        // MAPPS-934: the link covers more people, so the page
+                        // says so and offers the next one rather than leaving
+                        // the client to wonder whether to use the link again.
+                        if remaining > 0 {
+                            p { class: "mt-4 text-sm text-content",
+                                if remaining == 1 {
+                                    "There is one more person to add on this link."
+                                } else {
+                                    "There are {remaining} more people to add on this link."
+                                }
+                            }
+                            div { class: "mt-3",
+                                Button {
+                                    onclick: move |_| {
+                                        // Same link, empty form: the next
+                                        // person starts from a clean page.
+                                        answers.write().clear();
+                                        field_errors.write().clear();
+                                        form_error.set(String::new());
+                                        terminal.set(None);
+                                    },
+                                    "Add the next person"
+                                }
+                            }
                         }
                     }
                 },
@@ -312,6 +345,12 @@ pub(crate) fn RequestFormBody(
         }
 
         div { class: "mb-6",
+            // MAPPS-934: which person this is, on a link covering several.
+            if def.people > 1 {
+                p { class: "text-sm font-medium text-muted",
+                    "Person {def.person_number} of {def.people}"
+                }
+            }
             h1 { class: "text-2xl font-semibold text-content", "{def.name}" }
             if let Some(d) = def.description.clone() {
                 p { class: "mt-2 text-sm text-content", "{d}" }
@@ -549,6 +588,8 @@ mod tests {
 
     fn form() -> PublicForm {
         PublicForm {
+            people: 1,
+            person_number: 1,
             name: "Departure".into(),
             description: None,
             tenant_name: "Acme IT".into(),
@@ -645,6 +686,24 @@ mod tests {
     }
 
     /// MAPPS-843 acceptance criterion: toggling the checkbox is reflected
+    /// MAPPS-934: a link covering several people says which person is being
+    /// filled in, and offers the next one instead of leaving the client to
+    /// wonder whether the link still works.
+    #[test]
+    fn a_multi_person_link_offers_the_next_person() {
+        let src = include_str!("request_form.rs");
+        let code = &src[..src.find("mod tests").expect("this module")];
+        assert!(code.contains("\"Person {def.person_number} of {def.people}\""));
+        assert!(code.contains("Add the next person"));
+        assert!(
+            code.contains("answers.write().clear();"),
+            "the next person starts from an empty form"
+        );
+        // The receipt's count is what decides, so a server that predates this
+        // simply never offers the next person.
+        assert!(code.contains("#[serde(default)]\n    submissions_remaining: i32,"));
+    }
+
     /// exactly in the submitted payload, in both directions.
     #[test]
     fn toggling_the_checkbox_flips_the_submitted_value() {

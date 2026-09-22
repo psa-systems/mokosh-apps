@@ -2316,6 +2316,9 @@ fn preview_from_definition(
     fields.sort_by_key(|f| f.sort_order);
 
     PublicForm {
+        // MAPPS-934: a preview is one form, not a multi-person link.
+        people: 1,
+        person_number: 1,
         name: def.name.clone(),
         description: def
             .description
@@ -2397,6 +2400,9 @@ fn preview_form(
     let name = name.trim();
     let description = description.trim();
     PublicForm {
+        // MAPPS-934: a preview is one form, not a multi-person link.
+        people: 1,
+        person_number: 1,
         // An unnamed draft still previews; the placeholder shows where the
         // name will land rather than rendering an empty heading.
         name: if name.is_empty() {
