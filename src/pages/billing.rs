@@ -61,6 +61,22 @@ fn optional_string(value: &str) -> serde_json::Value {
     }
 }
 
+/// The clear-me-explicitly helper for UPDATE bodies (MAPPS-832; matches
+/// `contacts::clearable_string`). Every update path in `billing::service` that
+/// gates on `COALESCE($n, col)` or `.is_some()` treats a JSON `null` as
+/// "leave the column alone" (PMS-952), so a `PUT` that carries `null` for a
+/// user-emptied field silently keeps the old value. Returning a bare empty
+/// string here sends `""` on the wire, which is what the same server
+/// contract treats as "clear this value".
+///
+/// Use on UPDATE forms where the field is meant to be clearable. Use
+/// [`optional_string`] on CREATE forms and on UPDATE fields whose "clear"
+/// intent is deliberately not exposed (`billing_contact_id` on an invoice
+/// keeps its recipient once sent under PMS-1004).
+fn clearable_string(value: &str) -> String {
+    value.trim().to_string()
+}
+
 // ============================================================================
 // Invoices
 // ============================================================================
@@ -4608,8 +4624,11 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             // the server, which keeps it unless the term changed.
             "due_date": if *due_touched.read() { optional_string(&due) } else { serde_json::Value::Null },
             "payment_term_id": optional_string(&payment_term_id.read()),
-            "po_number": optional_string(&po_number.read()),
-            "notes": optional_string(&notes.read()),
+            // clearable_string ("" clears vs null keeps) instead of
+            // optional_string (null keeps and would silently no-op the clear).
+            // The server COALESCEs on both columns (billing/service.rs:4096-4097).
+            "po_number": clearable_string(&po_number.read()),
+            "notes": clearable_string(&notes.read()),
             "tax_rate_id": tax.rate_id,
             "tax_amount": tax.amount,
             "discount_amount": optional_string(&discount_amount.read()),
