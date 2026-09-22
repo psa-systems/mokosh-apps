@@ -740,7 +740,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     // retired: Teams is now core, not a preview.
                     TeamsNavItem { visible: is_org_tenant, collapsed }
                     NavItem { to: Route::Invitations {}, icon: rsx!(MailIcon {}), label: "Invitations", collapsed }
-                    // MAPPS-361: "Logs" groups every log-flavoured destination
+                    // "Logs" groups every log-flavoured destination
                     // under one dropdown so the section reads at a glance and
                     // a future error-logs page lands next to Audit Log rather
                     // than a second flat item. Audit Log is the only child
@@ -984,7 +984,7 @@ fn NavItem(props: NavItemProps) -> Element {
     }
 }
 
-/// MAPPS-361: nested collapsible dropdown category inside a [`NavSection`].
+/// nested collapsible dropdown category inside a [`NavSection`].
 ///
 /// A second collapse level: click "Logs" to reveal audit logs (and later,
 /// error logs) rather than adding indented always-visible sub-items, which
@@ -1071,7 +1071,7 @@ fn NavSubcategory(props: NavSubcategoryProps) -> Element {
                 }
             }
             if !collapsed {
-                // MAPPS-361: children indent one level so the nesting reads
+                // children indent one level so the nesting reads
                 // at a glance. The indent lives here rather than on each
                 // child NavItem so the pattern stays "one subcategory,
                 // one indent" and a caller cannot forget it.
