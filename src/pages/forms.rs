@@ -18,10 +18,10 @@ use std::rc::Rc;
 use dioxus::prelude::*;
 
 use crate::components::{
-    use_page_title, ArrowDownIcon, ArrowUpIcon, Badge, BadgeVariant, Button, ButtonVariant, Card,
-    Checkbox, ChevronDownIcon, ChevronRightIcon, DataTable, DragHandleIcon, ErrorBanner,
-    IconButton, IconSize, Input, PageHeader, Select, SelectOption, Table, TableBody, TableCell,
-    TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, TrashIcon,
+    use_page_title, ArrowDownIcon, ArrowUpIcon, Badge, BadgeVariant, Button, ButtonSize,
+    ButtonVariant, Card, Checkbox, ChevronDownIcon, ChevronRightIcon, DataTable, DragHandleIcon,
+    ErrorBanner, IconButton, IconSize, Input, PageHeader, Select, SelectOption, Table, TableBody,
+    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, TrashIcon,
 };
 use crate::modules::forms::FieldTypeExt;
 use crate::modules::forms::{
@@ -361,7 +361,8 @@ fn FormsBuilderContent() -> Element {
                                         TableCell { class: "text-muted", "{field_count}" }
                                         TableCell {
                                             Button {
-                                                variant: ButtonVariant::Link,
+                                                variant: ButtonVariant::Ghost,
+                                                size: ButtonSize::Small,
                                                 onclick: move |_| editing.set(Some(EditorState::from_existing(&for_edit))),
                                                 "Edit"
                                             }
