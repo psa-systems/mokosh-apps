@@ -2420,8 +2420,8 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         // the server's: the invoice goes as a PDF to the billing contact, the
         // pay link rides along only with a payment gateway, and a send with
         // nobody to email is refused rather than marked sent (MAPPS-663).
-        // PMS-1365: lead with the finalize consequence (the invoice locks) so
-        // the user reads what becomes immutable before pressing the button.
+        // Lead with the finalize consequence (the invoice locks) so the
+        // user reads what becomes immutable before pressing the button.
         if editable {
             p { class: "mb-3 text-xs text-subtle",
                 "Sending finalizes the invoice: it locks and nothing on it can change afterwards. The PDF goes to the billing contact's email, with a pay link when a payment gateway is connected. Use Preview email to read it first."
