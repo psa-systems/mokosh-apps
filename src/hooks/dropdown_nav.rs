@@ -463,7 +463,15 @@ mod tests {
     fn enter_commits_the_highlighted_row() {
         for enter_takes_first in [RECORD, FREE_TEXT] {
             assert_eq!(
-                decide(&Key::Enter, false, true, Some(1), 3, enter_takes_first, PICKER),
+                decide(
+                    &Key::Enter,
+                    false,
+                    true,
+                    Some(1),
+                    3,
+                    enter_takes_first,
+                    PICKER
+                ),
                 NavAction::Commit {
                     index: 1,
                     prevent_default: true,
@@ -471,7 +479,15 @@ mod tests {
             );
             // A closed list, or an empty one: Enter belongs to the form.
             assert_eq!(
-                decide(&Key::Enter, false, false, Some(1), 3, enter_takes_first, PICKER),
+                decide(
+                    &Key::Enter,
+                    false,
+                    false,
+                    Some(1),
+                    3,
+                    enter_takes_first,
+                    PICKER
+                ),
                 NavAction::Ignore
             );
             assert_eq!(
@@ -596,7 +612,15 @@ mod tests {
             NavAction::Close
         );
         assert_eq!(
-            decide(&Key::Character("a".into()), false, true, Some(1), 3, RECORD, PICKER),
+            decide(
+                &Key::Character("a".into()),
+                false,
+                true,
+                Some(1),
+                3,
+                RECORD,
+                PICKER
+            ),
             NavAction::Ignore
         );
     }
