@@ -4624,7 +4624,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             // the server, which keeps it unless the term changed.
             "due_date": if *due_touched.read() { optional_string(&due) } else { serde_json::Value::Null },
             "payment_term_id": optional_string(&payment_term_id.read()),
-            // MAPPS-832: clearable_string ("" clears vs null keeps) instead of
+            // clearable_string ("" clears vs null keeps) instead of
             // optional_string (null keeps and would silently no-op the clear).
             // The server COALESCEs on both columns (billing/service.rs:4096-4097).
             "po_number": clearable_string(&po_number.read()),
