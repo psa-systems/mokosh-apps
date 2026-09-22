@@ -141,13 +141,21 @@ fn ProductsSettingsBody() -> Element {
     let current_page = (*page.read()).max(1);
     let search_text = search.read().clone();
     let status_text = status.read().clone();
+    // MAPPS-931: debounce the search dependency so a burst of keystrokes
+    // fires one refetch per pause in typing rather than one per keystroke,
+    // matching the sibling call sites MAPPS-855 debounced.
+    let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let mut resource = use_resource(move || {
         // Read page/search/status here, inside the resource's own closure, so
         // Dioxus's dependency tracker attaches the resource's subscription to
         // them directly (the same reason active_tenant_generation() is read
         // here rather than above): a read outside this closure subscribes the
         // component to a re-render, not the resource to a re-fetch.
-        let path = list_path((*page.read()).max(1), &search.read(), &status.read());
+        let path = list_path(
+            (*page.read()).max(1),
+            &search_debounced.read(),
+            &status.read(),
+        );
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             // MAPPS-357: subscribe to reachability so the list auto-refetches
