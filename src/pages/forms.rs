@@ -2317,6 +2317,11 @@ fn preview_from_definition(
 
     PublicForm {
         name: def.name.clone(),
+        // Preview shows a single-person link, the one shape the definition
+        // pane can render honestly. A multi-person link renders per-recipient
+        // at issue time from the same server response.
+        people: 1,
+        person_number: 1,
         description: def
             .description
             .clone()
@@ -2404,6 +2409,8 @@ fn preview_form(
         } else {
             name.to_string()
         },
+        people: 1,
+        person_number: 1,
         description: (!description.is_empty()).then(|| description.to_string()),
         // PMS-748: previewed from the live editor state too, so an operator
         // adding a contact line sees it land before saving.

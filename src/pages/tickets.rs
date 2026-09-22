@@ -6773,6 +6773,7 @@ mod mapps686_shared_dto_tests {
             site_id,
             assigned_to_id,
             team_id,
+            parent_ticket_id,
             contract_id,
             sla_id,
             scheduled_start,
@@ -6826,6 +6827,10 @@ mod mapps686_shared_dto_tests {
             procedure_kb_article_id,
             email_message_id,
             email_thread_id,
+            // Not offered by the New Ticket form: a child ticket is filed by
+            // the multi-person request-link flow, never by an agent typing
+            // in the form.
+            parent_ticket_id,
         );
     }
 
@@ -6922,6 +6927,7 @@ mod mapps686_shared_dto_tests {
         let mokosh_types::tickets::TicketResponse {
             id,
             ticket_number,
+            parent_ticket_id,
             title,
             description,
             status,
@@ -7041,6 +7047,9 @@ mod mapps686_shared_dto_tests {
             status_color,
             status_is_closed,
             priority_color,
+            // PMS-1368: the parent link is not rendered by this page yet; the
+            // child ticket surface is a follow-up.
+            parent_ticket_id,
         );
     }
 
