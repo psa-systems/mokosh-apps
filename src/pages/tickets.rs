@@ -5129,15 +5129,21 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
         });
     };
 
-    // MAPPS-870: the approver picker's label always used a `name` field
-    // `/auth/users` never sends, so it fell straight to `email` every time.
-    // Preserving that behavior on the shared roster row here; `full_name`
-    // going unused everywhere else this list is used elsewhere in this file
-    // (see actor_name / journal_actor) makes clear the row does carry a real
-    // display name that just was not wired to this specific dropdown.
+    // MAPPS-870: read `u.display_name()` (`full_name`, else
+    // `first_name last_name`, else `email`) instead of an unused `name`
+    // field, matching every other consumer of the shared roster - the
+    // actor_name / journal_actor site above, `/team`'s roster row, the
+    // Assignee picker, etc. Before this the row's real display name went
+    // unread and the picker showed the operator's email for every user
+    // on every tenant. `display_name` returns `None` only for a row that
+    // carries none of the three; fall back to the id then, so a picker
+    // entry is at least deterministically identifiable.
     let mut user_options: Vec<SelectOption> = users
         .iter()
-        .map(|u| SelectOption::new(u.id.to_string(), u.email.clone()))
+        .map(|u| {
+            let label = u.display_name().unwrap_or_else(|| u.id.to_string());
+            SelectOption::new(u.id.to_string(), label)
+        })
         .collect();
     user_options.insert(0, SelectOption::new("", "- Pick approver -"));
 
