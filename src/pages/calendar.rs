@@ -942,7 +942,7 @@ struct ViewToggleButtonProps {
 
 #[component]
 fn ViewToggleButton(props: ViewToggleButtonProps) -> Element {
-    // MAPPS-805: route the active state through Button variant Primary
+    // route the active state through Button variant Primary
     // so the accent recipe is not hand-rolled here. The inactive branch
     // keeps its Ghost-flavoured hover shape (bare text with a surface-2
     // hover), which Button's Ghost variant matches. `rounded-none` on

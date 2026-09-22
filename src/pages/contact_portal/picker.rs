@@ -589,7 +589,7 @@ pub fn ContactPickerPage(token: String) -> Element {
                             }
                         }
                         div { class: "pt-2",
-                            // MAPPS-805: navigation-flavoured Primary action.
+                            // navigation-flavoured Primary action.
                             // Route the accent recipe through Button so it is
                             // not hand-rolled here; the Link wrapper is what
                             // BUNYIP-682 and MAPPS-793's own pattern use for a

@@ -200,7 +200,7 @@ pub fn ThemePicker() -> Element {
                     }
                     // MAPPS-385: demo only, so the label reads as a sample
                     // action rather than a save operation on the picker.
-                    // MAPPS-805: route through Button variant Primary so the
+                    // route through Button variant Primary so the
                     // recipe is not hand-rolled here. `disabled: true`
                     // matches the previous `tabindex="-1"` + `aria-disabled`
                     // shape - Button already applies both, plus the
