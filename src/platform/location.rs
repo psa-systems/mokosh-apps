@@ -326,12 +326,12 @@ mod tests {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn pathname_is_none_without_a_runtime() {
-        // MAPPS-697: same shape as current_query, and shares the same
+        // same shape as current_query, and shares the same
         // warn-rather-than-silent contract through router_route_string.
         assert_eq!(super::pathname(), None);
     }
 
-    // MAPPS-697: the four shapes the router hands `full_route_string`.
+    // the four shapes the router hands `full_route_string`.
     // A path with a query, a path with a fragment, a path with both, and
     // a path with neither. Named separately so a failure names which
     // shape drifted.
