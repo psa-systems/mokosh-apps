@@ -1625,11 +1625,15 @@ fn NotificationBell() -> Element {
     }
 }
 
-/// PMS-486: top-bar pending-approvals chip. Polls `/approvals/pending`
-/// on mount + on every active-org switch (cheap on the server thanks
-/// to the PMS-451 partial indexes on `(approver_user_id) WHERE state =
+/// PMS-486: top-bar pending-approvals chip. Polls `/approvals/pending/count`
+/// on mount + on every active-org switch (cheap on the server thanks to
+/// the PMS-451 partial indexes on `(approver_user_id) WHERE state =
 /// 'pending'` etc.). The badge collapses to nothing when there is no
 /// pending decision so the chrome stays clean for non-approvers.
+///
+/// hits the count-only endpoint (MAPPS-872), so a badge
+/// that only ever renders a number does not deserialize and clone the
+/// full pending-approvals list on every layout render.
 #[component]
 fn ApprovalsBadge() -> Element {
     // MAPPS-737: the server's contact arm requires `approvals:decide`, so
@@ -1639,27 +1643,30 @@ fn ApprovalsBadge() -> Element {
     let inbox = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         if !can_decide {
-            return Vec::new();
+            return 0i64;
         }
         // The badge collapses to nothing on an empty queue AND on a failed
         // read, so the log is the only thing that separates them.
         // MAPPS-737: contact-first bearer, so the chip counts a contact's
         // own queue on the contact plane.
-        crate::hooks::fetch::api::get_authed_any::<Vec<serde_json::Value>>("/approvals/pending")
+        // `{ "count": N }`, not the row set, so an idle badge
+        // pays for a scalar rather than a serialised Vec of full approval
+        // rows on every page's layout render.
+        crate::hooks::fetch::api::get_authed_any::<ApprovalsCount>("/approvals/pending/count")
             .await
-            .inspect(|rows| {
-                if rows.is_empty() {
-                    tracing::info!("pending approval load succeeded and the queue is empty");
+            .inspect(|payload| {
+                if payload.count == 0 {
+                    tracing::info!("pending approval count succeeded and the queue is empty");
                 }
             })
             .inspect_err(|e| {
-                tracing::error!("pending approval load failed, the badge will stay hidden: {e}")
+                tracing::error!("pending approval count failed, the badge will stay hidden: {e}")
             })
-            .ok()
-            .unwrap_or_default()
+            .map(|payload| payload.count)
+            .unwrap_or(0)
     });
-    let count = inbox.read_unchecked().clone().unwrap_or_default().len();
-    if count == 0 {
+    let count = inbox.read_unchecked().unwrap_or(0);
+    if count <= 0 {
         return rsx! { span {} };
     }
     rsx! {
@@ -1672,6 +1679,15 @@ fn ApprovalsBadge() -> Element {
             span { class: "font-bold", "{count}" }
         }
     }
+}
+
+/// shape of `GET /approvals/pending/count` (MAPPS-872's
+/// server-side prerequisite). Kept beside its one caller instead of
+/// living in a shared module: it is the badge's private wire type, and
+/// a second reader is a rename waiting to happen.
+#[derive(Clone, serde::Deserialize)]
+struct ApprovalsCount {
+    count: i64,
 }
 
 /// A single inbox row. Unread rows are tinted and, on click, POST a
@@ -2246,12 +2262,16 @@ mod tests {
             "the badge must gate on approvals:decide"
         );
         assert!(
-            body.contains("get_authed_any::<Vec<serde_json::Value>>(\"/approvals/pending\")"),
-            "the badge must read through get_authed_any"
+            body.contains("get_authed_any::<ApprovalsCount>(\"/approvals/pending/count\")"),
+            "the badge must read the count-only endpoint through get_authed_any"
         );
         assert!(
             !src.contains("get_authed::<Vec<serde_json::Value>>(\"/approvals/pending\")"),
             "no staff-only read of the queue may remain"
+        );
+        assert!(
+            !body.contains("\"/approvals/pending\""),
+            "the badge must not fetch the full pending list"
         );
         let entry = src
             .find("label: \"My Approvals\"")
