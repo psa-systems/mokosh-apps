@@ -768,7 +768,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
 /// while the build detail belongs on the status page, its agreed single home -
 /// so it is moved there rather than duplicated into a footer tooltip.
 ///
-/// MAPPS-570: also carries a Documentation link when `cfg.has_docs()` is
+/// also carries a Documentation link when `cfg.has_docs()` is
 /// true, so a docs subdomain configured on the deployment reaches every
 /// authenticated page from the footer as well as the sidebar's
 /// `DocsNavItem`. Both surfaces read the same predicate, so an unset
@@ -2346,7 +2346,7 @@ mod module_gated_nav_tests {
     }
 }
 
-/// MAPPS-570: the footer Documentation link is gated on `cfg.has_docs()`,
+/// the footer Documentation link is gated on `cfg.has_docs()`,
 /// matching the sidebar `DocsNavItem` and every `ContextualHelpLink`. Both
 /// halves of the ticket's ACs (configured -> non-empty target rendered;
 /// unconfigured -> nothing rendered) reduce to that source shape:

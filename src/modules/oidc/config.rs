@@ -166,7 +166,7 @@ impl OidcConfig {
         if let Some(docs) = crate::modules::runtime_config::get("docs_base_url") {
             cfg.docs_base_url = Box::leak(docs.into_boxed_str());
         }
-        // MAPPS-570: name the missing variable when nothing sets it, so an
+        // name the missing variable when nothing sets it, so an
         // operator following the release runbook sees a hint next to
         // "Documentation is not reachable in the SPA" instead of having to
         // trace the empty compile-time env, the empty runtime injection and
