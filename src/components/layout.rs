@@ -740,7 +740,17 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     // retired: Teams is now core, not a preview.
                     TeamsNavItem { visible: is_org_tenant, collapsed }
                     NavItem { to: Route::Invitations {}, icon: rsx!(MailIcon {}), label: "Invitations", collapsed }
-                    NavItem { to: Route::AuditLog {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Audit Log", collapsed }
+                    // "Logs" groups every log-flavoured destination
+                    // under one dropdown so the section reads at a glance and
+                    // a future error-logs page lands next to Audit Log rather
+                    // than a second flat item. Audit Log is the only child
+                    // for now.
+                    NavSubcategory {
+                        title: "Logs".to_string(),
+                        icon: rsx!(ClipboardDocumentListIcon {}),
+                        rail_collapsed: collapsed,
+                        NavItem { to: Route::AuditLog {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Audit Log", collapsed }
+                    }
                     NavItem { to: Route::FormsBuilder {}, icon: rsx!(InboxArrowDownIcon {}), label: "Request Forms", collapsed }
                     NavItem { to: Route::SlaManagement {}, icon: rsx!(ShieldCheckIcon {}), label: "SLA Management", collapsed }
                     // MAPPS-169: single entry into the centralized Settings hub.
@@ -990,6 +1000,105 @@ fn NavItem(props: NavItemProps) -> Element {
                 {props.icon}
             }
             "{props.label}"
+        }
+    }
+}
+
+/// nested collapsible dropdown category inside a [`NavSection`].
+///
+/// A second collapse level: click "Logs" to reveal audit logs (and later,
+/// error logs) rather than adding indented always-visible sub-items, which
+/// Vas rejected as looking inconsistent. The dropdown reads and writes the
+/// same `use_sidebar_state()` map [`NavSection`] uses, prefixing its key
+/// with `subcategory:` so a top-level section and a nested subcategory
+/// cannot collide over the same title, and so a future rename of one does
+/// not silently unhide the other.
+///
+/// Skips rendering entirely when the enclosing rail is collapsed (the
+/// icon-only strip has no room for a title + chevron, and the child
+/// icons are already rendered directly by NavSection's `display: contents`
+/// branch), which means every child NavItem must be discoverable ALSO
+/// through its own icon in the collapsed rail. Today Audit Log is the
+/// only child, so the collapsed rail keeps it visible.
+#[derive(Props, Clone, PartialEq)]
+struct NavSubcategoryProps {
+    /// Section label (e.g. "Logs"). Also the state key, prefixed with
+    /// `subcategory:` before it hits the sidebar state map.
+    title: String,
+    /// The section icon, rendered at the left of the header row.
+    icon: Element,
+    /// MAPPS-250 shape: skip rendering when the whole rail is collapsed.
+    /// The child NavItems still render directly through NavSection's
+    /// `display: contents` branch, so their own icon-only strips stay
+    /// reachable in the narrow rail.
+    #[props(default)]
+    rail_collapsed: bool,
+    children: Element,
+}
+
+#[component]
+fn NavSubcategory(props: NavSubcategoryProps) -> Element {
+    let mut state = crate::hooks::use_sidebar_state();
+    // Prefix the state key so a section and a nested subcategory sharing a
+    // title cannot collide (unlikely today, but the map is shared).
+    let state_key = format!("subcategory:{}", props.title);
+    // Default OPEN, mirroring NavSection: a first-time visitor sees every
+    // navigable destination without having to hunt for it.
+    let collapsed = state
+        .read()
+        .collapsed
+        .get(&state_key)
+        .copied()
+        .unwrap_or(false);
+
+    // Rail collapsed: the parent NavSection already switched to
+    // `display: contents`, so the child NavItems below are being rendered
+    // as direct flex children of the nav; do the same here so the
+    // grouping is invisible in the collapsed strip.
+    if props.rail_collapsed {
+        return rsx! {
+            div { class: "contents",
+                {props.children}
+            }
+        };
+    }
+
+    let icon_color = try_use_context::<NavCategoryColor>()
+        .map(|c| c.0.heading_class())
+        .unwrap_or("text-subtle");
+    let toggle_key = state_key.clone();
+    let toggle = move |_| {
+        let mut s = state.write();
+        let new_value = !s.collapsed.get(&toggle_key).copied().unwrap_or(false);
+        s.collapsed.insert(toggle_key.clone(), new_value);
+    };
+
+    rsx! {
+        div { class: "flex flex-col",
+            button {
+                r#type: "button",
+                class: "group flex items-center px-3 py-2 text-sm font-medium rounded-md text-muted hover:bg-surface hover:text-content w-full",
+                aria_expanded: if collapsed { "false" } else { "true" },
+                onclick: toggle,
+                span { class: "mr-3 {icon_color}",
+                    {props.icon}
+                }
+                span { class: "flex-1 text-left", "{props.title}" }
+                if collapsed {
+                    ChevronRightIcon { size: IconSize::Small, class: "text-muted".to_string() }
+                } else {
+                    ChevronDownIcon { size: IconSize::Small, class: "text-muted".to_string() }
+                }
+            }
+            if !collapsed {
+                // children indent one level so the nesting reads
+                // at a glance. The indent lives here rather than on each
+                // child NavItem so the pattern stays "one subcategory,
+                // one indent" and a caller cannot forget it.
+                div { class: "ml-4 mt-1 space-y-1",
+                    {props.children}
+                }
+            }
         }
     }
 }
