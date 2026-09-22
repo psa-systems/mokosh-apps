@@ -848,7 +848,7 @@ fn ContactRoleEditForm(props: ContactRoleEditFormProps) -> Element {
                     }
                 }
 
-                div { class: "flex justify-end space-x-3 pt-2",
+                div { class: "flex justify-end space-x-3",
                     Link {
                         to: Route::ContactRolesList {},
                         Button { variant: ButtonVariant::Secondary, "Cancel" }
@@ -859,7 +859,7 @@ fn ContactRoleEditForm(props: ContactRoleEditFormProps) -> Element {
                         loading: *saving.read(),
                         title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                         onclick: submit,
-                        if is_new { "Create role" } else { "Save changes" }
+                        if is_new { "Create role" } else { "Save Changes" }
                     }
                 }
             }
