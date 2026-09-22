@@ -8067,9 +8067,16 @@ struct ContactPortalCardProps {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct PortalGrantOutcomeWire {
     portal_slug: String,
-    setup_link: String,
     #[serde(default)]
     portal_id: Option<i64>,
+    /// PMS-1327: the server used to return the setup URL (`setup_link`)
+    /// so this page could copy it to the clipboard; that handed
+    /// password-setup capability to anyone reading the markup. The URL
+    /// is gone from the wire; this flag says whether the setup email
+    /// went out so the toast can still distinguish a fresh grant from
+    /// a role-only edit without rendering the token.
+    #[serde(default)]
+    password_email_queued: bool,
 }
 
 /// mokosh-contact-login prompt 003: one row of GET
@@ -8396,7 +8403,6 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
     let mut modal_open = use_signal(|| false);
     let mut picked: Signal<Vec<uuid::Uuid>> = use_signal(Vec::new);
     let mut error = use_signal(String::new);
-    let mut last_setup_link = use_signal(String::new);
     // MAPPS-589 (prompt 011): captured from the grant response so the
     // card can render "Company ID: 555556666" alongside the setup link
     // once PMS-928 lands. `None` when the server response pre-dates
@@ -8435,15 +8441,11 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
             .await
             {
                 Ok(outcome) => {
-                    // MAPPS-635 C: the server now short-circuits the
-                    // token + setup-email work when the contact is
-                    // already credentialled (already granted, has a
-                    // password). It signals that state by returning
-                    // an empty `setup_link` string. Distinguish the
-                    // two paths in the toast so a role edit never
-                    // reads as "we just sent them a new setup email".
-                    let is_role_only_edit = outcome.setup_link.trim().is_empty();
-                    last_setup_link.set(outcome.setup_link.clone());
+                    // MAPPS-635 C / PMS-1327: the server no longer returns
+                    // the setup link; it says whether the invite email went
+                    // out via `password_email_queued`, which stays false on
+                    // a role-only edit and is what the toast keys on.
+                    let is_role_only_edit = !outcome.password_email_queued;
                     last_portal_id.set(outcome.portal_id);
                     let toast_msg = if is_role_only_edit {
                         "Portal roles updated.".to_string()
@@ -8573,14 +8575,15 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                             code { class: "text-xs", "{pid}" }
                         }
                     }
-                    if !last_setup_link.read().is_empty() {
-                        p { class: "text-xs text-muted break-all",
-                            span { class: "font-medium text-content", "Invitation link (also emailed): " }
-                            code { class: "text-xs", "{last_setup_link}" }
-                        }
-                    }
+                    // PMS-1327: the setup URL used to render here as a
+                    // copy-friendly `<code>` block, but the token in it
+                    // was password-set capability handed to anyone
+                    // reading the markup. The link now reaches the
+                    // customer only through the setup email; "Resend
+                    // invitation" below re-issues it if they say
+                    // nothing arrived.
                     p { class: "text-xs text-muted",
-                        "This contact can sign in to your client portal. The invitation link works for 72 hours; send it again if they never received it."
+                        "This contact can sign in to your client portal. The invitation link is emailed and works for 72 hours; use Resend invitation if they never received it."
                     }
                     // MAPPS-775 / PMS-1187: what this customer has asked to
                     // see. The gap this closes was invisible from here: a
