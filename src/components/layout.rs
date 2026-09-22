@@ -740,7 +740,17 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     // retired: Teams is now core, not a preview.
                     TeamsNavItem { visible: is_org_tenant, collapsed }
                     NavItem { to: Route::Invitations {}, icon: rsx!(MailIcon {}), label: "Invitations", collapsed }
-                    NavItem { to: Route::AuditLog {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Audit Log", collapsed }
+                    // "Logs" groups every log-flavoured destination
+                    // under one dropdown so the section reads at a glance and
+                    // a future error-logs page lands next to Audit Log rather
+                    // than a second flat item. Audit Log is the only child
+                    // for now.
+                    NavSubcategory {
+                        title: "Logs".to_string(),
+                        icon: rsx!(ClipboardDocumentListIcon {}),
+                        rail_collapsed: collapsed,
+                        NavItem { to: Route::AuditLog {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Audit Log", collapsed }
+                    }
                     NavItem { to: Route::FormsBuilder {}, icon: rsx!(InboxArrowDownIcon {}), label: "Request Forms", collapsed }
                     NavItem { to: Route::SlaManagement {}, icon: rsx!(ShieldCheckIcon {}), label: "SLA Management", collapsed }
                     // MAPPS-169: single entry into the centralized Settings hub.
@@ -767,17 +777,37 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
 /// to a general user (and the fastest way to confirm which build someone is on),
 /// while the build detail belongs on the status page, its agreed single home -
 /// so it is moved there rather than duplicated into a footer tooltip.
+///
+/// also carries a Documentation link when `cfg.has_docs()` is
+/// true, so a docs subdomain configured on the deployment reaches every
+/// authenticated page from the footer as well as the sidebar's
+/// `DocsNavItem`. Both surfaces read the same predicate, so an unset
+/// docs URL hides both - which is what an operator on a deploy with no
+/// docs site should see, rather than a dead link.
 #[component]
 fn VersionFooter() -> Element {
     use crate::utils::version::VERSION;
+    let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
+    let docs_href = cfg.has_docs().then(|| cfg.docs_url(""));
     rsx! {
         p {
-            class: "px-3 py-2 text-xs text-muted text-center",
+            class: "px-3 py-2 text-xs text-muted text-center space-x-3",
             Link {
                 to: Route::SystemStatus {},
                 class: "hover:text-content transition-colors",
                 title: "View system status and build details",
                 "v{VERSION}"
+            }
+            if let Some(href) = docs_href {
+                span { class: "text-line", aria_hidden: "true", "·" }
+                a {
+                    href: "{href}",
+                    target: "_blank",
+                    rel: "noopener noreferrer",
+                    class: "hover:text-content transition-colors",
+                    title: "Open the documentation",
+                    "Documentation"
+                }
             }
         }
     }
@@ -970,6 +1000,105 @@ fn NavItem(props: NavItemProps) -> Element {
                 {props.icon}
             }
             "{props.label}"
+        }
+    }
+}
+
+/// nested collapsible dropdown category inside a [`NavSection`].
+///
+/// A second collapse level: click "Logs" to reveal audit logs (and later,
+/// error logs) rather than adding indented always-visible sub-items, which
+/// Vas rejected as looking inconsistent. The dropdown reads and writes the
+/// same `use_sidebar_state()` map [`NavSection`] uses, prefixing its key
+/// with `subcategory:` so a top-level section and a nested subcategory
+/// cannot collide over the same title, and so a future rename of one does
+/// not silently unhide the other.
+///
+/// Skips rendering entirely when the enclosing rail is collapsed (the
+/// icon-only strip has no room for a title + chevron, and the child
+/// icons are already rendered directly by NavSection's `display: contents`
+/// branch), which means every child NavItem must be discoverable ALSO
+/// through its own icon in the collapsed rail. Today Audit Log is the
+/// only child, so the collapsed rail keeps it visible.
+#[derive(Props, Clone, PartialEq)]
+struct NavSubcategoryProps {
+    /// Section label (e.g. "Logs"). Also the state key, prefixed with
+    /// `subcategory:` before it hits the sidebar state map.
+    title: String,
+    /// The section icon, rendered at the left of the header row.
+    icon: Element,
+    /// MAPPS-250 shape: skip rendering when the whole rail is collapsed.
+    /// The child NavItems still render directly through NavSection's
+    /// `display: contents` branch, so their own icon-only strips stay
+    /// reachable in the narrow rail.
+    #[props(default)]
+    rail_collapsed: bool,
+    children: Element,
+}
+
+#[component]
+fn NavSubcategory(props: NavSubcategoryProps) -> Element {
+    let mut state = crate::hooks::use_sidebar_state();
+    // Prefix the state key so a section and a nested subcategory sharing a
+    // title cannot collide (unlikely today, but the map is shared).
+    let state_key = format!("subcategory:{}", props.title);
+    // Default OPEN, mirroring NavSection: a first-time visitor sees every
+    // navigable destination without having to hunt for it.
+    let collapsed = state
+        .read()
+        .collapsed
+        .get(&state_key)
+        .copied()
+        .unwrap_or(false);
+
+    // Rail collapsed: the parent NavSection already switched to
+    // `display: contents`, so the child NavItems below are being rendered
+    // as direct flex children of the nav; do the same here so the
+    // grouping is invisible in the collapsed strip.
+    if props.rail_collapsed {
+        return rsx! {
+            div { class: "contents",
+                {props.children}
+            }
+        };
+    }
+
+    let icon_color = try_use_context::<NavCategoryColor>()
+        .map(|c| c.0.heading_class())
+        .unwrap_or("text-subtle");
+    let toggle_key = state_key.clone();
+    let toggle = move |_| {
+        let mut s = state.write();
+        let new_value = !s.collapsed.get(&toggle_key).copied().unwrap_or(false);
+        s.collapsed.insert(toggle_key.clone(), new_value);
+    };
+
+    rsx! {
+        div { class: "flex flex-col",
+            button {
+                r#type: "button",
+                class: "group flex items-center px-3 py-2 text-sm font-medium rounded-md text-muted hover:bg-surface hover:text-content w-full",
+                aria_expanded: if collapsed { "false" } else { "true" },
+                onclick: toggle,
+                span { class: "mr-3 {icon_color}",
+                    {props.icon}
+                }
+                span { class: "flex-1 text-left", "{props.title}" }
+                if collapsed {
+                    ChevronRightIcon { size: IconSize::Small, class: "text-muted".to_string() }
+                } else {
+                    ChevronDownIcon { size: IconSize::Small, class: "text-muted".to_string() }
+                }
+            }
+            if !collapsed {
+                // children indent one level so the nesting reads
+                // at a glance. The indent lives here rather than on each
+                // child NavItem so the pattern stays "one subcategory,
+                // one indent" and a caller cannot forget it.
+                div { class: "ml-4 mt-1 space-y-1",
+                    {props.children}
+                }
+            }
         }
     }
 }
@@ -2342,6 +2471,66 @@ mod module_gated_nav_tests {
         assert!(
             head.contains("NavItem { to: Route::TimeEntryList {}, icon: rsx!(ClockIcon {}), label: \"Time Entries\", collapsed }"),
             "Time Entries is untouched: it is the time_tracking module, not timesheets"
+        );
+    }
+}
+
+/// the footer Documentation link is gated on `cfg.has_docs()`,
+/// matching the sidebar `DocsNavItem` and every `ContextualHelpLink`. Both
+/// halves of the ticket's ACs (configured -> non-empty target rendered;
+/// unconfigured -> nothing rendered) reduce to that source shape:
+/// `has_docs()` is unit-tested in `modules::oidc::config`, so this test
+/// pins the FOOTER's dependency on it. Reading the source keeps the test
+/// off the Dioxus runtime (rendering `VersionFooter` requires one).
+#[cfg(test)]
+mod docs_footer_link_tests {
+    #[test]
+    fn the_footer_gates_the_docs_link_on_has_docs() {
+        let src = include_str!("layout.rs");
+        // The whole VersionFooter body is here; the two invariants:
+        //   1. Reads `cfg.has_docs()` before rendering the link.
+        //   2. When rendered, the link's `href` is `cfg.docs_url("")`
+        //      (an absolute URL derived from the configured base).
+        let start = src
+            .find("fn VersionFooter()")
+            .expect("VersionFooter is defined here");
+        let body = &src[start..];
+        let end = body.find("\n}\n").expect("body is closed");
+        let body = &body[..end];
+        assert!(
+            body.contains("cfg.has_docs()"),
+            "the footer link renders only when has_docs() is true"
+        );
+        assert!(
+            body.contains("cfg.docs_url(\"\")"),
+            "the link points at the configured docs base URL"
+        );
+        assert!(
+            body.contains("target: \"_blank\""),
+            "the docs link opens in a new tab, matching the sidebar Documentation nav"
+        );
+        assert!(
+            body.contains("rel: \"noopener noreferrer\""),
+            "external link carries noopener + noreferrer"
+        );
+    }
+
+    /// Unconfigured means both surfaces (sidebar `DocsNavItem` and the
+    /// footer link added here) render nothing. The one shared predicate
+    /// is `cfg.has_docs()`; asserting both call sites read it keeps them
+    /// impossible to drift.
+    #[test]
+    fn both_docs_surfaces_read_the_same_predicate() {
+        let src = include_str!("layout.rs");
+        // Sidebar entry: `if cfg.has_docs() { DocsNavItem { ... } }`.
+        assert!(
+            src.contains("if cfg.has_docs() {\n                    DocsNavItem "),
+            "the sidebar DocsNavItem gate stays on cfg.has_docs()"
+        );
+        // Footer entry: same predicate, wrapped in `.then(|| ...)`.
+        assert!(
+            src.contains("cfg.has_docs().then(|| cfg.docs_url(\"\"))"),
+            "the footer link gate reads the same cfg.has_docs()"
         );
     }
 }
