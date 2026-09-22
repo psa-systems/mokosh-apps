@@ -1523,20 +1523,18 @@ fn ApprovalsBadge() -> Element {
         // `{ "count": N }`, not the row set, so an idle badge
         // pays for a scalar rather than a serialised Vec of full approval
         // rows on every page's layout render.
-        crate::hooks::fetch::api::get_authed_any::<ApprovalsCount>(
-            "/approvals/pending/count",
-        )
-        .await
-        .inspect(|payload| {
-            if payload.count == 0 {
-                tracing::info!("pending approval count succeeded and the queue is empty");
-            }
-        })
-        .inspect_err(|e| {
-            tracing::error!("pending approval count failed, the badge will stay hidden: {e}")
-        })
-        .map(|payload| payload.count)
-        .unwrap_or(0)
+        crate::hooks::fetch::api::get_authed_any::<ApprovalsCount>("/approvals/pending/count")
+            .await
+            .inspect(|payload| {
+                if payload.count == 0 {
+                    tracing::info!("pending approval count succeeded and the queue is empty");
+                }
+            })
+            .inspect_err(|e| {
+                tracing::error!("pending approval count failed, the badge will stay hidden: {e}")
+            })
+            .map(|payload| payload.count)
+            .unwrap_or(0)
     });
     let count = inbox.read_unchecked().unwrap_or(0);
     if count <= 0 {
