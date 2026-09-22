@@ -589,10 +589,19 @@ pub fn ContactPickerPage(token: String) -> Element {
                             }
                         }
                         div { class: "pt-2",
+                            // MAPPS-805: navigation-flavoured Primary action.
+                            // Route the accent recipe through Button so it is
+                            // not hand-rolled here; the Link wrapper is what
+                            // BUNYIP-682 and MAPPS-793's own pattern use for a
+                            // routed control that should look like a button.
                             Link {
                                 to: Route::ContactGenericLogin {},
-                                class: "block w-full text-center rounded-md bg-accent text-on-accent px-4 py-2 text-sm font-medium hover:opacity-90",
-                                "Enter my Company ID"
+                                class: "block w-full",
+                                crate::components::Button {
+                                    variant: crate::components::ButtonVariant::Primary,
+                                    class: "w-full".to_string(),
+                                    "Enter my Company ID"
+                                }
                             }
                         }
                         if !error().is_empty() {

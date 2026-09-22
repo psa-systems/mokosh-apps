@@ -211,9 +211,17 @@ if [ -n "$hits" ]; then
 fi
 
 # --- 5. accent button recipe ---------------------------------------------
-# Pre-existing copies not yet routed through Button, tracked as a subtask of
-# MAPPS-793. New copies are not exempt.
-accent_allowed="$root/components/table.rs $root/components/theme_picker.rs $root/pages/calendar.rs $root/pages/contact_portal/picker.rs"
+# MAPPS-805 routed the three real controls that had copied the recipe
+# (theme_picker's demo button, calendar's ViewToggleButton, contact_portal's
+# picker Link) through `components::button::Button`. The one entry that
+# stays is `components/table.rs`, and only because the recipe there sits on
+# a `<span>` that shows the pagination CURRENT page as text (a display of
+# state, not an interactive Button - a `Button { disabled: true }` would
+# render `<button aria-disabled>` which reads to assistive tech as an
+# unavailable control rather than "you are here"). A shared `Indicator`
+# component that reuses Button's Primary class would remove the last copy;
+# tracked as a follow-up of MAPPS-805.
+accent_allowed="$root/components/table.rs"
 accent_hits=$(grep -rn 'bg-accent' "$root" --include='*.rs' | grep -F 'text-on-accent' || true)
 if [ -n "$accent_hits" ]; then
   hits=$(printf '%s\n' "$accent_hits" | grep -v "^$root/components/button.rs:")
