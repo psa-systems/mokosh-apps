@@ -34,6 +34,7 @@ pub mod unsaved_guard;
 pub mod update_check;
 pub mod user_roster;
 pub mod version_cache;
+pub mod work_types;
 
 pub use auth::*;
 pub use debounce::use_debounced_signal;
@@ -53,3 +54,4 @@ pub use unsaved_guard::use_unsaved_guard;
 pub use update_check::use_update_check;
 pub use user_roster::{use_user_roster, use_user_roster_provider, UserRow};
 pub use version_cache::{use_version_cache, use_version_cache_provider, CachedVersion};
+pub use work_types::{use_work_types, use_work_types_provider, WorkTypeRow};

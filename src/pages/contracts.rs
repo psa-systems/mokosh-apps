@@ -12,7 +12,6 @@
 
 use dioxus::prelude::*;
 use rust_decimal::Decimal;
-use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::components::{
@@ -2902,17 +2901,9 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
         }
     });
     // Work types resolve the item rows' `work_type_id` to names and feed
-    // the rate editor's work-type picker.
-    let work_types_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<WorkTypeOpt>("/work-types")
-            .await
-            .unwrap_or_else(|e| {
-                // Best-effort: rate rows fall back to a bare work-type id.
-                tracing::warn!("work-type load failed: {e}");
-                Vec::new()
-            })
-    });
+    // the rate editor's work-type picker. Shared session cache, so a page
+    // that already fetched the list serves this one without a round trip.
+    let work_types_resource = crate::hooks::use_work_types(true);
 
     let card_snapshot = card_resource.read_unchecked();
     let header_title = match &*card_snapshot {
@@ -2926,7 +2917,7 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
     };
 
     let wt_snap = work_types_resource.read_unchecked();
-    let work_types: Vec<WorkTypeOpt> = match &*wt_snap {
+    let work_types: Vec<crate::hooks::WorkTypeRow> = match &*wt_snap {
         Some(v) => v.clone(),
         None => Vec::new(),
     };
@@ -3087,7 +3078,7 @@ fn RateCardItemsCard(
     // MAPPS-357: false while the server is unreachable, so the Add Rate
     // affordance (which POSTs a rate) disables on top of the can_add gate.
     can_mutate: bool,
-    work_types: Vec<WorkTypeOpt>,
+    work_types: Vec<crate::hooks::WorkTypeRow>,
     editing_item: Signal<Option<RateCardItemFormState>>,
 ) -> Element {
     let mut editing_item = editing_item;
@@ -3210,15 +3201,6 @@ fn RateCardItemsCard(
 // /rate-card-items/{id}. All writes require a finance role server-side
 // (`RequireFinance`); the UI gates the affordances on the same capability.
 // ============================================================================
-
-/// Work-type option, used to resolve a rate row's `work_type_id` to a name
-/// and to populate the rate editor's picker. `GET /work-types`.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-struct WorkTypeOpt {
-    id: Uuid,
-    #[serde(default)]
-    name: String,
-}
 
 /// True when the signed-in user holds a finance role (matches the server's
 /// `RequireFinance` write guard). Reads stay open to any authenticated user;
@@ -3468,7 +3450,7 @@ impl RateCardItemFormState {
 struct RateCardItemFormModalProps {
     state: RateCardItemFormState,
     card_id: String,
-    work_types: Vec<WorkTypeOpt>,
+    work_types: Vec<crate::hooks::WorkTypeRow>,
     used_work_type_ids: Vec<String>,
     onclose: EventHandler<()>,
     onsaved: EventHandler<()>,
