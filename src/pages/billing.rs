@@ -3882,7 +3882,8 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
             TableCell { class: "text-right",
                 div { class: "inline-flex gap-2",
                     Button {
-                        variant: ButtonVariant::Secondary,
+                        variant: ButtonVariant::Ghost,
+                        size: ButtonSize::Small,
                         disabled: *deleting.read() || !can_mutate,
                         title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
                         onclick: move |_| on_edit.call(()),
