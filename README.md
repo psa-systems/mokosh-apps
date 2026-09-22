@@ -2,13 +2,11 @@
 
 The client for the Mokosh PSA platform: one Dioxus source tree that builds as a WebAssembly SPA in the browser and as a native desktop application.
 
-<!--
-BUNYIP-587 records the shared Bunyip-to-Mokosh walkthrough GIF. When it lands,
-commit a copy at docs/assets/mokosh-walkthrough.gif (a cross-repo relative path
-to the Bunyip copy does not render on the mirrors, and hot-linking the raw asset
-URL is fragile) and replace this comment with:
+## Walkthrough
+
 ![Mokosh walkthrough](docs/assets/mokosh-walkthrough.gif)
--->
+
+The image above is a placeholder; the shared Bunyip-to-Mokosh walkthrough replaces it at the same path.
 
 ## Try it
 
