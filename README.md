@@ -6,7 +6,7 @@ The client for the Mokosh PSA platform: one Dioxus source tree that builds as a 
 
 ![Mokosh walkthrough](docs/assets/mokosh-walkthrough.gif)
 
-The image above is a placeholder. BUNYIP-587 records the shared Bunyip-to-Mokosh walkthrough and replaces it at the same path.
+The image above is a placeholder; the shared Bunyip-to-Mokosh walkthrough replaces it at the same path.
 
 ## Try it
 
