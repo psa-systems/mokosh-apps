@@ -106,6 +106,7 @@ fn query_of(route: &str) -> Option<String> {
 /// `""` is an empty path a caller can compare against; the shared
 /// `router_route_string` decides when to answer `None` instead, and does
 /// so with a `warn`.
+#[cfg(not(target_arch = "wasm32"))]
 fn path_of(route: &str) -> String {
     let route = route.split('#').next().unwrap_or(route);
     route
@@ -344,6 +345,7 @@ mod tests {
     // a path with neither. Named separately so a failure names which
     // shape drifted.
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn path_of_drops_a_query() {
         assert_eq!(
             super::path_of("/onboarding/profile?next=/home"),
@@ -352,6 +354,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn path_of_drops_a_fragment() {
         assert_eq!(
             super::path_of("/onboarding/profile#step-2"),
@@ -360,6 +363,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn path_of_drops_a_query_and_a_fragment() {
         // A fragment ends the query on the wire, so cutting `#` first
         // and then `?` matches how a browser would parse the string.
@@ -376,6 +380,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn path_of_keeps_a_bare_path() {
         assert_eq!(super::path_of("/onboarding/profile"), "/onboarding/profile");
         assert_eq!(super::path_of("/"), "/");
