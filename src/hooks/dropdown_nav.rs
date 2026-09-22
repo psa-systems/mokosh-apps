@@ -101,10 +101,27 @@ impl NavRows {
     }
 }
 
+/// Which contract [`decide`] follows. A picker (a field of values to
+/// commit into a form) and a menu (a floating panel of actions) share
+/// most of the key shape - Escape closes, arrows move a highlight - but
+/// commit differently. In a picker Tab commits the highlighted row and
+/// moves on to the next field; in a menu there is no field to move on to
+/// and every row is a real `<button>` whose Enter is the browser's own,
+/// so Tab and Enter must not commit through the hook (MAPPS-508).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavMode {
+    /// Field of values, with Tab-commits-and-moves-on and Enter-commits.
+    Combobox,
+    /// Floating panel of actions. Tab and Enter fall through to the
+    /// browser (Tab walks the rows, Enter fires the focused button).
+    Menu,
+}
+
 /// The whole key state machine, free of Dioxus and the DOM so it is unit
 /// testable. `len` counts every navigable row, including a trailing inline
 /// "+ Create" action. `enter_takes_first` is the picker's opt-in from
-/// [`DropdownNav::enter_takes_first_match`].
+/// [`DropdownNav::enter_takes_first_match`]; `mode` is the picker/menu
+/// switch [`NavMode`] documents.
 pub fn decide(
     key: &Key,
     shift: bool,
@@ -112,6 +129,7 @@ pub fn decide(
     active: Option<usize>,
     len: usize,
     enter_takes_first: bool,
+    mode: NavMode,
 ) -> NavAction {
     match key {
         Key::ArrowDown => NavAction::Open(step_index(active, len, true)),
@@ -120,7 +138,10 @@ pub fn decide(
         // is highlighted, so a typed name is accepted without arrowing to it
         // first. Everywhere else it only ever takes a row the user actually
         // highlighted, and otherwise stays the form's key.
-        Key::Enter if open => {
+        //
+        // MAPPS-508: in a menu Enter stays the browser's key so a focused
+        // menu button fires its own onclick; the hook owns highlight only.
+        Key::Enter if open && mode == NavMode::Combobox => {
             let index = if enter_takes_first {
                 commit_index(active, len)
             } else {
@@ -135,14 +156,18 @@ pub fn decide(
             }
         }
         // Shift+Tab backs out of the field, so committing on the way out
-        // would be a surprise.
-        Key::Tab if open && !shift => match commit_index(active, len) {
-            Some(index) => NavAction::Commit {
-                index,
-                prevent_default: false,
-            },
-            None => NavAction::Ignore,
-        },
+        // would be a surprise. MAPPS-508: a menu has no field to move on
+        // to, so Tab is always Ignore in menu mode - the browser walks the
+        // rows on its own.
+        Key::Tab if open && !shift && mode == NavMode::Combobox => {
+            match commit_index(active, len) {
+                Some(index) => NavAction::Commit {
+                    index,
+                    prevent_default: false,
+                },
+                None => NavAction::Ignore,
+            }
+        }
         // Closed already is fine: Escape stays available for the call site's
         // own teardown (GlobalSearch collapses its entry, MAPPS-347).
         Key::Escape => NavAction::Close,
@@ -164,6 +189,7 @@ pub struct DropdownNav {
     base: &'static str,
     seq: usize,
     enter_takes_first: bool,
+    mode: NavMode,
 }
 
 /// Hook it up once per combobox. `id_base` only has to be readable; the
@@ -178,6 +204,7 @@ pub fn use_dropdown_nav(id_base: &'static str) -> DropdownNav {
         base: id_base,
         seq,
         enter_takes_first: false,
+        mode: NavMode::Combobox,
     }
 }
 
@@ -192,6 +219,21 @@ impl DropdownNav {
     pub fn enter_takes_first_match(mut self) -> Self {
         self.enter_takes_first = true;
         self
+    }
+
+    /// MAPPS-508: opt this instance into menu semantics (Tab and Enter fall
+    /// through to the browser, so Tab keeps walking the rows and Enter
+    /// fires the focused button's own onclick). Chain it onto
+    /// [`use_dropdown_nav`] for a floating panel of actions rather than a
+    /// field of values to commit.
+    pub fn menu(mut self) -> Self {
+        self.mode = NavMode::Menu;
+        self
+    }
+
+    /// The active mode.
+    pub fn mode(&self) -> NavMode {
+        self.mode
     }
 
     /// Is the panel showing?
@@ -281,6 +323,10 @@ impl DropdownNav {
     /// The keydown handler. Attach to the field wrapper `div`; `len` is the
     /// current navigable row count and `commit` takes a row index. Returns
     /// what it did so a call site can add its own teardown on `Close`.
+    ///
+    /// Menu callers (MAPPS-508) pass a no-op `commit` because [`NavMode::Menu`]
+    /// never returns `NavAction::Commit`; they can also call
+    /// [`keydown_menu`](Self::keydown_menu) instead, which needs no closure.
     pub fn keydown<F: FnOnce(usize)>(
         &mut self,
         e: &KeyboardEvent,
@@ -295,6 +341,7 @@ impl DropdownNav {
             self.active_index(),
             len,
             self.enter_takes_first,
+            self.mode,
         );
         match action {
             NavAction::Ignore => {}
@@ -321,6 +368,15 @@ impl DropdownNav {
             NavAction::Close => self.close(),
         }
         action
+    }
+
+    /// MAPPS-508: the menu-mode keydown handler. Same shape as
+    /// [`keydown`](Self::keydown) but takes no `commit` closure, because
+    /// [`NavMode::Menu`] never returns `NavAction::Commit` - Enter and Tab
+    /// are the browser's keys, so the menu row's own onclick fires on
+    /// Enter when the row is focused.
+    pub fn keydown_menu(&mut self, e: &KeyboardEvent, len: usize) -> NavAction {
+        self.keydown(e, len, |_| {})
     }
 
     /// Follow the highlight past the edge of the panel's `max-h-*` scroll box.
@@ -386,15 +442,19 @@ mod tests {
     /// with suggestions does not.
     const RECORD: bool = true;
     const FREE_TEXT: bool = false;
+    /// The mode the pre-MAPPS-508 tests all ran under; kept as a name so
+    /// the picker suite reads the same after threading the mode arg in.
+    const PICKER: NavMode = NavMode::Combobox;
+    const MENU: NavMode = NavMode::Menu;
 
     #[test]
     fn arrows_open_a_closed_list() {
         assert_eq!(
-            decide(&Key::ArrowDown, false, false, None, 3, RECORD),
+            decide(&Key::ArrowDown, false, false, None, 3, RECORD, PICKER),
             NavAction::Open(Some(0))
         );
         assert_eq!(
-            decide(&Key::ArrowUp, false, false, None, 3, RECORD),
+            decide(&Key::ArrowUp, false, false, None, 3, RECORD, PICKER),
             NavAction::Open(Some(0))
         );
     }
@@ -403,7 +463,15 @@ mod tests {
     fn enter_commits_the_highlighted_row() {
         for enter_takes_first in [RECORD, FREE_TEXT] {
             assert_eq!(
-                decide(&Key::Enter, false, true, Some(1), 3, enter_takes_first),
+                decide(
+                    &Key::Enter,
+                    false,
+                    true,
+                    Some(1),
+                    3,
+                    enter_takes_first,
+                    PICKER
+                ),
                 NavAction::Commit {
                     index: 1,
                     prevent_default: true,
@@ -411,11 +479,19 @@ mod tests {
             );
             // A closed list, or an empty one: Enter belongs to the form.
             assert_eq!(
-                decide(&Key::Enter, false, false, Some(1), 3, enter_takes_first),
+                decide(
+                    &Key::Enter,
+                    false,
+                    false,
+                    Some(1),
+                    3,
+                    enter_takes_first,
+                    PICKER
+                ),
                 NavAction::Ignore
             );
             assert_eq!(
-                decide(&Key::Enter, false, true, None, 0, enter_takes_first),
+                decide(&Key::Enter, false, true, None, 0, enter_takes_first, PICKER),
                 NavAction::Ignore
             );
         }
@@ -427,7 +503,7 @@ mod tests {
     #[test]
     fn enter_takes_the_first_row_in_a_record_picker_with_no_highlight() {
         assert_eq!(
-            decide(&Key::Enter, false, true, None, 3, RECORD),
+            decide(&Key::Enter, false, true, None, 3, RECORD, PICKER),
             NavAction::Commit {
                 index: 0,
                 prevent_default: true,
@@ -436,7 +512,7 @@ mod tests {
         // A stale index past the end of a shrunken list falls back to the
         // first row rather than committing nothing.
         assert_eq!(
-            decide(&Key::Enter, false, true, Some(9), 3, RECORD),
+            decide(&Key::Enter, false, true, Some(9), 3, RECORD, PICKER),
             NavAction::Commit {
                 index: 0,
                 prevent_default: true,
@@ -449,7 +525,7 @@ mod tests {
     #[test]
     fn enter_takes_nothing_unhighlighted_in_a_free_text_field() {
         assert_eq!(
-            decide(&Key::Enter, false, true, None, 3, FREE_TEXT),
+            decide(&Key::Enter, false, true, None, 3, FREE_TEXT, PICKER),
             NavAction::Ignore
         );
     }
@@ -462,7 +538,7 @@ mod tests {
         assert_eq!(list.len, 1);
         assert_eq!(list.create_index, Some(0));
         assert_eq!(
-            decide(&Key::Enter, false, true, None, list.len, RECORD),
+            decide(&Key::Enter, false, true, None, list.len, RECORD, PICKER),
             NavAction::Commit {
                 index: list.create_index.expect("the create action is navigable"),
                 prevent_default: true,
@@ -478,7 +554,7 @@ mod tests {
         assert_eq!(list.len, 3);
         assert_eq!(list.create_index, Some(2));
         assert_eq!(
-            decide(&Key::Enter, false, true, None, list.len, RECORD),
+            decide(&Key::Enter, false, true, None, list.len, RECORD, PICKER),
             NavAction::Commit {
                 index: 0,
                 prevent_default: true,
@@ -499,7 +575,7 @@ mod tests {
         let empty = NavRows::new(0, false);
         assert_eq!(empty.len, 0);
         assert_eq!(
-            decide(&Key::Enter, false, true, None, empty.len, RECORD),
+            decide(&Key::Enter, false, true, None, empty.len, RECORD, PICKER),
             NavAction::Ignore
         );
     }
@@ -507,7 +583,7 @@ mod tests {
     #[test]
     fn tab_commits_without_preventing_the_move_to_the_next_field() {
         assert_eq!(
-            decide(&Key::Tab, false, true, None, 3, RECORD),
+            decide(&Key::Tab, false, true, None, 3, RECORD, PICKER),
             NavAction::Commit {
                 index: 0,
                 prevent_default: false,
@@ -516,15 +592,15 @@ mod tests {
         // Nothing to take, backing out, or already closed (Escape first):
         // Tab just leaves, with the typed text intact.
         assert_eq!(
-            decide(&Key::Tab, false, true, None, 0, RECORD),
+            decide(&Key::Tab, false, true, None, 0, RECORD, PICKER),
             NavAction::Ignore
         );
         assert_eq!(
-            decide(&Key::Tab, true, true, Some(1), 3, RECORD),
+            decide(&Key::Tab, true, true, Some(1), 3, RECORD, PICKER),
             NavAction::Ignore
         );
         assert_eq!(
-            decide(&Key::Tab, false, false, Some(1), 3, RECORD),
+            decide(&Key::Tab, false, false, Some(1), 3, RECORD, PICKER),
             NavAction::Ignore
         );
     }
@@ -532,11 +608,68 @@ mod tests {
     #[test]
     fn escape_closes_and_other_keys_are_left_alone() {
         assert_eq!(
-            decide(&Key::Escape, false, true, Some(1), 3, RECORD),
+            decide(&Key::Escape, false, true, Some(1), 3, RECORD, PICKER),
             NavAction::Close
         );
         assert_eq!(
-            decide(&Key::Character("a".into()), false, true, Some(1), 3, RECORD),
+            decide(
+                &Key::Character("a".into()),
+                false,
+                true,
+                Some(1),
+                3,
+                RECORD,
+                PICKER
+            ),
+            NavAction::Ignore
+        );
+    }
+
+    // ---- MAPPS-508: menu mode -------------------------------------------
+
+    /// Escape and arrows keep working in menu mode - they are the two
+    /// keys the ticket asks the six panels to gain.
+    #[test]
+    fn menu_mode_still_arrows_and_escapes() {
+        assert_eq!(
+            decide(&Key::ArrowDown, false, true, None, 3, FREE_TEXT, MENU),
+            NavAction::Open(Some(0))
+        );
+        assert_eq!(
+            decide(&Key::ArrowUp, false, true, Some(2), 3, FREE_TEXT, MENU),
+            NavAction::Open(Some(1))
+        );
+        assert_eq!(
+            decide(&Key::Escape, false, true, Some(1), 3, FREE_TEXT, MENU),
+            NavAction::Close
+        );
+    }
+
+    /// Enter in menu mode falls through to the browser: the focused
+    /// menu button's own onclick fires it. The hook does not commit.
+    #[test]
+    fn menu_mode_leaves_enter_to_the_focused_row() {
+        assert_eq!(
+            decide(&Key::Enter, false, true, Some(1), 3, RECORD, MENU),
+            NavAction::Ignore
+        );
+        assert_eq!(
+            decide(&Key::Enter, false, true, None, 3, RECORD, MENU),
+            NavAction::Ignore
+        );
+    }
+
+    /// Tab in menu mode is also the browser's key: the ticket keeps rows
+    /// in the tab order so Tab walks them, and there is no field to move
+    /// on to.
+    #[test]
+    fn menu_mode_does_not_commit_on_tab() {
+        assert_eq!(
+            decide(&Key::Tab, false, true, Some(1), 3, RECORD, MENU),
+            NavAction::Ignore
+        );
+        assert_eq!(
+            decide(&Key::Tab, false, true, None, 3, RECORD, MENU),
             NavAction::Ignore
         );
     }
