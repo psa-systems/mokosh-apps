@@ -33,9 +33,9 @@ use crate::utils::datetime::{user_timezone, user_today};
 
 use crate::components::{
     clear_on_edit, use_page_title, BannerTone, Button, ButtonSize, ButtonVariant, Card,
-    ChevronLeftIcon,
-    ChevronRightIcon, EmptyState, ErrorBanner, IconButton, IconSize, Input, Modal, ModalSize,
-    PageHeader, PencilIcon, PlusIcon, Select, SelectOption, StatusBanner, SwatchIcon, Textarea,
+    ChevronLeftIcon, ChevronRightIcon, EmptyState, ErrorBanner, IconButton, IconSize, Input, Modal,
+    ModalSize, PageHeader, PencilIcon, PlusIcon, Select, SelectOption, StatusBanner, SwatchIcon,
+    Textarea,
 };
 use crate::modules::calendar::{
     AppointmentResponse, CreateAppointmentRequest, CreateSchedulingTemplateRequest,
