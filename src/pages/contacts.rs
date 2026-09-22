@@ -1522,7 +1522,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                 h3 { class: "text-sm font-medium text-content",
                     "Address"
                 }
-                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
                     crate::components::Input {
                         name: "address_line1",
                         label: "Street",
