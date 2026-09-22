@@ -166,6 +166,24 @@ impl OidcConfig {
         if let Some(docs) = crate::modules::runtime_config::get("docs_base_url") {
             cfg.docs_base_url = Box::leak(docs.into_boxed_str());
         }
+        // MAPPS-570: name the missing variable when nothing sets it, so an
+        // operator following the release runbook sees a hint next to
+        // "Documentation is not reachable in the SPA" instead of having to
+        // trace the empty compile-time env, the empty runtime injection and
+        // the two conditional-render sites (sidebar `DocsNavItem` and the
+        // footer link added in MAPPS-570) to work out which knob is missing.
+        // Fires once per session (this whole function is memoized by
+        // `for_current_origin`), so it is not a per-render toast.
+        if !cfg.has_docs() {
+            tracing::warn!(
+                "Documentation URL is not configured; the Documentation menu \
+                 entry and the footer link render nothing. Set \
+                 `window.__MOKOSH_CONFIG__.docs_base_url` at deploy time (via \
+                 `MOKOSH_DOCS_BASE_URL` on the mokosh-apps container, per \
+                 `oci-build/entrypoint.sh`) or `MOKOSH_DOCS_URL` at build \
+                 time to point at the docs site."
+            );
+        }
 
         if let Some(scopes) = injected_scopes {
             cfg.scopes = Box::leak(scopes.into_boxed_str());

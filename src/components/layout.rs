@@ -767,17 +767,37 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
 /// to a general user (and the fastest way to confirm which build someone is on),
 /// while the build detail belongs on the status page, its agreed single home -
 /// so it is moved there rather than duplicated into a footer tooltip.
+///
+/// MAPPS-570: also carries a Documentation link when `cfg.has_docs()` is
+/// true, so a docs subdomain configured on the deployment reaches every
+/// authenticated page from the footer as well as the sidebar's
+/// `DocsNavItem`. Both surfaces read the same predicate, so an unset
+/// docs URL hides both - which is what an operator on a deploy with no
+/// docs site should see, rather than a dead link.
 #[component]
 fn VersionFooter() -> Element {
     use crate::utils::version::VERSION;
+    let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
+    let docs_href = cfg.has_docs().then(|| cfg.docs_url(""));
     rsx! {
         p {
-            class: "px-3 py-2 text-xs text-muted text-center",
+            class: "px-3 py-2 text-xs text-muted text-center space-x-3",
             Link {
                 to: Route::SystemStatus {},
                 class: "hover:text-content transition-colors",
                 title: "View system status and build details",
                 "v{VERSION}"
+            }
+            if let Some(href) = docs_href {
+                span { class: "text-line", aria_hidden: "true", "·" }
+                a {
+                    href: "{href}",
+                    target: "_blank",
+                    rel: "noopener noreferrer",
+                    class: "hover:text-content transition-colors",
+                    title: "Open the documentation",
+                    "Documentation"
+                }
             }
         }
     }
@@ -2322,6 +2342,66 @@ mod module_gated_nav_tests {
         assert!(
             head.contains("NavItem { to: Route::TimeEntryList {}, icon: rsx!(ClockIcon {}), label: \"Time Entries\", collapsed }"),
             "Time Entries is untouched: it is the time_tracking module, not timesheets"
+        );
+    }
+}
+
+/// MAPPS-570: the footer Documentation link is gated on `cfg.has_docs()`,
+/// matching the sidebar `DocsNavItem` and every `ContextualHelpLink`. Both
+/// halves of the ticket's ACs (configured -> non-empty target rendered;
+/// unconfigured -> nothing rendered) reduce to that source shape:
+/// `has_docs()` is unit-tested in `modules::oidc::config`, so this test
+/// pins the FOOTER's dependency on it. Reading the source keeps the test
+/// off the Dioxus runtime (rendering `VersionFooter` requires one).
+#[cfg(test)]
+mod docs_footer_link_tests {
+    #[test]
+    fn the_footer_gates_the_docs_link_on_has_docs() {
+        let src = include_str!("layout.rs");
+        // The whole VersionFooter body is here; the two invariants:
+        //   1. Reads `cfg.has_docs()` before rendering the link.
+        //   2. When rendered, the link's `href` is `cfg.docs_url("")`
+        //      (an absolute URL derived from the configured base).
+        let start = src
+            .find("fn VersionFooter()")
+            .expect("VersionFooter is defined here");
+        let body = &src[start..];
+        let end = body.find("\n}\n").expect("body is closed");
+        let body = &body[..end];
+        assert!(
+            body.contains("cfg.has_docs()"),
+            "the footer link renders only when has_docs() is true"
+        );
+        assert!(
+            body.contains("cfg.docs_url(\"\")"),
+            "the link points at the configured docs base URL"
+        );
+        assert!(
+            body.contains("target: \"_blank\""),
+            "the docs link opens in a new tab, matching the sidebar Documentation nav"
+        );
+        assert!(
+            body.contains("rel: \"noopener noreferrer\""),
+            "external link carries noopener + noreferrer"
+        );
+    }
+
+    /// Unconfigured means both surfaces (sidebar `DocsNavItem` and the
+    /// footer link added here) render nothing. The one shared predicate
+    /// is `cfg.has_docs()`; asserting both call sites read it keeps them
+    /// impossible to drift.
+    #[test]
+    fn both_docs_surfaces_read_the_same_predicate() {
+        let src = include_str!("layout.rs");
+        // Sidebar entry: `if cfg.has_docs() { DocsNavItem { ... } }`.
+        assert!(
+            src.contains("if cfg.has_docs() {\n                    DocsNavItem "),
+            "the sidebar DocsNavItem gate stays on cfg.has_docs()"
+        );
+        // Footer entry: same predicate, wrapped in `.then(|| ...)`.
+        assert!(
+            src.contains("cfg.has_docs().then(|| cfg.docs_url(\"\"))"),
+            "the footer link gate reads the same cfg.has_docs()"
         );
     }
 }
