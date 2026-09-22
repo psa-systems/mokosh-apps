@@ -13,6 +13,7 @@
 //! matches both facts exactly.
 
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use dioxus::prelude::*;
 
@@ -832,10 +833,24 @@ fn load_local_draft(id: Option<&str>) -> Option<(DraftForm, f64)> {
 /// change and a crash do not wait for the 500 ms the server write is debounced
 /// by, and a network write cannot be made synchronous on unload (`sendBeacon`
 /// cannot carry the bearer token this SPA authenticates with).
+///
+/// MAPPS-873: takes `form` by reference and serialises it through a
+/// borrowing wrapper, so the local-storage write does NOT clone the form
+/// into `StoredDraft`. serde_json only ever reads through `&form`, so
+/// the caller's snapshot stays alive and can also flow into the debounce
+/// task without a deep copy.
 fn store_local_draft(id: Option<&str>, form: &DraftForm) {
-    let stored = StoredDraft {
+    // Local, borrowing mirror of `StoredDraft` used only for the write path.
+    // Deserialisation still goes through `StoredDraft` on read, so the
+    // on-disk wire shape is unchanged.
+    #[derive(serde::Serialize)]
+    struct StoredDraftBorrowed<'a> {
+        saved_at: f64,
+        form: &'a DraftForm,
+    }
+    let stored = StoredDraftBorrowed {
         saved_at: now_ms(),
-        form: form.clone(),
+        form,
     };
     if let Ok(json) = serde_json::to_string(&stored) {
         crate::utils::prefs::set_str(&draft_key(id), &json);
@@ -1411,17 +1426,29 @@ fn FormEditorModal(
     // successful write, because the first write on a new form is what creates
     // the row.
     let mut server_draft_id = use_signal(|| server_draft.as_ref().map(|d| d.id.clone()));
-    // The most recent snapshot, so a debounced write that wakes up superseded
-    // can tell. Reading the editor signals directly from the task would work
-    // too and would mean rebuilding the whole `EditorState` inside it.
-    let mut latest_snapshot = use_signal(DraftForm::default);
+    // MAPPS-873: the most recent snapshot, stored behind an Rc so this
+    // signal, the local-draft write, and the spawned server write all
+    // share ONE constructed value per keystroke instead of deep-cloning
+    // it three times. `None` while nothing has been written yet - the
+    // supersede check inside the task treats an empty signal the same as
+    // a differing one, which is what the pre-MAPPS-873 default-`DraftForm`
+    // initial value did on the first render (both are "not us").
+    let mut latest_snapshot = use_signal::<Option<Rc<DraftForm>>>(|| None);
     {
         let key = draft_key.clone();
-        let snapshot = DraftForm::from_state(&current);
-        let baseline = DraftForm::from_state(&saved);
         let definition_id = save_id.clone();
+        // MAPPS-873: gate the effect on the pre-existing `dirty` flag
+        // (`current != saved`, computed at forms.rs:1403 without any
+        // clones because `!=` borrows both sides). Before this, the
+        // effect built a fresh `DraftForm` for `current` AND for `saved`
+        // just to compare them - and did so on EVERY render, which is
+        // every keystroke, including the "back to saved" path where the
+        // effect immediately bailed out anyway. `dirty` is already the
+        // faithful proxy for `snapshot != baseline` (see MAPPS-866 /
+        // MAPPS-873 analysis on ticket), so the two `from_state` calls
+        // move inside the branch that actually uses their result.
         use_effect(move || {
-            if snapshot == baseline {
+            if !dirty {
                 // Back to what the server holds: nothing to restore, and a
                 // stored copy would only produce a "restored" banner that
                 // changes nothing on the next open. The server row is left
@@ -1431,10 +1458,16 @@ fn FormEditorModal(
                 crate::utils::prefs::clear(&key);
                 return;
             }
+            // MAPPS-873: build the snapshot ONCE per keystroke and share it
+            // through `Rc`. `store_local_draft` reads through a borrow, so
+            // the local-storage write does not clone. The signal and the
+            // spawned task hold their own `Rc` clones (ref-count bumps, not
+            // deep copies). The debounce supersede check is a cheap
+            // `Rc::ptr_eq`.
+            let snapshot = Rc::new(DraftForm::from_state(&current));
             store_local_draft(definition_id.as_deref(), &snapshot);
-            latest_snapshot.set(snapshot.clone());
+            latest_snapshot.set(Some(snapshot.clone()));
 
-            let snapshot = snapshot.clone();
             let definition_id = definition_id.clone();
             spawn(async move {
                 #[cfg(feature = "app")]
@@ -1443,12 +1476,19 @@ fn FormEditorModal(
                     // whose snapshot has been superseded by the time they wake
                     // up drop out, so a burst of typing costs one request.
                     crate::platform::timer::sleep_ms(DRAFT_DEBOUNCE_MS).await;
-                    if latest_snapshot() != snapshot {
+                    // MAPPS-873: supersede check via pointer equality on the
+                    // shared `Rc`. A later keystroke replaces the signal's
+                    // Rc, so the ptr no longer matches ours and this task
+                    // bails out without touching the network.
+                    let still_current = latest_snapshot()
+                        .as_ref()
+                        .is_some_and(|latest| Rc::ptr_eq(latest, &snapshot));
+                    if !still_current {
                         return;
                     }
                     let body = serde_json::json!({
                         "form_definition_id": definition_id,
-                        "payload": snapshot,
+                        "payload": &*snapshot,
                     });
                     match crate::hooks::fetch::api::put_authed_typed::<ServerDraft, _>(
                         "/forms/drafts",
@@ -3784,5 +3824,128 @@ mod tests {
             ..Default::default()
         }
         .any());
+    }
+}
+
+/// MAPPS-873: the autosave effect's clone accounting. Source-level rather
+/// than a runtime instrument because the wins are structural (a paired
+/// `from_state` disappearing, `store_local_draft` moving to a borrow,
+/// snapshot flowing through an `Rc`); a source scan catches a future
+/// change that reintroduces any of them without needing a
+/// clone-counting wrapper around every field.
+#[cfg(test)]
+mod mapps873_autosave_clone_accounting_tests {
+    /// The dirty-path invariants: (1) snapshot construction happens
+    /// exactly once (`Rc::new(DraftForm::from_state(&current))`);
+    /// (2) `store_local_draft` reads through a borrow (`&snapshot`);
+    /// (3) the signal holds an `Rc` clone; (4) the supersede check is
+    /// `Rc::ptr_eq`, not a deep `!=`.
+    #[test]
+    fn the_autosave_effect_builds_the_snapshot_once_and_shares_it_through_an_rc() {
+        let src = include_str!("forms.rs");
+        let start = src
+            .find("let mut latest_snapshot = use_signal::<Option<Rc<DraftForm>>>")
+            .expect("MAPPS-873 signal shape stays");
+        let after = &src[start..];
+        // The block ends at the closing `}` of the `use_effect` arm.
+        let end = after
+            .find("// MAPPS-292: the browser half.")
+            .expect("the autosave block ends before MAPPS-292");
+        let body = &after[..end];
+
+        // Exactly one `from_state` inside the effect - the paired
+        // `baseline = DraftForm::from_state(&saved)` from the pre-873
+        // shape is gone.
+        assert_eq!(
+            body.matches("DraftForm::from_state(").count(),
+            1,
+            "one from_state per keystroke (down from two): {body}"
+        );
+
+        // The snapshot is wrapped in an Rc so the signal, the local write
+        // and the spawned task share it through ref-count bumps.
+        assert!(
+            body.contains("let snapshot = Rc::new(DraftForm::from_state(&current));"),
+            "snapshot flows through Rc, not a deep clone: {body}"
+        );
+
+        // The local-storage write is a borrow, so no clone into
+        // `StoredDraft`.
+        assert!(
+            body.contains("store_local_draft(definition_id.as_deref(), &snapshot);"),
+            "store_local_draft is called with a &snapshot borrow: {body}"
+        );
+
+        // The debounce supersede check is Rc::ptr_eq, not a deep `!=`.
+        assert!(
+            body.contains("Rc::ptr_eq(latest, &snapshot)"),
+            "supersede check compares Rc pointers, not deep values: {body}"
+        );
+        assert!(
+            !body.contains("latest_snapshot() != snapshot"),
+            "the pre-873 deep-eq supersede check is gone"
+        );
+    }
+
+    /// The clean-path invariant: an "already back to saved" render pays
+    /// zero clones. The effect body opens with `if !dirty { ...clear;
+    /// return }`, and `dirty` is the pre-existing borrow-based
+    /// comparison (`current != saved`), so both `from_state` calls sit
+    /// after the early return.
+    #[test]
+    fn the_already_saved_path_bails_out_before_any_clone() {
+        let src = include_str!("forms.rs");
+        // Find the effect body.
+        let start = src
+            .find("use_effect(move || {\n            if !dirty {")
+            .expect("the effect body opens with the dirty gate");
+        let after = &src[start..];
+        let end = after
+            .find("// MAPPS-292: the browser half.")
+            .expect("the autosave block ends before MAPPS-292");
+        let body = &after[..end];
+
+        // The dirty gate returns BEFORE the snapshot is built.
+        let gate_pos = body
+            .find("if !dirty {")
+            .expect("the dirty gate is the first branch");
+        let build_pos = body
+            .find("DraftForm::from_state(")
+            .expect("the snapshot is built somewhere in the body");
+        assert!(
+            gate_pos < build_pos,
+            "the dirty gate must return before any from_state runs"
+        );
+    }
+
+    /// `store_local_draft` is a borrow now, and its body serialises
+    /// through a `StoredDraftBorrowed` wrapper so no `DraftForm` is
+    /// cloned into `StoredDraft` during the local-storage write.
+    #[test]
+    fn store_local_draft_reads_through_a_borrow() {
+        let src = include_str!("forms.rs");
+        let start = src
+            .find("fn store_local_draft(")
+            .expect("store_local_draft is defined");
+        let body = &src[start..];
+        // Signature takes `&DraftForm`, not owned.
+        assert!(
+            body.starts_with("fn store_local_draft(id: Option<&str>, form: &DraftForm)"),
+            "store_local_draft takes form by borrow"
+        );
+        // Uses the borrowing wrapper on the write path.
+        assert!(
+            body.contains("struct StoredDraftBorrowed"),
+            "the local write serialises through a borrowing wrapper"
+        );
+        // The `.clone()` on the caller's form is gone: the pre-873 body
+        // read `form: form.clone()`; the current body sets `form` from a
+        // reference.
+        let end = body.find("\nfn now_ms(").unwrap_or(body.len());
+        let fn_body = &body[..end];
+        assert!(
+            !fn_body.contains("form.clone()"),
+            "no deep clone in the local write: {fn_body}"
+        );
     }
 }
