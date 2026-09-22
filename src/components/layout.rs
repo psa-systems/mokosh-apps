@@ -1502,7 +1502,7 @@ fn NotificationBell() -> Element {
 /// 'pending'` etc.). The badge collapses to nothing when there is no
 /// pending decision so the chrome stays clean for non-approvers.
 ///
-/// MAPPS-862: hits the count-only endpoint (MAPPS-872), so a badge
+/// hits the count-only endpoint (MAPPS-872), so a badge
 /// that only ever renders a number does not deserialize and clone the
 /// full pending-approvals list on every layout render.
 #[component]
@@ -1520,7 +1520,7 @@ fn ApprovalsBadge() -> Element {
         // read, so the log is the only thing that separates them.
         // MAPPS-737: contact-first bearer, so the chip counts a contact's
         // own queue on the contact plane.
-        // MAPPS-862: `{ "count": N }`, not the row set, so an idle badge
+        // `{ "count": N }`, not the row set, so an idle badge
         // pays for a scalar rather than a serialised Vec of full approval
         // rows on every page's layout render.
         crate::hooks::fetch::api::get_authed_any::<ApprovalsCount>(
@@ -1554,7 +1554,7 @@ fn ApprovalsBadge() -> Element {
     }
 }
 
-/// MAPPS-862: shape of `GET /approvals/pending/count` (MAPPS-872's
+/// shape of `GET /approvals/pending/count` (MAPPS-872's
 /// server-side prerequisite). Kept beside its one caller instead of
 /// living in a shared module: it is the badge's private wire type, and
 /// a second reader is a rename waiting to happen.
