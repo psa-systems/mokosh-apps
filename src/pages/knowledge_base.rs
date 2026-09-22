@@ -4206,7 +4206,12 @@ fn ArticleActionsMenu(
     delete_busy: Signal<bool>,
     right_collapsed: Signal<bool>,
 ) -> Element {
-    let mut open = use_signal(|| false);
+    // MAPPS-508: shared keyboard contract via use_dropdown_nav in menu
+    // mode - Escape closes, Up/Down move the internal highlight.
+    let mut nav = crate::hooks::dropdown_nav::use_dropdown_nav("kb-article-actions").menu();
+    // ArticleActions renders Edit / Open ticket / Delete as three buttons
+    // (see the ArticleActions component); keep in step with that count.
+    const ARTICLE_ACTION_ROWS: usize = 3;
     // Hidden at >= sm only while the rail is showing the same actions.
     let wrapper_class = if right_collapsed() {
         "relative"
@@ -4216,14 +4221,23 @@ fn ArticleActionsMenu(
     rsx! {
         div { class: "{wrapper_class}",
             crate::components::Popover {
-                open: open(),
+                open: nav.is_open(),
                 label: "More actions",
                 title: "More",
                 trigger_class: "px-2 py-1 text-muted hover:text-content",
                 trigger: rsx! { "\u{22EF}" },
                 width: "w-56",
-                ontoggle: move |_| open.toggle(),
-                onclose: move |_| open.set(false),
+                ontoggle: move |_| {
+                    if nav.is_open() {
+                        nav.close();
+                    } else {
+                        nav.open();
+                    }
+                },
+                onclose: move |_| nav.close(),
+                onkeydown: move |e: KeyboardEvent| {
+                    nav.keydown_menu(&e, ARTICLE_ACTION_ROWS);
+                },
                 ArticleActions {
                     article_id,
                     article_title,

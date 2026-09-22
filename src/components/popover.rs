@@ -10,6 +10,10 @@
 //! three action menus) renders through it. Open/close state stays with the
 //! caller (some need it to close on route change or after an action), so
 //! `Popover` is controlled: it takes `open` plus `ontoggle`/`onclose`.
+//!
+//! MAPPS-508 adds an optional keydown handler on the wrapper `div` so a
+//! menu whose caller uses [`use_dropdown_nav`](crate::hooks::dropdown_nav)
+//! can wire Escape + arrow movement without a per-site DOM listener.
 
 use dioxus::prelude::*;
 
@@ -42,6 +46,13 @@ pub struct PopoverProps {
     ontoggle: EventHandler<MouseEvent>,
     /// Fired when the backdrop behind an open panel is clicked.
     onclose: EventHandler<MouseEvent>,
+    /// MAPPS-508: optional keydown handler on the wrapper `div`. A caller
+    /// wiring `use_dropdown_nav("...").menu()` passes the hook's
+    /// `keydown_menu` here so Escape closes the panel and Up/Down move
+    /// the internal highlight without a per-site listener. `None` keeps
+    /// the pre-508 behaviour: no keydown listener on the wrapper.
+    #[props(default)]
+    onkeydown: Option<EventHandler<KeyboardEvent>>,
 }
 
 /// The one popover surface: a trigger button carrying the ARIA triad
@@ -50,8 +61,18 @@ pub struct PopoverProps {
 #[component]
 pub fn Popover(props: PopoverProps) -> Element {
     let title = props.title.clone().unwrap_or_else(|| props.label.clone());
+    let onkeydown = props.onkeydown;
     rsx! {
-        div { class: "relative",
+        div {
+            class: "relative",
+            // MAPPS-508: keydown bubbles up from the focused row (or the
+            // trigger) to this wrapper, and the caller's `keydown_menu`
+            // sees Escape / Up / Down. Emitted only when a caller opts in.
+            onkeydown: move |e: KeyboardEvent| {
+                if let Some(h) = onkeydown.as_ref() {
+                    h.call(e);
+                }
+            },
             button {
                 r#type: "button",
                 class: "{props.trigger_class}",
