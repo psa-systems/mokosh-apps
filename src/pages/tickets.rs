@@ -71,10 +71,19 @@ pub(crate) fn should_show_reopen(status_name: &str, has_reopen_cap: bool) -> boo
 /// - `has_edit_own` is true (i.e. the contact holds `tickets:edit_own`), AND
 /// - the ticket's reporter contact id matches this contact's own id.
 ///
-/// Any `None` on either side (server pre-PMS-937 that omits
-/// `reporter_contact_id`, or a pre-PMS-937 login response that never
-/// stashed `contact_id`) short-circuits to false so the button hides
-/// rather than surfacing a guaranteed 403 on submit.
+/// Any `None` on either side (a legacy server response that carries no
+/// `contact_id` for the ticket, or a pre-PMS-937 login response that never
+/// stashed the session's own `contact_id`) short-circuits to false so the
+/// button hides rather than surfacing a guaranteed 403 on submit.
+///
+/// MAPPS-710: the field name is `contact_id` on the wire (both
+/// `mokosh-server`'s `TicketResponse` and its PATCH gate at
+/// `src/modules/tickets/routes.rs:308` treat `tickets.contact_id` as the
+/// reporter). An earlier misreading during the `mokosh-contact-login` merge
+/// had the client comparing against an invented `reporter_contact_id` key
+/// the server never sends, so this gate ALWAYS short-circuited on `None`
+/// and the Edit button hid for every contact on every ticket, including
+/// their own.
 ///
 /// Split out of the render body so the four combinations are unit-testable
 /// on the native `cargo test --lib` target (touching `use_capability`
@@ -143,11 +152,20 @@ struct RemoteTicketDetail {
     contact_name: Option<String>,
     /// MAPPS-609: the Contact who reported this ticket. Used by the
     /// Description-card Edit button's ownership gate for a contact
-    /// session (`contact_can_edit_ticket`). `#[serde(default)]` so a
-    /// pre-PMS-937 server that omits the field still deserialises; a
-    /// `None` here short-circuits the gate to false and the button hides.
+    /// session (`contact_can_edit_ticket`).
+    ///
+    /// MAPPS-710: the wire name is `contact_id`, matching
+    /// `mokosh-server::TicketResponse.contact_id` and the tenant PATCH
+    /// gate that reads `ticket.contact_id`. An earlier field named
+    /// `reporter_contact_id` was invented client-side and never present
+    /// in any server response, so the gate defaulted to `None` and the
+    /// button hid for every contact.
+    ///
+    /// `#[serde(default)]` so a server response that omits the field
+    /// still deserialises; a `None` here short-circuits the gate to
+    /// false and the button hides.
     #[serde(default)]
-    reporter_contact_id: Option<uuid::Uuid>,
+    contact_id: Option<uuid::Uuid>,
     #[serde(default)]
     queue_name: String,
     #[serde(default)]
@@ -3581,8 +3599,10 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                         crate::hooks::fetch::api::has_contact_session();
                     #[cfg(not(feature = "web"))]
                     let is_contact_session = false;
+                    // MAPPS-710: read the wire field (`contact_id`), not the
+                    // invented `reporter_contact_id` the previous code named.
                     let reporter_contact_id =
-                        ticket.as_ref().and_then(|t| t.reporter_contact_id);
+                        ticket.as_ref().and_then(|t| t.contact_id);
                     let show_edit = if is_contact_session {
                         contact_can_edit_ticket(
                             reporter_contact_id,
@@ -6969,11 +6989,11 @@ mod mapps686_shared_dto_tests {
             company_id: Some(company_id),
             company_name,
             contact_name,
-            // MAPPS-609's ownership gate reads this, but `TicketResponse` does
-            // not carry it at the pinned server rev, so it decodes as `None`
-            // (`#[serde(default)]`) and the gate hides the button. Tracked
-            // separately; nothing here can fill it.
-            reporter_contact_id: None,
+            // MAPPS-710: the field is `contact_id` on the wire; this test
+            // fixture leaves it None so the surrounding assertions do not
+            // depend on the ownership gate. Populate it (Some(uuid)) in a
+            // test that needs to exercise the gate through this fixture.
+            contact_id: None,
             queue_name,
             status: status_summary,
             priority: priority_summary,
