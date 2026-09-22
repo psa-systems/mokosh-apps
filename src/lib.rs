@@ -427,10 +427,15 @@ pub fn AuthGuard() -> Element {
     // profile_completed = false (first + last name still synthetic
     // placeholders). Bypass when the user is already on the
     // onboarding route itself, otherwise the AuthGuard would re-fire
-    // its own redirect every render and loop. Reads the pathname out
-    // of the current location rather than the router's current Route
-    // because we need to make the comparison synchronously inside
-    // render; reading the location avoids a re-entrant signal read.
+    // its own redirect every render and loop. `pathname()` reads the
+    // browser's URL bar on wasm and, since MAPPS-697, the router's
+    // current route string on the native desktop build (a desktop
+    // window has no URL bar, but the router holds the same path a
+    // `Link` pushed on both hosts). Before that, native `pathname()`
+    // was `None` unconditionally, so the bypass could never fire on
+    // desktop and a user with `profile_completed = false` had the
+    // redirect re-issued from a guard that was already rendering the
+    // onboarding route.
     //
     // MAPPS-317: gate the redirect on `server_loaded` so the optimistic
     // rehydrate window (which sets profile_completed=true before /me
