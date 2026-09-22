@@ -47,7 +47,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     mkdir src \
     && echo "fn main() {}" > src/main.rs \
     && echo "" > src/lib.rs \
-    && cargo build --release --target wasm32-unknown-unknown \
+    && cargo build --locked --release --target wasm32-unknown-unknown \
     && rm -rf src
 
 # --- Tailwind CSS build ---
@@ -84,11 +84,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # resolved at the build target platform (i.e. per-arch) instead of
 # the default-for-`COPY --from=image:tag`, which resolves at the
 # build platform.
-FROM caddy:2-alpine AS caddy-bin
+FROM caddy:2-alpine@sha256:de23def33b17fb5d1290b0f6c2add1d70780e52341896c00a4c8a2a2fe9d355e AS caddy-bin
 
 # Runtime stage - serve static assets via Caddy. Each output image
 # in a multi-arch build picks up the matching alpine variant.
-FROM alpine:3.21
+FROM alpine:3.21@sha256:ce64758a109eb420d874a118f87920e625e12d3634e03b4a5573fd9f6e5d3507
 
 # Copy Caddy from the target-arch stage above
 COPY --from=caddy-bin /usr/bin/caddy /usr/bin/caddy

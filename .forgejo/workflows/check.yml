@@ -30,7 +30,7 @@ jobs:
       - name: Clone the repository
         # `submodules: true` for the justfile guards below: cargo does not need
         # common/, but `import 'common/common.just'` does.
-        uses: https://code.forgejo.org/actions/checkout@v5
+        uses: https://code.forgejo.org/actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           submodules: true
 
@@ -39,7 +39,7 @@ jobs:
       # both guards run here too. `--summary` parses the file and its imports
       # without executing a recipe body.
       - name: Start job metrics sampler
-        uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/job-metrics-start@main
+        uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/job-metrics-start@e728773130496a6e84e0d87de9390f3d98939019 # main
 
       - name: Validate the justfile
         run: just --summary
@@ -49,10 +49,10 @@ jobs:
 
       - name: Build parallelism
         # The runner owns CARGO_BUILD_JOBS; this warns and falls back when unset.
-        uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/build-parallelism@main
+        uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/build-parallelism@e728773130496a6e84e0d87de9390f3d98939019 # main
 
       - name: Cache Rust build
-        uses: https://github.com/Swatinem/rust-cache@v2
+        uses: https://github.com/Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
 
@@ -323,10 +323,10 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Check web/WASM build
-        run: cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings
+        run: cargo clippy --locked --all-targets --target wasm32-unknown-unknown -- -D warnings
 
       # MAPPS-534: CI had never compiled this feature combination. The steps
       # above cover wasm and the host default, so a desktop-only break - a
@@ -334,11 +334,17 @@ jobs:
       # feature set does not satisfy - merged green and surfaced to whoever
       # next built the desktop app.
       - name: Check desktop build
-        run: cargo check --no-default-features --features desktop,multi-tenant
+        run: cargo check --locked --no-default-features --features desktop,multi-tenant
 
       - name: Unit tests
-        run: cargo test --lib
+        run: cargo test --locked --lib
+
+      # MAPPS-918: report known-vulnerable dependencies. Non-blocking until the
+      # backlog is triaged; promote by dropping continue-on-error.
+      - name: Audit dependencies
+        continue-on-error: true
+        run: cargo audit
 
       - name: Report job metrics
         if: always()
-        uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/job-metrics-report@main
+        uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/job-metrics-report@e728773130496a6e84e0d87de9390f3d98939019 # main
