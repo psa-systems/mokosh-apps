@@ -1440,7 +1440,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                                     });
                                     items.set(next);
                                 },
-                                "Add Item"
+                                "Add line"
                             }
                         }
                         if items.read().is_empty() {
@@ -1922,7 +1922,7 @@ fn ContractItemsCard(
                     title: (!can_mutate).then(|| "Can't add a line item while the server is unreachable".to_string()),
                     onclick: move |_| editing_item.set(Some(ContractItemFormState::new(next_sort_order))),
                     PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                    "Add Item"
+                    "Add line"
                 }
             },
             Table {
