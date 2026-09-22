@@ -121,7 +121,18 @@ struct RemoteTicket {
     updated_at: DateTime<Utc>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+/// MAPPS-934: where this ticket sits in a multi-person client request
+/// (PMS-737). Absent for the ordinary ticket, which is nearly all of them.
+#[derive(Clone, Debug)]
+enum TicketFamily {
+    /// One of several people on one request; carries the parent. Boxed
+    /// because a whole ticket detail dwarfs the other variant's Vec.
+    Child(Box<RemoteTicketDetail>),
+    /// The request itself; carries its people, in the order they came in.
+    Parent(Vec<RemoteTicket>),
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 struct RemoteSummary {
     /// Server-side `TicketStatusSummary` / `TicketPrioritySummary` always
     /// carry an `id`; the field is optional here only because legacy code
@@ -138,6 +149,10 @@ struct RemoteSummary {
 /// + `sla_status`, a snake_case enum) drives the at-risk / breach badge.
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteTicketDetail {
+    /// PMS-737: the ticket this one is a child of. A multi-person client
+    /// request is a parent with a child per person.
+    #[serde(default)]
+    parent_ticket_id: Option<uuid::Uuid>,
     #[serde(default)]
     ticket_number: String,
     #[serde(default)]
@@ -2768,6 +2783,53 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // older server or a refused route never removes what the page showed
     // before this.
     let id_for_sla = props.id.clone();
+    // MAPPS-934: the request this ticket belongs to. A child names its parent,
+    // and a parent lists its children, both read with the PMS-1368 filter.
+    // Keyed on the ticket itself so it follows a navigation between tickets.
+    let id_for_family = props.id.clone();
+    let family_resource = use_resource(move || {
+        let id = id_for_family.clone();
+        let parent_id = ticket_resource
+            .read()
+            .as_ref()
+            .and_then(|t: &Option<RemoteTicketDetail>| t.as_ref())
+            .and_then(|t| t.parent_ticket_id);
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
+            match parent_id {
+                // A child: name the one ticket it belongs to. One level only
+                // (PMS-737), so a child has no children to ask about.
+                Some(parent_id) => crate::hooks::fetch::api::get_authed_any::<RemoteTicketDetail>(
+                    &format!("/tickets/{parent_id}"),
+                )
+                .await
+                .inspect_err(|e| tracing::error!("parent ticket load failed for {parent_id}: {e}"))
+                .ok()
+                .map(|parent| TicketFamily::Child(Box::new(parent))),
+                // Through the paging helper, which stops on a short page:
+                // a page size at the server's cap cannot tell a complete list
+                // from a truncated one.
+                None => crate::hooks::fetch::api::get_all_authed_any::<RemoteTicket>(&format!(
+                    "/tickets?parent_ticket_id={id}"
+                ))
+                .await
+                .inspect_err(|e| tracing::error!("child tickets load failed for {id}: {e}"))
+                .ok()
+                .map(TicketFamily::Parent)
+                .filter(|family| !matches!(family, TicketFamily::Parent(rows) if rows.is_empty())),
+            }
+        }
+    });
+
+    // The parent's id, for the link the card renders (MAPPS-934).
+    let parent_id_for_link = ticket_resource
+        .read()
+        .as_ref()
+        .and_then(|t: &Option<RemoteTicketDetail>| t.as_ref())
+        .and_then(|t| t.parent_ticket_id)
+        .map(|id| id.to_string());
+
     let sla_resource = use_resource(move || {
         let id = id_for_sla.clone();
         let _ticket = ticket_resource.read().clone();
@@ -3815,6 +3877,53 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             }
                         }
                     }
+                }
+
+                // MAPPS-934: where this ticket sits in a multi-person client
+                // request (PMS-737). Rendered above the journal, because
+                // which request a ticket belongs to frames everything below
+                // it. Absent for an ordinary ticket, which is nearly all of
+                // them, so the card does not appear at all.
+                match family_resource.read().clone().flatten() {
+                    // The id comes from this ticket's own `parent_ticket_id`;
+                    // the fetched parent is what supplies its NUMBER, which is
+                    // what a person recognises.
+                    Some(TicketFamily::Child(parent)) => rsx! {
+                        Card {
+                            p { class: "text-sm text-content",
+                                "Part of the request "
+                                Link {
+                                    to: crate::Route::TicketDetail {
+                                        id: parent_id_for_link.clone().unwrap_or_default(),
+                                    },
+                                    class: "underline text-accent hover:opacity-90",
+                                    "{parent.ticket_number}"
+                                }
+                                ", one ticket per person. The work, the time and the SLA are on this ticket."
+                            }
+                        }
+                    },
+                    Some(TicketFamily::Parent(children)) => rsx! {
+                        Card { title: "People on this request",
+                            p { class: "mb-3 text-sm text-muted",
+                                "One ticket per person. Track the work, the time and the SLA on each of them, not here."
+                            }
+                            ul { class: "space-y-2",
+                                for child in children {
+                                    li { key: "{child.id}", class: "text-sm",
+                                        Link {
+                                            to: crate::Route::TicketDetail { id: child.id.to_string() },
+                                            class: "underline text-accent hover:opacity-90 font-medium",
+                                            "{child.ticket_number}"
+                                        }
+                                        span { class: "ml-2 text-content", "{child.title}" }
+                                        span { class: "ml-2 text-xs text-muted", "{child.status.name}" }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    None => rsx! {},
                 }
 
                 // PMS-486: ticket-detail Approvals section. Self-contained
@@ -6761,6 +6870,9 @@ mod mapps686_shared_dto_tests {
         req: mokosh_types::tickets::CreateTicketRequest,
     ) {
         let mokosh_types::tickets::CreateTicketRequest {
+            // PMS-737: a child of a multi-person client request. The ticket
+            // form never creates one; the request form does.
+            parent_ticket_id,
             title,
             description,
             priority_id,
@@ -6826,6 +6938,7 @@ mod mapps686_shared_dto_tests {
             procedure_kb_article_id,
             email_message_id,
             email_thread_id,
+            parent_ticket_id,
         );
     }
 
@@ -6920,6 +7033,8 @@ mod mapps686_shared_dto_tests {
     #[allow(dead_code)]
     fn ticket_response_fields_this_page_reads(resp: mokosh_types::tickets::TicketResponse) {
         let mokosh_types::tickets::TicketResponse {
+            // MAPPS-934: read from the detail payload, not from a list row.
+            parent_ticket_id,
             id,
             ticket_number,
             title,
@@ -6989,6 +7104,8 @@ mod mapps686_shared_dto_tests {
             updated_at,
         };
         let _ = RemoteTicketDetail {
+            // MAPPS-934: the detail carries it, and the page reads it.
+            parent_ticket_id,
             ticket_number,
             title,
             description,
@@ -7245,5 +7362,39 @@ mod mapps733_inline_image_tests {
         );
         assert!(head.contains("format!(\"/tickets/{ticket_id}/attachments/inline\")"));
         assert!(ticket_upload_help().contains("anyone holding the link can view it"));
+    }
+}
+
+/// MAPPS-934: a multi-person client request (PMS-737) is visible from both
+/// ends of the ticket it produced.
+#[cfg(test)]
+mod request_family_tests {
+    fn detail_page() -> &'static str {
+        let src = include_str!("tickets.rs");
+        let start = src.find("fn TicketDetailPage(").expect("the detail page");
+        &src[start..]
+    }
+
+    /// A child names the request it belongs to, and a parent lists its people.
+    /// Both come from the PMS-1368 filter rather than from reading every
+    /// ticket.
+    #[test]
+    fn the_page_shows_both_ends_of_a_request() {
+        let page = detail_page();
+        assert!(page.contains("Part of the request "));
+        assert!(page.contains("People on this request"));
+        assert!(page.contains("get_all_authed_any::<RemoteTicket>"));
+        assert!(page.contains("parent_ticket_id={id}"));
+        // One level only, so a child never asks for children of its own.
+        assert!(page.contains("Some(parent_id) => crate::hooks::fetch::api::get_authed_any"));
+    }
+
+    /// The ordinary ticket, which is nearly all of them, renders no card: an
+    /// empty children list is not a request.
+    #[test]
+    fn an_ordinary_ticket_shows_nothing() {
+        let page = detail_page();
+        assert!(page.contains("!matches!(family, TicketFamily::Parent(rows) if rows.is_empty())"));
+        assert!(page.contains("None => rsx! {},"));
     }
 }
