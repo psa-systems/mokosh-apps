@@ -116,7 +116,8 @@ pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Elem
                                     let status = link.status(now);
                                     let variant = match status {
                                         RequestLinkStatus::Submitted => BadgeVariant::Green,
-                                        RequestLinkStatus::Awaiting => BadgeVariant::Blue,
+                                        RequestLinkStatus::Awaiting
+                                        | RequestLinkStatus::PartlySubmitted => BadgeVariant::Blue,
                                         RequestLinkStatus::Expired => BadgeVariant::Gray,
                                     };
                                     let expires = crate::utils::datetime::format_user_datetime_in(link.expires_at, None, tz);
@@ -127,6 +128,13 @@ pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Elem
                                             TableCell { class: "text-muted", "{link.recipient_email}" }
                                             TableCell {
                                                 Badge { variant, "{status.label()}" }
+                                                // MAPPS-934: a link issued for
+                                                // several people says how far it
+                                                // has got; a one-person link has
+                                                // nothing to count.
+                                                if let Some(progress) = link.progress() {
+                                                    span { class: "ml-2 text-xs text-muted", "{progress}" }
+                                                }
                                             }
                                             TableCell { class: "text-muted", time { datetime: "{expires_iso}", "{expires}" } }
                                         }
@@ -152,6 +160,11 @@ pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Elem
         }
     }
 }
+
+/// MAPPS-934: the most people one link may cover, matching the server's own
+/// cap (PMS-737). Refused here so the agent hears it from the field rather
+/// than from a round trip.
+const MAX_PEOPLE: i32 = 50;
 
 /// PMS-764: how many of the tenant's most recent links the builder shows.
 ///
@@ -247,7 +260,8 @@ pub fn SentRequestLinksPanel(reload: ReadSignal<u32>) -> Element {
                                         let status = link.status(now);
                                         let variant = match status {
                                             RequestLinkStatus::Submitted => BadgeVariant::Green,
-                                            RequestLinkStatus::Awaiting => BadgeVariant::Blue,
+                                            RequestLinkStatus::Awaiting
+                                            | RequestLinkStatus::PartlySubmitted => BadgeVariant::Blue,
                                             RequestLinkStatus::Expired => BadgeVariant::Gray,
                                         };
                                         let expires = crate::utils::datetime::format_user_datetime_in(link.expires_at, None, tz);
@@ -268,7 +282,12 @@ pub fn SentRequestLinksPanel(reload: ReadSignal<u32>) -> Element {
                                                     }
                                                 }
                                                 TableCell { class: "text-muted", "{link.recipient_email}" }
-                                                TableCell { Badge { variant, "{status.label()}" } }
+                                                TableCell {
+                                                    Badge { variant, "{status.label()}" }
+                                                    if let Some(progress) = link.progress() {
+                                                        span { class: "ml-2 text-xs text-muted", "{progress}" }
+                                                    }
+                                                }
                                                 TableCell { class: "text-muted", time { datetime: "{expires_iso}", "{expires}" } }
                                             }
                                         }
@@ -320,6 +339,12 @@ pub(crate) fn SendRequestLinkModal(
     onsent: EventHandler<()>,
 ) -> Element {
     let form_id = use_signal(|| preselected_form_id.clone().unwrap_or_default());
+    // MAPPS-934: how many people this one request covers (PMS-737). One is the
+    // default and is the link that has always existed; more than one files a
+    // parent ticket with a child per person, and the client fills the form
+    // once per person from the same link.
+    let mut people = use_signal(|| "1".to_string());
+    let mut people_error = use_signal(String::new);
     let mut contact_id = use_signal(String::new);
     let mut email = use_signal(String::new);
     let mut saving = use_signal(|| false);
@@ -445,6 +470,16 @@ pub(crate) fn SendRequestLinkModal(
             form_error.set("Choose a form to send.".to_string());
             failed = true;
         }
+        // MAPPS-934: refused here for the same reason the server refuses it,
+        // so the agent is not told by a round trip that "5000" is not a batch.
+        let people_count = people.read().trim().parse::<i32>().ok();
+        match people_count {
+            Some(n) if (1..=MAX_PEOPLE).contains(&n) => {}
+            _ => {
+                people_error.set(format!("Enter a number of people from 1 to {MAX_PEOPLE}."));
+                failed = true;
+            }
+        }
         let chosen_contact = Uuid::parse_str(contact_id.read().trim()).ok();
         let typed_email = email.read().trim().to_string();
         // The server needs one of the two. A contact carries its own address,
@@ -464,6 +499,7 @@ pub(crate) fn SendRequestLinkModal(
             company_id: company_uuid,
             contact_id: chosen_contact,
             recipient_email: (!typed_email.is_empty()).then_some(typed_email),
+            people: people_count,
         };
 
         spawn(async move {
@@ -476,19 +512,34 @@ pub(crate) fn SendRequestLinkModal(
                 .await
                 {
                     Ok(link) => {
-                        crate::hooks::push_toast(
-                            crate::components::AlertType::Success,
-                            format!("Request form sent to {}.", link.recipient_email),
-                        );
+                        // MAPPS-934: a multi-person request names the parent
+                        // ticket it will file under, because that is where the
+                        // MSP works it.
+                        let sent = match (link.people > 1, link.parent_ticket_number.as_deref()) {
+                            (true, Some(parent)) => format!(
+                                "Request form sent to {} for {} people. They file under {parent}.",
+                                link.recipient_email, link.people
+                            ),
+                            (true, None) => format!(
+                                "Request form sent to {} for {} people.",
+                                link.recipient_email, link.people
+                            ),
+                            _ => format!("Request form sent to {}.", link.recipient_email),
+                        };
+                        crate::hooks::push_toast(crate::components::AlertType::Success, sent);
                         onsent.call(());
                     }
                     Err(err) => {
                         crate::hooks::push_api_error(&err);
                         // The server routes a bad address to `recipient_email`;
                         // anything else is a whole-request problem.
-                        match err.field_message("recipient_email") {
-                            Some(m) => email_error.set(m),
-                            None => error.set(err.user_message()),
+                        match (
+                            err.field_message("recipient_email"),
+                            err.field_message("people"),
+                        ) {
+                            (Some(m), _) => email_error.set(m),
+                            (_, Some(m)) => people_error.set(m),
+                            _ => error.set(err.user_message()),
                         }
                     }
                 }
@@ -654,8 +705,26 @@ pub(crate) fn SendRequestLinkModal(
                     },
                 }
 
+                Input {
+                    name: "people",
+                    label: "How many people?",
+                    r#type: "number".to_string(),
+                    value: people(),
+                    disabled: saving(),
+                    error: people_error(),
+                    help: "One request can cover several people, such as a group of starters. Each person is filled in separately from the same link and becomes its own ticket, under one parent.".to_string(),
+                    oninput: move |e: FormEvent| {
+                        people_error.set(String::new());
+                        people.set(e.value());
+                    },
+                }
+
                 p { class: "text-xs text-muted",
-                    "The link can be submitted once and expires in 7 days. Their answers arrive as a ticket for this client."
+                    if people.read().trim() == "1" {
+                        "The link can be submitted once and expires in 7 days. Their answers arrive as a ticket for this client."
+                    } else {
+                        "The link can be submitted once per person and expires in 7 days. Each person arrives as their own ticket, under one parent ticket for the request."
+                    }
                 }
             }
         }
@@ -772,7 +841,57 @@ mod tests {
             expires_at: Utc::now() + expires_in,
             used_at: used.then(Utc::now),
             submission_id: None,
+            people: 1,
+            submissions_remaining: if used { 0 } else { 1 },
+            parent_ticket_id: None,
+            parent_ticket_number: None,
         }
+    }
+
+    /// MAPPS-934: a link issued for several people reads as its own state
+    /// while the client is part way through, and says how far it has got.
+    #[test]
+    fn a_multi_person_link_shows_its_progress() {
+        let mut five = link(false, Duration::days(3));
+        five.people = 5;
+        five.submissions_remaining = 5;
+        assert_eq!(five.status(Utc::now()), RequestLinkStatus::Awaiting);
+        assert_eq!(five.progress().as_deref(), Some("0 of 5 submitted"));
+
+        five.submissions_remaining = 3;
+        assert_eq!(
+            five.status(Utc::now()),
+            RequestLinkStatus::PartlySubmitted,
+            "started is neither awaiting nor done"
+        );
+        assert_eq!(five.status(Utc::now()).label(), "Awaiting the rest");
+        assert_eq!(five.progress().as_deref(), Some("2 of 5 submitted"));
+
+        // The server stamps `used_at` on the last one, so the finished link
+        // reads exactly as a spent single-use link does.
+        five.submissions_remaining = 0;
+        five.used_at = Some(Utc::now());
+        assert_eq!(five.status(Utc::now()), RequestLinkStatus::Submitted);
+        assert_eq!(five.progress().as_deref(), Some("5 of 5 submitted"));
+
+        // A one-person link has nothing to count.
+        assert!(link(false, Duration::days(3)).progress().is_none());
+    }
+
+    /// The count is refused before it is sent, with the server's own cap, and
+    /// it rides on the request.
+    #[test]
+    fn the_people_count_is_bounded_and_sent() {
+        let src = include_str!("request_links.rs");
+        let code = &src[..src.find("mod tests").expect("this module")];
+        assert_eq!(MAX_PEOPLE, 50, "the server's cap (PMS-737)");
+        assert!(code.contains("(1..=MAX_PEOPLE).contains(&n)"));
+        assert!(code.contains("people: people_count,"));
+        assert!(
+            code.contains("err.field_message(\"people\")"),
+            "the server's refusal lands on the field"
+        );
+        assert!(code.contains("name: \"people\","), "the modal asks for it");
     }
 
     /// PMS-747: the prefill keys are what makes "Add one" land on THIS client
