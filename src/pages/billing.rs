@@ -17,7 +17,7 @@
 
 use dioxus::prelude::*;
 use rust_decimal::Decimal;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
 use crate::components::{
@@ -859,6 +859,15 @@ struct InvoiceDetail {
     write_off_reason: Option<String>,
     #[serde(default)]
     write_off_amount: Option<String>,
+    /// PMS-1333 (MAPPS-937): the void, when there was one. No amount beside
+    /// it, unlike the write-off above: a void says nothing was ever owed.
+    /// Absent from a server that predates PMS-1333.
+    #[serde(default)]
+    voided_at: Option<String>,
+    #[serde(default)]
+    voided_by_name: Option<String>,
+    #[serde(default)]
+    void_reason: Option<String>,
     #[serde(default)]
     lines: Option<Vec<InvoiceLine>>,
 }
@@ -874,7 +883,22 @@ pub(crate) fn can_write_off(status: &str) -> bool {
 /// MAPPS-727: the Details row for a written-off invoice: the amount, the
 /// date part of the timestamp, and who, when the server named them.
 pub(crate) fn write_off_line(amount: &str, at: Option<&str>, by: Option<&str>) -> String {
-    let mut line = amount.to_string();
+    format!("{amount}{}", stamped_by(at, by))
+}
+
+/// MAPPS-937: the same stamp with no amount in front of it, for a void.
+/// PMS-1333 freezes no amount on a void, because nothing was ever owed, so
+/// the line is the date and the person and nothing else. An empty result
+/// means the server predates the columns, and the caller renders no row.
+pub(crate) fn voided_line(at: Option<&str>, by: Option<&str>) -> String {
+    stamped_by(at, by).trim_start().to_string()
+}
+
+/// The " on {date} by {who}" tail both lines carry. Either half may be
+/// missing: a server that predates the column sends neither, and a deleted
+/// user leaves the name behind.
+fn stamped_by(at: Option<&str>, by: Option<&str>) -> String {
+    let mut line = String::new();
     if let Some(date) = at
         .map(|a| a.chars().take(10).collect::<String>())
         .filter(|d| !d.is_empty())
@@ -1157,6 +1181,15 @@ pub(crate) fn locked_invoice_note(status: &str) -> Option<&'static str> {
 #[derive(Props, Clone, PartialEq)]
 pub struct InvoiceDetailPageProps {
     pub id: String,
+}
+
+/// MAPPS-937: the body `POST /invoices/{id}/void` takes (PMS-1333). Typed
+/// rather than a `json!` literal so a rename on the server is a compile error
+/// here. The reason is optional, and omitted entirely when blank.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct VoidInvoiceBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
 }
 
 /// MAPPS-666 (mokosh-invoices P1a): SPA shadow of the server's
@@ -1673,28 +1706,45 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     let mut send_blocked = use_signal(|| None::<String>);
     let mut confirming_skip = use_signal(|| false);
     // MAPPS-189: the Void button opens the styled ConfirmDialog; the void
-    // PUT fires from `on_confirm_void` once the user confirms.
+    // request fires from `on_confirm_void` once the user confirms.
     let mut confirming_void = use_signal(|| false);
-    let on_confirm_void = move |_: ()| {
+    // MAPPS-937: why, optional. The server stores a blank as none, so an
+    // operator who has nothing to say is not made to invent something; the
+    // reason is worth asking for because it is the only thing on a voided
+    // invoice that says what happened.
+    let mut void_reason = use_signal(String::new);
+    let mut on_confirm_void = move |_: ()| {
         if *busy.read() {
             return;
         }
         busy.set(true);
         action_error.set(String::new());
-        let path = format!("/invoices/{id_for_void}");
+        let reason = void_reason.read().trim().to_string();
+        // MAPPS-937: `POST /invoices/{id}/void` (PMS-1333). This used to send
+        // `PUT /invoices/{id}` with `{"status":"void"}`, which PMS-1227 made a
+        // 422 - voiding a draft has been broken from this page since then.
+        let path = format!("/invoices/{id_for_void}/void");
         spawn(async move {
             #[cfg(feature = "app")]
             {
-                let body = serde_json::json!({ "status": "void" });
-                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                let body = VoidInvoiceBody {
+                    reason: (!reason.is_empty()).then_some(reason),
+                };
+                match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(&path, &body)
                     .await
                 {
-                    Ok(_) => invoice_resource.restart(),
+                    Ok(_) => {
+                        void_reason.set(String::new());
+                        confirming_void.set(false);
+                        invoice_resource.restart();
+                    }
+                    // The refusal stays in the dialog, the way the write-off's
+                    // does: a 409 here names the status and points at the
+                    // credit note, which is the next thing to do.
                     Err(err) => action_error.set(format!("Could not void invoice: {err}")),
                 }
             }
             busy.set(false);
-            confirming_void.set(false);
         });
     };
 
@@ -1943,15 +1993,29 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         crate::components::ConfirmDialog {
             open: confirming_void(),
             title: "Void invoice".to_string(),
-            message: "Void this invoice? This cannot be undone.".to_string(),
+            message: "Void this invoice? It stays on record as it was and cannot be reinstated; raise a new invoice instead. Only a draft can be voided: once an invoice is sent, the correction is a credit note.".to_string(),
             confirm_text: "Void".to_string(),
             cancel_text: "Cancel".to_string(),
             destructive: true,
             loading: *busy.read(),
-            onconfirm: on_confirm_void,
+            error: act_err.clone(),
+            body: rsx! {
+                crate::components::Textarea {
+                    name: "void_reason",
+                    label: "Reason",
+                    placeholder: "Why this invoice is being withdrawn (optional)",
+                    rows: 3,
+                    maxlength: 2000,
+                    value: void_reason.read().clone(),
+                    oninput: move |e: FormEvent| void_reason.set(e.value()),
+                }
+            },
+            onconfirm: move |_| on_confirm_void(()),
             oncancel: move |_| {
                 if !*busy.read() {
                     confirming_void.set(false);
+                    void_reason.set(String::new());
+                    action_error.set(String::new());
                 }
             },
         }
@@ -2564,6 +2628,15 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                     )
                 });
                 let write_off_reason_text = inv.write_off_reason.clone().unwrap_or_default();
+                // MAPPS-937: the void block, the write-off's shape with no
+                // amount. A server that predates PMS-1333 sends neither field,
+                // so the line comes back empty and no row is rendered.
+                let voided = inv
+                    .voided_at
+                    .as_deref()
+                    .map(|at| voided_line(Some(at), inv.voided_by_name.as_deref()))
+                    .filter(|line| !line.is_empty());
+                let void_reason_text = inv.void_reason.clone().unwrap_or_default();
                 let invoice_date = inv.invoice_date.clone().unwrap_or_default();
                 let due_date = inv.due_date.clone().unwrap_or_default();
                 let subtotal = format_money_str(&inv.subtotal);
@@ -2851,6 +2924,18 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                             div { class: "flex justify-between gap-4",
                                                 dt { class: "text-muted shrink-0", "Reason" }
                                                 dd { class: "text-right whitespace-pre-line", "{write_off_reason_text}" }
+                                            }
+                                        }
+                                    }
+                                    if let Some(v) = voided.clone() {
+                                        div { class: "flex justify-between gap-4",
+                                            dt { class: "text-muted shrink-0", "Voided" }
+                                            dd { class: "text-right", "{v}" }
+                                        }
+                                        if !void_reason_text.is_empty() {
+                                            div { class: "flex justify-between gap-4",
+                                                dt { class: "text-muted shrink-0", "Reason" }
+                                                dd { class: "text-right whitespace-pre-line", "{void_reason_text}" }
                                             }
                                         }
                                     }
@@ -7126,6 +7211,57 @@ mod write_off_tests {
             "$120.00 on 2026-09-02"
         );
         assert_eq!(write_off_line("$120.00", None, Some("  ")), "$120.00");
+    }
+}
+
+/// MAPPS-937 / PMS-1333: voiding is its own request now, not a status on the
+/// invoice PUT, and the detail page says who voided an invoice and why.
+#[cfg(test)]
+mod void_tests {
+    use super::{locked_invoice_note, voided_line, VoidInvoiceBody};
+
+    /// The write-off's row shape with the amount taken off the front, because
+    /// a void freezes no amount: nothing was ever owed.
+    #[test]
+    fn the_row_says_when_and_who() {
+        assert_eq!(
+            voided_line(Some("2026-09-23T09:15:00Z"), Some("Ada Admin")),
+            "on 2026-09-23 by Ada Admin"
+        );
+        assert_eq!(
+            voided_line(Some("2026-09-23T09:15:00Z"), None),
+            "on 2026-09-23"
+        );
+        assert_eq!(voided_line(None, Some("Ada Admin")), "by Ada Admin");
+    }
+
+    /// A server that predates PMS-1333 sends neither field, and the caller
+    /// renders no row rather than an empty one.
+    #[test]
+    fn an_older_server_produces_no_row() {
+        assert_eq!(voided_line(None, None), "");
+        assert_eq!(voided_line(Some(""), Some("   ")), "");
+    }
+
+    /// The reason is optional and a blank one is left out of the body
+    /// entirely, so the server stores none rather than an empty string.
+    #[test]
+    fn a_blank_reason_is_omitted_from_the_body() {
+        let with = VoidInvoiceBody {
+            reason: Some("Raised against the wrong company".to_string()),
+        };
+        let json = serde_json::to_string(&with).expect("serialize");
+        assert!(json.contains("Raised against the wrong company"), "{json}");
+        let without = VoidInvoiceBody { reason: None };
+        assert_eq!(serde_json::to_string(&without).expect("serialize"), "{}");
+    }
+
+    /// The note a voided invoice shows is unchanged by the move, and still
+    /// tells the reader the invoice cannot be reinstated.
+    #[test]
+    fn the_voided_note_still_explains_the_state() {
+        let note = locked_invoice_note("void").expect("void note");
+        assert!(note.contains("raise a new invoice"), "{note}");
     }
 }
 
