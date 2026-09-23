@@ -60,11 +60,25 @@ pub struct ReorderButtonsProps {
     pub icon_size: IconSize,
 }
 
+/// The disable state for both buttons at `index` inside a list of `total`,
+/// with a caller-supplied disable override applied on top. Extracted from
+/// the component so the position-edge rule can be pinned as a unit test
+/// without spinning a virtual DOM: a component test that duplicates the
+/// arithmetic inline (`assert!(0 == 0)`) is not pinning the rule, it is
+/// asserting a constant, and clippy correctly refuses.
+///
+/// Returns `(up_disabled, down_disabled)`. An empty list (`total == 0`)
+/// disables both because there is nothing to move.
+pub(crate) fn edge_disabled(index: usize, total: usize, disabled: bool) -> (bool, bool) {
+    let up = disabled || index == 0;
+    let down = disabled || index + 1 >= total;
+    (up, down)
+}
+
 /// See module docs.
 #[component]
 pub fn ReorderButtons(props: ReorderButtonsProps) -> Element {
-    let up_disabled = props.disabled || props.index == 0;
-    let down_disabled = props.disabled || props.index + 1 >= props.total;
+    let (up_disabled, down_disabled) = edge_disabled(props.index, props.total, props.disabled);
     let button_class = props
         .button_class
         .clone()
@@ -98,42 +112,31 @@ pub fn ReorderButtons(props: ReorderButtonsProps) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::edge_disabled;
 
     #[test]
     fn edges_disable_the_matching_button() {
-        // First row: up is disabled.
-        let up_disabled = 0 == 0;
-        let down_disabled = 0 + 1 >= 3;
-        assert!(up_disabled);
-        assert!(!down_disabled);
-        // Middle row: neither is disabled.
-        let up_disabled = 1 == 0;
-        let down_disabled = 1 + 1 >= 3;
-        assert!(!up_disabled);
-        assert!(!down_disabled);
-        // Last row: down is disabled.
-        let up_disabled = 2 == 0;
-        let down_disabled = 2 + 1 >= 3;
-        assert!(!up_disabled);
-        assert!(down_disabled);
+        assert_eq!(edge_disabled(0, 3, false), (true, false), "first row");
+        assert_eq!(edge_disabled(1, 3, false), (false, false), "middle row");
+        assert_eq!(edge_disabled(2, 3, false), (false, true), "last row");
     }
 
     #[test]
     fn a_one_row_list_disables_both_edges() {
-        assert!(0 == 0);
-        assert!(0 + 1 >= 1);
+        assert_eq!(edge_disabled(0, 1, false), (true, true));
     }
 
+    /// `total == 0` is not a valid caller, but the check must still not
+    /// underflow. Both ends are disabled: there is nothing to move.
     #[test]
     fn an_empty_list_disables_both_edges() {
-        // total == 0, index would not be a valid caller, but the check
-        // must still not underflow.
-        let index: usize = 0;
-        let total: usize = 0;
-        let up_disabled = index == 0;
-        let down_disabled = index + 1 >= total;
-        assert!(up_disabled);
-        assert!(down_disabled);
+        assert_eq!(edge_disabled(0, 0, false), (true, true));
+    }
+
+    /// The caller's `disabled` override wins over both edges: a read-only
+    /// row disables both buttons no matter where it sits.
+    #[test]
+    fn the_caller_disable_override_disables_both() {
+        assert_eq!(edge_disabled(1, 3, true), (true, true));
     }
 }
