@@ -35,14 +35,6 @@ struct TeamOption {
     is_active: bool,
 }
 
-/// The `PaginatedResponse<Team>` shape the picker reads from `/teams`. Only
-/// `data` is used; the meta block is ignored because the picker asks for a
-/// single large page rather than paging.
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-struct PaginatedTeamOptions {
-    data: Vec<TeamOption>,
-}
-
 #[derive(Clone, Debug, serde::Deserialize)]
 struct PaginatedInvitations {
     data: Vec<RemoteInvitation>,
@@ -156,27 +148,23 @@ pub fn InvitationsPage() -> Element {
     // means the operator never even sees the picker.
     let teams_resource = use_resource(move || async move {
         if !is_org_tenant {
-            return Some(PaginatedTeamOptions::default());
+            return Some(Vec::<TeamOption>::new());
         }
         let _gen = crate::hooks::fetch::active_tenant_generation();
         #[cfg(feature = "app")]
         {
-            // The picker wants every active team, so ask for the largest
-            // page the server allows in one shot (`PaginationParams::
-            // MAX_PER_PAGE = 100`). A tenant with more than 100 teams would
-            // need a second fetch; the invite picker is not the place to
-            // ship that, so surface it as a diagnostic and let the operator
-            // rely on the roster page instead.
-            crate::hooks::fetch::api::get_authed::<PaginatedTeamOptions>(
-                "/teams?page=1&per_page=100",
-            )
-            .await
-            .inspect_err(|e| tracing::warn!("team picker load failed: {e}"))
-            .ok()
+            // The picker wants every active team, so read the whole list
+            // through the paging helper: it walks page after page until a
+            // short one, so a tenant with more teams than `MAX_PER_PAGE`
+            // still fills the dropdown without silently truncating.
+            crate::hooks::fetch::api::get_all_authed::<TeamOption>("/teams")
+                .await
+                .inspect_err(|e| tracing::warn!("team picker load failed: {e}"))
+                .ok()
         }
         #[cfg(not(feature = "app"))]
         {
-            Some(PaginatedTeamOptions::default())
+            Some(Vec::<TeamOption>::new())
         }
     });
     let team_options: Vec<SelectOption> = {
@@ -184,7 +172,6 @@ pub fn InvitationsPage() -> Element {
         if let Some(Some(teams)) = teams_resource.read_unchecked().as_ref() {
             opts.extend(
                 teams
-                    .data
                     .iter()
                     .filter(|t| t.is_active)
                     .map(|t| SelectOption::new(t.id.to_string(), &t.name)),
