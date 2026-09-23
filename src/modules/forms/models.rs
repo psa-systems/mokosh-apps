@@ -97,6 +97,11 @@ pub trait RequestLinkExt {
     /// is still a request that came in, and calling it expired would read as
     /// though the client never replied.
     fn status(&self, now: DateTime<Utc>) -> RequestLinkStatus;
+
+    /// MAPPS-934: how far a multi-person link has got, for the row beside its
+    /// status. `None` for the ordinary one-person link, which has nothing to
+    /// count.
+    fn progress(&self) -> Option<String>;
 }
 
 impl RequestLinkExt for RequestLink {
@@ -105,15 +110,32 @@ impl RequestLinkExt for RequestLink {
             RequestLinkStatus::Submitted
         } else if self.expires_at <= now {
             RequestLinkStatus::Expired
+        } else if self.submissions_remaining < self.people {
+            // MAPPS-934: some of the people are in and the rest are not. Not
+            // Submitted, because the request is not complete, and not plain
+            // Awaiting, because the client has started.
+            RequestLinkStatus::PartlySubmitted
         } else {
             RequestLinkStatus::Awaiting
         }
+    }
+
+    fn progress(&self) -> Option<String> {
+        (self.people > 1).then(|| {
+            format!(
+                "{} of {} submitted",
+                self.people - self.submissions_remaining,
+                self.people
+            )
+        })
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestLinkStatus {
     Awaiting,
+    /// MAPPS-934: a multi-person link with some people in and some to come.
+    PartlySubmitted,
     Submitted,
     Expired,
 }
@@ -122,6 +144,7 @@ impl RequestLinkStatus {
     pub fn label(&self) -> &'static str {
         match self {
             RequestLinkStatus::Awaiting => "Awaiting reply",
+            RequestLinkStatus::PartlySubmitted => "Awaiting the rest",
             RequestLinkStatus::Submitted => "Submitted",
             RequestLinkStatus::Expired => "Expired",
         }

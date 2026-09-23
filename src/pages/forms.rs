@@ -2317,9 +2317,10 @@ fn preview_from_definition(
 
     PublicForm {
         name: def.name.clone(),
-        // Preview shows a single-person link, the one shape the definition
-        // pane can render honestly. A multi-person link renders per-recipient
-        // at issue time from the same server response.
+        // MAPPS-934: a preview is one form, not a multi-person link. It shows
+        // the single-person shape, the one the definition pane can render
+        // honestly; a multi-person link renders per recipient at issue time
+        // from the same server response.
         people: 1,
         person_number: 1,
         description: def
@@ -2409,6 +2410,7 @@ fn preview_form(
         } else {
             name.to_string()
         },
+        // MAPPS-934: a preview is one form, not a multi-person link.
         people: 1,
         person_number: 1,
         description: (!description.is_empty()).then(|| description.to_string()),
