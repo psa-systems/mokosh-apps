@@ -3222,30 +3222,27 @@ fn CompanyContactsCard(
     // this is a first-class button so the create path is one click,
     // not two.
     //
-    // Uses `window.location.set_href` on click instead of a bare
-    // `<a href>` because the Dioxus router intercepts anchor clicks
-    // on same-origin URLs and dispatches them through its
-    // typed-route matcher; `/contacts/new` matches `Route::ContactNew`
-    // but the router does not thread the `?company_id=X&company_name=Y`
-    // query segments through the destination component's mount, which
-    // meant the created contact silently lost its Company link. A
-    // hard nav via `set_href` forces a full page load so
-    // `window.location.search` on the ContactNewPage mount reflects
-    // the query, and `read_company_prefill_from_url` picks it up.
-    let new_contact_href = format!(
-        "/contacts/new?company_id={}&company_name={}",
-        urlencoding_minimal(&company_id),
-        urlencoding_minimal(&company_name),
-    );
+    // PMS-1331: the hard-nav `window.location.set_href` that MAPPS-207
+    // reached for is what made this feel like a full page refresh -
+    // the whole bundle reparses, scroll and view state go with it, and
+    // the "server unresponsive" banner used to flash on the way through.
+    // Client-side navigation via the router is one lifecycle instead.
+    //
+    // The Dioxus 0.7 router still calls `history.replaceState()` on a
+    // mount whose `#[route(...)]` pattern declares no query params
+    // (`/contacts/new`), so a URL query would be stripped before the
+    // destination reads it. Stash the prefill in `sessionStorage`
+    // instead, and let `read_company_prefill_from_url` pick it up on
+    // mount. `sessionStorage` survives the client-side navigation, is
+    // scoped to this tab, and clears itself on first read so a later
+    // unrelated visit to `/contacts/new` does not see it.
+    let nav = use_navigator();
     let go_new_contact = {
-        let href = new_contact_href.clone();
+        let company_id = company_id.clone();
+        let company_name = company_name.clone();
         move |_| {
-            #[cfg(target_arch = "wasm32")]
-            if let Some(win) = web_sys::window() {
-                let _ = win.location().set_href(&href);
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            let _ = &href;
+            stash_contact_new_prefill(&company_id, &company_name);
+            nav.push(Route::ContactNew {});
         }
     };
     rsx! {
@@ -6172,7 +6169,7 @@ pub fn ContactNewPage() -> Element {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct CompanyPrefill {
     id: String,
     name: String,
@@ -6181,6 +6178,13 @@ struct CompanyPrefill {
 fn read_company_prefill_from_url() -> CompanyPrefill {
     #[cfg(feature = "app")]
     {
+        // PMS-1331: sessionStorage handoff from a client-side navigation
+        // (the company page's "+ New Contact" button, see
+        // `stash_contact_new_prefill`). Read once and clear, so a later
+        // unrelated visit to `/contacts/new` does not see it.
+        if let Some(prefill) = take_stashed_contact_new_prefill() {
+            return prefill;
+        }
         // MAPPS-683: off the router, so the desktop reads the same
         // prefill the link carried.
         if let Some(search) = crate::platform::location::current_query() {
@@ -6203,6 +6207,66 @@ fn read_company_prefill_from_url() -> CompanyPrefill {
         }
     }
     CompanyPrefill::default()
+}
+
+/// sessionStorage key the company page writes into ahead of a client-side
+/// push to `Route::ContactNew`, and that `read_company_prefill_from_url`
+/// reads and clears once on mount. One key, one value: the last one written
+/// is what the next visit reads.
+const CONTACT_NEW_PREFILL_KEY: &str = "mokosh:contact-new-prefill";
+
+/// Write the company prefill into `sessionStorage` so the next
+/// `/contacts/new` mount reads it. Best-effort: a browser with sessionStorage
+/// disabled logs at `warn` and the destination falls back to the URL / OIDC
+/// snapshot readers below, which is the pre-PMS-1331 shape.
+#[cfg_attr(not(feature = "app"), allow(dead_code))]
+fn stash_contact_new_prefill(id: &str, name: &str) {
+    let prefill = CompanyPrefill {
+        id: id.to_string(),
+        name: name.to_string(),
+    };
+    let encoded = match serde_json::to_string(&prefill) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("could not encode contact-new prefill: {e}");
+            return;
+        }
+    };
+    match crate::platform::store::session() {
+        Ok(store) => {
+            if let Err(e) = store.set_item(CONTACT_NEW_PREFILL_KEY, &encoded) {
+                tracing::warn!("could not stash contact-new prefill: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("sessionStorage unavailable, contact-new prefill dropped: {e}"),
+    }
+}
+
+/// Read and clear the stashed prefill. `None` means "nothing waiting" (the
+/// common case for a direct visit to `/contacts/new`); a clear failure is
+/// logged and treated as "nothing to hand back" so the caller falls through
+/// to the URL / OIDC snapshot readers.
+#[cfg_attr(not(feature = "app"), allow(dead_code))]
+fn take_stashed_contact_new_prefill() -> Option<CompanyPrefill> {
+    let store = crate::platform::store::session().ok()?;
+    let raw = match store.get_item(CONTACT_NEW_PREFILL_KEY) {
+        Ok(v) => v?,
+        Err(e) => {
+            tracing::warn!("could not read stashed contact-new prefill: {e}");
+            return None;
+        }
+    };
+    if let Err(e) = store.remove_item(CONTACT_NEW_PREFILL_KEY) {
+        tracing::warn!("could not clear stashed contact-new prefill: {e}");
+    }
+    match serde_json::from_str::<CompanyPrefill>(&raw) {
+        Ok(p) if !p.id.is_empty() && uuid::Uuid::parse_str(&p.id).is_ok() => Some(p),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!("stashed contact-new prefill is not valid JSON: {e}");
+            None
+        }
+    }
 }
 
 /// Pure core of [`read_company_prefill_from_url`], so the rule is testable
