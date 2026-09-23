@@ -49,6 +49,9 @@ pub mod settings_contact_sync_import;
 pub mod settings_contact_sync_vcard;
 pub mod settings_email;
 pub mod settings_modules;
+// MAPPS-938: which shape a new invoice's number takes
+// (`billing_prefs/invoice_numbering`, PMS-979).
+pub mod settings_invoice_numbering;
 pub mod settings_note_editing;
 pub mod settings_timesheet_editing;
 // mokosh-contact-login: /portal/* customer-portal pages retired on this

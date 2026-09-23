@@ -652,6 +652,17 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         advanced: false,
         visibility: SurfaceVisibility::Always,
     },
+    // MAPPS-938: what a new invoice's number looks like
+    // (`billing_prefs/invoice_numbering`, PMS-979). In Billing & SLA because
+    // it is what a customer reads off the document they are asked to pay.
+    SettingsSurface {
+        route: Route::SettingsInvoiceNumbering {},
+        title: "Invoice Numbering",
+        description: "What a new invoice's number looks like, and whether each customer has a sequence of their own.",
+        group: SettingsGroupKey::Billing,
+        advanced: false,
+        visibility: SurfaceVisibility::StaffAdmin,
+    },
     // MAPPS-749: who may correct a ticket note after it was posted
     // (`tickets/note_editing`, PMS-974), which until then was reachable
     // only through the API with an admin bearer.

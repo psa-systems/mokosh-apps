@@ -1094,6 +1094,13 @@ pub enum Route {
     #[route("/settings/modules")]
     SettingsModules {},
 
+    // MAPPS-938: what a new invoice's number looks like
+    // (`billing_prefs/invoice_numbering`, PMS-979). Admin only, and the one
+    // policy page that confirms before it writes: it changes what goes on
+    // documents a customer keeps.
+    #[route("/settings/invoice-numbering")]
+    SettingsInvoiceNumbering {},
+
     // MAPPS-749: who may edit a ticket note (`tickets/note_editing`,
     // PMS-974). Admin only on the page, like the write it drives.
     #[route("/settings/note-editing")]
@@ -2263,6 +2270,15 @@ fn SettingsVcardImport() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             pages::settings_contact_sync_vcard::VcardImportPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsInvoiceNumbering() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_invoice_numbering::InvoiceNumberingSettingsPage {}
         }
     }
 }
