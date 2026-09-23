@@ -6870,9 +6870,6 @@ mod mapps686_shared_dto_tests {
         req: mokosh_types::tickets::CreateTicketRequest,
     ) {
         let mokosh_types::tickets::CreateTicketRequest {
-            // PMS-737: a child of a multi-person client request. The ticket
-            // form never creates one; the request form does.
-            parent_ticket_id,
             title,
             description,
             priority_id,
@@ -6885,6 +6882,9 @@ mod mapps686_shared_dto_tests {
             site_id,
             assigned_to_id,
             team_id,
+            // PMS-737: a child of a multi-person client request. The ticket
+            // form never creates one; the request form does.
+            parent_ticket_id,
             contract_id,
             sla_id,
             scheduled_start,
@@ -6938,6 +6938,9 @@ mod mapps686_shared_dto_tests {
             procedure_kb_article_id,
             email_message_id,
             email_thread_id,
+            // Not offered by the New Ticket form: a child ticket is filed by
+            // the multi-person request-link flow, never by an agent typing
+            // in the form.
             parent_ticket_id,
         );
     }
@@ -7033,10 +7036,10 @@ mod mapps686_shared_dto_tests {
     #[allow(dead_code)]
     fn ticket_response_fields_this_page_reads(resp: mokosh_types::tickets::TicketResponse) {
         let mokosh_types::tickets::TicketResponse {
-            // MAPPS-934: read from the detail payload, not from a list row.
-            parent_ticket_id,
             id,
             ticket_number,
+            // MAPPS-934: read from the detail payload, not from a list row.
+            parent_ticket_id,
             title,
             description,
             status,
@@ -7158,6 +7161,9 @@ mod mapps686_shared_dto_tests {
             status_color,
             status_is_closed,
             priority_color,
+            // PMS-1368: the parent link is not rendered by this page yet; the
+            // child ticket surface is a follow-up.
+            parent_ticket_id,
         );
     }
 

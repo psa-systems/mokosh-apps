@@ -858,6 +858,63 @@ pub fn ArrowDownIcon(#[props(default)] size: IconSize, #[props(default)] class: 
     }
 }
 
+/// Filled up-triangle with rounded corners (MAPPS-367).
+///
+/// A weightier reorder affordance than the line [`ArrowUpIcon`], which
+/// reads as a directional indicator rather than an actuator. Paired with
+/// [`TriangleDownIcon`] inside [`super::reorder_buttons::ReorderButtons`]
+/// to give a row-level reorder pair a shape that says "control" at a
+/// glance. Stroke matches `stroke-linejoin: round` so the tip and base
+/// corners round softly rather than reading as a sharp arrowhead.
+#[component]
+pub fn TriangleUpIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            view_box: "0 0 24 24",
+            fill: "currentColor",
+            stroke: "currentColor",
+            stroke_width: "1",
+            stroke_linejoin: "round",
+            path {
+                d: "M5 16 L12 8 L19 16 Z",
+            }
+        }
+    }
+}
+
+/// See [`TriangleUpIcon`].
+#[component]
+pub fn TriangleDownIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            view_box: "0 0 24 24",
+            fill: "currentColor",
+            stroke: "currentColor",
+            stroke_width: "1",
+            stroke_linejoin: "round",
+            path {
+                d: "M5 8 L12 16 L19 8 Z",
+            }
+        }
+    }
+}
+
 #[component]
 pub fn PencilIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
     let size_class = size.class();

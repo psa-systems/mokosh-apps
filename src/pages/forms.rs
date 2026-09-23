@@ -18,10 +18,10 @@ use std::rc::Rc;
 use dioxus::prelude::*;
 
 use crate::components::{
-    use_page_title, ArrowDownIcon, ArrowUpIcon, Badge, BadgeVariant, Button, ButtonSize,
-    ButtonVariant, Card, Checkbox, ChevronDownIcon, ChevronRightIcon, DataTable, DragHandleIcon,
-    ErrorBanner, IconButton, IconSize, Input, PageHeader, Select, SelectOption, Table, TableBody,
-    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, TrashIcon,
+    use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, Checkbox,
+    ChevronDownIcon, ChevronRightIcon, DataTable, DragHandleIcon, ErrorBanner, IconButton,
+    IconSize, Input, PageHeader, Select, SelectOption, Table, TableBody, TableCell, TableEmpty,
+    TableHead, TableHeader, TableLoading, TableRow, Textarea, TrashIcon,
 };
 use crate::modules::forms::FieldTypeExt;
 use crate::modules::forms::{
@@ -2316,10 +2316,13 @@ fn preview_from_definition(
     fields.sort_by_key(|f| f.sort_order);
 
     PublicForm {
-        // MAPPS-934: a preview is one form, not a multi-person link.
+        name: def.name.clone(),
+        // MAPPS-934: a preview is one form, not a multi-person link. It shows
+        // the single-person shape, the one the definition pane can render
+        // honestly; a multi-person link renders per recipient at issue time
+        // from the same server response.
         people: 1,
         person_number: 1,
-        name: def.name.clone(),
         description: def
             .description
             .clone()
@@ -2400,9 +2403,6 @@ fn preview_form(
     let name = name.trim();
     let description = description.trim();
     PublicForm {
-        // MAPPS-934: a preview is one form, not a multi-person link.
-        people: 1,
-        person_number: 1,
         // An unnamed draft still previews; the placeholder shows where the
         // name will land rather than rendering an empty heading.
         name: if name.is_empty() {
@@ -2410,6 +2410,9 @@ fn preview_form(
         } else {
             name.to_string()
         },
+        // MAPPS-934: a preview is one form, not a multi-person link.
+        people: 1,
+        person_number: 1,
         description: (!description.is_empty()).then(|| description.to_string()),
         // PMS-748: previewed from the live editor state too, so an operator
         // adding a contact line sees it land before saving.
@@ -2766,31 +2769,26 @@ fn FieldRowEditor(
                     }
                 }
                 div { class: "flex shrink-0 items-center gap-1",
-                    // PMS-760: two icons rather than three text links. Through
-                    // `IconButton`, which requires the accessible name the text
-                    // used to be, so shrinking the control does not silently
-                    // remove it for a screen reader.
-                    IconButton {
-                        label: "Move field up".to_string(),
-                        class: "p-1 text-subtle hover:text-content".to_string(),
-                        disabled: disabled || index == 0,
-                        onclick: move |_| {
+                    // PMS-760 + MAPPS-367: one component owns the up/down
+                    // pair, using rounded-triangle icons that read as
+                    // actuators rather than direction indicators. Edges are
+                    // computed inside ReorderButtons from index + total so a
+                    // caller cannot forget one.
+                    crate::components::ReorderButtons {
+                        index,
+                        total,
+                        disabled,
+                        label_noun: "field".to_string(),
+                        on_up: move |_| {
                             fields.write().swap(index, index - 1);
                             let moved = expansion_after_swap(&expanded_fields.read().clone(), index, index - 1);
                             expanded_fields.set(moved);
                         },
-                        ArrowUpIcon { size: IconSize::Small }
-                    }
-                    IconButton {
-                        label: "Move field down".to_string(),
-                        class: "p-1 text-subtle hover:text-content".to_string(),
-                        disabled: disabled || index + 1 >= total,
-                        onclick: move |_| {
+                        on_down: move |_| {
                             fields.write().swap(index, index + 1);
                             let moved = expansion_after_swap(&expanded_fields.read().clone(), index, index + 1);
                             expanded_fields.set(moved);
                         },
-                        ArrowDownIcon { size: IconSize::Small }
                     }
                     IconButton {
                         // The name opens with the action either way: the label

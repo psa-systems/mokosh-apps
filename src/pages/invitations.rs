@@ -153,7 +153,11 @@ pub fn InvitationsPage() -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         #[cfg(feature = "app")]
         {
-            crate::hooks::fetch::api::get_authed::<Vec<TeamOption>>("/teams")
+            // The picker wants every active team, so read the whole list
+            // through the paging helper: it walks page after page until a
+            // short one, so a tenant with more teams than `MAX_PER_PAGE`
+            // still fills the dropdown without silently truncating.
+            crate::hooks::fetch::api::get_all_authed::<TeamOption>("/teams")
                 .await
                 .inspect_err(|e| tracing::warn!("team picker load failed: {e}"))
                 .ok()
