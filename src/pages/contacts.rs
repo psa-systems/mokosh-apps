@@ -1522,7 +1522,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                 h3 { class: "text-sm font-medium text-content",
                     "Address"
                 }
-                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
                     crate::components::Input {
                         name: "address_line1",
                         label: "Street",
@@ -3068,7 +3068,11 @@ fn RowActions(
     /// Fired after a successful delete so the caller can refresh its resource.
     on_deleted: EventHandler<()>,
 ) -> Element {
-    let mut open = use_signal(|| false);
+    // MAPPS-508: shared keyboard contract via use_dropdown_nav in menu
+    // mode - Escape closes, Up/Down move the internal highlight.
+    let mut nav = crate::hooks::dropdown_nav::use_dropdown_nav("row-actions").menu();
+    // Two menu rows: Edit + Delete.
+    const ROW_ACTION_ROWS: usize = 2;
     let mut confirming = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     // MAPPS-574: the server's reason for refusing this row's delete.
@@ -3079,7 +3083,7 @@ fn RowActions(
 
     // Keep the trigger visible while its menu is open; otherwise reveal it only
     // on row hover (or keyboard focus within the cell, for accessibility).
-    let trigger_class = if open() {
+    let trigger_class = if nav.is_open() {
         "opacity-100"
     } else {
         "opacity-0 group-hover:opacity-100 focus-within:opacity-100"
@@ -3104,7 +3108,7 @@ fn RowActions(
                 match crate::hooks::fetch::api::delete_authed(&path).await {
                     Ok(()) => {
                         confirming.set(false);
-                        open.set(false);
+                        nav.close();
                         on_deleted.call(());
                     }
                     Err(err) => delete_error.set(err),
@@ -3117,7 +3121,7 @@ fn RowActions(
     rsx! {
         div { class: "flex justify-end transition-opacity {trigger_class}",
             crate::components::Popover {
-                open: open(),
+                open: nav.is_open(),
                 label: "Row actions",
                 title: "Actions",
                 trigger_class: "px-2 py-1 text-muted hover:text-content rounded",
@@ -3125,32 +3129,41 @@ fn RowActions(
                 width: "w-32",
                 ontoggle: move |e: MouseEvent| {
                     e.stop_propagation();
-                    open.toggle();
+                    if nav.is_open() {
+                        nav.close();
+                    } else {
+                        nav.open();
+                    }
                 },
                 onclose: move |e: MouseEvent| {
                     e.stop_propagation();
-                    open.set(false);
+                    nav.close();
+                },
+                onkeydown: move |e: KeyboardEvent| {
+                    nav.keydown_menu(&e, ROW_ACTION_ROWS);
                 },
                 div { class: "flex flex-col",
                     button {
                         r#type: "button",
+                        role: "menuitem",
                         class: "px-3 py-1.5 text-left text-sm text-content hover:bg-surface-2",
                         onclick: move |e: MouseEvent| {
                             e.stop_propagation();
-                            open.set(false);
+                            nav.close();
                             on_edit.call(());
                         },
                         "Edit"
                     }
                     button {
                         r#type: "button",
+                        role: "menuitem",
                         class: "px-3 py-1.5 text-left text-sm text-red-600 dark:text-red-400 hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed",
                         // MAPPS-357: block delete while the server is down.
                         disabled: !can_mutate,
                         title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                         onclick: move |e: MouseEvent| {
                             e.stop_propagation();
-                            open.set(false);
+                            nav.close();
                             confirming.set(true);
                         },
                         "Delete"
@@ -7954,8 +7967,12 @@ fn fmt_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
     crate::utils::datetime::fmt_user_dt(dt, None)
 }
 
-/// MAPPS-568: the notes written on this contact's tickets, so an agent reads
-/// the conversation history without opening each ticket.
+/// MAPPS-568: the public comments this contact has posted on tickets, so an
+/// agent reads the customer's side of the conversation without opening each
+/// ticket.
+///
+/// The feed is contact-authored only, so the title and empty state say so
+/// rather than promising a two-sided history the endpoint does not serve.
 ///
 /// The resource keeps its `Result` rather than `.ok()`-ing it: a failed fetch
 /// renders the server's reason, because "no notes" and "could not read the
@@ -7964,18 +7981,18 @@ fn fmt_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
 fn ContactNotesCard(notes_resource: Resource<Result<Vec<ContactNote>, String>>) -> Element {
     let snap = notes_resource.read_unchecked();
     rsx! {
-        Card { title: "Ticket Notes",
+        Card { title: "Comments From This Contact",
             match &*snap {
                 None => rsx! {
-                    p { class: "text-sm text-muted", "Loading notes…" }
+                    p { class: "text-sm text-muted", "Loading comments…" }
                 },
                 Some(Err(err)) => rsx! {
                     p { class: "text-sm text-red-600 dark:text-red-300",
-                        "Could not load notes for this contact: {err}"
+                        "Could not load comments for this contact: {err}"
                     }
                 },
                 Some(Ok(rows)) if rows.is_empty() => rsx! {
-                    p { class: "text-sm text-muted", "No notes from this contact's tickets yet." }
+                    p { class: "text-sm text-muted", "This contact has not commented on any tickets yet." }
                 },
                 Some(Ok(rows)) => {
                     let rows = notes_newest_first(rows.clone());
@@ -8050,9 +8067,16 @@ struct ContactPortalCardProps {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct PortalGrantOutcomeWire {
     portal_slug: String,
-    setup_link: String,
     #[serde(default)]
     portal_id: Option<i64>,
+    /// The server used to return the setup URL (`setup_link`) so this
+    /// page could copy it to the clipboard, which handed password-setup
+    /// capability to anyone reading the markup. The URL is gone from
+    /// the wire; this flag says whether the setup email went out so
+    /// the toast can still distinguish a fresh grant from a role-only
+    /// edit without rendering the token.
+    #[serde(default)]
+    password_email_queued: bool,
 }
 
 /// mokosh-contact-login prompt 003: one row of GET
@@ -8379,7 +8403,6 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
     let mut modal_open = use_signal(|| false);
     let mut picked: Signal<Vec<uuid::Uuid>> = use_signal(Vec::new);
     let mut error = use_signal(String::new);
-    let mut last_setup_link = use_signal(String::new);
     // MAPPS-589 (prompt 011): captured from the grant response so the
     // card can render "Company ID: 555556666" alongside the setup link
     // once PMS-928 lands. `None` when the server response pre-dates
@@ -8418,15 +8441,11 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
             .await
             {
                 Ok(outcome) => {
-                    // MAPPS-635 C: the server now short-circuits the
-                    // token + setup-email work when the contact is
-                    // already credentialled (already granted, has a
-                    // password). It signals that state by returning
-                    // an empty `setup_link` string. Distinguish the
-                    // two paths in the toast so a role edit never
-                    // reads as "we just sent them a new setup email".
-                    let is_role_only_edit = outcome.setup_link.trim().is_empty();
-                    last_setup_link.set(outcome.setup_link.clone());
+                    // The server no longer returns the setup link; it says
+                    // whether the invite email went out via
+                    // `password_email_queued`, which stays false on a
+                    // role-only edit and is what the toast keys on.
+                    let is_role_only_edit = !outcome.password_email_queued;
                     last_portal_id.set(outcome.portal_id);
                     let toast_msg = if is_role_only_edit {
                         "Portal roles updated.".to_string()
@@ -8556,14 +8575,14 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                             code { class: "text-xs", "{pid}" }
                         }
                     }
-                    if !last_setup_link.read().is_empty() {
-                        p { class: "text-xs text-muted break-all",
-                            span { class: "font-medium text-content", "Invitation link (also emailed): " }
-                            code { class: "text-xs", "{last_setup_link}" }
-                        }
-                    }
+                    // The setup URL used to render here as a copy-friendly
+                    // `<code>` block, but the token in it was password-set
+                    // capability handed to anyone reading the markup. The
+                    // link now reaches the customer only through the setup
+                    // email; "Resend invitation" below re-issues it if
+                    // they say nothing arrived.
                     p { class: "text-xs text-muted",
-                        "This contact can sign in to your client portal. The invitation link works for 72 hours; send it again if they never received it."
+                        "This contact can sign in to your client portal. The invitation link is emailed and works for 72 hours; use Resend invitation if they never received it."
                     }
                     // MAPPS-775 / PMS-1187: what this customer has asked to
                     // see. The gap this closes was invisible from here: a
@@ -10236,11 +10255,11 @@ mod mapps568_contact_notes_tests {
             "the notes resource keeps its Result: {window}"
         );
         assert!(
-            code.contains("\"Could not load notes for this contact: {err}\""),
+            code.contains("\"Could not load comments for this contact: {err}\""),
             "the failure renders the server's reason inline"
         );
         assert!(
-            code.contains("\"No notes from this contact's tickets yet.\""),
+            code.contains("\"This contact has not commented on any tickets yet.\""),
             "an empty feed has its own wording, distinct from the error"
         );
     }

@@ -8,7 +8,7 @@ use mokosh_apps::hooks::{
     use_server_status_monitor, use_session_end_watch, use_sidebar_collapsed_provider,
     use_sidebar_provider, use_sidebar_scroll_provider, use_standalone_token_refresh,
     use_theme_sync, use_token_refresh, use_update_check, use_user_roster_provider,
-    use_version_cache_provider,
+    use_version_cache_provider, use_work_types_provider,
 };
 use mokosh_apps::Route;
 
@@ -126,10 +126,13 @@ fn App() -> Element {
     // root so the 14+ pages that need it share one fetch per session instead
     // of refetching on every mount.
     use_user_roster_provider();
-    // MAPPS-860: cache the mention directory at App root the same way, so
-    // sibling `Markdown` instances on the same page (a ticket's journal, a
-    // KB article's comments) share one fetch instead of one each.
+    // Cache the mention directory at App root the same way, so sibling
+    // `Markdown` instances on the same page (a ticket's journal, a KB
+    // article's comments) share one fetch instead of one each.
     use_mention_directory_provider();
+    // Same shared-cache pattern for the work-types reference list, so the
+    // time and contracts pages share one fetch across mounts.
+    use_work_types_provider();
     // Background loop: rotates access tokens before expiry. No-op when
     // the user is not signed in. Mounted once at the app root so it
     // keeps running across navigations.

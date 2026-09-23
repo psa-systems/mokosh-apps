@@ -105,7 +105,7 @@ pub fn ThemePicker() -> Element {
                         div {
                             key: "{name}",
                             class: "flex-1 rounded-lg border border-dashed border-line px-3 py-2 text-center text-xs font-medium text-subtle",
-                            title: "Named palettes: tracked as MAPPS-910",
+                            title: "Named palettes are coming in a later phase",
                             "{name} "
                             span { class: "opacity-60", "(later)" }
                         }
@@ -198,8 +198,20 @@ pub fn ThemePicker() -> Element {
                     span { class: "px-3 py-1.5 rounded-md text-sm font-medium border-l-2 border-accent bg-accent-50 text-accent-700 dark:bg-accent-950 dark:text-accent-300",
                         "Tickets"
                     }
-                    button { r#type: "button", class: "px-3 py-1.5 rounded-md text-sm font-semibold bg-accent text-on-accent",
-                        "Save Changes"
+                    // MAPPS-385: demo only, so the label reads as a sample
+                    // action rather than a save operation on the picker.
+                    // route through Button variant Primary so the
+                    // recipe is not hand-rolled here. `disabled: true`
+                    // matches the previous `tabindex="-1"` + `aria-disabled`
+                    // shape - Button already applies both, plus the
+                    // `disabled:opacity-50 disabled:cursor-not-allowed`
+                    // recipe that keeps it visually inert.
+                    crate::components::Button {
+                        variant: crate::components::ButtonVariant::Primary,
+                        size: crate::components::ButtonSize::Small,
+                        disabled: true,
+                        title: "Sample button. This picker saves each change on click.".to_string(),
+                        "New ticket"
                     }
                     a { class: "text-sm font-semibold text-accent underline", "View all" }
                     span { class: "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-accent-100 text-accent-800 dark:bg-accent-900 dark:text-accent-300",

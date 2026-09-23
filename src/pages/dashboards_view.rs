@@ -703,8 +703,11 @@ fn WidgetOpenInvoices() -> Element {
     let rows = invoices.value_or_default();
     let (count, total) = open_invoices_totals(&rows);
     rsx! {
-        div { class: "text-3xl font-semibold text-content", "{count}" }
-        p { class: "text-xs text-muted mt-1", "Outstanding invoices, total {total}." }
+        StatCard {
+            label: "Open invoices",
+            value: "{count}",
+            caption: "Outstanding invoices, total {total}.",
+        }
     }
 }
 

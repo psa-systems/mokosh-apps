@@ -56,18 +56,32 @@ pub fn current_query() -> Option<String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn current_query() -> Option<String> {
+    router_route_string("current query string")
+        .as_deref()
+        .and_then(query_of)
+}
+
+/// The route string the app is currently on, or `None` when it cannot be
+/// resolved (no runtime, no router). Shared by [`current_query`] and the
+/// native [`pathname`] so the two cannot drift; MAPPS-697.
+///
+/// Never silently `None`: warns naming what the caller was after, because
+/// a prefill or a guard bypass that quietly does not resolve looks the
+/// same as an unset one.
+#[cfg(not(target_arch = "wasm32"))]
+fn router_route_string(what: &str) -> Option<String> {
     // `try_router` consumes a context, and consuming one outside a
     // Dioxus runtime panics rather than answering `None`. The host test
     // build has no runtime, so check for one first.
     if dioxus::core::Runtime::try_current().is_none() {
-        tracing::warn!("no Dioxus runtime to read the current query string from");
+        tracing::warn!("no Dioxus runtime to read the {what} from");
         return None;
     }
     let Some(router) = dioxus::prelude::try_router() else {
-        tracing::warn!("no router to read the current query string from");
+        tracing::warn!("no router to read the {what} from");
         return None;
     };
-    query_of(&router.full_route_string())
+    Some(router.full_route_string())
 }
 
 /// The query of an internal route string, leading `?` included.
@@ -80,6 +94,26 @@ fn query_of(route: &str) -> Option<String> {
     let route = route.split('#').next().unwrap_or(route);
     let (_, query) = route.split_once('?')?;
     (!query.is_empty()).then(|| format!("?{query}"))
+}
+
+/// The path component of an internal route string, without any query or
+/// fragment (MAPPS-697). The router's `full_route_string` mirrors what
+/// `Link` pushed - a path, an optional `?query` and an optional `#frag`
+/// in that order - so cutting the query and the fragment off leaves the
+/// path a browser's `location.pathname` would report for the same
+/// navigation.
+///
+/// `""` is an empty path a caller can compare against; the shared
+/// `router_route_string` decides when to answer `None` instead, and does
+/// so with a `warn`.
+#[cfg(not(target_arch = "wasm32"))]
+fn path_of(route: &str) -> String {
+    let route = route.split('#').next().unwrap_or(route);
+    route
+        .split_once('?')
+        .map(|(p, _)| p)
+        .unwrap_or(route)
+        .to_string()
 }
 
 /// Rewrite the address bar to `url` without adding a history entry, so a
@@ -164,9 +198,23 @@ pub fn reload() -> bool {
     true
 }
 
+/// Path the app is currently on, e.g. `/onboarding/profile`, on the
+/// desktop (MAPPS-697). Sourced from the router the same way
+/// [`current_query`] is: a desktop window has no URL bar, but every
+/// `Link` pushes its target verbatim into the router's history, so the
+/// router holds the current path on both hosts.
+///
+/// Distinct from the wasm build's `pathname`, which reads the browser's
+/// URL bar directly and so answers even outside a runtime.
+///
+/// Never silently `None`: warns when the location cannot be resolved,
+/// because a guard bypass (`on_onboarding_route`) that quietly does not
+/// resolve is the exact defect this closes.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn pathname() -> Option<String> {
-    None
+    router_route_string("current pathname")
+        .as_deref()
+        .map(path_of)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -282,5 +330,60 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn current_query_is_none_without_a_runtime() {
         assert_eq!(super::current_query(), None);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn pathname_is_none_without_a_runtime() {
+        // same shape as current_query, and shares the same
+        // warn-rather-than-silent contract through router_route_string.
+        assert_eq!(super::pathname(), None);
+    }
+
+    // the four shapes the router hands `full_route_string`.
+    // A path with a query, a path with a fragment, a path with both, and
+    // a path with neither. Named separately so a failure names which
+    // shape drifted.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn path_of_drops_a_query() {
+        assert_eq!(
+            super::path_of("/onboarding/profile?next=/home"),
+            "/onboarding/profile"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn path_of_drops_a_fragment() {
+        assert_eq!(
+            super::path_of("/onboarding/profile#step-2"),
+            "/onboarding/profile"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn path_of_drops_a_query_and_a_fragment() {
+        // A fragment ends the query on the wire, so cutting `#` first
+        // and then `?` matches how a browser would parse the string.
+        assert_eq!(
+            super::path_of("/onboarding/profile?next=/home#top"),
+            "/onboarding/profile"
+        );
+        // The reverse order in the source is unusual but stripping `#`
+        // first still recovers the path.
+        assert_eq!(
+            super::path_of("/onboarding/profile#top?next=/home"),
+            "/onboarding/profile"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn path_of_keeps_a_bare_path() {
+        assert_eq!(super::path_of("/onboarding/profile"), "/onboarding/profile");
+        assert_eq!(super::path_of("/"), "/");
+        assert_eq!(super::path_of(""), "");
     }
 }

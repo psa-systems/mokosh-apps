@@ -32,9 +32,10 @@ use dioxus::prelude::*;
 use crate::utils::datetime::{user_timezone, user_today};
 
 use crate::components::{
-    clear_on_edit, use_page_title, BannerTone, Button, ButtonVariant, Card, ChevronLeftIcon,
-    ChevronRightIcon, EmptyState, ErrorBanner, IconButton, IconSize, Input, Modal, ModalSize,
-    PageHeader, PencilIcon, PlusIcon, Select, SelectOption, StatusBanner, SwatchIcon, Textarea,
+    clear_on_edit, use_page_title, BannerTone, Button, ButtonSize, ButtonVariant, Card,
+    ChevronLeftIcon, ChevronRightIcon, EmptyState, ErrorBanner, IconButton, IconSize, Input, Modal,
+    ModalSize, PageHeader, PencilIcon, PlusIcon, Select, SelectOption, StatusBanner, SwatchIcon,
+    Textarea,
 };
 use crate::modules::calendar::{
     AppointmentResponse, CreateAppointmentRequest, CreateSchedulingTemplateRequest,
@@ -941,18 +942,33 @@ struct ViewToggleButtonProps {
 
 #[component]
 fn ViewToggleButton(props: ViewToggleButtonProps) -> Element {
-    let class = if props.active {
-        "px-3 py-1 text-sm bg-accent text-on-accent"
+    // route the active state through Button variant Primary
+    // so the accent recipe is not hand-rolled here. The inactive branch
+    // keeps its Ghost-flavoured hover shape (bare text with a surface-2
+    // hover), which Button's Ghost variant matches. `rounded-none` on
+    // both extra classes so the segmented row keeps the shared corners
+    // it had before, and `aria_pressed` mirrors this control's state
+    // (button-with-toggle semantics, not the tab semantics Button
+    // otherwise implies).
+    if props.active {
+        rsx! {
+            Button {
+                variant: ButtonVariant::Primary,
+                size: ButtonSize::Small,
+                class: "rounded-none".to_string(),
+                onclick: move |e| props.onclick.call(e),
+                "{props.label}"
+            }
+        }
     } else {
-        "px-3 py-1 text-sm text-content hover:bg-surface-2"
-    };
-    rsx! {
-        button {
-            r#type: "button",
-            class: "{class}",
-            aria_pressed: props.active,
-            onclick: move |e| props.onclick.call(e),
-            "{props.label}"
+        rsx! {
+            Button {
+                variant: ButtonVariant::Ghost,
+                size: ButtonSize::Small,
+                class: "rounded-none text-content".to_string(),
+                onclick: move |e| props.onclick.call(e),
+                "{props.label}"
+            }
         }
     }
 }
@@ -3063,7 +3079,8 @@ pub fn SchedulingTemplatesPage() -> Element {
                                     }
                                     div { class: "flex items-center gap-2 shrink-0",
                                         Button {
-                                            variant: ButtonVariant::Secondary,
+                                            variant: ButtonVariant::Ghost,
+                                            size: ButtonSize::Small,
                                             onclick: move |_| form_state.set(Some(Some(edit_row.clone()))),
                                             PencilIcon { size: IconSize::Small, class: "mr-1".to_string() }
                                             "Edit"

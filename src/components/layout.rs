@@ -740,7 +740,17 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     // retired: Teams is now core, not a preview.
                     TeamsNavItem { visible: is_org_tenant, collapsed }
                     NavItem { to: Route::Invitations {}, icon: rsx!(MailIcon {}), label: "Invitations", collapsed }
-                    NavItem { to: Route::AuditLog {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Audit Log", collapsed }
+                    // "Logs" groups every log-flavoured destination
+                    // under one dropdown so the section reads at a glance and
+                    // a future error-logs page lands next to Audit Log rather
+                    // than a second flat item. Audit Log is the only child
+                    // for now.
+                    NavSubcategory {
+                        title: "Logs".to_string(),
+                        icon: rsx!(ClipboardDocumentListIcon {}),
+                        rail_collapsed: collapsed,
+                        NavItem { to: Route::AuditLog {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Audit Log", collapsed }
+                    }
                     NavItem { to: Route::FormsBuilder {}, icon: rsx!(InboxArrowDownIcon {}), label: "Request Forms", collapsed }
                     NavItem { to: Route::SlaManagement {}, icon: rsx!(ShieldCheckIcon {}), label: "SLA Management", collapsed }
                     // MAPPS-169: single entry into the centralized Settings hub.
@@ -767,17 +777,37 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
 /// to a general user (and the fastest way to confirm which build someone is on),
 /// while the build detail belongs on the status page, its agreed single home -
 /// so it is moved there rather than duplicated into a footer tooltip.
+///
+/// also carries a Documentation link when `cfg.has_docs()` is
+/// true, so a docs subdomain configured on the deployment reaches every
+/// authenticated page from the footer as well as the sidebar's
+/// `DocsNavItem`. Both surfaces read the same predicate, so an unset
+/// docs URL hides both - which is what an operator on a deploy with no
+/// docs site should see, rather than a dead link.
 #[component]
 fn VersionFooter() -> Element {
     use crate::utils::version::VERSION;
+    let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
+    let docs_href = cfg.has_docs().then(|| cfg.docs_url(""));
     rsx! {
         p {
-            class: "px-3 py-2 text-xs text-muted text-center",
+            class: "px-3 py-2 text-xs text-muted text-center space-x-3",
             Link {
                 to: Route::SystemStatus {},
                 class: "hover:text-content transition-colors",
                 title: "View system status and build details",
                 "v{VERSION}"
+            }
+            if let Some(href) = docs_href {
+                span { class: "text-line", aria_hidden: "true", "·" }
+                a {
+                    href: "{href}",
+                    target: "_blank",
+                    rel: "noopener noreferrer",
+                    class: "hover:text-content transition-colors",
+                    title: "Open the documentation",
+                    "Documentation"
+                }
             }
         }
     }
@@ -970,6 +1000,105 @@ fn NavItem(props: NavItemProps) -> Element {
                 {props.icon}
             }
             "{props.label}"
+        }
+    }
+}
+
+/// nested collapsible dropdown category inside a [`NavSection`].
+///
+/// A second collapse level: click "Logs" to reveal audit logs (and later,
+/// error logs) rather than adding indented always-visible sub-items, which
+/// Vas rejected as looking inconsistent. The dropdown reads and writes the
+/// same `use_sidebar_state()` map [`NavSection`] uses, prefixing its key
+/// with `subcategory:` so a top-level section and a nested subcategory
+/// cannot collide over the same title, and so a future rename of one does
+/// not silently unhide the other.
+///
+/// Skips rendering entirely when the enclosing rail is collapsed (the
+/// icon-only strip has no room for a title + chevron, and the child
+/// icons are already rendered directly by NavSection's `display: contents`
+/// branch), which means every child NavItem must be discoverable ALSO
+/// through its own icon in the collapsed rail. Today Audit Log is the
+/// only child, so the collapsed rail keeps it visible.
+#[derive(Props, Clone, PartialEq)]
+struct NavSubcategoryProps {
+    /// Section label (e.g. "Logs"). Also the state key, prefixed with
+    /// `subcategory:` before it hits the sidebar state map.
+    title: String,
+    /// The section icon, rendered at the left of the header row.
+    icon: Element,
+    /// MAPPS-250 shape: skip rendering when the whole rail is collapsed.
+    /// The child NavItems still render directly through NavSection's
+    /// `display: contents` branch, so their own icon-only strips stay
+    /// reachable in the narrow rail.
+    #[props(default)]
+    rail_collapsed: bool,
+    children: Element,
+}
+
+#[component]
+fn NavSubcategory(props: NavSubcategoryProps) -> Element {
+    let mut state = crate::hooks::use_sidebar_state();
+    // Prefix the state key so a section and a nested subcategory sharing a
+    // title cannot collide (unlikely today, but the map is shared).
+    let state_key = format!("subcategory:{}", props.title);
+    // Default OPEN, mirroring NavSection: a first-time visitor sees every
+    // navigable destination without having to hunt for it.
+    let collapsed = state
+        .read()
+        .collapsed
+        .get(&state_key)
+        .copied()
+        .unwrap_or(false);
+
+    // Rail collapsed: the parent NavSection already switched to
+    // `display: contents`, so the child NavItems below are being rendered
+    // as direct flex children of the nav; do the same here so the
+    // grouping is invisible in the collapsed strip.
+    if props.rail_collapsed {
+        return rsx! {
+            div { class: "contents",
+                {props.children}
+            }
+        };
+    }
+
+    let icon_color = try_use_context::<NavCategoryColor>()
+        .map(|c| c.0.heading_class())
+        .unwrap_or("text-subtle");
+    let toggle_key = state_key.clone();
+    let toggle = move |_| {
+        let mut s = state.write();
+        let new_value = !s.collapsed.get(&toggle_key).copied().unwrap_or(false);
+        s.collapsed.insert(toggle_key.clone(), new_value);
+    };
+
+    rsx! {
+        div { class: "flex flex-col",
+            button {
+                r#type: "button",
+                class: "group flex items-center px-3 py-2 text-sm font-medium rounded-md text-muted hover:bg-surface hover:text-content w-full",
+                aria_expanded: if collapsed { "false" } else { "true" },
+                onclick: toggle,
+                span { class: "mr-3 {icon_color}",
+                    {props.icon}
+                }
+                span { class: "flex-1 text-left", "{props.title}" }
+                if collapsed {
+                    ChevronRightIcon { size: IconSize::Small, class: "text-muted".to_string() }
+                } else {
+                    ChevronDownIcon { size: IconSize::Small, class: "text-muted".to_string() }
+                }
+            }
+            if !collapsed {
+                // children indent one level so the nesting reads
+                // at a glance. The indent lives here rather than on each
+                // child NavItem so the pattern stays "one subcategory,
+                // one indent" and a caller cannot forget it.
+                div { class: "ml-4 mt-1 space-y-1",
+                    {props.children}
+                }
+            }
         }
     }
 }
@@ -1170,7 +1299,13 @@ pub fn TopBar(props: TopBarProps) -> Element {
 /// leaving users hunting for Logout / Profile.
 #[component]
 fn UserMenu() -> Element {
-    let mut open = use_signal(|| false);
+    // MAPPS-508: shared keyboard contract via use_dropdown_nav in menu
+    // mode - Escape closes, Up/Down move the internal highlight, Tab and
+    // Enter fall through to the browser.
+    let mut nav = crate::hooks::dropdown_nav::use_dropdown_nav("user-menu").menu();
+    // Five menu rows: Profile, Account Settings, System Status, Create
+    // new team, Logout. Keep in step with the rsx! block below.
+    const USER_MENU_ROWS: usize = 5;
     // MAPPS-384: dismiss the dropdown on navigation. UserMenu lives in the
     // persistent AppShell (MAPPS-366), so a route change re-renders the routed
     // subtree WITHOUT re-mounting this component; without this the menu would
@@ -1178,12 +1313,11 @@ fn UserMenu() -> Element {
     // current route changes, and only then.
     let route: Route = use_route();
     use_effect(use_reactive!(|route| {
-        // `route` is the reactive dependency: every navigation changes it and
-        // re-fires this effect to close the menu. `peek` reads `open` without
-        // subscribing the effect to it (which would defeat the purpose).
+        // `route` is the reactive dependency: every navigation changes it
+        // and re-fires this effect to close the menu.
         let _ = &route;
-        if *open.peek() {
-            open.set(false);
+        if nav.is_open() {
+            nav.close();
         }
     }));
     // No `mut auth` binding here on purpose. `use_auth` is the read-only
@@ -1211,7 +1345,7 @@ fn UserMenu() -> Element {
     // menu and the account-deleted overlay. It runs on a task so the closure
     // stays sync; every step is awaited before it navigates away.
     let logout = move |_| {
-        open.set(false);
+        nav.close();
         // MAPPS-605: a contact-plane session goes through its own
         // logout endpoint + destination. Route BEFORE touching the
         // staff/OIDC path so the two never cross: a staff session's
@@ -1278,7 +1412,7 @@ fn UserMenu() -> Element {
         // visually diverge from the `rounded-full` top-bar icons this is
         // meant to sit beside, so matching the sibling convention wins.
         Popover {
-            open: open(),
+            open: nav.is_open(),
             label: "User menu",
             trigger_class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2 focus:outline-none",
             trigger: rsx! {
@@ -1291,10 +1425,16 @@ fn UserMenu() -> Element {
             },
             width: "w-52",
             ontoggle: move |_| {
-                let next = !*open.read();
-                open.set(next);
+                if nav.is_open() {
+                    nav.close();
+                } else {
+                    nav.open();
+                }
             },
-            onclose: move |_| open.set(false),
+            onclose: move |_| nav.close(),
+            onkeydown: move |e: KeyboardEvent| {
+                nav.keydown_menu(&e, USER_MENU_ROWS);
+            },
             {
                 rsx! {
                     // Profile is a mokosh-side route, served by this
@@ -1302,8 +1442,9 @@ fn UserMenu() -> Element {
                     // internal transition instead of a full reload.
                     Link {
                         to: Route::Profile {},
+                        role: "menuitem",
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
-                        onclick: move |_| open.set(false),
+                        onclick: move |_| nav.close(),
                         "Profile"
                     }
                     // Account Settings lives on the bunyip hub;
@@ -1311,6 +1452,7 @@ fn UserMenu() -> Element {
                     // navigates instead of resolving against this
                     // SPA's Route enum.
                     a {
+                        role: "menuitem",
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
                         href: "{hub_account_settings}",
                         "Account Settings"
@@ -1322,11 +1464,12 @@ fn UserMenu() -> Element {
                     // internally with `Link` (PMS-237).
                     Link {
                         to: Route::SystemStatus {},
+                        role: "menuitem",
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
-                        onclick: move |_| open.set(false),
+                        onclick: move |_| nav.close(),
                         "System Status"
                     }
-                    div { class: "border-t border-line my-1" }
+                    div { class: "border-t border-line my-1", role: "separator" }
                     // MAPPS-497 item 1: create-org lives here too so a
                     // single-membership identity (switcher trigger
                     // hidden) can still start a new org from the top
@@ -1335,15 +1478,17 @@ fn UserMenu() -> Element {
                     // TenantSwitcher and reacts to the signal.
                     button {
                         r#type: "button",
+                        role: "menuitem",
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
                         onclick: move |_| {
                             *crate::components::tenant_switcher::SHOW_CREATE_ORG.write() = true;
-                            open.set(false);
+                            nav.close();
                         },
                         "Create new team"
                     }
-                    div { class: "border-t border-line my-1" }
+                    div { class: "border-t border-line my-1", role: "separator" }
                     button {
+                        role: "menuitem",
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-surface-2",
                         onclick: logout,
                         "Logout"
@@ -1423,7 +1568,9 @@ fn format_local_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
 /// stub. Clicking an unread item POSTs `.../{id}/read` and refetches.
 #[component]
 fn NotificationBell() -> Element {
-    let mut open = use_signal(|| false);
+    // MAPPS-508: shared keyboard contract via use_dropdown_nav in menu
+    // mode - Escape closes, Up/Down move the internal highlight.
+    let mut nav = crate::hooks::dropdown_nav::use_dropdown_nav("notification-bell").menu();
     // `use_resource` runs on mount and whenever `.restart()` is called
     // (after marking an item read). A failed fetch degrades to an empty
     // inbox rather than surfacing an error in the top bar.
@@ -1451,10 +1598,11 @@ fn NotificationBell() -> Element {
 
     let items = inbox.read_unchecked().clone().unwrap_or_default();
     let unread = items.iter().filter(|i| i.read_at.is_none()).count();
+    let row_count = items.len();
 
     rsx! {
         Popover {
-            open: open(),
+            open: nav.is_open(),
             label: "Notifications",
             trigger_class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2 relative",
             trigger: rsx! {
@@ -1470,10 +1618,16 @@ fn NotificationBell() -> Element {
             },
             width: "w-80 max-h-96 overflow-y-auto",
             ontoggle: move |_| {
-                let next = !*open.read();
-                open.set(next);
+                if nav.is_open() {
+                    nav.close();
+                } else {
+                    nav.open();
+                }
             },
-            onclose: move |_| open.set(false),
+            onclose: move |_| nav.close(),
+            onkeydown: move |e: KeyboardEvent| {
+                nav.keydown_menu(&e, row_count);
+            },
             div { class: "px-4 py-2 border-b border-line text-sm font-semibold text-content",
                 "Notifications"
             }
@@ -1488,7 +1642,7 @@ fn NotificationBell() -> Element {
                         on_read: move |_| inbox.restart(),
                         // MAPPS-743: a row that navigates closes the panel
                         // behind it; the page it lands on is the point.
-                        on_navigate: move |_| open.set(false),
+                        on_navigate: move |_| nav.close(),
                     }
                 }
             }
@@ -1496,11 +1650,15 @@ fn NotificationBell() -> Element {
     }
 }
 
-/// PMS-486: top-bar pending-approvals chip. Polls `/approvals/pending`
-/// on mount + on every active-org switch (cheap on the server thanks
-/// to the PMS-451 partial indexes on `(approver_user_id) WHERE state =
+/// PMS-486: top-bar pending-approvals chip. Polls `/approvals/pending/count`
+/// on mount + on every active-org switch (cheap on the server thanks to
+/// the PMS-451 partial indexes on `(approver_user_id) WHERE state =
 /// 'pending'` etc.). The badge collapses to nothing when there is no
 /// pending decision so the chrome stays clean for non-approvers.
+///
+/// hits the count-only endpoint (MAPPS-872), so a badge
+/// that only ever renders a number does not deserialize and clone the
+/// full pending-approvals list on every layout render.
 #[component]
 fn ApprovalsBadge() -> Element {
     // MAPPS-737: the server's contact arm requires `approvals:decide`, so
@@ -1510,27 +1668,30 @@ fn ApprovalsBadge() -> Element {
     let inbox = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         if !can_decide {
-            return Vec::new();
+            return 0i64;
         }
         // The badge collapses to nothing on an empty queue AND on a failed
         // read, so the log is the only thing that separates them.
         // MAPPS-737: contact-first bearer, so the chip counts a contact's
         // own queue on the contact plane.
-        crate::hooks::fetch::api::get_authed_any::<Vec<serde_json::Value>>("/approvals/pending")
+        // `{ "count": N }`, not the row set, so an idle badge
+        // pays for a scalar rather than a serialised Vec of full approval
+        // rows on every page's layout render.
+        crate::hooks::fetch::api::get_authed_any::<ApprovalsCount>("/approvals/pending/count")
             .await
-            .inspect(|rows| {
-                if rows.is_empty() {
-                    tracing::info!("pending approval load succeeded and the queue is empty");
+            .inspect(|payload| {
+                if payload.count == 0 {
+                    tracing::info!("pending approval count succeeded and the queue is empty");
                 }
             })
             .inspect_err(|e| {
-                tracing::error!("pending approval load failed, the badge will stay hidden: {e}")
+                tracing::error!("pending approval count failed, the badge will stay hidden: {e}")
             })
-            .ok()
-            .unwrap_or_default()
+            .map(|payload| payload.count)
+            .unwrap_or(0)
     });
-    let count = inbox.read_unchecked().clone().unwrap_or_default().len();
-    if count == 0 {
+    let count = inbox.read_unchecked().unwrap_or(0);
+    if count <= 0 {
         return rsx! { span {} };
     }
     rsx! {
@@ -1543,6 +1704,15 @@ fn ApprovalsBadge() -> Element {
             span { class: "font-bold", "{count}" }
         }
     }
+}
+
+/// shape of `GET /approvals/pending/count` (MAPPS-872's
+/// server-side prerequisite). Kept beside its one caller instead of
+/// living in a shared module: it is the badge's private wire type, and
+/// a second reader is a rename waiting to happen.
+#[derive(Clone, serde::Deserialize)]
+struct ApprovalsCount {
+    count: i64,
 }
 
 /// A single inbox row. Unread rows are tinted and, on click, POST a
@@ -2117,12 +2287,16 @@ mod tests {
             "the badge must gate on approvals:decide"
         );
         assert!(
-            body.contains("get_authed_any::<Vec<serde_json::Value>>(\"/approvals/pending\")"),
-            "the badge must read through get_authed_any"
+            body.contains("get_authed_any::<ApprovalsCount>(\"/approvals/pending/count\")"),
+            "the badge must read the count-only endpoint through get_authed_any"
         );
         assert!(
             !src.contains("get_authed::<Vec<serde_json::Value>>(\"/approvals/pending\")"),
             "no staff-only read of the queue may remain"
+        );
+        assert!(
+            !body.contains("\"/approvals/pending\""),
+            "the badge must not fetch the full pending list"
         );
         let entry = src
             .find("label: \"My Approvals\"")
@@ -2301,7 +2475,10 @@ mod notification_link_tests {
         assert!(row.contains("if let Some(target) = target.clone() {\n                    on_navigate.call(());\n                    navigator.push(target);"));
         assert!(row.contains("r#type: \"button\","), "still a button");
         assert!(
-            head.contains("on_navigate: move |_| open.set(false),"),
+            // MAPPS-508: the panel is now driven by `use_dropdown_nav`
+            // in menu mode, so a navigated row closes it via nav.close()
+            // instead of a private `open` signal.
+            head.contains("on_navigate: move |_| nav.close(),"),
             "the panel closes"
         );
     }
@@ -2322,6 +2499,66 @@ mod module_gated_nav_tests {
         assert!(
             head.contains("NavItem { to: Route::TimeEntryList {}, icon: rsx!(ClockIcon {}), label: \"Time Entries\", collapsed }"),
             "Time Entries is untouched: it is the time_tracking module, not timesheets"
+        );
+    }
+}
+
+/// the footer Documentation link is gated on `cfg.has_docs()`,
+/// matching the sidebar `DocsNavItem` and every `ContextualHelpLink`. Both
+/// halves of the ticket's ACs (configured -> non-empty target rendered;
+/// unconfigured -> nothing rendered) reduce to that source shape:
+/// `has_docs()` is unit-tested in `modules::oidc::config`, so this test
+/// pins the FOOTER's dependency on it. Reading the source keeps the test
+/// off the Dioxus runtime (rendering `VersionFooter` requires one).
+#[cfg(test)]
+mod docs_footer_link_tests {
+    #[test]
+    fn the_footer_gates_the_docs_link_on_has_docs() {
+        let src = include_str!("layout.rs");
+        // The whole VersionFooter body is here; the two invariants:
+        //   1. Reads `cfg.has_docs()` before rendering the link.
+        //   2. When rendered, the link's `href` is `cfg.docs_url("")`
+        //      (an absolute URL derived from the configured base).
+        let start = src
+            .find("fn VersionFooter()")
+            .expect("VersionFooter is defined here");
+        let body = &src[start..];
+        let end = body.find("\n}\n").expect("body is closed");
+        let body = &body[..end];
+        assert!(
+            body.contains("cfg.has_docs()"),
+            "the footer link renders only when has_docs() is true"
+        );
+        assert!(
+            body.contains("cfg.docs_url(\"\")"),
+            "the link points at the configured docs base URL"
+        );
+        assert!(
+            body.contains("target: \"_blank\""),
+            "the docs link opens in a new tab, matching the sidebar Documentation nav"
+        );
+        assert!(
+            body.contains("rel: \"noopener noreferrer\""),
+            "external link carries noopener + noreferrer"
+        );
+    }
+
+    /// Unconfigured means both surfaces (sidebar `DocsNavItem` and the
+    /// footer link added here) render nothing. The one shared predicate
+    /// is `cfg.has_docs()`; asserting both call sites read it keeps them
+    /// impossible to drift.
+    #[test]
+    fn both_docs_surfaces_read_the_same_predicate() {
+        let src = include_str!("layout.rs");
+        // Sidebar entry: `if cfg.has_docs() { DocsNavItem { ... } }`.
+        assert!(
+            src.contains("if cfg.has_docs() {\n                    DocsNavItem "),
+            "the sidebar DocsNavItem gate stays on cfg.has_docs()"
+        );
+        // Footer entry: same predicate, wrapped in `.then(|| ...)`.
+        assert!(
+            src.contains("cfg.has_docs().then(|| cfg.docs_url(\"\"))"),
+            "the footer link gate reads the same cfg.has_docs()"
         );
     }
 }

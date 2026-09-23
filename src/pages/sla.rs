@@ -20,9 +20,9 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    clear_on_edit, use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable,
-    ErrorBanner, PageHeader, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
-    TableLoading, TableRow,
+    clear_on_edit, use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card,
+    DataTable, ErrorBanner, PageHeader, Table, TableBody, TableCell, TableEmpty, TableHead,
+    TableHeader, TableLoading, TableRow,
 };
 use crate::modules::sla::{
     BusinessHours, HolidayCalendar, SlaPolicy, SlaTarget, TicketPriorityOption,
@@ -275,7 +275,8 @@ fn SlaPoliciesTab(tab: Signal<SlaTab>) -> Element {
                                         TableCell {
                                             div { class: "flex space-x-3",
                                                 Button {
-                                                    variant: ButtonVariant::Link,
+                                                    variant: ButtonVariant::Ghost,
+                                                    size: ButtonSize::Small,
                                                     onclick: move |_| editing.set(Some(PolicyFormState::from_existing(&policy_for_edit))),
                                                     "Edit"
                                                 }
@@ -1054,7 +1055,8 @@ fn BusinessHoursTab(tab: Signal<SlaTab>) -> Element {
                                         }
                                         TableCell {
                                             Button {
-                                                variant: ButtonVariant::Link,
+                                                variant: ButtonVariant::Ghost,
+                                                size: ButtonSize::Small,
                                                 onclick: move |_| editing.set(Some(BusinessHoursFormState::from_existing(&bh_for_edit))),
                                                 "Edit"
                                             }
@@ -1418,7 +1420,8 @@ fn HolidayCalendarsTab(tab: Signal<SlaTab>) -> Element {
                                         TableCell { class: "text-muted", "{count} dates" }
                                         TableCell {
                                             Button {
-                                                variant: ButtonVariant::Link,
+                                                variant: ButtonVariant::Ghost,
+                                                size: ButtonSize::Small,
                                                 onclick: move |_| editing.set(Some(HolidayFormState::from_existing(&cal_for_edit))),
                                                 "Edit"
                                             }
