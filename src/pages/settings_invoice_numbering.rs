@@ -305,16 +305,25 @@ mod tests {
         );
     }
 
+    /// Every run of whitespace as one space, so an assertion below is about
+    /// what the code does rather than about where rustfmt chose to break a
+    /// line. The first version of this test matched a two-line call verbatim
+    /// and went red the next time the file was formatted, which is a test
+    /// failing for a reason that has nothing to do with the behaviour it
+    /// guards.
+    fn squeezed(source: &str) -> String {
+        source.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
     /// The page is admin only, writes the server's body shape, confirms
     /// before writing, and re-reads afterwards.
     #[test]
     fn the_page_confirms_before_it_writes() {
         let src = include_str!("settings_invoice_numbering.rs");
-        let head = &src[..src.find("mod tests").expect("this module")];
+        let head = squeezed(&src[..src.find("mod tests").expect("this module")]);
         assert!(head.contains("if !crate::pages::settings::use_is_admin() {"));
         assert!(head.contains("\"category\": CATEGORY,"));
-        assert!(head.contains("put_authed::<serde_json::Value, _>("));
-        assert!(head.contains("\"/settings\", &body"));
+        assert!(head.contains("put_authed::<serde_json::Value, _>( \"/settings\", &body,"));
         assert!(
             head.contains("settings.restart();"),
             "a saved scheme re-reads rather than trusting the local value"
