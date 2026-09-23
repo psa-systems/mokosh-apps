@@ -29,6 +29,27 @@ struct RemoteTeam {
     is_active: bool,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct PaginatedTeams {
+    data: Vec<RemoteTeam>,
+    #[serde(default)]
+    meta: PaginationMeta,
+}
+
+/// Server-side paginated envelope's meta block (`PaginatedResponse::meta`).
+/// Only `total` is read here; the rest of the meta shape is not needed for
+/// rendering the roster.
+#[derive(Clone, Debug, Default, Deserialize)]
+struct PaginationMeta {
+    #[serde(default)]
+    total: u64,
+}
+
+/// Matches the `per_page` sent server-side, so the requested page size and
+/// the `DataTable`'s pager math agree. Mirrors the tenant / invitation
+/// rosters.
+const PER_PAGE: usize = 25;
+
 /// Team member with joined user fields, from `GET
 /// /api/v1/teams/{id}/members`.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -98,20 +119,28 @@ pub fn TeamsPage() -> Element {
     let auth = crate::hooks::use_auth();
     let mut show_create = use_signal(|| false);
     let mut edit_target: Signal<Option<RemoteTeam>> = use_signal(|| None);
-    let mut teams_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        let _reachable = crate::hooks::use_server_reachable();
-        #[cfg(feature = "app")]
-        {
-            let token = crate::hooks::fetch::api::current_access_token()?;
-            crate::hooks::fetch::api::get_with_auth::<Vec<RemoteTeam>>("/teams", &token)
-                .await
-                .inspect_err(|e| tracing::error!("team list load failed: {e}"))
-                .ok()
-        }
-        #[cfg(not(feature = "app"))]
-        {
-            None::<Vec<RemoteTeam>>
+    // Paging state for the roster. Read inside the resource closure below
+    // (not captured by value) so a page change actually subscribes the
+    // resource and re-fetches, matching the tenant / invitation rosters.
+    let mut page = use_signal(|| 1usize);
+    let mut teams_resource = use_resource(move || {
+        let current_page = (*page.read()).max(1);
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
+            #[cfg(feature = "app")]
+            {
+                let token = crate::hooks::fetch::api::current_access_token()?;
+                let path = format!("/teams?page={current_page}&per_page={PER_PAGE}");
+                crate::hooks::fetch::api::get_with_auth::<PaginatedTeams>(&path, &token)
+                    .await
+                    .inspect_err(|e| tracing::error!("team list load failed: {e}"))
+                    .ok()
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                None::<PaginatedTeams>
+            }
         }
     });
     let can_mutate = crate::hooks::use_can_mutate();
@@ -154,10 +183,11 @@ pub fn TeamsPage() -> Element {
 
     let snap = teams_resource.read_unchecked();
     let is_loading = snap.is_none();
-    let teams: Vec<RemoteTeam> = match &*snap {
-        Some(Some(rows)) => rows.clone(),
-        _ => Vec::new(),
+    let (teams, total): (Vec<RemoteTeam>, u64) = match &*snap {
+        Some(Some(payload)) => (payload.data.clone(), payload.meta.total),
+        _ => (Vec::new(), 0),
     };
+    let current_page = (*page.read()).max(1);
 
     rsx! {
         PageHeader {
@@ -177,10 +207,11 @@ pub fn TeamsPage() -> Element {
 
         DataTable {
             loading: is_loading,
-            total_items: teams.len(),
-            current_page: 1,
-            per_page: 50,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
             columns: 4,
+            onpagechange: move |p| page.set(p),
             Table {
                 TableHead {
                     TableRow {
