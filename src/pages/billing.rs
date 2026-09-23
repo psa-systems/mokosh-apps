@@ -2420,9 +2420,11 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         // the server's: the invoice goes as a PDF to the billing contact, the
         // pay link rides along only with a payment gateway, and a send with
         // nobody to email is refused rather than marked sent (MAPPS-663).
+        // Lead with the finalize consequence (the invoice locks) so the
+        // user reads what becomes immutable before pressing the button.
         if editable {
             p { class: "mb-3 text-xs text-subtle",
-                "Sending emails the invoice to your customer's billing contact as a PDF, with a link to pay online if a payment gateway is connected. That contact needs an email address. Use Preview email to read it first."
+                "Sending finalizes the invoice: it locks and nothing on it can change afterwards. The PDF goes to the billing contact's email, with a pay link when a payment gateway is connected. Use Preview email to read it first."
             }
         }
 
@@ -2897,6 +2899,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 InvoiceEditModal {
                     id: props.id.clone(),
                     company_id: inv.company_id.map(|c| c.to_string()).unwrap_or_default(),
+                    company_name: inv.company_name.clone().unwrap_or_default(),
                     billing_contact_id: inv.billing_contact_id.map(|c| c.to_string()).unwrap_or_default(),
                     billing_contact_name: contact_resource
                         .read_unchecked()
@@ -4332,7 +4335,10 @@ struct EditableLine {
 struct InvoiceEditModalProps {
     id: String,
     /// PMS-1004: the invoice's company, to scope the billing-contact picker.
+    /// PMS-977: also the company picker's starting value, since a draft can
+    /// move to another company.
     company_id: String,
+    company_name: String,
     /// Current billing contact FK and its display name, empty when unset.
     billing_contact_id: String,
     billing_contact_name: String,
@@ -4392,6 +4398,13 @@ fn derived_due_date(invoice_date: &str, net_days: Option<i64>) -> Option<String>
 /// this modal is only opened for editable invoices.
 #[component]
 fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
+    // PMS-977: a draft raised against the wrong company can move. The id the
+    // modal opened with is kept so the save sends `company_id` only when it
+    // changed; the server clears the old company's contact on a move.
+    let mut company_id = use_signal(|| props.company_id.clone());
+    let mut company_name = use_signal(|| props.company_name.clone());
+    let mut company_err = use_signal(String::new);
+    let original_company_id = props.company_id.clone();
     let mut billing_contact_id = use_signal(|| props.billing_contact_id.clone());
     let mut billing_contact_name = use_signal(|| props.billing_contact_name.clone());
     let mut invoice_date = use_signal(|| props.invoice_date.clone());
@@ -4607,6 +4620,11 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             }));
         }
 
+        // PMS-977: the company picker can be cleared; an invoice cannot.
+        if company_id.read().trim().is_empty() {
+            company_err.set("Choose the company this invoice is for.".to_string());
+            return;
+        }
         if guard.blocked() {
             return;
         }
@@ -4616,9 +4634,17 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
         // recorded rate in place, and the server re-derives the amount from it
         // over the replaced lines (PMS-1029).
         let tax = tax_body_fields(&tax_rate_id.read(), tax_override.read().as_deref());
+        let moved_to = {
+            let id = company_id.read().clone();
+            (id != original_company_id).then_some(id)
+        };
         let body = serde_json::json!({
+            // PMS-977: sent only when it changed. The server refuses a draft
+            // whose contents belong to its company and says why.
+            "company_id": moved_to,
             // PMS-1004: null leaves the contact as it is (the server
-            // COALESCEs), so clearing the chip changes nothing on save.
+            // COALESCEs), so clearing the chip changes nothing on save. On a
+            // company move the server clears it unless one is named here.
             "billing_contact_id": optional_string(&billing_contact_id.read()),
             "invoice_date": inv_date,
             // MAPPS-662: only what the operator typed. Null leaves the date to
@@ -4689,6 +4715,39 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                 // Scoped to the invoice's company; the server refuses a send
                 // with none, so this is where "set a billing contact on the
                 // invoice" is done.
+                // PMS-977: only a draft is editable, and a draft on the wrong
+                // company is what this field is for. Picking another company
+                // clears the contact, which was the old company's person.
+                crate::components::CompanyPicker {
+                    value: company_name.read().clone(),
+                    selected_id: {
+                        let id = company_id.read().clone();
+                        (!id.is_empty()).then_some(id)
+                    },
+                    required: true,
+                    error: company_err(),
+                    onselect: move |(id, name): (String, String)| {
+                        let changed = *company_id.peek() != id;
+                        company_id.set(id);
+                        company_name.set(name);
+                        company_err.set(String::new());
+                        if changed {
+                            billing_contact_id.set(String::new());
+                            billing_contact_name.set(String::new());
+                        }
+                    },
+                    onclear: move |_| {
+                        company_id.set(String::new());
+                        company_name.set(String::new());
+                        billing_contact_id.set(String::new());
+                        billing_contact_name.set(String::new());
+                    },
+                }
+                if *company_id.read() != props.company_id && !company_id.read().is_empty() {
+                    p { class: "-mt-2 text-sm text-muted",
+                        "This draft moves to {company_name} when you save. The billing contact is cleared, because it belonged to the previous company. A draft that bills time or mileage, comes from a contract, or has a payment recorded cannot move."
+                    }
+                }
                 crate::components::ContactPicker {
                     value: billing_contact_name.read().clone(),
                     selected_id: {
@@ -4696,7 +4755,10 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                         (!id.is_empty()).then_some(id)
                     },
                     label: "Billing Contact".to_string(),
-                    company_filter: (!props.company_id.is_empty()).then(|| props.company_id.clone()),
+                    company_filter: {
+                        let id = company_id.read().clone();
+                        (!id.is_empty()).then_some(id)
+                    },
                     onselect: move |(id, name): (String, String)| {
                         billing_contact_id.set(id);
                         billing_contact_name.set(name);
@@ -7594,5 +7656,51 @@ mod mapps643_locked_note_tests {
             assert!(!note.contains("cancelled, or voided"), "{note}");
             assert!(note.ends_with('.'), "{note}");
         }
+    }
+}
+
+/// PMS-977: a draft invoice on the wrong company moves in the edit modal.
+#[cfg(test)]
+mod invoice_company_move_tests {
+    fn edit_modal() -> &'static str {
+        let src = include_str!("billing.rs");
+        let start = src.find("fn InvoiceEditModal(").expect("the edit modal");
+        let end = src[start..]
+            .find("\n}\n")
+            .map(|i| start + i)
+            .expect("the modal's end");
+        &src[start..end]
+    }
+
+    /// The company is editable, and the PUT names it only when it changed, so
+    /// an ordinary edit is not a move the server has to audit.
+    #[test]
+    fn the_company_is_sent_only_when_it_changed() {
+        let modal = edit_modal();
+        assert!(modal.contains("crate::components::CompanyPicker {"));
+        assert!(modal.contains("(id != original_company_id).then_some(id)"));
+        assert!(modal.contains("\"company_id\": moved_to,"));
+    }
+
+    /// Picking another company clears the contact, and the contact picker
+    /// searches the company now chosen rather than the one the modal opened
+    /// with.
+    #[test]
+    fn the_contact_follows_the_chosen_company() {
+        let modal = edit_modal();
+        assert!(modal.contains(
+            "if changed {\n                            billing_contact_id.set(String::new());"
+        ));
+        let contact = &modal[modal
+            .find("crate::components::ContactPicker {")
+            .expect("contact picker")..];
+        assert!(contact.contains("let id = company_id.read().clone();"));
+        assert!(!contact[..400].contains("props.company_id"));
+    }
+
+    /// A cleared company blocks the save with a message on the field.
+    #[test]
+    fn a_cleared_company_blocks_the_save() {
+        assert!(edit_modal().contains("Choose the company this invoice is for."));
     }
 }

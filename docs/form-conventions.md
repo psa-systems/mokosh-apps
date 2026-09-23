@@ -96,6 +96,59 @@ The mechanics that go with it:
 Native `Select` fields need none of this; the browser already gives
 click-to-open, arrow navigation and Tab-commit.
 
+### Menu mode: floating action panels (MAPPS-508)
+
+An action menu (the header overflow, the top-bar user menu, the top-bar
+notification bell, the KB article action menu, the contacts row action
+menu) is a floating panel of buttons rather than of values to commit.
+The keyboard contract keeps the two halves the picker has (Escape closes,
+Up / Down move the highlight) and drops the two it does not (Tab and
+Enter belong to the browser, so Tab walks the buttons and Enter fires
+the focused one).
+
+Call sites take `use_dropdown_nav("<name>").menu()` and pass its state
+to `Popover`, which owns the trigger, the wrapper `div`, the ARIA triad
+and the shared geometry:
+
+```rust
+let mut nav = use_dropdown_nav("row-actions").menu();
+// The panel's actual row count. keydown_menu clamps a stale index,
+// so passing a conservative upper bound is fine when the row set is
+// caller-supplied via children.
+const ROWS: usize = 2;
+
+rsx! {
+    Popover {
+        open: nav.is_open(),
+        ontoggle: move |_| if nav.is_open() { nav.close() } else { nav.open() },
+        onclose: move |_| nav.close(),
+        onkeydown: move |e: KeyboardEvent| { nav.keydown_menu(&e, ROWS); },
+        // ...
+        button { r#type: "button", role: "menuitem", onclick: /* action */, "Edit" }
+        button { r#type: "button", role: "menuitem", onclick: /* action */, "Delete" }
+    }
+}
+```
+
+Rules that go with menu mode:
+
+- **No `tabindex="-1"` on menu rows.** The picker sets it so Tab commits
+  and leaves the field; a menu has no field to move on to, and Tab
+  walking the rows is how a keyboard user reaches an action without a
+  pointer.
+- **Tab and Enter fall through to the browser.** The hook's `decide()`
+  returns `NavAction::Ignore` for both in `NavMode::Menu`, so the focused
+  button's own `onclick` fires on Enter and Tab keeps walking. `keydown_menu`
+  is the no-commit-closure convenience wrapper for this shape.
+- **The panel carries `role="menu"`, rows carry `role="menuitem"`.**
+  `Popover` emits the first; each row is a plain `<button>` (or `Link` /
+  `<a>`) with `role: "menuitem"` beside its other attributes.
+- **Dividers carry `role="separator"`**, so an AT rendering the menu
+  does not read them as menuitems that do nothing.
+- **On-nav / on-click close via `nav.close()`**, not a private `open`
+  signal. Any surviving `use_signal(|| false)` beside a menu Popover is
+  a MAPPS-508 drift and should route through the hook instead.
+
 ### The inline-create modal keeps the keyboard (MAPPS-694)
 
 Committing the create row opens a modal, and the keyboard path used to stop at

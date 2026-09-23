@@ -430,7 +430,7 @@ pub fn InvitationsPage() -> Element {
                             TableHeader { "Email" }
                             TableHeader { "Role" }
                             TableHeader { "Expires" }
-                            TableHeader { "" }
+                            TableHeader { span { class: "sr-only", "Actions" } }
                         }
                     }
                     if is_loading {

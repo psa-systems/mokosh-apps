@@ -575,7 +575,7 @@ fn CompanyRoleEditForm(props: CompanyRoleEditFormProps) -> Element {
                     }
                 }
 
-                div { class: "flex justify-end space-x-3 pt-2",
+                div { class: "flex justify-end space-x-3",
                     Link {
                         to: back_route.clone(),
                         Button { variant: ButtonVariant::Secondary, "Cancel" }
@@ -586,7 +586,7 @@ fn CompanyRoleEditForm(props: CompanyRoleEditFormProps) -> Element {
                         loading: *saving.read(),
                         title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                         onclick: submit,
-                        if is_new { "Create role" } else { "Save changes" }
+                        if is_new { "Create role" } else { "Save Changes" }
                     }
                 }
             }
