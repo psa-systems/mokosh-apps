@@ -359,11 +359,6 @@ pub fn ContactLoginPage(slug: String) -> Element {
                         name: "password",
                         label: "Password",
                         r#type: "password".to_string(),
-                        // MAPPS-763: said BEFORE the attempt, because the
-                        // person most likely to get this wrong is the one who
-                        // already has an account with us and reasonably types
-                        // that password.
-                        help: super::PORTAL_PASSWORD_HELP.to_string(),
                         value: password(),
                         required: true,
                         disabled: saving(),

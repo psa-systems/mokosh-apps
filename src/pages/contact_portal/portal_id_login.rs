@@ -276,29 +276,8 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
     };
 
     let portal_id_readonly = portal_id.clone();
-    // MAPPS-615 (prompt 014): "Not your portal? Choose a different one"
-    // button. Rendered above the branding header so a visitor
-    // recognises they landed on the wrong portal BEFORE they type
-    // credentials. Click hops back to the step-1 Company ID entry page
-    // and clears the last-portal-id hint so the AuthGuard cold-load
-    // bootstrap does not immediately bounce back here.
-    let switch_portal = move |_| {
-        #[cfg(feature = "web")]
-        {
-            crate::hooks::fetch::api::clear_contact_last_portal_id();
-        }
-        nav.replace(Route::ContactGenericLogin {});
-    };
     rsx! {
         AuthLayout {
-            div { class: "mb-4 text-center",
-                button {
-                    r#type: "button",
-                    class: "text-sm text-accent hover:underline",
-                    onclick: switch_portal,
-                    "Not your portal? Choose a different one"
-                }
-            }
             if tenant_inactive {
                 div { class: "text-center mb-6",
                     h1 { class: "text-2xl font-semibold text-content", "This portal is not available" }
@@ -346,11 +325,6 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
                         name: "password",
                         label: "Password",
                         r#type: "password".to_string(),
-                        // MAPPS-763: said BEFORE the attempt, because the
-                        // person most likely to get this wrong is the one who
-                        // already has an account with us and reasonably types
-                        // that password.
-                        help: super::PORTAL_PASSWORD_HELP.to_string(),
                         value: password(),
                         required: true,
                         disabled: saving(),
