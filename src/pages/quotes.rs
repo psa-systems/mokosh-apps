@@ -158,6 +158,10 @@ pub fn QuoteListPage() -> Element {
 
 #[component]
 fn QuoteListBody() -> Element {
+    // MAPPS-939: resolve once for the whole row list, not once per row's
+    // "created" cell.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     // mokosh-contact-login prompt 006: the "New Quote" CTA is
     // staff-only. Contact-facing accept/decline lives on the quote page
     // (`CustomerQuoteView`, MAPPS-779), not this list.
@@ -399,8 +403,10 @@ fn QuoteListBody() -> Element {
                                     .map(|d| d.to_string())
                                     .unwrap_or_default(),
                                 status: quote.status.clone(),
-                                created: crate::utils::datetime::fmt_user_dt(
+                                created: crate::utils::datetime::fmt_user_dt_in(
                                     quote.created_at,
+                                    pref.as_deref(),
+                                    tz,
                                     Some("%b %-d, %Y"),
                                 ),
                                 created_iso: quote.created_at.to_rfc3339(),
@@ -742,6 +748,10 @@ fn CustomerQuoteView(id: String) -> Element {
 
 #[component]
 fn QuoteDetailBody(id: String) -> Element {
+    // MAPPS-939: resolve once for the whole render pass (Sent + Client
+    // decided below), not once per timestamp.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     // mokosh-contact-login prompt 006: all quote lifecycle controls
     // on this detail (Submit/Approve/Reject/Send/Convert/Cancel/Edit)
     // are staff-only. The customer's Accept/Decline is
@@ -976,7 +986,12 @@ fn QuoteDetailBody(id: String) -> Element {
                                     if let Some(sent) = q.sent_at {
                                         {
                                             let sent_iso = sent.to_rfc3339();
-                                            let sent = crate::utils::datetime::fmt_user_dt(sent, Some("%b %-d, %Y"));
+                                            let sent = crate::utils::datetime::fmt_user_dt_in(
+                                                sent,
+                                                pref.as_deref(),
+                                                tz,
+                                                Some("%b %-d, %Y"),
+                                            );
                                             rsx! {
                                                 div {
                                                     dt { class: "text-subtle", "Sent" }
@@ -988,7 +1003,12 @@ fn QuoteDetailBody(id: String) -> Element {
                                     if let Some(decided) = q.decided_at {
                                         {
                                             let decided_iso = decided.to_rfc3339();
-                                            let decided = crate::utils::datetime::fmt_user_dt(decided, Some("%b %-d, %Y"));
+                                            let decided = crate::utils::datetime::fmt_user_dt_in(
+                                                decided,
+                                                pref.as_deref(),
+                                                tz,
+                                                Some("%b %-d, %Y"),
+                                            );
                                             rsx! {
                                                 div {
                                                     dt { class: "text-subtle", "Client decided" }

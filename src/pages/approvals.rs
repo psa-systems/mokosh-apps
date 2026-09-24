@@ -165,6 +165,10 @@ impl PendingApproval {
 
 #[component]
 pub fn ApprovalsPage() -> Element {
+    // MAPPS-939: resolve once for the whole row list, not once per row's
+    // "requested at" cell.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     use_page_title("My Approvals");
     let mut version = use_signal(|| 0u32);
     let mut decision_error = use_signal(String::new);
@@ -302,7 +306,14 @@ pub fn ApprovalsPage() -> Element {
                         );
                         let when = row
                             .requested_at
-                            .map(|d| crate::utils::datetime::fmt_user_dt(d, Some("%b %-d, %Y %H:%M %Z")))
+                            .map(|d| {
+                                crate::utils::datetime::fmt_user_dt_in(
+                                    d,
+                                    pref.as_deref(),
+                                    tz,
+                                    Some("%b %-d, %Y %H:%M %Z"),
+                                )
+                            })
                             .unwrap_or_default();
                         let when_iso = row.requested_at.map(|d| d.to_rfc3339()).unwrap_or_default();
                         let notes = row.notes.clone().unwrap_or_default();

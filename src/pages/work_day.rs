@@ -412,6 +412,9 @@ pub fn WorkDayStrip() -> Element {
     let mut edit_start = use_signal(String::new);
     let mut edit_end = use_signal(String::new);
     let can_mutate = crate::hooks::use_can_mutate();
+    // MAPPS-939: resolve once for the whole strip, not once per segment chip.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
 
     let date_for_resource = picked_date();
     let user_for_resource = picked_user();
@@ -640,7 +643,7 @@ pub fn WorkDayStrip() -> Element {
     let unlogged_live = clocked_live - day.logged_minutes;
     let started_label = open_segment
         .and_then(|s| s.started_at)
-        .map(clock_time)
+        .map(|dt| clock_time(dt, pref.as_deref(), tz))
         .unwrap_or_default();
     let stale = accruing && session_minutes.is_some_and(|m| m >= STALE_AFTER_HOURS * 60);
     let day_note = other_day_note(
@@ -910,7 +913,7 @@ pub fn WorkDayStrip() -> Element {
                                 div { class: "flex flex-wrap items-center gap-2",
                                     span { class: "font-medium", if seg.kind == "break" { "Break" } else { "Work" } }
                                     " "
-                                    {segment_span_el(seg.started_at, seg.ended_at)}
+                                    {segment_span_el(seg.started_at, seg.ended_at, pref.as_deref(), tz)}
                                     " "
                                     span { class: "text-muted", "({fmt_duration(seg.minutes)})" }
                                     // MAPPS-754: offered only where the
@@ -1057,7 +1060,7 @@ pub fn WorkDayStrip() -> Element {
                                 format!(
                                     "{} {}",
                                     if s.kind == "break" { "break" } else { "work" },
-                                    segment_span(s.started_at, s.ended_at)
+                                    segment_span(s.started_at, s.ended_at, pref.as_deref(), tz)
                                 )
                             })
                             .unwrap_or_else(|| "clock entry".to_string());
@@ -1145,14 +1148,19 @@ pub fn WorkDayStrip() -> Element {
 /// `format_user_datetime` renders against `users.timezone` (the same
 /// preference the server dates a clock-in with), and only the time half is
 /// wanted here: the day is named by the card itself.
-fn clock_time(dt: DateTime<Utc>) -> String {
-    let full = crate::utils::datetime::fmt_user_dt(dt, None);
+fn clock_time(dt: DateTime<Utc>, pref: Option<&str>, tz: chrono_tz::Tz) -> String {
+    let full = crate::utils::datetime::fmt_user_dt_in(dt, pref, tz, None);
     full.rsplit(' ').next().unwrap_or(&full).to_string()
 }
 
 /// "09:02 to 12:30", or "09:02 onward" while open, in the viewer's zone.
-fn segment_span(started: Option<DateTime<Utc>>, ended: Option<DateTime<Utc>>) -> String {
-    let clock = clock_time;
+fn segment_span(
+    started: Option<DateTime<Utc>>,
+    ended: Option<DateTime<Utc>>,
+    pref: Option<&str>,
+    tz: chrono_tz::Tz,
+) -> String {
+    let clock = |dt| clock_time(dt, pref, tz);
     match (started, ended) {
         (Some(s), Some(e)) => format!("{} to {}", clock(s), clock(e)),
         (Some(s), None) => format!("{} onward", clock(s)),
@@ -1162,8 +1170,13 @@ fn segment_span(started: Option<DateTime<Utc>>, ended: Option<DateTime<Utc>>) ->
 
 /// [`segment_span`] rendered as `time` elements with an ISO `datetime` on
 /// each endpoint, for the segment list (N5).
-fn segment_span_el(started: Option<DateTime<Utc>>, ended: Option<DateTime<Utc>>) -> Element {
-    let clock = clock_time;
+fn segment_span_el(
+    started: Option<DateTime<Utc>>,
+    ended: Option<DateTime<Utc>>,
+    pref: Option<&str>,
+    tz: chrono_tz::Tz,
+) -> Element {
+    let clock = |dt| clock_time(dt, pref, tz);
     match (started, ended) {
         (Some(s), Some(e)) => rsx! {
             time { datetime: "{s.to_rfc3339()}", "{clock(s)}" }

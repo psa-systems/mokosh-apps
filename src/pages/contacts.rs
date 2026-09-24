@@ -8024,9 +8024,15 @@ fn note_author_name(note: &ContactNote) -> String {
 }
 
 /// Absolute timestamp for a note line, honouring the per-user format pref the
-/// same way the ticket journal's `fmt_datetime` does.
-fn fmt_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
-    crate::utils::datetime::fmt_user_dt(dt, None)
+/// same way the ticket journal's `fmt_datetime` does. MAPPS-939: takes
+/// `pref`/`tz` explicitly so the notes card resolves the user's timezone
+/// once per render pass instead of once per note.
+fn fmt_datetime(
+    dt: chrono::DateTime<chrono::Utc>,
+    pref: Option<&str>,
+    tz: chrono_tz::Tz,
+) -> String {
+    crate::utils::datetime::fmt_user_dt_in(dt, pref, tz, None)
 }
 
 /// MAPPS-568: the public comments this contact has posted on tickets, so an
@@ -8041,6 +8047,9 @@ fn fmt_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
 /// notes" are different facts.
 #[component]
 fn ContactNotesCard(notes_resource: Resource<Result<Vec<ContactNote>, String>>) -> Element {
+    // MAPPS-939: resolve once for the whole notes list, not once per note.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     let snap = notes_resource.read_unchecked();
     rsx! {
         Card { title: "Comments From This Contact",
@@ -8070,7 +8079,7 @@ fn ContactNotesCard(notes_resource: Resource<Result<Vec<ContactNote>, String>>) 
                                     } else {
                                         BadgeVariant::Gray
                                     };
-                                    let when = fmt_datetime(note.created_at);
+                                    let when = fmt_datetime(note.created_at, pref.as_deref(), tz);
                                     // MAPPS-409: machine-readable form for the `<time>` wrapper.
                                     let when_iso = note.created_at.to_rfc3339();
                                     rsx! {

@@ -349,8 +349,12 @@ pub fn fmt_user_dt(dt: DateTime<Utc>, no_pref_style: Option<&str>) -> String {
 
 /// Pure core of [`fmt_user_dt`]: takes `pref` and `tz` explicitly so a
 /// test can pin both without a live Dioxus context, matching how
-/// [`format_user_datetime_in`] backs [`format_user_datetime`].
-fn fmt_user_dt_in(
+/// [`format_user_datetime_in`] backs [`format_user_datetime`]. `pub(crate)`
+/// so a page that resolves `tz` once per render pass (MAPPS-939) can reuse
+/// it across every row instead of re-deriving it per timestamp through
+/// [`fmt_user_dt`]; still needs `user_format_pref()` per call since that
+/// reads a different AuthContext field.
+pub(crate) fn fmt_user_dt_in(
     dt: DateTime<Utc>,
     pref: Option<&str>,
     tz: Tz,

@@ -1918,6 +1918,10 @@ struct HistoryTarget {
 #[component]
 pub fn TimesheetApprovalsPage() -> Element {
     use_page_title("Timesheet Approvals & History");
+    // MAPPS-939: resolve once for the whole row list, not once per row's
+    // "decided at" cell.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     let auth = crate::hooks::auth::use_auth();
     // Match the server's `RequireManager` gate on approve/reject (manager,
     // admin, super_admin). The page re-checks server-side, so this is a UX
@@ -2264,7 +2268,14 @@ pub fn TimesheetApprovalsPage() -> Element {
                                 let week_label_row_iso = row_week.to_string();
                                 let decided_at_label = s
                                     .decided_at
-                                    .map(|d| crate::utils::datetime::fmt_user_dt(d, Some("%b %-d, %Y %H:%M %Z")))
+                                    .map(|d| {
+                                        crate::utils::datetime::fmt_user_dt_in(
+                                            d,
+                                            pref.as_deref(),
+                                            tz,
+                                            Some("%b %-d, %Y %H:%M %Z"),
+                                        )
+                                    })
                                     .unwrap_or_default();
                                 let decided_at_iso = s.decided_at.map(|d| d.to_rfc3339()).unwrap_or_default();
                                 let decided_by_label = s
@@ -2528,6 +2539,9 @@ struct TimesheetHistoryModalProps {
 
 #[component]
 fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
+    // MAPPS-939: resolve once for the whole event list, not once per event.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     let uid = props.uid;
     let week = props.week;
     let employee = props.employee.clone();
@@ -2654,8 +2668,10 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
                             ol { class: "space-y-3",
                                 for (i , ev) in events.iter().enumerate() {
                                     {
-                                        let when = crate::utils::datetime::fmt_user_dt(
+                                        let when = crate::utils::datetime::fmt_user_dt_in(
                                             ev.at,
+                                            pref.as_deref(),
+                                            tz,
                                             Some("%b %-d, %Y %H:%M %Z"),
                                         );
                                         let when_iso = ev.at.to_rfc3339();
