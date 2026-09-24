@@ -594,12 +594,8 @@ type PhraseParts = Vec<(String, Option<String>)>;
 /// MAPPS-939: takes `pref`/`tz` explicitly so the detail page resolves the
 /// user's timezone once per render pass instead of once per SLA due date.
 fn sla_due_parts_in(due: DateTime<Utc>, pref: Option<&str>, tz: chrono_tz::Tz) -> PhraseParts {
-    let absolute = crate::utils::datetime::fmt_user_dt_in(
-        due,
-        pref,
-        tz,
-        Some("%b %-d, %Y %-I:%M %p"),
-    );
+    let absolute =
+        crate::utils::datetime::fmt_user_dt_in(due, pref, tz, Some("%b %-d, %Y %-I:%M %p"));
     let hint = remaining_hint(due, Utc::now());
     vec![
         (absolute, Some(due.to_rfc3339())),
