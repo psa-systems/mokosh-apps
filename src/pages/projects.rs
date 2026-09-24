@@ -109,14 +109,8 @@ struct FieldChange {
 }
 
 /// A per-tenant task status (`GET /api/v1/task-statuses`).
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-struct RemoteTaskStatus {
-    id: uuid::Uuid,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    is_completed: bool,
-}
+/// MAPPS-940: the shared, App-root-cached row, not a page-local fetch shape.
+type RemoteTaskStatus = crate::hooks::TaskStatusRow;
 
 /// A user, used to resolve `assigned_to_id` / `project_manager_id` to a name.
 /// MAPPS-860: the shared roster row, not a page-local fetch shape.
@@ -1120,13 +1114,8 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
             )
         }
     });
-    let statuses_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::list_or_empty(
-            "project task status option",
-            crate::hooks::fetch::api::get_all_authed::<RemoteTaskStatus>("/task-statuses").await,
-        )
-    });
+    // MAPPS-940: shared task-statuses cache, not a per-page fetch.
+    let statuses_resource = crate::hooks::use_task_statuses(true);
     // MAPPS-860: shared roster cache, not a per-page fetch.
     let users_resource = crate::hooks::use_user_roster(true);
 
@@ -2196,13 +2185,8 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
                 .ok()
         }
     });
-    let statuses_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::list_or_empty(
-            "task board status option",
-            crate::hooks::fetch::api::get_all_authed::<RemoteTaskStatus>("/task-statuses").await,
-        )
-    });
+    // MAPPS-940: shared task-statuses cache, not a per-page fetch.
+    let statuses_resource = crate::hooks::use_task_statuses(true);
     // MAPPS-860: shared roster cache, not a per-page fetch.
     let users_resource = crate::hooks::use_user_roster(true);
 

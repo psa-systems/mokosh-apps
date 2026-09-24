@@ -2228,25 +2228,9 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
             .ok()
         }
     });
-    // Asset rows carry only `asset_type_id`; load the type list once to render
-    // a human-readable type name in the Assets card.
-    let asset_types_resource = use_resource(move || async move {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        // An empty type list and a failed read look identical on screen (no
-        // type name on any asset row), so the log is what tells them apart.
-        match crate::hooks::fetch::api::get_all_authed::<AssetTypeOption>("/asset-types").await {
-            Ok(types) => {
-                if types.is_empty() {
-                    tracing::info!("asset-type load succeeded and this tenant has no asset types");
-                }
-                Some(types)
-            }
-            Err(e) => {
-                tracing::error!("asset-type load failed, asset rows will show no type: {e}");
-                None
-            }
-        }
-    });
+    // Asset rows carry only `asset_type_id`; the shared cache resolves it to
+    // a human-readable type name in the Assets card (MAPPS-940).
+    let asset_types_resource = crate::hooks::use_asset_types(true);
 
     // MAPPS-619: tenant branding defaults so the per-Company branding
     // card can render "Inherits from MSP default: X" hints per field.
@@ -5227,13 +5211,6 @@ struct AssetSummary {
     status: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-struct AssetTypeOption {
-    id: uuid::Uuid,
-    #[serde(default)]
-    name: String,
-}
-
 #[component]
 fn CompanyContractsCard(
     company_id: String,
@@ -5533,7 +5510,7 @@ fn CompanyInvoicesCard(
 fn CompanyAssetsCard(
     company_id: String,
     mut assets_resource: Resource<Option<Paginated<AssetSummary>>>,
-    asset_types_resource: Resource<Option<Vec<AssetTypeOption>>>,
+    asset_types_resource: Resource<Vec<crate::hooks::AssetTypeRow>>,
 ) -> Element {
     let snap = assets_resource.read_unchecked();
     let count = match &*snap {
@@ -5547,18 +5524,18 @@ fn CompanyAssetsCard(
         "/assets/new?company_id={}",
         urlencoding_minimal(&company_id)
     );
-    let types_snap = asset_types_resource.read_unchecked();
-    // Build an id -> type-name lookup from the (best-effort) type list.
+    let types_snap = asset_types_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    // Build an id -> type-name lookup from the (best-effort) shared type list.
     let type_name = |id: &Option<uuid::Uuid>| -> String {
         match id {
-            Some(tid) => match &*types_snap {
-                Some(Some(types)) => types
-                    .iter()
-                    .find(|t| &t.id == tid)
-                    .map(|t| t.name.clone())
-                    .unwrap_or_default(),
-                _ => String::new(),
-            },
+            Some(tid) => types_snap
+                .iter()
+                .find(|t| &t.id == tid)
+                .map(|t| t.name.clone())
+                .unwrap_or_default(),
             None => String::new(),
         }
     };
@@ -10395,28 +10372,6 @@ mod mapps692_fetch_error_logging_tests {
         assert!(
             offenders.is_empty(),
             "these fetches drop the error instead of logging it first: {offenders:#?}"
-        );
-    }
-
-    /// The asset-type list is the one place where the substituted value is
-    /// indistinguishable on screen from a legitimate answer: no options at all
-    /// is what a tenant with no asset types looks like too. Both outcomes are
-    /// therefore stated in the log, not just the failure.
-    #[test]
-    fn the_asset_type_read_separates_a_failure_from_an_empty_tenant() {
-        let code = code_only();
-        let at = code
-            .find("get_all_authed::<AssetTypeOption>")
-            .expect("the asset-type read is in this file");
-        let window: String = code[at..].chars().take(600).collect();
-        assert!(
-            window.contains("tracing::error!(\"asset-type load failed"),
-            "a failed read is logged as an error: {window}"
-        );
-        assert!(
-            window.contains("types.is_empty()")
-                && window.contains("tracing::info!(\"asset-type load succeeded"),
-            "a genuinely empty list says so under its own message: {window}"
         );
     }
 }

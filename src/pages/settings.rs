@@ -3914,7 +3914,7 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
-                match save_lookup(id, "/task-statuses", &body).await {
+                match save_lookup(id, crate::hooks::task_statuses::ENDPOINT, &body).await {
                     Ok(()) => onsaved.call(()),
                     Err(err) => error.set(format!("Could not save task status: {err}")),
                 }
@@ -3934,7 +3934,7 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
-                match delete_lookup(&id, "/task-statuses").await {
+                match delete_lookup(&id, crate::hooks::task_statuses::ENDPOINT).await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
                     Err(err) => error.set(format!("Could not delete task status: {err}")),
@@ -4258,7 +4258,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
-                match save_lookup(id, "/asset-types", &body).await {
+                match save_lookup(id, crate::hooks::asset_types::ENDPOINT, &body).await {
                     Ok(()) => onsaved.call(()),
                     Err(err) => error.set(format!("Could not save asset type: {err}")),
                 }
@@ -4278,7 +4278,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
-                match delete_lookup(&id, "/asset-types").await {
+                match delete_lookup(&id, crate::hooks::asset_types::ENDPOINT).await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
                     Err(err) => error.set(format!("Could not delete asset type: {err}")),
@@ -5303,7 +5303,7 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
-                match save_lookup(id, "/payment-terms", &body).await {
+                match save_lookup(id, crate::hooks::payment_terms::ENDPOINT, &body).await {
                     Ok(()) => onsaved.call(()),
                     Err(err) => error.set(format!("Could not save payment term: {err}")),
                 }
@@ -5323,7 +5323,7 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
-                match delete_lookup(&id, "/payment-terms").await {
+                match delete_lookup(&id, crate::hooks::payment_terms::ENDPOINT).await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
                     Err(err) => error.set(format!("Could not delete payment term: {err}")),
