@@ -37,6 +37,11 @@ clippy_args := "--all-targets -- -D warnings"
 pre_commit_compile := "false"
 wasm_check := "true"
 
+# Run the wasm leg through clippy with `-D warnings`, same as `just
+# check-web` and the CI wasm step, so a wasm lint fails at commit
+# time rather than being caught in CI.
+wasm_check_step := "clippy"
+
 # Mirrors check.yml's `cargo test --lib`: the tests live on the library target.
 test_args := "--lib"
 
