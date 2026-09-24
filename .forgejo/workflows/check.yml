@@ -348,3 +348,7 @@ jobs:
       - name: Report job metrics
         if: always()
         uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/job-metrics-report@e728773130496a6e84e0d87de9390f3d98939019 # main
+
+  secrets:
+    uses: psa-systems/common/.forgejo/workflows/check-secrets.yml@main
+    secrets: inherit
