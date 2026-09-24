@@ -56,22 +56,6 @@ pub mod portal_id_login;
 /// address exists. A message that softened for a known address would answer
 /// "does this person have a portal account here", which is the enumeration
 /// oracle the portal plane avoids everywhere else.
-/// Help under the password field, shown before anything is typed.
-///
-/// MAPPS-766: this said "Set from your invitation email", which ASSERTED that
-/// the reader has a password. Several ordinary paths land someone here who has
-/// none - an invoice pay link is the first contact they ever get, the 72-hour
-/// setup link expired, the 15-minute sign-in link expired and the mail told
-/// them to come here - and that sentence sent them hunting an invitation for a
-/// password that was never in it. Fixing the returning customer's confusion by
-/// deepening the new customer's is not a trade worth keeping.
-///
-/// So it asserts nothing about what the reader has. It states the one fact
-/// that is true for everybody (this password is not another one) and names the
-/// way out for the person who has none.
-pub const PORTAL_PASSWORD_HELP: &str =
-    "This is separate from any other password you use with us. If you have not set one for this portal yet, use the sign-in link below instead.";
-
 /// The heading over the passwordless route, which is an OFFER and not a
 /// fallback.
 ///
@@ -92,43 +76,7 @@ pub const PORTAL_SIGN_IN_FAILED: &str =
 
 #[cfg(test)]
 mod sign_in_copy_tests {
-    use super::{
-        PORTAL_NO_PASSWORD_ACTION, PORTAL_NO_PASSWORD_PROMPT, PORTAL_PASSWORD_HELP,
-        PORTAL_SIGN_IN_FAILED,
-    };
-
-    /// MAPPS-763: the fact the reporter needed, said in their terms.
-    ///
-    /// The person who gets this wrong is the one who ALREADY has an account
-    /// with this product and types that password, so the help has to rule that
-    /// out by name rather than describe what a portal password is.
-    #[test]
-    fn the_help_says_the_password_is_not_another_one() {
-        let lowered = PORTAL_PASSWORD_HELP.to_lowercase();
-        assert!(
-            lowered.contains("separate from any other password"),
-            "{PORTAL_PASSWORD_HELP}"
-        );
-    }
-
-    /// MAPPS-766: and it ASSERTS NOTHING about the reader having one.
-    ///
-    /// The previous version opened "Set from your invitation email", which is
-    /// false for every customer who arrives here without a password - an
-    /// invoice pay link as first contact, an expired setup link, an expired
-    /// sign-in link - and sent them hunting an invitation for something that
-    /// was never in it.
-    #[test]
-    fn the_help_does_not_claim_the_reader_has_a_password() {
-        let lowered = PORTAL_PASSWORD_HELP.to_lowercase();
-        for claim in ["set from your", "your invitation email", "we sent you"] {
-            assert!(!lowered.contains(claim), "{PORTAL_PASSWORD_HELP}");
-        }
-        assert!(
-            lowered.contains("if you have not set one"),
-            "the reader with no password needs naming: {PORTAL_PASSWORD_HELP}"
-        );
-    }
+    use super::{PORTAL_NO_PASSWORD_ACTION, PORTAL_NO_PASSWORD_PROMPT, PORTAL_SIGN_IN_FAILED};
 
     /// MAPPS-766: the passwordless route reads as an offer.
     ///
@@ -181,7 +129,6 @@ mod sign_in_copy_tests {
     #[test]
     fn the_copy_uses_no_implementation_words() {
         for copy in [
-            PORTAL_PASSWORD_HELP,
             PORTAL_SIGN_IN_FAILED,
             PORTAL_NO_PASSWORD_PROMPT,
             PORTAL_NO_PASSWORD_ACTION,

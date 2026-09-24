@@ -3811,13 +3811,26 @@ fn EditPortalRolesButton(
             "Edit roles"
         }
         if open() {
-            div {
-                class: "fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4",
-                onclick: move |_| { if !saving() { open.set(false); } },
-                div {
-                    class: "bg-surface rounded-lg shadow-lg max-w-md w-full p-6 space-y-4",
-                    onclick: move |evt: Event<MouseData>| { evt.stop_propagation(); },
-                    h3 { class: "text-lg font-semibold text-content", "Edit portal roles" }
+            Modal {
+                open: true,
+                title: "Edit portal roles".to_string(),
+                onclose: move |_| { if !saving() { open.set(false); } },
+                footer: rsx! {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        disabled: saving(),
+                        onclick: move |_| open.set(false),
+                        "Cancel"
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        disabled: saving(),
+                        loading: saving(),
+                        onclick: submit,
+                        "Save"
+                    }
+                },
+                div { class: "space-y-4",
                     p { class: "text-xs text-muted",
                         "Pick every role this contact should hold. Effective capabilities are the union across all picked roles."
                     }
@@ -3867,21 +3880,6 @@ fn EditPortalRolesButton(
                     }
                     if !error.read().is_empty() {
                         p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
-                    }
-                    div { class: "flex justify-end space-x-3 pt-2",
-                        Button {
-                            variant: ButtonVariant::Secondary,
-                            disabled: saving(),
-                            onclick: move |_| open.set(false),
-                            "Cancel"
-                        }
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            disabled: saving(),
-                            loading: saving(),
-                            onclick: submit,
-                            "Save"
-                        }
                     }
                 }
             }
@@ -8703,13 +8701,25 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
 
             // Role picker modal.
             if modal_open() {
-                div {
-                    class: "fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4",
-                    onclick: move |_| modal_open.set(false),
-                    div {
-                        class: "bg-surface rounded-lg shadow-lg max-w-md w-full p-6 space-y-4",
-                        onclick: move |evt: Event<MouseData>| { evt.stop_propagation(); },
-                        h3 { class: "text-lg font-semibold text-content", "Assign portal roles" }
+                Modal {
+                    open: true,
+                    title: "Assign portal roles".to_string(),
+                    onclose: move |_| modal_open.set(false),
+                    footer: rsx! {
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            onclick: move |_| modal_open.set(false),
+                            "Cancel"
+                        }
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            disabled: !can_mutate || *mutating.read(),
+                            loading: *mutating.read(),
+                            onclick: submit_grant,
+                            if is_portal_user { "Update roles" } else { "Send invitation" }
+                        }
+                    },
+                    div { class: "space-y-4",
                         p { class: "text-xs text-muted",
                             "Pick every role this contact should hold. They get everything the picked roles allow, combined."
                         }
@@ -8788,20 +8798,6 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                         }
                         if !error.read().is_empty() {
                             p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
-                        }
-                        div { class: "flex justify-end space-x-3 pt-2",
-                            Button {
-                                variant: ButtonVariant::Secondary,
-                                onclick: move |_| modal_open.set(false),
-                                "Cancel"
-                            }
-                            Button {
-                                variant: ButtonVariant::Primary,
-                                disabled: !can_mutate || *mutating.read(),
-                                loading: *mutating.read(),
-                                onclick: submit_grant,
-                                if is_portal_user { "Update roles" } else { "Send invitation" }
-                            }
                         }
                     }
                 }
