@@ -102,20 +102,6 @@ async fn load_companies() -> Vec<CompanyOption> {
     )
 }
 
-/// Load the tenant's tax rates for the invoice pickers (MAPPS-192). Reuses the
-/// `RemoteTaxRate` model from the Tax Rates settings view. Best-effort: an
-/// empty list on error so a form still renders.
-async fn load_tax_rates() -> Vec<RemoteTaxRate> {
-    crate::hooks::fetch::api::get_all_authed::<RemoteTaxRate>("/tax-rates")
-        .await
-        .unwrap_or_else(|e| {
-            // Best-effort: the form still renders without the picker, but the
-            // failure is logged rather than read as "this tenant has no rates".
-            tracing::warn!("tax-rate load failed: {e}");
-            Vec::new()
-        })
-}
-
 /// The tenant's default rate, the one the server applies when a body names
 /// none (PMS-1029): active and flagged default.
 fn default_tax_rate(rates: &[RemoteTaxRate]) -> Option<&RemoteTaxRate> {
@@ -3065,17 +3051,8 @@ pub fn InvoiceNewPage() -> Element {
     // from the invoice date plus the term's days (PMS-990).
     let mut payment_term_id = use_signal(String::new);
     let mut term_seeded = use_signal(|| false);
-    let terms_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<PaymentTermOpt>("/payment-terms")
-            .await
-            .unwrap_or_else(|e| {
-                // Best-effort: with no lookup the server still applies its
-                // default term.
-                tracing::warn!("payment-term load failed: {e}");
-                Vec::new()
-            })
-    });
+    // MAPPS-940: shared payment-terms cache, not a per-form fetch.
+    let terms_resource = crate::hooks::use_payment_terms(true);
     let terms: Vec<PaymentTermOpt> = terms_resource.read_unchecked().clone().unwrap_or_default();
     if !*term_seeded.read() && !terms.is_empty() {
         if let Some(default) = terms.iter().find(|t| t.is_default && t.is_active) {
@@ -3123,10 +3100,8 @@ pub fn InvoiceNewPage() -> Element {
     // matching every other required field. Shared by both submit paths.
     let mut company_error = use_signal(String::new);
 
-    let tax_rates_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        load_tax_rates().await
-    });
+    // MAPPS-940: shared tax-rates cache, not a per-form fetch.
+    let tax_rates_resource = crate::hooks::use_tax_rates(true);
     let tax_rate_options = tax_rate_select_options(
         &tax_rates_resource
             .read_unchecked()
@@ -4448,21 +4423,8 @@ struct InvoiceEditModalProps {
 }
 
 /// A payment-term option for the invoice dropdown (`GET /payment-terms`).
-#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
-struct PaymentTermOpt {
-    id: uuid::Uuid,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    is_active: bool,
-    /// MAPPS-662: seeds the create form's select.
-    #[serde(default)]
-    is_default: bool,
-    /// MAPPS-662: what the term means in days (PMS-990), for the derived
-    /// due date hint. `None` for a term with no fixed count.
-    #[serde(default)]
-    net_days: Option<i64>,
-}
+/// MAPPS-940: the shared, App-root-cached row, not a page-local fetch shape.
+type PaymentTermOpt = crate::hooks::PaymentTermRow;
 
 /// MAPPS-662: the due date the server will derive when the field is left
 /// blank: the invoice date plus the term's days, or plus thirty when the
@@ -4543,10 +4505,8 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
 
     // Tax-rate picker (MAPPS-192): compute tax from the stored line subtotal and
     // the selected rate; the Tax field stays editable as a manual override.
-    let tax_rates_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        load_tax_rates().await
-    });
+    // MAPPS-940: shared tax-rates cache, not a per-form fetch.
+    let tax_rates_resource = crate::hooks::use_tax_rates(true);
     let tax_rate_options = tax_rate_select_options(
         &tax_rates_resource
             .read_unchecked()
@@ -4580,16 +4540,8 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
     // Payment-term options from the settings-managed lookup (PMS-333). Only
     // active terms are offered; the entry keeps its current term even if that
     // term was later deactivated (it stays selected because we seed by id).
-    let terms_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<PaymentTermOpt>("/payment-terms")
-            .await
-            .unwrap_or_else(|e| {
-                // Best-effort: the entry keeps its current term either way.
-                tracing::warn!("payment-term load failed: {e}");
-                Vec::new()
-            })
-    });
+    // MAPPS-940: shared payment-terms cache, not a per-form fetch.
+    let terms_resource = crate::hooks::use_payment_terms(true);
     let current_term = payment_term_id.read().clone();
     // The server PUT does `payment_term_id = COALESCE($x, payment_term_id)`, so
     // a null cannot clear a term that is already set. Only offer the "no term"
@@ -5080,18 +5032,8 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
 // ============================================================================
 
 /// `TaxRateResponse`. `rate` is a decimal string.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-struct RemoteTaxRate {
-    id: uuid::Uuid,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    rate: String,
-    #[serde(default)]
-    is_default: bool,
-    #[serde(default)]
-    is_active: bool,
-}
+/// MAPPS-940: the shared, App-root-cached row, not a page-local fetch shape.
+type RemoteTaxRate = crate::hooks::TaxRateRow;
 
 /// Tax-rate management view. GET/POST `/tax-rates`, PUT/DELETE
 /// `/tax-rates/{id}`. Create/edit happen in a modal.
@@ -5385,7 +5327,7 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
             {
                 let result: Result<(), String> = match id {
                     None => crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
-                        "/tax-rates",
+                        crate::hooks::tax_rates::ENDPOINT,
                         &body,
                     )
                     .await
