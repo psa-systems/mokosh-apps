@@ -1,0 +1,15 @@
+# Nosey Parker ignore file, gitignore-style patterns applied against blob
+# paths in this repo's history and working tree. Add a path here only when
+# every finding in it has been reviewed and none is a real credential.
+#
+# `src/pages/portal_reset_password.rs` is a retired path: the file was
+# renamed to `src/pages/reset_password.rs` in the reorganisation that moved
+# portal pages under `src/pages/contact_portal/`. Its historic blob carries
+# the `hunter2hunter2` XKCD dummy password in a `#[cfg(test)] mod tests`
+# block asserting the JSON body shape a client sends the server; the value
+# is one of the canonical "known fake password" strings and is not a
+# credential this deployment or any of its ancestors ever accepted. The
+# same test still exists at the renamed path with a different placeholder;
+# rewriting history to purge the string is not worth the fallout on
+# outstanding branches.
+src/pages/portal_reset_password.rs
