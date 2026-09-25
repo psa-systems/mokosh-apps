@@ -3119,13 +3119,10 @@ mod admin_route_role_gates {
         );
     }
 
-    /// How a page reads the caller's role. `/admin/tenants` reads super-admin
-    /// because its server endpoint takes `RequireSuperAdmin`, not `RequireAdmin`.
-    /// `/admin/platform-account` reads the platform bearer instead of a
-    /// tenant role: its four routes authenticate with `RequirePlatformAdmin`,
-    /// not a tenant `AuthContext` role, so there is no `is_admin`/
-    /// `is_super_admin` to read (see `TenantManagementPage` in
-    /// `src/pages/admin.rs` for the established precedent).
+    /// How a page reads the caller's role. `/admin/platform-account` reads
+    /// the platform bearer instead of a tenant role: its four routes
+    /// authenticate with `RequirePlatformAdmin`, not a tenant `AuthContext`
+    /// role, so there is no `is_admin`/`is_super_admin` to read.
     const ROLE_READS: &[&str] = &[
         "is_admin",
         "is_super_admin",
