@@ -246,17 +246,13 @@ pub fn AuthGuard() -> Element {
     if !auth_state.is_authenticated() {
         // MAPPS-520: platform-plane admins pass through the tenant
         // AuthGuard when they hold a valid platform bearer in
-        // sessionStorage. The MAPPS-518 platform-admin surface
-        // (currently only `/admin/tenants`, `TenantManagementPage`)
-        // gates its own render on the same signal and issues its own
-        // fetches with the platform bearer, so a platform-only
-        // caller can reach it without the tenant `AuthContext`
-        // being populated. AppShell / Sidebar / TopBar all read the
-        // tenant user via `.as_ref().map(...).unwrap_or(false)` so
-        // they render sensibly with no tenant session; the platform
-        // admin sees a nav where every tenant-role-gated item is
-        // hidden EXCEPT the Tenants item (which gates on
-        // `platform_bearer_present()`).
+        // sessionStorage. A platform-admin surface gates its own render
+        // on the same signal and issues its own fetches with the
+        // platform bearer, so a platform-only caller can reach it
+        // without the tenant `AuthContext` being populated. AppShell /
+        // Sidebar / TopBar all read the tenant user via
+        // `.as_ref().map(...).unwrap_or(false)` so they render sensibly
+        // with no tenant session.
         //
         // Every OTHER `AuthGuard` fall-through remains: no platform
         // bearer AND no tenant auth still bounces to `/login` (or
@@ -1163,9 +1159,6 @@ pub enum Route {
     #[cfg(feature = "multi-tenant")]
     #[route("/admin/teams")]
     Teams {},
-
-    // mokosh-contact-login: /admin/tenants (Clients tab / TenantManagement)
-    // retired on this branch (prompt 001).
 
     // MAPPS-366: close the AppShell layout. Every route above (from Dashboard
     // down) renders inside the persistent shell; the chromeless routes at the
@@ -2477,10 +2470,6 @@ fn Teams() -> Element {
         }
     }
 }
-
-// mokosh-contact-login: TenantManagement wrapper retired with the
-// Clients tab (prompt 001). admin::TenantManagementPage stays in the
-// admin.rs file as dead code for a follow-up cleanup.
 
 // mokosh-contact-login: all pre-pivot Portal* route wrapper components
 // retired with the customer-portal /portal/* routes (prompt 001). The
