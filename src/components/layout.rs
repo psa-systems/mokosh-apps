@@ -758,6 +758,18 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                 }
             }
 
+            // MAPPS-946: the platform admin's own account page (password +
+            // MFA on the `platform_admins` credential, distinct from the
+            // Admin section above which is tenant-scoped). Gated solely on
+            // holding a platform bearer, independent of `is_admin`, since a
+            // pure platform admin with no tenant `users` row still owns this
+            // account.
+            if is_platform_admin {
+                NavSection { title: "Platform", rail_collapsed: collapsed, color: SectionColor::Violet,
+                    NavItem { to: Route::PlatformAccount {}, icon: rsx!(UserCircleIcon {}), label: "Platform Account", collapsed }
+                }
+            }
+
             }
 
             }

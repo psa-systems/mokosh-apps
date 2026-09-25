@@ -10503,8 +10503,13 @@ mod shared_dto_tests {
             company_type: company_type.unwrap_or_default(),
             status: status.unwrap_or_default(),
             industry,
-            website,
-            phone,
+            // PMS-1392: `website` / `phone` grew a second `Option` layer so a
+            // PATCH can distinguish "leave alone" (`None`) from "clear"
+            // (`Some(None)`) from "set" (`Some(Some(_))`). This page's PUT
+            // always sends a value for both, so both layers collapse the same
+            // way `name` etc. do above.
+            website: website.flatten(),
+            phone: phone.flatten(),
             address: address.unwrap_or_default(),
             notes: notes.unwrap_or_default(),
         };
@@ -10562,6 +10567,7 @@ mod shared_dto_tests {
             industry,
             website,
             phone,
+            fax,
             address,
             account_manager_id,
             account_manager_name,
@@ -10636,6 +10642,7 @@ mod shared_dto_tests {
             sla_id,
             default_contract_id,
             tags,
+            fax,
             created_at,
             updated_at,
         );
@@ -11018,7 +11025,9 @@ mod shared_dto_tests {
             company_id,
             name: name.unwrap_or_default(),
             address: address.unwrap_or_default(),
-            phone,
+            // PMS-1392: see the `website` / `phone` comment on the company
+            // form body above; this modal's PUT always sends a value too.
+            phone: phone.flatten(),
             is_primary: is_primary.unwrap_or_default(),
             timezone,
         };

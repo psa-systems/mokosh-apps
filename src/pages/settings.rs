@@ -9182,6 +9182,7 @@ mod tests {
             trial_ends_at,
             branding,
             created_at,
+            user_count: _,
         } = resp;
         let mokosh_types::tenants::TenantBranding {
             logo_url,
