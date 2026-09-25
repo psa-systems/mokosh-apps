@@ -2734,6 +2734,145 @@ pub mod api {
         post_no_content_with_auth(path, &t).await
     }
 
+    /// MAPPS-946: shared body-error parsing for the two `_json_no_content`
+    /// platform helpers below, factored out so each does not duplicate the
+    /// `ErrorResponse` decode.
+    #[cfg(feature = "app")]
+    async fn platform_status_error(resp: crate::platform::http::Response) -> ApiError {
+        let status = resp.status();
+        super::note_response_status(status);
+        // fetch-error-logging-allow: the request already failed and its status
+        // is what gets reported; an unreadable body only costs the server's own
+        // message, and the status-class fallback is used in its place.
+        let body_text = resp.text().await.unwrap_or_default();
+        if status == 429 {
+            return ApiError::Status {
+                code: status,
+                message: rate_limited_message(&body_text),
+                fields: Vec::new(),
+                envelope_code: String::new(),
+                envelope_body: None,
+            };
+        }
+        let (message, fields, envelope_code, envelope_body) =
+            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
+                Ok(env) => {
+                    let code = env.error.code.clone();
+                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
+                    (
+                        env.error.message,
+                        env.error.errors.unwrap_or_default(),
+                        code,
+                        raw,
+                    )
+                }
+                Err(_) => (
+                    body_text.chars().take(200).collect(),
+                    Vec::new(),
+                    String::new(),
+                    None,
+                ),
+            };
+        ApiError::Status {
+            code: status,
+            message,
+            fields,
+            envelope_code,
+            envelope_body,
+        }
+    }
+
+    /// MAPPS-946: platform-authed PUT with a JSON body that answers 200 with
+    /// no body (`PUT /platform/me/password`). Mirrors
+    /// [`post_authed_json_no_content`] for the tenant-bearer family.
+    #[cfg(feature = "app")]
+    pub async fn put_platform_authed_json_no_content<B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<(), ApiError> {
+        let t = current_platform_access_token().ok_or_else(platform_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::put(&url)
+            .header("Authorization", &format!("Bearer {t}"))
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        let status = resp.status();
+        if (200..300).contains(&status) {
+            super::note_response_status(status);
+            return Ok(());
+        }
+        Err(platform_status_error(resp).await)
+    }
+
+    /// MAPPS-946: platform-authed POST with a JSON body that answers 200
+    /// with no body (`POST /platform/me/mfa/disable`).
+    #[cfg(feature = "app")]
+    pub async fn post_platform_authed_json_no_content<B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<(), ApiError> {
+        let t = current_platform_access_token().ok_or_else(platform_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::post(&url)
+            .header("Authorization", &format!("Bearer {t}"))
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        let status = resp.status();
+        if (200..300).contains(&status) {
+            super::note_response_status(status);
+            return Ok(());
+        }
+        Err(platform_status_error(resp).await)
+    }
+
+    /// MAPPS-946: sessionStorage key for the last-known MFA-enrolment state
+    /// of the signed-in platform admin, captured from the `/platform/login`
+    /// response's `admin.mfa_enabled` (`pages::platform_login::PlatformAdminProfile`).
+    /// There is no `GET /platform/me` among the four routes this settings
+    /// page is scoped to (`mokosh-server/src/modules/platform/routes.rs:48-51`),
+    /// so this cached hint is what the page renders; it is kept in sync
+    /// locally after every successful setup/enable/disable.
+    #[cfg(target_arch = "wasm32")]
+    const PLATFORM_MFA_ENABLED_KEY: &str = "mokosh:platform_mfa_enabled";
+
+    #[cfg(feature = "app")]
+    pub fn current_platform_mfa_enabled() -> bool {
+        #[cfg(target_arch = "wasm32")]
+        {
+            if let Some(win) = web_sys::window() {
+                if let Ok(Some(store)) = win.session_storage() {
+                    if let Ok(Some(v)) = store.get_item(PLATFORM_MFA_ENABLED_KEY) {
+                        return v == "true";
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    #[cfg(feature = "app")]
+    pub fn set_platform_mfa_enabled(enabled: bool) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            if let Some(win) = web_sys::window() {
+                if let Ok(Some(store)) = win.session_storage() {
+                    let _ = store.set_item(
+                        PLATFORM_MFA_ENABLED_KEY,
+                        if enabled { "true" } else { "false" },
+                    );
+                }
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = enabled;
+    }
+
     // --- Typed error layer ----------------------------------------------
     //
     // The string-returning helpers above are kept so existing callers

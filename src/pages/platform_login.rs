@@ -34,6 +34,13 @@ pub(crate) struct PlatformAdminProfile {
     pub(crate) email: String,
     pub(crate) first_name: String,
     pub(crate) last_name: String,
+    /// MAPPS-946: whether the admin already has TOTP enrolled. Mirrors
+    /// mokosh-server's `PlatformAdminProfile::mfa_enabled`; there is no
+    /// `GET /platform/me` among the platform-settings routes to re-fetch
+    /// this later, so it is cached at login (see
+    /// `hooks::fetch::api::set_platform_mfa_enabled`).
+    #[serde(default)]
+    pub(crate) mfa_enabled: bool,
 }
 
 #[component]
@@ -91,6 +98,7 @@ pub fn PlatformLoginPage() -> Element {
                         }
                         #[cfg(not(target_arch = "wasm32"))]
                         let _ = &resp.access_token;
+                        crate::hooks::fetch::api::set_platform_mfa_enabled(resp.admin.mfa_enabled);
                         done_greeting.set(format!(
                             "Signed in as {} {} ({}). Platform token stored in session; the tenant surface is unchanged.",
                             resp.admin.first_name, resp.admin.last_name, resp.admin.email
