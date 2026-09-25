@@ -25,13 +25,15 @@
 
 use std::collections::BTreeSet;
 
+use chrono::{DateTime, Utc};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::components::{
     use_page_title, Badge, BadgeVariant, BannerTone, Button, ButtonVariant, Card, Checkbox,
-    ErrorBanner, FileField, PageHeader, StatusBanner,
+    ContentUnavailable, ErrorBanner, FileField, PageHeader, StatusBanner, Table, TableBody,
+    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::pages::settings::{AdminOnlyNotice, SettingsBreadcrumb};
 use crate::pages::settings_contact_sync::Run;
@@ -85,6 +87,37 @@ pub struct UploadedFile {
 pub struct Uploaded {
     pub file: UploadedFile,
     pub preview: Preview,
+}
+
+/// One row of `GET /integrations/contact-sync/vcard/uploads` (`ImportFileView`,
+/// PMS-1290): the fields the "Recent uploads" list shows.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct RecentUpload {
+    pub id: Uuid,
+    pub filename: String,
+    pub uploaded_at: DateTime<Utc>,
+    #[serde(default)]
+    pub uploaded_by_name: Option<String>,
+    #[serde(default)]
+    pub discarded_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub contacts: i32,
+    #[serde(default)]
+    pub latest_run: Option<Run>,
+}
+
+/// What a prior upload's row says happened to it, in the order the reader
+/// cares about: a run in flight or finished says more than the file's own
+/// `discarded_at`.
+pub fn upload_status(row: &RecentUpload) -> &'static str {
+    match row.latest_run.as_ref().map(|r| r.status.as_str()) {
+        Some("completed") => "Imported",
+        Some("failed") => "Import failed",
+        Some("cancelled") => "Cancelled",
+        Some("queued") | Some("running") => "Importing…",
+        _ if row.discarded_at.is_some() => "Expired",
+        _ => "Not imported yet",
+    }
 }
 
 #[derive(Serialize)]
@@ -232,6 +265,16 @@ fn VcardImportBody() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
     let navigator = use_navigator();
 
+    // The upload history for the "Recent uploads" list below the picker.
+    // Re-read after each upload (`refresh` bump) so a just-uploaded file
+    // shows up without a page reload.
+    let mut refresh = use_signal(|| 0u32);
+    let recent = crate::hooks::use_remote_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _ = refresh.read();
+        crate::hooks::fetch::api::get_authed::<Vec<RecentUpload>>(UPLOADS).await
+    });
+
     // Read the run while it can still change, and stop when it cannot.
     use_effect(move || {
         let Step::Importing(run_id) = step() else {
@@ -293,6 +336,7 @@ fn VcardImportBody() -> Element {
                     uploaded.set(Some(answer));
                     selected.set(BTreeSet::new());
                     step.set(Step::Choose);
+                    refresh += 1;
                 }
                 Err(e) => {
                     tracing::error!("vCard upload failed: {e}");
@@ -415,6 +459,73 @@ fn VcardImportBody() -> Element {
                             li { "The file is read on the server and kept only until it is imported, or for a day if it never is." }
                             li { "Addresses, birthdays, photos and other details Mokosh has no place for are not imported. A photo link in the file is never opened." }
                             li { "Importing the same file again changes nothing that is already in Mokosh." }
+                        }
+                    }
+                }
+                Card { class: "mt-6",
+                    div { class: "space-y-3",
+                        p { class: "text-sm font-medium text-content", "Recent uploads" }
+                        if recent.is_unavailable() {
+                            ContentUnavailable { title: "Recent uploads".to_string() }
+                        } else if recent.is_loading() {
+                            Table {
+                                TableHead {
+                                    TableRow {
+                                        TableHeader { "File" }
+                                        TableHeader { "Uploaded" }
+                                        TableHeader { "Contacts" }
+                                        TableHeader { "Status" }
+                                    }
+                                }
+                                TableLoading { columns: 4 }
+                            }
+                        } else {
+                            {
+                                let rows = recent.clone().value_or_default();
+                                let tz = crate::utils::datetime::user_timezone();
+                                let pref = crate::utils::datetime::user_format_pref();
+                                rsx! {
+                                    Table {
+                                        TableHead {
+                                            TableRow {
+                                                TableHeader { "File" }
+                                                TableHeader { "Uploaded" }
+                                                TableHeader { "Contacts" }
+                                                TableHeader { "Status" }
+                                            }
+                                        }
+                                        if rows.is_empty() {
+                                            TableEmpty {
+                                                columns: 4,
+                                                title: "No uploads yet".to_string(),
+                                                description: "Files uploaded here show up in this list.".to_string(),
+                                            }
+                                        } else {
+                                            TableBody {
+                                                for row in rows.iter().cloned() {
+                                                    {
+                                                        let uploaded_at = crate::utils::datetime::fmt_user_dt_in(
+                                                            row.uploaded_at,
+                                                            pref.as_deref(),
+                                                            tz,
+                                                            Some("%b %d, %Y %H:%M"),
+                                                        );
+                                                        let status = upload_status(&row);
+                                                        rsx! {
+                                                            TableRow { key: "{row.id}",
+                                                                TableCell { "{row.filename}" }
+                                                                TableCell { "{uploaded_at}" }
+                                                                TableCell { "{row.contacts}" }
+                                                                TableCell { "{status}" }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -693,6 +804,59 @@ mod tests {
             "Office contacts.vcf holds 3 contacts. 1 card could not be read and will not be imported. 1 card describes a group rather than a person and is skipped."
         );
         assert!(file_summary(&Totals::default()).contains("chosen categories"));
+    }
+
+    fn recent_upload(latest_run_status: Option<&str>, discarded: bool) -> RecentUpload {
+        RecentUpload {
+            id: Uuid::nil(),
+            filename: "Office contacts.vcf".to_string(),
+            uploaded_at: Utc::now(),
+            uploaded_by_name: Some("Ana".to_string()),
+            discarded_at: discarded.then(Utc::now),
+            contacts: 3,
+            latest_run: latest_run_status.map(|status| {
+                serde_json::from_value(serde_json::json!({
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "status": status,
+                    "created": 0, "linked": 0, "updated": 0, "queued_for_review": 0,
+                }))
+                .expect("run")
+            }),
+        }
+    }
+
+    /// `GET /integrations/contact-sync/vcard/uploads` (`list_vcard_uploads`,
+    /// `mokosh-server/src/modules/contact_sync/routes.rs`) is authoritative
+    /// for `ImportFileView`'s shape; this client type is a read-only subset
+    /// of it, so a field this page needs but the server drops would show up
+    /// as a compile error here, not a silent blank column.
+    #[test]
+    fn the_status_label_prefers_the_latest_run_over_discarded_at() {
+        assert_eq!(
+            upload_status(&recent_upload(None, false)),
+            "Not imported yet"
+        );
+        assert_eq!(upload_status(&recent_upload(None, true)), "Expired");
+        assert_eq!(
+            upload_status(&recent_upload(Some("queued"), false)),
+            "Importing…"
+        );
+        assert_eq!(
+            upload_status(&recent_upload(Some("running"), false)),
+            "Importing…"
+        );
+        assert_eq!(
+            upload_status(&recent_upload(Some("completed"), true)),
+            "Imported"
+        );
+        assert_eq!(
+            upload_status(&recent_upload(Some("failed"), true)),
+            "Import failed"
+        );
+        assert_eq!(
+            upload_status(&recent_upload(Some("cancelled"), true)),
+            "Cancelled"
+        );
     }
 
     /// Only what the server would certainly refuse is refused here.
