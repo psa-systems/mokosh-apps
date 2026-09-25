@@ -306,6 +306,9 @@ pub fn StandaloneLogin() -> Element {
                             }
                             #[cfg(not(target_arch = "wasm32"))]
                             let _ = &resp.access_token;
+                            crate::hooks::fetch::api::set_platform_mfa_enabled(
+                                resp.admin.mfa_enabled,
+                            );
 
                             // MAPPS-520 walkthrough: chain a tenant
                             // login attempt with the same credentials

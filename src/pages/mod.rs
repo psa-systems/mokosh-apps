@@ -41,6 +41,7 @@ pub mod login;
 pub mod not_found;
 pub mod onboarding;
 pub mod pick_tenant;
+pub mod platform_account;
 pub mod platform_login;
 pub mod settings_contact_sync;
 pub mod settings_contact_sync_client;

@@ -1160,6 +1160,19 @@ pub enum Route {
     #[route("/admin/teams")]
     Teams {},
 
+    // MAPPS-946: platform-admin self-service (password + MFA), mirroring
+    // MAPPS-830's tenant-user MFA surface. Renders for a caller who holds
+    // only a platform bearer (see the `AuthGuard` branch in `App` above
+    // that lets a platform-only session reach this shared `AppShell`),
+    // so it lives inside the guarded layout like every other admin route
+    // even though it authenticates with the platform bearer, not the
+    // tenant `AuthContext`.
+    #[route("/admin/platform-account")]
+    PlatformAccount {},
+
+    // mokosh-contact-login: /admin/tenants (Clients tab / TenantManagement)
+    // retired on this branch (prompt 001).
+
     // MAPPS-366: close the AppShell layout. Every route above (from Dashboard
     // down) renders inside the persistent shell; the chromeless routes at the
     // top of the AuthGuard block and the portal routes below do not.
@@ -1957,6 +1970,15 @@ fn Profile() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             profile::ProfilePage {}
+        }
+    }
+}
+
+#[component]
+fn PlatformAccount() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            platform_account::PlatformAccountPage {}
         }
     }
 }
@@ -3055,6 +3077,11 @@ mod admin_route_role_gates {
             "src/pages/teams.rs",
             include_str!("pages/teams.rs"),
         ),
+        (
+            "/admin/platform-account",
+            "src/pages/platform_account.rs",
+            include_str!("pages/platform_account.rs"),
+        ),
     ];
 
     /// `/admin/*` paths declared in this file's `Route` enum. Read from the
@@ -3094,11 +3121,25 @@ mod admin_route_role_gates {
 
     /// How a page reads the caller's role. `/admin/tenants` reads super-admin
     /// because its server endpoint takes `RequireSuperAdmin`, not `RequireAdmin`.
-    const ROLE_READS: &[&str] = &["is_admin", "is_super_admin"];
+    /// `/admin/platform-account` reads the platform bearer instead of a
+    /// tenant role: its four routes authenticate with `RequirePlatformAdmin`,
+    /// not a tenant `AuthContext` role, so there is no `is_admin`/
+    /// `is_super_admin` to read (see `TenantManagementPage` in
+    /// `src/pages/admin.rs` for the established precedent).
+    const ROLE_READS: &[&str] = &[
+        "is_admin",
+        "is_super_admin",
+        "current_platform_access_token",
+    ];
 
     /// How a page refuses on that role. The gate has to be a refusal: reading
     /// the role and rendering the page anyway is what `/admin/forms` did.
-    const ROLE_REFUSALS: &[&str] = &["if !is_admin", "if !use_is_admin()", "if !is_super_admin"];
+    const ROLE_REFUSALS: &[&str] = &[
+        "if !is_admin",
+        "if !use_is_admin()",
+        "if !is_super_admin",
+        "current_platform_access_token().is_none()",
+    ];
 
     #[test]
     fn every_admin_page_has_a_role_gate() {
