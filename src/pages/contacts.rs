@@ -1992,14 +1992,10 @@ fn website_host(normalized: &str) -> String {
         .to_string()
 }
 
-/// PMS-805 `GET /companies/website-probe` response. Only the fields the note
-/// below renders are deserialized; the rest of the body is ignored.
-///
-/// `redirect_truncated` is `#[serde(default)]` because the shipped server does
-/// not send it: PMS-805 specified the field but merged without it, and a chain
-/// still redirecting at the hop limit comes back as `reachable: false` with
-/// `unreachable_reason: "refused"` instead. The branch here is inert until the
-/// server adds the field, and is tracked in MAPPS-486.
+/// `GET /companies/website-probe` response. Only the fields the note below
+/// renders are deserialized; the rest of the body is ignored. The server now
+/// sends `redirect_truncated` on every response, so the flag is required here
+/// and a missing field is a wire-shape regression the deserializer surfaces.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 struct WebsiteProbe {
     reachable: bool,
@@ -2009,7 +2005,6 @@ struct WebsiteProbe {
     #[serde(default)]
     www_change: String,
     unreachable_reason: Option<String>,
-    #[serde(default)]
     redirect_truncated: bool,
 }
 
@@ -8973,29 +8968,6 @@ mod validation_tests {
         assert_eq!(
             website_probe_note("https://example.com/x", &probe),
             "Could not reach example.com (teapot). Saving as https://example.com/x."
-        );
-    }
-
-    #[test]
-    fn website_probe_body_deserializes_without_redirect_truncated() {
-        // The shipped server (PMS-805) omits `redirect_truncated`; the client
-        // must still read the body it actually sends (MAPPS-486).
-        let body = serde_json::json!({
-            "input": "example.com",
-            "reachable": true,
-            "canonical_url": "https://www.example.com/",
-            "https_ok": true,
-            "http_ok": true,
-            "http_redirects_to_https": true,
-            "www_change": "added",
-            "final_status": 200,
-            "unreachable_reason": null
-        });
-        let probe: WebsiteProbe = serde_json::from_value(body).unwrap();
-        assert!(!probe.redirect_truncated);
-        assert_eq!(
-            website_probe_note("https://example.com", &probe),
-            "Resolved to https://www.example.com/ (http redirects to https, www added)"
         );
     }
 
