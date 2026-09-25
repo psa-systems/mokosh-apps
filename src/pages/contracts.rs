@@ -1444,7 +1444,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                             }
                         }
                         if items.read().is_empty() {
-                            p { class: "text-sm text-muted", "No line items. Click Add Item to include one." }
+                            p { class: "text-sm text-muted", "No line items. Click Add line to include one." }
                         } else {
                             div { class: "space-y-4",
                                 for (idx, item) in items.read().clone().into_iter().enumerate() {
@@ -1899,7 +1899,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
 fn ContractItemsCard(
     items_resource: Resource<Option<Vec<ContractItemResponse>>>,
     editing_item: Signal<Option<ContractItemFormState>>,
-    // MAPPS-357: false while the server is unreachable, so the Add Item
+    // MAPPS-357: false while the server is unreachable, so the Add line
     // affordance (which opens a POST/PUT/DELETE modal) disables.
     can_mutate: bool,
 ) -> Element {
