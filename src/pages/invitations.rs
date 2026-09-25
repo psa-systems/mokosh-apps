@@ -64,6 +64,10 @@ const INVITE_PREVIEW_NOTE: &str = "The invitation email is built into the server
 
 #[component]
 pub fn InvitationsPage() -> Element {
+    // MAPPS-939: resolve once for the whole row list, not once per row's
+    // "Expires" cell.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     use_page_title("Invitations");
     let auth = use_auth();
     // MAPPS-518: the platform super-admin persona lives in
@@ -456,7 +460,7 @@ pub fn InvitationsPage() -> Element {
                                     TableCell {
                                         time {
                                             datetime: "{inv.expires_at.to_rfc3339()}",
-                                            "{crate::utils::datetime::fmt_user_dt(inv.expires_at, Some(\"%Y-%m-%d\"))}"
+                                            "{crate::utils::datetime::fmt_user_dt_in(inv.expires_at, pref.as_deref(), tz, Some(\"%Y-%m-%d\"))}"
                                         }
                                     }
                                     TableCell {

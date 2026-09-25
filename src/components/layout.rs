@@ -1557,8 +1557,12 @@ struct NotificationPage {
 /// delegates. The instant is rendered in the user's profile timezone
 /// (MAPPS-208); users without a format preference get a locale
 /// rendering still pinned to that timezone.
-fn format_local_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
-    crate::utils::datetime::fmt_user_dt(dt, None)
+fn format_local_datetime(
+    dt: chrono::DateTime<chrono::Utc>,
+    pref: Option<&str>,
+    tz: chrono_tz::Tz,
+) -> String {
+    crate::utils::datetime::fmt_user_dt_in(dt, pref, tz, None)
 }
 
 /// Top-bar notification bell with an inbox dropdown.
@@ -1599,6 +1603,9 @@ fn NotificationBell() -> Element {
     let items = inbox.read_unchecked().clone().unwrap_or_default();
     let unread = items.iter().filter(|i| i.read_at.is_none()).count();
     let row_count = items.len();
+    // MAPPS-939: resolve once for the whole dropdown, not once per row.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
 
     rsx! {
         Popover {
@@ -1639,6 +1646,8 @@ fn NotificationBell() -> Element {
                 for item in items.iter().cloned() {
                     NotificationRow {
                         item,
+                        tz,
+                        pref: pref.clone(),
                         on_read: move |_| inbox.restart(),
                         // MAPPS-743: a row that navigates closes the panel
                         // behind it; the page it lands on is the point.
@@ -1725,6 +1734,8 @@ struct ApprovalsCount {
 #[component]
 fn NotificationRow(
     item: NotificationItem,
+    tz: chrono_tz::Tz,
+    pref: Option<String>,
     on_read: EventHandler<()>,
     on_navigate: EventHandler<()>,
 ) -> Element {
@@ -1732,7 +1743,7 @@ fn NotificationRow(
     let is_unread = item.read_at.is_none();
     let id = item.id;
     let subject = item.subject.clone().unwrap_or_default();
-    let when = format_local_datetime(item.created_at);
+    let when = format_local_datetime(item.created_at, pref.as_deref(), tz);
     let when_iso = item.created_at.to_rfc3339();
     let unread_bg = if is_unread {
         "bg-accent-50 dark:bg-accent-900/40"

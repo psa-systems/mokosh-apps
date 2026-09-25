@@ -164,6 +164,9 @@ fn activity_kind_label(kind: &str) -> &'static str {
 /// below and is unchanged.
 #[component]
 fn ContactDashboardBody() -> Element {
+    // MAPPS-939: resolve once for the whole activity list, not once per row.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     let summary_resource = use_resource(|| async {
         #[cfg(feature = "web")]
         {
@@ -310,8 +313,10 @@ fn ContactDashboardBody() -> Element {
                             {
                                 let route = activity_route(&item.kind, &item.id);
                                 let kind_label = activity_kind_label(&item.kind);
-                                let when = crate::utils::datetime::fmt_user_dt(
+                                let when = crate::utils::datetime::fmt_user_dt_in(
                                     item.occurred_at,
+                                    pref.as_deref(),
+                                    tz,
                                     Some("%b %-d, %Y %H:%M"),
                                 );
                                 let when_iso = item.occurred_at.to_rfc3339();
@@ -698,6 +703,10 @@ fn short_id(id: &uuid::Uuid) -> String {
 /// timer so an unattended monitor stays current.
 #[component]
 pub fn DashboardTvPage() -> Element {
+    // MAPPS-939: resolve once for the whole appointment list, not once per
+    // row's start/end time cells.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     let auth = crate::hooks::use_auth();
 
     // Periodic refresh for the unattended wall monitor. Bumps a counter
@@ -903,13 +912,17 @@ pub fn DashboardTvPage() -> Element {
                                                 .clone()
                                                 .filter(|s| !s.trim().is_empty())
                                                 .unwrap_or_else(|| "-".to_string());
-                                            let start_time = crate::utils::datetime::fmt_user_dt(
+                                            let start_time = crate::utils::datetime::fmt_user_dt_in(
                                                 a.start_time,
+                                                pref.as_deref(),
+                                                tz,
                                                 Some("%H:%M"),
                                             );
                                             let start_time_iso = a.start_time.to_rfc3339();
-                                            let end_time = crate::utils::datetime::fmt_user_dt(
+                                            let end_time = crate::utils::datetime::fmt_user_dt_in(
                                                 a.end_time,
+                                                pref.as_deref(),
+                                                tz,
                                                 Some("%H:%M"),
                                             );
                                             let end_time_iso = a.end_time.to_rfc3339();

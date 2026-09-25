@@ -591,8 +591,11 @@ type PhraseParts = Vec<(String, Option<String>)>;
 /// hint, e.g. "Jan 15, 2025 5:00 PM" and "(2 hours left)", as the two
 /// phrases a `Phrases` cell wraps between (MAPPS-731).
 /// PMS-253: honours the per-user format pref for the absolute part.
-fn sla_due_parts(due: DateTime<Utc>) -> PhraseParts {
-    let absolute = crate::utils::datetime::fmt_user_dt(due, Some("%b %-d, %Y %-I:%M %p"));
+/// MAPPS-939: takes `pref`/`tz` explicitly so the detail page resolves the
+/// user's timezone once per render pass instead of once per SLA due date.
+fn sla_due_parts_in(due: DateTime<Utc>, pref: Option<&str>, tz: chrono_tz::Tz) -> PhraseParts {
+    let absolute =
+        crate::utils::datetime::fmt_user_dt_in(due, pref, tz, Some("%b %-d, %Y %-I:%M %p"));
     let hint = remaining_hint(due, Utc::now());
     vec![
         (absolute, Some(due.to_rfc3339())),
@@ -762,9 +765,12 @@ fn humanize_priority(raw: &str) -> String {
 }
 
 /// Absolute timestamp for created / activity lines, e.g. "Jun 05, 2026 14:30".
-/// PMS-253: honours the per-user format pref when set.
-fn fmt_datetime(dt: DateTime<Utc>) -> String {
-    crate::utils::datetime::fmt_user_dt(dt, Some("%b %d, %Y %H:%M"))
+/// PMS-253: honours the per-user format pref when set. MAPPS-939: takes
+/// `pref`/`tz` explicitly so a caller rendering many timestamps in one
+/// render pass resolves the user's timezone once and reuses it, instead of
+/// each call re-deriving it from the AuthContext.
+fn fmt_datetime_in(dt: DateTime<Utc>, pref: Option<&str>, tz: chrono_tz::Tz) -> String {
+    crate::utils::datetime::fmt_user_dt_in(dt, pref, tz, Some("%b %d, %Y %H:%M"))
 }
 
 /// Resolve a history actor id to a display name; "-" when unknown so the
@@ -1196,6 +1202,10 @@ pub fn TicketListPage() -> Element {
 #[component]
 fn TicketListBody() -> Element {
     use_page_title("Tickets");
+    // MAPPS-939: resolve once for the whole row list, not once per row's
+    // "updated" hover title.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     // mokosh-contact-login prompt 006: gate the "New Ticket" CTA on
     // `tickets:write`. Staff / platform sessions always see it (the
     // hook returns true unconditionally for them); contacts see it
@@ -1675,7 +1685,7 @@ fn TicketListBody() -> Element {
                                 assigned_to: ticket.assigned_to_name.unwrap_or_else(|| "Unassigned".to_string()),
                                 updated: relative_time(ticket.updated_at),
                                 updated_iso: ticket.updated_at.to_rfc3339(),
-                                updated_title: fmt_datetime(ticket.updated_at),
+                                updated_title: fmt_datetime_in(ticket.updated_at, pref.as_deref(), tz),
                                 // MAPPS-290: hand the page-scoped
                                 // selection signal down so each
                                 // row's first cell renders a
@@ -2667,6 +2677,11 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
 #[component]
 #[allow(unused_variables)]
 fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
+    // MAPPS-939: resolve once for the whole render pass (Created, the SLA
+    // legs, the description "Edited" marker, and every journal entry),
+    // not once per timestamp.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     // mokosh-contact-login prompt 006: capability gates. `can_comment`
     // covers the customer-facing reply surface; every other mutation
     // control (Log Time, Delete, inline status/priority/assignee
@@ -3130,7 +3145,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
         .find(|e| e.action == "update" && e.changed_fields.iter().any(|f| f == "description"))
         .map(|e| {
             let who = actor_name(&users, &e.user_id);
-            let when = fmt_datetime(e.timestamp);
+            let when = fmt_datetime_in(e.timestamp, pref.as_deref(), tz);
             let when_iso = e.timestamp.to_rfc3339();
             if who == "-" {
                 rsx! {
@@ -4172,7 +4187,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             key: "{entry_key}",
                                             user: entry.who.clone(),
                                             action: entry.action.clone(),
-                                            time: fmt_datetime(entry.at),
+                                            time: fmt_datetime_in(entry.at, pref.as_deref(), tz),
                                             time_iso: entry.at.to_rfc3339(),
                                             content: entry.body.clone(),
                                             changes: entry.changes.clone(),
@@ -4701,7 +4716,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             }
                             {
                                 let created = created_parts(
-                                    fmt_datetime(t.created_at),
+                                    fmt_datetime_in(t.created_at, pref.as_deref(), tz),
                                     t.created_at.to_rfc3339(),
                                     &t.created_by_name,
                                 );
@@ -4727,11 +4742,20 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         ("Resolution", sla_leg(s.resolution_due, s.resolved_at, now)),
                                     ]
                                     .into_iter()
-                                    .filter_map(|(label, leg)| leg.map(|leg| (label, sla_leg_parts(&leg, fmt_datetime))))
+                                    .filter_map(|(label, leg)| {
+                                        leg.map(|leg| {
+                                            (
+                                                label,
+                                                sla_leg_parts(&leg, |dt| {
+                                                    fmt_datetime_in(dt, pref.as_deref(), tz)
+                                                }),
+                                            )
+                                        })
+                                    })
                                     .collect(),
                                     None => t
                                         .sla_due_date
-                                        .map(|due| vec![("SLA Due", sla_due_parts(due))])
+                                        .map(|due| vec![("SLA Due", sla_due_parts_in(due, pref.as_deref(), tz))])
                                         .unwrap_or_default(),
                                 };
                                 rsx! {
@@ -5180,6 +5204,9 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
     let loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
+    // MAPPS-939: resolve once for the whole approvals list, not once per row.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
 
     // MAPPS-357: this is a SECONDARY section embedded in the ticket-detail page,
     // not a routed page - the parent already swaps in ContentUnavailable when the
@@ -5335,8 +5362,10 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                             let when = row
                                 .requested_at
                                 .map(|d| {
-                                    crate::utils::datetime::fmt_user_dt(
+                                    crate::utils::datetime::fmt_user_dt_in(
                                         d,
+                                        pref.as_deref(),
+                                        tz,
                                         Some("%b %-d, %Y %H:%M %Z"),
                                     )
                                 })
@@ -5345,8 +5374,10 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                             let decided = row
                                 .decided_at
                                 .map(|d| {
-                                    crate::utils::datetime::fmt_user_dt(
+                                    crate::utils::datetime::fmt_user_dt_in(
                                         d,
+                                        pref.as_deref(),
+                                        tz,
                                         Some("%b %-d, %Y %H:%M %Z"),
                                     )
                                 })

@@ -204,12 +204,14 @@ struct FieldChange {
 /// "Feb 28, 2025 3:45 PM" from an ISO datetime; falls back to the date-only
 /// formatter, then the raw string. Used for audit timestamps.
 /// PMS-253: honours the per-user format pref when set.
-fn fmt_datetime(s: &Option<String>) -> String {
+/// MAPPS-939: takes `pref`/`tz` explicitly so the detail page resolves the
+/// user's timezone once per render pass instead of once per audit entry.
+fn fmt_datetime(s: &Option<String>, pref: Option<&str>, tz: chrono_tz::Tz) -> String {
     match s {
         Some(ts) => chrono::DateTime::parse_from_rfc3339(ts)
             .map(|dt| {
                 let utc = dt.with_timezone(&chrono::Utc);
-                crate::utils::datetime::fmt_user_dt(utc, Some("%b %-d, %Y %-I:%M %p"))
+                crate::utils::datetime::fmt_user_dt_in(utc, pref, tz, Some("%b %-d, %Y %-I:%M %p"))
             })
             .unwrap_or_else(|_| fmt_date(s)),
         None => "-".to_string(),
@@ -1241,6 +1243,10 @@ pub struct AssetDetailPageProps {
 
 #[component]
 pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
+    // MAPPS-939: resolve once for the whole render pass (the "Edited"
+    // marker plus the audit panel below), not once per timestamp.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     // MAPPS-607: PMS-936 exposes `POST /assets/{id}/report-issue` behind
     // the `assets:report_issue` cap; the endpoint creates a ticket
     // pre-linked to this asset and returns it in the response. Staff and
@@ -1552,7 +1558,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         };
         latest.map(|e| {
             let who = actor_name(&users, &e.performed_by_id);
-            let when = fmt_datetime(&e.performed_at);
+            let when = fmt_datetime(&e.performed_at, pref.as_deref(), tz);
             let when_iso = e.performed_at.clone().unwrap_or_default();
             if who == "-" {
                 rsx! { "Edited " time { datetime: "{when_iso}", "{when}" } }
@@ -2177,7 +2183,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                         // entry omits the line for an empty name, so the
                                                         // sentinel is dropped here rather than printed.
                                                         who: if who == "-" { String::new() } else { who },
-                                                        when: fmt_datetime(&e.performed_at),
+                                                        when: fmt_datetime(&e.performed_at, pref.as_deref(), tz),
                                                         when_iso: e.performed_at.clone().unwrap_or_default(),
                                                         changes: change_lines(e),
                                                     }

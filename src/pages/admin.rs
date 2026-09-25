@@ -129,9 +129,15 @@ fn humanize_tenant_status(raw: &str) -> String {
     }
 }
 
+/// MAPPS-939: takes `pref`/`tz` explicitly so the roster resolves the user's
+/// timezone once per render pass instead of once per row.
 #[cfg(feature = "multi-tenant")]
-fn format_created(when: chrono::DateTime<chrono::Utc>) -> String {
-    crate::utils::datetime::fmt_user_dt(when, Some("%b %-d, %Y"))
+fn format_created(
+    when: chrono::DateTime<chrono::Utc>,
+    pref: Option<&str>,
+    tz: chrono_tz::Tz,
+) -> String {
+    crate::utils::datetime::fmt_user_dt_in(when, pref, tz, Some("%b %-d, %Y"))
 }
 
 /// Tenant management page (multi-tenant mode only). Role-gated.
@@ -151,6 +157,10 @@ pub fn TenantManagementPage() -> Element {
     // name + Rust types stay `TenantManagement` / `Tenant*` / `tenant_id`
     // (schema jargon), only strings the operator sees flip.
     use_page_title("Client Management");
+    // MAPPS-939: resolve once for the whole row list, not once per row's
+    // "Created" cell.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     // MAPPS-518: this whole surface (list / create / suspend /
     // activate / resend welcome / edit tenant admin) is gated on
     // the platform-admin bearer server-side. If the operator has not
@@ -338,7 +348,7 @@ pub fn TenantManagementPage() -> Element {
                                 plan: humanize_plan(&tenant.subscription_plan),
                                 mrr: "-".to_string(),
                                 status: humanize_tenant_status(&tenant.status),
-                                created: format_created(tenant.created_at),
+                                created: format_created(tenant.created_at, pref.as_deref(), tz),
                                 created_iso: tenant.created_at.to_rfc3339(),
                                 logo_url: tenant.branding.logo_url.clone(),
                                 editable: true,

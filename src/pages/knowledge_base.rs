@@ -427,9 +427,11 @@ async fn resolve_company_names(ids: &[uuid::Uuid]) -> Vec<(String, String)> {
 /// Truncate an ISO timestamp to its date portion for compact display.
 /// The server returns RFC 3339 (`2026-06-05T12:34:56Z`); we show the
 /// leading `YYYY-MM-DD`. Falls back to the raw string if it is shorter.
-fn date_only(ts: &Option<DateTime<Utc>>) -> String {
+/// MAPPS-939: takes `pref`/`tz` explicitly so a list page resolves the
+/// user's timezone once per render pass instead of once per row.
+fn date_only(ts: &Option<DateTime<Utc>>, pref: Option<&str>, tz: chrono_tz::Tz) -> String {
     match ts {
-        Some(dt) => crate::utils::datetime::fmt_user_dt(*dt, Some("%Y-%m-%d")),
+        Some(dt) => crate::utils::datetime::fmt_user_dt_in(*dt, pref, tz, Some("%Y-%m-%d")),
         None => "-".to_string(),
     }
 }
@@ -481,6 +483,10 @@ fn attribution_parts(
 #[component]
 pub fn KBHomePage() -> Element {
     use_page_title("Knowledge Base");
+    // MAPPS-939: resolve once for the whole recent-articles list, not once
+    // per row.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     let mut search = use_signal(String::new);
     let navigator = use_navigator();
 
@@ -703,7 +709,7 @@ pub fn KBHomePage() -> Element {
                             key: "{article.id}",
                             id: article.id.to_string(),
                             title: article.title,
-                            updated: date_only(&article.updated_at),
+                            updated: date_only(&article.updated_at, pref.as_deref(), tz),
                             updated_iso: article.updated_at.map(|d| d.to_rfc3339()).unwrap_or_default(),
                         }
                     }
@@ -915,6 +921,9 @@ pub fn KBArticleListPage(
     #[props(default)] initial_category: String,
 ) -> Element {
     use_page_title("Articles");
+    // MAPPS-939: resolve once for the whole row list, not once per row.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     let mut search = use_signal(|| initial_q.clone());
     let mut category_filter = use_signal(|| initial_category.clone());
     let mut tag_filter = use_signal(|| initial_tag.clone());
@@ -1225,7 +1234,7 @@ pub fn KBArticleListPage(
                                         status: article.status,
                                         visibility: article.visibility,
                                         company_count: article.company_ids.len(),
-                                        updated: date_only(&article.updated_at),
+                                        updated: date_only(&article.updated_at, pref.as_deref(), tz),
                                         updated_iso: article.updated_at.map(|d| d.to_rfc3339()).unwrap_or_default(),
                                         tags: article.tags,
                                     }

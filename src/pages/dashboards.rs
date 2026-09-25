@@ -49,6 +49,10 @@ struct UpdateDashboardBody {
 #[component]
 pub fn SavedDashboardsPage() -> Element {
     use_page_title("Dashboards");
+    // MAPPS-939: resolve once for the whole row list, not once per row's
+    // "Updated" cell.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     let mut version = use_signal(|| 0u32);
     // MAPPS-357: primary resource -> explicit unavailable state on outage.
     // Refetch stays driven by the `version` bump after each mutation (the
@@ -251,8 +255,10 @@ pub fn SavedDashboardsPage() -> Element {
                                 let id = row.id;
                                 let row_default = row.is_default;
                                 let row_name = row.name.clone();
-                                let updated = crate::utils::datetime::fmt_user_dt(
+                                let updated = crate::utils::datetime::fmt_user_dt_in(
                                     row.updated_at,
+                                    pref.as_deref(),
+                                    tz,
                                     Some("%Y-%m-%d %H:%M %Z"),
                                 );
                                 let updated_iso = row.updated_at.to_rfc3339();

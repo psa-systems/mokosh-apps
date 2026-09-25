@@ -40,8 +40,14 @@ fn action_variant(action: &str) -> BadgeVariant {
 /// preference set in the Profile page (PMS-253), rendered in the user's
 /// profile timezone (MAPPS-786); falls back to the legacy
 /// "%b %-d, %Y %H:%M:%S" shape, in that same timezone, when unset.
-fn format_timestamp(when: chrono::DateTime<chrono::Utc>) -> String {
-    crate::utils::datetime::fmt_user_dt(when, Some("%b %-d, %Y %H:%M:%S %Z"))
+/// MAPPS-939: takes `pref`/`tz` explicitly so the list resolves the user's
+/// timezone once per render pass instead of once per row.
+fn format_timestamp(
+    when: chrono::DateTime<chrono::Utc>,
+    pref: Option<&str>,
+    tz: chrono_tz::Tz,
+) -> String {
+    crate::utils::datetime::fmt_user_dt_in(when, pref, tz, Some("%b %-d, %Y %H:%M:%S %Z"))
 }
 
 /// Render an optional UUID as a short hex prefix (first 8 chars) so the
@@ -220,6 +226,10 @@ pub fn AuditLogPage() -> Element {
 #[component]
 fn AuditLogContent() -> Element {
     use_page_title("Audit Log");
+    // MAPPS-939: resolve once for the whole row list and hand it down to
+    // each `AuditRow`, instead of every row resolving its own.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     let mut entity_type_filter = use_signal(String::new);
     let mut action_filter = use_signal(String::new);
     let mut user_id_filter = use_signal(String::new);
@@ -536,7 +546,7 @@ fn AuditLogContent() -> Element {
                 } else {
                     TableBody {
                         for entry in page_rows.iter().cloned() {
-                            AuditRow { key: "{entry.id}", entry, users: users.clone() }
+                            AuditRow { key: "{entry.id}", entry, users: users.clone(), tz, pref: pref.clone() }
                         }
                     }
                 }
@@ -583,6 +593,10 @@ enum EnrichState {
 struct AuditRowProps {
     entry: AuditLogEntry,
     users: Vec<RemoteUser>,
+    /// MAPPS-939: the list resolves these once for the whole page and hands
+    /// them down, so each row does not re-derive the timezone on its own.
+    tz: chrono_tz::Tz,
+    pref: Option<String>,
 }
 
 /// One audit row plus a collapsible detail row holding the pretty-printed
@@ -590,7 +604,12 @@ struct AuditRowProps {
 /// opening one entry does not affect the others.
 #[component]
 fn AuditRow(props: AuditRowProps) -> Element {
-    let AuditRowProps { entry, users } = props;
+    let AuditRowProps {
+        entry,
+        users,
+        tz,
+        pref,
+    } = props;
     let mut expanded = use_signal(|| false);
     // PMS-870: the actor IP's advisory enrichment, fetched only when asked for
     // and kept per row, so reopening the panel does not re-request what this
@@ -601,7 +620,7 @@ fn AuditRow(props: AuditRowProps) -> Element {
     let has_detail =
         entry.old_values.is_some() || entry.new_values.is_some() || entry.user_agent.is_some();
 
-    let timestamp = format_timestamp(entry.timestamp);
+    let timestamp = format_timestamp(entry.timestamp, pref.as_deref(), tz);
     let timestamp_iso = entry.timestamp.to_rfc3339();
     let action = entry.action.clone();
     let variant = action_variant(&action);

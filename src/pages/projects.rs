@@ -1082,6 +1082,10 @@ pub struct ProjectDetailPageProps {
 
 #[component]
 pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
+    // MAPPS-939: resolve once for the whole render pass (the "Edited" line
+    // plus the change-history rows below), not once per timestamp.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     let id_for_project = props.id.clone();
     // MAPPS-357: the fetched project is this detail page's PRIMARY resource
     // (tasks / statuses / users / history are secondary lookups that keep
@@ -1185,7 +1189,12 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         .find(|e| e.action == "update")
         .map(|e| {
             let who = actor_name(&users, &e.user_id);
-            let when = crate::utils::datetime::fmt_user_dt(e.timestamp, Some("%b %-d, %Y %H:%M"));
+            let when = crate::utils::datetime::fmt_user_dt_in(
+                e.timestamp,
+                pref.as_deref(),
+                tz,
+                Some("%b %-d, %Y %H:%M"),
+            );
             if who.is_empty() {
                 format!("Edited {when}")
             } else {
@@ -1608,7 +1617,12 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                 key: "{e.timestamp}",
                                                 headline: headline(&e.action, &e.changed_fields),
                                                 who: actor_name(&users, &e.user_id),
-                                                when: crate::utils::datetime::fmt_user_dt(e.timestamp, Some("%b %-d, %Y %H:%M")),
+                                                when: crate::utils::datetime::fmt_user_dt_in(
+                                                    e.timestamp,
+                                                    pref.as_deref(),
+                                                    tz,
+                                                    Some("%b %-d, %Y %H:%M"),
+                                                ),
                                                 when_iso: e.timestamp.to_rfc3339(),
                                                 changes: change_lines(&e.changes),
                                             }
@@ -2279,6 +2293,10 @@ struct TaskEditModalProps {
 
 #[component]
 fn TaskEditModal(props: TaskEditModalProps) -> Element {
+    // MAPPS-939: resolve once for the whole render pass (the "Edited" line
+    // plus the change-history rows below), not once per timestamp.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     let task = props.task.clone();
     let tid = task.id;
     let statuses = props.statuses.clone();
@@ -2335,7 +2353,12 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
         .unwrap_or_default();
     let task_edited = task_history.iter().find(|e| e.action == "update").map(|e| {
         let who = actor_name(&users, &e.user_id);
-        let when = crate::utils::datetime::fmt_user_dt(e.timestamp, Some("%b %-d, %Y %H:%M"));
+        let when = crate::utils::datetime::fmt_user_dt_in(
+            e.timestamp,
+            pref.as_deref(),
+            tz,
+            Some("%b %-d, %Y %H:%M"),
+        );
         if who.is_empty() {
             format!("Edited {when}")
         } else {
@@ -2584,7 +2607,12 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                                     key: "{e.timestamp}",
                                     headline: headline(&e.action, &e.changed_fields),
                                     who: actor_name(&users, &e.user_id),
-                                    when: crate::utils::datetime::fmt_user_dt(e.timestamp, Some("%b %-d, %Y %H:%M")),
+                                    when: crate::utils::datetime::fmt_user_dt_in(
+                                        e.timestamp,
+                                        pref.as_deref(),
+                                        tz,
+                                        Some("%b %-d, %Y %H:%M"),
+                                    ),
                                     when_iso: e.timestamp.to_rfc3339(),
                                     changes: change_lines(&e.changes),
                                 }

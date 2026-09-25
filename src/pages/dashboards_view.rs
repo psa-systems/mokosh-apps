@@ -722,6 +722,9 @@ struct AuditEntryLite {
 
 #[component]
 fn WidgetRecentAuditLog() -> Element {
+    // MAPPS-939: resolve once for the whole row list, not once per row.
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
     let entries = crate::hooks::use_remote_resource(|| async {
         crate::hooks::fetch::api::get_authed::<Paginated<AuditEntryLite>>(
             "/audit-log?page=1&per_page=5",
@@ -751,8 +754,12 @@ fn WidgetRecentAuditLog() -> Element {
             TableBody {
                 for e in rows.iter() {
                     {
-                        let when =
-                            crate::utils::datetime::fmt_user_dt(e.occurred_at, Some("%m/%d %H:%M"));
+                        let when = crate::utils::datetime::fmt_user_dt_in(
+                            e.occurred_at,
+                            pref.as_deref(),
+                            tz,
+                            Some("%m/%d %H:%M"),
+                        );
                         let when_iso = e.occurred_at.to_rfc3339();
                         rsx! {
                             TableRow {
