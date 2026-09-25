@@ -490,17 +490,10 @@ pub fn KBHomePage() -> Element {
     let mut search = use_signal(String::new);
     let navigator = use_navigator();
 
-    let mut categories_resource = use_resource(move || async move {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        // MAPPS-357: subscribe to reachability so the category grid (this
-        // landing page's primary content) auto-refetches on reconnect.
-        let _reachable = crate::hooks::use_server_reachable();
-        let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
-            .await
-            .inspect_err(|e| tracing::error!("kb category grid load failed: {e}"))
-            .ok()
-    });
+    // MAPPS-940: shared kb-categories cache, not a per-page fetch. Restarted
+    // below on a successful create/update/delete so every consumer, not
+    // just this page, sees the change.
+    let mut categories_resource = crate::hooks::use_kb_categories(true);
 
     // Category CRUD UI state (MAPPS-230). `category_form` drives the
     // create/edit modal (`None` = closed); `deleting_category` drives the
@@ -543,10 +536,7 @@ pub fn KBHomePage() -> Element {
 
     let categories_snapshot = categories_resource.read_unchecked();
     let categories_loading = categories_snapshot.is_none();
-    let categories: Vec<KbCategory> = match &*categories_snapshot {
-        Some(Some(rows)) => rows.clone(),
-        _ => Vec::new(),
-    };
+    let categories: Vec<KbCategory> = categories_snapshot.clone().unwrap_or_default();
 
     let recent_snapshot = recent_resource.read_unchecked();
     let recent_loading = recent_snapshot.is_none();
@@ -573,8 +563,7 @@ pub fn KBHomePage() -> Element {
     // delete category controls.
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
-    let categories_failed = matches!(*categories_snapshot, Some(None));
-    if categories_failed && !reachable {
+    if !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Knowledge Base".to_string() }
         };
@@ -969,32 +958,12 @@ pub fn KBArticleListPage(
     use_effect(move || crate::utils::prefs::set_bool("kb_left_rail", left_collapsed()));
 
     // Category options for the filter dropdown and the tree rail.
-    let categories_resource = use_resource(move || async move {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        let token = crate::hooks::fetch::api::current_access_token()?;
-        // An empty dropdown is what a tenant with no categories looks like
-        // too, so each outcome says which it is.
-        match crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
-            .await
-        {
-            Ok(rows) => {
-                if rows.is_empty() {
-                    tracing::info!(
-                        "kb category filter load succeeded and this tenant has no categories"
-                    );
-                }
-                Some(rows)
-            }
-            Err(e) => {
-                tracing::error!("kb category filter load failed, the dropdown will be empty: {e}");
-                None
-            }
-        }
-    });
-    let categories: Vec<KbCategory> = match &*categories_resource.read_unchecked() {
-        Some(Some(rows)) => rows.clone(),
-        _ => Vec::new(),
-    };
+    // MAPPS-940: shared kb-categories cache, not a per-page fetch.
+    let categories_resource = crate::hooks::use_kb_categories(true);
+    let categories: Vec<KbCategory> = categories_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
     let mut category_options = vec![SelectOption::new("", "All Categories")];
     for c in categories.iter() {
         category_options.push(SelectOption::new(c.id.to_string(), c.name.clone()));
@@ -1425,14 +1394,8 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     let focus_thread = use_signal(|| None::<uuid::Uuid>);
 
     // Category list for the breadcrumb path and the left tree rail.
-    let categories_resource = use_resource(move || async move {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
-            .await
-            .inspect_err(|e| tracing::error!("kb breadcrumb category load failed: {e}"))
-            .ok()
-    });
+    // MAPPS-940: shared kb-categories cache, not a per-page fetch.
+    let categories_resource = crate::hooks::use_kb_categories(true);
 
     // Article list feeding the left tree rail.
     let tree_articles_resource = use_resource(move || async move {
@@ -1444,10 +1407,10 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
             .ok()
     });
 
-    let categories: Vec<KbCategory> = match &*categories_resource.read_unchecked() {
-        Some(Some(rows)) => rows.clone(),
-        _ => Vec::new(),
-    };
+    let categories: Vec<KbCategory> = categories_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
     let tree_articles: Vec<KbArticle> = match &*tree_articles_resource.read_unchecked() {
         Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
@@ -2676,32 +2639,12 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     let mut company_error = use_signal(String::new);
 
     // Category dropdown options, fetched live.
-    let categories_resource = use_resource(move || async move {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        let token = crate::hooks::fetch::api::current_access_token()?;
-        // An empty dropdown is what a tenant with no categories looks like
-        // too, so each outcome says which it is.
-        match crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
-            .await
-        {
-            Ok(rows) => {
-                if rows.is_empty() {
-                    tracing::info!(
-                        "kb editor category load succeeded and this tenant has no categories"
-                    );
-                }
-                Some(rows)
-            }
-            Err(e) => {
-                tracing::error!("kb editor category load failed, the dropdown will be empty: {e}");
-                None
-            }
-        }
-    });
-    let categories: Vec<KbCategory> = match &*categories_resource.read_unchecked() {
-        Some(Some(rows)) => rows.clone(),
-        _ => Vec::new(),
-    };
+    // MAPPS-940: shared kb-categories cache, not a per-page fetch.
+    let categories_resource = crate::hooks::use_kb_categories(true);
+    let categories: Vec<KbCategory> = categories_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
     let mut category_options = vec![SelectOption::new("", "Uncategorized")];
     for c in categories.iter() {
         category_options.push(SelectOption::new(c.id.to_string(), c.name.clone()));
@@ -3891,7 +3834,7 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
                             sort_order: sort_val,
                         };
                         crate::hooks::fetch::api::post_authed::<KbCategory, _>(
-                            "/kb/categories",
+                            crate::hooks::kb_categories::ENDPOINT,
                             &body,
                         )
                         .await

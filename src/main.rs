@@ -3,12 +3,14 @@
 use dioxus::prelude::*;
 use mokosh_apps::components::{use_page_title_provider, CloseConfirmModal};
 use mokosh_apps::hooks::{
-    use_active_org_loader, use_apply_theme, use_auth_heartbeat, use_auth_provider,
-    use_bfcache_invalidator, use_current_user_loader, use_mention_directory_provider,
+    use_active_org_loader, use_apply_theme, use_asset_types_provider, use_auth_heartbeat,
+    use_auth_provider, use_bfcache_invalidator, use_current_user_loader,
+    use_kb_categories_provider, use_mention_directory_provider, use_payment_terms_provider,
     use_server_status_monitor, use_session_end_watch, use_sidebar_collapsed_provider,
     use_sidebar_provider, use_sidebar_scroll_provider, use_standalone_token_refresh,
-    use_theme_sync, use_token_refresh, use_update_check, use_user_roster_provider,
-    use_version_cache_provider, use_work_types_provider,
+    use_task_statuses_provider, use_tax_rates_provider, use_theme_sync, use_token_refresh,
+    use_update_check, use_user_roster_provider, use_version_cache_provider,
+    use_work_types_provider,
 };
 use mokosh_apps::Route;
 
@@ -133,6 +135,14 @@ fn App() -> Element {
     // Same shared-cache pattern for the work-types reference list, so the
     // time and contracts pages share one fetch across mounts.
     use_work_types_provider();
+    // MAPPS-940: same shared-cache pattern for the four remaining
+    // reference lists MAPPS-871 left independently fetched (asset types,
+    // task statuses, KB categories, payment terms) and for tax rates.
+    use_asset_types_provider();
+    use_task_statuses_provider();
+    use_kb_categories_provider();
+    use_payment_terms_provider();
+    use_tax_rates_provider();
     // Background loop: rotates access tokens before expiry. No-op when
     // the user is not signed in. Mounted once at the app root so it
     // keeps running across navigations.

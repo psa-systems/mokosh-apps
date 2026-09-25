@@ -74,13 +74,6 @@ struct RemoteAsset {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct AssetTypeOpt {
-    id: uuid::Uuid,
-    #[serde(default)]
-    name: String,
-}
-
-#[derive(Clone, Debug, Deserialize)]
 struct CompanyOpt {
     id: uuid::Uuid,
     #[serde(default)]
@@ -410,13 +403,8 @@ pub fn AssetListPage() -> Element {
                 .ok()
         }
     });
-    let types_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::list_or_empty(
-            "asset type filter option",
-            crate::hooks::fetch::api::get_all_authed::<AssetTypeOpt>("/asset-types").await,
-        )
-    });
+    // MAPPS-940: shared asset-types cache, not a per-page fetch.
+    let types_resource = crate::hooks::use_asset_types(true);
     let companies_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::list_or_empty(
@@ -938,13 +926,8 @@ pub fn AssetNewPage() -> Element {
     let mut manufacturer_err = use_signal(String::new);
     let mut model_err = use_signal(String::new);
 
-    let types_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::list_or_empty(
-            "asset type option",
-            crate::hooks::fetch::api::get_all_authed::<AssetTypeOpt>("/asset-types").await,
-        )
-    });
+    // MAPPS-940: shared asset-types cache, not a per-page fetch.
+    let types_resource = crate::hooks::use_asset_types(true);
     // PMS-352 AC3: company is now chosen via CompanyPicker (which fetches and
     // filters its own company list with an inline-create affordance), so the
     // page no longer builds a company Select option list.
@@ -1380,15 +1363,8 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             )
         }
     });
-    let types_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::list_or_empty(
-            "asset type option",
-            crate::hooks::fetch::api::get_authed::<Paginated<AssetTypeOpt>>("/asset-types")
-                .await
-                .map(|p| p.data),
-        )
-    });
+    // MAPPS-940: shared asset-types cache, not a per-page fetch.
+    let types_resource = crate::hooks::use_asset_types(true);
     let companies_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::list_or_empty(
