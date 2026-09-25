@@ -73,8 +73,7 @@ struct MfaDisableRequest {
 /// lets any signed-in caller (tenant or platform-bearer-only) reach the
 /// shared `AppShell` this route lives in, so a tenant-only session could
 /// otherwise land here with no platform bearer to call any of the four
-/// routes below. Gate on holding a platform bearer, mirroring
-/// `TenantManagementPage` in `src/pages/admin.rs`, and redirect to sign-in
+/// routes below. Gate on holding a platform bearer and redirect to sign-in
 /// instead of rendering an all-401 shell.
 #[component]
 pub fn PlatformAccountPage() -> Element {

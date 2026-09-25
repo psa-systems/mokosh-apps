@@ -3324,7 +3324,7 @@ dependencies = [
 [[package]]
 name = "mokosh-types"
 version = "0.1.0"
-source = "git+https://dev.a8n.run/psa-systems/mokosh-server.git#6f10f712b099f320a23e29d789b312f817e25daf"
+source = "git+https://dev.a8n.run/psa-systems/mokosh-server.git#6a128e0150551613363ae2c0fae762e06a789d13"
 dependencies = [
  "chrono",
  "chrono-tz 0.9.0",

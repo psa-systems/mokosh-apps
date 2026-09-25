@@ -246,17 +246,13 @@ pub fn AuthGuard() -> Element {
     if !auth_state.is_authenticated() {
         // MAPPS-520: platform-plane admins pass through the tenant
         // AuthGuard when they hold a valid platform bearer in
-        // sessionStorage. The MAPPS-518 platform-admin surface
-        // (currently only `/admin/tenants`, `TenantManagementPage`)
-        // gates its own render on the same signal and issues its own
-        // fetches with the platform bearer, so a platform-only
-        // caller can reach it without the tenant `AuthContext`
-        // being populated. AppShell / Sidebar / TopBar all read the
-        // tenant user via `.as_ref().map(...).unwrap_or(false)` so
-        // they render sensibly with no tenant session; the platform
-        // admin sees a nav where every tenant-role-gated item is
-        // hidden EXCEPT the Tenants item (which gates on
-        // `platform_bearer_present()`).
+        // sessionStorage. A platform-admin surface gates its own render
+        // on the same signal and issues its own fetches with the
+        // platform bearer, so a platform-only caller can reach it
+        // without the tenant `AuthContext` being populated. AppShell /
+        // Sidebar / TopBar all read the tenant user via
+        // `.as_ref().map(...).unwrap_or(false)` so they render sensibly
+        // with no tenant session.
         //
         // Every OTHER `AuthGuard` fall-through remains: no platform
         // bearer AND no tenant auth still bounces to `/login` (or
@@ -2497,10 +2493,6 @@ fn Teams() -> Element {
     }
 }
 
-// mokosh-contact-login: TenantManagement wrapper retired with the
-// Clients tab (prompt 001). admin::TenantManagementPage stays in the
-// admin.rs file as dead code for a follow-up cleanup.
-
 // mokosh-contact-login: all pre-pivot Portal* route wrapper components
 // retired with the customer-portal /portal/* routes (prompt 001). The
 // contact-plane replacements below land per prompt 005 under a new
@@ -3127,13 +3119,10 @@ mod admin_route_role_gates {
         );
     }
 
-    /// How a page reads the caller's role. `/admin/tenants` reads super-admin
-    /// because its server endpoint takes `RequireSuperAdmin`, not `RequireAdmin`.
-    /// `/admin/platform-account` reads the platform bearer instead of a
-    /// tenant role: its four routes authenticate with `RequirePlatformAdmin`,
-    /// not a tenant `AuthContext` role, so there is no `is_admin`/
-    /// `is_super_admin` to read (see `TenantManagementPage` in
-    /// `src/pages/admin.rs` for the established precedent).
+    /// How a page reads the caller's role. `/admin/platform-account` reads
+    /// the platform bearer instead of a tenant role: its four routes
+    /// authenticate with `RequirePlatformAdmin`, not a tenant `AuthContext`
+    /// role, so there is no `is_admin`/`is_super_admin` to read.
     const ROLE_READS: &[&str] = &[
         "is_admin",
         "is_super_admin",
