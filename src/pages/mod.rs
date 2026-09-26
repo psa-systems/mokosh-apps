@@ -8,7 +8,6 @@
 //! one-line redirect stubs that send bookmarks at the legacy URLs to
 //! the hub.
 
-pub mod admin;
 pub mod approvals;
 pub mod assets;
 pub mod audit_log;
@@ -42,6 +41,7 @@ pub mod login;
 pub mod not_found;
 pub mod onboarding;
 pub mod pick_tenant;
+pub mod platform_account;
 pub mod platform_login;
 pub mod settings_contact_sync;
 pub mod settings_contact_sync_client;

@@ -35,7 +35,7 @@ level = "z"
 
 [server]
 # Server configuration
-port = 4300
+port = 4301
 ip = "0.0.0.0"
 
 [server.middleware]
