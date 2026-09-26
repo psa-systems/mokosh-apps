@@ -352,30 +352,6 @@ pub mod api {
         base.trim_end_matches('/').to_string()
     }
 
-    /// MAPPS-649: `true` iff the SPA is currently served on the configured
-    /// portal host. Used by the portal login page to decide whether to hide
-    /// the identifier input and paint the MSP branding block. Port-agnostic,
-    /// case-insensitive host compare against `runtime_config::portal_host`.
-    ///
-    /// The non-web stub returns `false` so downstream call sites compile
-    /// under a plain `cargo check`.
-    #[cfg(feature = "web")]
-    pub fn on_portal_host() -> bool {
-        let Some(portal_host) = crate::modules::runtime_config::portal_host() else {
-            return false;
-        };
-        let Some(host) = crate::platform::location::host() else {
-            return false;
-        };
-        let host_no_port = host.split(':').next().unwrap_or(&host);
-        host_no_port.eq_ignore_ascii_case(&portal_host)
-    }
-
-    #[cfg(not(feature = "web"))]
-    pub fn on_portal_host() -> bool {
-        false
-    }
-
     /// PMS-729: the current browser-visible host (`window.location.host`,
     /// including port). Attached as `X-Forwarded-Host` on every portal-side
     /// fetch below so the mokosh-server host-to-tenant extractor sees the
