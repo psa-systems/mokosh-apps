@@ -11,6 +11,10 @@ use crate::components::{
     TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::modules::contacts::{Address, CompanyStatus, CompanyType, ContactType, PhoneType};
+// PMS-1344: the invoices list's own wording for an overdue badge, reused
+// rather than restated, so the two surfaces cannot drift into saying it
+// differently.
+use crate::pages::billing::overdue_label;
 use crate::utils::money::format_money_str;
 use crate::utils::sort_keys::TICKETS_RECENT_SORT;
 use crate::utils::url::{safe_href, urlencoding_minimal};
@@ -5193,6 +5197,17 @@ struct InvoiceSummary {
     status: String,
     #[serde(default, deserialize_with = "de_money_opt")]
     balance_due: Option<String>,
+    /// PMS-1344: overdue is DERIVED by the server and is not a `status`
+    /// (server PMS-1037): `status` stays `sent` while the balance goes past
+    /// its due date, so a panel that read only `status` showed "Sent" for an
+    /// invoice weeks overdue, and a user on this page could not tell an issued
+    /// invoice from an overdue one. These two are what carries it, and they
+    /// are the tenant's day rather than the browser's, which is why the client
+    /// renders what it is told instead of comparing `due_date` itself.
+    #[serde(default)]
+    is_overdue: bool,
+    #[serde(default)]
+    days_overdue: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -5469,6 +5484,8 @@ fn CompanyInvoicesCard(
                                         let number = invoice.invoice_number.clone();
                                         let balance = money_label(&invoice.balance_due);
                                         let (variant, label) = invoice_status_badge(&invoice.status);
+                                        let overdue_days =
+                                            invoice.is_overdue.then_some(invoice.days_overdue);
                                         rsx! {
                                             TableRow { key: "{key}", class: "group",
                                                 TableCell {
@@ -5479,7 +5496,23 @@ fn CompanyInvoicesCard(
                                                     }
                                                 }
                                                 TableCell { class: "font-medium", "{balance}" }
-                                                TableCell { Badge { variant, "{label}" } }
+                                                TableCell {
+                                                    // The same pair the invoices list renders
+                                                    // (`InvoiceRow`): the lifecycle status, plus
+                                                    // the derived overdue badge beside it rather
+                                                    // than replacing it, because "sent and three
+                                                    // weeks late" is two facts and collapsing
+                                                    // them loses the one the page is for.
+                                                    div { class: "flex flex-wrap items-center gap-1",
+                                                        Badge { variant, "{label}" }
+                                                        if let Some(days) = overdue_days {
+                                                            Badge {
+                                                                variant: BadgeVariant::Orange,
+                                                                "{overdue_label(days)}"
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                                 TableCell { class: "w-10",
                                                     RowActions {
                                                         on_edit: move |_| { navigator.push(Route::InvoiceDetail { id: edit_id.clone() }); },
