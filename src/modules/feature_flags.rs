@@ -51,3 +51,84 @@ fn is_truthy(raw: &str) -> bool {
     let value = raw.trim().to_ascii_lowercase();
     TRUTHY.contains(&value.as_str())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::is_truthy;
+
+    /// PMS-1337: every way into the organizations surface is behind the flag.
+    ///
+    /// Two entry points exist and the bug was that they were gated differently
+    /// from each other: the switcher on `memberships >= 2`, the create action on
+    /// nothing at all. So this counts the gate rather than trusting a reader to
+    /// notice a third one arriving: `TenantSwitcher {}` is rendered once, the
+    /// create-team signal is set from one place outside the switcher's own file,
+    /// and each of those lines is inside an `organizations_enabled()` check.
+    #[test]
+    fn both_entry_points_sit_behind_the_flag() {
+        let layout = include_str!("../components/layout.rs");
+        for needle in ["TenantSwitcher {}", "SHOW_CREATE_ORG.write() = true"] {
+            let at = layout
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle} is rendered by the layout"));
+            let before = &layout[..at];
+            let gate = before
+                .rfind("feature_flags::organizations_enabled()")
+                .unwrap_or_else(|| panic!("{needle} is not behind the organizations flag"));
+            // The gate has to be the nearest condition, not one further up the
+            // file guarding something else: no closing brace of its own block
+            // may sit between them.
+            assert!(
+                !layout[gate..at].contains("\n                }\n"),
+                "{needle} is after an organizations gate that has already closed"
+            );
+            assert_eq!(
+                layout.matches(needle).count(),
+                1,
+                "{needle} appears more than once, so one copy may be ungated"
+            );
+        }
+    }
+
+    /// The retired `team_enabled` flag is not coming back by accident. PMS-791
+    /// made Teams core and the SPA stopped reading the key, but the container
+    /// entrypoint kept writing it and the self-hosting table kept documenting
+    /// it, so an operator could set it and get nothing.
+    #[test]
+    fn the_retired_team_flag_is_gone_from_the_operator_surface() {
+        let entrypoint = include_str!("../../oci-build/entrypoint.sh");
+        assert!(
+            !entrypoint.contains("printf 'team_enabled"),
+            "the entrypoint is writing a config key nothing reads"
+        );
+        let self_hosting = include_str!("../../docs/self-hosting.md");
+        assert!(
+            !self_hosting.contains("MOKOSH_TEAM_ENABLED"),
+            "the self-hosting table documents a variable nothing reads"
+        );
+    }
+
+    /// PMS-1337: the three spellings an operator is likely to write, in any
+    /// case, with whitespace they did not mean to leave.
+    #[test]
+    fn the_spellings_that_mean_yes() {
+        for raw in [
+            "1", "true", "TRUE", "True", "yes", "YES", " true ", "\tyes\n",
+        ] {
+            assert!(is_truthy(raw), "{raw:?} should enable the feature");
+        }
+    }
+
+    /// Everything else is off, and that includes the near misses. A flag
+    /// guarding an unfinished feature has to fail closed: the cost of reading
+    /// "flase" as off is that somebody retypes it, and the cost of reading it as
+    /// on is that customers see a half-built organizations surface.
+    #[test]
+    fn everything_else_is_off() {
+        for raw in [
+            "", " ", "0", "false", "no", "off", "flase", "ture", "enabled", "y", "t", "2",
+        ] {
+            assert!(!is_truthy(raw), "{raw:?} must not enable the feature");
+        }
+    }
+}
