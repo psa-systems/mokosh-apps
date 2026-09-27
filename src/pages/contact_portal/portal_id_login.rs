@@ -99,25 +99,11 @@ struct HostHint {
     /// legacy `/host` response (pre-MAPPS-617) deserializes cleanly.
     #[serde(default)]
     effective_branding: crate::hooks::branding::EffectiveBranding,
-    /// MAPPS-806: the company's portal slug, which the reset-password route
-    /// is keyed on. The server has always sent it on this response; the client
-    /// never read it, which is part of why this page had no way to reset a
-    /// forgotten password.
-    #[serde(default)]
-    portal_slug: String,
-}
-
-/// MAPPS-806: where "Forgot your password?" goes, or `None` while the company
-/// is not known.
-///
-/// `None` rather than a link to a reset page for an empty slug: that would
-/// route to `/portal//forgot-password`, which matches nothing, and a customer
-/// who has just forgotten their password should not also meet a 404.
-pub(crate) fn forgot_password_route(portal_slug: Option<&str>) -> Option<Route> {
-    let slug = portal_slug.map(str::trim).filter(|s| !s.is_empty())?;
-    Some(Route::ContactForgotPassword {
-        slug: slug.to_string(),
-    })
+    // PMS-1343: `portal_slug` used to be read here, by MAPPS-806, purely to
+    // key the self-service reset route. That route is gone with the
+    // self-service reset, so the field is not deserialized any more; the
+    // server still sends it and `#[serde(deny_unknown_fields)]` is not in use,
+    // so dropping it costs nothing on the wire.
 }
 
 #[component]
@@ -176,7 +162,6 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
         .map(|h| h.tenant_status.trim().to_ascii_lowercase())
         .unwrap_or_default();
     let host_loaded = host.is_some();
-    let forgot_route = forgot_password_route(host.as_ref().map(|h| h.portal_slug.as_str()));
     // MAPPS-559 shape (mirrored from prompt 005): hide the form when
     // the owning tenant is not active. A missing host hint falls
     // through to the form so a bad Company ID still lets the visitor
@@ -358,21 +343,15 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
                             class: "w-full".to_string(),
                             "Sign in"
                         }
-                        // MAPPS-806: the reset this page never offered. The
-                        // older slug-based login had a "Forgot password?"
-                        // button; this page replaced it (PMS-928) without one,
-                        // and it is where every emailed link lands, so a
-                        // customer who forgot their password had no route to
-                        // a new one. Changing it while signed in needs the
-                        // current password, which is the thing they forgot.
-                        if let Some(route) = forgot_route.clone() {
-                            div { class: "text-center",
-                                Link {
-                                    to: route,
-                                    class: "text-sm text-accent hover:underline",
-                                    "Forgot your password?"
-                                }
-                            }
+                        // PMS-1343: the MSP owns the reset. This was a link to
+                        // a self-service reset page, added by MAPPS-806
+                        // because this page is where every emailed link lands
+                        // and a customer who forgot their password had no
+                        // route at all. The route it pointed at is gone, so
+                        // the guidance that replaces it says who does reset a
+                        // password and what the customer can do unaided.
+                        p { class: "text-sm text-muted text-center",
+                            {super::PORTAL_FORGOT_PASSWORD_GUIDANCE}
                         }
                     }
                     // MAPPS-615 (prompt 014): step 1 no longer carries
@@ -449,46 +428,10 @@ fn install_session(nav: &dioxus::router::Navigator, resp: LoginResp, portal_id_s
     nav.replace(super::next_target::landing());
 }
 
-/// MAPPS-806: a customer who forgot their password can reach the reset, and a
-/// customer page does not send them to the staff sign-in.
+/// PMS-1343: the customer sign-in pages send a forgotten password to the MSP,
+/// and do not send a customer to the staff sign-in.
 #[cfg(test)]
 mod password_reset_tests {
-    use super::forgot_password_route;
-    use crate::Route;
-
-    #[test]
-    fn a_known_company_links_to_its_own_reset_page() {
-        assert_eq!(
-            forgot_password_route(Some("acme-7k2")),
-            Some(Route::ContactForgotPassword {
-                slug: "acme-7k2".to_string()
-            })
-        );
-    }
-
-    /// Before the company loads there is no link at all, rather than one to
-    /// `/portal//forgot-password`, which matches nothing.
-    #[test]
-    fn no_company_means_no_link() {
-        assert_eq!(forgot_password_route(None), None);
-        assert_eq!(forgot_password_route(Some("  ")), None);
-    }
-
-    /// The reset link actually resolves to the reset page, so a route change
-    /// fails here instead of on a customer who has just forgotten a password.
-    #[test]
-    fn the_reset_link_is_a_real_route() {
-        let route = forgot_password_route(Some("acme-7k2")).expect("a link");
-        let parsed: Route = route.to_string().parse().expect("parses back");
-        assert!(
-            matches!(parsed, Route::ContactForgotPassword { .. }),
-            "{parsed:?}"
-        );
-    }
-
-    /// Neither customer login page links to the staff sign-in. Read from the
-    /// shipping source, because the link was a `Link { to: Route::Login {} }`
-    /// that renders fine and is simply the wrong door.
     #[test]
     fn customer_login_pages_do_not_link_to_the_staff_sign_in() {
         for (page, src) in [

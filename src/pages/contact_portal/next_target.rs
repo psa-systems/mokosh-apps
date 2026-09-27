@@ -204,7 +204,6 @@ mod tests {
             ("generic_login.rs", include_str!("generic_login.rs")),
             ("magic_link_login.rs", include_str!("magic_link_login.rs")),
             ("set_password.rs", include_str!("set_password.rs")),
-            ("reset_password.rs", include_str!("reset_password.rs")),
         ];
         for (name, source) in PAGES {
             assert!(
