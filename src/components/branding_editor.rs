@@ -156,6 +156,41 @@ pub struct BrandingEditorProps {
     pub on_asset_saved: Option<EventHandler<()>>,
 }
 
+/// PMS-1338: whether this plane edits the support-contact fields.
+///
+/// It does everywhere EXCEPT the tenant plane, and the reason is that on the
+/// tenant plane those three keys are not branding's to own. `support_phone`,
+/// `support_email` and `support_contact_name` in `tenants.branding` ARE the
+/// organisation record: `PUT /api/v1/tenants/current/organization` writes the
+/// Organization page's phone, email and contact name into exactly those keys
+/// (PMS-896). So the editor was a second editor of one record, with different
+/// labels, and the Organization page's whole-record write nulls an optional key
+/// it omits, which meant saving it wiped a contact name entered here.
+///
+/// One editor each, then: the organisation owns the tenant-level values, and the
+/// per-Company and contact planes keep their fields because those genuinely are
+/// overrides, resolved over the tenant's values by `effective_branding`.
+pub(crate) fn edits_support_contact(plane: &BrandingPlane) -> bool {
+    !matches!(plane, BrandingPlane::StaffTenant)
+}
+
+/// PMS-1338: the organisation's contact details in one line, for the tenant
+/// plane's read-only block. Empty fields are left out rather than rendered as
+/// gaps, and a record with nothing in it says so, because "Support contact:" on
+/// its own reads as a bug rather than as an empty record.
+pub(crate) fn support_contact_summary(name: &str, email: &str, phone: &str) -> String {
+    let parts: Vec<&str> = [name, email, phone]
+        .into_iter()
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.is_empty() {
+        "Not set yet.".to_string()
+    } else {
+        parts.join(" - ")
+    }
+}
+
 /// Render the hint line under each field. Company/Contact scopes
 /// point at the tenant default (or "no default set"); Tenant scope
 /// only has the coded fallback, so the hint reads that instead.
@@ -633,7 +668,34 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                         rsx! {}
                     }
                 }
-                // Support contact block
+                // Support contact block. PMS-1338: on the tenant plane these
+                // three keys are the organisation record, so the editor shows
+                // them and sends the operator to the one place that writes them.
+                if !edits_support_contact(&props.plane) {
+                    div { class: "space-y-1 rounded-md border border-line bg-surface-2 p-4",
+                        p { class: "text-sm font-medium text-content", "Support contact" }
+                        p { class: "text-sm text-muted",
+                            {support_contact_summary(
+                                support_contact_name.read().as_str(),
+                                support_email.read().as_str(),
+                                support_phone.read().as_str(),
+                            )}
+                        }
+                        p { class: "text-xs text-muted",
+                            "These are your organisation's contact details, not a separate branding value: the portal, your invoices and your outbound mail all read the same record. "
+                            Link {
+                                to: crate::Route::SettingsOrganization {},
+                                class: "text-accent hover:underline",
+                                "Edit them under Organization"
+                            }
+                            "."
+                        }
+                        p { class: "text-xs text-muted",
+                            "A single client portal can still say something different: set a support contact on that Company, which wins over this."
+                        }
+                    }
+                }
+                if edits_support_contact(&props.plane) {
                 div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                     div { class: "space-y-1",
                         label {
@@ -687,6 +749,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                     }
                     p { class: "text-xs text-muted", "{hint(&props.plane, defaults.support_contact_name.as_deref())}" }
                 }
+                }
                 // Save row
                 div { class: "flex items-center justify-end gap-3 pt-4 border-t border-line",
                     Button {
@@ -698,5 +761,72 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{edits_support_contact, support_contact_summary, BrandingPlane};
+
+    /// PMS-1338: the tenant plane does not edit the support contact, and the two
+    /// override planes do.
+    ///
+    /// The asymmetry is the whole decision, so it is asserted rather than left to
+    /// a reader of the rsx: on the tenant plane those three keys ARE the
+    /// organisation record that `PUT /tenants/current/organization` writes
+    /// (PMS-896), and a Company or a contact editing them is a genuine override
+    /// that `effective_branding` resolves over the tenant's values.
+    #[test]
+    fn only_the_override_planes_edit_the_support_contact() {
+        assert!(!edits_support_contact(&BrandingPlane::StaffTenant));
+        assert!(edits_support_contact(&BrandingPlane::Staff {
+            company_id: "c0ffee".to_string()
+        }));
+        assert!(edits_support_contact(&BrandingPlane::ContactSelf));
+    }
+
+    /// The read-only line on the tenant plane. An empty record says so, because
+    /// "Support contact:" followed by nothing reads as a bug rather than as a
+    /// record nobody has filled in.
+    #[test]
+    fn the_summary_names_what_is_set_and_says_when_nothing_is() {
+        assert_eq!(
+            support_contact_summary("Alex from Ops", "support@acme.example", "+1 555 555 5555"),
+            "Alex from Ops - support@acme.example - +1 555 555 5555"
+        );
+        assert_eq!(
+            support_contact_summary("", "support@acme.example", ""),
+            "support@acme.example"
+        );
+        assert_eq!(support_contact_summary("  ", "", "\t"), "Not set yet.");
+        assert_eq!(support_contact_summary("", "", ""), "Not set yet.");
+    }
+
+    /// PMS-1338: hiding the inputs must not clear the keys. The save block is
+    /// built from the same signals whether or not the fields render, so a tenant
+    /// save carries the organisation's values through untouched; if it sent
+    /// `None` instead, saving a logo would null the organisation's phone number,
+    /// which is the clobber this change exists to close coming back the other
+    /// way.
+    #[test]
+    fn the_tenant_save_still_carries_the_contact_keys() {
+        let src = include_str!("branding_editor.rs");
+        let submit = src
+            .find("let submit = move |_| {")
+            .expect("the save closure is in this file");
+        let block_end = src[submit..]
+            .find("on_save.call(block);")
+            .expect("the closure calls on_save");
+        let block = &src[submit..submit + block_end];
+        for key in ["support_email:", "support_phone:", "support_contact_name:"] {
+            assert!(
+                block.contains(key),
+                "{key} left the save block, so a tenant save would clear it"
+            );
+        }
+        assert!(
+            !block.contains("edits_support_contact"),
+            "the save block must not depend on whether the fields render"
+        );
     }
 }

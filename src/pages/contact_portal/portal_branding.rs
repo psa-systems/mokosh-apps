@@ -118,6 +118,15 @@ pub fn ContactPortalBrandingPage() -> Element {
 
     rsx! {
         div { class: "max-w-4xl mx-auto space-y-6 p-6",
+            // PMS-1338: the same missing exit as the staff page next door. Not
+            // the settings breadcrumb, which walks a group landing a contact
+            // cannot open (`/settings/group/*` is staff-only): the hub itself is
+            // on the contact allowlist, so that is where back goes.
+            Link {
+                to: crate::Route::SettingsHome {},
+                class: "inline-flex items-center gap-1 text-sm text-muted hover:text-content",
+                "Back to Settings"
+            }
             div {
                 h1 { class: "text-2xl font-semibold text-content", "Portal branding" }
                 p { class: "text-sm text-muted mt-1",
