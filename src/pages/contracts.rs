@@ -552,8 +552,39 @@ pub fn ContractEditPage(props: ContractEditPageProps) -> Element {
             crate::components::ContentUnavailable { title: "Edit Contract".to_string() }
         };
     }
+    // PMS-1339: the trail this screen never had. Same shape as every other edit
+    // screen fixed under this issue: list, the record itself, then Edit.
+    let record_label = match &*snap {
+        Some(Some(contract)) => contract
+            .contract_number
+            .clone()
+            .filter(|number| !number.trim().is_empty())
+            .unwrap_or_else(|| "Contract".to_string()),
+        _ => "Contract".to_string(),
+    };
+    let crumbs = vec![
+        crate::components::BreadcrumbItem {
+            label: "Contracts".to_string(),
+            route: Some(Route::ContractList {}),
+        },
+        crate::components::BreadcrumbItem {
+            label: record_label,
+            route: Some(Route::ContractDetail {
+                id: props.id.clone(),
+            }),
+        },
+        crate::components::BreadcrumbItem {
+            label: "Edit".to_string(),
+            route: None,
+        },
+    ];
     rsx! {
-        PageHeader { title: "Edit Contract" }
+        PageHeader {
+            title: "Edit Contract",
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs { items: crumbs }
+            },
+        }
         match &*snap {
             None => rsx! {
                 // PMS-353

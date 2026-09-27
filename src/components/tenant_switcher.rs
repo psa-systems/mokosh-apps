@@ -247,9 +247,13 @@ pub fn TenantSwitcher() -> Element {
 
     // Read the memberships + active for render. Hide the trigger when
     // there is nothing to show (unauthenticated / no memberships).
-    let (memberships, active_name, active_id_str) = {
+    let (memberships, active_name, active_id_str, loading_memberships) = {
         let a = auth.read();
         let mut list = a.memberships.clone();
+        // PMS-1339: the app-root loader sets this once the list has arrived, so
+        // the slot below can reserve its width while the answer is still unknown
+        // instead of appearing later and pushing the profile icon sideways.
+        let loading = !a.memberships_loaded;
         let active_id = a.active_tenant_id.map(|u| u.to_string());
         let derived_name = a.active_org_name().map(str::to_string);
         let active_name = derived_name.unwrap_or_else(|| {
@@ -263,7 +267,7 @@ pub fn TenantSwitcher() -> Element {
                 .to_ascii_lowercase()
                 .cmp(&b.tenant_name.to_ascii_lowercase())
         });
-        (list, active_name, active_id)
+        (list, active_name, active_id, loading)
     };
 
     if !auth.read().is_authenticated() {
@@ -275,9 +279,22 @@ pub fn TenantSwitcher() -> Element {
     // Modal is rendered unconditionally below because UserMenu can also
     // open it via the SHOW_CREATE_ORG global signal.
     let show_trigger = memberships.len() >= 2;
+    // PMS-1339: the trigger's width arrives late. Memberships load after the
+    // first paint, so the switcher was zero-wide and then suddenly a team name
+    // wide, and because the action cluster is right-aligned everything to its
+    // right - the bell, the badge, the profile icon - slid left as it appeared.
+    // That is the "profile shifts on refresh" report. The slot is therefore a
+    // fixed width from the first render, matching the trigger's own
+    // `max-w-[7rem] sm:max-w-[10rem]` ceiling, so the name lands inside space
+    // that was already reserved and nothing moves.
+    let reserved = if show_trigger || loading_memberships {
+        "relative w-[8.5rem] sm:w-[11.5rem] shrink-0"
+    } else {
+        "relative"
+    };
 
     rsx! {
-        div { class: "relative",
+        div { class: reserved,
             if show_trigger {
                 Popover {
                     open: open(),
@@ -291,16 +308,13 @@ pub fn TenantSwitcher() -> Element {
                         span { class: "inline max-w-[7rem] sm:max-w-[10rem] truncate font-medium text-content",
                             "{active_name}"
                         }
-                        // Small chevron caret drawn inline (avoids a dep on an
-                        // icon we don't own yet).
-                        svg {
-                            class: "w-4 h-4",
-                            view_box: "0 0 20 20",
-                            fill: "currentColor",
-                            path {
-                                d: "M5.23 7.21a.75.75 0 011.06.02L10 11.06l3.71-3.83a.75.75 0 111.08 1.04l-4.24 4.38a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z",
-                            }
-                        }
+                        // PMS-1339: the caret is gone. It was a hand-drawn SVG
+                        // path ("avoids a dep on an icon we don't own yet")
+                        // sitting immediately left of the profile icon, and it
+                        // said nothing the Popover's own hover, focus ring and
+                        // `aria-expanded` do not. If a caret is ever wanted back
+                        // it is `ChevronDownIcon`, which this app owns, rather
+                        // than a second copy of the path.
                     },
                     width: "w-64",
                     ontoggle: move |_| {
