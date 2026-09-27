@@ -1732,7 +1732,12 @@ fn ApprovalsBadge() -> Element {
     });
     let count = inbox.read_unchecked().unwrap_or(0);
     if count <= 0 {
-        return rsx! { span {} };
+        // PMS-1339: NOTHING, not an empty `span`. The action cluster is a
+        // `space-x-4` flex row, so an empty element is still a child and still
+        // takes its gap: on the common zero-count case that was a 1rem block of
+        // dead space immediately right of the notification bell, present on every
+        // page and every reload, with nothing in it to explain itself.
+        return rsx! {};
     }
     rsx! {
         Link {
