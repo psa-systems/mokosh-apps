@@ -2230,10 +2230,31 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
         };
     }
 
+    // PMS-1339: a trail as well as the Back action. The action is one route; the
+    // trail says where the screen sits, which is the part that was missing.
+    let crumbs = vec![
+        crate::components::BreadcrumbItem {
+            label: "Projects".to_string(),
+            route: Some(Route::ProjectList {}),
+        },
+        crate::components::BreadcrumbItem {
+            label: "Project".to_string(),
+            route: Some(Route::ProjectDetail {
+                id: props.id.clone(),
+            }),
+        },
+        crate::components::BreadcrumbItem {
+            label: "Tasks".to_string(),
+            route: None,
+        },
+    ];
     rsx! {
         PageHeader {
             title: "Project Tasks",
             subtitle: "Tasks for this project",
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs { items: crumbs }
+            },
             actions: rsx! {
                 Link {
                     to: Route::ProjectDetail { id: props.id.clone() },

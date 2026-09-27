@@ -385,10 +385,24 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
     }
     let view = view_data.value_or_default();
 
+    // PMS-1339: the trail this screen never had.
+    let crumbs = vec![
+        crate::components::BreadcrumbItem {
+            label: "Reports".to_string(),
+            route: Some(Route::Reports {}),
+        },
+        crate::components::BreadcrumbItem {
+            label: report_title.to_string(),
+            route: None,
+        },
+    ];
     rsx! {
         PageHeader {
             title: report_title,
             subtitle: "Live figures from the reports service",
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs { items: crumbs }
+            },
             actions: rsx! {
                 // MAPPS-641: CSV and PDF of the server report this page reads
                 // (PMS-876). Both carry the report's own gate server-side, so

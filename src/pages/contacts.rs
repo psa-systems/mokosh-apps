@@ -894,8 +894,34 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
             crate::components::ContentUnavailable { title: "Edit Company".to_string() }
         };
     }
+    // PMS-1339: same missing trail as Edit Contact next door.
+    let record_label = match &*snap {
+        Some(Some(payload)) => payload.name.clone(),
+        _ => "Company".to_string(),
+    };
+    let crumbs = vec![
+        crate::components::BreadcrumbItem {
+            label: "Companies".to_string(),
+            route: Some(Route::CompanyList {}),
+        },
+        crate::components::BreadcrumbItem {
+            label: record_label,
+            route: Some(Route::CompanyDetail {
+                id: props.id.clone(),
+            }),
+        },
+        crate::components::BreadcrumbItem {
+            label: "Edit".to_string(),
+            route: None,
+        },
+    ];
     rsx! {
-        PageHeader { title: "Edit Company" }
+        PageHeader {
+            title: "Edit Company",
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs { items: crumbs }
+            },
+        }
         match &*snap {
             None => rsx! {
                 crate::components::DetailSkeleton {} // PMS-353
@@ -6323,8 +6349,51 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
             crate::components::ContentUnavailable { title: "Edit Contact".to_string() }
         };
     }
+    // PMS-1339: the trail this screen never had. Edit Contact was reachable from
+    // the detail page and offered no way back up: the only exit was scrolling to
+    // the bottom of the form and pressing Cancel, which reads as "discard" rather
+    // than "go back". The record's own name appears once it loads; until then the
+    // middle crumb says "Contact" so the trail is the same shape from the first
+    // paint and does not reflow under the reader.
+    let record_label = match &*snap {
+        Some(Some(payload)) => {
+            // The same composition the list, the detail journal and the company
+            // card already use inline; not a new helper, because a fifth
+            // spelling of one rule is worse than four.
+            let name = format!("{} {}", payload.first_name, payload.last_name)
+                .trim()
+                .to_string();
+            if name.is_empty() {
+                "Contact".to_string()
+            } else {
+                name
+            }
+        }
+        _ => "Contact".to_string(),
+    };
+    let crumbs = vec![
+        crate::components::BreadcrumbItem {
+            label: "Contacts".to_string(),
+            route: Some(Route::ContactList {}),
+        },
+        crate::components::BreadcrumbItem {
+            label: record_label,
+            route: Some(Route::ContactDetail {
+                id: props.id.clone(),
+            }),
+        },
+        crate::components::BreadcrumbItem {
+            label: "Edit".to_string(),
+            route: None,
+        },
+    ];
     rsx! {
-        PageHeader { title: "Edit Contact" }
+        PageHeader {
+            title: "Edit Contact",
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs { items: crumbs }
+            },
+        }
         match &*snap {
             None => rsx! {
                 crate::components::DetailSkeleton {} // PMS-353
