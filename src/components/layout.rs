@@ -1297,7 +1297,17 @@ pub fn TopBar(props: TopBarProps) -> Element {
                 // MAPPS-494 (MAPPS-474 phase 5): tenant switcher.
                 // Dropdown listing every membership the identity holds
                 // + a "Create new team" action.
-                TenantSwitcher {}
+                //
+                // PMS-1337: behind the organizations flag, off by default. The
+                // feature is unbuilt and its charging model unresolved, and the
+                // trigger rendered only for two or more memberships while the
+                // create action sat in the user menu, so the control appeared,
+                // vanished on switching and came back on a hard refresh. Gating
+                // the component rather than its trigger also unmounts the
+                // create-team modal it hosts.
+                if crate::modules::feature_flags::organizations_enabled() {
+                    TenantSwitcher {}
+                }
 
                 // User menu (P3-26 avatar dropdown)
                 UserMenu {}
@@ -1481,22 +1491,31 @@ fn UserMenu() -> Element {
                         onclick: move |_| nav.close(),
                         "System Status"
                     }
-                    div { class: "border-t border-line my-1", role: "separator" }
                     // MAPPS-497 item 1: create-org lives here too so a
                     // single-membership identity (switcher trigger
                     // hidden) can still start a new org from the top
                     // bar. Same global signal the switcher dropdown
                     // uses; the modal itself is mounted inside
                     // TenantSwitcher and reacts to the signal.
-                    button {
-                        r#type: "button",
-                        role: "menuitem",
-                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
-                        onclick: move |_| {
-                            *crate::components::tenant_switcher::SHOW_CREATE_ORG.write() = true;
-                            nav.close();
-                        },
-                        "Create new team"
+                    //
+                    // PMS-1337: gated on the same flag as the switcher, and it
+                    // has to be. The modal this opens lives inside
+                    // `TenantSwitcher`, so with the switcher gone the signal
+                    // would set and nothing would render; and a create action
+                    // that works while the switcher is hidden leaves the
+                    // operator holding a team they cannot reach.
+                    if crate::modules::feature_flags::organizations_enabled() {
+                        div { class: "border-t border-line my-1", role: "separator" }
+                        button {
+                            r#type: "button",
+                            role: "menuitem",
+                            class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
+                            onclick: move |_| {
+                                *crate::components::tenant_switcher::SHOW_CREATE_ORG.write() = true;
+                                nav.close();
+                            },
+                            "Create new team"
+                        }
                     }
                     div { class: "border-t border-line my-1", role: "separator" }
                     button {
