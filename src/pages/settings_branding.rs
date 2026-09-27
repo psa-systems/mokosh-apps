@@ -23,6 +23,7 @@ use serde::Deserialize;
 
 use crate::components::{BrandingEditor, BrandingPlane, Card, Checkbox, ContentUnavailable};
 use crate::hooks::branding::{CompanyBranding, TenantBranding};
+use crate::Route;
 
 #[derive(Clone, Debug, Deserialize, Default)]
 struct TenantSnippet {
@@ -155,6 +156,10 @@ pub fn SettingsBrandingPage() -> Element {
 
     rsx! {
         div { class: "max-w-5xl mx-auto space-y-6 p-6",
+            // PMS-1338: the way out. Appearance, the TV view and every other
+            // settings leaf carry this; this page did not, so the only exit was
+            // browser back.
+            crate::pages::settings::SettingsBreadcrumb { current: Route::SettingsBranding {} }
             div {
                 h1 { class: "text-2xl font-semibold text-content", "Portal branding" }
                 p { class: "text-sm text-muted mt-1",
