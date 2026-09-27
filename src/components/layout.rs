@@ -1732,7 +1732,12 @@ fn ApprovalsBadge() -> Element {
     });
     let count = inbox.read_unchecked().unwrap_or(0);
     if count <= 0 {
-        return rsx! { span {} };
+        // PMS-1339: NOTHING, not an empty `span`. The action cluster is a
+        // `space-x-4` flex row, so an empty element is still a child and still
+        // takes its gap: on the common zero-count case that was a 1rem block of
+        // dead space immediately right of the notification bell, present on every
+        // page and every reload, with nothing in it to explain itself.
+        return rsx! {};
     }
     rsx! {
         Link {
@@ -2552,6 +2557,186 @@ mod module_gated_nav_tests {
 /// `has_docs()` is unit-tested in `modules::oidc::config`, so this test
 /// pins the FOOTER's dependency on it. Reading the source keeps the test
 /// off the Dioxus runtime (rendering `VersionFooter` requires one).
+#[cfg(test)]
+mod action_cluster_tests {
+    /// PMS-1339: nothing in the top bar's action cluster renders an empty element.
+    ///
+    /// The cluster is a `space-x-4` flex row, so a child that renders nothing
+    /// visible still takes its 1rem gap. `ApprovalsBadge` returned `rsx! { span {}
+    /// }` on the zero-count case, which is the common case, and that was the block
+    /// of dead space beside the notification bell: present on every page, surviving
+    /// a hard reload, with nothing in it to explain itself.
+    ///
+    /// Asserted as "no placeholder element in this file" rather than by rendering,
+    /// because the empty-span shape is the mistake and it is visible in the source.
+    #[test]
+    fn no_action_renders_an_empty_placeholder() {
+        let src = include_str!("layout.rs");
+        let body = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the component source precedes the tests");
+        for placeholder in ["rsx! { span {} }", "rsx! { div {} }"] {
+            assert!(
+                !body.contains(placeholder),
+                "{placeholder} still takes a `space-x-4` gap: return `rsx! {{}}` instead"
+            );
+        }
+    }
+
+    /// The switcher's slot is reserved before its width is known, so the profile
+    /// icon does not slide sideways when memberships arrive. Read from the
+    /// switcher's own file: the fixed width and the `memberships_loaded` read have
+    /// to travel together, since either alone leaves the shift in place.
+    #[test]
+    fn the_switcher_reserves_its_width_while_memberships_load() {
+        let src = include_str!("tenant_switcher.rs");
+        assert!(
+            src.contains("memberships_loaded"),
+            "the switcher cannot reserve space without knowing the list is still loading"
+        );
+        assert!(
+            src.contains("w-[8.5rem] sm:w-[11.5rem]"),
+            "the reserved slot is gone, so the trigger's arrival will push the profile icon again"
+        );
+    }
+
+    /// PMS-1339: the caret beside the profile icon is gone, and it does not come
+    /// back as a second hand-drawn path. This app owns `ChevronDownIcon`; the
+    /// switcher carried its own inline `svg` with a copied `d` attribute.
+    #[test]
+    fn the_switcher_draws_no_chevron_of_its_own() {
+        let src = include_str!("tenant_switcher.rs");
+        let body = src
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or(src)
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !body.contains("view_box"),
+            "the switcher is drawing an icon by hand again"
+        );
+    }
+}
+
+#[cfg(test)]
+mod nested_screen_breadcrumb_tests {
+    /// PMS-1339: every nested screen renders breadcrumbs.
+    ///
+    /// "Nested" means a route that takes a parameter and sits inside the signed-in
+    /// app: a screen you arrive at FROM somewhere, where the way back has to be on
+    /// the page. Edit Contact was the reported trap - the only exit was scrolling
+    /// to the bottom of the form and pressing Cancel, which reads as "discard"
+    /// rather than "go back" - and the audit found eight more in the same state,
+    /// every edit screen among them.
+    ///
+    /// The list is the routes, not the pages somebody remembered, so a new
+    /// parameterised screen has to be added here and given a trail. Excluded on
+    /// purpose: the token-bearing public pages (password set, invite accept,
+    /// request form, the contact-portal entry points), which are single screens
+    /// outside the app shell with nothing to be nested under, list screens whose
+    /// only parameters are filters, and `NotFound`.
+    const NESTED_SCREENS: [(&str, &str); 21] = [
+        ("SavedDashboardView", "dashboards_view.rs"),
+        ("TicketDetail", "tickets.rs"),
+        ("ProjectDetail", "projects.rs"),
+        ("ProjectTasks", "projects.rs"),
+        ("CompanyDetail", "contacts.rs"),
+        ("CompanyEdit", "contacts.rs"),
+        ("CompanyRoleEdit", "company_role_edit.rs"),
+        ("ContactDetail", "contacts.rs"),
+        ("ContactEdit", "contacts.rs"),
+        ("QuoteDetail", "quotes.rs"),
+        ("QuoteEdit", "quotes.rs"),
+        ("ContractDetail", "contracts.rs"),
+        ("ContractEdit", "contracts.rs"),
+        ("RateCardDetail", "contracts.rs"),
+        ("InvoiceDetail", "billing.rs"),
+        ("CreditNoteDetail", "credit_notes.rs"),
+        ("AssetDetail", "assets.rs"),
+        ("KBArticleDetail", "knowledge_base.rs"),
+        ("KBArticleEdit", "knowledge_base.rs"),
+        ("ReportDetail", "reports.rs"),
+        ("ContactRoleEdit", "settings_contact_roles.rs"),
+    ];
+
+    /// The page sources this guard reads. `include_str!` needs a literal, so the
+    /// files are listed rather than globbed; a nested screen in a file that is not
+    /// here fails below rather than passing unchecked.
+    const PAGE_SOURCES: [(&str, &str); 13] = [
+        (
+            "dashboards_view.rs",
+            include_str!("../pages/dashboards_view.rs"),
+        ),
+        ("tickets.rs", include_str!("../pages/tickets.rs")),
+        ("projects.rs", include_str!("../pages/projects.rs")),
+        ("contacts.rs", include_str!("../pages/contacts.rs")),
+        (
+            "company_role_edit.rs",
+            include_str!("../pages/company_role_edit.rs"),
+        ),
+        ("quotes.rs", include_str!("../pages/quotes.rs")),
+        ("contracts.rs", include_str!("../pages/contracts.rs")),
+        ("billing.rs", include_str!("../pages/billing.rs")),
+        ("credit_notes.rs", include_str!("../pages/credit_notes.rs")),
+        ("assets.rs", include_str!("../pages/assets.rs")),
+        (
+            "knowledge_base.rs",
+            include_str!("../pages/knowledge_base.rs"),
+        ),
+        ("reports.rs", include_str!("../pages/reports.rs")),
+        (
+            "settings_contact_roles.rs",
+            include_str!("../pages/settings_contact_roles.rs"),
+        ),
+    ];
+
+    /// One page component's body: from its `pub fn` to the next one, which is how
+    /// these files are laid out (one component after another at the top level).
+    fn body_of<'a>(source: &'a str, component: &str) -> Option<&'a str> {
+        let start = [
+            format!("\npub fn {component}Page("),
+            format!("\npub fn {component}("),
+            format!("\nfn {component}Editor("),
+        ]
+        .iter()
+        .find_map(|needle| source.find(needle.as_str()))?;
+        let rest = &source[start + 1..];
+        let end = rest.find("\npub fn ").unwrap_or(rest.len());
+        Some(&rest[..end])
+    }
+
+    #[test]
+    fn every_nested_screen_renders_breadcrumbs() {
+        let mut missing = Vec::new();
+        for (component, file) in NESTED_SCREENS {
+            let source = PAGE_SOURCES
+                .iter()
+                .find(|(name, _)| *name == file)
+                .map(|(_, src)| *src)
+                .unwrap_or_else(|| {
+                    panic!("{file} is not in PAGE_SOURCES, so {component} is unchecked")
+                });
+            // Two of them share a body with their "new" sibling
+            // (`QuoteEditor`, `settings_contact_roles`'s editor), which is fine:
+            // one body serving both still has to carry a trail.
+            let body = body_of(source, component)
+                .unwrap_or_else(|| panic!("{component} was not found in {file}"));
+            if !body.contains("Breadcrumbs") {
+                missing.push(format!("{component} ({file})"));
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "these nested screens render no breadcrumbs, so the only way out is browser back: {}",
+            missing.join(", ")
+        );
+    }
+}
+
 #[cfg(test)]
 mod docs_footer_link_tests {
     #[test]

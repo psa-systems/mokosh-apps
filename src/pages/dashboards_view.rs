@@ -159,8 +159,25 @@ pub fn SavedDashboardViewPage(id: String) -> Element {
             Some(d) => render_with_editor(d, version, can_mutate),
             None => rsx! {
                 PageHeader {
+                    // The same trail as the loaded branch, so the crumbs do not
+                    // appear a beat after the header (PMS-1339 is partly about
+                    // exactly that kind of reflow).
                     title: "Dashboard".to_string(),
                     subtitle: "Loading…".to_string(),
+                    breadcrumbs: rsx! {
+                        crate::components::Breadcrumbs {
+                            items: vec![
+                                crate::components::BreadcrumbItem {
+                                    label: "Dashboards".to_string(),
+                                    route: Some(crate::Route::SavedDashboards {}),
+                                },
+                                crate::components::BreadcrumbItem {
+                                    label: "Dashboard".to_string(),
+                                    route: None,
+                                },
+                            ],
+                        }
+                    },
                 }
             },
         }
@@ -321,11 +338,25 @@ fn render_with_editor(d: SavedDashboardRow, mut version: Signal<u32>, can_mutate
         }
     };
 
+    // PMS-1339: the trail this screen never had.
+    let crumbs = vec![
+        crate::components::BreadcrumbItem {
+            label: "Dashboards".to_string(),
+            route: Some(crate::Route::SavedDashboards {}),
+        },
+        crate::components::BreadcrumbItem {
+            label: name.clone(),
+            route: None,
+        },
+    ];
     rsx! {
         PageHeader {
             title: name,
             subtitle: "Saved dashboard".to_string(),
             actions: actions,
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs { items: crumbs }
+            },
         }
         if *editing.read() {
             // MAPPS-357: the add-widget buttons, the per-widget coord inputs,
