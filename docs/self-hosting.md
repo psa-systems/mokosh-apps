@@ -52,7 +52,7 @@ non-empty are emitted. Restart the container to pick up a change.
 | `MOKOSH_HUB_BASE_URL` | Origin of the Bunyip hub, for legacy login bookmarks. Optional. |
 | `MOKOSH_PORTAL_HOST` | The single host the client portal is served from, typically `portal.<apex>`. The SPA uses it to decide whether the current host is the portal host and to derive the API base when it is. Unset turns both off. |
 | `MOKOSH_DOCS_BASE_URL` | Base URL of the documentation site. Unset hides the Documentation menu entry and every contextual help link. `MOKOSH_DOCS_URL` is a deprecated fallback for the same field. |
-| `MOKOSH_TEAM_ENABLED` | Set to `true` or `1` to expose the Team item under the Admin nav section. The route and its API stay reachable by direct URL either way. |
+| `MOKOSH_ORGANIZATIONS_ENABLED` | Set to `1`, `true` or `yes` to offer the organizations surface: the team switcher in the top bar and the "Create new team" action beside it. Unset, which is the default, hides both. Organizations are not built out and their charging model is unresolved, so the control is deliberately absent rather than greyed out (PMS-1337). |
 | `MOKOSH_PUBLIC_URL` | Public base URL of this site. Only the link preview needs it, to resolve a root-relative brand logo into an absolute `og:image`. |
 | `MOKOSH_KB_ATTACHMENT_MAX_BYTES` | Knowledge base attachment size cap, in bytes. Set this to the SAME value as the mokosh-server `KB_ATTACHMENT_MAX_BYTES` env var, so the client's pre-upload check matches what the server will actually accept. Unset falls back to the compile-time 5 MiB default. |
 

@@ -95,17 +95,25 @@ build_config_fields() {
     # runtime-config field name). MOKOSH_DOCS_URL is read as a deprecated
     # fallback for operators who have not migrated yet.
     printf 'docs_base_url\t%s\n' "${MOKOSH_DOCS_BASE_URL:-${MOKOSH_DOCS_URL:-}}"
+    # PMS-1337: organizations (the tenant switcher and the create-team action
+    # beside it) are hidden unless this says 1, true or yes. The feature is not
+    # built out and its charging model is unresolved, so the default is off and
+    # turning it on is a deployment decision rather than a rebuild. Hidden rather
+    # than greyed out because it is unbuilt rather than refused; see
+    # src/modules/feature_flags.rs.
+    printf 'organizations_enabled\t%s\n' "${MOKOSH_ORGANIZATIONS_ENABLED:-}"
     # BUNYIP-142: requested scope string for /oauth2/authorize. Default
     # compile-time value is "openid email offline_access"; operators
     # opting in to bunyip's profile/phone claim emission set this to
     # e.g. "openid email offline_access profile" without rebuilding the
     # SPA image.
     printf 'oidc_scopes\t%s\n' "${MOKOSH_OIDC_SCOPES:-}"
-    # MAPPS-329: Team admin nav feature flag. Locked off by default; set
-    # `MOKOSH_TEAM_ENABLED=true` (or `=1`) per deployment to expose the
-    # Team item under the Admin nav section. Route::Team and its API stay
-    # reachable by direct URL regardless of the flag.
-    printf 'team_enabled\t%s\n' "${MOKOSH_TEAM_ENABLED:-}"
+    # PMS-1337: `team_enabled` (MAPPS-329) is gone from here. PMS-791 phase 2
+    # made Teams core and retired the flag in the SPA, but this line and its row
+    # in docs/self-hosting.md stayed, so an operator could set
+    # MOKOSH_TEAM_ENABLED, see it land in `_mokosh_config.js`, and get no
+    # behaviour at all - a knob that looks supported and reads nothing, which is
+    # exactly what makes somebody reintroduce it.
     # MAPPS-509: operator branding. Unset means the SPA keeps its built-in
     # name and artwork, so a deployment that sets none of these renders
     # exactly as before. The logo and hero URLs must resolve on the SPA
