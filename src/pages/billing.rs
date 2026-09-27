@@ -7352,6 +7352,144 @@ mod overdue_tests {
 }
 
 #[cfg(test)]
+mod invoice_action_availability_tests {
+    use super::{
+        action_block, amend_unavailable, credit_note_unavailable, edit_unavailable,
+        void_unavailable, write_off_unavailable,
+    };
+
+    /// Every status an invoice can be in, so a table below cannot quietly omit
+    /// one: the whole point of PMS-1334's pattern is that no status leaves a
+    /// control unexplained.
+    const STATUSES: [&str; 7] = [
+        "draft",
+        "pending",
+        "sent",
+        "partially_paid",
+        "paid",
+        "void",
+        "written_off",
+    ];
+
+    /// PMS-1334: which actions are available per status, matching what the
+    /// server accepts. `None` from the helper means available, so this table is
+    /// the client's copy of the server's contract and the test is what keeps the
+    /// two honest: edit on draft and pending (`is_frozen`), amend on sent alone
+    /// (`amend_invoice`), a credit note on anything frozen except void, a
+    /// write-off on sent and partially paid (PMS-1036), a void pre-send only
+    /// (PMS-1333).
+    #[test]
+    fn each_status_offers_exactly_the_actions_the_server_accepts() {
+        for status in STATUSES {
+            let edit = edit_unavailable(status).is_none();
+            let amend = amend_unavailable(status, false, false).is_none();
+            let credit = credit_note_unavailable(status, true).is_none();
+            let write_off = write_off_unavailable(status).is_none();
+            let void = void_unavailable(status).is_none();
+            let expected = match status {
+                "draft" | "pending" => (true, false, false, false, true),
+                "sent" => (false, true, true, true, false),
+                "partially_paid" => (false, false, true, true, false),
+                "paid" => (false, false, true, false, false),
+                "void" => (false, false, false, false, false),
+                "written_off" => (false, false, true, false, false),
+                other => panic!("unlisted status {other}"),
+            };
+            assert_eq!(
+                (edit, amend, credit, write_off, void),
+                expected,
+                "availability for {status}"
+            );
+        }
+    }
+
+    /// Nothing is ever unavailable in silence. Every refusal has to be a
+    /// sentence, because the reason IS the feature: a greyed control with an
+    /// empty tooltip is the hidden control with extra steps.
+    #[test]
+    fn every_refusal_says_why_in_a_sentence() {
+        for status in STATUSES {
+            for reason in [
+                edit_unavailable(status),
+                amend_unavailable(status, false, false),
+                credit_note_unavailable(status, true),
+                write_off_unavailable(status),
+                void_unavailable(status),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                assert!(
+                    reason.len() > 20 && reason.ends_with('.'),
+                    "{status}: {reason:?} does not read as an explanation"
+                );
+            }
+        }
+    }
+
+    /// A payment or an existing credit note is what makes replacing a sent
+    /// invoice wrong, and each names the credit note instead, because that is
+    /// what the server says when it refuses.
+    #[test]
+    fn money_against_a_sent_invoice_points_at_a_credit_note() {
+        assert!(amend_unavailable("sent", false, false).is_none());
+        let paid = amend_unavailable("sent", true, false).expect("a payment blocks the amend");
+        assert!(paid.contains("credit note"), "{paid}");
+        let credited = amend_unavailable("sent", false, true).expect("a credit blocks the amend");
+        assert!(credited.contains("credit note"), "{credited}");
+    }
+
+    /// A fully credited invoice has nothing left to credit, which is a different
+    /// refusal from the status ones and has to survive them.
+    #[test]
+    fn a_fully_credited_invoice_says_there_is_nothing_left() {
+        let reason = credit_note_unavailable("paid", false).expect("nothing left to credit");
+        assert!(reason.contains("fully credited"), "{reason}");
+        assert!(credit_note_unavailable("paid", true).is_none());
+    }
+
+    /// An unreachable server outranks every status reason, because nothing can
+    /// be saved at all until it is back (MAPPS-357).
+    #[test]
+    fn an_unreachable_server_is_the_reason_that_wins() {
+        let down = action_block(false, "Can't edit while the server is unreachable", None);
+        assert_eq!(
+            down.as_deref(),
+            Some("Can't edit while the server is unreachable")
+        );
+        let down_and_frozen = action_block(
+            false,
+            "Can't edit while the server is unreachable",
+            edit_unavailable("sent"),
+        );
+        assert_eq!(
+            down_and_frozen.as_deref(),
+            Some("Can't edit while the server is unreachable")
+        );
+        assert!(action_block(true, "unused", None).is_none());
+    }
+
+    /// PMS-1334: one credit-note entry point. The card below the actions used to
+    /// carry a second button opening the same modal, and the two were reachable
+    /// at once with nothing to tell them apart.
+    ///
+    /// Read from the page's source up to its first test module, because the
+    /// needle is a literal in this test and a whole-file scan would count it.
+    #[test]
+    fn the_credit_note_modal_has_one_trigger() {
+        let page = include_str!("billing.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the page has source before its tests");
+        assert_eq!(
+            page.matches("show_credit_note.set(true)").count(),
+            1,
+            "two ways to open one modal is the duplicate entry point PMS-1334 removed"
+        );
+    }
+}
+
+#[cfg(test)]
 mod write_off_tests {
     use super::{can_write_off, write_off_line};
 
