@@ -9308,6 +9308,58 @@ mod company_source_tests {
         }
     }
 
+    /// PMS-1332 / MAPPS-757: the company decision on the contact form is ONE
+    /// search box, and the three affordances it replaced cannot drift back.
+    ///
+    /// Asserted over `ContactForm`'s own body, minus comment lines: the body
+    /// because these needles are literals in this test and a whole-file scan
+    /// would count them, and the filter because the paragraph above the control
+    /// names every retired label, so a scan that read it would pass while the
+    /// labels were back on screen. What is pinned is the count (a second picker beside the first would be two
+    /// controls again for one decision) and `allow_inline_create`, which is
+    /// what makes "create the company you typed" the third outcome of the one
+    /// interaction rather than a separate control. The picker's own "+ New
+    /// company" button needs no guard here: PMS-1332 deleted the prop, so a
+    /// form asking for it does not compile.
+    #[test]
+    fn the_company_control_is_one_search_box() {
+        // The form's own body, so a needle below cannot match itself, minus
+        // comment lines, because the paragraph above the control names every
+        // retired label.
+        let src = include_str!("contacts.rs");
+        let start = src
+            .find("fn ContactForm(")
+            .expect("ContactForm is defined in this file");
+        let rest = &src[start..];
+        let rendered = rest[..rest.find("\n}\n").expect("the form closes")]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            rendered
+                .matches("crate::components::CompanyPicker {")
+                .count(),
+            1,
+            "one company control on this page, not two"
+        );
+        assert!(
+            rendered.contains("allow_inline_create: true,"),
+            "the one box must still be able to create the company that was typed"
+        );
+        for retired in [
+            "Add a company",
+            "Link an existing company",
+            "Enter a name without creating",
+            "don't add a company",
+        ] {
+            assert!(
+                !rendered.contains(retired),
+                "{retired:?} is back: the decision is split across controls again"
+            );
+        }
+    }
+
     /// The note describes a name the record already holds; it must not read
     /// as an invitation to enter one, because the form offers no way to.
     #[test]

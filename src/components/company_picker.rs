@@ -67,14 +67,6 @@ pub struct CompanyPickerProps {
     /// entry pickers do not want the affordance.
     #[props(default)]
     pub allow_inline_create: bool,
-    /// MAPPS-484: render a "+ New company" button beside the input that opens
-    /// the same create modal `allow_inline_create` puts in the dropdown. The
-    /// dropdown affordance only exists once the dropdown is open, so a form
-    /// that needs a visible create control sets this too. Default off, so no
-    /// existing call site changes; ignored without `allow_inline_create`,
-    /// which owns the modal.
-    #[props(default)]
-    pub show_create_button: bool,
 }
 
 /// Subset of the server's `CompanyResponse` the inline-create modal
@@ -98,9 +90,6 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
     // the user doesn't have to re-type the company name they were
     // already searching for.
     let allow_inline_create = props.allow_inline_create;
-    // MAPPS-484: the modal lives behind `allow_inline_create`, so the button
-    // that opens it cannot render without it.
-    let show_create_button = props.show_create_button && allow_inline_create;
     let mut show_create_modal = use_signal(|| false);
     let mut new_name = use_signal(String::new);
     let mut creating = use_signal(|| false);
@@ -193,14 +182,6 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
     // MAPPS-653: with nothing matching the typed text, the create action is
     // row 0, which is what makes Enter on a no-match query start a new company.
     let list = NavRows::new(rows.len(), allow_inline_create && loaded);
-    // The button sits beside the input, so it drops by the height of the
-    // label when the picker renders one.
-    let create_button_class = if props.label.is_empty() {
-        "whitespace-nowrap"
-    } else {
-        "whitespace-nowrap mt-6"
-    };
-    let query_for_button = query_text.clone();
     let rows_for_keys = rows.clone();
     let query_for_keys = query_text.clone();
     rsx! {
@@ -254,23 +235,15 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                         },
                     }
                 }
-                // MAPPS-484: the visible create affordance. Opens the same
-                // modal as the in-dropdown "Create new company", so what it
-                // creates is a real `companies` row, not a typed name.
-                if show_create_button {
-                    Button {
-                        variant: ButtonVariant::Secondary,
-                        class: create_button_class.to_string(),
-                        onclick: move |_| {
-                            new_name.set(query_for_button.clone());
-                            create_error.set(String::new());
-                            nav.close();
-                            show_create_modal.set(true);
-                        },
-                        PlusIcon { size: IconSize::Small, class: "mr-1".to_string() }
-                        "New company"
-                    }
-                }
+                // PMS-1332: the "+ New company" button beside the input is
+                // gone, and with it the prop that turned it on. MAPPS-484 added
+                // it for the contact form, MAPPS-757 took that form down to one
+                // control and turned it off, and it then rendered on none of the
+                // fifteen pickers in the app: a control nothing shows is what
+                // makes putting it back look supported. The create path it
+                // opened is unchanged and is the dropdown's own create row,
+                // which `allow_inline_create` owns and which seeds the modal
+                // with the typed query.
             }
             if nav.is_open() {
                 // Transparent full-viewport backdrop: a click anywhere outside
