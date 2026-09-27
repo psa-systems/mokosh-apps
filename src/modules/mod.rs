@@ -5,6 +5,7 @@ pub mod auth;
 pub mod calendar;
 pub mod contacts;
 pub mod contracts;
+pub mod feature_flags;
 pub mod forms;
 pub mod kb;
 pub mod oidc;
