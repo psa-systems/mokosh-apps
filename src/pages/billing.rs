@@ -859,11 +859,139 @@ struct InvoiceDetail {
 }
 
 /// MAPPS-727: whether the server would accept a write-off. PMS-1036 moves a
-/// `sent` or `partially_paid` invoice to `written_off` and refuses every
-/// other status with a 409, so the button is absent rather than disabled
-/// everywhere else: a control that can never work should not be on the page.
+/// `sent` or `partially_paid` invoice to `written_off` and refuses every other
+/// status with a 409.
+///
+/// PMS-1334 changed what this decides rather than what it answers. It used to
+/// decide whether the button was on the page at all, on the stance that "a
+/// control that can never work should not be on the page". The stance is now the
+/// opposite, for every action on this invoice: the control stays, greyed, with a
+/// tooltip naming the reason, because hiding it answers the operator's question
+/// ("can I write this off?") with silence, and silence reads as broken.
 pub(crate) fn can_write_off(status: &str) -> bool {
     matches!(status, "sent" | "partially_paid")
+}
+
+/// PMS-1334: why an invoice action is unavailable, or `None` when it is
+/// available. One function per action, each returning the operator-facing reason
+/// that matches what the server would refuse with, because a tooltip that
+/// disagrees with the 409 is worse than no tooltip.
+///
+/// These are the greyed-control half of the pattern David asked for, with Google
+/// Cloud as the reference: the item stays visible and says why. The alternative
+/// the page used was to render nothing, which is indistinguishable from a
+/// feature that does not exist.
+pub(crate) fn edit_unavailable(status: &str) -> Option<String> {
+    match status {
+        "draft" | "pending" => None,
+        "void" => Some(
+            "This invoice was voided, so there is nothing to edit. Amend the invoice that \
+             replaced it."
+                .to_string(),
+        ),
+        _ => Some(
+            "This invoice has already been sent, so the customer holds it. Amend it instead: that \
+             creates a replacement you can edit and send."
+                .to_string(),
+        ),
+    }
+}
+
+/// PMS-1334: amend replaces a sent invoice with a linked draft, and the server
+/// refuses it for anything else. `paid` and `credited` are whether either amount
+/// is above zero on the invoice, which is what makes a void wrong.
+pub(crate) fn amend_unavailable(status: &str, paid: bool, credited: bool) -> Option<String> {
+    match status {
+        "draft" | "pending" => Some(
+            "This invoice has not been sent, so edit it directly rather than amending it."
+                .to_string(),
+        ),
+        "void" => Some(
+            "This invoice has already been replaced. Amend the invoice that replaced it."
+                .to_string(),
+        ),
+        "sent" if paid => Some(
+            "A payment is recorded against this invoice, so replacing it would leave that payment \
+             on a voided document. Raise a credit note instead."
+                .to_string(),
+        ),
+        "sent" if credited => Some(
+            "This invoice already has a credit note against it, so the correction is under way. \
+             Credit the rest of it, or invoice the difference."
+                .to_string(),
+        ),
+        "sent" => None,
+        _ => Some(
+            "Money or a decision has already moved against this invoice, so it cannot be \
+             replaced. Raise a credit note instead."
+                .to_string(),
+        ),
+    }
+}
+
+/// MAPPS-638 / PMS-1334: a credit note corrects a frozen invoice, and only while
+/// something is left to credit. `left_to_credit` is the total less what is
+/// already credited, and deliberately NOT less what was paid: a paid invoice can
+/// be credited in full, which is the case where the customer is owed money back.
+pub(crate) fn credit_note_unavailable(status: &str, left_to_credit: bool) -> Option<String> {
+    match status {
+        "draft" | "pending" => Some(
+            "A credit note corrects an invoice the customer already holds. Edit this one instead, \
+             or void it."
+                .to_string(),
+        ),
+        "void" => Some("This invoice was voided, so there is no charge to correct.".to_string()),
+        _ if !left_to_credit => {
+            Some("This invoice is fully credited, so there is nothing left to credit.".to_string())
+        }
+        _ => None,
+    }
+}
+
+/// PMS-1036: a write-off says the customer owes this and will not pay, which is
+/// only a question for an invoice that is owed.
+pub(crate) fn write_off_unavailable(status: &str) -> Option<String> {
+    match status {
+        _ if can_write_off(status) => None,
+        "draft" | "pending" => {
+            Some("Nobody owes a draft. Void it instead if it should not go out.".to_string())
+        }
+        "paid" => Some("This invoice is paid, so there is no debt to write off.".to_string()),
+        "written_off" => Some("This invoice is already written off.".to_string()),
+        _ => {
+            Some("A write-off applies to an invoice that is owed and will not be paid.".to_string())
+        }
+    }
+}
+
+/// PMS-1333: voiding is the pre-send back-out, and PMS-1334 is the only other
+/// way an invoice reaches `void`: sending the amendment that replaces it. So the
+/// control itself stays pre-send only, and says which instrument takes over.
+pub(crate) fn void_unavailable(status: &str) -> Option<String> {
+    match status {
+        "draft" | "pending" => None,
+        "void" => Some("This invoice is already void.".to_string()),
+        _ => Some(
+            "The customer already holds this invoice, so it cannot simply be cancelled. Amend it \
+             to replace it, or raise a credit note."
+                .to_string(),
+        ),
+    }
+}
+
+/// PMS-1334: the reason a control is greyed, with the server being unreachable
+/// taking precedence over any status reason, because nothing can be saved at all
+/// until it is back (MAPPS-357).
+pub(crate) fn action_block(
+    can_mutate: bool,
+    unreachable: &str,
+    reason: Option<String>,
+) -> Option<String> {
+    if can_mutate {
+        reason
+    } else {
+        Some(unreachable.to_string())
+    }
 }
 
 /// MAPPS-727: the Details row for a written-off invoice: the amount, the
@@ -1639,8 +1767,11 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         .unwrap_or_default();
     let editable = matches!(status.as_str(), "draft" | "pending");
     let collectible = matches!(status.as_str(), "pending" | "sent" | "partially_paid");
-    // MAPPS-727: PMS-1036 writes off a sent or partially paid invoice.
-    let write_offable = can_write_off(status.as_str());
+    // PMS-1334: no `write_offable` binding any more. The write-off button is on
+    // the page for every status now, and `write_off_unavailable` asks
+    // `can_write_off` itself to decide whether it is greyed and what the reason
+    // says, so a second copy of that question here would be the drift the one
+    // helper exists to prevent.
     // MAPPS-638: a credit note corrects a frozen invoice, and only while
     // something is left to credit: the total less what is already credited,
     // and NOT less what was paid, because a paid invoice can be credited in
@@ -1662,6 +1793,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         })
         .unwrap_or(Decimal::ZERO);
     let creditable = frozen && remaining_to_credit > Decimal::ZERO;
+
     // PMS-580: a frozen invoice (sent and beyond) is a finalized financial
     // record. There is no edit / cancel / void once sent; correction goes
     // through a credit note (MAPPS-638, the Credit Notes card). Say so inline so the
@@ -1680,6 +1812,9 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         .map(|c| c.to_string())
         .unwrap_or_default();
     let id_for_send = props.id.clone();
+    // PMS-1334: the amend POST needs the id inside its own spawn.
+    let id_for_amend = props.id.clone();
+
     let id_for_void = props.id.clone();
     let act_err = action_error.read().clone();
 
@@ -1839,6 +1974,43 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     let fetch_failed = matches!(*snap, Some(None));
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
+    // PMS-1334: every staff action on this invoice now states its own
+    // availability, so the row is the same row whatever the status and each
+    // control answers "why not" on hover instead of vanishing. The reasons are
+    // pure functions above, tested against what the server actually refuses.
+    let amount_paid_any = invoice
+        .as_ref()
+        .and_then(|i| Decimal::from_str_exact(&i.amount_paid).ok())
+        .is_some_and(|paid| paid > Decimal::ZERO);
+    let amount_credited_any = invoice
+        .as_ref()
+        .and_then(|i| Decimal::from_str_exact(&i.amount_credited).ok())
+        .is_some_and(|credited| credited > Decimal::ZERO);
+    let edit_block = action_block(
+        can_mutate,
+        "Can't edit while the server is unreachable",
+        edit_unavailable(status.as_str()),
+    );
+    let amend_block = action_block(
+        can_mutate,
+        "Can't amend while the server is unreachable",
+        amend_unavailable(status.as_str(), amount_paid_any, amount_credited_any),
+    );
+    let credit_note_block = action_block(
+        can_mutate,
+        "Can't raise a credit note while the server is unreachable",
+        credit_note_unavailable(status.as_str(), remaining_to_credit > Decimal::ZERO),
+    );
+    let write_off_block = action_block(
+        can_mutate,
+        "Can't write off while the server is unreachable",
+        write_off_unavailable(status.as_str()),
+    );
+    let void_block = action_block(
+        can_mutate,
+        "Can't void while the server is unreachable",
+        void_unavailable(status.as_str()),
+    );
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Invoice".to_string() }
@@ -2266,18 +2438,74 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                         }
                     }
                 }
-                if editable && staff_only {
+                if staff_only {
+                    // PMS-1334: Edit is visible on a sent invoice and greyed,
+                    // pointing at Amend. It used to be absent, which is how an
+                    // operator came away thinking a sent invoice has no
+                    // correction path at all.
                     Button {
                         variant: ButtonVariant::Secondary,
-                        // MAPPS-357: block edits while the server is down.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
+                        disabled: edit_block.is_some(),
+                        title: edit_block.clone(),
                         onclick: move |_| {
                             action_error.set(String::new());
                             show_edit.set(true);
                         },
                         "Edit"
                     }
+                    // PMS-1334: the correction for a sent invoice. Creates a
+                    // linked draft and changes nothing about this invoice until
+                    // that draft is sent, which is why the label is Amend and
+                    // not Replace: nothing is replaced yet.
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        loading: *busy.read(),
+                        disabled: amend_block.is_some(),
+                        title: amend_block.clone(),
+                        onclick: move |_| {
+                            if *busy.read() {
+                                return;
+                            }
+                            busy.set(true);
+                            action_error.set(String::new());
+                            let path = format!("/invoices/{}/amend", id_for_amend);
+                            spawn(async move {
+                                #[cfg(feature = "app")]
+                                {
+                                    match crate::hooks::fetch::api::post_authed::<
+                                        serde_json::Value,
+                                        serde_json::Value,
+                                    >(&path, &serde_json::json!({}))
+                                    .await
+                                    {
+                                        Ok(created) => {
+                                            // Land on the draft that was just
+                                            // created, because the next thing
+                                            // the operator does is edit it.
+                                            if let Some(id) =
+                                                created.get("id").and_then(|v| v.as_str())
+                                            {
+                                                navigator().push(Route::InvoiceDetail {
+                                                    id: id.to_string(),
+                                                });
+                                            } else {
+                                                action_error.set(
+                                                    "The amendment was created but the server did \
+                                                     not say which invoice it is."
+                                                        .to_string(),
+                                                );
+                                            }
+                                        }
+                                        Err(e) => action_error.set(e.to_string()),
+                                    }
+                                }
+                                busy.set(false);
+                            });
+                        },
+                        "Amend"
+                    }
+                }
+                if editable && staff_only {
                     Button {
                         variant: ButtonVariant::Primary,
                         loading: *busy.read(),
@@ -2397,11 +2625,11 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 // MAPPS-727 (PMS-1036): the bad-debt record for a sent
                 // balance that will not be paid. Finance only, like the
                 // route.
-                if write_offable && staff_only && has_finance {
+                if staff_only && has_finance {
                     Button {
                         variant: ButtonVariant::Secondary,
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't write off while the server is unreachable".to_string()),
+                        disabled: write_off_block.is_some(),
+                        title: write_off_block.clone(),
                         onclick: move |_| {
                             action_error.set(String::new());
                             write_off_error.set(String::new());
@@ -2413,12 +2641,15 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 // PMS-953 (MAPPS-638): a credit note is the correction path
                 // for a frozen invoice. Staff-only per the contact-login
                 // stance; contact plane never issues a credit note.
-                if creditable && staff_only {
+                // PMS-1334: the ONE credit-note entry point. The Credit Notes
+                // card below used to carry a second button opening this same
+                // modal, which is the duplicate entry point the issue names;
+                // actions live in this row, and the card lists what came of them.
+                if staff_only {
                     Button {
                         variant: ButtonVariant::Secondary,
-                        // MAPPS-357: block raising a credit note while down.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't raise a credit note while the server is unreachable".to_string()),
+                        disabled: credit_note_block.is_some(),
+                        title: credit_note_block.clone(),
                         onclick: move |_| {
                             action_error.set(String::new());
                             show_credit_note.set(true);
@@ -2426,14 +2657,18 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                         "Create Credit Note"
                     }
                 }
-                if editable && staff_only {
+                if staff_only {
                     Button {
                         variant: ButtonVariant::Danger,
                         loading: *busy.read(),
-                        // MAPPS-357: block voiding while the server is down.
-                        // PMS-580: clarify that Void is the pre-send back-out.
-                        disabled: !can_mutate,
-                        title: "Voids this draft invoice and keeps it on record. Once an invoice is sent it can no longer be voided.".to_string(),
+                        // PMS-580 said what Void is for; PMS-1334 keeps the
+                        // control on the page past `pending` and lets the reason
+                        // say which instrument takes over, rather than the
+                        // operator inferring it from an absence.
+                        disabled: void_block.is_some(),
+                        title: void_block.clone().unwrap_or_else(|| {
+                            "Voids this draft invoice and keeps it on record.".to_string()
+                        }),
                         onclick: move |_| {
                             if !*busy.read() {
                                 confirming_void.set(true);
@@ -2838,21 +3073,13 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                                 }
                                             }
                                         }
-                                        if creditable {
-                                            div { class: "mt-3",
-                                                Button {
-                                                    variant: ButtonVariant::Secondary,
-                                                    size: ButtonSize::Small,
-                                                    disabled: !can_mutate,
-                                                    title: (!can_mutate).then(|| "Can't raise a credit note while the server is unreachable".to_string()),
-                                                    onclick: move |_| {
-                                                        action_error.set(String::new());
-                                                        show_credit_note.set(true);
-                                                    },
-                                                    "Create Credit Note"
-                                                }
-                                            }
-                                        }
+                                        // PMS-1334: no button here. This card had
+                                        // one opening the same modal as the action
+                                        // row above, which is the duplicate entry
+                                        // point the issue names: two controls, one
+                                        // outcome, and no way to tell them apart.
+                                        // The row holds the actions, this card
+                                        // lists what came of them.
                                     }
                                 }
                             }
