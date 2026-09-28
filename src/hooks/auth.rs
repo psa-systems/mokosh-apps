@@ -18,6 +18,22 @@ use crate::Route;
 pub struct MembershipView {
     pub tenant_id: String,
     pub tenant_name: String,
+    /// MAPPS-948: the grant this seat came from, when it came from one.
+    ///
+    /// A third field on a struct whose doc above explains why it carries only
+    /// two, so the reason has to be better than "the server sends it": this id
+    /// is the ONLY thing that makes `DELETE /api/v1/my-grants/{id}` callable
+    /// (server PMS-1393 put it on the wire for exactly that), and its presence
+    /// is also the answer to whether this seat CAN be left. `None` covers both
+    /// a seat the identity holds in its own right and a grant that is already
+    /// revoked, which is why the switcher can decide whether to offer Leave
+    /// without a second request.
+    ///
+    /// `#[serde(default)]` because a client can be deployed against a server
+    /// that predates the field, and a missing id means "no Leave here" rather
+    /// than a failed parse of the whole membership list.
+    #[serde(default)]
+    pub mokosh_bunyip_grant_id: Option<String>,
 }
 
 /// MAPPS-661: whether the identity provider has confirmed, during THIS page
@@ -639,6 +655,9 @@ pub fn use_memberships_loader() {
                         a.memberships = vec![MembershipView {
                             tenant_id: t.id,
                             tenant_name: t.name,
+                            // The single-org read answers the caller's own
+                            // organisation, which is never a grant.
+                            mokosh_bunyip_grant_id: None,
                         }];
                         a.memberships_loaded = true;
                     }
@@ -1334,6 +1353,7 @@ mod tests {
             memberships: vec![super::MembershipView {
                 tenant_id: id.to_string(),
                 tenant_name: name.to_string(),
+                mokosh_bunyip_grant_id: None,
             }],
             memberships_loaded: true,
             ..Default::default()
@@ -1378,6 +1398,7 @@ mod tests {
         ctx.memberships.push(super::MembershipView {
             tenant_id: uuid::Uuid::from_u128(0xbeef).to_string(),
             tenant_name: "Someone else".to_string(),
+            mokosh_bunyip_grant_id: None,
         });
         assert!(ctx.set_active_org_name("Niceguy IT"));
         assert_eq!(ctx.memberships[0].tenant_name, "Niceguy IT");
