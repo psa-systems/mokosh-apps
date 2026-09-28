@@ -78,6 +78,15 @@ pub struct Overview {
     /// The caller may set the deployment's Google client (PMS-1264).
     #[serde(default)]
     pub client_editable: bool,
+    /// `integrations/icloud_contacts_enabled` (server PMS-1341), the iCloud half
+    /// of `enabled`. Absent reads as enabled, the server's own default.
+    #[serde(default = "enabled_by_default")]
+    pub icloud_enabled: bool,
+    /// The tenant's iCloud connection (server PMS-1409). Beside `connection`
+    /// rather than replacing it with a list, because a tenant may hold both: two
+    /// cards, two credentials, two selections, one read.
+    #[serde(default)]
+    pub icloud_connection: Option<Connection>,
 }
 
 /// The connection half of the status read (PMS-1212, PMS-1215).
@@ -228,16 +237,33 @@ pub enum CardState {
 /// The one state the card renders for `overview`. Checked in the order an
 /// admin needs to hear about them; see the module doc.
 pub fn card_state(overview: &Overview) -> CardState {
-    if !overview.enabled {
+    card_state_of(
+        overview.enabled,
+        overview.configured,
+        overview.connection.as_ref(),
+    )
+}
+
+/// The same decision for any provider's connection (MAPPS iCloud card, server
+/// PMS-1409).
+///
+/// One derivation and not two, because the STATES are the same - an import in
+/// flight, a credential a human has to fix, a wait, a failure streak, a partial
+/// import, nothing chosen yet - and only the words differ. `configured` is what
+/// the Google path uses for "this deployment has an OAuth client"; a provider
+/// that needs no deployment-level setup passes `true`.
+pub fn card_state_of(
+    enabled: bool,
+    configured: bool,
+    connection: Option<&Connection>,
+) -> CardState {
+    if !enabled {
         return CardState::TurnedOff {
-            connected_account: overview
-                .connection
-                .as_ref()
-                .map(|c| c.account_email.clone()),
+            connected_account: connection.map(|c| c.account_email.clone()),
         };
     }
-    let Some(connection) = overview.connection.as_ref() else {
-        return if overview.configured {
+    let Some(connection) = connection else {
+        return if configured {
             CardState::NeverConnected
         } else {
             CardState::NotConfigured
@@ -817,9 +843,17 @@ fn GoogleContactsSettingsBody() -> Element {
 
 /// What a disconnect does, stated before it happens (PSA-70 J).
 pub fn disconnect_message(account: Option<&str>) -> String {
+    disconnect_message_from("Google", account)
+}
+
+/// The same sentence for any source (PMS-1409). The vendor's name appears twice
+/// and both matter: what is REMOVED is the credential this MSP gave us, and what
+/// is NOT touched is the address book itself, which is the reassurance somebody
+/// hovering over a Disconnect button is looking for.
+pub fn disconnect_message_from(vendor: &str, account: Option<&str>) -> String {
     let from = account.map(|a| format!(" from {a}")).unwrap_or_default();
     format!(
-        "Syncing stops and the stored Google access is removed. Every contact imported{from} stays in Mokosh as a local record that still shows where it came from. Nothing is deleted from Google or from Mokosh, and an import in progress stops."
+        "Syncing stops and the stored {vendor} access is removed. Every contact imported{from} stays in Mokosh as a local record that still shows where it came from. Nothing is deleted from {vendor} or from Mokosh, and an import in progress stops."
     )
 }
 
@@ -867,10 +901,17 @@ pub fn percent(run: &Run) -> Option<i32> {
 }
 
 #[component]
-fn RunProgress(run: Run) -> Element {
+pub fn RunProgress(
+    run: Run,
+    /// Whose address book is being read, for the label a run without a total
+    /// yet shows (PMS-1409). Defaults to Google, so the call site that predates
+    /// the iCloud card is unchanged.
+    #[props(default = "Google".to_string())]
+    source: String,
+) -> Element {
     let label = match (percent(&run), run.total) {
         (Some(p), Some(total)) => format!("{} of {total} contacts read ({p}%)", run.processed),
-        _ => "Reading contacts from Google…".to_string(),
+        _ => format!("Reading contacts from {source}…"),
     };
     let width = percent(&run).unwrap_or(0);
     rsx! {
