@@ -350,5 +350,5 @@ jobs:
         uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/job-metrics-report@e728773130496a6e84e0d87de9390f3d98939019 # main
 
   secrets:
-    uses: psa-systems/common/.forgejo/workflows/check-secrets.yml@main
+    uses: psa-systems/common/.forgejo/workflows/check-secrets.yml@7987236da3d1a4aee8897ecd9e2be16e6d5b65ac # main
     secrets: inherit
