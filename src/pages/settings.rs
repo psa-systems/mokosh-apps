@@ -574,6 +574,15 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         advanced: false,
         visibility: SurfaceVisibility::StaffAdmin,
     },
+    // PMS-1409: beside Google Contacts and not advanced, for the same reason.
+    SettingsSurface {
+        route: Route::SettingsICloudContacts {},
+        title: "iCloud Contacts",
+        description: "Import contacts from an iCloud account over CardDAV, with an Apple ID and an app-specific password. Read-only: nothing is written back.",
+        group: SettingsGroupKey::Integrations,
+        advanced: false,
+        visibility: SurfaceVisibility::StaffAdmin,
+    },
     // MAPPS-915: a .vcf file through the same import (server PMS-1290).
     // Beside Google Contacts and not advanced, for the same reason.
     SettingsSurface {

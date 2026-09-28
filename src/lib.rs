@@ -1058,6 +1058,14 @@ pub enum Route {
     // MAPPS-809: choose labels, preview, review, import.
     #[route("/settings/integrations/google-contacts/import")]
     SettingsGoogleContactsImport {},
+    // PMS-1409: the iCloud half of the contact import (server PMS-1341). Its
+    // own surface rather than a provider switch on the Google one: a tenant may
+    // hold both, and the credentials have nothing in common.
+    #[route("/settings/integrations/icloud-contacts")]
+    SettingsICloudContacts {},
+    // PMS-1409: choose iCloud groups, preview, review, import.
+    #[route("/settings/integrations/icloud-contacts/import")]
+    SettingsICloudContactsImport {},
     // MAPPS-915: upload a .vcf file into the same import (server PMS-1290).
     #[route("/settings/integrations/vcard-import")]
     SettingsVcardImport {},
@@ -2270,6 +2278,24 @@ fn SettingsGoogleContactsImport() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             pages::settings_contact_sync_import::GoogleContactsImportPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsICloudContacts() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_contact_sync_icloud::ICloudContactsSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsICloudContactsImport() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_contact_sync_icloud_import::ICloudContactsImportPage {}
         }
     }
 }
