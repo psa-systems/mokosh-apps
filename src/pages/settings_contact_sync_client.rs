@@ -46,12 +46,20 @@ struct ClientSettingsBody {
 }
 
 /// Where the client in force comes from, in words.
+///
+/// PMS-1340 split the old `database` in two, because "set here" stopped being one
+/// thing: the credential is now this organisation's own Google registration, and
+/// the deployment-wide value PMS-1264 stored is a deprecated fallback for a
+/// tenant that has not entered one yet. An admin needs to know which of those is
+/// answering, since the consent screen a customer reads names whichever
+/// application it is.
 pub fn source_text(source: &str) -> &'static str {
     match source {
-        "database" => "Set here. It is used instead of the deployment's environment.",
-        "environment" => "Taken from the deployment's environment (GOOGLE_CONTACTS_CLIENT_ID). Saving here replaces it.",
-        "incomplete" => "A client id is saved here without its secret, so nothing can connect. Enter the secret.",
-        _ => "Not set. Nobody on this deployment can connect Google Contacts until it is.",
+        "tenant" => "Your organization's own Google registration. This is what your clients consent to.",
+        "deployment" => "Falling back to the deployment-wide client set by your provider. Save your own registration here to use your own consent screen and quota.",
+        "environment" => "Taken from the deployment's environment (GOOGLE_CONTACTS_CLIENT_ID). Saving here replaces it for this organization.",
+        "incomplete" => "A client id is saved without its secret, so nothing can connect. Enter the secret.",
+        _ => "Not set. Nobody in this organization can connect Google Contacts until it is.",
     }
 }
 
@@ -181,7 +189,11 @@ pub fn GoogleClientForm(on_change: EventHandler<()>) -> Element {
                                     data_testid: "google-client-save",
                                     "Save client"
                                 }
-                                if current.source == "database" || current.source == "incomplete" {
+                                // PMS-1340: only a credential stored at THIS level
+                                // can be cleared from here. On `deployment` there
+                                // is nothing of this tenant's to clear, and the
+                                // fallback belongs to the provider.
+                                if current.source == "tenant" || current.source == "incomplete" {
                                     Button {
                                         variant: ButtonVariant::Secondary,
                                         disabled: busy() || !can_mutate,
@@ -233,10 +245,19 @@ mod tests {
 
     #[test]
     fn every_source_is_explained() {
-        for source in ["database", "environment", "incomplete", "none"] {
+        for source in ["tenant", "deployment", "environment", "incomplete", "none"] {
             assert!(!source_text(source).is_empty(), "{source}");
         }
         assert!(source_text("incomplete").contains("Enter the secret"));
+        // PMS-1340: the two levels have to read differently, or an admin cannot
+        // tell their own registration from their provider's fallback, which is
+        // the whole point of showing the source at all.
+        assert_ne!(source_text("tenant"), source_text("deployment"));
+        assert!(
+            source_text("deployment").contains("your own"),
+            "the fallback should say what to do about it: {}",
+            source_text("deployment")
+        );
     }
 
     /// The secret field is a password input and never seeded from the server.
