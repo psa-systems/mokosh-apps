@@ -1,12 +1,11 @@
 //! Contact-plane portal pages (mokosh-contact-login, prompt 005).
 //!
 //! Each submodule renders one leaf of the `/portal/{slug}/*` route
-//! family: login, magic-link password setup, forgot-password,
-//! reset-password. All are public (no `AuthGuard`); a successful login
+//! family: login, magic-link password setup, and Company-ID sign-in.
+//! All are public (no `AuthGuard`); a successful login
 //! seeds the contact-session tokens (see `hooks::fetch::api`) and
 //! navigates the visitor into the workspace at `/dashboard`.
 
-pub mod forgot_password;
 pub mod login;
 // MAPPS-572 (prompt 010): magic-link finder + Company picker land as
 // two sibling routes. Post MAPPS-589 (prompt 011) the finder moved
@@ -17,7 +16,6 @@ pub mod magic_link_login;
 /// brought them named a page.
 pub mod next_target;
 pub mod picker;
-pub mod reset_password;
 pub mod set_password;
 // MAPPS-589 (prompt 011): Portal-ID login pages.
 // - `generic_login` at `/portal/login` (three-field: Company ID +
@@ -69,6 +67,23 @@ pub const PORTAL_NO_PASSWORD_PROMPT: &str = "First time here, or never set a pas
 /// The action itself, named for what it does rather than for what it lacks.
 pub const PORTAL_NO_PASSWORD_ACTION: &str = "Email me a sign-in link";
 
+/// PMS-1343: what the sign-in pages say in place of a "Forgot password?"
+/// button, on both portal entry points.
+///
+/// The MSP owns the client relationship and therefore owns this: a portal user
+/// does not reset their own password, they ask their provider, who reissues
+/// the link from the contact record. Self-service reset is gone from the
+/// server as well, so a page offering it would be offering a route that is not
+/// there.
+///
+/// It names the sign-in link deliberately, because that is the thing a locked
+/// out customer can act on RIGHT NOW without waiting for anybody, and sending
+/// them to their provider without it would read as "come back tomorrow". The
+/// link gets them in; it does not change their password, which is the part
+/// that stays with the provider.
+pub const PORTAL_FORGOT_PASSWORD_GUIDANCE: &str =
+    "Forgotten your password? Your service provider resets it for you - contact them and they will send a new link. To get in now, use the sign-in link below.";
+
 /// What a refused sign-in says. Names no account, and points at the way through
 /// for the customer who never set a password in the first place.
 pub const PORTAL_SIGN_IN_FAILED: &str =
@@ -76,7 +91,10 @@ pub const PORTAL_SIGN_IN_FAILED: &str =
 
 #[cfg(test)]
 mod sign_in_copy_tests {
-    use super::{PORTAL_NO_PASSWORD_ACTION, PORTAL_NO_PASSWORD_PROMPT, PORTAL_SIGN_IN_FAILED};
+    use super::{
+        PORTAL_FORGOT_PASSWORD_GUIDANCE, PORTAL_NO_PASSWORD_ACTION, PORTAL_NO_PASSWORD_PROMPT,
+        PORTAL_SIGN_IN_FAILED,
+    };
 
     /// MAPPS-766: the passwordless route reads as an offer.
     ///
@@ -132,11 +150,42 @@ mod sign_in_copy_tests {
             PORTAL_SIGN_IN_FAILED,
             PORTAL_NO_PASSWORD_PROMPT,
             PORTAL_NO_PASSWORD_ACTION,
+            PORTAL_FORGOT_PASSWORD_GUIDANCE,
         ] {
             let lowered = copy.to_lowercase();
             for jargon in ["platform", "tenant", "plane", "credential", "identity"] {
                 assert!(!lowered.contains(jargon), "{copy}");
             }
         }
+    }
+
+    /// PMS-1343: the guidance sends the customer to their provider AND tells
+    /// them what they can do unaided.
+    ///
+    /// Either half alone is a worse page. Naming only the provider reads as
+    /// "come back tomorrow" to somebody locked out at the wrong hour; naming
+    /// only the sign-in link leaves them believing their password is
+    /// recoverable when nothing on this side can recover it.
+    #[test]
+    fn the_forgot_password_guidance_names_the_provider_and_the_way_in() {
+        let lowered = PORTAL_FORGOT_PASSWORD_GUIDANCE.to_lowercase();
+        assert!(
+            lowered.contains("provider"),
+            "the reset belongs to the MSP and the copy has to say so: \
+             {PORTAL_FORGOT_PASSWORD_GUIDANCE}"
+        );
+        assert!(
+            lowered.contains("sign-in link"),
+            "and the customer needs something they can do now: \
+             {PORTAL_FORGOT_PASSWORD_GUIDANCE}"
+        );
+        // It must not promise the thing that was removed.
+        assert!(
+            !lowered.contains("reset your password")
+                && !lowered.contains("reset link")
+                && !lowered.contains("forgot password?"),
+            "the copy offers a self-service reset that no longer exists: \
+             {PORTAL_FORGOT_PASSWORD_GUIDANCE}"
+        );
     }
 }

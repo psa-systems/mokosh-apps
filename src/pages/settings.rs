@@ -574,6 +574,15 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         advanced: false,
         visibility: SurfaceVisibility::StaffAdmin,
     },
+    // PMS-1409: beside Google Contacts and not advanced, for the same reason.
+    SettingsSurface {
+        route: Route::SettingsICloudContacts {},
+        title: "iCloud Contacts",
+        description: "Import contacts from an iCloud account over CardDAV, with an Apple ID and an app-specific password. Read-only: nothing is written back.",
+        group: SettingsGroupKey::Integrations,
+        advanced: false,
+        visibility: SurfaceVisibility::StaffAdmin,
+    },
     // MAPPS-915: a .vcf file through the same import (server PMS-1290).
     // Beside Google Contacts and not advanced, for the same reason.
     SettingsSurface {
@@ -620,11 +629,17 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
     // MAPPS-622: staff-side tenant branding editor. Sets the MSP
     // defaults every Company portal inherits; per-Company overrides
     // live on the Company detail page.
+    //
+    // PMS-1338: filed under the organisation group rather than
+    // Personalization. Branding is what a client sees of the
+    // organisation, and it sits beside Organization here because the
+    // support contact it used to edit IS that record - the two were one
+    // group apart while writing the same three keys.
     SettingsSurface {
         route: Route::SettingsBranding {},
         title: "Portal Branding",
-        description: "MSP-wide defaults every client portal inherits: logo, favicon, background, colors, display name, support contact.",
-        group: SettingsGroupKey::Personalization,
+        description: "MSP-wide defaults every client portal inherits: logo, favicon, background, colors, display name. The support contact comes from Organization.",
+        group: SettingsGroupKey::Data,
         advanced: false,
         visibility: SurfaceVisibility::StaffAdmin,
     },
@@ -647,7 +662,11 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
     SettingsSurface {
         route: Route::SettingsOrganization {},
         title: "Organization",
-        description: "Your organization's name, as clients see it in email you send them.",
+        // PMS-1338: the description named only the name, though this page has
+        // written the support phone, email and contact name into
+        // `tenants.branding` since PMS-896. Now that it is the ONLY editor of
+        // them, saying so is how an operator finds them.
+        description: "Your organization's name and contact details, as clients see them in your portal, your invoices and the email you send them.",
         group: SettingsGroupKey::Data,
         advanced: false,
         visibility: SurfaceVisibility::Always,
@@ -8938,6 +8957,88 @@ async fn delete_lookup(id: &str, base: &str) -> Result<bool, String> {
 // `SettingFormModal` (the shared create/edit modal chrome) now lives in
 // `crate::components` so both these editors and the rate-card editor can
 // reuse it (MAPPS-160).
+
+#[cfg(test)]
+mod branding_placement_tests {
+    use super::{Route, SettingsGroupKey, SETTINGS_SURFACES};
+
+    /// PMS-1338: Portal Branding sits in the organisation group, beside
+    /// Organization itself.
+    ///
+    /// It was under Personalization while writing the same three contact keys
+    /// Organization writes, which is how one record came to have two editors a
+    /// group apart. Asserted as "the same group as Organization" rather than as
+    /// the literal key, so renaming the group does not silently separate them
+    /// again.
+    #[test]
+    fn portal_branding_lives_with_the_organization() {
+        let branding = SETTINGS_SURFACES
+            .iter()
+            .find(|s| s.route == Route::SettingsBranding {})
+            .expect("Portal Branding is a settings surface");
+        let organization = SETTINGS_SURFACES
+            .iter()
+            .find(|s| s.route == Route::SettingsOrganization {})
+            .expect("Organization is a settings surface");
+        assert_eq!(
+            branding.group, organization.group,
+            "Portal Branding and Organization must sit in one group"
+        );
+        assert_eq!(branding.group, SettingsGroupKey::Data);
+    }
+
+    /// The descriptions have to carry the decision, because the hub card is where
+    /// an operator looks for a field. Organization says it holds the contact
+    /// details; Portal Branding says the support contact is not its own.
+    #[test]
+    fn the_hub_says_which_screen_owns_the_contact_details() {
+        let branding = SETTINGS_SURFACES
+            .iter()
+            .find(|s| s.route == Route::SettingsBranding {})
+            .expect("Portal Branding is a settings surface");
+        let organization = SETTINGS_SURFACES
+            .iter()
+            .find(|s| s.route == Route::SettingsOrganization {})
+            .expect("Organization is a settings surface");
+        assert!(
+            organization.description.contains("contact details"),
+            "Organization's card does not mention the contact details it owns: {}",
+            organization.description
+        );
+        assert!(
+            branding.description.contains("from Organization"),
+            "Portal Branding's card does not say where the support contact comes from: {}",
+            branding.description
+        );
+        assert!(
+            !branding.description.contains("support contact,"),
+            "Portal Branding still advertises editing the support contact: {}",
+            branding.description
+        );
+    }
+
+    /// PMS-1338: the page has a way out. Every other settings leaf renders
+    /// `SettingsBreadcrumb`; this one did not, so the only exit was browser back.
+    #[test]
+    fn both_branding_pages_offer_a_way_back() {
+        let staff = include_str!("settings_branding.rs");
+        assert!(
+            staff.contains("SettingsBreadcrumb"),
+            "the staff branding page has no breadcrumb"
+        );
+        let contact = include_str!("contact_portal/portal_branding.rs");
+        assert!(
+            contact.contains("Back to Settings"),
+            "the contact branding page has no way back"
+        );
+        // Not the breadcrumb on the contact page: it walks the group landing,
+        // and `/settings/group/*` is staff-only.
+        assert!(
+            !contact.contains("SettingsBreadcrumb"),
+            "the contact page must not render a breadcrumb through a staff-only landing"
+        );
+    }
+}
 
 #[cfg(test)]
 mod reminder_schedule_tests {
