@@ -659,12 +659,6 @@ pub enum Route {
     #[route("/portal/:slug/set-password?:token")]
     ContactSetPassword { slug: String, token: String },
 
-    #[route("/portal/:slug/forgot-password")]
-    ContactForgotPassword { slug: String },
-
-    #[route("/portal/:slug/reset-password?:token")]
-    ContactResetPassword { slug: String, token: String },
-
     // MAPPS-572 (prompt 010): magic-link finder + Company picker.
     // Both public (no AuthGuard). Finder accepts an optional
     // `?email=` query segment so the picker's "Request a new sign-in
@@ -1064,6 +1058,14 @@ pub enum Route {
     // MAPPS-809: choose labels, preview, review, import.
     #[route("/settings/integrations/google-contacts/import")]
     SettingsGoogleContactsImport {},
+    // PMS-1409: the iCloud half of the contact import (server PMS-1341). Its
+    // own surface rather than a provider switch on the Google one: a tenant may
+    // hold both, and the credentials have nothing in common.
+    #[route("/settings/integrations/icloud-contacts")]
+    SettingsICloudContacts {},
+    // PMS-1409: choose iCloud groups, preview, review, import.
+    #[route("/settings/integrations/icloud-contacts/import")]
+    SettingsICloudContactsImport {},
     // MAPPS-915: upload a .vcf file into the same import (server PMS-1290).
     #[route("/settings/integrations/vcard-import")]
     SettingsVcardImport {},
@@ -2281,6 +2283,24 @@ fn SettingsGoogleContactsImport() -> Element {
 }
 
 #[component]
+fn SettingsICloudContacts() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_contact_sync_icloud::ICloudContactsSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsICloudContactsImport() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_contact_sync_icloud_import::ICloudContactsImportPage {}
+        }
+    }
+}
+
+#[component]
 fn SettingsVcardImport() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
@@ -2533,17 +2553,6 @@ fn ContactSetPassword(slug: String, token: String) -> Element {
     rsx! { contact_portal::set_password::ContactSetPasswordPage { slug, token } }
 }
 
-#[component]
-fn ContactForgotPassword(slug: String) -> Element {
-    rsx! { contact_portal::forgot_password::ContactForgotPasswordPage { slug } }
-}
-
-#[component]
-fn ContactResetPassword(slug: String, token: String) -> Element {
-    use_hook(crate::platform::location::strip_url_query);
-    rsx! { contact_portal::reset_password::ContactResetPasswordPage { slug, token } }
-}
-
 // MAPPS-572 (prompt 010): the slug-less magic-link finder + the
 // picker/redemption landing page. Both public (no AuthGuard). The
 // finder's `?:email` query segment is optional; when absent the router
@@ -2562,8 +2571,8 @@ fn ContactPicker(token: String) -> Element {
 
 // mokosh-contact-login: PortalForgotPassword / PortalResetPassword
 // wrappers retired with the customer-portal route family (prompt 001).
-// Contact-plane replacements live under ContactForgotPassword /
-// ContactResetPassword above.
+// PMS-1343: the contact plane has no self-service reset. A portal user asks
+// their MSP, who reissues the link from the contact record.
 
 #[component]
 fn RequestForm(token: String) -> Element {
@@ -2920,25 +2929,34 @@ mod contact_portal_routes {
         }
     }
 
+    /// PMS-1343: the portal has no self-service password reset.
+    ///
+    /// The MSP owns the client relationship and therefore owns the reset: a
+    /// portal user asks their provider, who reissues the link from the contact
+    /// record. Both pages are gone and so are the server routes behind them,
+    /// so what is pinned here is their ABSENCE - a route that came back would
+    /// be an affordance pointing at an endpoint that answers 404, which is a
+    /// worse page than the one that never offered it.
+    ///
+    /// `/portal/:slug/set-password` is deliberately still here and is asserted
+    /// above: that is the link the MSP sends, and it is how both a first-time
+    /// password and a reissued one get set.
     #[test]
-    fn forgot_password_resolves_with_slug() {
-        let route = Route::from_str("/portal/abc/forgot-password").expect("forgot-password parses");
-        match route {
-            Route::ContactForgotPassword { slug } => assert_eq!(slug, "abc"),
-            other => panic!("expected ContactForgotPassword, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn reset_password_carries_slug_and_token() {
-        let route =
-            Route::from_str("/portal/abc/reset-password?token=xyz").expect("reset-password parses");
-        match route {
-            Route::ContactResetPassword { slug, token } => {
-                assert_eq!(slug, "abc");
-                assert_eq!(token, "xyz");
-            }
-            other => panic!("expected ContactResetPassword, got {other:?}"),
+    fn the_portal_offers_no_self_service_password_reset() {
+        for gone in [
+            "/portal/abc/forgot-password",
+            "/portal/abc/reset-password?token=xyz",
+        ] {
+            let route = Route::from_str(gone).expect("the router resolves every path");
+            // The router answers an unmatched path with the catch-all rather
+            // than an error, and `NotFound` renders back the path it was
+            // handed - so comparing the rendered string proves nothing and the
+            // assertion has to be on the VARIANT.
+            assert!(
+                matches!(route, Route::NotFound { .. }),
+                "{gone} still resolves to a page ({route:?}); the self-service \
+                 reset is supposed to be gone"
+            );
         }
     }
 
@@ -2982,45 +3000,41 @@ mod contact_portal_routes {
         }
     }
 
-    /// PMS-832 / MAPPS-538: the password-reset pair resolves, and resolves to
-    /// the PORTAL (now contact-plane) pages, NOT the platform ones.
+    /// PMS-832 / MAPPS-538 / PMS-1343: a portal path never lands on the
+    /// PLATFORM reset page.
     ///
-    /// The emailed link landing on the 404 catch-all is the defect this work
-    /// fixes. What the two individual-shape tests above cannot see is the
-    /// other half: `/reset-password/{token}` is the PLATFORM page, which
-    /// posts to `/api/v1/auth/reset-password` and resolves the token against
-    /// `users`. A portal customer reaching that page resets a staff login,
-    /// which is the PMS-820 defect exactly. These paths differ by one prefix,
-    /// so the two are asserted apart rather than assumed.
+    /// `/reset-password/{token}` posts to `/api/v1/auth/reset-password`, which
+    /// resolves the token against `users`. A portal customer who reached it
+    /// would be resetting a STAFF login, which is the PMS-820 defect exactly,
+    /// and the two paths differ by one prefix - so they are asserted apart
+    /// rather than assumed.
     ///
-    /// mokosh-contact-login (prompt 001): the emailed portal reset link is
-    /// slug-scoped now (`/portal/:slug/reset-password?token=...`), so the
-    /// URLs asserted here follow that shape. The platform-vs-portal
-    /// separation is what still matters.
+    /// The portal half of this test used to assert that the contact-plane
+    /// reset pages resolved. PMS-1343 removed them, because the MSP owns the
+    /// client relationship and therefore owns the reset. What survives is the
+    /// half that was always the security property: whatever a portal path
+    /// does or does not resolve to, it is not the staff page.
     #[test]
-    fn the_portal_reset_pages_resolve_and_are_not_the_platform_one() {
-        let reset = Route::from_str("/portal/acme/reset-password?token=Zt4kQ1p9Zt4kQ1p9Zt4k")
-            .expect("/portal/:slug/reset-password parses");
-        assert!(
-            matches!(reset, Route::ContactResetPassword { .. }),
-            "the emailed portal link must land on the contact-plane reset page, got {reset:?}"
-        );
-
-        let forgot = Route::from_str("/portal/acme/forgot-password")
-            .expect("/portal/:slug/forgot-password parses");
-        assert!(
-            matches!(forgot, Route::ContactForgotPassword { .. }),
-            "/portal/:slug/forgot-password must resolve to ContactForgotPassword, got {forgot:?}"
-        );
-
-        // The platform page is still its own route, one prefix away.
+    fn no_portal_path_resolves_to_the_platform_reset_page() {
         let platform = Route::from_str("/reset-password/Zt4kQ1p9Zt4kQ1p9Zt4kQ1p9Zt4kQ1p9")
             .expect("the platform reset route parses");
         assert!(
-            !matches!(platform, Route::ContactResetPassword { .. }),
-            "the platform reset link must not resolve to the contact-plane page: it posts to \
-             /api/v1/auth/reset-password, which resolves the token against `users`"
+            matches!(platform, Route::ResetPassword { .. }),
+            "the platform reset page is still its own route, got {platform:?}"
         );
+
+        for portal in [
+            "/portal/acme/reset-password?token=Zt4kQ1p9Zt4kQ1p9Zt4k",
+            "/portal/acme/forgot-password",
+        ] {
+            if let Ok(route) = Route::from_str(portal) {
+                assert!(
+                    !matches!(route, Route::ResetPassword { .. }),
+                    "{portal} resolves to the PLATFORM reset page ({route:?}), which posts to \
+                     /api/v1/auth/reset-password and would reset a staff login"
+                );
+            }
+        }
     }
 }
 
@@ -3335,7 +3349,10 @@ mod url_token_strip {
             "fn SignupComplete(",
             "fn RequestForm(",
             "fn ContactSetPassword(",
-            "fn ContactResetPassword(",
+            // PMS-1343 removed `fn ContactResetPassword(` with the
+            // self-service reset it wrapped. `ContactSetPassword` above is the
+            // token-bearing contact route that remains, and it is the one the
+            // MSP's reissued link lands on.
             "fn ContactPicker(",
         ] {
             let start = src.find(sig).unwrap_or_else(|| panic!("{sig} missing"));

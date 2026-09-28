@@ -298,7 +298,6 @@ pub fn ContactLoginPage(slug: String) -> Element {
         });
     };
 
-    let slug_for_forgot = slug.clone();
     // MAPPS-635 D5: `/portal/<bad-slug>/login` resolved as an
     // unbranded generic sign-in form + a submit that would always
     // 401. Detect the "host fetch resolved, no such portal" case
@@ -392,15 +391,13 @@ pub fn ContactLoginPage(slug: String) -> Element {
                             class: "w-full".to_string(),
                             "Sign in"
                         }
-                        Button {
-                            variant: ButtonVariant::Secondary,
-                            disabled: saving(),
-                            r#type: "button".to_string(),
-                            class: "w-full".to_string(),
-                            onclick: move |_| {
-                                nav.push(Route::ContactForgotPassword { slug: slug_for_forgot.clone() });
-                            },
-                            "Forgot password?"
+                        // PMS-1343: the MSP owns the client relationship and
+                        // therefore owns the reset. This was a button to a
+                        // self-service reset page; that page and the route
+                        // behind it are gone, so what stands here is the
+                        // guidance that replaces them.
+                        p { class: "pt-1 text-sm text-muted text-center",
+                            {super::PORTAL_FORGOT_PASSWORD_GUIDANCE}
                         }
                     }
                     // MAPPS-572 (prompt 010): magic-link escape hatch.
