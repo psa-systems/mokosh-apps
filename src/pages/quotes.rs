@@ -1364,7 +1364,7 @@ fn ConvertQuoteModal(props: ConvertQuoteModalProps) -> Element {
                     "The project takes its name, scope, client, and budget from this quote. Set how it runs."
                 }
                 if !error.read().is_empty() {
-                    p { class: "text-sm text-red-600 dark:text-red-300", "{error}" }
+                    p { class: "text-sm text-red-600 dark:text-red-400", "{error}" }
                 }
                 Input {
                     name: "start_date",

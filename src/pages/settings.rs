@@ -7925,7 +7925,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
                             class: if reachable {
                                 "mt-2 text-sm text-green-700 dark:text-green-300"
                             } else {
-                                "mt-2 text-sm text-red-700 dark:text-red-300"
+                                "mt-2 text-sm text-red-700 dark:text-red-400"
                             },
                             "{msg}"
                         }

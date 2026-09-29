@@ -962,10 +962,12 @@ fn FailureList(run: Run) -> Element {
 
 #[component]
 fn ConnectionFacts(connection: Connection) -> Element {
-    let last_sync = connection
-        .last_sync_at
-        .map(crate::utils::datetime::fmt_datetime_pref)
-        .unwrap_or_else(|| "Never".to_string());
+    let last_sync = connection.last_sync_at.map(|dt| {
+        (
+            dt.to_rfc3339(),
+            crate::utils::datetime::fmt_datetime_pref(dt),
+        )
+    });
     let last_run = connection
         .latest_run
         .as_ref()
@@ -997,7 +999,13 @@ fn ConnectionFacts(connection: Connection) -> Element {
             }
             div {
                 dt { class: "text-muted", "Last sync" }
-                dd { class: "text-content", "{last_sync}" }
+                dd { class: "text-content",
+                    if let Some((last_sync_iso, last_sync)) = last_sync {
+                        time { datetime: "{last_sync_iso}", "{last_sync}" }
+                    } else {
+                        "Never"
+                    }
+                }
             }
             div {
                 dt { class: "text-muted", "Labels imported" }

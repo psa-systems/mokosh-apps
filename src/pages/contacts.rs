@@ -8132,7 +8132,7 @@ fn ContactNotesCard(notes_resource: Resource<Result<Vec<ContactNote>, String>>) 
                     p { class: "text-sm text-muted", "Loading comments…" }
                 },
                 Some(Err(err)) => rsx! {
-                    p { class: "text-sm text-red-600 dark:text-red-300",
+                    p { class: "text-sm text-red-600 dark:text-red-400",
                         "Could not load comments for this contact: {err}"
                     }
                 },
