@@ -3586,7 +3586,7 @@ fn CompanyPortalAccessCard(
                         // custom role without opening the contact
                         // detail.
                         TableHeader { "Roles" }
-                        TableHeader { span { class: "sr-only", "Action" } }
+                        TableHeader { span { class: "sr-only", "Actions" } }
                     }
                 }
                 match &*snap {
