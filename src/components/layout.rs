@@ -1338,7 +1338,8 @@ fn UserMenu() -> Element {
         // `route` is the reactive dependency: every navigation changes it
         // and re-fires this effect to close the menu.
         let _ = &route;
-        if nav.is_open() {
+        // Untracked: `is_open()` here re-fired this on open and shut the menu (MAPPS-964).
+        if nav.is_open_untracked() {
             nav.close();
         }
     }));
