@@ -18,7 +18,9 @@
 /// One nav-area accent hue. The five original hues (Emerald, Amber, Blue,
 /// Violet, Rose) come from the Settings taxonomy (MAPPS-257); the four
 /// added for MAPPS-359 (Indigo, Cyan, Teal, Fuchsia) give every top-level
-/// sidebar category its own distinct hue.
+/// sidebar category its own distinct hue. Sky was added for MAPPS-956 to
+/// give the Platform nav section its own identity, distinct from Admin's
+/// Violet.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SectionColor {
     /// Service Desk (the existing active-nav accent hue).
@@ -40,6 +42,8 @@ pub enum SectionColor {
     Rose,
     /// Admin / Integrations.
     Violet,
+    /// Platform (MAPPS-956): distinct from Admin's Violet.
+    Sky,
 }
 
 impl SectionColor {
@@ -55,6 +59,7 @@ impl SectionColor {
             SectionColor::Fuchsia => "text-fuchsia-600 dark:text-fuchsia-400",
             SectionColor::Rose => "text-rose-600 dark:text-rose-400",
             SectionColor::Violet => "text-violet-600 dark:text-violet-400",
+            SectionColor::Sky => "text-sky-600 dark:text-sky-400",
         }
     }
 
@@ -72,6 +77,7 @@ impl SectionColor {
             SectionColor::Fuchsia => "border-l-fuchsia-500 hover:border-l-fuchsia-400 dark:border-l-fuchsia-400 dark:hover:border-l-fuchsia-300",
             SectionColor::Rose => "border-l-rose-500 hover:border-l-rose-400 dark:border-l-rose-400 dark:hover:border-l-rose-300",
             SectionColor::Violet => "border-l-violet-500 hover:border-l-violet-400 dark:border-l-violet-400 dark:hover:border-l-violet-300",
+            SectionColor::Sky => "border-l-sky-500 hover:border-l-sky-400 dark:border-l-sky-400 dark:hover:border-l-sky-300",
         }
     }
 }
@@ -92,6 +98,7 @@ mod tests {
         SectionColor::Fuchsia,
         SectionColor::Rose,
         SectionColor::Violet,
+        SectionColor::Sky,
     ];
 
     #[test]

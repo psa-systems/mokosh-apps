@@ -765,7 +765,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
             // pure platform admin with no tenant `users` row still owns this
             // account.
             if is_platform_admin {
-                NavSection { title: "Platform", rail_collapsed: collapsed, color: SectionColor::Violet,
+                NavSection { title: "Platform", rail_collapsed: collapsed, color: SectionColor::Sky,
                     NavItem { to: Route::PlatformAccount {}, icon: rsx!(UserCircleIcon {}), label: "Platform Account", collapsed }
                 }
             }
@@ -2261,6 +2261,7 @@ mod tests {
             ("Knowledge", SectionColor::Fuchsia),
             ("Analytics", SectionColor::Rose),
             ("Admin", SectionColor::Violet),
+            ("Platform", SectionColor::Sky),
         ];
         for (i, (cat_a, color_a)) in categories.iter().enumerate() {
             // Both base modes are themed: a light-mode tint plus a `dark:`
