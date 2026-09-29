@@ -36,7 +36,7 @@ use crate::components::{
 use crate::pages::settings::{AdminOnlyNotice, SettingsBreadcrumb};
 use crate::pages::settings_contact_sync::{
     actions_for, card_state_of, disconnect_message_from, CardState, Connection, Overview,
-    RunProgress, StateCopy,
+    RunProgress, StateCopy, StateIcon,
 };
 use crate::Route;
 
@@ -379,6 +379,9 @@ fn ICloudContactsSettingsBody() -> Element {
                                 class: "flex flex-wrap items-center gap-3",
                                 "aria-live": "polite",
                                 "data-testid": "icloud-sync-state",
+                                span { "aria-hidden": "true", class: "text-muted",
+                                    StateIcon { state: state.clone() }
+                                }
                                 Badge { variant: copy.tone, "{copy.badge}" }
                                 p { class: "text-sm font-medium text-content", "{copy.headline}" }
                             }
@@ -447,7 +450,12 @@ fn ICloudContactsSettingsBody() -> Element {
                     // reveals a field is one click more for no information.
                     if enabled && (actions.connect || actions.reconnect) {
                         Card { class: "mt-4",
-                            h2 { class: "text-base font-semibold text-content",
+                            h2 {
+                                class: "text-base font-medium text-content focus:outline-none",
+                                tabindex: "-1",
+                                onmounted: move |e| async move {
+                                    let _ = e.set_focus(true).await;
+                                },
                                 if actions.reconnect { "Enter a new app-specific password" } else { "Connect an iCloud account" }
                             }
                             p { class: "mt-1 text-sm text-muted",

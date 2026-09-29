@@ -317,7 +317,7 @@ fn ICloudContactsImportBody() -> Element {
                                 disabled: nothing_chosen || starting() || !can_mutate,
                                 onclick: move |_| review(chosen.clone()),
                                 data_testid: "icloud-import-review",
-                                "Review this selection"
+                                "Review import"
                             }
                         }
                     }
@@ -351,7 +351,7 @@ fn ICloudContactsImportBody() -> Element {
                                 disabled: starting() || !can_mutate || !matches!(exact(), Some(Ok(_))),
                                 onclick: move |_| start(chosen_now.clone()),
                                 data_testid: "icloud-import-start",
-                                "Start the import"
+                                if starting() { "Starting…" } else { "Start the import" }
                             }
                             Button {
                                 variant: ButtonVariant::Secondary,
