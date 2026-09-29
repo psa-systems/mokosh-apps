@@ -255,7 +255,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
             // points the way the click moves the rail: right to expand when
             // collapsed, left (rotate-180) to collapse when open.
             button {
-                class: "absolute top-1/2 right-0 -translate-y-1/2 translate-x-full z-30 flex h-10 w-5 items-center justify-center rounded-r-full border border-l-0 border-line bg-surface-2 text-subtle shadow-sm hover:text-content focus:outline-none",
+                class: "absolute top-1/2 right-0 -translate-y-1/2 translate-x-full z-30 flex h-10 w-5 items-center justify-center rounded-r-full border border-l-0 border-line bg-surface-2 text-subtle shadow-sm hover:text-content focus:outline-none focus-visible:ring-2 focus-visible:ring-accent",
                 aria_label: "{toggle_title}",
                 aria_expanded: if collapsed { "false" } else { "true" },
                 title: "{toggle_title}",
@@ -1436,7 +1436,7 @@ fn UserMenu() -> Element {
         Popover {
             open: nav.is_open(),
             label: "User menu",
-            trigger_class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2 focus:outline-none",
+            trigger_class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent",
             trigger: rsx! {
                 // No color class on the icon: it inherits `currentColor` from
                 // the button (`text-subtle`, `hover:text-content`) so it
