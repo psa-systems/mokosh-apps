@@ -1238,7 +1238,7 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
                             }
                             div { class: "flex justify-between font-bold pt-2 border-t border-line",
                                 span { "Total to credit" }
-                                span { class: if over_cap { "text-red-600 dark:text-red-300" } else { "" },
+                                span { class: if over_cap { "text-red-600 dark:text-red-400" } else { "" },
                                     "{crate::utils::money::format_money(live_total)}"
                                 }
                             }
@@ -1247,7 +1247,7 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
                                 span { "{remaining_label}" }
                             }
                             if over_cap {
-                                p { class: "text-xs text-red-600 dark:text-red-300",
+                                p { class: "text-xs text-red-600 dark:text-red-400",
                                     "That is more than is left on this invoice."
                                 }
                             }

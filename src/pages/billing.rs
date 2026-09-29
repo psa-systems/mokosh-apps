@@ -6778,7 +6778,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                                                         span {
                                                             class: match result.outcome.as_str() {
                                                                 "passed" => "text-green-600 dark:text-green-400",
-                                                                "failed" => "text-red-600 dark:text-red-300",
+                                                                "failed" => "text-red-600 dark:text-red-400",
                                                                 _ => "text-muted",
                                                             },
                                                             "{check_label(&result.outcome)}"

@@ -2563,7 +2563,7 @@ fn EditorTabButton(
             }
             if problems > 0 {
                 span {
-                    class: "ml-1.5 rounded-full bg-red-100 px-1.5 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900 dark:text-red-300",
+                    class: "ml-1.5 rounded-full bg-red-100 px-1.5 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900 dark:text-red-400",
                     // The number is already beside it; this names what it is
                     // for someone who cannot see the colour.
                     aria_label: "{problems} problems",
