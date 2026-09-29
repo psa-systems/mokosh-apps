@@ -113,9 +113,10 @@ pub fn AppShell() -> Element {
         }
         // If the signal is already populated (e.g. by a prior tenant
         // switch), skip; the switch handler is responsible for
-        // repainting.
+        // repainting. `peek`, not `read` (MAPPS-968): a tracked read re-ran
+        // this effect on its own write, refetching forever with no display name.
         if crate::hooks::branding::EFFECTIVE_BRANDING
-            .read()
+            .peek()
             .display_name
             .is_some()
         {

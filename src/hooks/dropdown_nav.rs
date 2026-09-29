@@ -860,4 +860,103 @@ mod tests {
              matching them rather than proving anything"
         );
     }
+
+    /// Lines of the effect calls that write `EFFECTIVE_BRANDING` and also read it
+    /// tracked. A read-only effect (`use_apply_brand`) must track it to repaint.
+    fn tracked_branding_reads(calls: &[(usize, String)]) -> Vec<usize> {
+        const TRACKED: [&str; 3] = [
+            "EFFECTIVE_BRANDING.read()",
+            "EFFECTIVE_BRANDING()",
+            "EFFECTIVE_BRANDING.with(",
+        ];
+        const WRITES: [&str; 3] = [
+            "set_effective_branding(",
+            "clear_effective_branding(",
+            "EFFECTIVE_BRANDING.write()",
+        ];
+        calls
+            .iter()
+            .filter(|(_, call)| {
+                let flat: String = call.split_whitespace().collect();
+                TRACKED.iter().any(|shape| flat.contains(shape))
+                    && WRITES.iter().any(|shape| flat.contains(shape))
+            })
+            .map(|(line, _)| *line)
+            .collect()
+    }
+
+    /// The guard's own proof: it catches the MAPPS-968 shape, split across
+    /// lines as rustfmt writes it, and passes the `peek()` form and a
+    /// read-only repaint effect.
+    #[test]
+    fn the_effect_scan_catches_a_tracked_branding_read_and_nothing_else() {
+        const VIOLATING: &str = r#"
+            use_effect(|| {
+                if crate::hooks::branding::EFFECTIVE_BRANDING
+                    .read()
+                    .display_name
+                    .is_some()
+                {
+                    return;
+                }
+                spawn(async move {
+                    crate::hooks::branding::set_effective_branding(t.branding);
+                });
+            });
+        "#;
+        const COMPLIANT: &str = r#"
+            use_effect(|| {
+                // EFFECTIVE_BRANDING.read() in a comment is not a read.
+                if crate::hooks::branding::EFFECTIVE_BRANDING
+                    .peek()
+                    .display_name
+                    .is_some()
+                {
+                    return;
+                }
+                spawn(async move {
+                    crate::hooks::branding::set_effective_branding(t.branding);
+                });
+            });
+            use_effect(move || {
+                let brand = EFFECTIVE_BRANDING.read().clone();
+                apply_brand_css_vars(&brand);
+            });
+        "#;
+        assert_eq!(tracked_branding_reads(&effect_calls(VIOLATING)), vec![2]);
+        assert_eq!(effect_calls(COMPLIANT).len(), 2);
+        assert!(tracked_branding_reads(&effect_calls(COMPLIANT)).is_empty());
+    }
+
+    /// MAPPS-968: the shell's branding effect read `EFFECTIVE_BRANDING` tracked
+    /// and wrote it, so a tenant with no display name refetched `/tenants/current`
+    /// about 15 times a second for as long as a staff tab stayed open.
+    #[test]
+    fn no_effect_reads_the_effective_branding_tracked() {
+        let mut offenders = Vec::new();
+        let mut stack = vec![std::path::PathBuf::from("src")];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read src") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let src = std::fs::read_to_string(&path).expect("read file");
+                for line in tracked_branding_reads(&effect_calls(&src)) {
+                    offenders.push(format!("{}:{line}", path.display()));
+                }
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "a `use_effect` that writes `EFFECTIVE_BRANDING` also reads it tracked, so \
+             its own write re-runs it (MAPPS-968: an endless `/tenants/current` \
+             refetch). Read it with `.peek()` instead: {offenders:?}"
+        );
+    }
 }
