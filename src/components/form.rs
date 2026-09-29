@@ -1172,4 +1172,36 @@ mod tests {
             "Input must focus the field when it mounts, not only mark it"
         );
     }
+
+    /// MAPPS-966: every radio in the app is round. One `rounded` shared with
+    /// the checkbox rule made each radio a small square that read as a checkbox.
+    #[test]
+    fn a_radio_is_round_and_a_checkbox_is_not() {
+        const CSS: &str = include_str!("../../input.css");
+        let rule = |start: usize| {
+            let body = &CSS[start..];
+            body[..body.find('}').expect("the rule ends")].to_string()
+        };
+        let shared = rule(
+            CSS.find("input[type=\"checkbox\"],")
+                .expect("the shared rule"),
+        );
+        assert!(
+            !shared.contains("rounded"),
+            "the shared rule sets no radius"
+        );
+        let radio = rule(
+            CSS.rfind("input[type=\"radio\"] {")
+                .expect("a radio-only rule"),
+        );
+        assert!(radio.contains("rounded-full"), "a radio is round: {radio}");
+        let checkbox = rule(
+            CSS.rfind("input[type=\"checkbox\"] {")
+                .expect("a checkbox-only rule"),
+        );
+        assert!(
+            checkbox.contains("rounded") && !checkbox.contains("rounded-full"),
+            "a checkbox keeps its square corners: {checkbox}"
+        );
+    }
 }

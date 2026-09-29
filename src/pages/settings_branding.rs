@@ -177,7 +177,7 @@ pub fn SettingsBrandingPage() -> Element {
                 // the toast message names that side-effect so the
                 // operator is not surprised.
                 Card {
-                    div { class: "p-6 space-y-2 max-w-2xl",
+                    div { class: "space-y-2 max-w-2xl",
                         h2 { class: "text-lg font-semibold text-content", "Portal module" }
                         p { class: "text-sm text-muted",
                             "The portal module gates whether any client Company under this tenant can offer a portal. Off = the whole surface is unreachable; on = Company Admins can enable the portal for individual Companies from each Company's detail page."

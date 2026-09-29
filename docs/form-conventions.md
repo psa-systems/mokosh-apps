@@ -394,6 +394,15 @@ never gates validation, never blocks or delays submit, and a save with a probe s
 flight uses whatever is in the field. Every failure path logs at `warn` before it
 renders the note.
 
+## Page sections and card headings (MAPPS-966)
+
+Two layout rules every page follows, so cards neither touch nor sit twice as far from their own edge as they should:
+
+- **Page sections are gapped with `space-y-6`.** A page that stacks two or more blocks under `PageHeader` (cards, banners, tables, a pager) wraps them in one `div { class: "space-y-6" }`, or in a flex or grid parent with an equivalent `gap-*`. `PageHeader` already ends in `mb-6`, so the first block needs nothing. The gap never goes on `Card` itself: a margin on a shared primitive doubles up inside every grid and flex parent that already gaps its children. Older pages that space each block with its own `mb-*` still meet the rule; a new page uses the wrapper.
+- **`Card` headings use `title` / `subtitle`, never an inner `p-6`.** `Card` pads its own body (`p-6`, or `px-6 pb-6 pt-4` under a header), so a child that adds another `p-6` puts the content 48px from the edge and leaves an empty band above a hand-rolled heading. The heading comes from `title` and `subtitle` (PMS-765), and a control that belongs beside it goes in `actions`. A card whose body must sit flush, such as a full-bleed table, passes `padding: false` instead.
+
+The profile page is the reference: one `mx-auto w-full max-w-5xl space-y-6` column (the width `settings.rs` uses since MAPPS-257), with every card headed by `title` / `subtitle`.
+
 ## Modal vs full page
 
 The choice is **structural**, not stylistic:

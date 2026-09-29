@@ -7,26 +7,30 @@
 //! 1. **Bunyip identity strip.** Full name, email, and role, sourced
 //!    from `AuthContext` (which the SPA hydrates from the OIDC
 //!    id_token + a periodic `/v1/auth/me` refresh against bunyip).
-//!    Read-only here; editing requires the "Account Settings" link
+//!    Read-only here; editing requires the "Account settings" button
 //!    that bounces over to bunyip-web's `/settings`.
 //!
-//! 2. **Personal info.** Title, mobile,
-//!    timezone. Lives on mokosh-server's `users` row, edited via
+//! 2. **Personal info.** Title, mobile, timezone, and date/time
+//!    format. Lives on mokosh-server's `users` row, edited via
 //!    `GET` + `PUT /api/v1/auth/me`. mokosh-server's
 //!    `update_current_user` handler already strips role / status from
 //!    the inbound request, so the form does not need to defend
 //!    against escalation.
 //!
-//! 3. **Preferences.** Theme, time format, and first day of week.
-//!    Persisted to `localStorage` via `utils::prefs`; no server
-//!    round-trip. Applies immediately; theme toggling re-applies the
-//!    `<html class="dark">` Tailwind variant via `hooks::theme`.
+//! 3. **Preferences.** Time format, first day of week, and duration
+//!    format. Persisted to `localStorage` via `utils::prefs`; no server
+//!    round-trip. Applies immediately. Theme and accent live in
+//!    Settings > Appearance (MAPPS-259), linked from the card header.
+//!
+//! The cards sit in one `max-w-5xl` column gapped with `space-y-6`, and
+//! each takes its heading from `Card`'s `title` / `subtitle` (MAPPS-966).
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{
-    use_page_title, BannerTone, Button, ButtonVariant, Card, ErrorBanner, Input, Modal, ModalSize,
+    button_class, use_page_title, ArrowTopRightOnSquareIcon, Badge, BadgeVariant, BannerTone,
+    Button, ButtonSize, ButtonVariant, Card, ErrorBanner, IconSize, Input, Modal, ModalSize,
     PageHeader, Select, SelectOption, StatusBanner,
 };
 use crate::utils::datetime::{format_user_datetime, preset_label, token_warnings, PRESET_FORMATS};
@@ -336,55 +340,62 @@ fn StaffProfilePage() -> Element {
             subtitle: "Identity, personal info, and your local preferences.",
         }
 
-        // Identity strip is rendered unconditionally: it reads
-        // from AuthContext (already loaded by the time this page
-        // mounts) so it does not block on the mokosh `/auth/me`
-        // round-trip.
-        IdentityStrip {}
+        // MAPPS-966: the same focused width as Settings (MAPPS-257), with the
+        // cards gapped instead of stacked edge to edge.
+        div { class: "{PROFILE_BODY_CLASS}",
+            // Identity strip is rendered unconditionally: it reads
+            // from AuthContext (already loaded by the time this page
+            // mounts) so it does not block on the mokosh `/auth/me`
+            // round-trip.
+            IdentityStrip {}
 
-        match &*snap {
-            None => rsx! {
-                crate::components::DetailSkeleton {} // PMS-353
-            },
-            Some(Err(err)) => {
-                let detail = err.to_string();
-                let toast = err.user_message();
-                rsx! {
-                    Card {
-                        div { class: "py-12 text-center",
-                            p { class: "text-sm text-red-600 dark:text-red-400",
-                                "Could not load your profile: {toast}"
-                            }
-                            p { class: "mt-2 text-xs text-muted",
-                                "Detail: {detail}"
+            match &*snap {
+                None => rsx! {
+                    crate::components::DetailSkeleton {} // PMS-353
+                },
+                Some(Err(err)) => {
+                    let detail = err.to_string();
+                    let toast = err.user_message();
+                    rsx! {
+                        Card {
+                            div { class: "py-12 text-center",
+                                p { class: "text-sm text-red-600 dark:text-red-400",
+                                    "Could not load your profile: {toast}"
+                                }
+                                p { class: "mt-2 text-xs text-muted",
+                                    "Detail: {detail}"
+                                }
                             }
                         }
                     }
                 }
-            }
-            Some(Ok(me)) => rsx! {
-                PersonalInfoForm { initial: me.clone() }
-                // MAPPS-830: mokosh-server's own `/me/mfa/*` routes are the
-                // standalone-mode account-management path; a hub deployment
-                // stays authoritative for MFA (mirrors the profile-hub-link
-                // gate MAPPS-816 adds for the links above).
-                if !crate::modules::oidc::OidcConfig::for_current_origin().has_issuer() {
-                    MfaCard {
-                        mfa_enabled: me.mfa_enabled,
-                        onchange: move |_| me_resource.restart(),
+                Some(Ok(me)) => rsx! {
+                    PersonalInfoForm { initial: me.clone() }
+                    // MAPPS-830: mokosh-server's own `/me/mfa/*` routes are the
+                    // standalone-mode account-management path; a hub deployment
+                    // stays authoritative for MFA (mirrors the profile-hub-link
+                    // gate MAPPS-816 adds for the links above).
+                    if !crate::modules::oidc::OidcConfig::for_current_origin().has_issuer() {
+                        MfaCard {
+                            mfa_enabled: me.mfa_enabled,
+                            onchange: move |_| me_resource.restart(),
+                        }
                     }
-                }
-            },
+                },
+            }
+
+            PreferencesCard {}
+
+            // MAPPS-889: unconditional, unlike MfaCard above. `/auth/logout-all`
+            // revokes this SPA's own session table, which exists in every
+            // deployment mode, so there is no hub-delegates-this branch here.
+            SignOutEverywhereCard {}
         }
-
-        PreferencesCard {}
-
-        // MAPPS-889: unconditional, unlike MfaCard above. `/auth/logout-all`
-        // revokes this SPA's own session table, which exists in every
-        // deployment mode, so there is no hub-delegates-this branch here.
-        SignOutEverywhereCard {}
     }
 }
+
+/// MAPPS-966: the profile body below `PageHeader`, for staff and contacts alike.
+const PROFILE_BODY_CLASS: &str = "mx-auto w-full max-w-5xl space-y-6";
 
 /// MAPPS-816: what the account-settings corner of the identity strip shows.
 /// `has_issuer` mirrors `OidcConfig::has_issuer()`: when true this is a
@@ -443,28 +454,26 @@ fn IdentityStrip() -> Element {
             u.full_name(),
             u.initials(),
             u.email.clone(),
-            format!("{:?}", u.role),
+            role_display_name(u.role),
         ),
-        None => (
-            "Unknown".to_string(),
-            "?".to_string(),
-            String::new(),
-            String::new(),
-        ),
+        None => ("Unknown".to_string(), "?".to_string(), String::new(), ""),
     };
     let brand = crate::branding::product_name();
+    // MAPPS-329: the role is this app's, not the Bunyip hub's; the tooltip
+    // says so now that the badge carries no "<brand> Role" label.
+    let role_tooltip = role_badge_tooltip(&brand);
 
     rsx! {
         Card {
-            div { class: "flex flex-wrap items-center gap-4 p-6",
+            div { class: "flex flex-wrap items-center gap-4",
                 // Initials disc. The avatar URL pipeline lands as a
                 // follow-up; until then we render initials in a
                 // gradient pill so the strip is not visually flat.
-                div { class: "flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 text-white text-lg font-semibold",
+                div { class: "flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 text-white text-xl font-semibold",
                     "{initials}"
                 }
                 div { class: "flex-1 min-w-0",
-                    p { class: "text-lg font-semibold text-content truncate",
+                    p { class: "text-xl font-semibold text-content truncate",
                         "{full_name}"
                     }
                     if !email.is_empty() {
@@ -473,34 +482,50 @@ fn IdentityStrip() -> Element {
                         }
                     }
                     if !role.is_empty() {
-                        // MAPPS-329: explicit "<brand> Role" so a user with
-                        // admin-on-mokosh does not assume the same level on
-                        // the Bunyip hub. The Bunyip role is a separate
-                        // claim issued by the OP and managed in Bunyip's
-                        // own admin surface.
-                        p { class: "mt-1 text-xs uppercase tracking-wide text-muted",
-                            "{brand} Role: {role}"
-                        }
-                        p { class: "text-xs text-muted",
-                            "Bunyip hub role is separate."
+                        span { class: "mt-2 inline-flex", title: "{role_tooltip}",
+                            Badge { variant: BadgeVariant::Blue, "{role}" }
                         }
                     }
                 }
-                div { class: "flex flex-col items-end gap-1",
+                div { class: "flex flex-col items-start gap-2 sm:items-end",
                     if let Some(url) = settings_panel.link_url.clone() {
                         a {
                             href: "{url}",
-                            class: "text-sm font-medium text-accent hover:underline",
-                            "Account Settings (Bunyip)"
+                            class: button_class(ButtonVariant::Secondary, ButtonSize::Medium),
+                            "Account settings"
+                            ArrowTopRightOnSquareIcon {
+                                size: IconSize::Small,
+                                class: "ml-2".to_string(),
+                            }
                         }
                     }
-                    p { class: "text-xs text-muted text-right max-w-xs",
+                    p { class: "max-w-xs text-xs text-muted sm:text-right",
                         "{settings_panel.note}"
                     }
                 }
             }
         }
     }
+}
+
+/// MAPPS-966: the role badge's text, e.g. "Admin" rather than the wire's
+/// `admin`. Exhaustive, so a new role fails the build instead of rendering blank.
+fn role_display_name(role: crate::modules::auth::UserRole) -> &'static str {
+    use crate::modules::auth::UserRole;
+    match role {
+        UserRole::SuperAdmin => "Super admin",
+        UserRole::Admin => "Admin",
+        UserRole::Manager => "Manager",
+        UserRole::Technician => "Technician",
+        UserRole::Dispatcher => "Dispatcher",
+        UserRole::Sales => "Sales",
+        UserRole::Finance => "Finance",
+    }
+}
+
+/// MAPPS-966: the role badge's tooltip, naming this app by its brand.
+fn role_badge_tooltip(brand: &str) -> String {
+    format!("Your role in {brand}. Your Bunyip hub role is managed separately.")
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -577,18 +602,13 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
         });
     };
 
+    let brand = crate::branding::product_name();
+
     rsx! {
         Card {
-            div { class: "space-y-6 p-6",
-                div {
-                    h2 { class: "text-base font-semibold text-content",
-                        "Personal info"
-                    }
-                    p { class: "text-sm text-muted",
-                        "How you show up in this organization. Saved on mokosh."
-                    }
-                }
-
+            title: "Personal info".to_string(),
+            subtitle: format!("How you appear in this organization. Saved to {brand}."),
+            div { class: "space-y-6",
                 if !error().is_empty() {
                     ErrorBanner { "{error}" }
                 }
@@ -596,6 +616,8 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
                     StatusBanner { tone: BannerTone::Success, "Profile saved." }
                 }
 
+                // MAPPS-966: identity fields on the first row, time and date
+                // rendering on the second.
                 div { class: "grid gap-4 sm:grid-cols-2",
                     Input {
                         name: "title",
@@ -603,6 +625,14 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
                         placeholder: "e.g. Senior Technician",
                         value: title(),
                         oninput: move |e: FormEvent| title.set(e.value()),
+                    }
+                    Input {
+                        name: "mobile",
+                        label: "Mobile",
+                        r#type: "tel".to_string(),
+                        value: mobile(),
+                        help: "Your own number, stored here. Your name and work phone belong to your account; change those in Account settings above.".to_string(),
+                        oninput: move |e: FormEvent| mobile.set(e.value()),
                     }
                     Select {
                         name: "timezone",
@@ -613,14 +643,6 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
                         onchange: move |e: FormEvent| timezone.set(e.value()),
                     }
                     DateFormatField { value: date_format }
-                    Input {
-                        name: "mobile",
-                        label: "Mobile",
-                        r#type: "tel".to_string(),
-                        value: mobile(),
-                        help: "Your own number, stored here. Your name and work phone belong to your account; change those in Account Settings above.".to_string(),
-                        oninput: move |e: FormEvent| mobile.set(e.value()),
-                    }
                 }
 
                 div { class: "flex justify-end",
@@ -656,17 +678,13 @@ fn MfaCard(props: MfaCardProps) -> Element {
 
     rsx! {
         Card {
-            div { class: "flex items-center justify-between gap-4 p-6",
-                div {
-                    h2 { class: "text-base font-semibold text-content",
-                        "Two-factor authentication"
-                    }
-                    p { class: "text-sm text-muted",
-                        "A TOTP code from an authenticator app, held on this account directly. Independent of Bunyip."
-                    }
-                    p { class: "mt-1 text-sm font-medium text-content",
-                        if props.mfa_enabled { "Enabled" } else { "Not enabled" }
-                    }
+            title: "Two-factor authentication".to_string(),
+            subtitle: "A TOTP code from an authenticator app, held on this account directly. Independent of Bunyip.".to_string(),
+            div { class: "flex items-center justify-between gap-4",
+                if props.mfa_enabled {
+                    Badge { variant: BadgeVariant::Green, "Enabled" }
+                } else {
+                    Badge { "Disabled" }
                 }
                 if props.mfa_enabled {
                     Button {
@@ -1007,16 +1025,12 @@ fn SignOutEverywhereCard() -> Element {
     };
 
     rsx! {
+        // MAPPS-966: the page's one destructive action, marked as a danger zone.
         Card {
-            div { class: "flex items-center justify-between gap-4 p-6",
-                div {
-                    h2 { class: "text-base font-semibold text-content",
-                        "Sign out everywhere"
-                    }
-                    p { class: "text-sm text-muted",
-                        "Ends every session on every device, including this one."
-                    }
-                }
+            title: "Sign out everywhere".to_string(),
+            subtitle: "Ends every session on every device, including this one.".to_string(),
+            danger: true,
+            div { class: "flex justify-end",
                 Button {
                     variant: ButtonVariant::Danger,
                     onclick: move |_| show_confirm.set(true),
@@ -1051,7 +1065,7 @@ fn SignOutEverywhereCard() -> Element {
 }
 
 /// PMS-253: date/time format picker that sits next to the timezone
-/// dropdown. Ships the preset list + a "Custom…" button that opens
+/// dropdown. Ships the preset list + a "Customize" link that opens
 /// the [`CustomFormatBuilder`] modal (PMS-254). The matching token
 /// grammar + renderer live in [`crate::utils::datetime`].
 #[component]
@@ -1060,11 +1074,8 @@ fn DateFormatField(value: Signal<String>) -> Element {
     let mut show_builder = use_signal(|| false);
     let preview_now = chrono::Utc::now();
     let current = value();
-    let preview = if current.trim().is_empty() {
-        "Browser default".to_string()
-    } else {
-        format_user_datetime(preview_now, Some(&current))
-    };
+    // MAPPS-966: a live rendering even for "Browser default" (the locale form).
+    let preview = format_user_datetime(preview_now, Some(&current));
 
     let mut opts: Vec<SelectOption> = vec![SelectOption::new("", "Browser default (locale)")];
     // MAPPS-144: prefill each preset with a live example rendered
@@ -1085,7 +1096,7 @@ fn DateFormatField(value: Signal<String>) -> Element {
     }
 
     rsx! {
-        div { class: "space-y-2",
+        div { class: "space-y-1",
             Select {
                 name: "date_format_string",
                 label: "Date & time format",
@@ -1094,17 +1105,18 @@ fn DateFormatField(value: Signal<String>) -> Element {
                 help: "Applied everywhere a timestamp is shown. \"Browser default\" follows your system locale.",
                 onchange: move |e: FormEvent| value.set(e.value()),
             }
-            div { class: "flex items-center gap-3 text-xs text-muted",
-                span { class: "font-medium text-content",
-                    "Preview:"
+            // MAPPS-966: one helper row anchored to the select, not two loose lines.
+            div { class: "flex items-center justify-between gap-3 text-sm",
+                p { class: "min-w-0 truncate text-muted",
+                    span { class: "font-medium text-content", "Preview: " }
+                    "{preview}"
                 }
-                span { "{preview}" }
-            }
-            div {
                 Button {
-                    variant: ButtonVariant::Secondary,
+                    variant: ButtonVariant::Link,
+                    size: ButtonSize::Small,
+                    class: "shrink-0".to_string(),
                     onclick: move |_| show_builder.set(true),
-                    "Custom\u{2026}"
+                    "Customize"
                 }
             }
             CustomFormatBuilder { value: value, open: show_builder }
@@ -1177,7 +1189,7 @@ const TOKEN_GROUPS: &[TokenGroup] = &[
 
 /// PMS-254: free-form custom date/time format builder.
 ///
-/// Opens in a modal triggered by the "Custom…" button under the
+/// Opens in a modal triggered by the "Customize" link under the
 /// preset dropdown. The user picks tokens via the pill grid or types
 /// directly into the format string input; either path keeps the live
 /// preview at the top in sync. Unrecognized alphabetic runs (e.g. a
@@ -1368,6 +1380,52 @@ mod identity_strip_tests {
     }
 }
 
+/// MAPPS-966: the profile's presentation rules.
+#[cfg(test)]
+mod profile_layout_tests {
+    use super::{role_badge_tooltip, role_display_name, PROFILE_BODY_CLASS};
+    use crate::modules::auth::UserRole;
+
+    #[test]
+    fn the_role_badge_reads_as_a_name_not_a_wire_value() {
+        assert_eq!(role_display_name(UserRole::Admin), "Admin");
+        assert_eq!(role_display_name(UserRole::SuperAdmin), "Super admin");
+        assert_eq!(role_display_name(UserRole::Technician), "Technician");
+    }
+
+    /// The badge lost its "<brand> Role" label, so the tooltip carries MAPPS-329.
+    #[test]
+    fn the_role_tooltip_separates_the_two_roles() {
+        assert_eq!(
+            role_badge_tooltip("Mokosh"),
+            "Your role in Mokosh. Your Bunyip hub role is managed separately."
+        );
+    }
+
+    #[test]
+    fn the_body_is_focused_and_gapped() {
+        for class in ["mx-auto", "w-full", "max-w-5xl", "space-y-6"] {
+            assert!(
+                PROFILE_BODY_CLASS.split_whitespace().any(|c| c == class),
+                "{class} missing from {PROFILE_BODY_CLASS}"
+            );
+        }
+    }
+
+    /// `Card` pads its own body, so nothing on this page adds another `p-6`.
+    #[test]
+    fn no_card_body_adds_its_own_padding() {
+        let needle = ["p", "6"].join("-");
+        let doubled = include_str!("profile.rs")
+            .split(|c: char| c == '"' || c.is_whitespace())
+            .any(|token| token == needle);
+        assert!(
+            !doubled,
+            "a `{needle}` inside a padded Card doubles its padding"
+        );
+    }
+}
+
 /// Local-only preferences. No server writes; everything persists to
 /// `localStorage` via `utils::prefs`. Applies immediately on
 /// selection.
@@ -1384,103 +1442,85 @@ fn PreferencesCard() -> Element {
 
     rsx! {
         Card {
-            div { class: "space-y-6 p-6",
-                div {
-                    h2 { class: "text-base font-semibold text-content",
-                        "Preferences"
+            title: "Preferences".to_string(),
+            subtitle: "Saved on this device. Applies immediately.".to_string(),
+            // Theme + accent live in Settings > Appearance (MAPPS-259); MAPPS-966
+            // moved the pointer here from a control-less grid column.
+            actions: rsx! {
+                Link {
+                    to: Route::SettingsAppearance {},
+                    class: "text-right text-sm font-medium text-accent hover:opacity-90",
+                    "Theme and accent: Settings > Appearance"
+                }
+            },
+            div { class: "grid gap-6 sm:grid-cols-2",
+                // Time format
+                fieldset { class: "space-y-2",
+                    legend { class: "text-sm font-medium text-content",
+                        "Time format"
                     }
-                    p { class: "text-sm text-muted",
-                        "Saved on this device. Applies immediately."
+                    for (val, label) in [("12h", "12-hour (1:30 PM)"), ("24h", "24-hour (13:30)")] {
+                        label {
+                            class: "flex items-center gap-2 text-sm text-content",
+                            input {
+                                r#type: "radio",
+                                name: "time_format",
+                                value: "{val}",
+                                checked: time_format() == val,
+                                onchange: move |_| {
+                                    time_format.set(val.to_string());
+                                    prefs::set_str(PREF_TIME_FORMAT, val);
+                                },
+                            }
+                            "{label}"
+                        }
                     }
                 }
 
-                div { class: "grid gap-6 sm:grid-cols-3",
-                    // Theme + accent moved to Settings > Appearance
-                    // (MAPPS-259): one account-synced picker, also reachable
-                    // from the swatch in the top bar.
-                    fieldset { class: "space-y-2",
-                        legend { class: "text-sm font-medium text-content",
-                            "Theme"
-                        }
-                        p { class: "text-sm text-muted",
-                            "Theme and accent color are set in "
-                            Link {
-                                to: Route::SettingsAppearance {},
-                                class: "font-medium text-accent hover:opacity-90",
-                                "Settings > Appearance"
+                // First day of week
+                fieldset { class: "space-y-2",
+                    legend { class: "text-sm font-medium text-content",
+                        "First day of week"
+                    }
+                    for (val, label) in [("sunday", "Sunday"), ("monday", "Monday")] {
+                        label {
+                            class: "flex items-center gap-2 text-sm text-content",
+                            input {
+                                r#type: "radio",
+                                name: "first_day",
+                                value: "{val}",
+                                checked: first_day() == val,
+                                onchange: move |_| {
+                                    first_day.set(val.to_string());
+                                    prefs::set_str(PREF_FIRST_DAY, val);
+                                },
                             }
-                            ", or from the swatch in the top bar."
+                            "{label}"
                         }
                     }
+                }
 
-                    // Time format
-                    fieldset { class: "space-y-2",
-                        legend { class: "text-sm font-medium text-content",
-                            "Time format"
-                        }
-                        for (val, label) in [("12h", "12-hour (1:30 PM)"), ("24h", "24-hour (13:30)")] {
-                            label {
-                                class: "flex items-center gap-2 text-sm text-content",
-                                input {
-                                    r#type: "radio",
-                                    name: "time_format",
-                                    value: "{val}",
-                                    checked: time_format() == val,
-                                    onchange: move |_| {
-                                        time_format.set(val.to_string());
-                                        prefs::set_str(PREF_TIME_FORMAT, val);
-                                    },
-                                }
-                                "{label}"
-                            }
-                        }
+                // Duration format: how logged time is displayed
+                // across timesheets, the time list, and the
+                // dashboard (PMS-265).
+                fieldset { class: "space-y-2",
+                    legend { class: "text-sm font-medium text-content",
+                        "Duration format"
                     }
-
-                    // First day of week
-                    fieldset { class: "space-y-2",
-                        legend { class: "text-sm font-medium text-content",
-                            "First day of week"
-                        }
-                        for (val, label) in [("sunday", "Sunday"), ("monday", "Monday")] {
-                            label {
-                                class: "flex items-center gap-2 text-sm text-content",
-                                input {
-                                    r#type: "radio",
-                                    name: "first_day",
-                                    value: "{val}",
-                                    checked: first_day() == val,
-                                    onchange: move |_| {
-                                        first_day.set(val.to_string());
-                                        prefs::set_str(PREF_FIRST_DAY, val);
-                                    },
-                                }
-                                "{label}"
+                    for (val , label) in [("decimal", "Decimal (1.5h)"), ("hm", "Hours:minutes (1:30)")] {
+                        label {
+                            class: "flex items-center gap-2 text-sm text-content",
+                            input {
+                                r#type: "radio",
+                                name: "duration_format",
+                                value: "{val}",
+                                checked: duration_format() == val,
+                                onchange: move |_| {
+                                    duration_format.set(val.to_string());
+                                    prefs::set_str(crate::utils::duration::PREF_DURATION_FORMAT, val);
+                                },
                             }
-                        }
-                    }
-
-                    // Duration format: how logged time is displayed
-                    // across timesheets, the time list, and the
-                    // dashboard (PMS-265).
-                    fieldset { class: "space-y-2",
-                        legend { class: "text-sm font-medium text-content",
-                            "Duration format"
-                        }
-                        for (val , label) in [("decimal", "Decimal (1.5h)"), ("hm", "Hours:minutes (1:30)")] {
-                            label {
-                                class: "flex items-center gap-2 text-sm text-content",
-                                input {
-                                    r#type: "radio",
-                                    name: "duration_format",
-                                    value: "{val}",
-                                    checked: duration_format() == val,
-                                    onchange: move |_| {
-                                        duration_format.set(val.to_string());
-                                        prefs::set_str(crate::utils::duration::PREF_DURATION_FORMAT, val);
-                                    },
-                                }
-                                "{label}"
-                            }
+                            "{label}"
                         }
                     }
                 }
@@ -1536,27 +1576,29 @@ fn ContactProfilePage() -> Element {
             subtitle: "Your contact information for this portal.",
         }
 
-        match &*snap {
-            None => rsx! { crate::components::DetailSkeleton {} },
-            Some(Err(err)) => {
-                let detail = err.to_string();
-                let toast = err.user_message();
-                rsx! {
-                    Card {
-                        div { class: "py-12 text-center",
-                            p { class: "text-sm text-red-600 dark:text-red-400",
-                                "Could not load your profile: {toast}"
+        div { class: "{PROFILE_BODY_CLASS}",
+            match &*snap {
+                None => rsx! { crate::components::DetailSkeleton {} },
+                Some(Err(err)) => {
+                    let detail = err.to_string();
+                    let toast = err.user_message();
+                    rsx! {
+                        Card {
+                            div { class: "py-12 text-center",
+                                p { class: "text-sm text-red-600 dark:text-red-400",
+                                    "Could not load your profile: {toast}"
+                                }
+                                p { class: "mt-2 text-xs text-muted", "Detail: {detail}" }
                             }
-                            p { class: "mt-2 text-xs text-muted", "Detail: {detail}" }
                         }
                     }
                 }
-            }
-            Some(Ok(me)) => {
-                if can_manage_own {
-                    rsx! { ContactPersonalInfoForm { initial: me.clone() } }
-                } else {
-                    rsx! { ContactPersonalInfoReadOnly { me: me.clone() } }
+                Some(Ok(me)) => {
+                    if can_manage_own {
+                        rsx! { ContactPersonalInfoForm { initial: me.clone() } }
+                    } else {
+                        rsx! { ContactPersonalInfoReadOnly { me: me.clone() } }
+                    }
                 }
             }
         }
@@ -1616,18 +1658,12 @@ fn ContactPersonalInfoReadOnly(props: ContactPersonalInfoReadOnlyProps) -> Eleme
         ("Company", profile_value(me.company_name.as_deref())),
     ];
     rsx! {
-        Card {
-            div { class: "space-y-6 p-6",
-                div {
-                    h2 { class: "text-base font-semibold text-content", "Personal info" }
-                    p { class: "text-sm text-muted", "{note}" }
-                }
-                dl { class: "grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2",
-                    for (label, value) in rows {
-                        div { key: "{label}",
-                            dt { class: "text-xs font-medium text-muted", "{label}" }
-                            dd { class: "mt-1 text-sm text-content", "{value}" }
-                        }
+        Card { title: "Personal info".to_string(), subtitle: note,
+            dl { class: "grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2",
+                for (label, value) in rows {
+                    div { key: "{label}",
+                        dt { class: "text-xs font-medium text-muted", "{label}" }
+                        dd { class: "mt-1 text-sm text-content", "{value}" }
                     }
                 }
             }
@@ -1704,14 +1740,10 @@ fn ContactPersonalInfoForm(props: ContactPersonalInfoFormProps) -> Element {
 
     rsx! {
         Card {
-            div { class: "space-y-6 p-6",
-                div {
-                    h2 { class: "text-base font-semibold text-content", "Personal info" }
-                    p { class: "text-sm text-muted",
-                        "Your name, contact numbers, and timezone. Email is managed by your MSP."
-                    }
-                }
-
+            title: "Personal info".to_string(),
+            subtitle: "Your name, contact numbers, and timezone. Email is managed by your MSP."
+                .to_string(),
+            div { class: "space-y-6",
                 if !error().is_empty() {
                     ErrorBanner { "{error}" }
                 }

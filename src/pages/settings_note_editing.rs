@@ -109,61 +109,64 @@ fn NoteEditingSettingsBody() -> Element {
                 SettingsBreadcrumb { current: Route::SettingsNoteEditing {} }
             },
         }
-        if !error().is_empty() {
-            ErrorBanner { "{error}" }
-        }
-        match snap {
-            None => rsx! { crate::components::DetailSkeleton {} },
-            Some(None) => rsx! {
-                Card {
-                    div { class: "p-6", ErrorBanner { "Could not load the note editing policy." } }
-                }
-            },
-            Some(Some(rows)) => {
-                let current = policy_in(&rows);
-                let described = POLICIES
-                    .iter()
-                    .find(|(name, _, _)| *name == current)
-                    .map(|(_, _, meaning)| *meaning)
-                    .unwrap_or_default();
-                rsx! {
+        // MAPPS-966: the error banner and the card are gapped, not stacked.
+        div { class: "space-y-6",
+            if !error().is_empty() {
+                ErrorBanner { "{error}" }
+            }
+            match snap {
+                None => rsx! { crate::components::DetailSkeleton {} },
+                Some(None) => rsx! {
                     Card {
-                        div { class: "p-6 space-y-4",
-                            Select {
-                                name: "note_editing",
-                                label: "Who may edit a note",
-                                value: current.to_string(),
-                                disabled: saving() || !can_mutate,
-                                options: POLICIES
-                                    .iter()
-                                    .map(|(name, label, _)| SelectOption::new(*name, *label))
-                                    .collect::<Vec<_>>(),
-                                onchange: move |e: FormEvent| {
-                                    let next = e.value();
-                                    saving.set(true);
-                                    error.set(String::new());
-                                    spawn(async move {
-                                        #[cfg(feature = "app")]
-                                        {
-                                            let body = serde_json::json!({
-                                                "category": CATEGORY,
-                                                "key": KEY,
-                                                "value": next,
-                                            });
-                                            match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>("/settings", &body).await {
-                                                Ok(_) => settings.restart(),
-                                                Err(e) => error.set(format!("Could not change the policy: {e}")),
+                        ErrorBanner { "Could not load the note editing policy." }
+                    }
+                },
+                Some(Some(rows)) => {
+                    let current = policy_in(&rows);
+                    let described = POLICIES
+                        .iter()
+                        .find(|(name, _, _)| *name == current)
+                        .map(|(_, _, meaning)| *meaning)
+                        .unwrap_or_default();
+                    rsx! {
+                        Card {
+                            div { class: "space-y-4",
+                                Select {
+                                    name: "note_editing",
+                                    label: "Who may edit a note",
+                                    value: current.to_string(),
+                                    disabled: saving() || !can_mutate,
+                                    options: POLICIES
+                                        .iter()
+                                        .map(|(name, label, _)| SelectOption::new(*name, *label))
+                                        .collect::<Vec<_>>(),
+                                    onchange: move |e: FormEvent| {
+                                        let next = e.value();
+                                        saving.set(true);
+                                        error.set(String::new());
+                                        spawn(async move {
+                                            #[cfg(feature = "app")]
+                                            {
+                                                let body = serde_json::json!({
+                                                    "category": CATEGORY,
+                                                    "key": KEY,
+                                                    "value": next,
+                                                });
+                                                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>("/settings", &body).await {
+                                                    Ok(_) => settings.restart(),
+                                                    Err(e) => error.set(format!("Could not change the policy: {e}")),
+                                                }
                                             }
-                                        }
-                                        #[cfg(not(feature = "app"))]
-                                        let _ = next;
-                                        saving.set(false);
-                                    });
-                                },
-                            }
-                            p { class: "text-sm text-muted", "{described}" }
-                            p { class: "text-sm text-subtle",
-                                "Two kinds of note refuse the edit whatever this says: one the customer wrote through the portal, and a public note that was already emailed, because the customer holds the original. A note logged against a time entry is edited through that entry."
+                                            #[cfg(not(feature = "app"))]
+                                            let _ = next;
+                                            saving.set(false);
+                                        });
+                                    },
+                                }
+                                p { class: "text-sm text-muted", "{described}" }
+                                p { class: "text-sm text-subtle",
+                                    "Two kinds of note refuse the edit whatever this says: one the customer wrote through the portal, and a public note that was already emailed, because the customer holds the original. A note logged against a time entry is edited through that entry."
+                                }
                             }
                         }
                     }

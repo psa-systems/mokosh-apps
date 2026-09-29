@@ -573,116 +573,119 @@ pub fn ProjectListPage() -> Element {
             }
         }
 
-        if is_loading {
-            // PMS-353: card-grid skeleton matching the populated layout,
-            // instead of a bare "Loading projects…" line.
-            crate::components::CardGridSkeleton {}
-        } else if filtered.is_empty() {
-            if projects.is_empty() {
-                crate::components::EmptyState {
-                    title: "No projects yet".to_string(),
-                    description: "Create your first project to plan and track work.".to_string(),
-                    actions: rsx! {
-                        Link {
-                            to: Route::ProjectNew {},
-                            Button {
-                                variant: ButtonVariant::Primary,
-                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                "New Project"
+        // MAPPS-966: the cards and the pager are gapped; an absent pager adds no space.
+        div { class: "space-y-6",
+            if is_loading {
+                // PMS-353: card-grid skeleton matching the populated layout,
+                // instead of a bare "Loading projects…" line.
+                crate::components::CardGridSkeleton {}
+            } else if filtered.is_empty() {
+                if projects.is_empty() {
+                    crate::components::EmptyState {
+                        title: "No projects yet".to_string(),
+                        description: "Create your first project to plan and track work.".to_string(),
+                        actions: rsx! {
+                            Link {
+                                to: Route::ProjectNew {},
+                                Button {
+                                    variant: ButtonVariant::Primary,
+                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                    "New Project"
+                                }
                             }
-                        }
-                    },
+                        },
+                    }
+                } else {
+                    // MAPPS-291 "Clear filters" affordance on the projects list.
+                    crate::components::EmptyState {
+                        title: "No projects match the current filters".to_string(),
+                        description: "Adjust the filters above, or clear them to see every project again.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                onclick: move |_| {
+                                    search.set(String::new());
+                                    status_filter.set(String::new());
+                                },
+                                "Clear filters"
+                            }
+                        },
+                    }
                 }
             } else {
-                // MAPPS-291 "Clear filters" affordance on the projects list.
-                crate::components::EmptyState {
-                    title: "No projects match the current filters".to_string(),
-                    description: "Adjust the filters above, or clear them to see every project again.".to_string(),
-                    actions: rsx! {
-                        Button {
-                            variant: ButtonVariant::Secondary,
-                            onclick: move |_| {
-                                search.set(String::new());
-                                status_filter.set(String::new());
-                            },
-                            "Clear filters"
-                        }
-                    },
-                }
-            }
-        } else {
-            // Project cards
-            div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6",
-                for p in filtered.iter() {
-                    {
-                        let (variant, label) = status_badge(&p.status);
-                        let cname = company_name(&p.company_id);
-                        let util = match (p.actual_amount, p.budget_amount) {
-                            (Some(a), Some(b)) if b > 0.0 => {
-                                Some(((a / b) * 100.0).clamp(0.0, 100.0).round() as u32)
-                            }
-                            _ => None,
-                        };
-                        let bar_color = match util {
-                            Some(u) if u >= 90 => "bg-red-600",
-                            Some(u) if u >= 75 => "bg-yellow-500",
-                            Some(_) => "bg-green-600",
-                            None => "bg-gray-400", // theme-guard-allow: neutral status-bar fill, sibling of red/yellow/green
-                        };
-                        let due = fmt_date(&p.target_end_date);
-                        let due_iso = p.target_end_date.clone().unwrap_or_default();
-                        let budget = format_money_f64(p.budget_amount);
-                        let pid = p.id.to_string();
-                        rsx! {
-                            Link {
-                                key: "{pid}",
-                                to: Route::ProjectDetail { id: pid.clone() },
-                                Card { class: "hover:shadow-lg transition-shadow cursor-pointer",
-                                    div { class: "flex items-start justify-between mb-4",
-                                        div {
-                                            h3 { class: "text-lg font-medium text-content",
-                                                "{p.name}"
-                                            }
-                                            p { class: "text-sm text-muted",
-                                                "{cname}"
-                                            }
-                                        }
-                                        Badge { variant, "{label}" }
-                                    }
-
-                                    // Budget utilization (actual vs budget)
-                                    div { class: "mb-4",
-                                        div { class: "flex justify-between text-sm mb-1",
-                                            span { class: "text-muted", "Budget used" }
-                                            if let Some(u) = util {
-                                                span { class: "font-medium text-content", "{u}%" }
-                                            } else {
-                                                span { class: "text-subtle", "n/a" }
-                                            }
-                                        }
-                                        div { class: "w-full bg-surface-2 rounded-full h-2",
+                // Project cards
+                div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6",
+                    for p in filtered.iter() {
+                        {
+                            let (variant, label) = status_badge(&p.status);
+                            let cname = company_name(&p.company_id);
+                            let util = match (p.actual_amount, p.budget_amount) {
+                                (Some(a), Some(b)) if b > 0.0 => {
+                                    Some(((a / b) * 100.0).clamp(0.0, 100.0).round() as u32)
+                                }
+                                _ => None,
+                            };
+                            let bar_color = match util {
+                                Some(u) if u >= 90 => "bg-red-600",
+                                Some(u) if u >= 75 => "bg-yellow-500",
+                                Some(_) => "bg-green-600",
+                                None => "bg-gray-400", // theme-guard-allow: neutral status-bar fill, sibling of red/yellow/green
+                            };
+                            let due = fmt_date(&p.target_end_date);
+                            let due_iso = p.target_end_date.clone().unwrap_or_default();
+                            let budget = format_money_f64(p.budget_amount);
+                            let pid = p.id.to_string();
+                            rsx! {
+                                Link {
+                                    key: "{pid}",
+                                    to: Route::ProjectDetail { id: pid.clone() },
+                                    Card { class: "hover:shadow-lg transition-shadow cursor-pointer",
+                                        div { class: "flex items-start justify-between mb-4",
                                             div {
-                                                class: "{bar_color} h-2 rounded-full transition-all",
-                                                style: "width: {util.unwrap_or(0)}%",
+                                                h3 { class: "text-lg font-medium text-content",
+                                                    "{p.name}"
+                                                }
+                                                p { class: "text-sm text-muted",
+                                                    "{cname}"
+                                                }
                                             }
+                                            Badge { variant, "{label}" }
                                         }
-                                    }
 
-                                    // Footer info
-                                    div { class: "flex justify-between text-sm",
-                                        div {
-                                            span { class: "text-muted", "Due: " }
-                                            span { class: "text-content",
-                                                if due_iso.is_empty() {
-                                                    "{due}"
+                                        // Budget utilization (actual vs budget)
+                                        div { class: "mb-4",
+                                            div { class: "flex justify-between text-sm mb-1",
+                                                span { class: "text-muted", "Budget used" }
+                                                if let Some(u) = util {
+                                                    span { class: "font-medium text-content", "{u}%" }
                                                 } else {
-                                                    time { datetime: "{due_iso}", "{due}" }
+                                                    span { class: "text-subtle", "n/a" }
+                                                }
+                                            }
+                                            div { class: "w-full bg-surface-2 rounded-full h-2",
+                                                div {
+                                                    class: "{bar_color} h-2 rounded-full transition-all",
+                                                    style: "width: {util.unwrap_or(0)}%",
                                                 }
                                             }
                                         }
-                                        div {
-                                            span { class: "text-muted", "Budget: " }
-                                            span { class: "font-medium text-content", "{budget}" }
+
+                                        // Footer info
+                                        div { class: "flex justify-between text-sm",
+                                            div {
+                                                span { class: "text-muted", "Due: " }
+                                                span { class: "text-content",
+                                                    if due_iso.is_empty() {
+                                                        "{due}"
+                                                    } else {
+                                                        time { datetime: "{due_iso}", "{due}" }
+                                                    }
+                                                }
+                                            }
+                                            div {
+                                                span { class: "text-muted", "Budget: " }
+                                                span { class: "font-medium text-content", "{budget}" }
+                                            }
                                         }
                                     }
                                 }
@@ -691,17 +694,17 @@ pub fn ProjectListPage() -> Element {
                     }
                 }
             }
-        }
 
-        // MAPPS-546: the list is a card grid, not a DataTable, so it gets the
-        // standalone pager rather than the table's built-in one. `total` is
-        // the server's count of every match, not of the cards above it.
-        crate::components::Pagination {
-            current_page: (*page.read()).max(1),
-            total_items: total,
-            per_page: PER_PAGE,
-            onpagechange: move |p| page.set(p),
-            bordered: false,
+            // MAPPS-546: the list is a card grid, not a DataTable, so it gets the
+            // standalone pager rather than the table's built-in one. `total` is
+            // the server's count of every match, not of the cards above it.
+            crate::components::Pagination {
+                current_page: (*page.read()).max(1),
+                total_items: total,
+                per_page: PER_PAGE,
+                onpagechange: move |p| page.set(p),
+                bordered: false,
+            }
         }
     }
 }

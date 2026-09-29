@@ -99,8 +99,11 @@ pub fn PlatformAccountPage() -> Element {
             title: "Platform Admin Account",
             subtitle: "Password and two-factor authentication for your platform-admin sign-in, independent of any tenant.",
         }
-        PlatformPasswordCard {}
-        PlatformMfaCard { mfa_enabled: mfa_enabled() }
+        // MAPPS-966: the two cards are gapped, not stacked edge to edge.
+        div { class: "space-y-6",
+            PlatformPasswordCard {}
+            PlatformMfaCard { mfa_enabled: mfa_enabled() }
+        }
     }
 }
 
@@ -158,7 +161,7 @@ fn PlatformPasswordCard() -> Element {
 
     rsx! {
         Card {
-            div { class: "space-y-6 p-6",
+            div { class: "space-y-6",
                 div {
                     h2 { class: "text-base font-semibold text-content", "Password" }
                     p { class: "text-sm text-muted",
@@ -240,7 +243,7 @@ fn PlatformMfaCard(props: PlatformMfaCardProps) -> Element {
 
     rsx! {
         Card {
-            div { class: "flex items-center justify-between gap-4 p-6",
+            div { class: "flex items-center justify-between gap-4",
                 div {
                     h2 { class: "text-base font-semibold text-content",
                         "Two-factor authentication"

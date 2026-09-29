@@ -113,64 +113,67 @@ fn SegmentEditingSettingsBody() -> Element {
                 SettingsBreadcrumb { current: Route::SettingsSegmentEditing {} }
             },
         }
-        if !error().is_empty() {
-            ErrorBanner { "{error}" }
-        }
-        match snap {
-            None => rsx! { crate::components::DetailSkeleton {} },
-            Some(None) => rsx! {
-                Card {
-                    div { class: "p-6", ErrorBanner { "Could not load the segment editing policy." } }
-                }
-            },
-            Some(Some(rows)) => {
-                let current = policy_in(&rows);
-                let described = POLICIES
-                    .iter()
-                    .find(|(name, _, _)| *name == current)
-                    .map(|(_, _, meaning)| *meaning)
-                    .unwrap_or_default();
-                rsx! {
+        // MAPPS-966: the error banner and the card are gapped, not stacked.
+        div { class: "space-y-6",
+            if !error().is_empty() {
+                ErrorBanner { "{error}" }
+            }
+            match snap {
+                None => rsx! { crate::components::DetailSkeleton {} },
+                Some(None) => rsx! {
                     Card {
-                        div { class: "p-6 space-y-4",
-                            Select {
-                                name: "segment_editing",
-                                label: "Who may correct a clock entry",
-                                value: current.to_string(),
-                                disabled: saving() || !can_mutate,
-                                options: POLICIES
-                                    .iter()
-                                    .map(|(name, label, _)| SelectOption::new(*name, *label))
-                                    .collect::<Vec<_>>(),
-                                onchange: move |e: FormEvent| {
-                                    let next = e.value();
-                                    saving.set(true);
-                                    error.set(String::new());
-                                    spawn(async move {
-                                        #[cfg(feature = "app")]
-                                        {
-                                            let body = serde_json::json!({
-                                                "category": CATEGORY,
-                                                "key": KEY,
-                                                "value": next,
-                                            });
-                                            match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>("/settings", &body).await {
-                                                Ok(_) => settings.restart(),
-                                                Err(e) => error.set(format!("Could not change the policy: {e}")),
+                        ErrorBanner { "Could not load the segment editing policy." }
+                    }
+                },
+                Some(Some(rows)) => {
+                    let current = policy_in(&rows);
+                    let described = POLICIES
+                        .iter()
+                        .find(|(name, _, _)| *name == current)
+                        .map(|(_, _, meaning)| *meaning)
+                        .unwrap_or_default();
+                    rsx! {
+                        Card {
+                            div { class: "space-y-4",
+                                Select {
+                                    name: "segment_editing",
+                                    label: "Who may correct a clock entry",
+                                    value: current.to_string(),
+                                    disabled: saving() || !can_mutate,
+                                    options: POLICIES
+                                        .iter()
+                                        .map(|(name, label, _)| SelectOption::new(*name, *label))
+                                        .collect::<Vec<_>>(),
+                                    onchange: move |e: FormEvent| {
+                                        let next = e.value();
+                                        saving.set(true);
+                                        error.set(String::new());
+                                        spawn(async move {
+                                            #[cfg(feature = "app")]
+                                            {
+                                                let body = serde_json::json!({
+                                                    "category": CATEGORY,
+                                                    "key": KEY,
+                                                    "value": next,
+                                                });
+                                                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>("/settings", &body).await {
+                                                    Ok(_) => settings.restart(),
+                                                    Err(e) => error.set(format!("Could not change the policy: {e}")),
+                                                }
                                             }
-                                        }
-                                        #[cfg(not(feature = "app"))]
-                                        let _ = next;
-                                        saving.set(false);
-                                    });
-                                },
-                            }
-                            p { class: "text-sm text-muted", "{described}" }
-                            // Said here because an admin arriving from Note
-                            // Editing will expect a second half to the rule,
-                            // and there isn't one.
-                            p { class: "text-sm text-subtle",
-                                "This is the whole rule. Nothing else refuses a correction: a clock entry has no state of its own that can, unlike a ticket note. Choosing Nobody means an operator has to fix a mis-clock in the database."
+                                            #[cfg(not(feature = "app"))]
+                                            let _ = next;
+                                            saving.set(false);
+                                        });
+                                    },
+                                }
+                                p { class: "text-sm text-muted", "{described}" }
+                                // Said here because an admin arriving from Note
+                                // Editing will expect a second half to the rule,
+                                // and there isn't one.
+                                p { class: "text-sm text-subtle",
+                                    "This is the whole rule. Nothing else refuses a correction: a clock entry has no state of its own that can, unlike a ticket note. Choosing Nobody means an operator has to fix a mis-clock in the database."
+                                }
                             }
                         }
                     }
