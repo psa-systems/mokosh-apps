@@ -52,65 +52,68 @@ fn ModulesSettingsBody() -> Element {
                 SettingsBreadcrumb { current: Route::SettingsModules {} }
             },
         }
-        if !error().is_empty() {
-            ErrorBanner { "{error}" }
-        }
-        match snap {
-            None => rsx! { crate::components::DetailSkeleton {} },
-            Some(None) => rsx! {
-                Card {
-                    div { class: "p-6", ErrorBanner { "Could not load the module settings." } }
-                }
-            },
-            Some(Some(configs)) => rsx! {
-                Card {
-                    ul { class: "divide-y divide-line",
-                        for module in GATED_MODULES.iter() {
-                            {
-                                let name = module.name;
-                                let on = enabled_in(&configs, name);
-                                let saving = busy() == Some(name);
-                                rsx! {
-                                    li { key: "{name}", class: "flex items-start justify-between gap-6 px-6 py-4",
-                                        div { class: "min-w-0",
-                                            p { class: "text-sm font-medium text-content", "{module.label}" }
-                                            p { class: "mt-1 text-sm text-muted", "Off: {module.off_means}" }
-                                        }
-                                        Checkbox {
-                                            name: "module_{name}",
-                                            label: if on { "On".to_string() } else { "Off".to_string() },
-                                            checked: on,
-                                            disabled: saving || !can_mutate,
-                                            onchange: move |e: FormEvent| {
-                                                let next = e.checked();
-                                                busy.set(Some(name));
-                                                error.set(String::new());
-                                                spawn(async move {
-                                                    #[cfg(feature = "app")]
-                                                    {
-                                                        let path = format!("/settings/modules/{name}");
-                                                        let body = serde_json::json!({ "is_enabled": next, "config": {} });
-                                                        match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await {
-                                                            Ok(_) => {
-                                                                rows.restart();
-                                                                refresh_module_flags();
+        // MAPPS-966: the error banner and the card are gapped, not stacked.
+        div { class: "space-y-6",
+            if !error().is_empty() {
+                ErrorBanner { "{error}" }
+            }
+            match snap {
+                None => rsx! { crate::components::DetailSkeleton {} },
+                Some(None) => rsx! {
+                    Card {
+                        ErrorBanner { "Could not load the module settings." }
+                    }
+                },
+                Some(Some(configs)) => rsx! {
+                    Card {
+                        ul { class: "divide-y divide-line",
+                            for module in GATED_MODULES.iter() {
+                                {
+                                    let name = module.name;
+                                    let on = enabled_in(&configs, name);
+                                    let saving = busy() == Some(name);
+                                    rsx! {
+                                        li { key: "{name}", class: "flex items-start justify-between gap-6 px-6 py-4",
+                                            div { class: "min-w-0",
+                                                p { class: "text-sm font-medium text-content", "{module.label}" }
+                                                p { class: "mt-1 text-sm text-muted", "Off: {module.off_means}" }
+                                            }
+                                            Checkbox {
+                                                name: "module_{name}",
+                                                label: if on { "On".to_string() } else { "Off".to_string() },
+                                                checked: on,
+                                                disabled: saving || !can_mutate,
+                                                onchange: move |e: FormEvent| {
+                                                    let next = e.checked();
+                                                    busy.set(Some(name));
+                                                    error.set(String::new());
+                                                    spawn(async move {
+                                                        #[cfg(feature = "app")]
+                                                        {
+                                                            let path = format!("/settings/modules/{name}");
+                                                            let body = serde_json::json!({ "is_enabled": next, "config": {} });
+                                                            match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await {
+                                                                Ok(_) => {
+                                                                    rows.restart();
+                                                                    refresh_module_flags();
+                                                                }
+                                                                Err(e) => error.set(format!("Could not change {}: {e}", module.label)),
                                                             }
-                                                            Err(e) => error.set(format!("Could not change {}: {e}", module.label)),
                                                         }
-                                                    }
-                                                    #[cfg(not(feature = "app"))]
-                                                    let _ = next;
-                                                    busy.set(None);
-                                                });
-                                            },
+                                                        #[cfg(not(feature = "app"))]
+                                                        let _ = next;
+                                                        busy.set(None);
+                                                    });
+                                                },
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
                     }
-                }
-            },
+                },
+            }
         }
     }
 }
@@ -127,7 +130,11 @@ mod tests {
         assert!(head.contains("if !crate::pages::settings::use_is_admin() {"));
         assert!(head.contains("for module in GATED_MODULES.iter() {"));
         assert!(head.contains("let path = format!(\"/settings/modules/{name}\");"));
-        assert!(head.contains("rows.restart();\n                                                                refresh_module_flags();"));
+        // Indentation-free, so re-nesting the markup (MAPPS-966) cannot break it.
+        let restart = head.find("rows.restart();").expect("the list refreshes");
+        assert!(head[restart + "rows.restart();".len()..]
+            .trim_start()
+            .starts_with("refresh_module_flags();"));
         assert!(
             head.contains("\"is_enabled\": next, \"config\": {}"),
             "the server's body shape"

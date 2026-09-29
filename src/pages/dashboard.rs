@@ -246,7 +246,8 @@ fn ContactDashboardBody() -> Element {
             }
         } else {
             if load_error {
-                Card {
+                // MAPPS-966: gapped from the stats grid below it.
+                Card { class: "mb-6",
                     div { class: "py-6 text-center text-sm text-red-600 dark:text-red-400",
                         "Could not load your dashboard. Refresh to retry."
                     }

@@ -165,63 +165,66 @@ fn InvoiceNumberingSettingsBody() -> Element {
                 SettingsBreadcrumb { current: Route::SettingsInvoiceNumbering {} }
             },
         }
-        if !error().is_empty() {
-            ErrorBanner { "{error}" }
-        }
-        ConfirmDialog {
-            open: pending().is_some(),
-            title: "Change invoice numbering".to_string(),
-            message: switch_warning(pending().as_deref().unwrap_or(DEFAULT_SCHEME)).to_string(),
-            confirm_text: "Change numbering".to_string(),
-            cancel_text: "Keep current".to_string(),
-            loading: saving(),
-            onconfirm: on_confirm,
-            oncancel: move |_| {
-                if !saving() {
-                    pending.set(None);
-                }
-            },
-        }
-        match snap {
-            None => rsx! { crate::components::DetailSkeleton {} },
-            Some(None) => rsx! {
-                Card {
-                    div { class: "p-6", ErrorBanner { "Could not load the invoice numbering scheme." } }
-                }
-            },
-            Some(Some(rows)) => {
-                let current = scheme_in(&rows);
-                let described = SCHEMES
-                    .iter()
-                    .find(|(name, _, _, _)| *name == current)
-                    .map(|(_, _, example, meaning)| (*example, *meaning))
-                    .unwrap_or_default();
-                rsx! {
+        // MAPPS-966: the error banner and the card are gapped, not stacked.
+        div { class: "space-y-6",
+            if !error().is_empty() {
+                ErrorBanner { "{error}" }
+            }
+            ConfirmDialog {
+                open: pending().is_some(),
+                title: "Change invoice numbering".to_string(),
+                message: switch_warning(pending().as_deref().unwrap_or(DEFAULT_SCHEME)).to_string(),
+                confirm_text: "Change numbering".to_string(),
+                cancel_text: "Keep current".to_string(),
+                loading: saving(),
+                onconfirm: on_confirm,
+                oncancel: move |_| {
+                    if !saving() {
+                        pending.set(None);
+                    }
+                },
+            }
+            match snap {
+                None => rsx! { crate::components::DetailSkeleton {} },
+                Some(None) => rsx! {
                     Card {
-                        div { class: "p-6 space-y-4",
-                            Select {
-                                name: "invoice_numbering",
-                                label: "How new invoices are numbered",
-                                value: current.to_string(),
-                                disabled: saving() || !can_mutate,
-                                options: SCHEMES
-                                    .iter()
-                                    .map(|(name, label, _, _)| SelectOption::new(*name, *label))
-                                    .collect::<Vec<_>>(),
-                                onchange: move |e: FormEvent| {
-                                    let next = e.value();
-                                    // Nothing is written from the select: the
-                                    // dialog is what writes, so cancelling
-                                    // leaves the scheme where it was.
-                                    if next != current {
-                                        pending.set(Some(next));
-                                    }
-                                },
-                            }
-                            p { class: "text-sm text-muted", "For example: {described.0}" }
-                            p { class: "text-sm text-muted", "{described.1}" }
-                            p { class: "text-sm text-subtle",
-                                "Changing this never renumbers an invoice. Each invoice keeps the number it was issued with, and records which scheme produced it, so your history stays exactly as your customers received it."
+                        ErrorBanner { "Could not load the invoice numbering scheme." }
+                    }
+                },
+                Some(Some(rows)) => {
+                    let current = scheme_in(&rows);
+                    let described = SCHEMES
+                        .iter()
+                        .find(|(name, _, _, _)| *name == current)
+                        .map(|(_, _, example, meaning)| (*example, *meaning))
+                        .unwrap_or_default();
+                    rsx! {
+                        Card {
+                            div { class: "space-y-4",
+                                Select {
+                                    name: "invoice_numbering",
+                                    label: "How new invoices are numbered",
+                                    value: current.to_string(),
+                                    disabled: saving() || !can_mutate,
+                                    options: SCHEMES
+                                        .iter()
+                                        .map(|(name, label, _, _)| SelectOption::new(*name, *label))
+                                        .collect::<Vec<_>>(),
+                                    onchange: move |e: FormEvent| {
+                                        let next = e.value();
+                                        // Nothing is written from the select: the
+                                        // dialog is what writes, so cancelling
+                                        // leaves the scheme where it was.
+                                        if next != current {
+                                            pending.set(Some(next));
+                                        }
+                                    },
+                                }
+                                p { class: "text-sm text-muted", "For example: {described.0}" }
+                                p { class: "text-sm text-muted", "{described.1}" }
+                                p { class: "text-sm text-subtle",
+                                    "Changing this never renumbers an invoice. Each invoice keeps the number it was issued with, and records which scheme produced it, so your history stays exactly as your customers received it."
+                                }
                             }
                         }
                     }

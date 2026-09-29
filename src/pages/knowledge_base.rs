@@ -658,8 +658,9 @@ pub fn KBHomePage() -> Element {
         // PMS-485: Top ticket-driving articles widget. Reads
         // tickets joined to kb_articles on `source_kb_article_id`
         // (stamped on ticket create by PMS-482), grouped + ordered
-        // by count over the trailing 90 days.
-        Card { title: "Top ticket-driving articles",
+        // by count over the trailing 90 days. `mb-6` gaps it from Recent
+        // Articles below, like the search Card above (MAPPS-966).
+        Card { title: "Top ticket-driving articles", class: "mb-6",
             if top_driving_loading {
                 div { class: "space-y-2",
                     for _ in 0..3 {

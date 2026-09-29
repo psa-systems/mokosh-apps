@@ -498,7 +498,7 @@ fn CompanyRoleEditForm(props: CompanyRoleEditFormProps) -> Element {
         }
 
         Card {
-            div { class: "space-y-6 p-6",
+            div { class: "space-y-6",
                 if !error.read().is_empty() {
                     ErrorBanner { "{error.read()}" }
                 }
