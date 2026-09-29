@@ -2315,7 +2315,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
             saving: *saving.read(),
             deleting: *deleting.read(),
             error: error.read().clone(),
-            create_label: "Add Item".to_string(),
+            create_label: "Add Line".to_string(),
             onclose: move |_| onclose.call(()),
             onsave: handle_save,
             ondelete: handle_delete_click,
