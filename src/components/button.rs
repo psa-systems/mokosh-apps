@@ -87,16 +87,19 @@ pub struct ButtonProps {
     aria_label: Option<String>,
 }
 
+/// The full class recipe for a variant and size. Public so a link that leaves
+/// the app (a plain `a`) can look like a `Button` without re-typing the recipe.
+pub fn button_class(variant: ButtonVariant, size: ButtonSize) -> String {
+    let base_class = "inline-flex items-center justify-center font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
+    format!("{} {} {}", base_class, variant.class(), size.class())
+}
+
 /// Reusable button component
 #[component]
 pub fn Button(props: ButtonProps) -> Element {
-    let base_class = "inline-flex items-center justify-center font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
-
     let class = format!(
-        "{} {} {} {}",
-        base_class,
-        props.variant.class(),
-        props.size.class(),
+        "{} {}",
+        button_class(props.variant, props.size),
         props.class
     );
 

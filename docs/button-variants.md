@@ -39,6 +39,7 @@ page headers), `Large` (hero CTAs).
 4. Do not invent ad-hoc Tailwind colour classes on a raw `button` to fake a
    variant - extend `ButtonVariant` if a genuinely new style is needed, so the
    set stays enumerable and reviewable.
+5. A link that leaves the app but should read as a button (the profile page's "Account settings", which opens the Bunyip hub) is a plain `a` whose class comes from `button_class(variant, size)`, the same recipe `Button` renders (MAPPS-966). It never re-types the recipe by hand.
 
 ## Reviewing
 
