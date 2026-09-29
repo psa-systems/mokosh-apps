@@ -858,7 +858,7 @@ pub fn disconnect_message_from(vendor: &str, account: Option<&str>) -> String {
 }
 
 #[component]
-fn StateIcon(state: CardState) -> Element {
+pub fn StateIcon(state: CardState) -> Element {
     use crate::components::{CheckIcon, ExclamationIcon, InformationIcon};
     match state {
         CardState::Syncing { .. } => rsx! { SyncIcon {} },
