@@ -798,7 +798,7 @@ pub(crate) fn CommentComposer(
                     }
                 },
                 if !error().is_empty() {
-                    p { class: "text-sm text-red-600 dark:text-red-300", "{error}" }
+                    p { class: "text-sm text-red-600 dark:text-red-400", "{error}" }
                 }
                 crate::components::MarkdownEditor {
                     name: "kb_comment".to_string(),

@@ -247,7 +247,7 @@ fn ContactDashboardBody() -> Element {
         } else {
             if load_error {
                 Card {
-                    div { class: "py-6 text-center text-sm text-red-600 dark:text-red-300",
+                    div { class: "py-6 text-center text-sm text-red-600 dark:text-red-400",
                         "Could not load your dashboard. Refresh to retry."
                     }
                 }

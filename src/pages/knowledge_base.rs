@@ -689,7 +689,7 @@ pub fn KBHomePage() -> Element {
         // Recent articles
         Card { title: "Recent Articles",
             if recent_failed {
-                div { class: "py-8 text-center text-sm text-red-600 dark:text-red-300",
+                div { class: "py-8 text-center text-sm text-red-600 dark:text-red-400",
                     "Could not load recent articles."
                 }
             } else if recent_loading {

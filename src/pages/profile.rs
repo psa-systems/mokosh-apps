@@ -352,7 +352,7 @@ fn StaffProfilePage() -> Element {
                 rsx! {
                     Card {
                         div { class: "py-12 text-center",
-                            p { class: "text-sm text-red-600 dark:text-red-300",
+                            p { class: "text-sm text-red-600 dark:text-red-400",
                                 "Could not load your profile: {toast}"
                             }
                             p { class: "mt-2 text-xs text-muted",
@@ -1544,7 +1544,7 @@ fn ContactProfilePage() -> Element {
                 rsx! {
                     Card {
                         div { class: "py-12 text-center",
-                            p { class: "text-sm text-red-600 dark:text-red-300",
+                            p { class: "text-sm text-red-600 dark:text-red-400",
                                 "Could not load your profile: {toast}"
                             }
                             p { class: "mt-2 text-xs text-muted", "Detail: {detail}" }

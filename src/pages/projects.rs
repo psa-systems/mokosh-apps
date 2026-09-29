@@ -2104,7 +2104,7 @@ fn ProjectTaskTable(props: ProjectTaskTableProps) -> Element {
                     if is_loading {
                         TableRow { TableCell { class: "text-subtle", "Loading…" } }
                     } else if load_failed {
-                        TableEmptyRow { columns: 5, class: "text-red-600 dark:text-red-300",
+                        TableEmptyRow { columns: 5, class: "text-red-600 dark:text-red-400",
                             "Could not load tasks."
                         }
                     } else if tasks.is_empty() {

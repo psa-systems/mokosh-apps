@@ -1548,7 +1548,7 @@ pub fn TimesheetsPage() -> Element {
                             }
                         }
                     } else if load_failed {
-                        TableEmptyRow { columns: 9, class: "text-red-600 dark:text-red-300",
+                        TableEmptyRow { columns: 9, class: "text-red-600 dark:text-red-400",
                             "Could not load timesheet. The time-tracking service may be unavailable."
                         }
                     } else if !has_entries {
@@ -2235,7 +2235,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                             TableCell { class: "text-subtle", "Loading…" }
                         }
                     } else if load_failed {
-                        TableEmptyRow { columns: 7, class: "text-red-600 dark:text-red-300",
+                        TableEmptyRow { columns: 7, class: "text-red-600 dark:text-red-400",
                             "Could not load timesheets. The time-tracking service may be unavailable."
                         }
                     } else if rows.is_empty() {
