@@ -504,6 +504,7 @@ fn VcardImportBody() -> Element {
                                             TableBody {
                                                 for row in rows.iter().cloned() {
                                                     {
+                                                        let uploaded_at_iso = row.uploaded_at.to_rfc3339();
                                                         let uploaded_at = crate::utils::datetime::fmt_user_dt_in(
                                                             row.uploaded_at,
                                                             pref.as_deref(),
@@ -514,7 +515,7 @@ fn VcardImportBody() -> Element {
                                                         rsx! {
                                                             TableRow { key: "{row.id}",
                                                                 TableCell { "{row.filename}" }
-                                                                TableCell { "{uploaded_at}" }
+                                                                TableCell { time { datetime: "{uploaded_at_iso}", "{uploaded_at}" } }
                                                                 TableCell { "{row.contacts}" }
                                                                 TableCell { "{status}" }
                                                             }
