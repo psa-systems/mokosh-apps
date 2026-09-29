@@ -377,7 +377,7 @@ pub fn TenantSwitcher() -> Element {
                 Popover {
                     open: open(),
                     label: "Switch team",
-                    trigger_class: "flex items-center gap-2 px-3 py-2 rounded-md text-sm text-subtle hover:text-content hover:bg-surface-2 focus:outline-none",
+                    trigger_class: "flex items-center gap-2 px-3 py-2 rounded-md text-sm text-subtle hover:text-content hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent",
                     trigger: rsx! {
                         // Team name is visible at every breakpoint so a user
                         // can see at a glance which team they are on. Narrower
