@@ -236,9 +236,15 @@ impl DropdownNav {
         self.mode
     }
 
-    /// Is the panel showing?
+    /// Is the panel showing? A tracked read, for render and event handlers.
     pub fn is_open(&self) -> bool {
         *self.open.read()
+    }
+
+    /// The read to use inside `use_effect` / `use_memo`: a tracked read there
+    /// subscribes the effect to this dropdown's own state (MAPPS-964).
+    pub fn is_open_untracked(&self) -> bool {
+        *self.open.peek()
     }
 
     /// The highlighted row, if any.
@@ -671,6 +677,187 @@ mod tests {
         assert_eq!(
             decide(&Key::Tab, false, true, None, 3, RECORD, MENU),
             NavAction::Ignore
+        );
+    }
+
+    // ---- MAPPS-964: effects read the open state untracked ---------------
+
+    /// `src` with comments and string / char literals blanked (newlines kept),
+    /// so the scan sees code only and its line numbers still line up.
+    fn code_only(src: &str) -> String {
+        let bytes = src.as_bytes();
+        let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+        let mut out = bytes.to_vec();
+        let mut i = 0;
+        while i < bytes.len() {
+            let rest = &src[i..];
+            let token_start = i == 0 || !ident(bytes[i - 1]);
+            let skip = if rest.starts_with("//") {
+                rest.find('\n').unwrap_or(rest.len())
+            } else if rest.starts_with("/*") {
+                rest.find("*/").map_or(rest.len(), |n| n + 2)
+            } else if let Some(n) = raw_string_len(rest).filter(|_| token_start) {
+                n
+            } else if rest.starts_with('"') {
+                quoted_len(rest)
+            } else if rest.starts_with('\'') {
+                // No closing quote means a lifetime, which is code.
+                char_literal_len(rest).unwrap_or(0)
+            } else {
+                0
+            };
+            if skip == 0 {
+                i += rest.chars().next().map_or(1, char::len_utf8);
+                continue;
+            }
+            for b in &mut out[i..i + skip] {
+                if *b != b'\n' {
+                    *b = b' ';
+                }
+            }
+            i += skip;
+        }
+        String::from_utf8(out).expect("blanking whole chars keeps UTF-8 valid")
+    }
+
+    /// Length of the `r"..."` / `r#"..."#` literal `rest` starts with, if any.
+    fn raw_string_len(rest: &str) -> Option<usize> {
+        let after_r = rest.strip_prefix('r')?;
+        let hashes = after_r.len() - after_r.trim_start_matches('#').len();
+        let body = after_r[hashes..].strip_prefix('"')?;
+        let close = format!("\"{}", "#".repeat(hashes));
+        let end = body.find(&close).map_or(body.len(), |n| n + close.len());
+        Some(1 + hashes + 1 + end)
+    }
+
+    /// Length of the `"..."` literal `rest` starts with, escapes included.
+    fn quoted_len(rest: &str) -> usize {
+        let b = rest.as_bytes();
+        let mut j = 1;
+        while j < b.len() && b[j] != b'"' {
+            j += if b[j] == b'\\' { 2 } else { 1 };
+        }
+        (j + 1).min(b.len())
+    }
+
+    /// Length of the char literal `rest` starts with; `None` for a lifetime.
+    fn char_literal_len(rest: &str) -> Option<usize> {
+        let inner = &rest[1..];
+        if let Some(esc) = inner.strip_prefix('\\') {
+            // Step over the escaped char so '\'' closes on its last quote.
+            let first = esc.chars().next()?.len_utf8();
+            esc[first..].find('\'').map(|n| 2 + first + n + 1)
+        } else {
+            let c = inner.chars().next()?.len_utf8();
+            inner[c..].starts_with('\'').then_some(c + 2)
+        }
+    }
+
+    /// Every `use_effect(` call in `src` as (line, call text), literals and
+    /// comments blanked. A call ends at its matching `)`, so a handler later
+    /// in the same component is not part of it.
+    fn effect_calls(src: &str) -> Vec<(usize, String)> {
+        let code = code_only(src);
+        let mut out = Vec::new();
+        let mut from = 0;
+        while let Some(rel) = code[from..].find("use_effect(") {
+            let start = from + rel + "use_effect".len();
+            let mut depth = 0usize;
+            let mut end = code.len();
+            for (i, b) in code.bytes().enumerate().skip(start) {
+                match b {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = i + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let line = code[..start].matches('\n').count() + 1;
+            out.push((line, code[start..end].to_string()));
+            from = start;
+        }
+        out
+    }
+
+    /// Lines of the effect calls that make a tracked `.is_open()` read.
+    fn tracked_open_reads(calls: &[(usize, String)]) -> Vec<usize> {
+        calls
+            .iter()
+            .filter(|(_, call)| call.contains(".is_open()"))
+            .map(|(line, _)| *line)
+            .collect()
+    }
+
+    /// The guard's own proof: it catches the MAPPS-964 shape, and passes the
+    /// fixed one even beside a comment, an unbalanced `"("` and a later handler.
+    #[test]
+    fn the_effect_scan_catches_a_tracked_open_read_and_nothing_else() {
+        const VIOLATING: &str = r#"
+            use_effect(use_reactive!(|route| {
+                let _ = &route;
+                if nav.is_open() {
+                    nav.close();
+                }
+            }));
+        "#;
+        const COMPLIANT: &str = r#"
+            use_effect(use_reactive!(|route| {
+                // Naming nav.is_open() in a comment is not a read.
+                let _ = (&route, "(");
+                if nav.is_open_untracked() {
+                    nav.close();
+                }
+            }));
+            rsx! { Popover { ontoggle: move |_| if nav.is_open() { nav.close() } } }
+        "#;
+        assert_eq!(tracked_open_reads(&effect_calls(VIOLATING)), vec![2]);
+        assert_eq!(effect_calls(COMPLIANT).len(), 1);
+        assert!(tracked_open_reads(&effect_calls(COMPLIANT)).is_empty());
+    }
+
+    /// MAPPS-964: `is_open()` inside an effect subscribes it to the dropdown's
+    /// own open state, so the user menu's close-on-navigation effect re-ran
+    /// on every open and shut the menu in the same frame.
+    #[test]
+    fn no_effect_reads_a_dropdowns_open_state_tracked() {
+        let mut offenders = Vec::new();
+        let mut effects = 0usize;
+        let mut stack = vec![std::path::PathBuf::from("src")];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read src") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let src = std::fs::read_to_string(&path).expect("read file");
+                let calls = effect_calls(&src);
+                effects += calls.len();
+                for line in tracked_open_reads(&calls) {
+                    offenders.push(format!("{}:{line}", path.display()));
+                }
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "a `use_effect` reads `.is_open()`, which subscribes it to the dropdown's own \
+             open state, so opening the dropdown re-runs the effect (MAPPS-964: the user \
+             menu closed the instant it opened). Read it with `is_open_untracked()` \
+             instead: {offenders:?}"
+        );
+        assert!(
+            effects >= 40,
+            "the scan found only {effects} use_effect calls, so it has probably stopped \
+             matching them rather than proving anything"
         );
     }
 }

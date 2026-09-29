@@ -148,6 +148,10 @@ Rules that go with menu mode:
 - **On-nav / on-click close via `nav.close()`**, not a private `open`
   signal. Any surviving `use_signal(|| false)` beside a menu Popover is
   a MAPPS-508 drift and should route through the hook instead.
+- **Inside a `use_effect`, read `nav.is_open_untracked()`**, because a
+  tracked `is_open()` there subscribes the effect to the menu's own state
+  and an on-navigation close then shuts the menu the moment it opens
+  (MAPPS-964, guarded by a test in `src/hooks/dropdown_nav.rs`).
 
 ### The inline-create modal keeps the keyboard (MAPPS-694)
 
