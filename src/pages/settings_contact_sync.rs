@@ -371,7 +371,17 @@ pub fn copy_for(state: &CardState) -> StateCopy {
             headline: if *waiting {
                 "Google asked this import to wait, and it resumes by itself.".to_string()
             } else if run.status == "queued" {
-                "An import is queued and starts within a minute.".to_string()
+                // PMS-1429: "within a minute" was the truth when a queued run
+                // waited for the import worker's next 60s tick. The server wakes
+                // that worker the moment the run is committed now, so a queued
+                // run starts in about a second and this card polls every three;
+                // the old line read as a stall to the person watching it.
+                //
+                // Still "in a moment" rather than "now": the status IS queued at
+                // this point, and on a deployment running several API replicas
+                // the wake reaches the one that served the request, so the next
+                // tick is the floor rather than the expectation.
+                "An import is queued and starts in a moment.".to_string()
             } else {
                 "Importing contacts now.".to_string()
             },
