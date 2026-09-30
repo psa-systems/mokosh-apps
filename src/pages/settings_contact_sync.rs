@@ -39,7 +39,7 @@ use uuid::Uuid;
 
 use crate::components::{
     use_page_title, Badge, BadgeVariant, BannerTone, Button, ButtonVariant, Card, Checkbox,
-    ConfirmDialog, ErrorBanner, PageHeader, StatusBanner,
+    ConfirmDialog, ContextualHelpLink, ErrorBanner, PageHeader, StatusBanner,
 };
 use crate::pages::settings::{AdminOnlyNotice, SettingsBreadcrumb};
 use crate::Route;
@@ -700,6 +700,25 @@ fn GoogleContactsSettingsBody() -> Element {
                                 p { class: "text-sm font-medium text-content", "{copy.headline}" }
                             }
                             p { class: "text-sm text-muted", "{copy.next_step}" }
+                            // MAPPS-977: the one state whose reader may be the
+                            // person who can act. On a hosted deployment this is
+                            // gone the moment the operator sets the pair, and no
+                            // tenant sees it again; on a self-hosted one the
+                            // reader IS the operator and has nowhere else to
+                            // start. A LINK rather than the commands, because the
+                            // command depends on which secret provider the
+                            // deployment declared and this card cannot know that.
+                            // Renders nothing where no documentation subdomain is
+                            // configured (MAPPS-453), so it cannot become a dead
+                            // link on a deploy without docs.
+                            if state == CardState::NotConfigured {
+                                div { class: "flex items-center gap-2 text-sm text-muted",
+                                    span { "Setting up this deployment?" }
+                                    ContextualHelpLink {
+                                        article: "/integrations/google-contacts".to_string(),
+                                    }
+                                }
+                            }
                             if let CardState::Syncing { run, .. } = &state {
                                 RunProgress { run: run.clone() }
                             }
@@ -1471,6 +1490,17 @@ mod tests {
                 .contains("whoever runs this deployment"),
             "the unavailable state has to name who can fix it: {}",
             unavailable.next_step
+        );
+
+        // And it points somewhere, for the reader who IS that person. A link
+        // rather than the commands: which command is right depends on the
+        // secret provider the deployment declared, and this card cannot know
+        // that. Asserted against the source because the component renders
+        // nothing without a documentation subdomain, so a render test on a
+        // deploy without one would pass while the link was missing.
+        assert!(
+            head.contains("ContextualHelpLink") && head.contains("/integrations/google-contacts"),
+            "the unavailable state has to point a self-hosted operator somewhere"
         );
     }
 }
