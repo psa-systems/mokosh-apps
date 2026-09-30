@@ -16,7 +16,7 @@
 #   - required: a 14px `::-webkit-scrollbar` (the grab zone, both axes), a
 #     transparent track, a thumb color carrying `var(--sb-alpha)`, the
 #     `@property --sb-alpha` registration that fails visible, the Firefox block
-#     with `thin` and an alpha thumb, and `scrollbar-gutter: stable`.
+#     with `thin` and an alpha thumb; `scrollbar-gutter: stable` is forbidden (MAPPS-981).
 # And in the behavior script: exactly one `SCROLLBAR_IDLE_MS`, within 5000-7000.
 #
 # Usage: check-scrollbars.sh [--self-test]
@@ -77,7 +77,7 @@ END {
     seg = seg c
   }
 
-  bar_w = bar_h = track = thumb = prop = ff_thin = ff_color = gutter = 0
+  bar_w = bar_h = track = thumb = prop = ff_thin = ff_color = 0
   for (r = 1; r <= k; r++) {
     sel = rsel[r]; b = rbody[r]; nd = split(b, decls, ";")
     for (d = 1; d <= nd; d++) {
@@ -94,7 +94,8 @@ END {
         if (v !~ ("^(" CLEAR "|none)$"))
           report(rline[r], "\047" sel " { " decl " }\047 paints a scrollbar background - only the thumb may be painted.")
       }
-      if (decl ~ ("^scrollbar-gutter" S ":" S "stable")) gutter = 1
+      if (decl ~ ("^scrollbar-gutter" S ":" S "stable"))
+        report(rline[r], "\047" decl "\047 reserves an empty strip on containers that never scroll (MAPPS-981).")
       if (sel ~ ("::-webkit-scrollbar" S "(,|$)")) {
         if (decl ~ ("^width" S ":" S "14px$")) bar_w = 1
         if (decl ~ ("^height" S ":" S "14px$")) bar_h = 1
@@ -112,7 +113,6 @@ END {
   if (!thumb) report(0, "missing a `::-webkit-scrollbar-thumb` color from a theme token carrying `var(--sb-alpha)` (color-mix in srgb over transparent).")
   if (!prop) report(0, "missing `@property --sb-alpha` registered as an inherited <number> with initial-value 1, which is what fails visible.")
   if (!ff_thin || !ff_color) report(0, "missing the Firefox `@supports not selector(::-webkit-scrollbar)` block with `scrollbar-width: thin` and a `var(--sb-alpha)` thumb over a transparent track.")
-  if (!gutter) report(0, "missing `scrollbar-gutter: stable`, which stops the content shifting.")
 }
 '
 
@@ -152,19 +152,18 @@ self_test() {
 
   local alpha='color-mix(in srgb, var(--line-strong) calc(var(--sb-alpha) * 100%), transparent)'
   local p_property=$'@property --sb-alpha {\n  syntax: "<number>";\n  inherits: true;\n  initial-value: 1;\n}\n'
-  local p_gutter=$'html {\n  scrollbar-gutter: stable;\n}\n'
   local p_bar=$'::-webkit-scrollbar {\n  width: 14px;\n  height: 14px;\n  background-color: transparent;\n}\n'
   local p_track=$'::-webkit-scrollbar-track,\n::-webkit-scrollbar-corner {\n  background-color: transparent;\n}\n'
   local p_thumb=$'::-webkit-scrollbar-thumb {\n  border: 4px solid transparent;\n  background-clip: padding-box;\n  background-color: '"$alpha"$';\n}\n'
   local p_firefox=$'@supports not selector(::-webkit-scrollbar) {\n  html,\n  pre {\n    scrollbar-width: thin;\n    scrollbar-color: '"$alpha"$' transparent;\n  }\n}\n'
-  local compliant="$p_property$p_gutter$p_bar$p_track$p_thumb$p_firefox"
+  local compliant="$p_property$p_bar$p_track$p_thumb$p_firefox"
   # What Tailwind emits unminified: a plain-token fallback plus a nested `@supports` for color-mix.
   local tw_thumb=$'::-webkit-scrollbar-thumb {\n  background-clip: padding-box;\n  background-color: var(--line-strong);\n  @supports (color: color-mix(in lab, red, red)) {\n    background-color: '"$alpha"$';\n  }\n}\n'
   local tw_firefox=$'@supports not selector(::-webkit-scrollbar) {\n  html, pre {\n    scrollbar-width: thin;\n    scrollbar-color: var(--line-strong) transparent;\n    @supports (color: color-mix(in lab, red, red)) {\n      scrollbar-color: '"$alpha"$' transparent;\n    }\n  }\n}\n'
-  local tailwind="$p_property$p_gutter$p_bar$p_track$tw_thumb$tw_firefox"
+  local tailwind="$p_property$p_bar$p_track$tw_thumb$tw_firefox"
   # The --minify form: one line, `: ` squeezed, `transparent` as `#0000`, the fallback hoisted out.
   local minified
-  minified=$(printf '%s' "$p_property$p_gutter$p_bar$p_track" | sed -E 's/^[[:space:]]+//; s/: /:/g; s/transparent/#0000/g' | tr -d '\n')
+  minified=$(printf '%s' "$p_property$p_bar$p_track" | sed -E 's/^[[:space:]]+//; s/: /:/g; s/transparent/#0000/g' | tr -d '\n')
   minified+='::-webkit-scrollbar-thumb{background-clip:padding-box;background-color:var(--line-strong)}@supports (color:color-mix(in lab, red, red)){::-webkit-scrollbar-thumb{background-color:color-mix(in srgb, var(--line-strong) calc(var(--sb-alpha) * 100%), transparent)}}'
   minified+='@supports not selector(::-webkit-scrollbar){html,pre{scrollbar-width:thin;scrollbar-color:var(--line-strong) transparent}@supports (color:color-mix(in lab, red, red)){html,pre{scrollbar-color:color-mix(in srgb, var(--line-strong) calc(var(--sb-alpha) * 100%), transparent) transparent}}}'
 
@@ -191,20 +190,20 @@ self_test() {
   case_css painted-track 1 "a painted \`::-webkit-scrollbar-track\`" "$compliant"$'::-webkit-scrollbar-track {\n  background-color: var(--surface-2);\n}\n'
   case_css painted-track-hover 1 "a painted track hover state" "$compliant"$'::-webkit-scrollbar-track:hover{background:#eee}\n'
   case_css painted-track-piece 1 "a painted \`::-webkit-scrollbar-track-piece\`" "$compliant"$'::-webkit-scrollbar-track-piece {\n  background: var(--line);\n}\n'
-  case_css painted-bar 1 "a painted \`::-webkit-scrollbar\`" "$p_property$p_gutter${p_bar/background-color: transparent/background-color: var(--line)}$p_track$p_thumb$p_firefox"
+  case_css painted-bar 1 "a painted \`::-webkit-scrollbar\`" "$p_property${p_bar/background-color: transparent/background-color: var(--line)}$p_track$p_thumb$p_firefox"
   case_css painted-corner 1 "a painted \`::-webkit-scrollbar-corner\`" "$compliant"$'::-webkit-scrollbar-corner{background:#fff}\n'
   case_css narrow-bar 1 "a \`::-webkit-scrollbar\` narrower than the 14px zone" "${compliant/width: 14px/width: 5px}"
   case_css short-bar 1 "a horizontal bar lower than the 14px zone" "${compliant/height: 14px/height: 5px}"
-  case_css no-track 1 "no transparent \`::-webkit-scrollbar-track\`" "$p_property$p_gutter$p_bar$p_thumb$p_firefox"
-  case_css static-thumb 1 "a thumb color without \`var(--sb-alpha)\`" "$p_property$p_gutter$p_bar$p_track${p_thumb/"$alpha"/var(--line-strong)}$p_firefox"
-  case_css literal-thumb 1 "a literal thumb color" "$p_property$p_gutter$p_bar$p_track${p_thumb/"$alpha"/#888}$p_firefox"
-  case_css no-property 1 "no \`@property --sb-alpha\` registration" "$p_gutter$p_bar$p_track$p_thumb$p_firefox"
+  case_css no-track 1 "no transparent \`::-webkit-scrollbar-track\`" "$p_property$p_bar$p_thumb$p_firefox"
+  case_css static-thumb 1 "a thumb color without \`var(--sb-alpha)\`" "$p_property$p_bar$p_track${p_thumb/"$alpha"/var(--line-strong)}$p_firefox"
+  case_css literal-thumb 1 "a literal thumb color" "$p_property$p_bar$p_track${p_thumb/"$alpha"/#888}$p_firefox"
+  case_css no-property 1 "no \`@property --sb-alpha\` registration" "$p_bar$p_track$p_thumb$p_firefox"
   case_css uninherited 1 "an uninherited \`--sb-alpha\`" "${compliant/inherits: true/inherits: false}"
   case_css hidden-initial 1 "\`--sb-alpha\` starting at 0, which would fail hidden" "${compliant/initial-value: 1/initial-value: 0}"
-  case_css no-firefox 1 "no Firefox \`@supports\` block" "$p_property$p_gutter$p_bar$p_track$p_thumb"
+  case_css no-firefox 1 "no Firefox \`@supports\` block" "$p_property$p_bar$p_track$p_thumb"
   case_css firefox-auto 1 "a Firefox block without \`thin\`" "${compliant/scrollbar-width: thin/scrollbar-width: auto}"
-  case_css firefox-static 1 "a Firefox thumb color without \`var(--sb-alpha)\`" "$p_property$p_gutter$p_bar$p_track$p_thumb${p_firefox/"$alpha"/var(--line-strong)}"
-  case_css no-gutter 1 "no \`scrollbar-gutter: stable\`" "$p_property$p_bar$p_track$p_thumb$p_firefox"
+  case_css firefox-static 1 "a Firefox thumb color without \`var(--sb-alpha)\`" "$p_property$p_bar$p_track$p_thumb${p_firefox/"$alpha"/var(--line-strong)}"
+  case_css gutter-stable 1 "a re-added \`scrollbar-gutter: stable\` (MAPPS-981)" "$compliant"$'html {\n  scrollbar-gutter: stable;\n}\n'
   case_css unstyled 1 "a stylesheet with the scrollbar styling stripped out" $'body {\n  color: red;\n}\n'
   case_css commented-styling 1 "the styling present only inside a comment" "/* $compliant */"$'\nbody {\n  color: red;\n}\n'
 
