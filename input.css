@@ -343,16 +343,6 @@
   initial-value: 1;
 }
 
-/* Reserve the track on vertical scroll containers so gaining or losing a scrollbar shifts nothing.
-   Horizontal-only wrappers have nothing to reserve on the inline edge. */
-html,
-[class*="overflow-auto"],
-[class*="overflow-y-auto"],
-[class*="overflow-scroll"],
-[class*="overflow-y-scroll"] {
-  scrollbar-gutter: stable;
-}
-
 /* Hidden at rest only once the script tags <html>, so a page without it fails visible. `transition-*`
    utilities outrank this layer; reduced motion drops the glide, not the hold. */
 @layer base {
