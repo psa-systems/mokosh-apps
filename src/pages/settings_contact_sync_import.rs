@@ -161,38 +161,46 @@ fn plural(n: u32, one: &str, many: &str) -> String {
 }
 
 /// The sentence the review step states before anything is written.
+///
+/// PMS-1438: it states only what WILL happen. An outcome with a count of zero
+/// is left out rather than read aloud, because "link 0 contacts already in
+/// Mokosh" is a clause the reader has to parse to discover that nothing is
+/// happening, and a selection could produce two of them in one sentence. The
+/// counted noun appears once, in the opening clause, rather than on every
+/// outcome; and the review queue is named without explaining itself, because
+/// the bullet under this sentence already says what it is for.
 pub fn summary(totals: &Totals) -> String {
     if totals.contacts == 0 {
         return "No contacts carry the chosen labels, so this import would change nothing."
             .to_string();
     }
-    let mut parts = vec![
-        format!(
-            "create {}",
-            plural(totals.create, "new contact", "new contacts")
-        ),
-        format!(
-            "link {} already in Mokosh",
-            plural(totals.link, "contact", "contacts")
-        ),
-        format!(
-            "put {} in the review queue for a person to decide",
-            plural(totals.review, "contact", "contacts")
-        ),
-    ];
-    if totals.imported > 0 {
-        parts.push(format!(
-            "update {} imported before",
-            plural(totals.imported, "contact", "contacts")
-        ));
+    let mut parts = Vec::new();
+    if totals.create > 0 {
+        parts.push(format!("create {} new", totals.create));
     }
-    let last = parts.pop().unwrap_or_default();
-    let mut sentence = format!(
-        "Importing {} will {} and {}.",
-        plural(totals.contacts, "contact", "contacts"),
-        parts.join(", "),
-        last
-    );
+    if totals.link > 0 {
+        parts.push(format!("link {} already in Mokosh", totals.link));
+    }
+    if totals.review > 0 {
+        parts.push(format!("send {} to the review queue", totals.review));
+    }
+    if totals.imported > 0 {
+        parts.push(format!("update {} already imported", totals.imported));
+    }
+    let counted = plural(totals.contacts, "contact", "contacts");
+    // Every outcome zero with contacts to show means the whole selection is
+    // excluded, which the sentence below explains. Saying so plainly beats the
+    // empty "will ." an unguarded join would produce.
+    let mut sentence = if parts.is_empty() {
+        format!("Importing {counted} would change nothing.")
+    } else {
+        let last = parts.pop().unwrap_or_default();
+        if parts.is_empty() {
+            format!("Importing {counted} will {last}.")
+        } else {
+            format!("Importing {counted} will {} and {last}.", parts.join(", "))
+        }
+    };
     if totals.excluded > 0 {
         sentence.push_str(&format!(
             " {} unlinked, removed on request or skipped by a reviewer {} left out.",
@@ -504,9 +512,13 @@ fn GoogleContactsImportBody() -> Element {
                                 }
                             }
                             ul { class: "list-disc space-y-1 pl-5 text-sm text-muted",
-                                li { "No contact is merged on a name alone. Anything short of an exact email match waits in the review queue." }
-                                li { "Company names are kept as text; a matching company is suggested, never linked for you." }
-                                li { "The import runs on the server. You can leave this page; progress shows on the Google Contacts card." }
+                                // PMS-1438: shorter, and each still carries the
+                                // guarantee it exists for: nothing merges on a
+                                // name, a company is suggested and never linked,
+                                // and closing the page does not stop the import.
+                                li { "Only an exact email match links a contact. Everything else waits in the review queue." }
+                                li { "Company names are kept as text; a match is suggested, never linked for you." }
+                                li { "The import runs on the server, so you can leave this page. Progress shows on the Google Contacts card." }
                             }
                             div { class: "flex flex-wrap gap-3 pt-2",
                                 Button {
@@ -533,17 +545,31 @@ fn GoogleContactsImportBody() -> Element {
 }
 
 /// The per-label figures under a checkbox.
+///
+/// PMS-1438: zeros are left out here for the same reason they are left out of
+/// [`summary`]. These figures exist to be compared across labels at a glance,
+/// and `0 new, 0 to link, 0 to review, 1 already imported` makes the reader
+/// find the one number that is not zero.
 pub fn label_help(counts: &Totals) -> String {
     if counts.contacts == 0 {
         return "Nobody in the account carries this label.".to_string();
     }
-    let mut parts = vec![
-        format!("{} new", counts.create),
-        format!("{} to link", counts.link),
-        format!("{} to review", counts.review),
-    ];
+    let mut parts = Vec::new();
+    if counts.create > 0 {
+        parts.push(format!("{} new", counts.create));
+    }
+    if counts.link > 0 {
+        parts.push(format!("{} to link", counts.link));
+    }
+    if counts.review > 0 {
+        parts.push(format!("{} to review", counts.review));
+    }
     if counts.imported > 0 {
         parts.push(format!("{} already imported", counts.imported));
+    }
+    if parts.is_empty() {
+        // Carried by the label, and every one of them excluded.
+        return "Nothing here would be imported.".to_string();
     }
     parts.join(", ")
 }
@@ -620,27 +646,72 @@ mod tests {
             .find(|r| r.id == "contactGroups/clients")
             .unwrap();
         assert_eq!(label_help(&clients.counts), "1 new, 1 to link, 1 to review");
+        // PMS-1438: the three zeros this label used to read out are gone, so
+        // the one figure that is not zero is the whole line.
         let zeta = rows.iter().find(|r| r.id == "contactGroups/zeta").unwrap();
+        assert_eq!(label_help(&zeta.counts), "1 already imported");
+    }
+
+    /// PMS-1438: a label whose every record is excluded says so, rather than
+    /// rendering an empty line where four figures used to be.
+    #[test]
+    fn a_label_with_nothing_to_import_says_so() {
+        let excluded = Totals {
+            contacts: 3,
+            excluded: 3,
+            ..Totals::default()
+        };
+        assert_eq!(label_help(&excluded), "Nothing here would be imported.");
         assert_eq!(
-            label_help(&zeta.counts),
-            "0 new, 0 to link, 0 to review, 1 already imported"
+            label_help(&Totals::default()),
+            "Nobody in the account carries this label."
         );
     }
 
+    /// PMS-1438: the sentence states only what will happen.
+    ///
+    /// The three cases that matter are the long one (every outcome non-zero,
+    /// which has to stay readable), the ordinary one (the shape the screenshot
+    /// on that issue carries, where one outcome is zero), and the single
+    /// outcome, which must not end up with a dangling "and".
     #[test]
-    fn the_summary_states_create_link_and_review() {
-        let totals = Totals {
-            contacts: 40,
+    fn the_summary_states_only_what_will_happen() {
+        let every = Totals {
+            contacts: 45,
             create: 30,
             link: 8,
             review: 2,
+            imported: 5,
+            excluded: 0,
+        };
+        assert_eq!(
+            summary(&every),
+            "Importing 45 contacts will create 30 new, link 8 already in Mokosh, \
+             send 2 to the review queue and update 5 already imported."
+        );
+
+        // The reported case: nothing to link, and the sentence does not say so.
+        let reported = Totals {
+            contacts: 6,
+            create: 5,
+            link: 0,
+            review: 1,
             imported: 0,
             excluded: 0,
         };
         assert_eq!(
-            summary(&totals),
-            "Importing 40 contacts will create 30 new contacts, link 8 contacts already in Mokosh and put 2 contacts in the review queue for a person to decide."
+            summary(&reported),
+            "Importing 6 contacts will create 5 new and send 1 to the review queue."
         );
+        assert!(!summary(&reported).contains(" 0 "), "a zero was read out");
+
+        let only_new = Totals {
+            contacts: 1,
+            create: 1,
+            ..Totals::default()
+        };
+        assert_eq!(summary(&only_new), "Importing 1 contact will create 1 new.");
+
         let one = Totals {
             contacts: 2,
             create: 1,
@@ -650,8 +721,10 @@ mod tests {
             excluded: 1,
         };
         let s = summary(&one);
-        assert!(s.contains("create 1 new contact,"), "{s}");
-        assert!(s.contains("and update 1 contact imported before."), "{s}");
+        assert!(
+            s.contains("create 1 new and update 1 already imported."),
+            "{s}"
+        );
         assert!(
             s.ends_with(
                 "1 contact unlinked, removed on request or skipped by a reviewer is left out."
@@ -659,6 +732,23 @@ mod tests {
             "{s}"
         );
         assert!(summary(&Totals::default()).contains("change nothing"));
+    }
+
+    /// PMS-1438: a selection whose every record is excluded still says something
+    /// true. Before the zeros were dropped the three fixed clauses covered this;
+    /// now nothing would be left to join.
+    #[test]
+    fn a_selection_with_every_record_excluded_still_reads() {
+        let all_excluded = Totals {
+            contacts: 3,
+            excluded: 3,
+            ..Totals::default()
+        };
+        assert_eq!(
+            summary(&all_excluded),
+            "Importing 3 contacts would change nothing. 3 contacts unlinked, \
+             removed on request or skipped by a reviewer are left out."
+        );
     }
 
     /// The flow is admin only, sends typed bodies, and starts the import by

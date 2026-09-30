@@ -666,8 +666,13 @@ fn VcardImportBody() -> Element {
                                 }
                             }
                             ul { class: "list-disc space-y-1 pl-5 text-sm text-muted",
-                                li { "No contact is merged on a name alone. Anything short of an exact email match waits in the review queue." }
-                                li { "Company names are kept as text; a matching company is suggested, never linked for you." }
+                                // PMS-1438: the same two guarantees the Google
+                                // import states, in the same words. They share
+                                // `summary` and `label_help` already, so two
+                                // wordings for one guarantee is drift waiting to
+                                // happen. The third is this page's own.
+                                li { "Only an exact email match links a contact. Everything else waits in the review queue." }
+                                li { "Company names are kept as text; a match is suggested, never linked for you." }
                                 li { "A contact that is not in this file is left alone. A file is never read as the whole address book." }
                             }
                             div { class: "flex flex-wrap gap-3 pt-2",
@@ -795,7 +800,9 @@ mod tests {
         let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, vec!["Client", "VIP", UNGROUPED]);
         assert!(rows.iter().all(|r| !r.everything));
-        assert_eq!(label_help(&rows[0].counts), "1 new, 1 to link, 0 to review");
+        // PMS-1438: the figures state only what would happen, so the category
+        // with nothing to review no longer says "0 to review".
+        assert_eq!(label_help(&rows[0].counts), "1 new, 1 to link");
     }
 
     #[test]
