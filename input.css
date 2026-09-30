@@ -342,11 +342,19 @@
     color: var(--subtle);
   }
 
-  /* Checkbox and radio styling */
+  /* Checkbox and radio styling. A radio stays round (MAPPS-966): a shared
+     `rounded` made every radio a small square that read as a checkbox. */
   input[type="checkbox"],
   input[type="radio"] {
-    @apply h-4 w-4 rounded border-line bg-surface text-accent
-           focus:ring-accent;
+    @apply h-4 w-4 border-line bg-surface text-accent focus:ring-accent;
+  }
+
+  input[type="checkbox"] {
+    @apply rounded;
+  }
+
+  input[type="radio"] {
+    @apply rounded-full;
   }
 
   /* Descender safety net for headings.

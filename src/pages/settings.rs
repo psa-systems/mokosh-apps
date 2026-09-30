@@ -128,27 +128,28 @@ pub fn AppearanceSettingsPage() -> Element {
                 SettingsBreadcrumb { current: Route::SettingsAppearance {} }
             },
         }
-        Card {
-            div { class: "p-6",
+        // MAPPS-966: two cards, gapped; `Card` already pads each body.
+        div { class: "space-y-6",
+            Card {
                 ThemePicker {}
             }
-        }
-        Card { title: "Reading",
-            div { class: "p-6 max-w-xl",
-                Select {
-                    name: "kb_density",
-                    label: "Knowledge base article density",
-                    help: "Comfortable gives an article room to breathe; Compact fits more of a long procedure on one screen.",
-                    options: vec![
-                        SelectOption { value: "comfortable".to_string(), label: "Comfortable".to_string(), disabled: false },
-                        SelectOption { value: "compact".to_string(), label: "Compact".to_string(), disabled: false },
-                    ],
-                    value: if comfortable() { "comfortable".to_string() } else { "compact".to_string() },
-                    onchange: move |e: FormEvent| {
-                        let next = e.value() != "compact";
-                        comfortable.set(next);
-                        crate::utils::prefs::set_bool("kb_density", next);
-                    },
+            Card { title: "Reading",
+                div { class: "max-w-xl",
+                    Select {
+                        name: "kb_density",
+                        label: "Knowledge base article density",
+                        help: "Comfortable gives an article room to breathe; Compact fits more of a long procedure on one screen.",
+                        options: vec![
+                            SelectOption { value: "comfortable".to_string(), label: "Comfortable".to_string(), disabled: false },
+                            SelectOption { value: "compact".to_string(), label: "Compact".to_string(), disabled: false },
+                        ],
+                        value: if comfortable() { "comfortable".to_string() } else { "compact".to_string() },
+                        onchange: move |e: FormEvent| {
+                            let next = e.value() != "compact";
+                            comfortable.set(next);
+                            crate::utils::prefs::set_bool("kb_density", next);
+                        },
+                    }
                 }
             }
         }
@@ -177,7 +178,7 @@ pub fn TvViewSettingsPage() -> Element {
             },
         }
         Card {
-            div { class: "p-6 space-y-6 max-w-xl",
+            div { class: "space-y-6 max-w-xl",
                 Checkbox {
                     name: "tv_view_enabled",
                     label: "Enable TV view",
@@ -574,6 +575,15 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         advanced: false,
         visibility: SurfaceVisibility::StaffAdmin,
     },
+    // PMS-1409: beside Google Contacts and not advanced, for the same reason.
+    SettingsSurface {
+        route: Route::SettingsICloudContacts {},
+        title: "iCloud Contacts",
+        description: "Import contacts from an iCloud account over CardDAV, with an Apple ID and an app-specific password. Read-only: nothing is written back.",
+        group: SettingsGroupKey::Integrations,
+        advanced: false,
+        visibility: SurfaceVisibility::StaffAdmin,
+    },
     // MAPPS-915: a .vcf file through the same import (server PMS-1290).
     // Beside Google Contacts and not advanced, for the same reason.
     SettingsSurface {
@@ -620,11 +630,17 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
     // MAPPS-622: staff-side tenant branding editor. Sets the MSP
     // defaults every Company portal inherits; per-Company overrides
     // live on the Company detail page.
+    //
+    // PMS-1338: filed under the organisation group rather than
+    // Personalization. Branding is what a client sees of the
+    // organisation, and it sits beside Organization here because the
+    // support contact it used to edit IS that record - the two were one
+    // group apart while writing the same three keys.
     SettingsSurface {
         route: Route::SettingsBranding {},
         title: "Portal Branding",
-        description: "MSP-wide defaults every client portal inherits: logo, favicon, background, colors, display name, support contact.",
-        group: SettingsGroupKey::Personalization,
+        description: "MSP-wide defaults every client portal inherits: logo, favicon, background, colors, display name. The support contact comes from Organization.",
+        group: SettingsGroupKey::Data,
         advanced: false,
         visibility: SurfaceVisibility::StaffAdmin,
     },
@@ -647,7 +663,11 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
     SettingsSurface {
         route: Route::SettingsOrganization {},
         title: "Organization",
-        description: "Your organization's name, as clients see it in email you send them.",
+        // PMS-1338: the description named only the name, though this page has
+        // written the support phone, email and contact name into
+        // `tenants.branding` since PMS-896. Now that it is the ONLY editor of
+        // them, saying so is how an operator finds them.
+        description: "Your organization's name and contact details, as clients see them in your portal, your invoices and the email you send them.",
         group: SettingsGroupKey::Data,
         advanced: false,
         visibility: SurfaceVisibility::Always,
@@ -970,7 +990,7 @@ fn SettingsGroupLanding(group: SettingsGroupKey) -> Element {
         }
         if visible.is_empty() {
             Card {
-                div { class: "p-6 text-sm text-muted",
+                div { class: "text-sm text-muted",
                     "These settings are marked advanced. Turn on \"Show advanced settings\" on the "
                     Link {
                         to: Route::SettingsHome {},
@@ -1783,321 +1803,324 @@ fn OrganizationSettingsBody() -> Element {
             LoadError { what: "your organization" }
         }
 
-        // MAPPS-885: a deployment-wide value (PMS-789), not a per-tenant one,
-        // so it gets its own Card and its own Save rather than joining the
-        // organisation form below.
-        if app_name_owned {
-        Card {
-            div { class: "space-y-4 max-w-xl",
-                h2 { class: "text-lg font-semibold text-content", "App name" }
-                if !app_name_error().is_empty() {
-                    ErrorBanner { "{app_name_error()}" }
-                }
-                Input {
-                    name: "app_name",
-                    label: "App name",
-                    value: app_name_value(),
-                    maxlength: MAX_APP_NAME_LEN,
-                    disabled: app_name_saving(),
-                    help: format!(
-                        "Shown in email this deployment sends and on its error pages, for every tenant. Left blank, it renders \"{}\".",
-                        if app_name_effective().is_empty() { "Mokosh".to_string() } else { app_name_effective() },
-                    ),
-                    oninput: move |e: FormEvent| {
-                        app_name_error.set(String::new());
-                        app_name_value.set(e.value());
-                    },
-                }
-                div { class: "flex justify-end",
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        loading: app_name_saving(),
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
-                        onclick: handle_save_app_name,
-                        "Save Changes"
+        // MAPPS-966: the app-name and organization cards are gapped, not stacked.
+        div { class: "space-y-6",
+            // MAPPS-885: a deployment-wide value (PMS-789), not a per-tenant one,
+            // so it gets its own Card and its own Save rather than joining the
+            // organisation form below.
+            if app_name_owned {
+            Card {
+                div { class: "space-y-4 max-w-xl",
+                    h2 { class: "text-lg font-semibold text-content", "App name" }
+                    if !app_name_error().is_empty() {
+                        ErrorBanner { "{app_name_error()}" }
+                    }
+                    Input {
+                        name: "app_name",
+                        label: "App name",
+                        value: app_name_value(),
+                        maxlength: MAX_APP_NAME_LEN,
+                        disabled: app_name_saving(),
+                        help: format!(
+                            "Shown in email this deployment sends and on its error pages, for every tenant. Left blank, it renders \"{}\".",
+                            if app_name_effective().is_empty() { "Mokosh".to_string() } else { app_name_effective() },
+                        ),
+                        oninput: move |e: FormEvent| {
+                            app_name_error.set(String::new());
+                            app_name_value.set(e.value());
+                        },
+                    }
+                    div { class: "flex justify-end",
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            loading: app_name_saving(),
+                            disabled: !can_mutate,
+                            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
+                            onclick: handle_save_app_name,
+                            "Save Changes"
+                        }
                     }
                 }
             }
-        }
-        }
+            }
 
-        Card {
-            div { class: "space-y-4 max-w-xl",
-                if !error().is_empty() {
-                    ErrorBanner { "{error()}" }
-                }
-
-                Input {
-                    name: "name",
-                    label: "Organization name",
-                    value: name(),
-                    required: true,
-                    disabled: is_loading || saving(),
-                    error: name_error(),
-                    help: "Used in email your clients receive: the subject of a request form you send them, and invitations to join. Not an internal label.".to_string(),
-                    oninput: move |e: FormEvent| {
-                        name_error.set(String::new());
-                        name.set(e.value());
-                    },
-                }
-
-                Input {
-                    name: "contact_name",
-                    label: "Contact name",
-                    value: contact_name(),
-                    disabled: is_loading || saving(),
-                    help: "Optional. Who a client should ask for. Shown on the request forms you send and in the email that carries them, unless a form names its own contact.".to_string(),
-                    oninput: move |e: FormEvent| contact_name.set(e.value()),
-                }
-
-                Input {
-                    name: "contact_phone",
-                    label: "Contact phone",
-                    value: contact_phone(),
-                    required: true,
-                    disabled: is_loading || saving(),
-                    error: phone_error(),
-                    help: "Shown next to the contact name, so a client can ask before they answer.".to_string(),
-                    oninput: move |e: FormEvent| {
-                        phone_error.set(String::new());
-                        contact_phone.set(e.value());
-                    },
-                }
-
-                Input {
-                    name: "contact_email",
-                    label: "Contact email",
-                    r#type: "email".to_string(),
-                    value: contact_email(),
-                    required: true,
-                    disabled: is_loading || saving(),
-                    error: email_error(),
-                    help: "Offered alongside the phone number, and usually the one a client reaches for first.".to_string(),
-                    oninput: move |e: FormEvent| {
-                        email_error.set(String::new());
-                        contact_email.set(e.value());
-                    },
-                }
-
-                // PMS-911: what an invoice has to carry beyond a trading name.
-                // Written through the same branding merge as the fields above,
-                // so an emptied one clears rather than storing "".
-                Input {
-                    name: "legal_name",
-                    label: "Legal name",
-                    value: legal_name(),
-                    maxlength: MAX_LEGAL_NAME,
-                    disabled: is_loading || saving(),
-                    help: "Optional. The registered entity your invoices are issued by, if that is not the name above. Left empty, an invoice uses the organization name.".to_string(),
-                    oninput: move |e: FormEvent| legal_name.set(e.value()),
-                }
-
-                Input {
-                    name: "tax_id",
-                    label: "Tax identifier",
-                    value: tax_id(),
-                    maxlength: MAX_TAX_ID,
-                    disabled: is_loading || saving(),
-                    help: "Optional. The VAT number, ABN, EIN or registration number your invoices must show. Printed as you enter it.".to_string(),
-                    oninput: move |e: FormEvent| tax_id.set(e.value()),
-                }
-
-                Textarea {
-                    name: "postal_address",
-                    label: "Postal address",
-                    value: postal_address(),
-                    rows: MAX_POSTAL_ADDRESS_LINES as u32,
-                    maxlength: MAX_POSTAL_ADDRESS,
-                    disabled: is_loading || saving(),
-                    error: postal_address_error(),
-                    help: "Optional. The address your invoices are issued from, one line each, up to 6 lines.".to_string(),
-                    oninput: move |e: FormEvent| {
-                        postal_address_error.set(String::new());
-                        postal_address.set(e.value());
-                    },
-                }
-
-                Input {
-                    name: "website",
-                    label: "Website",
-                    r#type: "url".to_string(),
-                    value: website(),
-                    maxlength: MAX_WEBSITE,
-                    disabled: is_loading || saving(),
-                    error: website_error(),
-                    help: "Optional. Printed on your invoices. Needs the scheme, like https://acme.example.".to_string(),
-                    oninput: move |e: FormEvent| {
-                        website_error.set(String::new());
-                        website.set(e.value());
-                    },
-                }
-
-                Input {
-                    name: "primary_color",
-                    label: "Brand color",
-                    value: primary_color(),
-                    maxlength: MAX_PRIMARY_COLOR,
-                    disabled: is_loading || saving(),
-                    error: primary_color_error(),
-                    help: "Optional. A hex colour like #0066cc, used for the header band on the Modern invoice template below.".to_string(),
-                    oninput: move |e: FormEvent| {
-                        primary_color_error.set(String::new());
-                        primary_color.set(e.value());
-                    },
-                }
-
-                // PMS-1006: which of the three document templates this
-                // tenant's invoices, credit notes and statements render
-                // with. No live preview here: there is no invoice in scope
-                // on this page, and a made-up sample would misrepresent the
-                // MSP's own data. The real preview is on a draft invoice
-                // itself (`src/pages/billing.rs`).
-                fieldset { class: "space-y-3",
-                    legend { class: "block text-sm font-medium text-content",
-                        "Invoice template"
+            Card {
+                div { class: "space-y-4 max-w-xl",
+                    if !error().is_empty() {
+                        ErrorBanner { "{error()}" }
                     }
-                    for (key , label , description) in INVOICE_TEMPLATES {
-                        label {
-                            key: "{key}",
-                            class: "flex items-start gap-2 text-sm text-content",
-                            input {
-                                r#type: "radio",
-                                name: "invoice_template",
-                                value: "{key}",
-                                checked: invoice_template() == key,
-                                disabled: is_loading || saving(),
-                                onchange: move |_| invoice_template.set(key.to_string()),
-                            }
-                            div {
-                                span { class: "font-medium", "{label}" }
-                                p { class: "text-muted", "{description}" }
+
+                    Input {
+                        name: "name",
+                        label: "Organization name",
+                        value: name(),
+                        required: true,
+                        disabled: is_loading || saving(),
+                        error: name_error(),
+                        help: "Used in email your clients receive: the subject of a request form you send them, and invitations to join. Not an internal label.".to_string(),
+                        oninput: move |e: FormEvent| {
+                            name_error.set(String::new());
+                            name.set(e.value());
+                        },
+                    }
+
+                    Input {
+                        name: "contact_name",
+                        label: "Contact name",
+                        value: contact_name(),
+                        disabled: is_loading || saving(),
+                        help: "Optional. Who a client should ask for. Shown on the request forms you send and in the email that carries them, unless a form names its own contact.".to_string(),
+                        oninput: move |e: FormEvent| contact_name.set(e.value()),
+                    }
+
+                    Input {
+                        name: "contact_phone",
+                        label: "Contact phone",
+                        value: contact_phone(),
+                        required: true,
+                        disabled: is_loading || saving(),
+                        error: phone_error(),
+                        help: "Shown next to the contact name, so a client can ask before they answer.".to_string(),
+                        oninput: move |e: FormEvent| {
+                            phone_error.set(String::new());
+                            contact_phone.set(e.value());
+                        },
+                    }
+
+                    Input {
+                        name: "contact_email",
+                        label: "Contact email",
+                        r#type: "email".to_string(),
+                        value: contact_email(),
+                        required: true,
+                        disabled: is_loading || saving(),
+                        error: email_error(),
+                        help: "Offered alongside the phone number, and usually the one a client reaches for first.".to_string(),
+                        oninput: move |e: FormEvent| {
+                            email_error.set(String::new());
+                            contact_email.set(e.value());
+                        },
+                    }
+
+                    // PMS-911: what an invoice has to carry beyond a trading name.
+                    // Written through the same branding merge as the fields above,
+                    // so an emptied one clears rather than storing "".
+                    Input {
+                        name: "legal_name",
+                        label: "Legal name",
+                        value: legal_name(),
+                        maxlength: MAX_LEGAL_NAME,
+                        disabled: is_loading || saving(),
+                        help: "Optional. The registered entity your invoices are issued by, if that is not the name above. Left empty, an invoice uses the organization name.".to_string(),
+                        oninput: move |e: FormEvent| legal_name.set(e.value()),
+                    }
+
+                    Input {
+                        name: "tax_id",
+                        label: "Tax identifier",
+                        value: tax_id(),
+                        maxlength: MAX_TAX_ID,
+                        disabled: is_loading || saving(),
+                        help: "Optional. The VAT number, ABN, EIN or registration number your invoices must show. Printed as you enter it.".to_string(),
+                        oninput: move |e: FormEvent| tax_id.set(e.value()),
+                    }
+
+                    Textarea {
+                        name: "postal_address",
+                        label: "Postal address",
+                        value: postal_address(),
+                        rows: MAX_POSTAL_ADDRESS_LINES as u32,
+                        maxlength: MAX_POSTAL_ADDRESS,
+                        disabled: is_loading || saving(),
+                        error: postal_address_error(),
+                        help: "Optional. The address your invoices are issued from, one line each, up to 6 lines.".to_string(),
+                        oninput: move |e: FormEvent| {
+                            postal_address_error.set(String::new());
+                            postal_address.set(e.value());
+                        },
+                    }
+
+                    Input {
+                        name: "website",
+                        label: "Website",
+                        r#type: "url".to_string(),
+                        value: website(),
+                        maxlength: MAX_WEBSITE,
+                        disabled: is_loading || saving(),
+                        error: website_error(),
+                        help: "Optional. Printed on your invoices. Needs the scheme, like https://acme.example.".to_string(),
+                        oninput: move |e: FormEvent| {
+                            website_error.set(String::new());
+                            website.set(e.value());
+                        },
+                    }
+
+                    Input {
+                        name: "primary_color",
+                        label: "Brand color",
+                        value: primary_color(),
+                        maxlength: MAX_PRIMARY_COLOR,
+                        disabled: is_loading || saving(),
+                        error: primary_color_error(),
+                        help: "Optional. A hex colour like #0066cc, used for the header band on the Modern invoice template below.".to_string(),
+                        oninput: move |e: FormEvent| {
+                            primary_color_error.set(String::new());
+                            primary_color.set(e.value());
+                        },
+                    }
+
+                    // PMS-1006: which of the three document templates this
+                    // tenant's invoices, credit notes and statements render
+                    // with. No live preview here: there is no invoice in scope
+                    // on this page, and a made-up sample would misrepresent the
+                    // MSP's own data. The real preview is on a draft invoice
+                    // itself (`src/pages/billing.rs`).
+                    fieldset { class: "space-y-3",
+                        legend { class: "block text-sm font-medium text-content",
+                            "Invoice template"
+                        }
+                        for (key , label , description) in INVOICE_TEMPLATES {
+                            label {
+                                key: "{key}",
+                                class: "flex items-start gap-2 text-sm text-content",
+                                input {
+                                    r#type: "radio",
+                                    name: "invoice_template",
+                                    value: "{key}",
+                                    checked: invoice_template() == key,
+                                    disabled: is_loading || saving(),
+                                    onchange: move |_| invoice_template.set(key.to_string()),
+                                }
+                                div {
+                                    span { class: "font-medium", "{label}" }
+                                    p { class: "text-muted", "{description}" }
+                                }
                             }
                         }
                     }
-                }
 
-                // MAPPS-429: the logo uploads on selection rather than on Save.
-                // It is a separate request either way (multipart, not JSON), and
-                // a file input whose effect waits for a Save button is one people
-                // forget to press.
-                FileField {
-                    name: "org_logo",
-                    label: "Logo",
-                    accept: "image/png,image/jpeg,image/webp,image/gif",
-                    disabled: logo_busy() || !can_mutate,
-                    // PMS-758: an upload starts on selection and takes as long as
-                    // it takes; without this the page said nothing at all.
-                    status: if logo_busy() { "Uploading…" } else { "" },
-                    error: logo_error(),
-                    help: "Optional. PNG, JPEG, WebP or GIF, up to 1 MB. Shown to clients at the top of the request forms you send and the email that carries them.",
-                    preview: rsx! {
-                        if let Some(src) = logo_url.read().clone() {
-                            div { class: "flex items-center gap-3",
-                                if !logo_broken() {
-                                    img {
-                                        src: "{crate::hooks::fetch::api::api_origin()}{src}",
-                                        alt: "Current organization logo",
-                                        class: "max-h-14 max-w-56 rounded border border-line bg-surface p-1",
-                                        onerror: move |_| logo_broken.set(true),
+                    // MAPPS-429: the logo uploads on selection rather than on Save.
+                    // It is a separate request either way (multipart, not JSON), and
+                    // a file input whose effect waits for a Save button is one people
+                    // forget to press.
+                    FileField {
+                        name: "org_logo",
+                        label: "Logo",
+                        accept: "image/png,image/jpeg,image/webp,image/gif",
+                        disabled: logo_busy() || !can_mutate,
+                        // PMS-758: an upload starts on selection and takes as long as
+                        // it takes; without this the page said nothing at all.
+                        status: if logo_busy() { "Uploading…" } else { "" },
+                        error: logo_error(),
+                        help: "Optional. PNG, JPEG, WebP or GIF, up to 1 MB. Shown to clients at the top of the request forms you send and the email that carries them.",
+                        preview: rsx! {
+                            if let Some(src) = logo_url.read().clone() {
+                                div { class: "flex items-center gap-3",
+                                    if !logo_broken() {
+                                        img {
+                                            src: "{crate::hooks::fetch::api::api_origin()}{src}",
+                                            alt: "Current organization logo",
+                                            class: "max-h-14 max-w-56 rounded border border-line bg-surface p-1",
+                                            onerror: move |_| logo_broken.set(true),
+                                        }
+                                    } else {
+                                        span { class: "text-sm text-muted",
+                                            "A logo is set but could not be loaded."
+                                        }
                                     }
-                                } else {
-                                    span { class: "text-sm text-muted",
-                                        "A logo is set but could not be loaded."
+                                    Button {
+                                        // MAPPS-436: Remove is destructive, so it takes the
+                                        // Danger variant per docs/button-variants.md.
+                                        variant: ButtonVariant::Danger,
+                                        disabled: logo_busy() || !can_mutate,
+                                        onclick: move |_| confirming_logo_remove.set(true),
+                                        "Remove"
                                     }
-                                }
-                                Button {
-                                    // MAPPS-436: Remove is destructive, so it takes the
-                                    // Danger variant per docs/button-variants.md.
-                                    variant: ButtonVariant::Danger,
-                                    disabled: logo_busy() || !can_mutate,
-                                    onclick: move |_| confirming_logo_remove.set(true),
-                                    "Remove"
                                 }
                             }
-                        }
-                        crate::components::ConfirmDialog {
-                            open: confirming_logo_remove(),
-                            title: "Remove logo".to_string(),
-                            message: "Remove the organization logo?".to_string(),
-                            confirm_text: "Remove".to_string(),
-                            cancel_text: "Cancel".to_string(),
-                            destructive: true,
-                            loading: logo_busy(),
-                            onconfirm: move |_| {
-                                if logo_busy() {
-                                    return;
-                                }
-                                logo_busy.set(true);
+                            crate::components::ConfirmDialog {
+                                open: confirming_logo_remove(),
+                                title: "Remove logo".to_string(),
+                                message: "Remove the organization logo?".to_string(),
+                                confirm_text: "Remove".to_string(),
+                                cancel_text: "Cancel".to_string(),
+                                destructive: true,
+                                loading: logo_busy(),
+                                onconfirm: move |_| {
+                                    if logo_busy() {
+                                        return;
+                                    }
+                                    logo_busy.set(true);
+                                    logo_error.set(String::new());
+                                    spawn(async move {
+                                        #[cfg(feature = "app")]
+                                        {
+                                            match crate::hooks::fetch::api::delete_authed(TENANT_LOGO_PATH).await {
+                                                Ok(()) => {
+                                                    logo_url.set(None);
+                                                    logo_broken.set(false);
+                                                }
+                                                Err(e) => logo_error.set(format!("Could not remove the logo: {e}")),
+                                            }
+                                        }
+                                        logo_busy.set(false);
+                                        confirming_logo_remove.set(false);
+                                    });
+                                },
+                                oncancel: move |_| {
+                                    if !logo_busy() {
+                                        confirming_logo_remove.set(false);
+                                    }
+                                },
+                            }
+                        },
+                        onchange: move |evt: FormEvent| {
                                 logo_error.set(String::new());
+                                let Some(file) = evt.files().into_iter().next() else {
+                                    return;
+                                };
+                                logo_busy.set(true);
                                 spawn(async move {
                                     #[cfg(feature = "app")]
                                     {
-                                        match crate::hooks::fetch::api::delete_authed(TENANT_LOGO_PATH).await {
-                                            Ok(()) => {
-                                                logo_url.set(None);
-                                                logo_broken.set(false);
+                                        let file_name = file.name();
+                                        let mime = file
+                                            .content_type()
+                                            .unwrap_or_else(|| "application/octet-stream".to_string());
+                                        match file.read_bytes().await {
+                                            Ok(bytes) => {
+                                                match crate::hooks::fetch::api::put_file_authed::<TenantView>(
+                                                    TENANT_LOGO_PATH,
+                                                    &file_name,
+                                                    &mime,
+                                                    &bytes,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(t) => {
+                                                        logo_broken.set(false);
+                                                        logo_url.set(t.branding.logo_url);
+                                                    }
+                                                    Err(e) => logo_error.set(e.user_message()),
+                                                }
                                             }
-                                            Err(e) => logo_error.set(format!("Could not remove the logo: {e}")),
+                                            Err(_) => logo_error.set("Could not read the selected file.".to_string()),
                                         }
                                     }
                                     logo_busy.set(false);
-                                    confirming_logo_remove.set(false);
                                 });
-                            },
-                            oncancel: move |_| {
-                                if !logo_busy() {
-                                    confirming_logo_remove.set(false);
-                                }
-                            },
-                        }
-                    },
-                    onchange: move |evt: FormEvent| {
-                            logo_error.set(String::new());
-                            let Some(file) = evt.files().into_iter().next() else {
-                                return;
-                            };
-                            logo_busy.set(true);
-                            spawn(async move {
-                                #[cfg(feature = "app")]
-                                {
-                                    let file_name = file.name();
-                                    let mime = file
-                                        .content_type()
-                                        .unwrap_or_else(|| "application/octet-stream".to_string());
-                                    match file.read_bytes().await {
-                                        Ok(bytes) => {
-                                            match crate::hooks::fetch::api::put_file_authed::<TenantView>(
-                                                TENANT_LOGO_PATH,
-                                                &file_name,
-                                                &mime,
-                                                &bytes,
-                                            )
-                                            .await
-                                            {
-                                                Ok(t) => {
-                                                    logo_broken.set(false);
-                                                    logo_url.set(t.branding.logo_url);
-                                                }
-                                                Err(e) => logo_error.set(e.user_message()),
-                                            }
-                                        }
-                                        Err(_) => logo_error.set("Could not read the selected file.".to_string()),
-                                    }
-                                }
-                                logo_busy.set(false);
-                            });
-                    },
-                }
+                        },
+                    }
 
-                div { class: "flex justify-end",
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        loading: saving(),
-                        disabled: is_loading || !can_mutate,
-                        title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
-                        onclick: handle_save,
-                        "Save Changes"
+                    div { class: "flex justify-end",
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            loading: saving(),
+                            disabled: is_loading || !can_mutate,
+                            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
+                            onclick: handle_save,
+                            "Save Changes"
+                        }
                     }
                 }
             }
@@ -2709,7 +2732,7 @@ fn StandardDueDateForm(initial: u32) -> Element {
 
     rsx! {
         Card {
-            div { class: "space-y-4 p-6",
+            div { class: "space-y-4",
                 if saved() {
                     div { class: "text-sm text-green-700 dark:text-green-300", "Scheduling settings saved." }
                 }
@@ -2991,7 +3014,7 @@ fn PaymentRemindersForm(initial: ReminderSettings) -> Element {
 
     rsx! {
         Card {
-            div { class: "space-y-4 p-6",
+            div { class: "space-y-4",
                 if saved() {
                     div { class: "text-sm text-green-700 dark:text-green-300", "Payment reminder settings saved." }
                 }
@@ -3209,7 +3232,7 @@ fn MaxHoursPerDayForm(initial: u32) -> Element {
 
     rsx! {
         Card {
-            div { class: "space-y-4 p-6",
+            div { class: "space-y-4",
                 if saved() {
                     div { class: "text-sm text-green-700 dark:text-green-300", "Time tracking settings saved." }
                 }
@@ -7906,7 +7929,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
                             class: if reachable {
                                 "mt-2 text-sm text-green-700 dark:text-green-300"
                             } else {
-                                "mt-2 text-sm text-red-700 dark:text-red-300"
+                                "mt-2 text-sm text-red-700 dark:text-red-400"
                             },
                             "{msg}"
                         }
@@ -8938,6 +8961,88 @@ async fn delete_lookup(id: &str, base: &str) -> Result<bool, String> {
 // `SettingFormModal` (the shared create/edit modal chrome) now lives in
 // `crate::components` so both these editors and the rate-card editor can
 // reuse it (MAPPS-160).
+
+#[cfg(test)]
+mod branding_placement_tests {
+    use super::{Route, SettingsGroupKey, SETTINGS_SURFACES};
+
+    /// PMS-1338: Portal Branding sits in the organisation group, beside
+    /// Organization itself.
+    ///
+    /// It was under Personalization while writing the same three contact keys
+    /// Organization writes, which is how one record came to have two editors a
+    /// group apart. Asserted as "the same group as Organization" rather than as
+    /// the literal key, so renaming the group does not silently separate them
+    /// again.
+    #[test]
+    fn portal_branding_lives_with_the_organization() {
+        let branding = SETTINGS_SURFACES
+            .iter()
+            .find(|s| s.route == Route::SettingsBranding {})
+            .expect("Portal Branding is a settings surface");
+        let organization = SETTINGS_SURFACES
+            .iter()
+            .find(|s| s.route == Route::SettingsOrganization {})
+            .expect("Organization is a settings surface");
+        assert_eq!(
+            branding.group, organization.group,
+            "Portal Branding and Organization must sit in one group"
+        );
+        assert_eq!(branding.group, SettingsGroupKey::Data);
+    }
+
+    /// The descriptions have to carry the decision, because the hub card is where
+    /// an operator looks for a field. Organization says it holds the contact
+    /// details; Portal Branding says the support contact is not its own.
+    #[test]
+    fn the_hub_says_which_screen_owns_the_contact_details() {
+        let branding = SETTINGS_SURFACES
+            .iter()
+            .find(|s| s.route == Route::SettingsBranding {})
+            .expect("Portal Branding is a settings surface");
+        let organization = SETTINGS_SURFACES
+            .iter()
+            .find(|s| s.route == Route::SettingsOrganization {})
+            .expect("Organization is a settings surface");
+        assert!(
+            organization.description.contains("contact details"),
+            "Organization's card does not mention the contact details it owns: {}",
+            organization.description
+        );
+        assert!(
+            branding.description.contains("from Organization"),
+            "Portal Branding's card does not say where the support contact comes from: {}",
+            branding.description
+        );
+        assert!(
+            !branding.description.contains("support contact,"),
+            "Portal Branding still advertises editing the support contact: {}",
+            branding.description
+        );
+    }
+
+    /// PMS-1338: the page has a way out. Every other settings leaf renders
+    /// `SettingsBreadcrumb`; this one did not, so the only exit was browser back.
+    #[test]
+    fn both_branding_pages_offer_a_way_back() {
+        let staff = include_str!("settings_branding.rs");
+        assert!(
+            staff.contains("SettingsBreadcrumb"),
+            "the staff branding page has no breadcrumb"
+        );
+        let contact = include_str!("contact_portal/portal_branding.rs");
+        assert!(
+            contact.contains("Back to Settings"),
+            "the contact branding page has no way back"
+        );
+        // Not the breadcrumb on the contact page: it walks the group landing,
+        // and `/settings/group/*` is staff-only.
+        assert!(
+            !contact.contains("SettingsBreadcrumb"),
+            "the contact page must not render a breadcrumb through a staff-only landing"
+        );
+    }
+}
 
 #[cfg(test)]
 mod reminder_schedule_tests {

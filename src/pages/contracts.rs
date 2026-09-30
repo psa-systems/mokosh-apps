@@ -552,8 +552,39 @@ pub fn ContractEditPage(props: ContractEditPageProps) -> Element {
             crate::components::ContentUnavailable { title: "Edit Contract".to_string() }
         };
     }
+    // PMS-1339: the trail this screen never had. Same shape as every other edit
+    // screen fixed under this issue: list, the record itself, then Edit.
+    let record_label = match &*snap {
+        Some(Some(contract)) => contract
+            .contract_number
+            .clone()
+            .filter(|number| !number.trim().is_empty())
+            .unwrap_or_else(|| "Contract".to_string()),
+        _ => "Contract".to_string(),
+    };
+    let crumbs = vec![
+        crate::components::BreadcrumbItem {
+            label: "Contracts".to_string(),
+            route: Some(Route::ContractList {}),
+        },
+        crate::components::BreadcrumbItem {
+            label: record_label,
+            route: Some(Route::ContractDetail {
+                id: props.id.clone(),
+            }),
+        },
+        crate::components::BreadcrumbItem {
+            label: "Edit".to_string(),
+            route: None,
+        },
+    ];
     rsx! {
-        PageHeader { title: "Edit Contract" }
+        PageHeader {
+            title: "Edit Contract",
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs { items: crumbs }
+            },
+        }
         match &*snap {
             None => rsx! {
                 // PMS-353
@@ -1444,7 +1475,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                             }
                         }
                         if items.read().is_empty() {
-                            p { class: "text-sm text-muted", "No line items. Click Add Item to include one." }
+                            p { class: "text-sm text-muted", "No line items. Click Add line to include one." }
                         } else {
                             div { class: "space-y-4",
                                 for (idx, item) in items.read().clone().into_iter().enumerate() {
@@ -1899,7 +1930,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
 fn ContractItemsCard(
     items_resource: Resource<Option<Vec<ContractItemResponse>>>,
     editing_item: Signal<Option<ContractItemFormState>>,
-    // MAPPS-357: false while the server is unreachable, so the Add Item
+    // MAPPS-357: false while the server is unreachable, so the Add line
     // affordance (which opens a POST/PUT/DELETE modal) disables.
     can_mutate: bool,
 ) -> Element {
@@ -2284,7 +2315,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
             saving: *saving.read(),
             deleting: *deleting.read(),
             error: error.read().clone(),
-            create_label: "Add Item".to_string(),
+            create_label: "Add Line".to_string(),
             onclose: move |_| onclose.call(()),
             onsave: handle_save,
             ondelete: handle_delete_click,

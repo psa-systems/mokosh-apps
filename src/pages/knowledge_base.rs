@@ -658,8 +658,9 @@ pub fn KBHomePage() -> Element {
         // PMS-485: Top ticket-driving articles widget. Reads
         // tickets joined to kb_articles on `source_kb_article_id`
         // (stamped on ticket create by PMS-482), grouped + ordered
-        // by count over the trailing 90 days.
-        Card { title: "Top ticket-driving articles",
+        // by count over the trailing 90 days. `mb-6` gaps it from Recent
+        // Articles below, like the search Card above (MAPPS-966).
+        Card { title: "Top ticket-driving articles", class: "mb-6",
             if top_driving_loading {
                 div { class: "space-y-2",
                     for _ in 0..3 {
@@ -689,7 +690,7 @@ pub fn KBHomePage() -> Element {
         // Recent articles
         Card { title: "Recent Articles",
             if recent_failed {
-                div { class: "py-8 text-center text-sm text-red-600 dark:text-red-300",
+                div { class: "py-8 text-center text-sm text-red-600 dark:text-red-400",
                     "Could not load recent articles."
                 }
             } else if recent_loading {
@@ -1684,6 +1685,26 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                     ReadModeButton { left_collapsed, right_collapsed }
                                 }
                             }
+                            // PMS-1339: this page draws its own title rather than
+                            // using `PageHeader`, so it never got the trail either.
+                            // Above the title, where a breadcrumb belongs, and
+                            // pointing at the Knowledge Base list with no filters.
+                            crate::components::Breadcrumbs {
+                                items: vec![
+                                    crate::components::BreadcrumbItem {
+                                        label: "Knowledge Base".to_string(),
+                                        route: Some(Route::KBArticleList {
+                                            q: String::new(),
+                                            tag: String::new(),
+                                            category: String::new(),
+                                        }),
+                                    },
+                                    crate::components::BreadcrumbItem {
+                                        label: article.title.clone(),
+                                        route: None,
+                                    },
+                                ],
+                            }
                             div { class: "mt-2 flex items-center justify-between gap-3 flex-wrap",
                                 h1 { class: "text-2xl sm:text-3xl font-bold text-content truncate", "{article.title}" }
                                 div { class: "flex items-center gap-2 flex-wrap",
@@ -2537,8 +2558,39 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
         };
     }
 
+    // PMS-1339: the trail this screen never had.
+    let record_label = match &*snap {
+        // The resource yields `(article, tag pairs)`, so the title is `.0`.
+        Some(Some((article, _))) if !article.title.trim().is_empty() => article.title.clone(),
+        _ => "Article".to_string(),
+    };
+    let crumbs = vec![
+        crate::components::BreadcrumbItem {
+            label: "Knowledge Base".to_string(),
+            route: Some(Route::KBArticleList {
+                q: String::new(),
+                tag: String::new(),
+                category: String::new(),
+            }),
+        },
+        crate::components::BreadcrumbItem {
+            label: record_label,
+            route: Some(Route::KBArticleDetail {
+                id: props.id.clone(),
+            }),
+        },
+        crate::components::BreadcrumbItem {
+            label: "Edit".to_string(),
+            route: None,
+        },
+    ];
     rsx! {
-        PageHeader { title: "Edit Article" }
+        PageHeader {
+            title: "Edit Article",
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs { items: crumbs }
+            },
+        }
         match &*snap {
             None => rsx! {
                 // PMS-353

@@ -1364,7 +1364,7 @@ fn ConvertQuoteModal(props: ConvertQuoteModalProps) -> Element {
                     "The project takes its name, scope, client, and budget from this quote. Set how it runs."
                 }
                 if !error.read().is_empty() {
-                    p { class: "text-sm text-red-600 dark:text-red-300", "{error}" }
+                    p { class: "text-sm text-red-600 dark:text-red-400", "{error}" }
                 }
                 Input {
                     name: "start_date",
@@ -1636,10 +1636,40 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
         });
     };
 
+    // PMS-1339: the trail this screen never had. `cancel_route` above already
+    // knew where "up" is - the quote being edited, else the list - which is
+    // exactly what the middle crumb needs, so the two cannot disagree about
+    // where this screen came from.
+    let crumbs = {
+        let mut items = vec![crate::components::BreadcrumbItem {
+            label: "Quotes".to_string(),
+            route: Some(Route::QuoteList {}),
+        }];
+        if let Some(id) = editing.clone() {
+            items.push(crate::components::BreadcrumbItem {
+                label: "Quote".to_string(),
+                route: Some(Route::QuoteDetail { id }),
+            });
+            items.push(crate::components::BreadcrumbItem {
+                label: "Edit".to_string(),
+                route: None,
+            });
+        } else {
+            items.push(crate::components::BreadcrumbItem {
+                label: "New Quote".to_string(),
+                route: None,
+            });
+        }
+        items
+    };
+
     rsx! {
         PageHeader {
             title: if is_edit { "Edit Quote" } else { "New Quote" },
             subtitle: "Scope the work and price it. Totals come from the line items.",
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs { items: crumbs }
+            },
         }
 
         if !error.read().is_empty() {

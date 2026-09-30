@@ -11,6 +11,10 @@ use crate::components::{
     TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::modules::contacts::{Address, CompanyStatus, CompanyType, ContactType, PhoneType};
+// PMS-1344: the invoices list's own wording for an overdue badge, reused
+// rather than restated, so the two surfaces cannot drift into saying it
+// differently.
+use crate::pages::billing::overdue_label;
 use crate::utils::money::format_money_str;
 use crate::utils::sort_keys::TICKETS_RECENT_SORT;
 use crate::utils::url::{safe_href, urlencoding_minimal};
@@ -890,8 +894,34 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
             crate::components::ContentUnavailable { title: "Edit Company".to_string() }
         };
     }
+    // PMS-1339: same missing trail as Edit Contact next door.
+    let record_label = match &*snap {
+        Some(Some(payload)) => payload.name.clone(),
+        _ => "Company".to_string(),
+    };
+    let crumbs = vec![
+        crate::components::BreadcrumbItem {
+            label: "Companies".to_string(),
+            route: Some(Route::CompanyList {}),
+        },
+        crate::components::BreadcrumbItem {
+            label: record_label,
+            route: Some(Route::CompanyDetail {
+                id: props.id.clone(),
+            }),
+        },
+        crate::components::BreadcrumbItem {
+            label: "Edit".to_string(),
+            route: None,
+        },
+    ];
     rsx! {
-        PageHeader { title: "Edit Company" }
+        PageHeader {
+            title: "Edit Company",
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs { items: crumbs }
+            },
+        }
         match &*snap {
             None => rsx! {
                 crate::components::DetailSkeleton {} // PMS-353
@@ -3556,7 +3586,7 @@ fn CompanyPortalAccessCard(
                         // custom role without opening the contact
                         // detail.
                         TableHeader { "Roles" }
-                        TableHeader { span { class: "sr-only", "Action" } }
+                        TableHeader { span { class: "sr-only", "Actions" } }
                     }
                 }
                 match &*snap {
@@ -5193,6 +5223,17 @@ struct InvoiceSummary {
     status: String,
     #[serde(default, deserialize_with = "de_money_opt")]
     balance_due: Option<String>,
+    /// PMS-1344: overdue is DERIVED by the server and is not a `status`
+    /// (server PMS-1037): `status` stays `sent` while the balance goes past
+    /// its due date, so a panel that read only `status` showed "Sent" for an
+    /// invoice weeks overdue, and a user on this page could not tell an issued
+    /// invoice from an overdue one. These two are what carries it, and they
+    /// are the tenant's day rather than the browser's, which is why the client
+    /// renders what it is told instead of comparing `due_date` itself.
+    #[serde(default)]
+    is_overdue: bool,
+    #[serde(default)]
+    days_overdue: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -5469,6 +5510,8 @@ fn CompanyInvoicesCard(
                                         let number = invoice.invoice_number.clone();
                                         let balance = money_label(&invoice.balance_due);
                                         let (variant, label) = invoice_status_badge(&invoice.status);
+                                        let overdue_days =
+                                            invoice.is_overdue.then_some(invoice.days_overdue);
                                         rsx! {
                                             TableRow { key: "{key}", class: "group",
                                                 TableCell {
@@ -5479,7 +5522,23 @@ fn CompanyInvoicesCard(
                                                     }
                                                 }
                                                 TableCell { class: "font-medium", "{balance}" }
-                                                TableCell { Badge { variant, "{label}" } }
+                                                TableCell {
+                                                    // The same pair the invoices list renders
+                                                    // (`InvoiceRow`): the lifecycle status, plus
+                                                    // the derived overdue badge beside it rather
+                                                    // than replacing it, because "sent and three
+                                                    // weeks late" is two facts and collapsing
+                                                    // them loses the one the page is for.
+                                                    div { class: "flex flex-wrap items-center gap-1",
+                                                        Badge { variant, "{label}" }
+                                                        if let Some(days) = overdue_days {
+                                                            Badge {
+                                                                variant: BadgeVariant::Orange,
+                                                                "{overdue_label(days)}"
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                                 TableCell { class: "w-10",
                                                     RowActions {
                                                         on_edit: move |_| { navigator.push(Route::InvoiceDetail { id: edit_id.clone() }); },
@@ -6290,8 +6349,51 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
             crate::components::ContentUnavailable { title: "Edit Contact".to_string() }
         };
     }
+    // PMS-1339: the trail this screen never had. Edit Contact was reachable from
+    // the detail page and offered no way back up: the only exit was scrolling to
+    // the bottom of the form and pressing Cancel, which reads as "discard" rather
+    // than "go back". The record's own name appears once it loads; until then the
+    // middle crumb says "Contact" so the trail is the same shape from the first
+    // paint and does not reflow under the reader.
+    let record_label = match &*snap {
+        Some(Some(payload)) => {
+            // The same composition the list, the detail journal and the company
+            // card already use inline; not a new helper, because a fifth
+            // spelling of one rule is worse than four.
+            let name = format!("{} {}", payload.first_name, payload.last_name)
+                .trim()
+                .to_string();
+            if name.is_empty() {
+                "Contact".to_string()
+            } else {
+                name
+            }
+        }
+        _ => "Contact".to_string(),
+    };
+    let crumbs = vec![
+        crate::components::BreadcrumbItem {
+            label: "Contacts".to_string(),
+            route: Some(Route::ContactList {}),
+        },
+        crate::components::BreadcrumbItem {
+            label: record_label,
+            route: Some(Route::ContactDetail {
+                id: props.id.clone(),
+            }),
+        },
+        crate::components::BreadcrumbItem {
+            label: "Edit".to_string(),
+            route: None,
+        },
+    ];
     rsx! {
-        PageHeader { title: "Edit Contact" }
+        PageHeader {
+            title: "Edit Contact",
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs { items: crumbs }
+            },
+        }
         match &*snap {
             None => rsx! {
                 crate::components::DetailSkeleton {} // PMS-353
@@ -8030,7 +8132,7 @@ fn ContactNotesCard(notes_resource: Resource<Result<Vec<ContactNote>, String>>) 
                     p { class: "text-sm text-muted", "Loading comments…" }
                 },
                 Some(Err(err)) => rsx! {
-                    p { class: "text-sm text-red-600 dark:text-red-300",
+                    p { class: "text-sm text-red-600 dark:text-red-400",
                         "Could not load comments for this contact: {err}"
                     }
                 },
@@ -9271,6 +9373,58 @@ mod company_source_tests {
             assert!(
                 lowered.contains(word),
                 "the one company control says nothing about {word}: {COMPANY_SEARCH_HELP}"
+            );
+        }
+    }
+
+    /// PMS-1332 / MAPPS-757: the company decision on the contact form is ONE
+    /// search box, and the three affordances it replaced cannot drift back.
+    ///
+    /// Asserted over `ContactForm`'s own body, minus comment lines: the body
+    /// because these needles are literals in this test and a whole-file scan
+    /// would count them, and the filter because the paragraph above the control
+    /// names every retired label, so a scan that read it would pass while the
+    /// labels were back on screen. What is pinned is the count (a second picker beside the first would be two
+    /// controls again for one decision) and `allow_inline_create`, which is
+    /// what makes "create the company you typed" the third outcome of the one
+    /// interaction rather than a separate control. The picker's own "+ New
+    /// company" button needs no guard here: PMS-1332 deleted the prop, so a
+    /// form asking for it does not compile.
+    #[test]
+    fn the_company_control_is_one_search_box() {
+        // The form's own body, so a needle below cannot match itself, minus
+        // comment lines, because the paragraph above the control names every
+        // retired label.
+        let src = include_str!("contacts.rs");
+        let start = src
+            .find("fn ContactForm(")
+            .expect("ContactForm is defined in this file");
+        let rest = &src[start..];
+        let rendered = rest[..rest.find("\n}\n").expect("the form closes")]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            rendered
+                .matches("crate::components::CompanyPicker {")
+                .count(),
+            1,
+            "one company control on this page, not two"
+        );
+        assert!(
+            rendered.contains("allow_inline_create: true,"),
+            "the one box must still be able to create the company that was typed"
+        );
+        for retired in [
+            "Add a company",
+            "Link an existing company",
+            "Enter a name without creating",
+            "don't add a company",
+        ] {
+            assert!(
+                !rendered.contains(retired),
+                "{retired:?} is back: the decision is split across controls again"
             );
         }
     }

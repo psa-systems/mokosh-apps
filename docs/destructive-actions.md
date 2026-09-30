@@ -24,6 +24,10 @@ Wiring pattern: the Delete/Remove button's only job is to open the dialog
 from the dialog's `onconfirm`. Never issue the mutation straight from the
 button `onclick`.
 
+## Danger zone (MAPPS-966)
+
+A settings-style page whose destructive action sits among ordinary cards marks that card as a danger zone: `Card { danger: true, title, subtitle, ... }` gives it a red-toned border and title, and its trigger is a `ButtonVariant::Danger` button. The trigger still only opens the confirmation; the rules above and below are unchanged. The profile page's "Sign out everywhere" is the reference.
+
 ## Simple confirm vs type-to-confirm
 
 | Action shape | Pattern |

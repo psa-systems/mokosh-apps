@@ -1670,3 +1670,29 @@ pub fn EyeIcon(#[props(default)] size: IconSize, #[props(default)] class: String
         }
     }
 }
+/// MAPPS-966: marks a link that leaves the app (the Bunyip hub's account settings).
+#[component]
+pub fn ArrowTopRightOnSquareIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            "aria-hidden": "true",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25",
+            }
+        }
+    }
+}

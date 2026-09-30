@@ -181,7 +181,7 @@ pub fn DownloadButton(props: DownloadButtonProps) -> Element {
             }
             match current {
                 Some(Outcome::Failed(message)) => rsx! {
-                    p { class: "text-xs text-red-600 dark:text-red-300", role: "alert", "{message}" }
+                    p { class: "text-xs text-red-600 dark:text-red-400", role: "alert", "{message}" }
                 },
                 Some(Outcome::SavedTo(saved)) => rsx! {
                     p { class: "text-xs text-muted", role: "status", "Saved to {saved}" }

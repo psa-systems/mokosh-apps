@@ -296,156 +296,159 @@ fn EmailSettingsForm() -> Element {
             },
         }
 
-        if fetch_failed {
-            Card {
-                div { class: "p-6", ErrorBanner { "Could not load the email settings." } }
-            }
-        }
-        if not_operator {
-            Card {
-                p { class: "text-sm text-muted",
-                    "Email for this deployment is set up by whoever runs it. Every organisation on the deployment sends through it, so only its operator can see or change these settings."
+        // MAPPS-966: the cards are gapped, not stacked edge to edge.
+        div { class: "space-y-6",
+            if fetch_failed {
+                Card {
+                    ErrorBanner { "Could not load the email settings." }
                 }
             }
-        } else {
+            if not_operator {
+                Card {
+                    p { class: "text-sm text-muted",
+                        "Email for this deployment is set up by whoever runs it. Every organisation on the deployment sends through it, so only its operator can see or change these settings."
+                    }
+                }
+            } else {
 
-        Card {
-            div { class: "space-y-4 max-w-xl",
-                if !error().is_empty() {
-                    ErrorBanner { "{error()}" }
-                }
-                Input {
-                    name: "smtp_host",
-                    label: "SMTP host",
-                    value: host(),
-                    disabled: is_loading || saving(),
-                    placeholder: "smtp.example.com",
-                    oninput: move |e: FormEvent| host.set(e.value()),
-                }
-                Input {
-                    name: "smtp_port",
-                    label: "Port",
-                    r#type: "number".to_string(),
-                    value: port(),
-                    disabled: is_loading || saving(),
-                    error: port_error(),
-                    placeholder: "587",
-                    oninput: move |e: FormEvent| {
-                        port_error.set(String::new());
-                        port.set(e.value());
-                    },
-                }
-                Select {
-                    name: "smtp_tls",
-                    label: "TLS",
-                    value: tls(),
-                    disabled: is_loading || saving(),
-                    options: TLS_MODES
-                        .iter()
-                        .map(|(v, l)| SelectOption::new(*v, *l))
-                        .collect::<Vec<_>>(),
-                    onchange: move |e: FormEvent| tls.set(e.value()),
-                }
-                Input {
-                    name: "smtp_username",
-                    label: "Username",
-                    value: username(),
-                    disabled: is_loading || saving(),
-                    oninput: move |e: FormEvent| username.set(e.value()),
-                }
-                Input {
-                    name: "smtp_password",
-                    label: "Password",
-                    r#type: "password".to_string(),
-                    value: password(),
-                    disabled: is_loading || saving() || clear_password(),
-                    placeholder: password_placeholder,
-                    help: "Write-only: never shown once saved. Leave blank to keep the current password."
-                        .to_string(),
-                    oninput: move |e: FormEvent| password.set(e.value()),
-                }
-                if password_set() {
-                    Checkbox {
-                        name: "smtp_password_clear",
-                        label: "Clear the stored password",
-                        checked: clear_password(),
+            Card {
+                div { class: "space-y-4 max-w-xl",
+                    if !error().is_empty() {
+                        ErrorBanner { "{error()}" }
+                    }
+                    Input {
+                        name: "smtp_host",
+                        label: "SMTP host",
+                        value: host(),
                         disabled: is_loading || saving(),
-                        onchange: move |e: FormEvent| {
-                            let checked = e.value() == "true";
-                            clear_password.set(checked);
-                            if checked {
-                                password.set(String::new());
-                            }
+                        placeholder: "smtp.example.com",
+                        oninput: move |e: FormEvent| host.set(e.value()),
+                    }
+                    Input {
+                        name: "smtp_port",
+                        label: "Port",
+                        r#type: "number".to_string(),
+                        value: port(),
+                        disabled: is_loading || saving(),
+                        error: port_error(),
+                        placeholder: "587",
+                        oninput: move |e: FormEvent| {
+                            port_error.set(String::new());
+                            port.set(e.value());
                         },
                     }
-                }
-                Input {
-                    name: "smtp_from",
-                    label: "From address",
-                    value: from(),
-                    disabled: is_loading || saving(),
-                    placeholder: "no-reply@example.com",
-                    oninput: move |e: FormEvent| from.set(e.value()),
-                }
-                div { class: "flex justify-end",
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        loading: saving(),
-                        disabled: !can_mutate || is_loading,
-                        title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
-                        onclick: handle_save,
-                        "Save Changes"
+                    Select {
+                        name: "smtp_tls",
+                        label: "TLS",
+                        value: tls(),
+                        disabled: is_loading || saving(),
+                        options: TLS_MODES
+                            .iter()
+                            .map(|(v, l)| SelectOption::new(*v, *l))
+                            .collect::<Vec<_>>(),
+                        onchange: move |e: FormEvent| tls.set(e.value()),
+                    }
+                    Input {
+                        name: "smtp_username",
+                        label: "Username",
+                        value: username(),
+                        disabled: is_loading || saving(),
+                        oninput: move |e: FormEvent| username.set(e.value()),
+                    }
+                    Input {
+                        name: "smtp_password",
+                        label: "Password",
+                        r#type: "password".to_string(),
+                        value: password(),
+                        disabled: is_loading || saving() || clear_password(),
+                        placeholder: password_placeholder,
+                        help: "Write-only: never shown once saved. Leave blank to keep the current password."
+                            .to_string(),
+                        oninput: move |e: FormEvent| password.set(e.value()),
+                    }
+                    if password_set() {
+                        Checkbox {
+                            name: "smtp_password_clear",
+                            label: "Clear the stored password",
+                            checked: clear_password(),
+                            disabled: is_loading || saving(),
+                            onchange: move |e: FormEvent| {
+                                let checked = e.value() == "true";
+                                clear_password.set(checked);
+                                if checked {
+                                    password.set(String::new());
+                                }
+                            },
+                        }
+                    }
+                    Input {
+                        name: "smtp_from",
+                        label: "From address",
+                        value: from(),
+                        disabled: is_loading || saving(),
+                        placeholder: "no-reply@example.com",
+                        oninput: move |e: FormEvent| from.set(e.value()),
+                    }
+                    div { class: "flex justify-end",
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            loading: saving(),
+                            disabled: !can_mutate || is_loading,
+                            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
+                            onclick: handle_save,
+                            "Save Changes"
+                        }
                     }
                 }
             }
-        }
 
-        Card {
-            div { class: "space-y-4 max-w-xl",
-                h2 { class: "text-lg font-semibold text-content", "Send a test email" }
-                if !test_error().is_empty() {
-                    ErrorBanner { "{test_error()}" }
-                }
-                Input {
-                    name: "test_email_to",
-                    label: "Send to",
-                    value: test_to(),
-                    disabled: test_sending(),
-                    placeholder: "you@example.com",
-                    oninput: move |e: FormEvent| test_to.set(e.value()),
-                }
-                div { class: "flex justify-end",
-                    Button {
-                        variant: ButtonVariant::Secondary,
-                        loading: test_sending(),
-                        disabled: !can_mutate,
-                        onclick: handle_test_send,
-                        "Send Test Email"
+            Card {
+                div { class: "space-y-4 max-w-xl",
+                    h2 { class: "text-lg font-semibold text-content", "Send a test email" }
+                    if !test_error().is_empty() {
+                        ErrorBanner { "{test_error()}" }
+                    }
+                    Input {
+                        name: "test_email_to",
+                        label: "Send to",
+                        value: test_to(),
+                        disabled: test_sending(),
+                        placeholder: "you@example.com",
+                        oninput: move |e: FormEvent| test_to.set(e.value()),
+                    }
+                    div { class: "flex justify-end",
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            loading: test_sending(),
+                            disabled: !can_mutate,
+                            onclick: handle_test_send,
+                            "Send Test Email"
+                        }
                     }
                 }
             }
-        }
 
-        Card {
-            div { class: "space-y-4 max-w-xl",
-                h2 { class: "text-lg font-semibold text-content", "Verify" }
-                p { class: "text-sm text-muted",
-                    "Check the mailer's connection without sending anything."
-                }
-                if !verify_error().is_empty() {
-                    ErrorBanner { "{verify_error()}" }
-                }
-                div { class: "flex justify-end",
-                    Button {
-                        variant: ButtonVariant::Secondary,
-                        loading: verifying(),
-                        disabled: !can_mutate,
-                        onclick: handle_verify,
-                        "Verify"
+            Card {
+                div { class: "space-y-4 max-w-xl",
+                    h2 { class: "text-lg font-semibold text-content", "Verify" }
+                    p { class: "text-sm text-muted",
+                        "Check the mailer's connection without sending anything."
+                    }
+                    if !verify_error().is_empty() {
+                        ErrorBanner { "{verify_error()}" }
+                    }
+                    div { class: "flex justify-end",
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            loading: verifying(),
+                            disabled: !can_mutate,
+                            onclick: handle_verify,
+                            "Verify"
+                        }
                     }
                 }
             }
-        }
+            }
         }
     }
 }

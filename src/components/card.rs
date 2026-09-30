@@ -29,12 +29,20 @@ pub struct CardProps {
     /// Whether to add padding
     #[props(default = true)]
     padding: bool,
+    /// MAPPS-966: a danger zone (a page's destructive action). Red-toned
+    /// border and title; pair it with a `ButtonVariant::Danger` button.
+    #[props(default)]
+    danger: bool,
 }
 
 /// Card container component
 #[component]
 pub fn Card(props: CardProps) -> Element {
-    let base_class = "bg-surface rounded-lg shadow border border-line";
+    let base_class = if props.danger {
+        "bg-surface rounded-lg shadow border border-red-300 dark:border-red-800"
+    } else {
+        "bg-surface rounded-lg shadow border border-line"
+    };
     let class = format!("{} {}", base_class, props.class);
 
     let has_header = !props.title.is_empty();
@@ -60,6 +68,7 @@ pub fn Card(props: CardProps) -> Element {
                     title: props.title,
                     subtitle: props.subtitle,
                     actions: props.actions,
+                    danger: props.danger,
                 }
             }
             div { class: "{body_class}",
@@ -80,6 +89,9 @@ pub struct CardHeaderProps {
     actions: Option<Element>,
     #[props(default)]
     class: String,
+    /// See [`CardProps::danger`].
+    #[props(default)]
+    danger: bool,
 }
 
 #[component]
@@ -92,15 +104,23 @@ pub fn CardHeader(props: CardHeaderProps) -> Element {
     } else {
         "items-start"
     };
+    let (rule, title_color) = if props.danger {
+        (
+            "border-red-200 dark:border-red-900",
+            "text-red-700 dark:text-red-400",
+        )
+    } else {
+        ("border-line", "text-content")
+    };
     let class = format!(
-        "flex {align} justify-between px-6 pt-6 pb-4 border-b border-line {}",
+        "flex {align} justify-between px-6 pt-6 pb-4 border-b {rule} {}",
         props.class
     );
 
     rsx! {
         div { class: "{class}",
             div {
-                h3 { class: "text-lg font-medium text-content",
+                h3 { class: "text-lg font-medium {title_color}",
                     "{props.title}"
                 }
                 if !props.subtitle.is_empty() {
@@ -284,6 +304,43 @@ mod tests {
             "a two-line heading aligns its actions to the title, not to the pair; \
              got: {html}"
         );
+    }
+
+    #[component]
+    fn DangerZone() -> Element {
+        rsx! {
+            Card { title: "Sign out everywhere".to_string(), danger: true, "BODY-MARKER" }
+        }
+    }
+
+    /// MAPPS-966: a danger card is red-toned on its border and its title, and
+    /// an ordinary card never is.
+    #[test]
+    fn a_danger_card_is_red_toned_and_an_ordinary_card_is_not() {
+        let mut dom = VirtualDom::new(DangerZone);
+        dom.rebuild_in_place();
+        let danger = dioxus_ssr::render(&dom);
+        assert!(
+            danger.contains("border-red-300 dark:border-red-800"),
+            "red border in both modes; got: {danger}"
+        );
+        assert!(
+            danger.contains("text-red-700 dark:text-red-400"),
+            "red title in both modes; got: {danger}"
+        );
+        assert!(
+            !danger.contains("border-line"),
+            "no neutral border; got: {danger}"
+        );
+
+        let mut dom = VirtualDom::new(WithoutSubtitle);
+        dom.rebuild_in_place();
+        let plain = dioxus_ssr::render(&dom);
+        assert!(
+            !plain.contains("red-"),
+            "an ordinary card has no red; got: {plain}"
+        );
+        assert!(plain.contains("border-line"));
     }
 
     /// The prop is optional, and a card without one keeps the header it had.

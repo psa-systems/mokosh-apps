@@ -19,6 +19,16 @@
 //! - Create: POST `/api/v1/tenants/additional` -> TenantResponse.
 //!   Refetch the membership list so the new tenant appears in the
 //!   dropdown; the operator can then switch into it.
+//! - Leave (MAPPS-948): DELETE `/api/v1/my-grants/{grant_id}` -> 204, then
+//!   refetch the membership list so the row goes. Offered only on a row that
+//!   came from a GRANT and is not the active one. A seat the identity holds in
+//!   its own right has nothing to leave (that is a tenant to delete, not a
+//!   membership to drop), and the active one is excluded because leaving the
+//!   tenant you are scoped to would invalidate the session you are holding;
+//!   switch first, then leave. The server answers 204 on a replay as well as a
+//!   fresh revoke and 404 for an id that is not the caller's, so both are
+//!   treated as "it is gone" and refetch rather than raising an error at
+//!   somebody who asked for exactly that outcome.
 //!
 //! MAPPS-497 item 3: memberships are loaded by the app-root
 //! `use_memberships_loader` hook (which points at mokosh's endpoint
@@ -28,7 +38,7 @@
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::components::{Button, ButtonVariant, Input, Modal, ModalSize, Popover};
+use crate::components::{Button, ButtonVariant, ConfirmDialog, Input, Modal, ModalSize, Popover};
 use crate::hooks::auth::MembershipView;
 use crate::modules::oidc::storage::{save_standalone, StandaloneSession};
 use crate::{CurrentUser, Route};
@@ -62,6 +72,30 @@ struct AdditionalBody {
 /// so we can refetch the memberships list and let the operator switch.
 #[derive(Deserialize)]
 struct TenantResp {}
+
+/// MAPPS-948: the grant id a row's Leave control acts on, or `None` when the row
+/// has nothing to leave.
+///
+/// Two conditions, and each excludes a different thing:
+///
+/// * No grant id means the identity holds this seat in its own right, so there
+///   is no grant to revoke. Deleting that tenant is a different act with a
+///   different endpoint, and offering Leave for it would promise something this
+///   call cannot do. A revoked grant also arrives as `None` (server PMS-1393
+///   joins only live rows), so a seat whose access the owner already withdrew
+///   does not offer Leave either.
+/// * The ACTIVE row is excluded because leaving the tenant the session is scoped
+///   to would invalidate the token being used to ask. Switch first, then leave.
+///
+/// Pure so both rules are testable without a browser, which is the only way the
+/// second one gets pinned at all: "the active row has no Leave button" is
+/// invisible to a unit test of anything else.
+pub fn leave_target(membership: &MembershipView, is_active: bool) -> Option<String> {
+    if is_active {
+        return None;
+    }
+    membership.mokosh_bunyip_grant_id.clone()
+}
 
 #[component]
 pub fn TenantSwitcher() -> Element {
@@ -245,11 +279,59 @@ pub fn TenantSwitcher() -> Element {
         });
     };
 
+    // MAPPS-948: the grant the operator has asked to leave, held while the
+    // confirmation is open. `Option<(grant_id, tenant_name)>` rather than a
+    // bare id so the dialog can name the team being left: "leave a workspace"
+    // with no name in it is the shape of prompt people click through.
+    let mut leaving: Signal<Option<(String, String)>> = use_signal(|| None);
+
+    let mut leave_grant = move |grant_id: String| {
+        if saving() {
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                use crate::hooks::fetch::api::ApiError;
+                let path = format!("/my-grants/{grant_id}");
+                let outcome = crate::hooks::fetch::api::delete_authed_typed(&path).await;
+                match outcome {
+                    // 404 is "that grant is not yours, or not there any more",
+                    // which for somebody who just asked to leave is the state
+                    // they wanted. Treated as success so a double-click or a
+                    // revoke the owner performed first does not raise an error.
+                    Ok(()) | Err(ApiError::Status { code: 404, .. }) => {
+                        if let Ok(list) = crate::hooks::fetch::api::get_authed_typed::<
+                            Vec<MembershipView>,
+                        >("/auth/memberships")
+                        .await
+                        {
+                            let mut a = auth_write.write();
+                            a.memberships = list;
+                        }
+                        leaving.set(None);
+                        open.set(false);
+                    }
+                    Err(e) => error.set(e.user_message()),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            let _ = grant_id;
+            saving.set(false);
+        });
+    };
+
     // Read the memberships + active for render. Hide the trigger when
     // there is nothing to show (unauthenticated / no memberships).
-    let (memberships, active_name, active_id_str) = {
+    let (memberships, active_name, active_id_str, loading_memberships) = {
         let a = auth.read();
         let mut list = a.memberships.clone();
+        // PMS-1339: the app-root loader sets this once the list has arrived, so
+        // the slot below can reserve its width while the answer is still unknown
+        // instead of appearing later and pushing the profile icon sideways.
+        let loading = !a.memberships_loaded;
         let active_id = a.active_tenant_id.map(|u| u.to_string());
         let derived_name = a.active_org_name().map(str::to_string);
         let active_name = derived_name.unwrap_or_else(|| {
@@ -263,7 +345,7 @@ pub fn TenantSwitcher() -> Element {
                 .to_ascii_lowercase()
                 .cmp(&b.tenant_name.to_ascii_lowercase())
         });
-        (list, active_name, active_id)
+        (list, active_name, active_id, loading)
     };
 
     if !auth.read().is_authenticated() {
@@ -275,14 +357,27 @@ pub fn TenantSwitcher() -> Element {
     // Modal is rendered unconditionally below because UserMenu can also
     // open it via the SHOW_CREATE_ORG global signal.
     let show_trigger = memberships.len() >= 2;
+    // PMS-1339: the trigger's width arrives late. Memberships load after the
+    // first paint, so the switcher was zero-wide and then suddenly a team name
+    // wide, and because the action cluster is right-aligned everything to its
+    // right - the bell, the badge, the profile icon - slid left as it appeared.
+    // That is the "profile shifts on refresh" report. The slot is therefore a
+    // fixed width from the first render, matching the trigger's own
+    // `max-w-[7rem] sm:max-w-[10rem]` ceiling, so the name lands inside space
+    // that was already reserved and nothing moves.
+    let reserved = if show_trigger || loading_memberships {
+        "relative w-[8.5rem] sm:w-[11.5rem] shrink-0"
+    } else {
+        "relative"
+    };
 
     rsx! {
-        div { class: "relative",
+        div { class: reserved,
             if show_trigger {
                 Popover {
                     open: open(),
                     label: "Switch team",
-                    trigger_class: "flex items-center gap-2 px-3 py-2 rounded-md text-sm text-subtle hover:text-content hover:bg-surface-2 focus:outline-none",
+                    trigger_class: "flex items-center gap-2 px-3 py-2 rounded-md text-sm text-subtle hover:text-content hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent",
                     trigger: rsx! {
                         // Team name is visible at every breakpoint so a user
                         // can see at a glance which team they are on. Narrower
@@ -291,16 +386,13 @@ pub fn TenantSwitcher() -> Element {
                         span { class: "inline max-w-[7rem] sm:max-w-[10rem] truncate font-medium text-content",
                             "{active_name}"
                         }
-                        // Small chevron caret drawn inline (avoids a dep on an
-                        // icon we don't own yet).
-                        svg {
-                            class: "w-4 h-4",
-                            view_box: "0 0 20 20",
-                            fill: "currentColor",
-                            path {
-                                d: "M5.23 7.21a.75.75 0 011.06.02L10 11.06l3.71-3.83a.75.75 0 111.08 1.04l-4.24 4.38a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z",
-                            }
-                        }
+                        // PMS-1339: the caret is gone. It was a hand-drawn SVG
+                        // path ("avoids a dep on an icon we don't own yet")
+                        // sitting immediately left of the profile icon, and it
+                        // said nothing the Popover's own hover, focus ring and
+                        // `aria-expanded` do not. If a caret is ever wanted back
+                        // it is `ChevronDownIcon`, which this app owns, rather
+                        // than a second copy of the path.
                     },
                     width: "w-64",
                     ontoggle: move |_| {
@@ -318,23 +410,48 @@ pub fn TenantSwitcher() -> Element {
                         {memberships.iter().map(|m| {
                             let tenant_id = m.tenant_id.clone();
                             let is_active = Some(tenant_id.clone()) == active_id_str;
+                            // MAPPS-948: only a granted, non-active seat can be
+                            // left. The row therefore holds two controls in a
+                            // flex rather than being one big button, because a
+                            // button inside a button is not a thing a browser
+                            // will render as two targets.
+                            let grant_id = leave_target(m, is_active);
+                            let tenant_name = m.tenant_name.clone();
                             rsx! {
-                                button {
+                                div {
                                     key: "{tenant_id}",
-                                    r#type: "button",
                                     class: if is_active {
-                                        "block w-full text-left rounded-md px-3 py-2 text-sm bg-surface-2 text-content"
+                                        "flex items-stretch gap-1 rounded-md bg-surface-2"
                                     } else {
-                                        "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2"
+                                        "flex items-stretch gap-1 rounded-md hover:bg-surface-2"
                                     },
-                                    disabled: is_active || saving(),
-                                    onclick: {
-                                        let tenant_id = tenant_id.clone();
-                                        move |_| switch_to(tenant_id.clone())
-                                    },
-                                    div { class: "font-medium truncate", "{m.tenant_name}" }
-                                    div { class: "text-xs text-subtle",
-                                        if is_active { "Active" } else { "Member" }
+                                    button {
+                                        r#type: "button",
+                                        class: "flex-1 min-w-0 text-left rounded-md px-3 py-2 text-sm text-content",
+                                        disabled: is_active || saving(),
+                                        onclick: {
+                                            let tenant_id = tenant_id.clone();
+                                            move |_| switch_to(tenant_id.clone())
+                                        },
+                                        div { class: "font-medium truncate", "{m.tenant_name}" }
+                                        div { class: "text-xs text-subtle",
+                                            if is_active { "Active" } else if grant_id.is_some() { "Shared with you" } else { "Member" }
+                                        }
+                                    }
+                                    if let Some(grant_id) = grant_id {
+                                        button {
+                                            r#type: "button",
+                                            class: "shrink-0 self-center rounded-md px-2 py-1 mr-1 text-xs text-subtle hover:text-red-600 dark:hover:text-red-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+                                            disabled: saving(),
+                                            "aria-label": "Leave {tenant_name}",
+                                            "data-testid": "tenant-switcher-leave",
+                                            onclick: {
+                                                let grant_id = grant_id.clone();
+                                                let tenant_name = tenant_name.clone();
+                                                move |_| leaving.set(Some((grant_id.clone(), tenant_name.clone())))
+                                            },
+                                            "Leave"
+                                        }
                                     }
                                 }
                             }
@@ -420,6 +537,118 @@ pub fn TenantSwitcher() -> Element {
                     }
                 }
             }
+            // MAPPS-948: leaving a team removes standing access, so it asks
+            // first, like every other destructive action in this app. The
+            // message says what leaving does NOT do as well, because "leave"
+            // next to a team name reads like it might delete the team.
+            if let Some((grant_id, tenant_name)) = leaving() {
+                ConfirmDialog {
+                    open: true,
+                    title: format!("Leave {tenant_name}?"),
+                    message: format!(
+                        "You will lose access to {tenant_name} and it will disappear from your team list. Nothing in it is deleted, and its owner can invite you again."
+                    ),
+                    confirm_text: "Leave",
+                    destructive: true,
+                    loading: saving(),
+                    error: error(),
+                    onconfirm: move |_| leave_grant(grant_id.clone()),
+                    oncancel: move |_| {
+                        leaving.set(None);
+                        error.set(String::new());
+                    },
+                }
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn membership(grant: Option<&str>) -> MembershipView {
+        MembershipView {
+            tenant_id: "2f1c2f1e-0000-4000-8000-00000000abcd".to_string(),
+            tenant_name: "Acme".to_string(),
+            mokosh_bunyip_grant_id: grant.map(str::to_string),
+        }
+    }
+
+    /// The Leave control appears on a granted, non-active row and nowhere else.
+    #[test]
+    fn only_a_granted_non_active_row_can_be_left() {
+        assert_eq!(
+            leave_target(&membership(Some("g-1")), false).as_deref(),
+            Some("g-1"),
+            "a shared team the operator is not in right now is leavable"
+        );
+        assert_eq!(
+            leave_target(&membership(Some("g-1")), true),
+            None,
+            "leaving the active team would invalidate the session asking"
+        );
+        assert_eq!(
+            leave_target(&membership(None), false),
+            None,
+            "a seat held in its own right has no grant to revoke"
+        );
+        assert_eq!(leave_target(&membership(None), true), None);
+    }
+
+    /// A server that predates the field still parses, and a row from it offers
+    /// no Leave rather than failing the whole membership list.
+    #[test]
+    fn a_membership_without_the_field_parses_and_offers_no_leave() {
+        let old: MembershipView = serde_json::from_str(
+            r#"{"tenant_id":"2f1c2f1e-0000-4000-8000-00000000abcd","tenant_name":"Acme"}"#,
+        )
+        .expect("a pre-PMS-1393 payload must still parse");
+        assert_eq!(old.mokosh_bunyip_grant_id, None);
+        assert_eq!(leave_target(&old, false), None);
+    }
+
+    /// MAPPS-948's own acceptance criterion is a grep, so this is it in
+    /// executable form: the component calls the endpoint, and it calls the
+    /// endpoint PMS-1210 mounted rather than a path that merely looks like it.
+    #[test]
+    fn the_component_calls_the_leave_endpoint() {
+        let src = include_str!("tenant_switcher.rs");
+        let head = &src[..src.find("mod tests").expect("this module")];
+        assert!(
+            head.contains(&format!("/my-{}/{{grant_id}}", "grants")),
+            "the Leave control must DELETE the grant by id"
+        );
+        assert!(
+            head.contains("delete_authed_typed"),
+            "it is a DELETE, not a POST that happens to work"
+        );
+        // The 404 arm is the idempotency contract: somebody who asked to leave
+        // and finds it already gone got what they wanted.
+        assert!(
+            head.contains("code: 404"),
+            "a 404 must be handled as success rather than surfaced as an error"
+        );
+    }
+
+    /// MAPPS-974: a non-404 failure of `DELETE /my-grants/{grant_id}` (e.g. a
+    /// 500) sets the `error` signal via `Err(e) => error.set(e.user_message())`
+    /// (:317), but that is only visible if the open `ConfirmDialog` is told
+    /// about it. Asserts the invocation passes the signal through.
+    #[test]
+    fn leave_team_confirm_dialog_reflects_the_error_signal() {
+        let src = include_str!("tenant_switcher.rs");
+        let start = src
+            .find("ConfirmDialog {")
+            .expect("the leave-team ConfirmDialog invocation");
+        let end = src[start..]
+            .find("onconfirm:")
+            .map(|i| start + i)
+            .expect("the onconfirm handler inside that invocation");
+        let invocation = &src[start..end];
+        assert!(
+            invocation.contains("error: error()"),
+            "a 500 from DELETE /my-grants/{{grant_id}} must show inside the open ConfirmDialog, not be dropped"
+        );
     }
 }

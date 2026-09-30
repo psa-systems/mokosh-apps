@@ -51,8 +51,13 @@ const STATUS_PATH: &str = "/integrations/contact-sync";
 const SETTING_CATEGORY: &str = "integrations";
 const SETTING_KEY: &str = "google_contacts_enabled";
 
-/// The not-configured next step for the one person who can fix it.
-const NOT_CONFIGURED_EDITABLE: &str = "Enter this deployment's Google sign-in client below. It only has to be done once, for every organisation on the deployment.";
+/// The not-configured next step for somebody who can fix it themselves.
+///
+/// MAPPS-972: this used to describe the client as belonging to the deployment and
+/// as shared by every organisation on it, which was PMS-1264's model. PMS-1340
+/// made the client the ORGANISATION's, so an admin reading the old line was told
+/// their entry affected everyone when it affects only their own organisation.
+const NOT_CONFIGURED_EDITABLE: &str = "Add your organization's Google sign-in client below. It is yours: your clients see its consent screen, and its API quota is yours rather than shared.";
 
 /// Failed runs in a row before the card calls it failing repeatedly. The
 /// server mails an admin at the same count (`runs::NOTIFY_AFTER`).
@@ -75,9 +80,19 @@ pub struct Overview {
     pub configured: bool,
     #[serde(default)]
     pub connection: Option<Connection>,
-    /// The caller may set the deployment's Google client (PMS-1264).
+    /// The caller may set this organization's Google client (PMS-1264, and
+    /// PMS-1340 which moved it from the deployment to the organisation).
     #[serde(default)]
     pub client_editable: bool,
+    /// `integrations/icloud_contacts_enabled` (server PMS-1341), the iCloud half
+    /// of `enabled`. Absent reads as enabled, the server's own default.
+    #[serde(default = "enabled_by_default")]
+    pub icloud_enabled: bool,
+    /// The tenant's iCloud connection (server PMS-1409). Beside `connection`
+    /// rather than replacing it with a list, because a tenant may hold both: two
+    /// cards, two credentials, two selections, one read.
+    #[serde(default)]
+    pub icloud_connection: Option<Connection>,
 }
 
 /// The connection half of the status read (PMS-1212, PMS-1215).
@@ -187,7 +202,8 @@ pub enum CardState {
     TurnedOff {
         connected_account: Option<String>,
     },
-    /// This deployment has no Google OAuth client.
+    /// This organization has no Google OAuth client, and no deployment-wide one
+    /// is answering for it either (MAPPS-972, the PMS-1340 ladder).
     NotConfigured,
     NeverConnected,
     /// A run is queued (possibly waiting out a rate limit) or running.
@@ -228,16 +244,35 @@ pub enum CardState {
 /// The one state the card renders for `overview`. Checked in the order an
 /// admin needs to hear about them; see the module doc.
 pub fn card_state(overview: &Overview) -> CardState {
-    if !overview.enabled {
+    card_state_of(
+        overview.enabled,
+        overview.configured,
+        overview.connection.as_ref(),
+    )
+}
+
+/// The same decision for any provider's connection (MAPPS iCloud card, server
+/// PMS-1409).
+///
+/// One derivation and not two, because the STATES are the same - an import in
+/// flight, a credential a human has to fix, a wait, a failure streak, a partial
+/// import, nothing chosen yet - and only the words differ. `configured` is what
+/// the Google path uses for "an OAuth client answers for this organisation",
+/// which since PMS-1340 is its own registration, else the deployment-wide
+/// fallback, else the environment; a provider that needs no client at all passes
+/// `true`.
+pub fn card_state_of(
+    enabled: bool,
+    configured: bool,
+    connection: Option<&Connection>,
+) -> CardState {
+    if !enabled {
         return CardState::TurnedOff {
-            connected_account: overview
-                .connection
-                .as_ref()
-                .map(|c| c.account_email.clone()),
+            connected_account: connection.map(|c| c.account_email.clone()),
         };
     }
-    let Some(connection) = overview.connection.as_ref() else {
-        return if overview.configured {
+    let Some(connection) = connection else {
+        return if configured {
             CardState::NeverConnected
         } else {
             CardState::NotConfigured
@@ -317,8 +352,12 @@ pub fn copy_for(state: &CardState) -> StateCopy {
         CardState::NotConfigured => StateCopy {
             badge: "Not available",
             tone: BadgeVariant::Gray,
-            headline: "This deployment has no Google sign-in client configured.".to_string(),
-            next_step: "Ask whoever runs this deployment to set up its Google sign-in client. Nothing here can be connected until then.".to_string(),
+            headline: "This organization has no Google sign-in client configured.".to_string(),
+            // What a NON-admin sees; `client_editable` replaces it with
+            // `NOT_CONFIGURED_EDITABLE` for somebody who can add one. It points
+            // at an admin of their own organisation rather than at whoever runs
+            // the deployment, because since PMS-1340 that is who can do it.
+            next_step: "Ask an administrator of this organization to add its Google sign-in client. Nothing here can be connected until then.".to_string(),
         },
         CardState::NeverConnected => StateCopy {
             badge: "Not connected",
@@ -332,7 +371,17 @@ pub fn copy_for(state: &CardState) -> StateCopy {
             headline: if *waiting {
                 "Google asked this import to wait, and it resumes by itself.".to_string()
             } else if run.status == "queued" {
-                "An import is queued and starts within a minute.".to_string()
+                // PMS-1429: "within a minute" was the truth when a queued run
+                // waited for the import worker's next 60s tick. The server wakes
+                // that worker the moment the run is committed now, so a queued
+                // run starts in about a second and this card polls every three;
+                // the old line read as a stall to the person watching it.
+                //
+                // Still "in a moment" rather than "now": the status IS queued at
+                // this point, and on a deployment running several API replicas
+                // the wake reaches the one that served the request, so the next
+                // tick is the floor rather than the expectation.
+                "An import is queued and starts in a moment.".to_string()
             } else {
                 "Importing contacts now.".to_string()
             },
@@ -817,14 +866,22 @@ fn GoogleContactsSettingsBody() -> Element {
 
 /// What a disconnect does, stated before it happens (PSA-70 J).
 pub fn disconnect_message(account: Option<&str>) -> String {
+    disconnect_message_from("Google", account)
+}
+
+/// The same sentence for any source (PMS-1409). The vendor's name appears twice
+/// and both matter: what is REMOVED is the credential this MSP gave us, and what
+/// is NOT touched is the address book itself, which is the reassurance somebody
+/// hovering over a Disconnect button is looking for.
+pub fn disconnect_message_from(vendor: &str, account: Option<&str>) -> String {
     let from = account.map(|a| format!(" from {a}")).unwrap_or_default();
     format!(
-        "Syncing stops and the stored Google access is removed. Every contact imported{from} stays in Mokosh as a local record that still shows where it came from. Nothing is deleted from Google or from Mokosh, and an import in progress stops."
+        "Syncing stops and the stored {vendor} access is removed. Every contact imported{from} stays in Mokosh as a local record that still shows where it came from. Nothing is deleted from {vendor} or from Mokosh, and an import in progress stops."
     )
 }
 
 #[component]
-fn StateIcon(state: CardState) -> Element {
+pub fn StateIcon(state: CardState) -> Element {
     use crate::components::{CheckIcon, ExclamationIcon, InformationIcon};
     match state {
         CardState::Syncing { .. } => rsx! { SyncIcon {} },
@@ -867,10 +924,17 @@ pub fn percent(run: &Run) -> Option<i32> {
 }
 
 #[component]
-fn RunProgress(run: Run) -> Element {
+pub fn RunProgress(
+    run: Run,
+    /// Whose address book is being read, for the label a run without a total
+    /// yet shows (PMS-1409). Defaults to Google, so the call site that predates
+    /// the iCloud card is unchanged.
+    #[props(default = "Google".to_string())]
+    source: String,
+) -> Element {
     let label = match (percent(&run), run.total) {
         (Some(p), Some(total)) => format!("{} of {total} contacts read ({p}%)", run.processed),
-        _ => "Reading contacts from Google…".to_string(),
+        _ => format!("Reading contacts from {source}…"),
     };
     let width = percent(&run).unwrap_or(0);
     rsx! {
@@ -921,10 +985,12 @@ fn FailureList(run: Run) -> Element {
 
 #[component]
 fn ConnectionFacts(connection: Connection) -> Element {
-    let last_sync = connection
-        .last_sync_at
-        .map(crate::utils::datetime::fmt_datetime_pref)
-        .unwrap_or_else(|| "Never".to_string());
+    let last_sync = connection.last_sync_at.map(|dt| {
+        (
+            dt.to_rfc3339(),
+            crate::utils::datetime::fmt_datetime_pref(dt),
+        )
+    });
     let last_run = connection
         .latest_run
         .as_ref()
@@ -956,7 +1022,13 @@ fn ConnectionFacts(connection: Connection) -> Element {
             }
             div {
                 dt { class: "text-muted", "Last sync" }
-                dd { class: "text-content", "{last_sync}" }
+                dd { class: "text-content",
+                    if let Some((last_sync_iso, last_sync)) = last_sync {
+                        time { datetime: "{last_sync_iso}", "{last_sync}" }
+                    } else {
+                        "Never"
+                    }
+                }
             }
             div {
                 dt { class: "text-muted", "Labels imported" }

@@ -3109,7 +3109,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
             Card {
                 div { class: "py-8 text-center",
                     p {
-                        class: "text-sm text-red-600 dark:text-red-300 mb-2",
+                        class: "text-sm text-red-600 dark:text-red-400 mb-2",
                         "Ticket not found. It may have been deleted, or the link may be incorrect."
                     }
                     Link {
@@ -4214,7 +4214,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             }
                         }
                         if !journal_gaps.is_empty() {
-                            p { class: "mt-4 text-xs text-red-600 dark:text-red-300",
+                            p { class: "mt-4 text-xs text-red-600 dark:text-red-400",
                                 "This ticket's {journal_gaps_label} could not be loaded, so the journal is missing entries. Reload the page to try again."
                             }
                         }
