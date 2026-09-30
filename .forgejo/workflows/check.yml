@@ -346,8 +346,13 @@ jobs:
       - name: Unit tests
         run: cargo test --locked --lib
 
+      # MAPPS-975: the CI image ships no cargo-audit, so the audit below was a
+      # silent no-op. crates.io has no digest, so the crate version is the pin.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
       # MAPPS-918: report known-vulnerable dependencies. Non-blocking until the
-      # backlog is triaged; promote by dropping continue-on-error.
+      # backlog is triaged (MAPPS-976); promote by dropping continue-on-error.
       - name: Audit dependencies
         continue-on-error: true
         run: cargo audit
