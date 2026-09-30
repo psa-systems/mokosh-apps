@@ -551,6 +551,7 @@ pub fn TenantSwitcher() -> Element {
                     confirm_text: "Leave",
                     destructive: true,
                     loading: saving(),
+                    error: error(),
                     onconfirm: move |_| leave_grant(grant_id.clone()),
                     oncancel: move |_| {
                         leaving.set(None);
@@ -627,6 +628,27 @@ mod tests {
         assert!(
             head.contains("code: 404"),
             "a 404 must be handled as success rather than surfaced as an error"
+        );
+    }
+
+    /// MAPPS-974: a non-404 failure of `DELETE /my-grants/{grant_id}` (e.g. a
+    /// 500) sets the `error` signal via `Err(e) => error.set(e.user_message())`
+    /// (:317), but that is only visible if the open `ConfirmDialog` is told
+    /// about it. Asserts the invocation passes the signal through.
+    #[test]
+    fn leave_team_confirm_dialog_reflects_the_error_signal() {
+        let src = include_str!("tenant_switcher.rs");
+        let start = src
+            .find("ConfirmDialog {")
+            .expect("the leave-team ConfirmDialog invocation");
+        let end = src[start..]
+            .find("onconfirm:")
+            .map(|i| start + i)
+            .expect("the onconfirm handler inside that invocation");
+        let invocation = &src[start..end];
+        assert!(
+            invocation.contains("error: error()"),
+            "a 500 from DELETE /my-grants/{{grant_id}} must show inside the open ConfirmDialog, not be dropped"
         );
     }
 }

@@ -51,8 +51,13 @@ const STATUS_PATH: &str = "/integrations/contact-sync";
 const SETTING_CATEGORY: &str = "integrations";
 const SETTING_KEY: &str = "google_contacts_enabled";
 
-/// The not-configured next step for the one person who can fix it.
-const NOT_CONFIGURED_EDITABLE: &str = "Enter this deployment's Google sign-in client below. It only has to be done once, for every organisation on the deployment.";
+/// The not-configured next step for somebody who can fix it themselves.
+///
+/// MAPPS-972: this used to describe the client as belonging to the deployment and
+/// as shared by every organisation on it, which was PMS-1264's model. PMS-1340
+/// made the client the ORGANISATION's, so an admin reading the old line was told
+/// their entry affected everyone when it affects only their own organisation.
+const NOT_CONFIGURED_EDITABLE: &str = "Add your organization's Google sign-in client below. It is yours: your clients see its consent screen, and its API quota is yours rather than shared.";
 
 /// Failed runs in a row before the card calls it failing repeatedly. The
 /// server mails an admin at the same count (`runs::NOTIFY_AFTER`).
@@ -75,7 +80,8 @@ pub struct Overview {
     pub configured: bool,
     #[serde(default)]
     pub connection: Option<Connection>,
-    /// The caller may set the deployment's Google client (PMS-1264).
+    /// The caller may set this organization's Google client (PMS-1264, and
+    /// PMS-1340 which moved it from the deployment to the organisation).
     #[serde(default)]
     pub client_editable: bool,
     /// `integrations/icloud_contacts_enabled` (server PMS-1341), the iCloud half
@@ -196,7 +202,8 @@ pub enum CardState {
     TurnedOff {
         connected_account: Option<String>,
     },
-    /// This deployment has no Google OAuth client.
+    /// This organization has no Google OAuth client, and no deployment-wide one
+    /// is answering for it either (MAPPS-972, the PMS-1340 ladder).
     NotConfigured,
     NeverConnected,
     /// A run is queued (possibly waiting out a rate limit) or running.
@@ -250,8 +257,10 @@ pub fn card_state(overview: &Overview) -> CardState {
 /// One derivation and not two, because the STATES are the same - an import in
 /// flight, a credential a human has to fix, a wait, a failure streak, a partial
 /// import, nothing chosen yet - and only the words differ. `configured` is what
-/// the Google path uses for "this deployment has an OAuth client"; a provider
-/// that needs no deployment-level setup passes `true`.
+/// the Google path uses for "an OAuth client answers for this organisation",
+/// which since PMS-1340 is its own registration, else the deployment-wide
+/// fallback, else the environment; a provider that needs no client at all passes
+/// `true`.
 pub fn card_state_of(
     enabled: bool,
     configured: bool,
@@ -343,8 +352,12 @@ pub fn copy_for(state: &CardState) -> StateCopy {
         CardState::NotConfigured => StateCopy {
             badge: "Not available",
             tone: BadgeVariant::Gray,
-            headline: "This deployment has no Google sign-in client configured.".to_string(),
-            next_step: "Ask whoever runs this deployment to set up its Google sign-in client. Nothing here can be connected until then.".to_string(),
+            headline: "This organization has no Google sign-in client configured.".to_string(),
+            // What a NON-admin sees; `client_editable` replaces it with
+            // `NOT_CONFIGURED_EDITABLE` for somebody who can add one. It points
+            // at an admin of their own organisation rather than at whoever runs
+            // the deployment, because since PMS-1340 that is who can do it.
+            next_step: "Ask an administrator of this organization to add its Google sign-in client. Nothing here can be connected until then.".to_string(),
         },
         CardState::NeverConnected => StateCopy {
             badge: "Not connected",
@@ -358,7 +371,17 @@ pub fn copy_for(state: &CardState) -> StateCopy {
             headline: if *waiting {
                 "Google asked this import to wait, and it resumes by itself.".to_string()
             } else if run.status == "queued" {
-                "An import is queued and starts within a minute.".to_string()
+                // PMS-1429: "within a minute" was the truth when a queued run
+                // waited for the import worker's next 60s tick. The server wakes
+                // that worker the moment the run is committed now, so a queued
+                // run starts in about a second and this card polls every three;
+                // the old line read as a stall to the person watching it.
+                //
+                // Still "in a moment" rather than "now": the status IS queued at
+                // this point, and on a deployment running several API replicas
+                // the wake reaches the one that served the request, so the next
+                // tick is the floor rather than the expectation.
+                "An import is queued and starts in a moment.".to_string()
             } else {
                 "Importing contacts now.".to_string()
             },

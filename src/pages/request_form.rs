@@ -73,6 +73,42 @@ enum Terminal {
     Unusable,
 }
 
+/// Fetches `PublicForm` for `tok` and applies the result. Shared by the
+/// mount-time load and by "Add the next person" (MAPPS-973): the server
+/// computes `person_number` per fetch, so a link covering several people
+/// needs this to run again for each one rather than only once at mount.
+async fn load_form(
+    mut form: Signal<Option<PublicForm>>,
+    mut loading: Signal<bool>,
+    mut terminal: Signal<Option<Terminal>>,
+    tok: String,
+) {
+    #[cfg(feature = "app")]
+    {
+        use crate::hooks::fetch::api::ApiError;
+        match crate::hooks::fetch::api::get_typed::<PublicForm>(&format!(
+            "/public/request-forms/{tok}"
+        ))
+        .await
+        {
+            Ok(f) => form.set(Some(f)),
+            Err(ApiError::Status { code: 410, .. }) => {
+                terminal.set(Some(Terminal::AlreadySubmitted))
+            }
+            Err(ApiError::Status { code: 400, .. }) => terminal.set(Some(Terminal::Unusable)),
+            // Anything else (network, 5xx, 429) is not terminal: the link may
+            // well work on a retry, so the visitor is told to try again
+            // rather than that their link is dead.
+            Err(_) => terminal.set(None),
+        }
+    }
+    #[cfg(not(feature = "app"))]
+    {
+        let _ = tok;
+    }
+    loading.set(false);
+}
+
 #[component]
 pub fn RequestFormPage(token: String) -> Element {
     let token = use_signal(|| token);
@@ -91,41 +127,9 @@ pub fn RequestFormPage(token: String) -> Element {
     let submitting = use_signal(|| false);
 
     // Load the form behind the link.
-    use_effect({
-        let mut form = form;
-        let mut loading = loading;
-        let mut terminal = terminal;
-        move || {
-            let tok = token.read().clone();
-            spawn(async move {
-                #[cfg(feature = "app")]
-                {
-                    use crate::hooks::fetch::api::ApiError;
-                    match crate::hooks::fetch::api::get_typed::<PublicForm>(&format!(
-                        "/public/request-forms/{tok}"
-                    ))
-                    .await
-                    {
-                        Ok(f) => form.set(Some(f)),
-                        Err(ApiError::Status { code: 410, .. }) => {
-                            terminal.set(Some(Terminal::AlreadySubmitted))
-                        }
-                        Err(ApiError::Status { code: 400, .. }) => {
-                            terminal.set(Some(Terminal::Unusable))
-                        }
-                        // Anything else (network, 5xx, 429) is not terminal:
-                        // the link may well work on a retry, so the visitor is
-                        // told to try again rather than that their link is dead.
-                        Err(_) => terminal.set(None),
-                    }
-                }
-                #[cfg(not(feature = "app"))]
-                {
-                    let _ = tok;
-                }
-                loading.set(false);
-            });
-        }
+    use_effect(move || {
+        let tok = token.read().clone();
+        spawn(load_form(form, loading, terminal, tok));
     });
 
     let mut handle_submit = {
@@ -255,7 +259,20 @@ pub fn RequestFormPage(token: String) -> Element {
                                         answers.write().clear();
                                         field_errors.write().clear();
                                         form_error.set(String::new());
+                                        // MAPPS-973: person_number is
+                                        // computed per fetch, so the next
+                                        // person needs a fresh GET, not just
+                                        // the cleared answers above. Loading
+                                        // stays true (and terminal stays
+                                        // None) until it resolves, which
+                                        // keeps the form off screen so the
+                                        // next person cannot submit against
+                                        // the stale one.
+                                        let mut loading = loading;
+                                        loading.set(true);
                                         terminal.set(None);
+                                        let tok = token.read().clone();
+                                        spawn(load_form(form, loading, terminal, tok));
                                     },
                                     "Add the next person"
                                 }
@@ -704,6 +721,41 @@ mod tests {
         assert!(code.contains("#[serde(default)]\n    submissions_remaining: i32,"));
     }
 
+    /// MAPPS-973 regression: "Add the next person" used to only clear local
+    /// answer state, so `person_number` stayed whatever the mount-time fetch
+    /// returned for the first person. The click handler must refetch through
+    /// the same `load_form` the mount effect uses, and keep the form off
+    /// screen (`loading` true) until that refetch resolves, so the next
+    /// person cannot submit against the stale `PublicForm`.
+    #[test]
+    fn the_next_person_button_refetches_before_the_form_reappears() {
+        let src = include_str!("request_form.rs");
+        let code = &src[..src.find("mod tests").expect("this module")];
+        let use_effect_load = code
+            .matches("spawn(load_form(form, loading, terminal,")
+            .count();
+        assert_eq!(
+            use_effect_load, 2,
+            "load_form must be spawned both at mount and from the next-person button; got {use_effect_load} call sites in: {code}"
+        );
+        let handler_start = code
+            .find("MAPPS-973: person_number is")
+            .expect("the next-person handler carries its own doc comment");
+        let label_start = code[handler_start..]
+            .find("\"Add the next person\"")
+            .map(|i| handler_start + i)
+            .expect("the button's label follows its handler");
+        let handler = &code[handler_start..label_start];
+        assert!(
+            handler.contains("loading.set(true)"),
+            "the next-person click must reopen the loading gate, or the stale form stays on screen while the refetch is in flight: {handler}"
+        );
+        assert!(
+            handler.contains("spawn(load_form(form, loading, terminal, tok));"),
+            "the next-person click must spawn the same load_form refetch the mount effect uses: {handler}"
+        );
+    }
+
     /// exactly in the submitted payload, in both directions.
     #[test]
     fn toggling_the_checkbox_flips_the_submitted_value() {
@@ -744,6 +796,32 @@ mod tests {
         dioxus_ssr::render(&dom)
     }
 
+    #[component]
+    fn BodyWithDef(def: PublicForm) -> Element {
+        let answers = use_signal(HashMap::new);
+        let field_errors = use_signal(HashMap::new);
+        rsx! {
+            RequestFormBody {
+                def,
+                answers,
+                field_errors,
+                form_error: String::new(),
+                disabled: false,
+                loading: false,
+                onsubmit: move |_| {},
+            }
+        }
+    }
+
+    /// Renders `RequestFormBody` with a caller-supplied `PublicForm`, standing
+    /// in for whatever `load_form` last set `form` to, whether that was the
+    /// mount fetch or a later one from "Add the next person".
+    fn render_def(def: PublicForm) -> String {
+        let mut dom = VirtualDom::new_with_props(BodyWithDef, BodyWithDefProps { def });
+        dom.rebuild_in_place();
+        dioxus_ssr::render(&dom)
+    }
+
     /// MAPPS-445 regression: the submit used to swap its own label
     /// ("Send request" -> "Sending...") and render no spinner, so a slow
     /// upload showed a client nothing but a greyed-out button with different
@@ -771,5 +849,52 @@ mod tests {
             "an idle form shows no spinner; got: {idle}"
         );
         assert!(idle.contains("Send request"));
+    }
+
+    /// MAPPS-973 acceptance criterion: two sequential submissions on a
+    /// `people = 5` link. Slot 1's fetch renders "Person 1 of 5"; the second
+    /// person's fetch (what `load_form` sets `form` to after "Add the next
+    /// person" refetches) must render "Person 2 of 5", not the first
+    /// person's stale slot.
+    #[test]
+    fn the_second_person_on_a_link_sees_their_own_slot_not_the_first_persons() {
+        let first_submission = render_def(PublicForm {
+            people: 5,
+            person_number: 1,
+            ..form()
+        });
+        assert!(
+            first_submission.contains("Person 1 of 5"),
+            "the first person's fetch shows slot 1; got: {first_submission}"
+        );
+
+        let second_submission = render_def(PublicForm {
+            people: 5,
+            person_number: 2,
+            ..form()
+        });
+        assert!(
+            second_submission.contains("Person 2 of 5"),
+            "the second person's fetch must show slot 2; got: {second_submission}"
+        );
+        assert!(
+            !second_submission.contains("Person 1 of 5"),
+            "the second person's page must not still read slot 1; got: {second_submission}"
+        );
+    }
+
+    /// MAPPS-973 acceptance criterion: the single-person path renders no
+    /// label at all, and stays that way.
+    #[test]
+    fn a_single_person_link_renders_no_person_number_label() {
+        let rendered = render_def(PublicForm {
+            people: 1,
+            person_number: 1,
+            ..form()
+        });
+        assert!(
+            !rendered.contains("Person 1 of 1"),
+            "a single-person link renders no person-number label at all; got: {rendered}"
+        );
     }
 }
