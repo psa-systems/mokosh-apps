@@ -57,8 +57,6 @@ const SETTING_KEY: &str = "google_contacts_enabled";
 /// as shared by every organisation on it, which was PMS-1264's model. PMS-1340
 /// made the client the ORGANISATION's, so an admin reading the old line was told
 /// their entry affected everyone when it affects only their own organisation.
-const NOT_CONFIGURED_EDITABLE: &str = "Add your organization's Google sign-in client below. It is yours: your clients see its consent screen, and its API quota is yours rather than shared.";
-
 /// Failed runs in a row before the card calls it failing repeatedly. The
 /// server mails an admin at the same count (`runs::NOTIFY_AFTER`).
 const FAILING_AFTER: i32 = 3;
@@ -80,10 +78,6 @@ pub struct Overview {
     pub configured: bool,
     #[serde(default)]
     pub connection: Option<Connection>,
-    /// The caller may set this organization's Google client (PMS-1264, and
-    /// PMS-1340 which moved it from the deployment to the organisation).
-    #[serde(default)]
-    pub client_editable: bool,
     /// `integrations/icloud_contacts_enabled` (server PMS-1341), the iCloud half
     /// of `enabled`. Absent reads as enabled, the server's own default.
     #[serde(default = "enabled_by_default")]
@@ -352,12 +346,14 @@ pub fn copy_for(state: &CardState) -> StateCopy {
         CardState::NotConfigured => StateCopy {
             badge: "Not available",
             tone: BadgeVariant::Gray,
-            headline: "This organization has no Google sign-in client configured.".to_string(),
-            // What a NON-admin sees; `client_editable` replaces it with
-            // `NOT_CONFIGURED_EDITABLE` for somebody who can add one. It points
-            // at an admin of their own organisation rather than at whoever runs
-            // the deployment, because since PMS-1340 that is who can do it.
-            next_step: "Ask an administrator of this organization to add its Google sign-in client. Nothing here can be connected until then.".to_string(),
+            headline: "Google Contacts is not available on this deployment.".to_string(),
+            // MAPPS-977: one line for everybody, because nobody here can fix
+            // it. PMS-1264 put a Google Cloud console walkthrough on this card
+            // and PMS-1340 put it in front of every customer; server PMS-1430
+            // made the client a property of the deployment, so there is no
+            // admin of this organization to ask and no form to point at. Naming
+            // who CAN do it is the whole of what the card owes the reader.
+            next_step: "Its Google sign-in client is set by whoever runs this deployment, not in these settings. Nothing here can connect a Google account until they add one.".to_string(),
         },
         CardState::NeverConnected => StateCopy {
             badge: "Not connected",
@@ -685,12 +681,7 @@ fn GoogleContactsSettingsBody() -> Element {
                 Card { ErrorBanner { "Could not load the Google Contacts connection." } }
             },
             (Some(Some(data)), Some(state)) => {
-                let mut copy = copy_for(&state);
-                // PMS-1264: the person who CAN set the client is told where.
-                if state == CardState::NotConfigured && data.client_editable {
-                    copy.next_step = NOT_CONFIGURED_EDITABLE.to_string();
-                }
-                let client_editable = data.client_editable;
+                let copy = copy_for(&state);
                 let actions = actions_for(&state);
                 let disabled = busy() || !can_mutate;
                 let connection = data.connection.clone();
@@ -783,11 +774,6 @@ fn GoogleContactsSettingsBody() -> Element {
                                     }
                                 }
                             }
-                        }
-                    }
-                    if client_editable {
-                        crate::pages::settings_contact_sync_client::GoogleClientForm {
-                            on_change: move |_| overview.restart(),
                         }
                     }
                     Card { class: "mt-6",
@@ -1412,6 +1398,79 @@ mod tests {
         assert!(
             !head.contains("json!("),
             "request bodies are typed (MAPPS-685)"
+        );
+    }
+    /// MAPPS-977: the card asks for nothing about the Google client, and the
+    /// rule it used to enforce is now reversed.
+    ///
+    /// `settings_contact_sync_client.rs` carried a scan called
+    /// `no_copy_calls_the_client_the_deployments`, because under PMS-1340 the
+    /// client belonged to the organisation and calling it the deployment's was
+    /// the error. Server PMS-1430 moved it to the deployment, so that guard is
+    /// inverted here rather than deleted: the words it banned are now the
+    /// truth, and the words it protected are the ones that must not come back.
+    ///
+    /// Scanned as source rather than asserted through a render, because what
+    /// this defends against is somebody reintroducing a form or a console
+    /// walkthrough, and both arrive as text in this file. The needles are
+    /// assembled so this test's own prose is not a match.
+    #[test]
+    fn the_card_asks_for_nothing_about_the_google_client() {
+        let src = include_str!("settings_contact_sync.rs");
+        let all = &src[..src.find("mod tests").expect("this module")];
+        // Comment lines are exempt: this file EXPLAINS the console walkthrough
+        // it used to carry, and a guard that cannot be documented gets reworded
+        // instead of understood. What it defends is the copy a reader sees.
+        let head: String = all
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let head = head.as_str();
+
+        // The retired routes. A call to either is a 404 or a 405 on any server
+        // that has PMS-1430, so it cannot be a stale-but-harmless leftover.
+        assert!(
+            !head.contains("google/client"),
+            "the client routes are gone from the server (PMS-1430)"
+        );
+
+        // The credential itself, in any shape a form would need it.
+        for banned in [
+            format!("client{}id", "_"),
+            format!("client{}secret", "_"),
+            "Google Cloud".to_string(),
+            "People API".to_string(),
+            format!("client{}editable", "_"),
+        ] {
+            assert!(
+                !head.contains(banned.as_str()),
+                "the card mentions {banned:?}; the client is the host's and is configured by                  whoever runs the deployment"
+            );
+        }
+
+        // The ownership wording PMS-1340 required and PMS-1430 reversed.
+        for stale in [
+            "your organization's Google sign-in client",
+            "This organization has no Google sign-in client",
+            "its API quota is yours",
+        ] {
+            assert!(
+                !head.contains(stale),
+                "the card still says {stale:?}; the client is not the organisation's any more"
+            );
+        }
+
+        // And the replacement says who CAN act, since nobody reading this card
+        // can. A next step that names no actor is the failure this asserts
+        // against, not a wording preference.
+        let unavailable = copy_for(&CardState::NotConfigured);
+        assert!(
+            unavailable
+                .next_step
+                .contains("whoever runs this deployment"),
+            "the unavailable state has to name who can fix it: {}",
+            unavailable.next_step
         );
     }
 }
