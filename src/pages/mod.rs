@@ -44,7 +44,6 @@ pub mod pick_tenant;
 pub mod platform_account;
 pub mod platform_login;
 pub mod settings_contact_sync;
-pub mod settings_contact_sync_client;
 pub mod settings_contact_sync_icloud;
 pub mod settings_contact_sync_icloud_import;
 pub mod settings_contact_sync_import;
