@@ -99,6 +99,7 @@ comment):
 | `check-prose-layer.sh` | The Markdown prose corrections stay in a cascade layer that outranks the typography plugin. |
 | `check-refresh-token-storage.sh` | The portal and contact refresh tokens are never written to `localStorage`; they live in `sessionStorage` until an HttpOnly cookie flow exists. |
 | `check-runner-labels.sh` | CI's Rust build runs on the dev runner label, not the base image. |
+| `check-scrollbars.sh` | Scrollbars keep the auto-hiding contract: a 14px grab zone with no painted track, `scrollbar-width`/`scrollbar-color` only in the Firefox block, and a 5-7 s `SCROLLBAR_IDLE_MS` in `assets/scrollbar-autohide.js`. |
 | `check-sort-keys.sh` | No page hardcodes a `?sort=` value outside the shared `sort_keys` module. |
 | `check-status-banner.sh` | Every inline status banner uses `components::StatusBanner`, never a hand-rolled recipe. |
 | `check-theme-storage-key.sh` | The first-paint theme script and the app agree on the same `localStorage` key. |

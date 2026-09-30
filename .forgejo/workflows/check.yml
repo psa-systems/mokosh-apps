@@ -241,6 +241,13 @@ jobs:
           bash scripts/check-theme-storage-key.sh --self-test
           bash scripts/check-theme-storage-key.sh
 
+      # MAPPS-970: auto-hiding scrollbars. A global `scrollbar-color` made Chromium drop every
+      # webkit rule, and `scrollbar-hide` left the sidebar with no bar to grab.
+      - name: Scrollbar guard
+        run: |
+          bash scripts/check-scrollbars.sh --self-test
+          bash scripts/check-scrollbars.sh
+
       # MAPPS-917: the portal and contact refresh tokens stay out of localStorage.
       - name: Refresh-token storage guard
         run: |

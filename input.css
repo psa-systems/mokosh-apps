@@ -220,45 +220,6 @@
     @apply bg-app text-content;
   }
 
-  /* Themed scrollbars (global default). The browser default is an
-     opaque white trough that reads as a hard seam against the gray/blue
-     theme, especially in dark mode. Style every scrollable element to
-     match the theme: a transparent track and a rounded gray thumb that
-     darkens on hover, mirroring the `.scrollbar-thin` utility palette.
-     `.scrollbar-thin` / `.scrollbar-hide` still override this per element. */
-  * {
-    scrollbar-width: thin;
-    /* Themed thumb on a transparent track; follows the base mode via
-       the --line-strong token (no separate .dark override needed). */
-    scrollbar-color: var(--line-strong) transparent;
-  }
-
-  ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
-  }
-
-  ::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  ::-webkit-scrollbar-thumb {
-    @apply bg-line-strong rounded-full;
-    /* Inset border keeps the thumb visually thinner than the track and
-       off the very edge, so it reads as a soft pill, not a hard bar. */
-    border: 2px solid transparent;
-    background-clip: padding-box;
-  }
-
-  ::-webkit-scrollbar-thumb:hover {
-    @apply bg-muted;
-    background-clip: padding-box;
-  }
-
-  ::-webkit-scrollbar-corner {
-    background: transparent;
-  }
-
   /* MAPPS-423: restore the pointer cursor on clickable controls. Tailwind
      v4's preflight sets `button { cursor: default }`, so nothing in the app
      looked clickable on hover. Disabled controls are excluded here and keep
@@ -374,17 +335,98 @@
   }
 }
 
-@layer utilities {
-  /* Hide the scrollbar visuals while keeping the element scrollable.
-     Used on the sidebar so a long nav list can still scroll without
-     the scrollbar trough sitting flush against the right edge of
-     the column. */
-  .scrollbar-hide {
-    -ms-overflow-style: none;   /* IE / Edge legacy */
-    scrollbar-width: none;       /* Firefox */
+/* Auto-hiding scrollbars (MAPPS-970, ported from BUNYIP-848): a 5px thumb, no track, a 14px grab
+   zone; assets/scrollbar-autohide.js reveals it and scripts/check-scrollbars.sh gates it. */
+@property --sb-alpha {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+
+/* Reserve the track on vertical scroll containers so gaining or losing a scrollbar shifts nothing.
+   Horizontal-only wrappers have nothing to reserve on the inline edge. */
+html,
+[class*="overflow-auto"],
+[class*="overflow-y-auto"],
+[class*="overflow-scroll"],
+[class*="overflow-y-scroll"] {
+  scrollbar-gutter: stable;
+}
+
+/* Hidden at rest only once the script tags <html>, so a page without it fails visible. `transition-*`
+   utilities outrank this layer; reduced motion drops the glide, not the hold. */
+@layer base {
+  html[data-scrollbars="auto"],
+  html[data-scrollbars="auto"]
+    :where(
+      [class*="overflow-auto"],
+      [class*="overflow-x-auto"],
+      [class*="overflow-y-auto"],
+      [class*="overflow-scroll"],
+      [class*="overflow-x-scroll"],
+      [class*="overflow-y-scroll"],
+      pre,
+      table,
+      textarea
+    ) {
+    --sb-alpha: 0;
+    @media (prefers-reduced-motion: no-preference) {
+      transition: --sb-alpha 400ms ease-in-out;
+    }
   }
-  .scrollbar-hide::-webkit-scrollbar {
-    display: none;               /* Chrome / Safari / WebKit */
+  html[data-scrollbars="auto"][data-scrollbar-active],
+  html[data-scrollbars="auto"] [data-scrollbar-active] {
+    --sb-alpha: 1;
+    @media (prefers-reduced-motion: no-preference) {
+      transition: --sb-alpha 150ms ease-out;
+    }
+  }
+}
+
+/* Any `scrollbar-width` / `scrollbar-color` Chromium sees makes it drop these rules (YOTUN-208),
+   so those two live in the Firefox block alone. */
+::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+  background-color: transparent;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background-color: transparent;
+}
+
+/* A 5px pill in the 14px zone (Chromium floors a 4.5px border to 4px, a 6px pill, hence 4 + 5).
+   Its transparent border is still thumb, so the whole 14px strip drags. */
+::-webkit-scrollbar-thumb {
+  border-style: solid;
+  border-color: transparent;
+  border-width: 4px 5px 5px 4px;
+  border-radius: 9999px;
+  background-clip: padding-box;
+  background-color: color-mix(in srgb, var(--line-strong) calc(var(--sb-alpha) * 100%), transparent);
+}
+
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+  border-width: 3px;
+  background-color: color-mix(in srgb, var(--muted) calc(var(--sb-alpha) * 100%), transparent);
+}
+
+/* Firefox lacks ::-webkit-scrollbar and pixel widths, so `thin` is allowed here and nowhere else. */
+@supports not selector(::-webkit-scrollbar) {
+  html,
+  [class*="overflow-auto"],
+  [class*="overflow-x-auto"],
+  [class*="overflow-y-auto"],
+  [class*="overflow-scroll"],
+  [class*="overflow-x-scroll"],
+  [class*="overflow-y-scroll"],
+  pre,
+  table,
+  textarea {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--line-strong) calc(var(--sb-alpha) * 100%), transparent) transparent;
   }
 }
 
@@ -576,38 +618,6 @@
     -webkit-line-clamp: 3;
     -webkit-box-orient: vertical;
     overflow: hidden;
-  }
-
-  /* Scrollbar styling */
-  .scrollbar-thin {
-    scrollbar-width: thin;
-  }
-
-  .scrollbar-thin::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-  }
-
-  .scrollbar-thin::-webkit-scrollbar-track {
-    @apply bg-surface-2;
-  }
-
-  .scrollbar-thin::-webkit-scrollbar-thumb {
-    @apply bg-line-strong rounded-full;
-  }
-
-  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-    @apply bg-muted;
-  }
-
-  /* Hide scrollbar but keep functionality */
-  .scrollbar-hide {
-    -ms-overflow-style: none;
-    scrollbar-width: none;
-  }
-
-  .scrollbar-hide::-webkit-scrollbar {
-    display: none;
   }
 
   /* Backdrop blur fallback */

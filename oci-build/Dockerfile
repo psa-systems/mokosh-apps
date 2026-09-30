@@ -113,7 +113,8 @@ COPY assets/favicon.svg assets/favicon.ico assets/apple-touch-icon.png \
 # `try_files` serves index.html for it as text/html, which the browser rejects
 # with "Uncaught SyntaxError: Unexpected token '<'". Copy it into the web root's
 # /assets so file_server serves it as JS before the SPA fallback (PMS-687).
-COPY assets/theme-init.js /usr/share/caddy/assets/theme-init.js
+# scrollbar-autohide.js (MAPPS-970) is the same kind of raw index.html script, so it is copied the same way.
+COPY assets/theme-init.js assets/scrollbar-autohide.js /usr/share/caddy/assets/
 
 # Pre-create /etc/caddy with the default 0755 mode. The Caddyfile
 # COPY below pins --chmod=0644 so the file is readable by appuser

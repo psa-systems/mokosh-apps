@@ -95,11 +95,12 @@
         file {path}
     }
     header @immutable Cache-Control "public, max-age=31536000, immutable"
-    # `theme-init.js` is the one stable-named (non-hashed) script under
-    # /assets - a raw <script src> in index.html, not an `asset!()` - so
-    # it must keep revalidating. Excepted back to no-cache after the
-    # immutable block (a later matching header directive wins).
-    @stable-asset path /assets/theme-init.js
+    # `theme-init.js` and `scrollbar-autohide.js` (MAPPS-970) are the
+    # stable-named (non-hashed) scripts under /assets - raw <script src>
+    # tags in index.html, not `asset!()` - so they must keep revalidating.
+    # Excepted back to no-cache after the immutable block (a later
+    # matching header directive wins).
+    @stable-asset path /assets/theme-init.js /assets/scrollbar-autohide.js
     header @stable-asset Cache-Control "no-cache, no-store, must-revalidate"
     # MAPPS-852: root-path icons (favicon.svg, apple-touch-icon.png, the PWA
     # manifest's icon-*.png set) are not content-hashed, so they cannot join

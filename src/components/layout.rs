@@ -243,13 +243,13 @@ pub fn Sidebar(props: SidebarProps) -> Element {
         // Desktop sidebar - sits below the top bar in the flex column
         // (no fixed positioning needed). MAPPS-346: the collapse toggle
         // moved out of an in-sidebar row (which left dead space under the
-        // top bar) onto a half-circle handle straddling the right border,
-        // and the sidebar's scrollbar is hidden (`scrollbar-hide`) so the
-        // rail reads as a clean surface. The relative wrapper is NOT
-        // clipped so the handle can protrude past the border; the aside
-        // inside owns the (hidden) scroll.
+        // top bar) onto a half-circle handle straddling the right border.
+        // MAPPS-970: the sidebar's scrollbar auto-hides like every other pane
+        // (clean at rest, grabbable on approach) instead of being hidden outright.
+        // The relative wrapper is NOT clipped so the handle can protrude past
+        // the border; the aside inside owns the scroll.
         div { class: "relative hidden lg:flex {desktop_width} shrink-0 lg:flex-col transition-[width] duration-200 ease-in-out",
-            aside { class: "flex-1 min-h-0 flex flex-col bg-surface-2 border-r border-line overflow-y-auto overscroll-contain scrollbar-hide",
+            aside { class: "flex-1 min-h-0 flex flex-col bg-surface-2 border-r border-line overflow-y-auto overscroll-contain",
                 SidebarContent { persist_scroll: true, collapsed }
             }
             // Half-circle collapse handle on the right border. The chevron
@@ -522,7 +522,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                 // spare height. When the rail overflows, space-between degrades to
                 // flex-start (no top clipping) so it just scrolls at the minimum
                 // density. Expanded keeps the original block + space-y-1.
-                class: if collapsed { "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-hide flex flex-col justify-between gap-0.5 px-1 pt-1 pb-2" } else { "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-hide px-2 pt-1 pb-4 space-y-1" },
+                class: if collapsed { "flex-1 min-h-0 overflow-y-auto overscroll-contain flex flex-col justify-between gap-0.5 px-1 pt-1 pb-2" } else { "flex-1 min-h-0 overflow-y-auto overscroll-contain px-2 pt-1 pb-4 space-y-1" },
                 // On mount of the persistent desktop sidebar, jump straight
                 // to the offset recorded before the last navigation so the
                 // re-mount is invisible. `peek` so reading it here never
