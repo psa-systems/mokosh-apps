@@ -64,7 +64,7 @@ default:
 # desktop, clippy, fmt, and the rest of the project's linting/consistency
 # checks).
 [group: 'check']
-check: check-justfile check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-refresh-token-storage check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging check-loading-recipe check-company-id-copy
+check: check-justfile check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-scrollbars check-refresh-token-storage check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging check-loading-recipe check-company-id-copy
 
 # MAPPS-682: clippy, not check, and `-D warnings`, so the browser target fails
 # on a finding instead of printing it. Mirrors check-clippy and check.yml.
@@ -92,6 +92,13 @@ check-theme-tokens:
 check-theme-storage-key:
     bash scripts/check-theme-storage-key.sh --self-test
     bash scripts/check-theme-storage-key.sh
+
+# MAPPS-970: auto-hiding scrollbars (ported from BUNYIP-848): scrollbar-width/-color only in the Firefox block, no painted track, no hidden bar, a 14px zone, and a 5-7 s SCROLLBAR_IDLE_MS. --self-test first, so a guard that stopped guarding fails loudly.
+[doc("Fail if the auto-hiding scrollbar contract breaks (MAPPS-970).")]
+[group: 'check']
+check-scrollbars:
+    bash scripts/check-scrollbars.sh --self-test
+    bash scripts/check-scrollbars.sh
 
 # MAPPS-917: the portal and contact refresh tokens must stay out of localStorage (sessionStorage only). --self-test first, so a guard that stopped guarding fails loudly.
 [doc("Fail if a refresh token is written to localStorage (MAPPS-917).")]

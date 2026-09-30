@@ -28,6 +28,10 @@
          because the CSP `script-src 'self' 'wasm-unsafe-eval'` refuses inline
          script execution. The WASM app takes over the theme once it boots. -->
     <script src="/assets/theme-init.js"></script>
+
+    <!-- MAPPS-970: auto-hiding scrollbars. Same-origin for the same CSP reason; `defer` so the
+         DOM is parsed first. Without it the bars stay visible (input.css fails visible). -->
+    <script src="/assets/scrollbar-autohide.js" defer></script>
 </head>
 <body>
     <!-- App root -->
