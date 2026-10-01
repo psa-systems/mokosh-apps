@@ -189,16 +189,24 @@ fn GoogleClientForm() -> Element {
                 .await
                 {
                     Ok(saved) => {
+                        // The server says whether its write is live, and this
+                        // line is the only thing an operator has to go on, so it
+                        // reads the field rather than restating what PMS-1444
+                        // does today. A page that promised immediacy
+                        // unconditionally would start lying the moment the
+                        // server's answer changed.
+                        let message = if saved.restart_required {
+                            "Google sign-in client saved. Restart the deployment to start using it."
+                        } else {
+                            "Google sign-in client saved. It is in use now, with no restart."
+                        };
                         state.set(saved);
                         // Cleared on success, not kept: the server will not
                         // return them and a filled field after a save suggests
                         // the page is showing what is stored.
                         client_id.set(String::new());
                         client_secret.set(String::new());
-                        crate::hooks::push_toast(
-                            crate::components::AlertType::Success,
-                            "Google sign-in client saved. It is in use now, with no restart.",
-                        );
+                        crate::hooks::push_toast(crate::components::AlertType::Success, message);
                     }
                     Err(err) => {
                         crate::hooks::push_api_error(&err);
@@ -254,6 +262,11 @@ fn GoogleClientForm() -> Element {
                     if view.client_id_set != view.client_secret_set {
                         ErrorBanner {
                             "Only one half of the pair is stored, which stops this deployment from starting. Enter both below."
+                        }
+                    }
+                    if view.configured && view.restart_required {
+                        p { class: "text-sm text-muted",
+                            "A change here needs the deployment restarted before it is used."
                         }
                     }
                     if !view.provider.is_empty() {
@@ -453,6 +466,35 @@ mod tests {
             strings, 1,
             "GoogleClientView grew a second string field; the only one that belongs is the \
              provider NAME: {view}"
+        );
+    }
+
+    /// The page does not promise immediacy on its own authority.
+    ///
+    /// `restart_required` exists on the server's view so the client can stop
+    /// claiming a save is live if that ever stops being true (PMS-1444 swaps
+    /// the running client, so it is `false` today). A hard-coded "no restart"
+    /// line would turn that field into decoration and the page into a lie on
+    /// the day it flipped.
+    #[test]
+    fn the_save_message_reads_the_servers_answer_rather_than_asserting_it() {
+        let src = include_str!("settings_google_client.rs");
+        let head = &src[..src.find("mod tests").expect("this module")];
+        assert!(
+            head.contains("if saved.restart_required"),
+            "the save message has to branch on what the server said"
+        );
+        let promise = "in use now, with no restart";
+        assert!(
+            head.contains(promise),
+            "and it still says so in the case where it is true"
+        );
+        // The claim appears once, inside that branch. A second copy would be
+        // the unconditional one coming back.
+        assert_eq!(
+            head.matches(promise).count(),
+            1,
+            "the no-restart claim appears more than once, so one of them is unconditional"
         );
     }
 
