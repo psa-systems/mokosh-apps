@@ -565,6 +565,17 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         advanced: false,
         visibility: SurfaceVisibility::StaffAdmin,
     },
+    // MAPPS-980: the deployment's Google OAuth client (server PMS-1444).
+    // Advanced, and listed after the import pages it enables: an operator sets
+    // it once per deployment, while the pages below are where the work happens.
+    SettingsSurface {
+        route: Route::SettingsGoogleClient {},
+        title: "Google sign-in client",
+        description: "The Google application this deployment authenticates as. One client for every organization here; set once by whoever runs the deployment.",
+        group: SettingsGroupKey::Integrations,
+        advanced: true,
+        visibility: SurfaceVisibility::StaffAdmin,
+    },
     // MAPPS-808: listed first in the group and not advanced: it is the one an
     // MSP without an RMM still has a use for.
     SettingsSurface {

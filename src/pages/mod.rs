@@ -49,6 +49,7 @@ pub mod settings_contact_sync_icloud_import;
 pub mod settings_contact_sync_import;
 pub mod settings_contact_sync_vcard;
 pub mod settings_email;
+pub mod settings_google_client;
 pub mod settings_modules;
 // MAPPS-938: which shape a new invoice's number takes
 // (`billing_prefs/invoice_numbering`, PMS-979).
