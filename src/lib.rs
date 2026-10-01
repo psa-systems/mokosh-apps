@@ -1051,6 +1051,11 @@ pub enum Route {
     // previously reachable only through the API with an admin bearer.
     #[route("/settings/email")]
     SettingsEmail {},
+    // MAPPS-971: the integrations page (server PMS-1310, PMS-1312, PMS-1447).
+    // What this organization delegates to other systems; distinct from the
+    // per-provider settings pages, which is where credentials are entered.
+    #[route("/settings/integrations")]
+    SettingsIntegrations {},
     // MAPPS-980: the deployment's Google OAuth client (server PMS-1444).
     // Deployment-wide, beside Email, and NOT the per-tenant form MAPPS-977
     // deleted: that one was on the tenant card, for a credential that was
@@ -2266,6 +2271,15 @@ fn SettingsEmail() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             pages::settings_email::EmailSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsIntegrations() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_integrations::IntegrationsPage {}
         }
     }
 }

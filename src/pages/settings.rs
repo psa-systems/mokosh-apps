@@ -565,6 +565,17 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         advanced: false,
         visibility: SurfaceVisibility::StaffAdmin,
     },
+    // MAPPS-971: the integrations page (server PMS-1310). Listed first in the
+    // group and not advanced: it is the overview the per-provider pages below
+    // are reached from.
+    SettingsSurface {
+        route: Route::SettingsIntegrations {},
+        title: "Integrations",
+        description: "What this organization delegates to other systems, and what each one is allowed to do.",
+        group: SettingsGroupKey::Integrations,
+        advanced: false,
+        visibility: SurfaceVisibility::StaffAdmin,
+    },
     // MAPPS-980: the deployment's Google OAuth client (server PMS-1444).
     // Advanced, and listed after the import pages it enables: an operator sets
     // it once per deployment, while the pages below are where the work happens.
