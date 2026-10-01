@@ -1051,6 +1051,12 @@ pub enum Route {
     // previously reachable only through the API with an admin bearer.
     #[route("/settings/email")]
     SettingsEmail {},
+    // MAPPS-980: the deployment's Google OAuth client (server PMS-1444).
+    // Deployment-wide, beside Email, and NOT the per-tenant form MAPPS-977
+    // deleted: that one was on the tenant card, for a credential that was
+    // never the tenant's.
+    #[route("/settings/integrations/google-client")]
+    SettingsGoogleClient {},
     // MAPPS-808: Google Contacts import (server PSA-70, PMS-1211..1215, 1241).
     // The OAuth callback and the `contact_sync.failing` mail both land here.
     #[route("/settings/integrations/google-contacts")]
@@ -2260,6 +2266,15 @@ fn SettingsEmail() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             pages::settings_email::EmailSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsGoogleClient() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_google_client::GoogleClientPage {}
         }
     }
 }
