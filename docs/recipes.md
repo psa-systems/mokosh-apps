@@ -74,6 +74,7 @@ comment):
 | --- | --- |
 | `check-auth-error-prose.sh` | The `/auth/callback` failure classifies on the `FlowError` variant, never by matching the rendered error string. |
 | `check-cancel-routes.sh` | A shared create/edit form's Cancel routes back to the record being edited, plus the global pointer-cursor rule. |
+| `check-card-headings.sh` | A `Card`'s heading comes from its `title` prop; an `h2`/`h3` in the heading slot needs a `// card-heading-allow:` reason. |
 | `check-ci-parity.sh` | Every command a `check` recipe runs, including its `--self-test`, has a matching step in `.forgejo/workflows/check.yml`. |
 | `check-class-omissions.sh` | Three specific Tailwind class omissions (auth heading, form-grid breakpoint, table name-cell colour) stay fixed. |
 | `check-company-id-copy.sh` | No "Portal ID" copy under `src/pages/contact_portal/`; the user-facing name is "Company ID". |

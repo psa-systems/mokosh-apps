@@ -64,7 +64,7 @@ default:
 # desktop, clippy, fmt, and the rest of the project's linting/consistency
 # checks).
 [group: 'check']
-check: check-justfile check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-scrollbars check-refresh-token-storage check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging check-loading-recipe check-company-id-copy
+check: check-justfile check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-scrollbars check-refresh-token-storage check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging check-loading-recipe check-company-id-copy check-card-headings
 
 # MAPPS-682: clippy, not check, and `-D warnings`, so the browser target fails
 # on a finding instead of printing it. Mirrors check-clippy and check.yml.
@@ -133,6 +133,12 @@ check-hooks-before-return:
 check-fetch-error-logging:
     bash scripts/check-fetch-error-logging.sh --self-test
     bash scripts/check-fetch-error-logging.sh
+
+# MAPPS-967: a Card's heading comes from its `title` prop, never from an `h2`/`h3` in the body. Two heading styles coexisted across 22 cards, differing in size, weight and inset per page. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-card-headings:
+    bash scripts/check-card-headings.sh --self-test
+    bash scripts/check-card-headings.sh
 
 # MAPPS-584: keep the Markdown corrections in a cascade layer that outranks @tailwindcss/typography. In `@layer components` they lost to the plugin and shipped inert. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']

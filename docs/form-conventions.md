@@ -403,6 +403,8 @@ Two layout rules every page follows, so cards neither touch nor sit twice as far
 
 The profile page is the reference: one `mx-auto w-full max-w-5xl space-y-6` column (the width `settings.rs` uses since MAPPS-257), with every card headed by `title` / `subtitle`.
 
+MAPPS-967 converted the other 22 cards that wrote their own heading and `scripts/check-card-headings.sh` keeps them converted: it fails an `h2` or `h3` in a card's heading slot, which is its first rendered element reached through any plain wrapper `div`. Four shapes legitimately keep a heading in the body and carry `// card-heading-allow: <reason>` on the line above it: a centred empty state whose icon comes first, a document preview whose heading is the invoice's or credit note's own title, a heading that is a focus target (`tabindex: "-1"` plus an `onmounted` that moves focus to it, neither of which a string prop can hold), and an empty-state message styled as a heading but read as prose.
+
 ## Modal vs full page
 
 The choice is **structural**, not stylistic:
