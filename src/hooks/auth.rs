@@ -131,6 +131,17 @@ impl AuthContext {
         self.user.as_ref().is_some_and(|u| u.role.is_admin())
     }
 
+    /// MAPPS-989: shorthand for "current user meets the server's
+    /// `RequireManager` floor" (super_admin, admin, or manager). Use this,
+    /// not [`Self::is_admin`], to gate a control whose server route is
+    /// `RequireManager` rather than `RequireAdmin`: `is_admin` wrongly
+    /// excludes `manager`, which `RequireManager` allows.
+    pub fn can_manage(&self) -> bool {
+        self.user
+            .as_ref()
+            .is_some_and(|u| u.role.can_manage_users())
+    }
+
     /// PMS-791 / MAPPS-462: true when the caller's tenant is a
     /// multi-user org tenant. Empty tenant_kind (older server) reads as
     /// org (fail-open UI; server still gates the actual endpoints).
