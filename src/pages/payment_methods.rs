@@ -148,74 +148,78 @@ fn ContactPaymentMethodsBody() -> Element {
             }
 
             Card {
-                div { class: "flex items-center justify-between mb-4",
-                    h2 { class: "text-lg font-semibold text-content", "Saved cards" }
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        disabled: *add_saving.read(),
-                        loading: *add_saving.read(),
-                        r#type: "button".to_string(),
-                        onclick: move |_| {
-                            if *add_saving.read() {
-                                return;
-                            }
-                            add_saving.set(true);
-                            action_error.set(String::new());
-                            spawn(async move {
-                                #[cfg(feature = "app")]
-                                {
-                                    let origin = crate::platform::location::origin().unwrap_or_default();
-                                    // MAPPS-674: return to this same page after
-                                    // Stripe finishes or the customer cancels. The
-                                    // page's own resource re-fetches on mount, so
-                                    // the new card appears once the webhook has
-                                    // landed.
-                                    let base = Route::ContactPaymentMethods {}.to_string();
-                                    let body = StartAddPaymentMethodBody {
-                                        success_url: format!("{origin}{base}?added=1"),
-                                        cancel_url: format!("{origin}{base}"),
-                                    };
-                                    match crate::hooks::fetch::api::post_contact_authed_typed::<
-                                        StartAddPaymentMethodResponse,
-                                        _,
-                                    >("/contact/payment-methods", &body)
-                                    .await
+                title: "Saved cards".to_string(),
+                // MAPPS-967: the heading-row control moves to `actions`, which is
+                // what keeps it on the header's baseline now that the heading is
+                // the card's own rather than a flex row in the body.
+                actions: rsx! {
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            disabled: *add_saving.read(),
+                            loading: *add_saving.read(),
+                            r#type: "button".to_string(),
+                            onclick: move |_| {
+                                if *add_saving.read() {
+                                    return;
+                                }
+                                add_saving.set(true);
+                                action_error.set(String::new());
+                                spawn(async move {
+                                    #[cfg(feature = "app")]
                                     {
-                                        Ok(resp) if !resp.checkout_url.is_empty() => {
-                                            #[cfg(target_arch = "wasm32")]
-                                            {
-                                                if let Some(win) = web_sys::window() {
-                                                    let _ = win.location().replace(&resp.checkout_url);
-                                                    return;
+                                        let origin = crate::platform::location::origin().unwrap_or_default();
+                                        // MAPPS-674: return to this same page after
+                                        // Stripe finishes or the customer cancels. The
+                                        // page's own resource re-fetches on mount, so
+                                        // the new card appears once the webhook has
+                                        // landed.
+                                        let base = Route::ContactPaymentMethods {}.to_string();
+                                        let body = StartAddPaymentMethodBody {
+                                            success_url: format!("{origin}{base}?added=1"),
+                                            cancel_url: format!("{origin}{base}"),
+                                        };
+                                        match crate::hooks::fetch::api::post_contact_authed_typed::<
+                                            StartAddPaymentMethodResponse,
+                                            _,
+                                        >("/contact/payment-methods", &body)
+                                        .await
+                                        {
+                                            Ok(resp) if !resp.checkout_url.is_empty() => {
+                                                #[cfg(target_arch = "wasm32")]
+                                                {
+                                                    if let Some(win) = web_sys::window() {
+                                                        let _ = win.location().replace(&resp.checkout_url);
+                                                        return;
+                                                    }
                                                 }
+                                                #[cfg(not(target_arch = "wasm32"))]
+                                                {
+                                                    let _ = &resp;
+                                                }
+                                                action_error.set(
+                                                    "Adding a card is only available in the web portal. Open your portal in a browser to add a card.".to_string(),
+                                                );
                                             }
-                                            #[cfg(not(target_arch = "wasm32"))]
-                                            {
-                                                let _ = &resp;
+                                            Ok(_) => {
+                                                action_error.set(
+                                                    "The payment provider returned an empty response. Try again.".to_string(),
+                                                );
                                             }
-                                            action_error.set(
-                                                "Adding a card is only available in the web portal. Open your portal in a browser to add a card.".to_string(),
-                                            );
-                                        }
-                                        Ok(_) => {
-                                            action_error.set(
-                                                "The payment provider returned an empty response. Try again.".to_string(),
-                                            );
-                                        }
-                                        Err(err) => {
-                                            action_error.set(format!(
-                                                "Could not start adding a card: {}",
-                                                err.user_message()
-                                            ));
+                                            Err(err) => {
+                                                action_error.set(format!(
+                                                    "Could not start adding a card: {}",
+                                                    err.user_message()
+                                                ));
+                                            }
                                         }
                                     }
-                                }
-                                add_saving.set(false);
-                            });
-                        },
-                        "Add a card"
-                    }
-                }
+                                    add_saving.set(false);
+                                });
+                            },
+                            "Add a card"
+                        }
+                },
+
                 match &*snap {
                     None => rsx! {
                         div { class: "space-y-4 py-2",

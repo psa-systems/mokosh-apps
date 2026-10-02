@@ -161,13 +161,9 @@ fn PlatformPasswordCard() -> Element {
 
     rsx! {
         Card {
+            title: "Password".to_string(),
+            subtitle: "Change the password for this platform-admin sign-in.".to_string(),
             div { class: "space-y-6",
-                div {
-                    h2 { class: "text-base font-semibold text-content", "Password" }
-                    p { class: "text-sm text-muted",
-                        "Change the password for this platform-admin sign-in."
-                    }
-                }
                 if !error().is_empty() {
                     ErrorBanner { "{error}" }
                 }
@@ -243,15 +239,14 @@ fn PlatformMfaCard(props: PlatformMfaCardProps) -> Element {
 
     rsx! {
         Card {
+            // MAPPS-967: label and description on the Card; the enabled/not-enabled
+            // line stays in the body because it is state, not part of the label.
+            title: "Two-factor authentication".to_string(),
+            subtitle: "A TOTP code from an authenticator app, held on this platform-admin account."
+                .to_string(),
             div { class: "flex items-center justify-between gap-4",
                 div {
-                    h2 { class: "text-base font-semibold text-content",
-                        "Two-factor authentication"
-                    }
-                    p { class: "text-sm text-muted",
-                        "A TOTP code from an authenticator app, held on this platform-admin account."
-                    }
-                    p { class: "mt-1 text-sm font-medium text-content",
+                    p { class: "text-sm font-medium text-content",
                         if enabled() { "Enabled" } else { "Not enabled" }
                     }
                 }
