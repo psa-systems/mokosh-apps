@@ -454,6 +454,27 @@ fn note_is_editable(note: &RemoteNote, viewer: Option<uuid::Uuid>, viewer_is_adm
     viewer_is_admin || (viewer.is_some() && viewer == note.created_by_id)
 }
 
+/// MAPPS-989: mirrors the server's `RequireManager` floor on
+/// `DELETE /tickets/{id}` (`mokosh-server/src/modules/tickets/routes.rs`),
+/// which allows `super_admin`/`admin`/`manager`. Returns the disabled state
+/// and, when disabled, the reason to show in the button's title.
+fn ticket_delete_gate(
+    deleting: bool,
+    can_mutate: bool,
+    can_manage: bool,
+) -> (bool, Option<&'static str>) {
+    if deleting || !can_mutate {
+        (
+            true,
+            (!can_mutate).then_some("Can't delete while the server is unreachable"),
+        )
+    } else if !can_manage {
+        (true, Some("Only a manager or above can delete a ticket"))
+    } else {
+        (false, None)
+    }
+}
+
 /// MAPPS-613: every `NoteType`, in the order the composer considers them.
 ///
 /// Written out rather than iterated, because the shared enum offers no such
@@ -2690,6 +2711,11 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     let can_comment = crate::hooks::capabilities::use_capability("tickets:comment");
     let staff_only =
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    // MAPPS-989: the server's `delete_ticket` route is `RequireManager`
+    // (super_admin/admin/manager), not `RequireAdmin`, so the Delete button
+    // gate must match that floor rather than reusing the narrower
+    // `is_admin` pattern used elsewhere.
+    let can_manage = crate::hooks::use_auth().read().can_manage();
     // MAPPS-607: new dual-plane caps introduced by PMS-936. Staff and
     // platform-admin sessions bypass unconditionally via `use_capability`,
     // so the buttons still render for them regardless of the contact
@@ -3439,16 +3465,23 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                     }
                     // MAPPS-313: per-ticket Delete affordance, matching
                     // the pattern on Company / Contract / Asset detail.
-                    Button {
-                        variant: ButtonVariant::Danger,
-                        // MAPPS-357: block delete while the server is unreachable.
-                        disabled: deleting_ticket() || !can_mutate,
-                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                        onclick: move |_| {
-                            delete_ticket_error.set(String::new());
-                            confirming_ticket_delete.set(true);
-                        },
-                        "Delete"
+                    {
+                        let (delete_disabled, delete_reason) =
+                            ticket_delete_gate(deleting_ticket(), can_mutate, can_manage);
+                        rsx! {
+                            Button {
+                                variant: ButtonVariant::Danger,
+                                // MAPPS-357: block delete while the server is unreachable.
+                                // MAPPS-989: block delete below the server's manager floor.
+                                disabled: delete_disabled,
+                                title: delete_reason.map(|s| s.to_string()),
+                                onclick: move |_| {
+                                    delete_ticket_error.set(String::new());
+                                    confirming_ticket_delete.set(true);
+                                },
+                                "Delete"
+                            }
+                        }
                     }
                 }
             },
@@ -6193,6 +6226,43 @@ mod mapps593_note_edit_tests {
         let save = save.expect("the save handler");
         let window = &code[save..code.len().min(save + 900)];
         assert!(!window.contains("push_toast"), "and not a toast: {window}");
+    }
+}
+
+/// MAPPS-989: pins the Delete button's disabled state at the server's
+/// `RequireManager` floor, across a technician session (no access) and a
+/// manager session (full access), matching the acceptance criteria for the
+/// parity gap this closes.
+#[cfg(test)]
+mod mapps989_ticket_delete_gate_tests {
+    use super::ticket_delete_gate;
+
+    #[test]
+    fn technician_session_is_blocked_even_when_online_and_idle() {
+        let (disabled, reason) = ticket_delete_gate(false, true, false);
+        assert!(disabled, "a technician must not be able to delete a ticket");
+        assert_eq!(reason, Some("Only a manager or above can delete a ticket"));
+    }
+
+    #[test]
+    fn manager_session_is_enabled_when_online_and_idle() {
+        let (disabled, reason) = ticket_delete_gate(false, true, true);
+        assert!(!disabled, "a manager must be able to delete a ticket");
+        assert_eq!(reason, None);
+    }
+
+    #[test]
+    fn offline_blocks_even_a_manager_with_its_own_reason() {
+        let (disabled, reason) = ticket_delete_gate(false, false, true);
+        assert!(disabled);
+        assert_eq!(reason, Some("Can't delete while the server is unreachable"));
+    }
+
+    #[test]
+    fn in_flight_delete_blocks_a_manager_with_no_reason_text() {
+        let (disabled, reason) = ticket_delete_gate(true, true, true);
+        assert!(disabled);
+        assert_eq!(reason, None);
     }
 }
 
