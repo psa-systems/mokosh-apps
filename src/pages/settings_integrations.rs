@@ -475,11 +475,13 @@ fn IntegrationCard(
 
     rsx! {
         Card {
+            // MAPPS-967: the provider IS this card's label, and its status badge is
+            // the heading-row control, so the pair becomes title + actions.
+            title: integration.display_name.clone(),
+            actions: rsx! {
+                Badge { variant: tone, "{badge}" }
+            },
             div { class: "space-y-4",
-                div { class: "flex flex-wrap items-center gap-3",
-                    h2 { class: "text-lg font-semibold text-content", "{integration.display_name}" }
-                    Badge { variant: tone, "{badge}" }
-                }
                 p { class: "text-sm text-muted", "{integration.description}" }
                 p { class: "text-sm text-content", "{line}" }
 

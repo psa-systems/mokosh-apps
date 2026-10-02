@@ -1935,8 +1935,8 @@ fn OrganizationSettingsBody() -> Element {
             // organisation form below.
             if app_name_owned {
             Card {
+                title: "App name".to_string(),
                 div { class: "space-y-4 max-w-xl",
-                    h2 { class: "text-lg font-semibold text-content", "App name" }
                     if !app_name_error().is_empty() {
                         ErrorBanner { "{app_name_error()}" }
                     }
@@ -2382,11 +2382,9 @@ fn ExportPanel() -> Element {
 
     rsx! {
         Card {
+            title: "Export".to_string(),
+            subtitle: "Download a JSON snapshot of all of this tenant's data. The file contains your records. Store it somewhere safe.".to_string(),
             div { class: "space-y-3",
-                h3 { class: "text-base font-semibold text-content", "Export" }
-                p { class: "text-sm text-muted",
-                    "Download a JSON snapshot of all of this tenant's data. The file contains your records. Store it somewhere safe."
-                }
                 if !error.read().is_empty() {
                     ErrorBanner { "{error.read()}" }
                 }
@@ -2461,8 +2459,8 @@ fn ImportPanel(tenant_name: String) -> Element {
 
     rsx! {
         Card {
+            title: "Import".to_string(),
             div { class: "space-y-4",
-                h3 { class: "text-base font-semibold text-content", "Import" }
                 ErrorBanner {
                     strong { "This replaces all current data for this tenant." }
                     " Importing wipes every existing record and restores from the uploaded file. This cannot be undone. Export a fresh snapshot first."
@@ -2603,11 +2601,11 @@ fn SeedDemoPanel() -> Element {
 
     rsx! {
         Card {
+            title: "Load demo data".to_string(),
+            // Dynamic, so a `format!` rather than a literal, which is the shape
+            // MAPPS-966 used for the profile page's headings.
+            subtitle: format!("Populate this tenant with a small sample dataset (a company, two contacts, and a few tickets) so you can explore {brand}. This only loads into an empty tenant. It never overwrites existing data."),
             div { class: "space-y-3",
-                h3 { class: "text-base font-semibold text-content", "Load demo data" }
-                p { class: "text-sm text-muted",
-                    "Populate this tenant with a small sample dataset (a company, two contacts, and a few tickets) so you can explore {brand}. This only loads into an empty tenant. It never overwrites existing data."
-                }
                 if !error.read().is_empty() {
                     ErrorBanner { "{error.read()}" }
                 }
