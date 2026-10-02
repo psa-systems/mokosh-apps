@@ -380,6 +380,7 @@ struct CompanyFormBody {
     industry: Option<String>,
     website: Option<String>,
     phone: Option<String>,
+    fax: Option<String>,
     address: Address,
     /// MAPPS-614: always a string, never null, which is why this is a `String`
     /// where the DTO has `Option<String>`. See `clearable_string`.
@@ -946,6 +947,7 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
                     industry: payload.industry.clone().unwrap_or_default(),
                     website: payload.website.clone().unwrap_or_default(),
                     phone: payload.phone.clone().unwrap_or_default(),
+                    fax: payload.fax.clone().unwrap_or_default(),
                     address_line1: payload.address.line1.clone().unwrap_or_default(),
                     address_line2: payload.address.line2.clone().unwrap_or_default(),
                     address_city: payload.address.city.clone().unwrap_or_default(),
@@ -980,6 +982,8 @@ struct CompanyEditPayload {
     #[serde(default)]
     phone: Option<String>,
     #[serde(default)]
+    fax: Option<String>,
+    #[serde(default)]
     address: Address,
     // MAPPS-614 / PMS-952: the free-text note, held and rendered as Markdown.
     #[serde(default)]
@@ -994,6 +998,7 @@ struct CompanyFormValues {
     industry: String,
     website: String,
     phone: String,
+    fax: String,
     address_line1: String,
     address_line2: String,
     address_city: String,
@@ -1062,6 +1067,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         .unwrap_or_default();
     let mut website = use_signal(|| initial.website.clone());
     let phone = use_signal(|| initial.phone.clone());
+    let fax = use_signal(|| initial.fax.clone());
     let line1 = use_signal(|| initial.address_line1.clone());
     let line2 = use_signal(|| initial.address_line2.clone());
     let city = use_signal(|| initial.address_city.clone());
@@ -1078,6 +1084,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let mut status_err = use_signal(String::new);
     let mut website_err = use_signal(String::new);
     let mut phone_err = use_signal(String::new);
+    let mut fax_err = use_signal(String::new);
     let mut postal_err = use_signal(String::new);
     // MAPPS-480: advisory note under the Website field carrying the background
     // probe's state, and the value that probe was last fired for so tabbing
@@ -1113,6 +1120,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             || *industry.read() != initial_for_dirty.industry
             || *website.read() != initial_for_dirty.website
             || *phone.read() != initial_for_dirty.phone
+            || *fax.read() != initial_for_dirty.fax
             || *line1.read() != initial_for_dirty.address_line1
             || *line2.read() != initial_for_dirty.address_line2
             || *city.read() != initial_for_dirty.address_city
@@ -1272,6 +1280,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         status_err.set(String::new());
         website_err.set(String::new());
         phone_err.set(String::new());
+        fax_err.set(String::new());
         postal_err.set(String::new());
         line1_err.set(String::new());
         line2_err.set(String::new());
@@ -1312,6 +1321,11 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             phone_err.set(msg.clone());
             guard.note_invalid(Some("phone"));
         }
+        let fax_res = validate_phone_field(&fax.read(), "Fax");
+        if let Err(msg) = &fax_res {
+            fax_err.set(msg.clone());
+            guard.note_invalid(Some("fax"));
+        }
         let postal_res = validate_postal_field(&postal.read());
         if let Err(msg) = &postal_res {
             postal_err.set(msg.clone());
@@ -1339,6 +1353,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         let status_value = status_res.expect("status validated above");
         let website_value = website_res.expect("website validated above");
         let phone_value = phone_res.expect("phone validated above");
+        let fax_value = fax_res.expect("fax validated above");
         let postal_value = postal_res.expect("postal validated above");
         // PMS-581: US-only. A blank country defaults to "US"; a preserved
         // legacy value passes through unchanged.
@@ -1358,6 +1373,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             industry: optional_string(&industry.read()),
             website: website_value,
             phone: phone_value,
+            fax: fax_value,
             address: Address {
                 line1: optional_string(&line1.read()),
                 line2: optional_string(&line2.read()),
@@ -1442,6 +1458,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                                     "name" => name_err.set(fe.message.clone()),
                                     "website" => website_err.set(fe.message.clone()),
                                     "phone" => phone_err.set(fe.message.clone()),
+                                    "fax" => fax_err.set(fe.message.clone()),
                                     "postal_code" | "address.postal_code" => {
                                         postal_err.set(fe.message.clone())
                                     }
@@ -1546,6 +1563,14 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         value: phone.read().clone(),
                         error: phone_err(),
                         oninput: clear_on_edit(phone, phone_err),
+                    }
+                    crate::components::Input {
+                        name: "fax",
+                        label: "Fax",
+                        placeholder: "(555) 555-5555",
+                        value: fax.read().clone(),
+                        error: fax_err(),
+                        oninput: clear_on_edit(fax, fax_err),
                     }
                 }
 
@@ -2655,6 +2680,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 };
                 let website = company.website.clone();
                 let phone = company.phone.clone();
+                let fax = company.fax.clone();
                 let industry = company.industry.clone();
                 let am_name = company.account_manager_name.clone();
                 // MAPPS-644: the billing contact's row, once its read lands.
@@ -2813,6 +2839,14 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                                 dt { class: "text-sm text-muted", "Phone" }
                                                 // MAPPS-283: render with separators.
                                                 dd { class: "text-sm", {format_phone(&phone)} }
+                                            }
+                                        }
+                                    }
+                                    if let Some(fax) = fax {
+                                        if !fax.is_empty() {
+                                            div { class: "flex justify-between",
+                                                dt { class: "text-sm text-muted", "Fax" }
+                                                dd { class: "text-sm", {format_phone(&fax)} }
                                             }
                                         }
                                     }
@@ -2975,6 +3009,8 @@ struct CompanyDetail {
     website: Option<String>,
     #[serde(default)]
     phone: Option<String>,
+    #[serde(default)]
+    fax: Option<String>,
     #[serde(default)]
     address: Address,
     #[serde(default)]
@@ -10591,6 +10627,7 @@ mod shared_dto_tests {
             industry,
             website,
             phone,
+            fax,
             address: address.unwrap_or_default(),
             // MAPPS-614: sent as a string so an emptied note clears the record.
             notes: notes.unwrap_or_default(),
@@ -10598,14 +10635,13 @@ mod shared_dto_tests {
         // The "Create this company" recovery on contact detail (MAPPS-484),
         // which has a typed name and nothing else.
         let _ = CreateCompanyFromNameBody { name };
-        // Deliberately not sent by this form: the company hierarchy, the fax
-        // and billing address, the tax and account identifiers, the account
+        // Deliberately not sent by this form: the company hierarchy and
+        // billing address, the tax and account identifiers, the account
         // manager, SLA and payment terms all belong to surfaces this page does
         // not own, `custom_fields` and `tags` have no editor anywhere yet, and
         // `portal_enabled` is managed per contact from the Portal Access card.
         let _ = (
             parent_company_id,
-            fax,
             billing_address,
             tax_id,
             account_number,
@@ -10657,13 +10693,14 @@ mod shared_dto_tests {
             company_type: company_type.unwrap_or_default(),
             status: status.unwrap_or_default(),
             industry,
-            // PMS-1392: `website` / `phone` grew a second `Option` layer so a
-            // PATCH can distinguish "leave alone" (`None`) from "clear"
-            // (`Some(None)`) from "set" (`Some(Some(_))`). This page's PUT
-            // always sends a value for both, so both layers collapse the same
-            // way `name` etc. do above.
+            // PMS-1392: `website` / `phone` / `fax` grew a second `Option`
+            // layer so a PATCH can distinguish "leave alone" (`None`) from
+            // "clear" (`Some(None)`) from "set" (`Some(Some(_))`). This page's
+            // PUT always sends a value for all three, so both layers collapse
+            // the same way `name` etc. do above.
             website: website.flatten(),
             phone: phone.flatten(),
+            fax: fax.flatten(),
             address: address.unwrap_or_default(),
             notes: notes.unwrap_or_default(),
         };
@@ -10695,7 +10732,6 @@ mod shared_dto_tests {
         // editor on this page either; the contract default is set from billing.
         let _ = (
             parent_company_id,
-            fax,
             billing_address,
             tax_id,
             account_number,
@@ -10708,6 +10744,54 @@ mod shared_dto_tests {
             custom_fields,
             tags,
         );
+    }
+
+    /// MAPPS-988: company `fax` set, clear and display, the same coverage
+    /// `phone` has above. `validate_phone_field` is shared with Phone (it
+    /// takes the field's label only for its error message), and
+    /// `CompanyFormBody` has no `#[serde(skip_serializing_if)]` on `fax`, so a
+    /// cleared field always serializes as `"fax": null` per PMS-1392's
+    /// double-option contract, never an omitted key or an empty string.
+    #[test]
+    fn company_fax_sets_clears_and_serializes_like_phone() {
+        assert_eq!(validate_phone_field("  ", "Fax").unwrap(), None);
+        assert_eq!(
+            validate_phone_field("+1 (415) 555-1234", "Fax").unwrap(),
+            Some("+14155551234".to_string())
+        );
+        assert!(validate_phone_field("not-a-fax", "Fax").is_err());
+
+        let cleared = CompanyFormBody {
+            name: "Acme".to_string(),
+            company_type: CompanyType::Client,
+            status: CompanyStatus::Active,
+            industry: None,
+            website: None,
+            phone: None,
+            fax: None,
+            address: Address::default(),
+            notes: String::new(),
+        };
+        let value = serde_json::to_value(&cleared).expect("CompanyFormBody serializes");
+        assert!(value["fax"].is_null());
+
+        let set = CompanyFormBody {
+            fax: Some("+14155551234".to_string()),
+            ..cleared
+        };
+        let value = serde_json::to_value(&set).expect("CompanyFormBody serializes");
+        assert_eq!(value["fax"], serde_json::json!("+14155551234"));
+
+        // Display: `CompanyDetail` (the detail page's read site) carries
+        // `fax` straight off the wire, so a value set via the API is never
+        // unreadable through the SPA (the ticket's reported runtime
+        // consequence).
+        let detail: CompanyDetail = serde_json::from_value(serde_json::json!({
+            "name": "Acme",
+            "fax": "+14155551234",
+        }))
+        .expect("CompanyDetail decodes a fax field");
+        assert_eq!(detail.fax, Some("+14155551234".to_string()));
     }
 
     #[allow(dead_code)]
@@ -10758,6 +10842,7 @@ mod shared_dto_tests {
             industry: industry.clone(),
             website: website.clone(),
             phone: phone.clone(),
+            fax: fax.clone(),
             address: address.clone(),
             notes: notes.clone(),
         };
@@ -10769,6 +10854,7 @@ mod shared_dto_tests {
             industry,
             website,
             phone,
+            fax,
             address,
             account_manager_name,
             notes,
@@ -10796,7 +10882,6 @@ mod shared_dto_tests {
             sla_id,
             default_contract_id,
             tags,
-            fax,
             created_at,
             updated_at,
         );
