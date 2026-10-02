@@ -450,6 +450,7 @@ fn ICloudContactsSettingsBody() -> Element {
                     // reveals a field is one click more for no information.
                     if enabled && (actions.connect || actions.reconnect) {
                         Card { class: "mt-4",
+                            // card-heading-allow: a focus target (tabindex + onmounted set_focus), which the title prop cannot carry
                             h2 {
                                 class: "text-base font-medium text-content focus:outline-none",
                                 tabindex: "-1",

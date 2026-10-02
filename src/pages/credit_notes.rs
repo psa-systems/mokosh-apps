@@ -692,6 +692,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
                             Card {
                                 div { class: "flex justify-between mb-8",
                                     div {
+                                        // card-heading-allow: the printed document's own title, not the card's label
                                         h2 { class: "text-2xl font-bold text-content", "CREDIT NOTE" }
                                         p { class: "text-muted", "{n.credit_note_number}" }
                                     }

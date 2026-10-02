@@ -635,6 +635,7 @@ fn VcardImportBody() -> Element {
                 rsx! {
                     Card {
                         div { class: "space-y-4",
+                            // card-heading-allow: a focus target (tabindex + onmounted set_focus), which the title prop cannot carry
                             h2 {
                                 class: "text-base font-medium text-content focus:outline-none",
                                 tabindex: "-1",
@@ -706,6 +707,7 @@ fn VcardImportBody() -> Element {
                 rsx! {
                     Card {
                         div { class: "space-y-4",
+                            // card-heading-allow: a focus target (tabindex + onmounted set_focus), which the title prop cannot carry
                             h2 {
                                 class: "text-base font-medium text-content focus:outline-none",
                                 tabindex: "-1",
