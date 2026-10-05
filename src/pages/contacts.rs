@@ -185,6 +185,58 @@ fn contact_sort_query(
 /// that `CompanyRow` keys its badge variant on. Covers every variant of
 /// `mokosh_types::contacts::CompanyType`; unknown values fall through
 /// unchanged so future variants don't disappear.
+/// Render an [`Address`] as the visible lines of a standard US mailing
+/// address: street line 1, street line 2, `city, state postal_code`, and
+/// country. Each line is skipped when empty; separators within the
+/// city/state/postal line collapse so a city alone or `city, state` without
+/// a postal both read cleanly. `country` is omitted when empty or `US`, so a
+/// US address stays short and foreign addresses still identify themselves.
+///
+/// Returns an empty vec when every field is empty; callers hide the whole
+/// block in that case (matching the pre-MAPPS-994 `!address_parts.is_empty()`
+/// guard).
+fn format_mailing_address(address: &Address) -> Vec<String> {
+    let non_empty = |o: &Option<String>| -> Option<String> {
+        o.as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(line1) = non_empty(&address.line1) {
+        lines.push(line1);
+    }
+    if let Some(line2) = non_empty(&address.line2) {
+        lines.push(line2);
+    }
+
+    let city = non_empty(&address.city);
+    let state = non_empty(&address.state);
+    let postal = non_empty(&address.postal_code);
+    let csp = match (city, state, postal) {
+        (Some(c), Some(s), Some(p)) => Some(format!("{c}, {s} {p}")),
+        (Some(c), Some(s), None) => Some(format!("{c}, {s}")),
+        (Some(c), None, Some(p)) => Some(format!("{c} {p}")),
+        (Some(c), None, None) => Some(c),
+        (None, Some(s), Some(p)) => Some(format!("{s} {p}")),
+        (None, Some(s), None) => Some(s),
+        (None, None, Some(p)) => Some(p),
+        (None, None, None) => None,
+    };
+    if let Some(line) = csp {
+        lines.push(line);
+    }
+
+    if let Some(country) = non_empty(&address.country) {
+        if !country.eq_ignore_ascii_case("US") {
+            lines.push(country);
+        }
+    }
+
+    lines
+}
+
 fn humanize_company_type(raw: &str) -> String {
     match raw {
         "client" => "Client".to_string(),
@@ -2626,18 +2678,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 }
             },
             Some(Some(company)) => {
-                let address_parts: Vec<String> = [
-                    company.address.line1.clone(),
-                    company.address.line2.clone(),
-                    company.address.city.clone(),
-                    company.address.state.clone(),
-                    company.address.postal_code.clone(),
-                    company.address.country.clone(),
-                ]
-                .into_iter()
-                .flatten()
-                .filter(|s| !s.is_empty())
-                .collect();
+                let address_lines = format_mailing_address(&company.address);
                 let type_label = humanize_company_type(&company.company_type);
                 let is_archived = company.status == "inactive";
                 let status_label = match company.status.as_str() {
@@ -2907,11 +2948,36 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                             }
                                         }
                                     }
-                                    if !address_parts.is_empty() {
+                                    if !address_lines.is_empty() {
                                         div {
-                                            dt { class: "text-sm text-muted mb-1", "Address" }
-                                            dd { class: "text-sm space-y-0.5",
-                                                for line in address_parts.iter() {
+                                            dt { class: "flex items-center justify-between gap-2 text-sm text-muted mb-1",
+                                                span { "Address" }
+                                                {
+                                                    let joined = address_lines.join("\n");
+                                                    rsx! {
+                                                        Button {
+                                                            variant: ButtonVariant::Secondary,
+                                                            size: ButtonSize::Small,
+                                                            onclick: move |_| {
+                                                                let text = joined.clone();
+                                                                #[cfg(target_arch = "wasm32")]
+                                                                if let Some(win) = web_sys::window() {
+                                                                    let _ = win.navigator().clipboard().write_text(&text);
+                                                                    crate::hooks::toast::push_toast(
+                                                                        crate::components::AlertType::Success,
+                                                                        "Address copied to clipboard.".to_string(),
+                                                                    );
+                                                                }
+                                                                #[cfg(not(target_arch = "wasm32"))]
+                                                                let _ = text;
+                                                            },
+                                                            "Copy"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            dd { class: "text-sm text-content space-y-0.5",
+                                                for line in address_lines.iter() {
                                                     p { "{line}" }
                                                 }
                                             }
@@ -8956,6 +9022,132 @@ mod company_type_tests {
     #[test]
     fn unknown_tag_falls_through_unchanged() {
         assert_eq!(humanize_company_type("franchisee"), "franchisee");
+    }
+}
+
+#[cfg(test)]
+mod mailing_address_tests {
+    use super::format_mailing_address;
+    use crate::modules::contacts::Address;
+
+    fn address(
+        line1: Option<&str>,
+        line2: Option<&str>,
+        city: Option<&str>,
+        state: Option<&str>,
+        postal: Option<&str>,
+        country: Option<&str>,
+    ) -> Address {
+        Address {
+            line1: line1.map(str::to_string),
+            line2: line2.map(str::to_string),
+            city: city.map(str::to_string),
+            state: state.map(str::to_string),
+            postal_code: postal.map(str::to_string),
+            country: country.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_fully_populated_us_address_renders_three_lines() {
+        let addr = address(
+            Some("120 Main St"),
+            Some("Suite 200"),
+            Some("Fairview"),
+            Some("OH"),
+            Some("43990"),
+            Some("US"),
+        );
+        assert_eq!(
+            format_mailing_address(&addr),
+            vec![
+                "120 Main St".to_string(),
+                "Suite 200".to_string(),
+                "Fairview, OH 43990".to_string(),
+            ],
+            "country `US` is implicit on a US-shaped block"
+        );
+    }
+
+    #[test]
+    fn a_missing_second_line_collapses_without_a_blank_row() {
+        let addr = address(
+            Some("120 Main St"),
+            None,
+            Some("Fairview"),
+            Some("OH"),
+            Some("43990"),
+            Some("US"),
+        );
+        assert_eq!(
+            format_mailing_address(&addr),
+            vec!["120 Main St".to_string(), "Fairview, OH 43990".to_string(),]
+        );
+    }
+
+    #[test]
+    fn city_state_without_a_postal_drops_the_trailing_space() {
+        let addr = address(
+            Some("120 Main St"),
+            None,
+            Some("Fairview"),
+            Some("OH"),
+            None,
+            None,
+        );
+        assert_eq!(
+            format_mailing_address(&addr),
+            vec!["120 Main St".to_string(), "Fairview, OH".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_city_alone_stays_one_line() {
+        let addr = address(None, None, Some("Fairview"), None, None, None);
+        assert_eq!(format_mailing_address(&addr), vec!["Fairview".to_string()]);
+    }
+
+    #[test]
+    fn a_non_us_country_renders_a_fourth_line() {
+        let addr = address(
+            Some("1 King St W"),
+            None,
+            Some("Toronto"),
+            Some("ON"),
+            Some("M5H 1A1"),
+            Some("CA"),
+        );
+        assert_eq!(
+            format_mailing_address(&addr),
+            vec![
+                "1 King St W".to_string(),
+                "Toronto, ON M5H 1A1".to_string(),
+                "CA".to_string(),
+            ],
+            "a non-US country identifies itself under the city/state line"
+        );
+    }
+
+    #[test]
+    fn an_empty_address_returns_no_lines_so_the_block_hides() {
+        let addr = Address::default();
+        assert!(format_mailing_address(&addr).is_empty());
+    }
+
+    #[test]
+    fn whitespace_only_fields_count_as_empty() {
+        let addr = address(Some("   "), None, Some(""), None, None, None);
+        assert!(format_mailing_address(&addr).is_empty());
+    }
+
+    #[test]
+    fn country_matches_us_case_insensitively() {
+        let addr = address(Some("120 Main St"), None, None, None, None, Some("us"));
+        assert_eq!(
+            format_mailing_address(&addr),
+            vec!["120 Main St".to_string()],
+            "a lowercase `us` is still implicit"
+        );
     }
 }
 
