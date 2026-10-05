@@ -842,7 +842,25 @@ struct JournalEntry {
 
 /// The name to attribute a journal line to. `actor_name` yields "-" for an
 /// id no `/auth/users` row matches, which reads as a broken row in a sentence.
-fn journal_actor(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
+///
+/// `viewer` carries the authenticated session's own `(id, name)` so an entry
+/// attributed to the viewer resolves to the viewer's name even when the
+/// roster is empty or returns an empty `full_name`. The roster is
+/// `RequireManager`-gated on the server and can legitimately not reach every
+/// signed-in operator, and a JIT-provisioned bunyip user starts with an
+/// empty profile name, so a viewer could see their own actions as "Someone"
+/// on their own ticket. The authenticated session always knows its own
+/// identity, so a self-attributed line never falls through to the roster.
+fn journal_actor(
+    users: &[UserOpt],
+    id: &Option<uuid::Uuid>,
+    viewer: Option<(uuid::Uuid, &str)>,
+) -> String {
+    if let (Some(h_id), Some((v_id, v_name))) = (id, viewer) {
+        if *h_id == v_id && !v_name.trim().is_empty() {
+            return v_name.to_string();
+        }
+    }
     let name = actor_name(users, id);
     if name == "-" {
         "Someone".to_string()
@@ -910,9 +928,12 @@ fn build_journal(
     history: &[HistoryEntry],
     time_entries: &[RemoteTimeEntry],
     users: &[UserOpt],
-    viewer: Option<uuid::Uuid>,
+    viewer: Option<(uuid::Uuid, String)>,
     viewer_is_admin: bool,
 ) -> Vec<JournalEntry> {
+    let viewer_id = viewer.as_ref().map(|(id, _)| *id);
+    let viewer_pair: Option<(uuid::Uuid, &str)> =
+        viewer.as_ref().map(|(id, name)| (*id, name.as_str()));
     let mut entries: Vec<JournalEntry> =
         Vec::with_capacity(notes.len() + history.len() + time_entries.len());
 
@@ -947,7 +968,7 @@ fn build_journal(
             action,
             body: (!n.content.trim().is_empty()).then(|| n.content.clone()),
             changes: Vec::new(),
-            editable_note: note_is_editable(n, viewer, viewer_is_admin).then_some(n.id),
+            editable_note: note_is_editable(n, viewer_id, viewer_is_admin).then_some(n.id),
             // Strictly greater: both timestamps come from the same
             // transaction's `NOW()` on insert, so an unedited note has them
             // exactly equal.
@@ -958,7 +979,7 @@ fn build_journal(
     for h in history {
         entries.push(JournalEntry {
             at: h.timestamp,
-            who: journal_actor(users, &h.user_id),
+            who: journal_actor(users, &h.user_id, viewer_pair),
             action: history_action(h),
             body: None,
             changes: history_changes(h),
@@ -977,7 +998,7 @@ fn build_journal(
         let billable = if e.is_billable { " (billable)" } else { "" };
         entries.push(JournalEntry {
             at,
-            who: journal_actor(users, &e.user_id),
+            who: journal_actor(users, &e.user_id, viewer_pair),
             action: format!("logged {} min on {}{billable}", e.duration_minutes, e.date),
             body: e.notes.clone().filter(|s| !s.trim().is_empty()),
             changes: Vec::new(),
@@ -3070,14 +3091,29 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // page stops responding entirely, and a save that reaches the database goes
     // on rendering the old value, which reads as a stale-data bug and is not
     // one.
-    let (viewer_id, viewer_is_admin) = {
+    let (viewer_id, viewer_name, viewer_is_admin) = {
         let auth = crate::hooks::use_auth();
         let a = auth.read();
-        (
-            a.user.as_ref().map(|u| u.id),
-            a.has_role(crate::modules::auth::UserRole::Admin)
-                || a.has_role(crate::modules::auth::UserRole::SuperAdmin),
-        )
+        let id = a.user.as_ref().map(|u| u.id);
+        // Compose the viewer's display name the way `UserRow::display_name`
+        // does for the roster: "first last", else email. The roster is
+        // `RequireManager`-gated and a JIT-provisioned bunyip row starts with
+        // empty names, so the authenticated session is the one place that
+        // always knows how the viewer wants to be addressed.
+        let name = a.user.as_ref().and_then(|u| {
+            let joined = format!("{} {}", u.first_name, u.last_name);
+            let joined = joined.trim().to_string();
+            if !joined.is_empty() {
+                Some(joined)
+            } else if !u.email.trim().is_empty() {
+                Some(u.email.clone())
+            } else {
+                None
+            }
+        });
+        let admin = a.has_role(crate::modules::auth::UserRole::Admin)
+            || a.has_role(crate::modules::auth::UserRole::SuperAdmin);
+        (id, name, admin)
     };
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
@@ -3280,12 +3316,13 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     };
 
     // MAPPS-517: one stream out of the three sources the page already holds.
+    let viewer_for_journal = viewer_id.zip(viewer_name.clone());
     let journal = build_journal(
         &notes,
         &history,
         &time_entries,
         &users,
-        viewer_id,
+        viewer_for_journal,
         viewer_is_admin,
     );
     let shown_journal_count = journal.len().min(JOURNAL_LIMIT);
@@ -5853,6 +5890,119 @@ mod mapps517_journal_tests {
             vec!["Someone created the ticket".to_string()]
         );
     }
+
+    /// The viewer's own history line resolves to the viewer's name even when
+    /// the roster is empty. The roster is `RequireManager`-gated on the
+    /// server, so an operator seeing their own ticket can legitimately get
+    /// no row back for themselves, and falling through to "Someone" on
+    /// their own actions reads as the product being broken.
+    #[test]
+    fn the_viewer_resolves_to_their_own_name_even_when_the_roster_misses_them() {
+        let viewer_id =
+            uuid::Uuid::parse_str("11111111-1111-4111-8111-111111111111").expect("uuid");
+        let h = history(
+            r#"{"action":"create","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+
+        let journal = build_journal(
+            &[],
+            &[h],
+            &[],
+            &[],
+            Some((viewer_id, "Alex Doe".to_string())),
+            false,
+        );
+
+        assert_eq!(
+            actions(&journal),
+            vec!["Alex Doe created the ticket".to_string()],
+            "the viewer's own line short-circuits the empty roster"
+        );
+    }
+
+    /// A roster row with an empty `full_name` (JIT-provisioned bunyip user
+    /// whose profile has not been filled in yet) must not pull the viewer's
+    /// own line down to "Someone": `actor_name` filters an empty name back
+    /// to `-`, which the viewer short-circuit above has to beat.
+    #[test]
+    fn the_viewer_resolves_to_their_own_name_when_the_roster_carries_an_empty_full_name() {
+        let viewer_id =
+            uuid::Uuid::parse_str("11111111-1111-4111-8111-111111111111").expect("uuid");
+        let roster: Vec<UserOpt> = vec![serde_json::from_str(
+            r#"{"id":"11111111-1111-4111-8111-111111111111","full_name":""}"#,
+        )
+        .expect("deserialise user")];
+        let h = history(
+            r#"{"action":"create","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+
+        let journal = build_journal(
+            &[],
+            &[h],
+            &[],
+            &roster,
+            Some((viewer_id, "Alex Doe".to_string())),
+            false,
+        );
+
+        assert_eq!(
+            actions(&journal),
+            vec!["Alex Doe created the ticket".to_string()]
+        );
+    }
+
+    /// A line whose actor is NOT the viewer still falls through to the
+    /// roster. The viewer short-circuit must not swallow another operator's
+    /// id just because the current one is signed in.
+    #[test]
+    fn another_user_still_falls_through_to_someone() {
+        let viewer_id =
+            uuid::Uuid::parse_str("22222222-2222-4222-8222-222222222222").expect("uuid");
+        let h = history(
+            r#"{"action":"create","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+
+        let journal = build_journal(
+            &[],
+            &[h],
+            &[],
+            &[],
+            Some((viewer_id, "Alex Doe".to_string())),
+            false,
+        );
+
+        assert_eq!(
+            actions(&journal),
+            vec!["Someone created the ticket".to_string()],
+            "non-viewer ids still rely on the roster"
+        );
+    }
+
+    /// A line whose actor IS in the roster, and the roster carries a usable
+    /// name, resolves from the roster. The viewer short-circuit never
+    /// overrides a non-viewer line even when the shape would allow it.
+    #[test]
+    fn an_actor_in_the_roster_is_still_resolved_from_the_roster() {
+        let viewer_id =
+            uuid::Uuid::parse_str("22222222-2222-4222-8222-222222222222").expect("uuid");
+        let h = history(
+            r#"{"action":"create","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+
+        let journal = build_journal(
+            &[],
+            &[h],
+            &[],
+            &users(),
+            Some((viewer_id, "Alex Doe".to_string())),
+            false,
+        );
+
+        assert_eq!(
+            actions(&journal),
+            vec!["Dana Reeve created the ticket".to_string()]
+        );
+    }
 }
 
 #[cfg(test)]
@@ -6130,7 +6280,7 @@ mod mapps593_note_edit_tests {
             &history,
             &[],
             &users,
-            Some(viewer()),
+            Some((viewer(), "Viewer".to_string())),
             false,
         );
 
