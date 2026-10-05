@@ -428,30 +428,27 @@ struct UpdateNoteBody {
 /// time entry. The permission half: the author, or an admin, which is the
 /// server's own default policy.
 ///
-/// MAPPS-888: this rule mirrors mokosh-server's PMS-974 enforcement
-/// (`src/modules/tickets/service.rs`, `src/modules/tickets/routes.rs`),
-/// which is NOT part of the shared `mokosh-types` crate this app already
-/// depends on; it lives in the server's own binary crate. Moving it into
-/// `mokosh-types` is therefore a change to the mokosh-server repo, out of
-/// scope for a mokosh-apps PR; tracked as MAPPS-891.
+/// The intrinsic row-state gates live in `mokosh_types::tickets::note_is_editable`
+/// (shared with mokosh-server's PMS-974 enforcement; see MAPPS-891 and
+/// mokosh-server #942). This wrapper owns the SPA-specific bits that are not
+/// in the shared contract: the `can_edit` short-circuit the server opts into,
+/// the string-to-`NoteType` decode (an unknown kind means no, since offering
+/// a control that cannot work is worse than hiding one that could), and the
+/// `admin OR author` role resolution the SPA computes rather than fetches.
 fn note_is_editable(note: &RemoteNote, viewer: Option<uuid::Uuid>, viewer_is_admin: bool) -> bool {
     if let Some(server) = note.can_edit {
         return server;
     }
-    if note.created_by_contact_id.is_some() {
+    let Some(note_type) = NoteType::from_str(&note.note_type) else {
         return false;
-    }
-    let kind_allows = match note.note_type.as_str() {
-        "internal" | "resolution" => true,
-        "public" => !note.is_email_sent,
-        // `time_entry`, and anything a future server adds. Unknown means no:
-        // guessing wrong here offers a control that cannot work.
-        _ => false,
     };
-    if !kind_allows {
-        return false;
-    }
-    viewer_is_admin || (viewer.is_some() && viewer == note.created_by_id)
+    let role_permits = viewer_is_admin || (viewer.is_some() && viewer == note.created_by_id);
+    mokosh_types::tickets::note_is_editable(
+        note_type,
+        note.is_email_sent,
+        note.created_by_contact_id,
+        role_permits,
+    )
 }
 
 /// MAPPS-989: mirrors the server's `RequireManager` floor on

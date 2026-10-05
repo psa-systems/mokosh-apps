@@ -135,8 +135,9 @@ with the outcome either way. It is not a recipe, so it has no `just` entry.
 
 | Recipe | What it does |
 | --- | --- |
-| `just install-hooks` *(common)* | Write the `.git/hooks/pre-commit` stub. Run once per fresh clone. |
-| `just pre-commit` *(common)* | Run the same checks CI runs, in the builder image. |
+| `just install-hooks` *(common)* | Write the `.git/hooks/pre-commit` and `.git/hooks/pre-push` stubs. Run once per fresh clone, and again after pulling a bump to `common` that changes the hooks. |
+| `just pre-commit` *(common)* | Run `check-tree-ownership` and a fmt-only check. |
+| `just pre-push` *(common)* | Run the same checks CI runs, in the builder image. |
 | `just check-justfile` *(common)* | Fail if this justfile redefines a recipe that must come from `common`. |
 | `just check-tree-ownership` *(common)* | Fail if the working tree holds a path the host user does not own. |
 

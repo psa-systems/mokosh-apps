@@ -33,9 +33,11 @@ git submodule update --init
 
 Configure those recipes through the variables at the top of the `justfile`;
 never redefine one, which `just check-justfile` rejects. `just install-hooks`
-writes the `.git/hooks/pre-commit` stub, and `just pre-commit` runs fmt, clippy,
-the wasm check and the library tests in the builder image. Recipe by recipe,
-grouped the way `just --list` groups them, is [`recipes.md`](recipes.md).
+writes both the `.git/hooks/pre-commit` and `.git/hooks/pre-push` stubs. `just
+pre-commit` only runs `check-tree-ownership` and a fmt-only check; `just
+pre-push` runs the full suite (fmt, clippy, the wasm check and the library
+tests) in the builder image. Recipe by recipe, grouped the way `just --list`
+groups them, is [`recipes.md`](recipes.md).
 
 ## Start the dev server
 

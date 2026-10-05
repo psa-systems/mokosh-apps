@@ -11,20 +11,20 @@ set allow-duplicate-recipes := true
 # Names the cargo cache volumes the shared pre-commit uses (dev-mokosh-apps-cargo-*-$USER).
 app := "mokosh-apps"
 
-# No compose.dev.yml here, so the shared pre-commit runs the checks in a bare
-# `docker run`. The image matches oci-build/Dockerfile so `just pre-commit` and
-# the Forgejo `check.yml` job run a toolchain compatible with the
-# rust-builder-glibc image the client is built against.
+# No compose.dev.yml here, so the shared pre-commit/pre-push dispatch runs the
+# checks in a bare `docker run`. The image matches oci-build/Dockerfile so
+# `just pre-push` and the Forgejo `check.yml` job run a toolchain compatible
+# with the rust-builder-glibc image the client is built against.
 pre_commit_mode := "docker"
 dev_image := "ghcr.io/niceguyit/rust-builder-glibc:v1.2.0-rust1.98.1-trixie"
 
 # MAPPS-824: `pre_commit_prepare` is the only host-side hook common.just's
-# shared `pre-commit` exposes before its cargo legs run, so it is where this
-# repo's 30+ check-* guard scripts run too, not just css-build (src/main.rs
-# embeds assets/styles.css via asset!(), and that file is gitignored, so
-# Tailwind still has to run on the host before any cargo step in the
-# container). Without this the git hook passed on a change CI then rejected
-# on any of the guards. See pre-commit-guards below.
+# shared `pre-commit`/`pre-push` dispatch exposes before its cargo legs run,
+# so it is where this repo's 30+ check-* guard scripts run too, not just
+# css-build (src/main.rs embeds assets/styles.css via asset!(), and that
+# file is gitignored, so Tailwind still has to run on the host before any
+# cargo step in the container). Without this the git hook passed on a change
+# CI then rejected on any of the guards. See pre-commit-guards below.
 pre_commit_prepare := "pre-commit-guards"
 
 # Mirrors check-clippy and check.yml. The shared default is --all-features,
@@ -295,12 +295,13 @@ check-fmt:
 
 # MAPPS-824: runs `check`'s check-* dependency list on the host, minus the
 # four cargo-driven members (check-clippy, check-fmt, check-web, check-desktop)
-# that the pre-commit cargo legs already cover in-container, then css-build.
-# Read off the `check:` line itself (the same technique check-ci-parity.sh
-# uses) rather than a copy of the list, so a guard added to `check` and
-# forgotten here cannot happen: this recipe can only drift stale, never
-# incomplete. Wired in as `pre_commit_prepare`, the only host-side hook
-# common.just's shared `pre-commit` exposes before its cargo legs.
+# that the hook pipeline's cargo legs already cover in-container (fmt on
+# pre-commit; clippy, web and desktop on pre-push), then css-build. Read off
+# the `check:` line itself (the same technique check-ci-parity.sh uses) rather
+# than a copy of the list, so a guard added to `check` and forgotten here
+# cannot happen: this recipe can only drift stale, never incomplete. Wired in
+# as `pre_commit_prepare`, the only host-side hook common.just's shared
+# `pre-commit`/`pre-push` dispatch exposes before its cargo legs.
 [private]
 [group: 'hooks']
 pre-commit-guards:
