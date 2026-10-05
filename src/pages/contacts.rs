@@ -224,39 +224,9 @@ struct RemoteCompany {
 /// changed the rules: the dialog kept warning about projects, appointments and
 /// sub-companies long after those started unlinking instead of blocking.
 ///
-/// MAPPS-888: this mirrors mokosh-server's `CompanyDeletionPreview`
-/// (`src/modules/contacts/service.rs`), which is NOT part of the shared
-/// `mokosh-types` crate this app already depends on; it lives in the
-/// server's own binary crate. Moving it into `mokosh-types` is therefore a
-/// change to the mokosh-server repo, out of scope for a mokosh-apps PR;
-/// tracked as MAPPS-891.
-#[derive(Clone, Debug, Default, Deserialize)]
-struct DeletionPreview {
-    #[serde(default)]
-    can_delete: bool,
-    /// Refused for what the company IS (the tenant's own company, PMS-919)
-    /// rather than for what references it, so `blocking` is empty and the
-    /// delete still fails.
-    #[serde(default)]
-    is_own_company: bool,
-    #[serde(default)]
-    blocking: Vec<DeletionRecords>,
-    #[serde(default)]
-    unlinked: Vec<DeletionRecords>,
-    #[serde(default)]
-    removed: Vec<DeletionRecords>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-struct DeletionRecords {
-    label: String,
-    count: i64,
-    /// PMS-920: these exist to be KEPT. Telling somebody to clear their
-    /// invoices to tidy a client list destroys the record the refusal is
-    /// protecting, so the two read differently.
-    #[serde(default)]
-    retained: bool,
-}
+/// The wire type lives in `mokosh_types::contacts` (see MAPPS-891 /
+/// mokosh-server #942), so the server and this client share one definition.
+use mokosh_types::contacts::{CompanyDeletionPreview as DeletionPreview, DeletionRecords};
 
 /// Server-side paginated envelope (`PaginatedResponse<CompanyResponse>`).
 #[derive(Clone, Debug, Deserialize)]
