@@ -3837,12 +3837,20 @@ fn EditPortalRolesButton(
                         onclick: move |_| open.set(false),
                         "Cancel"
                     }
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        disabled: saving(),
-                        loading: saving(),
-                        onclick: submit,
-                        "Save"
+                    {
+                        let no_roles_configured = all_roles.is_empty();
+                        let disabled_title: Option<String> = no_roles_configured
+                            .then(|| "Create a portal role in Settings before assigning any.".to_string());
+                        rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                disabled: saving() || no_roles_configured,
+                                loading: saving(),
+                                onclick: submit,
+                                title: disabled_title,
+                                "Save"
+                            }
+                        }
                     }
                 },
                 div { class: "space-y-4",
@@ -8800,12 +8808,26 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                             onclick: move |_| modal_open.set(false),
                             "Cancel"
                         }
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            disabled: !can_mutate || *mutating.read(),
-                            loading: *mutating.read(),
-                            onclick: submit_grant,
-                            if is_portal_user { "Update roles" } else { "Send invitation" }
+                        {
+                            let no_roles_configured = roles_fetch_error.is_none() && roles.is_empty();
+                            let disabled_title: Option<String> = no_roles_configured.then(|| {
+                                if is_portal_user {
+                                    "Create a portal role in Settings before assigning any."
+                                } else {
+                                    "Create a portal role in Settings before inviting a contact."
+                                }
+                                .to_string()
+                            });
+                            rsx! {
+                                Button {
+                                    variant: ButtonVariant::Primary,
+                                    disabled: !can_mutate || *mutating.read() || no_roles_configured,
+                                    loading: *mutating.read(),
+                                    onclick: submit_grant,
+                                    title: disabled_title,
+                                    if is_portal_user { "Update roles" } else { "Send invitation" }
+                                }
+                            }
                         }
                     },
                     div { class: "space-y-4",
@@ -11453,6 +11475,55 @@ mod mapps882_name_lock_marker_tests {
         assert!(
             slot.contains("LockMarker { locked: name_locked }"),
             "the header title_slot no longer renders the name's LockMarker"
+        );
+    }
+}
+
+#[cfg(test)]
+mod portal_role_modal_tests {
+    const SRC: &str = include_str!("contacts.rs");
+
+    /// Both portal-role modals disable their primary action when the role
+    /// catalog is empty: the modal body already tells the operator to
+    /// create one in Settings, and keeping the button clickable surfaces
+    /// a confusing "Pick at least one role" validation on a form that
+    /// cannot pick anything. Encoded as a source-scan over the two
+    /// `disabled:` conditions, so a future refactor cannot regress one.
+    #[test]
+    fn both_role_pickers_disable_submit_when_no_roles_configured() {
+        let save_marker = r#"disabled: saving() || no_roles_configured,"#;
+        assert!(
+            SRC.contains(save_marker),
+            "the \"Save\" button on the role-editor modal no longer disables \
+             on an empty role catalog ({save_marker})",
+        );
+
+        let grant_marker = r#"disabled: !can_mutate || *mutating.read() || no_roles_configured,"#;
+        assert!(
+            SRC.contains(grant_marker),
+            "the \"Send invitation\" / \"Update roles\" button on the \
+             assign-portal-roles modal no longer disables on an empty role \
+             catalog ({grant_marker})",
+        );
+    }
+
+    /// The `no_roles_configured` flag is derived from the SAME list the
+    /// empty-state copy renders from. If a future edit drifts one, the
+    /// button and the body disagree about whether anything can be
+    /// picked, which is exactly the shape this fix closed.
+    #[test]
+    fn no_roles_configured_reads_the_rendered_role_list() {
+        assert!(
+            SRC.contains("let no_roles_configured = all_roles.is_empty();"),
+            "the role-editor derives `no_roles_configured` from a different \
+             list than the one it renders",
+        );
+        assert!(
+            SRC.contains(
+                "let no_roles_configured = roles_fetch_error.is_none() && roles.is_empty();"
+            ),
+            "the assign-portal-roles modal derives `no_roles_configured` \
+             from a different list than the one it renders",
         );
     }
 }
