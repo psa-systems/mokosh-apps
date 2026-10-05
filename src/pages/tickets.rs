@@ -270,6 +270,16 @@ struct RemoteTicketPriority {
     is_default: bool,
 }
 
+/// One row from `GET /tickets/queues`. Tenant-scoped lookup the New Ticket
+/// form and the Queue filter on the list both consume. Server's
+/// `TicketFilter` accepts `queue_id: Option<Uuid>`, so a non-UUID would be
+/// silently coerced away.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteTicketQueue {
+    id: uuid::Uuid,
+    name: String,
+}
+
 /// MAPPS-296: minimal shape of a row from `GET /tickets/types` /
 /// `GET /tickets/categories`. Both endpoints share the `(id, name)`
 /// projection the New Ticket form needs; serde drops every other
@@ -1254,6 +1264,7 @@ fn TicketListBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut status_filter = use_signal(String::new);
     let mut priority_filter = use_signal(String::new);
+    let mut queue_filter = use_signal(String::new);
     // MAPPS-289: sortable-column state. Sorting here is entirely client-side
     // over the fetched page; the list query sends no `?sort=` at all.
     let mut sort = use_signal(|| Some((TicketSortKey::Updated, SortDirection::Descending)));
@@ -1304,6 +1315,19 @@ fn TicketListBody() -> Element {
                 .await,
         )
     });
+    // MAPPS-997: queue filter options, same shape as the status and priority
+    // resources above. The server's `TicketFilter` already accepts `queue_id`,
+    // so the list page was offering status + priority filtering while queue -
+    // a first-class ticket attribute the create form and the detail view both
+    // show - stayed off the filter card. Empty fetch falls back to just the
+    // "All Queues" placeholder.
+    let queue_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::list_or_empty(
+            "ticket queue filter option",
+            crate::hooks::fetch::api::get_all_authed::<RemoteTicketQueue>("/tickets/queues").await,
+        )
+    });
 
     // MAPPS-438: `None` is a failed load, exactly like the other list pages.
     // The page renders only what the backend returned.
@@ -1338,6 +1362,7 @@ fn TicketListBody() -> Element {
         let q = search_debounced.read().trim().to_string();
         let status_id = status_filter.read().clone();
         let priority_id = priority_filter.read().clone();
+        let queue_id = queue_filter.read().clone();
         let sort_snapshot = *sort.read();
         let current_page = (*page.read()).max(1);
         async move {
@@ -1365,6 +1390,9 @@ fn TicketListBody() -> Element {
             }
             if !priority_id.is_empty() {
                 path.push_str(&format!("&priority_id={priority_id}"));
+            }
+            if !queue_id.is_empty() {
+                path.push_str(&format!("&queue_id={queue_id}"));
             }
             if let Some((key, dir)) = sort_snapshot {
                 path.push_str(&format!(
@@ -1417,7 +1445,8 @@ fn TicketListBody() -> Element {
     // is set.
     let filters_active = !search.read().trim().is_empty()
         || !status_filter.read().is_empty()
-        || !priority_filter.read().is_empty();
+        || !priority_filter.read().is_empty()
+        || !queue_filter.read().is_empty();
 
     // MAPPS-295: build the Status filter options from the tenant's actual
     // status set. A still-loading or empty resource just shows the "All
@@ -1445,6 +1474,14 @@ fn TicketListBody() -> Element {
             p.id.to_string(),
             humanize_priority(&p.name),
         ));
+    }
+
+    // MAPPS-997: queue filter options. Same shape as status/priority above.
+    // A still-loading / failed fetch just renders the placeholder.
+    let tenant_queues = queue_resource.read_unchecked().clone().unwrap_or_default();
+    let mut queue_options = vec![SelectOption::new("", "All Queues")];
+    for q in tenant_queues.iter() {
+        queue_options.push(SelectOption::new(q.id.to_string(), q.name.clone()));
     }
 
     rsx! {
@@ -1492,6 +1529,16 @@ fn TicketListBody() -> Element {
                         placeholder: "Status",
                         onchange: move |e: FormEvent| {
                             status_filter.set(e.value());
+                            page.set(1);
+                        },
+                    }
+                    Select {
+                        name: "queue",
+                        options: queue_options,
+                        value: queue_filter.read().clone(),
+                        placeholder: "Queue",
+                        onchange: move |e: FormEvent| {
+                            queue_filter.set(e.value());
                             page.set(1);
                         },
                     }
@@ -1704,6 +1751,7 @@ fn TicketListBody() -> Element {
                                         set_ticket_search(&mut search, &mut page, String::new());
                                         status_filter.set(String::new());
                                         priority_filter.set(String::new());
+                                        queue_filter.set(String::new());
                                     },
                                     "Clear filters"
                                 }
@@ -7650,5 +7698,100 @@ mod request_family_tests {
         let page = detail_page();
         assert!(page.contains("!matches!(family, TicketFamily::Parent(rows) if rows.is_empty())"));
         assert!(page.contains("None => rsx! {},"));
+    }
+}
+
+#[cfg(test)]
+mod mapps997_queue_filter_tests {
+    const SRC: &str = include_str!("tickets.rs");
+
+    fn list_body() -> &'static str {
+        let start = SRC
+            .find("fn TicketListBody()")
+            .expect("the list page body is in this file");
+        &SRC[start..]
+    }
+
+    /// The Queue filter sits between Status and Priority on the Tickets list
+    /// filter card. The three Selects are the whole surface the walkthrough
+    /// script needs; a future reshuffle of the card has to notice when the
+    /// one it added disappears.
+    #[test]
+    fn the_queue_filter_sits_between_status_and_priority() {
+        let body = list_body();
+        let status = body
+            .find(r#"name: "status","#)
+            .expect("Status Select is on the list filter card");
+        let queue = body
+            .find(r#"name: "queue","#)
+            .expect("Queue Select is on the list filter card");
+        let priority = body
+            .find(r#"name: "priority","#)
+            .expect("Priority Select is on the list filter card");
+        assert!(
+            status < queue && queue < priority,
+            "the Queue filter is not between Status and Priority: \
+             status at {status}, queue at {queue}, priority at {priority}"
+        );
+    }
+
+    /// The queue filter writes `queue_id=<uuid>` into the list fetch path,
+    /// matching the field `TicketFilter` accepts on the server. The empty
+    /// value is skipped the same way `status_id` and `priority_id` are.
+    #[test]
+    fn the_queue_filter_reaches_the_list_fetch() {
+        let body = list_body();
+        assert!(
+            body.contains(r#"path.push_str(&format!("&queue_id={queue_id}"));"#),
+            "the queue filter is not threaded into the list fetch path"
+        );
+        assert!(
+            body.contains("if !queue_id.is_empty() {"),
+            "an empty queue filter must not land as `queue_id=` on the path"
+        );
+    }
+
+    /// The Clear filters affordance on the empty state clears every filter
+    /// the card can set, including the queue filter. Without this the user
+    /// clears Status and Priority, still sees "No tickets match" because
+    /// Queue is still set, and reads the control as broken.
+    #[test]
+    fn clear_filters_clears_the_queue_filter_too() {
+        let body = list_body();
+        // The first `"Clear filters"` occurrence is actually the comment
+        // introducing the affordance; the second is the button label we
+        // want. Skip the first match so the preamble reads the button
+        // onclick body and nothing from the comment prose.
+        let first = body
+            .find("\"Clear filters\"")
+            .expect("the Clear filters affordance is in this file");
+        let after_first = first + "\"Clear filters\"".len();
+        let second = after_first
+            + body[after_first..]
+                .find("\"Clear filters\"")
+                .expect("the Clear filters button label is in this file");
+        let preamble = &body[second.saturating_sub(400)..second];
+        assert!(
+            preamble.contains("queue_filter.set(String::new());"),
+            "the Clear filters button is not clearing the queue filter: {preamble}"
+        );
+    }
+
+    /// `filters_active` decides which empty-state message renders and whether
+    /// the "Clear filters" button appears. A queue-only filter must count.
+    #[test]
+    fn filters_active_includes_the_queue_filter() {
+        let body = list_body();
+        let marker = body
+            .find("let filters_active = ")
+            .expect("filters_active expression is in the list body");
+        let end = body[marker..]
+            .find(';')
+            .expect("filters_active expression closes");
+        let expr = &body[marker..marker + end];
+        assert!(
+            expr.contains("queue_filter.read().is_empty()"),
+            "filters_active no longer reads the queue filter: {expr}"
+        );
     }
 }
