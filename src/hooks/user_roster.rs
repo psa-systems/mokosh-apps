@@ -64,35 +64,10 @@ impl UserRow {
     }
 }
 
-/// Shared "has any consumer asked for the roster yet" flag. Provided at the
-/// App root alongside the resource itself; a page flips it via
-/// [`use_user_roster`], never directly.
-type RosterWanted = Signal<bool>;
-
-/// Provide the shared roster resource and its `enabled` flag at the App
-/// root. Mirrors [`crate::hooks::version_cache::use_version_cache_provider`].
+/// Provide the shared roster at the App root (MAPPS-1001: see
+/// [`crate::hooks::shared_list`]).
 pub fn use_user_roster_provider() {
-    let wanted = use_signal(|| false);
-    use_context_provider::<RosterWanted>(|| wanted);
-
-    let resource = use_resource(move || async move {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        if !*wanted.read() {
-            return Vec::new();
-        }
-        #[cfg(feature = "app")]
-        {
-            crate::hooks::fetch::api::get_all_authed::<UserRow>("/auth/users")
-                .await
-                .inspect_err(|e| tracing::warn!("user roster load failed: {e}"))
-                .unwrap_or_default()
-        }
-        #[cfg(not(feature = "app"))]
-        {
-            Vec::new()
-        }
-    });
-    use_context_provider::<Resource<Vec<UserRow>>>(|| resource);
+    crate::hooks::shared_list::use_shared_list_provider::<UserRow>("users", "/auth/users");
 }
 
 /// Ask for the cached roster. `enabled` is each caller's own gate (an admin
@@ -102,9 +77,5 @@ pub fn use_user_roster_provider() {
 /// the one underlying fetch; passing `false` never blocks a roster another
 /// consumer already cached.
 pub fn use_user_roster(enabled: bool) -> Resource<Vec<UserRow>> {
-    let mut wanted = use_context::<RosterWanted>();
-    if enabled && !*wanted.read() {
-        wanted.set(true);
-    }
-    use_context::<Resource<Vec<UserRow>>>()
+    crate::hooks::shared_list::use_shared_list::<UserRow>(enabled)
 }

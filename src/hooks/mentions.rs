@@ -19,16 +19,18 @@ use dioxus::prelude::*;
 
 use crate::utils::mentions::Mention;
 
-/// Shared "has any consumer asked for the directory yet" flag, mirroring
-/// [`crate::hooks::user_roster`]'s `RosterWanted`.
-type DirectoryWanted = Signal<bool>;
+/// Shared "has any consumer asked for the directory yet" flag. Its own type,
+/// not a bare `Signal<bool>`: context is keyed by type, and the reference-list
+/// flags sharing that type overwrote each other (MAPPS-1001).
+#[derive(Clone, Copy)]
+struct DirectoryWanted(Signal<bool>);
 
 /// Provide the shared mention-directory resource and its `enabled` flag at
 /// the App root. Call once, alongside
 /// [`crate::hooks::user_roster::use_user_roster_provider`].
 pub fn use_mention_directory_provider() {
     let wanted = use_signal(|| false);
-    use_context_provider::<DirectoryWanted>(|| wanted);
+    use_context_provider(|| DirectoryWanted(wanted));
 
     let resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -102,11 +104,17 @@ async fn fetch_directory() -> Option<Vec<Mention>> {
 /// underlying fetch; passing `false` never blocks a directory another
 /// consumer already cached.
 pub fn use_mention_directory(enabled: bool) -> Resource<Option<Vec<Mention>>> {
-    let mut wanted = use_context::<DirectoryWanted>();
+    let DirectoryWanted(mut wanted) = use_context::<DirectoryWanted>();
     if enabled && !*wanted.read() {
         wanted.set(true);
     }
     use_context::<Resource<Option<Vec<Mention>>>>()
+}
+
+/// The directory's flag, for the one-scope test in [`crate::hooks::shared_list`].
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn directory_wanted_flag() -> Signal<bool> {
+    use_context::<DirectoryWanted>().0
 }
 
 /// The list itself, flattened: a failed or still-running fetch is an empty
