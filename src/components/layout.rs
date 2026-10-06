@@ -2008,7 +2008,7 @@ pub fn PageHeader(props: PageHeaderProps) -> Element {
                     // the title (min-w-0 + sm:truncate above) is what gives
                     // way on a tight row, instead of the buttons collapsing
                     // into or colliding with a long dynamic title.
-                    div { class: "mt-4 flex shrink-0 md:ml-4 md:mt-0 space-x-3",
+                    div { class: "mt-4 flex items-start shrink-0 md:ml-4 md:mt-0 space-x-3",
                         {actions}
                     }
                 }
