@@ -139,17 +139,8 @@ struct RejectTimesheetBody {
     reason: String,
 }
 
-/// Per-key tenant setting response (`GET /settings/...`). Only `value` is
-/// read; the server stores the max-hours-per-day cap as a JSON integer
-/// (MAPPS-244 / PMS-396).
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-struct SettingValueRow {
-    #[serde(default)]
-    value: serde_json::Value,
-}
-
 /// Hard upper bound on a single entry's duration, and the fallback per-day
-/// cap when the tenant has not configured one (404). Kept as minutes.
+/// cap when the tenant has not configured one. Kept as minutes.
 const MAX_SINGLE_ENTRY_MINUTES: i64 = 24 * 60;
 const DEFAULT_MAX_MINUTES_PER_DAY: i64 = 24 * 60;
 
@@ -666,31 +657,29 @@ pub fn TimeEntryNewPage() -> Element {
         }
     });
 
-    // MAPPS-244: the configured per-day cap (minutes). A missing setting
-    // (404) or any fetch failure falls back to the 24h default so a settings
-    // outage never blocks logging; the server still enforces the real cap.
+    // MAPPS-244: the configured per-day cap (minutes). An unset cap or any
+    // fetch failure falls back to the 24h default so a settings outage never
+    // blocks logging; the server still enforces the real cap.
     let cap_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         #[cfg(feature = "app")]
         {
-            match crate::hooks::fetch::api::get_authed_typed::<SettingValueRow>(
-                "/settings/time_tracking/max_hours_per_day",
-            )
-            .await
-            {
-                Ok(row) => row
-                    .value
-                    .as_i64()
-                    .filter(|h| (1..=24).contains(h))
-                    .map(|h| h * 60)
-                    .unwrap_or(DEFAULT_MAX_MINUTES_PER_DAY),
-                // A 404 is the documented "cap not configured" case, so it
-                // stays at debug; anything else is a real settings failure
-                // and the 24h fallback hides it unless it is logged.
-                Err(e) if e.status_code() == Some(404) => {
-                    tracing::debug!("no per-day cap configured, using the 24h default: {e}");
+            match crate::modules::tenant_settings::get("time_tracking", "max_hours_per_day").await {
+                Ok(Some(value)) => {
+                    match value.as_i64().filter(|h| (1..=24).contains(h)) {
+                        Some(h) => h * 60,
+                        None => {
+                            tracing::warn!("per-day cap holds {value}, not 1..=24 hours; using the 24h default");
+                            DEFAULT_MAX_MINUTES_PER_DAY
+                        }
+                    }
+                }
+                Ok(None) => {
+                    tracing::debug!("no per-day cap configured, using the 24h default");
                     DEFAULT_MAX_MINUTES_PER_DAY
                 }
+                // A real settings failure: the 24h fallback hides it unless
+                // it is logged.
                 Err(e) => {
                     tracing::warn!("per-day cap load failed, using the 24h default: {e}");
                     DEFAULT_MAX_MINUTES_PER_DAY
@@ -2559,19 +2548,18 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
     });
 
     // AC2: the applicable per-day max-hours cap (a JSON integer setting;
-    // MAPPS-244). A missing setting (404) simply omits the line.
+    // MAPPS-244). An unset cap simply omits the line.
     let cap_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<SettingValueRow>(
-            "/settings/time_tracking/max_hours_per_day",
-        )
-        .await
-        // A missing setting (404) and a broken settings read both omit the
-        // line, so the log is the only thing that tells them apart.
-        .map_err(|e| tracing::warn!("history cap load failed, omitting the cap line: {e}"))
-        .ok()
-        .and_then(|row| row.value.as_i64())
-        .filter(|h| (1..=24).contains(h))
+        crate::modules::tenant_settings::get("time_tracking", "max_hours_per_day")
+            .await
+            // An unset cap and a broken settings read both omit the line, so
+            // the log is the only thing that tells them apart.
+            .map_err(|e| tracing::warn!("history cap load failed, omitting the cap line: {e}"))
+            .ok()
+            .flatten()
+            .and_then(|value| value.as_i64())
+            .filter(|h| (1..=24).contains(h))
     });
 
     // AC2: the tenant rounding rules. Rows decode through `Value` so a field
