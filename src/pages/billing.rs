@@ -1829,6 +1829,13 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     // MAPPS-189: the Void button opens the styled ConfirmDialog; the void
     // request fires from `on_confirm_void` once the user confirms.
     let mut confirming_void = use_signal(|| false);
+    // MAPPS-1006: the Send button opens the styled ConfirmDialog; the send
+    // request fires from `on_confirm_send` once the user confirms. Kept apart
+    // from `action_error` (MAPPS-574 pattern): a non-409 failure stays in the
+    // dialog next to the button that produced it, rather than on the page
+    // behind it.
+    let mut confirming_send = use_signal(|| false);
+    let mut send_error = use_signal(String::new);
     // MAPPS-937: why, optional. The server stores a blank as none, so an
     // operator who has nothing to say is not made to invent something; the
     // reason is worth asking for because it is the only thing on a voided
@@ -1863,6 +1870,55 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                     // does: a 409 here names the status and points at the
                     // credit note, which is the next thing to do.
                     Err(err) => action_error.set(format!("Could not void invoice: {err}")),
+                }
+            }
+            busy.set(false);
+        });
+    };
+
+    // MAPPS-1006: the Send confirmation's own request, moved out of the
+    // header button's `onclick`. A 409 ("nobody to email") closes the dialog
+    // and surfaces the existing blocked-send panel with its ways out; any
+    // other failure stays in the dialog instead of the page.
+    let mut on_confirm_send = move |_: ()| {
+        if *busy.read() {
+            return;
+        }
+        busy.set(true);
+        send_error.set(String::new());
+        let path = invoice_send_path(&id_for_send);
+        // Cloned so the `async move` block below moves only this copy,
+        // leaving the closure's own `id_for_send` intact to borrow again
+        // on the next confirm (mirrors `on_confirm_void`'s `path` above).
+        let invoice_id_for_log = id_for_send.clone();
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let body = serde_json::json!({ "status": "sent" });
+                // Typed, so a 409 can be told from any other refusal
+                // (PMS-1004).
+                match crate::hooks::fetch::api::put_authed_typed::<serde_json::Value, _>(
+                    &path, &body,
+                )
+                .await
+                {
+                    Ok(_) => {
+                        confirming_send.set(false);
+                        send_blocked.set(None);
+                        invoice_resource.restart();
+                    }
+                    // PMS-1004: a 409 is "nobody to email", and it gets the
+                    // panel with the ways out rather than the dialog's error.
+                    Err(crate::hooks::fetch::api::ApiError::Status {
+                        code: 409, message, ..
+                    }) => {
+                        confirming_send.set(false);
+                        send_blocked.set(Some(message));
+                    }
+                    Err(err) => {
+                        tracing::warn!("send failed for invoice {invoice_id_for_log}: {err:?}");
+                        send_error.set(format!("Could not send invoice: {err}"));
+                    }
                 }
             }
             busy.set(false);
@@ -2174,6 +2230,85 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                     confirming_void.set(false);
                     void_reason.set(String::new());
                     action_error.set(String::new());
+                }
+            },
+        }
+        // MAPPS-1006: Send is a one-way door that emails the client and
+        // locks the invoice, so it gets a confirmation like Void's rather
+        // than firing on click. `EmailPreview` sits in the dialog's body: it
+        // used to sit beside the Send button, but most visits to an invoice
+        // are not sends.
+        crate::components::ConfirmDialog {
+            open: confirming_send(),
+            title: "Send invoice".to_string(),
+            message: "Sending finalizes the invoice: it locks and nothing on it can change afterwards. The PDF goes to the billing contact's email, with a pay link when a payment gateway is connected.".to_string(),
+            confirm_text: "Send invoice".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: false,
+            loading: *busy.read(),
+            error: send_error.read().clone(),
+            body: rsx! {
+                p { class: "mb-2 text-sm text-muted",
+                    "Use Preview email to read the message first."
+                }
+                crate::components::EmailPreview {
+                    event_type: "billing.invoice_pay_now".to_string(),
+                    context: {
+                        let invoice_number = invoice
+                            .as_ref()
+                            .map(|i| i.invoice_number.clone())
+                            .unwrap_or_default();
+                        let company_name = invoice
+                            .as_ref()
+                            .and_then(|i| i.company_name.clone())
+                            .unwrap_or_default();
+                        let total = invoice
+                            .as_ref()
+                            .map(|i| i.total.clone())
+                            .unwrap_or_default();
+                        let due_date = invoice
+                            .as_ref()
+                            .and_then(|i| i.due_date.clone())
+                            .unwrap_or_default();
+                        move || serde_json::json!({
+                            "invoice_number": invoice_number.clone(),
+                            "company_name": company_name.clone(),
+                            "total": total.clone(),
+                            "due_date": due_date.clone(),
+                        })
+                    },
+                    // MAPPS-642: the server-built message, with the
+                    // conditions under which Send mails nobody.
+                    builtin: invoice.as_ref().map(|inv| {
+                        let contact_email: Option<Option<String>> = inv
+                            .billing_contact_id
+                            .map(|_| {
+                                contact_resource
+                                    .read_unchecked()
+                                    .clone()
+                                    .flatten()
+                                    .and_then(|c| c.email())
+                            });
+                        invoice_pay_now_preview(
+                            crate::hooks::use_auth()
+                                .read()
+                                .active_org_name()
+                                .unwrap_or_default(),
+                            &inv.invoice_number,
+                            &inv.balance_due,
+                            inv.currency.as_deref().unwrap_or_default(),
+                            inv.due_date.as_deref().unwrap_or_default(),
+                            contact_email.as_ref().map(|e| e.as_deref()),
+                            (*gateway_resource.read_unchecked()).flatten(),
+                        )
+                    }),
+                }
+            },
+            onconfirm: move |_| on_confirm_send(()),
+            oncancel: move |_| {
+                if !*busy.read() {
+                    confirming_send.set(false);
+                    send_error.set(String::new());
                 }
             },
         }
@@ -2512,101 +2647,15 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                         // MAPPS-357: block sending while the server is down.
                         disabled: !can_mutate,
                         title: (!can_mutate).then(|| "Can't send while the server is unreachable".to_string()),
+                        // MAPPS-1006: only opens the confirmation; the actual
+                        // send request moved to `on_confirm_send`.
                         onclick: move |_| {
-                            if *busy.read() {
-                                return;
+                            if !*busy.read() {
+                                confirming_send.set(true);
                             }
-                            busy.set(true);
-                            action_error.set(String::new());
-                            let path = invoice_send_path(&id_for_send);
-                            spawn(async move {
-                                #[cfg(feature = "app")]
-                                {
-                                    let body = serde_json::json!({ "status": "sent" });
-                                    // Typed, so a 409 can be told from any
-                                    // other refusal (PMS-1004).
-                                    match crate::hooks::fetch::api::put_authed_typed::<
-                                        serde_json::Value,
-                                        _,
-                                    >(&path, &body)
-                                        .await
-                                    {
-                                        Ok(_) => {
-                                            send_blocked.set(None);
-                                            invoice_resource.restart();
-                                        }
-                                        // PMS-1004: a 409 is "nobody to email",
-                                        // and it gets the panel with the ways
-                                        // out rather than the error banner.
-                                        Err(crate::hooks::fetch::api::ApiError::Status {
-                                            code: 409,
-                                            message,
-                                            ..
-                                        }) => send_blocked.set(Some(message)),
-                                        Err(err) => action_error
-                                            .set(format!("Could not send invoice: {err}")),
-                                    }
-                                }
-                                busy.set(false);
-                            });
                         },
                         MailIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "Send"
-                    }
-                    // MAPPS-539: Send emails the client, so it carries the two
-                    // affordances every other send trigger does. The preview
-                    // never gates the send; it sits beside it.
-                    crate::components::EmailPreview {
-                        event_type: "billing.invoice_pay_now".to_string(),
-                        context: {
-                            let invoice_number = invoice
-                                .as_ref()
-                                .map(|i| i.invoice_number.clone())
-                                .unwrap_or_default();
-                            let company_name = invoice
-                                .as_ref()
-                                .and_then(|i| i.company_name.clone())
-                                .unwrap_or_default();
-                            let total = invoice
-                                .as_ref()
-                                .map(|i| i.total.clone())
-                                .unwrap_or_default();
-                            let due_date = invoice
-                                .as_ref()
-                                .and_then(|i| i.due_date.clone())
-                                .unwrap_or_default();
-                            move || serde_json::json!({
-                                "invoice_number": invoice_number.clone(),
-                                "company_name": company_name.clone(),
-                                "total": total.clone(),
-                                "due_date": due_date.clone(),
-                            })
-                        },
-                        // MAPPS-642: the server-built message, with the
-                        // conditions under which Send mails nobody.
-                        builtin: invoice.as_ref().map(|inv| {
-                            let contact_email: Option<Option<String>> = inv
-                                .billing_contact_id
-                                .map(|_| {
-                                    contact_resource
-                                        .read_unchecked()
-                                        .clone()
-                                        .flatten()
-                                        .and_then(|c| c.email())
-                                });
-                            invoice_pay_now_preview(
-                                crate::hooks::use_auth()
-                                    .read()
-                                    .active_org_name()
-                                    .unwrap_or_default(),
-                                &inv.invoice_number,
-                                &inv.balance_due,
-                                inv.currency.as_deref().unwrap_or_default(),
-                                inv.due_date.as_deref().unwrap_or_default(),
-                                contact_email.as_ref().map(|e| e.as_deref()),
-                                (*gateway_resource.read_unchecked()).flatten(),
-                            )
-                        }),
                     }
                 }
                 if collectible && staff_only {
@@ -2697,19 +2746,6 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 role: "status",
                 class: "mb-3 text-xs text-muted bg-surface-2 border border-line rounded-md px-3 py-2",
                 "Your payment has not reached this invoice yet. If you completed it, this usually settles within a few minutes: reload this page to check. Do not pay again; contact us if it has not appeared by tomorrow."
-            }
-        }
-
-        // MAPPS-539: Send is a one-way door that emails the client, and the
-        // button alone cannot say so. Since PMS-991 and PMS-992 the rule is
-        // the server's: the invoice goes as a PDF to the billing contact, the
-        // pay link rides along only with a payment gateway, and a send with
-        // nobody to email is refused rather than marked sent (MAPPS-663).
-        // Lead with the finalize consequence (the invoice locks) so the
-        // user reads what becomes immutable before pressing the button.
-        if editable {
-            p { class: "mb-3 text-xs text-subtle",
-                "Sending finalizes the invoice: it locks and nothing on it can change afterwards. The PDF goes to the billing contact's email, with a pay link when a payment gateway is connected. Use Preview email to read it first."
             }
         }
 
