@@ -2534,28 +2534,6 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 // unconditionally.
                 if can_download_pdf {
                     if let Some(inv) = invoice.as_ref() {
-                        // MAPPS-672: on a draft, try another template before
-                        // committing to it in settings. No live render here
-                        // either: `?template=` asks the server to render the
-                        // invoice's own data under the named template, which
-                        // is PMS-1006's whole point. Nothing is saved by
-                        // picking one; the tenant-wide choice is still made
-                        // on the organization settings page.
-                        if editable {
-                            crate::components::Select {
-                                name: "invoice_preview_template",
-                                label: "Preview template".to_string(),
-                                options: vec![
-                                    crate::components::SelectOption::new("", "Your current template"),
-                                    crate::components::SelectOption::new("classic", "Classic"),
-                                    crate::components::SelectOption::new("modern", "Modern"),
-                                    crate::components::SelectOption::new("compact", "Compact"),
-                                ],
-                                value: preview_template(),
-                                help: "Shows this draft under another template. Nothing is saved.".to_string(),
-                                onchange: move |e: FormEvent| preview_template.set(e.value()),
-                            }
-                        }
                         crate::components::DownloadButton {
                             path: if editable && !preview_template.read().is_empty() {
                                 format!("/invoices/{}/pdf?template={}", props.id, preview_template())
@@ -2905,16 +2883,35 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 let amount_credited = format_money_str(&inv.amount_credited);
                 let balance_due = format_money_str(&inv.balance_due);
                 rsx! {
+                    // MAPPS-672: on a draft, try another template before
+                    // committing to it in settings. Nothing is saved.
+                    if can_download_pdf && editable {
+                        div { class: "mb-4 w-full sm:max-w-xs",
+                            crate::components::Select {
+                                name: "invoice_preview_template",
+                                label: "Preview template".to_string(),
+                                options: vec![
+                                    crate::components::SelectOption::new("", "Your current template"),
+                                    crate::components::SelectOption::new("classic", "Classic"),
+                                    crate::components::SelectOption::new("modern", "Modern"),
+                                    crate::components::SelectOption::new("compact", "Compact"),
+                                ],
+                                value: preview_template(),
+                                help: "Shows this draft under another template. Nothing is saved.".to_string(),
+                                onchange: move |e: FormEvent| preview_template.set(e.value()),
+                            }
+                        }
+                    }
                     div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
                         div { class: "lg:col-span-2",
                             Card {
                                 // Header
-                                div { class: "flex justify-between mb-8",
+                                div { class: "flex flex-wrap justify-between gap-4 mb-8",
                                     div {
                                         h2 { class: "text-2xl font-bold text-content", "INVOICE" }
                                         p { class: "text-muted", "{inv.invoice_number}" }
                                     }
-                                    div { class: "text-right",
+                                    div { class: "sm:text-right",
                                         div { class: "mb-2",
                                             span { class: "text-sm text-muted", "Invoice Date: " }
                                             span { class: "font-medium",
@@ -2972,7 +2969,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                 // Totals
                                 div { class: "mt-8 border-t border-line pt-4",
                                     div { class: "flex justify-end",
-                                        div { class: "w-64 space-y-2",
+                                        div { class: "w-full sm:w-64 space-y-2",
                                             div { class: "flex justify-between",
                                                 span { class: "text-muted", "Subtotal" }
                                                 span { "{subtotal}" }
