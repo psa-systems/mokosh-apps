@@ -2905,8 +2905,8 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 let amount_credited = format_money_str(&inv.amount_credited);
                 let balance_due = format_money_str(&inv.balance_due);
                 rsx! {
-                    div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
-                        div { class: "lg:col-span-2",
+                    div { class: "grid grid-cols-1 @5xl:grid-cols-3 gap-6",
+                        div { class: "@5xl:col-span-2",
                             Card {
                                 // Header
                                 div { class: "flex justify-between mb-8",

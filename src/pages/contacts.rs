@@ -2701,8 +2701,8 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 let contact_count = company.contact_count.unwrap_or(0).max(0);
                 let site_count = company.site_count.unwrap_or(0).max(0);
                 rsx! {
-                    div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
-                        div { class: "lg:col-span-2 space-y-6",
+                    div { class: "grid grid-cols-1 @5xl:grid-cols-3 gap-6",
+                        div { class: "@5xl:col-span-2 space-y-6",
                             // Contacts
                             CompanyContactsCard {
                                 company_id: company_id_str.clone(),
@@ -7783,8 +7783,8 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                     });
                 };
                 rsx! {
-                    div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
-                        div { class: "lg:col-span-2 space-y-6",
+                    div { class: "grid grid-cols-1 @5xl:grid-cols-3 gap-6",
+                        div { class: "@5xl:col-span-2 space-y-6",
                             ContactTicketsCard { tickets_resource: tickets }
                             // MAPPS-568: beside Recent Tickets, because the two
                             // answer different questions - which tickets exist,

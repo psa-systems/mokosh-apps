@@ -1830,8 +1830,8 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                 let number = contract.contract_number.clone().unwrap_or_default();
                 let notes = contract.notes.clone().unwrap_or_default();
                 rsx! {
-                    div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
-                        div { class: "lg:col-span-2 space-y-6",
+                    div { class: "grid grid-cols-1 @5xl:grid-cols-3 gap-6",
+                        div { class: "@5xl:col-span-2 space-y-6",
                             Card { title: "Contract Details",
                                 dl { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                     div {

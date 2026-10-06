@@ -135,7 +135,7 @@ if [ "${1:-}" = "--self-test" ]; then
   status=0
 
   # The shape that shipped before MAPPS-624: the cap back around the Outlet.
-  sed 's|main { class: "flex-1 overflow-y-auto overscroll-contain py-6 px-4 sm:px-6 lg:px-8",|main { class: "flex-1 overflow-y-auto overscroll-contain py-6",\n                    div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",|' \
+  sed 's|main { class: "flex-1 overflow-y-auto overscroll-contain py-6 px-4 sm:px-6 lg:px-8 @container",|main { class: "flex-1 overflow-y-auto overscroll-contain py-6 @container",\n                    div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",|' \
     src/components/layout.rs > "$tmp/recapped-layout.rs"
   if run_guard src/lib.rs "$tmp/recapped-layout.rs" >/dev/null 2>&1; then
     echo "page-width guard: SELF-TEST FAIL (a shell that caps every page passed)"
@@ -143,7 +143,7 @@ if [ "${1:-}" = "--self-test" ]; then
   fi
 
   # `main` stripped of the padding the wrapper div used to carry.
-  sed 's| py-6 px-4 sm:px-6 lg:px-8"| py-6"|' src/components/layout.rs > "$tmp/unpadded-layout.rs"
+  sed 's| py-6 px-4 sm:px-6 lg:px-8 @container"| py-6 @container"|' src/components/layout.rs > "$tmp/unpadded-layout.rs"
   if run_guard src/lib.rs "$tmp/unpadded-layout.rs" >/dev/null 2>&1; then
     echo "page-width guard: SELF-TEST FAIL (a shell with no shared padding passed)"
     status=1

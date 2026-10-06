@@ -1729,9 +1729,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                 };
                 let edited_marker = edited_label.clone();
                 rsx! {
-                    div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
+                    div { class: "grid grid-cols-1 @5xl:grid-cols-3 gap-6",
                         // Main content
-                        div { class: "lg:col-span-2 space-y-6",
+                        div { class: "@5xl:col-span-2 space-y-6",
                             Card {
                                 title: "Asset Information",
                                 actions: rsx! {
