@@ -1416,12 +1416,12 @@ pub mod api {
 
     // --- Whole-list reads (MAPPS-528) ------------------------------------
     //
-    // mokosh-server caps `per_page` at `PaginationParams::MAX_PER_PAGE` and
-    // CLAMPS anything larger instead of rejecting it, so a page that asked
-    // for 200 got 100 rows and no sign that the rest existed. Fifteen call
-    // sites asked for 200 or 500 and read `resp.data` once. These helpers
-    // are the single way to read a whole collection: they request the cap
-    // and keep going until a short page arrives.
+    // mokosh-server rejects a `per_page` above `PaginationParams::MAX_PER_PAGE`
+    // with a 400 (MAPPS-542); it once CLAMPED anything larger instead, so a
+    // page that asked for 200 got 100 rows and no sign that the rest existed.
+    // Fifteen call sites asked for 200 or 500 and read `resp.data` once. These
+    // helpers are the single way to read a whole collection: they request the
+    // cap and keep going until a short page arrives.
 
     /// The server's `per_page` ceiling. Mirrors
     /// `PaginationParams::MAX_PER_PAGE`, which is itself the client's copy
