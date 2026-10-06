@@ -127,11 +127,13 @@ re-fetches instead of leaving the previous tenant's rows on screen.
 ### Reading a whole collection
 
 `get_all_authed` and its siblings are the only correct way to read a
-list in full. mokosh-server clamps an over-large `per_page` instead of
-rejecting it, so a page that asked for 200 got the cap and no sign the
-rest existed; the helpers request `MAX_PER_PAGE` (re-exported from the
-server's own constant) and keep going until a short page arrives,
-failing loudly rather than returning a silently short list (MAPPS-528).
+list in full. mokosh-server rejects an over-cap `per_page` with a 400
+naming the value and the limit (MAPPS-542); it once clamped silently
+instead, so a page that asked for 200 got the cap and no sign the rest
+existed, which is the history the paging helpers were written against.
+The helpers still request `MAX_PER_PAGE` (re-exported from the server's
+own constant) and keep going until a short page arrives, failing
+loudly rather than returning a silently short list (MAPPS-528).
 
 There is one per bearer: `get_all_authed` on the staff token,
 `get_all_portal_authed` on the portal token, and `get_all_authed_any`
@@ -139,6 +141,21 @@ on whichever the caller holds (contact first, staff second), for the
 dual-planed paths a contact and a staff member both reach. Reaching for
 the single-page `get_authed_any` on one of those is what left a long
 contact-side note thread silently short at the page cap.
+
+`get_all_authed_typed` is the staff-token read with a typed `ApiError`,
+for a caller that must tell a 403 from a failure. The shared reference
+lists in `src/hooks/shared_list.rs` use it: a role the endpoint refuses
+is logged, and any other failure is logged and shown as an error toast
+(MAPPS-1001).
+
+### Reading one tenant setting
+
+Read a tenant setting through its category with
+`crate::modules::tenant_settings::get(category, key)`, which calls
+`GET /settings/{category}` and returns `Ok(None)` for a key the tenant
+never set. The per-key `GET /settings/{category}/{key}` answers an unset
+key with a 404, which the browser logs as a console error on a page that
+is working (MAPPS-1001). Writes still go to the per-key route.
 
 ## DTO sharing
 

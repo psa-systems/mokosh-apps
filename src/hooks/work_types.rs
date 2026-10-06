@@ -29,32 +29,10 @@ pub struct WorkTypeRow {
     pub name: String,
 }
 
-type WorkTypesWanted = Signal<bool>;
-
-/// Provide the shared work-types resource and its `enabled` flag at the
-/// App root. Mirrors [`crate::hooks::user_roster::use_user_roster_provider`].
+/// Provide the shared work-types list at the App root (MAPPS-1001: see
+/// [`crate::hooks::shared_list`]).
 pub fn use_work_types_provider() {
-    let wanted = use_signal(|| false);
-    use_context_provider::<WorkTypesWanted>(|| wanted);
-
-    let resource = use_resource(move || async move {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        if !*wanted.read() {
-            return Vec::new();
-        }
-        #[cfg(feature = "app")]
-        {
-            crate::hooks::fetch::api::get_all_authed::<WorkTypeRow>("/work-types")
-                .await
-                .inspect_err(|e| tracing::warn!("work-types load failed: {e}"))
-                .unwrap_or_default()
-        }
-        #[cfg(not(feature = "app"))]
-        {
-            Vec::new()
-        }
-    });
-    use_context_provider::<Resource<Vec<WorkTypeRow>>>(|| resource);
+    crate::hooks::shared_list::use_shared_list_provider::<WorkTypeRow>("work types", "/work-types");
 }
 
 /// Ask for the cached work-types list. `enabled` is each caller's own
@@ -62,9 +40,5 @@ pub fn use_work_types_provider() {
 /// thereafter share) the one underlying fetch. Passing `false` never
 /// blocks a list another consumer already cached.
 pub fn use_work_types(enabled: bool) -> Resource<Vec<WorkTypeRow>> {
-    let mut wanted = use_context::<WorkTypesWanted>();
-    if enabled && !*wanted.read() {
-        wanted.set(true);
-    }
-    use_context::<Resource<Vec<WorkTypeRow>>>()
+    crate::hooks::shared_list::use_shared_list::<WorkTypeRow>(enabled)
 }
