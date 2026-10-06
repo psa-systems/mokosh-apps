@@ -66,6 +66,27 @@ pub fn enabled_in(rows: &[ModuleConfig], name: &str) -> bool {
     rows.iter().any(|r| r.module_name == name && r.is_enabled)
 }
 
+/// The success/failure decision for a `/settings/modules` load: `Ok` becomes
+/// the flags for `generation`, `Err` leaves the cache untouched (callers must
+/// not write an empty [`ModuleFlags`], so the next mount or generation bump
+/// retries instead of reading every module as off).
+#[cfg(feature = "app")]
+fn flags_after_load(
+    generation: u64,
+    result: Result<Vec<ModuleConfig>, crate::hooks::fetch::api::ApiError>,
+) -> Option<ModuleFlags> {
+    let rows = result.ok()?;
+    let enabled = rows
+        .into_iter()
+        .filter(|r| r.is_enabled)
+        .map(|r| r.module_name)
+        .collect();
+    Some(ModuleFlags {
+        generation,
+        enabled,
+    })
+}
+
 /// Read the flags for the active tenant into [`MODULE_FLAGS`]. Called by
 /// the hook when the cache is missing or from another tenant, and by the
 /// Modules page after a toggle.
@@ -78,22 +99,19 @@ pub fn refresh_module_flags() {
         }
         *LOADING_FOR.write() = Some(generation);
         spawn(async move {
-            let rows =
-                crate::hooks::fetch::api::get_all_authed::<ModuleConfig>("/settings/modules")
-                    .await
-                    .inspect_err(|e| {
-                        tracing::warn!("module flags load failed, every module reads as off: {e}")
-                    })
-                    .unwrap_or_default();
-            let enabled = rows
-                .iter()
-                .filter(|r| r.is_enabled)
-                .map(|r| r.module_name.clone())
-                .collect();
-            *MODULE_FLAGS.write() = Some(ModuleFlags {
-                generation,
-                enabled,
-            });
+            let result =
+                crate::hooks::fetch::api::get_all_authed_typed::<ModuleConfig>("/settings/modules")
+                    .await;
+            if let Err(e) = &result {
+                tracing::error!("module flags load failed, not caching every module as off: {e}");
+                crate::hooks::push_toast(
+                    crate::components::AlertType::Error,
+                    format!("Could not load module settings: {}", e.user_message()),
+                );
+            }
+            if let Some(flags) = flags_after_load(generation, result) {
+                *MODULE_FLAGS.write() = Some(flags);
+            }
             *LOADING_FOR.write() = None;
         });
     }
@@ -152,6 +170,35 @@ mod tests {
         assert!(!enabled_in(&rows, "timesheets"));
         assert!(enabled_in(&rows, "billing"));
         assert!(!enabled_in(&rows, "projects"), "no row is off");
+    }
+
+    /// A failed load leaves the cache unset instead of writing an empty
+    /// `ModuleFlags` (MAPPS-1008): a transient outage must not read as
+    /// "every module off" forever, it must retry on the next mount or
+    /// generation bump.
+    #[cfg(feature = "app")]
+    #[test]
+    fn a_failed_load_leaves_the_flags_unset() {
+        let err = crate::hooks::fetch::api::ApiError::Network("boom".into());
+        assert_eq!(flags_after_load(7, Err(err)), None);
+    }
+
+    #[cfg(feature = "app")]
+    #[test]
+    fn a_successful_load_keeps_only_the_enabled_rows() {
+        let rows = vec![
+            ModuleConfig {
+                module_name: "billing".into(),
+                is_enabled: true,
+            },
+            ModuleConfig {
+                module_name: "projects".into(),
+                is_enabled: false,
+            },
+        ];
+        let flags = flags_after_load(7, Ok(rows)).expect("a successful load yields flags");
+        assert_eq!(flags.generation, 7);
+        assert_eq!(flags.enabled, vec!["billing".to_string()]);
     }
 
     /// The client's table names the server's ten gated modules and no other.
