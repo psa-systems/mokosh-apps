@@ -127,11 +127,13 @@ re-fetches instead of leaving the previous tenant's rows on screen.
 ### Reading a whole collection
 
 `get_all_authed` and its siblings are the only correct way to read a
-list in full. mokosh-server clamps an over-large `per_page` instead of
-rejecting it, so a page that asked for 200 got the cap and no sign the
-rest existed; the helpers request `MAX_PER_PAGE` (re-exported from the
-server's own constant) and keep going until a short page arrives,
-failing loudly rather than returning a silently short list (MAPPS-528).
+list in full. mokosh-server rejects an over-cap `per_page` with a 400
+naming the value and the limit (MAPPS-542); it once clamped silently
+instead, so a page that asked for 200 got the cap and no sign the rest
+existed, which is the history the paging helpers were written against.
+The helpers still request `MAX_PER_PAGE` (re-exported from the server's
+own constant) and keep going until a short page arrives, failing
+loudly rather than returning a silently short list (MAPPS-528).
 
 There is one per bearer: `get_all_authed` on the staff token,
 `get_all_portal_authed` on the portal token, and `get_all_authed_any`
