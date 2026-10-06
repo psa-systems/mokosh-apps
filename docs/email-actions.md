@@ -38,6 +38,11 @@ trigger, so that stops being true.
    what `dispatch` would render and sends nothing. Per returned entry the modal
    shows the recipients, the subject and the body.
 
+   When the trigger opens a confirmation dialog instead of sending straight
+   from the button's click, `EmailPreview` goes in that dialog's `body` rather
+   than beside the button: the invoice send (MAPPS-1006) does this, since Send
+   now opens a `ConfirmDialog` before it fires the request.
+
 ## Rules the component holds
 
 - **`body_html` never reaches the DOM as markup.** It is a tenant-editable
@@ -64,7 +69,7 @@ trigger, so that stops being true.
 | Send a request form to a client | `src/pages/request_links.rs` (`SendRequestLinkModal`, reached directly from the company page and via `SendFormToClientModal` from the form builder) | `forms.request_link` |
 | Invite a colleague | `src/pages/invitations.rs` | `invitations.created` |
 | Send a quote to the client | `src/pages/quotes.rs` | `quote.sent` |
-| Send an invoice to the client | `src/pages/billing.rs` (`InvoiceDetailPage`) | `billing.invoice_pay_now` |
+| Send an invoice to the client | `src/pages/billing.rs` (`InvoiceDetailPage`, `EmailPreview` in the "Send invoice" `ConfirmDialog`'s body) | `billing.invoice_pay_now` |
 | Email a ticket note to the client | `src/pages/tickets.rs` (the journal composer on `TicketDetailPage`) | `ticket.note` |
 
 Only `forms.request_link` is a notification rule today. mokosh-server builds the

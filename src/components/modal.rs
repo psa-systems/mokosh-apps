@@ -154,7 +154,16 @@ fn ModalChrome(
                     // header and footer stay pinned (flex-shrink-0) while only the
                     // body scrolls. Keeps large modals usable on small screens with
                     // no double-axis scroll.
-                    class: "relative transform flex flex-col max-h-[90vh] overflow-hidden rounded-lg bg-raised text-left shadow-xl transition-all sm:my-8 w-full {size_class}",
+                    //
+                    // MAPPS-1006: no `transform` here. A non-`none` `transform`
+                    // (even the identity one Tailwind's `transform` utility
+                    // produces) makes this panel the containing block for any
+                    // `position: fixed` descendant, which is exactly what a
+                    // nested `Modal` (e.g. `EmailPreview`'s) renders. That
+                    // squeezes the nested modal into this panel's small bounds
+                    // instead of the viewport. Dropping `transform` lets a
+                    // nested modal anchor to the viewport again.
+                    class: "relative flex flex-col max-h-[90vh] overflow-hidden rounded-lg bg-raised text-left shadow-xl transition-all sm:my-8 w-full {size_class}",
                     // PMS-369: Esc cancels. Focus the dialog on mount so the
                     // keydown lands here even before the user clicks anything;
                     // keydown from any focused control inside also bubbles up.
@@ -169,6 +178,12 @@ fn ModalChrome(
                     },
                     onkeydown: move |e: KeyboardEvent| {
                         if e.key() == Key::Escape {
+                            // MAPPS-1006: a nested modal's own `ModalChrome`
+                            // sits inside this one's DOM subtree, so this
+                            // keydown would otherwise bubble up from it and
+                            // close both on a single Esc. Stop it here so Esc
+                            // closes only the innermost open modal.
+                            e.stop_propagation();
                             onclose.call(());
                         }
                     },
