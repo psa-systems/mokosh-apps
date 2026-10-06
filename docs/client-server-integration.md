@@ -140,6 +140,21 @@ dual-planed paths a contact and a staff member both reach. Reaching for
 the single-page `get_authed_any` on one of those is what left a long
 contact-side note thread silently short at the page cap.
 
+`get_all_authed_typed` is the staff-token read with a typed `ApiError`,
+for a caller that must tell a 403 from a failure. The shared reference
+lists in `src/hooks/shared_list.rs` use it: a role the endpoint refuses
+is logged, and any other failure is logged and shown as an error toast
+(MAPPS-1001).
+
+### Reading one tenant setting
+
+Read a tenant setting through its category with
+`crate::modules::tenant_settings::get(category, key)`, which calls
+`GET /settings/{category}` and returns `Ok(None)` for a key the tenant
+never set. The per-key `GET /settings/{category}/{key}` answers an unset
+key with a 404, which the browser logs as a console error on a page that
+is working (MAPPS-1001). Writes still go to the per-key route.
+
 ## DTO sharing
 
 The shared-crate option is now live for part of the tree. MAPPS-383

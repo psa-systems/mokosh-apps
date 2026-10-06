@@ -28,6 +28,7 @@ pub mod pending_login;
 // 001). Contact plane hooks land in prompts 004-006.
 pub mod remote_data;
 pub mod server_status;
+pub mod shared_list;
 mod sidebar;
 pub mod task_statuses;
 pub mod tax_rates;

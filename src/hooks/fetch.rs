@@ -3077,6 +3077,26 @@ pub mod api {
         handle_response(resp).await
     }
 
+    /// [`get_all_authed`] with a typed error, so a caller can tell a 403 from
+    /// a failure. Same paging contract as [`get_all_with_auth`].
+    #[cfg(feature = "app")]
+    pub async fn get_all_authed_typed<T: DeserializeOwned>(path: &str) -> Result<Vec<T>, ApiError> {
+        let mut rows: Vec<T> = Vec::new();
+        for page in 1..=MAX_PAGES {
+            let resp: crate::utils::Paginated<T> =
+                get_authed_typed(&paged_path(path, page)).await?;
+            let full = resp.data.len() as u32 >= MAX_PER_PAGE;
+            rows.extend(resp.data);
+            if !full {
+                return Ok(rows);
+            }
+        }
+        Err(ApiError::Decode(format!(
+            "{path} returned more than {MAX_PAGES} full pages of {MAX_PER_PAGE} rows; \
+             refusing to render a list that is silently short"
+        )))
+    }
+
     /// Bearer-authed GET that returns the raw response body plus the server's
     /// `Content-Disposition` filename. Used for attachment downloads the SPA
     /// cannot fetch through a plain `<a href>` because the bearer lives in WASM
