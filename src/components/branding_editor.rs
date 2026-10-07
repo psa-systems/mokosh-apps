@@ -455,6 +455,17 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
     // block. On Save we hand the full state back through the
     // `on_save` callback; on Reset we clear a single field.
     let mut display_name = use_signal(|| props.current.display_name.clone().unwrap_or_default());
+    // MAPPS-1024: the invoice-identity block. `company_name`,
+    // `legal_name`, `postal_address` and `tax_id` are shown on every
+    // plane; `invoice_template` is StaffTenant-only (TENANT_ONLY_KEYS
+    // on the server).
+    let mut company_name = use_signal(|| props.current.company_name.clone().unwrap_or_default());
+    let mut legal_name = use_signal(|| props.current.legal_name.clone().unwrap_or_default());
+    let mut postal_address =
+        use_signal(|| props.current.postal_address.clone().unwrap_or_default());
+    let mut tax_id = use_signal(|| props.current.tax_id.clone().unwrap_or_default());
+    let mut invoice_template =
+        use_signal(|| props.current.invoice_template.clone().unwrap_or_default());
     let primary_color = use_signal(|| props.current.primary_color.clone().unwrap_or_default());
     let secondary_color = use_signal(|| props.current.secondary_color.clone().unwrap_or_default());
     let background_color =
@@ -483,6 +494,11 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
         // fields flows through the row's Remove button.
         let block = CompanyBranding {
             display_name: Some(display_name.read().clone()).filter(|s| !s.is_empty()),
+            company_name: Some(company_name.read().clone()).filter(|s| !s.is_empty()),
+            legal_name: Some(legal_name.read().clone()).filter(|s| !s.is_empty()),
+            postal_address: Some(postal_address.read().clone()).filter(|s| !s.is_empty()),
+            tax_id: Some(tax_id.read().clone()).filter(|s| !s.is_empty()),
+            invoice_template: Some(invoice_template.read().clone()).filter(|s| !s.is_empty()),
             primary_color: Some(primary_color.read().clone()).filter(|s| !s.is_empty()),
             secondary_color: Some(secondary_color.read().clone()).filter(|s| !s.is_empty()),
             background_color: Some(background_color.read().clone()).filter(|s| !s.is_empty()),
@@ -581,6 +597,113 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                         oninput: move |e: FormEvent| display_name.set(e.value()),
                     }
                     p { class: "text-xs text-muted", "{hint(&props.plane, defaults.display_name.as_deref())}" }
+                }
+                // MAPPS-1024: business identity. The invoice "From"
+                // block picks the first non-empty of `legal_name`
+                // then `company_name` then the tenant display name
+                // (PMS-911 issuer::resolve). `invoice_template`
+                // (PMS-1006) is tenant-only on the server; the
+                // override planes hide the select.
+                div { class: "space-y-4 pt-4 border-t border-line",
+                    p { class: "text-sm font-medium text-content", "Business identity" }
+                    p { class: "text-xs text-muted",
+                        "What your invoices read as under \"From\". Blank legal name falls through to trading name, then to the tenant's display name."
+                    }
+                    div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
+                        div { class: "space-y-1",
+                            label {
+                                r#for: "brand_company_name",
+                                class: "block text-sm font-medium text-content",
+                                "Trading name"
+                            }
+                            input {
+                                id: "brand_company_name",
+                                r#type: "text",
+                                class: "block w-full rounded-md border-line shadow-sm focus:border-accent focus:ring-accent bg-surface text-content sm:text-sm",
+                                placeholder: "Acme IT",
+                                value: "{company_name}",
+                                disabled,
+                                oninput: move |e: FormEvent| company_name.set(e.value()),
+                            }
+                            p { class: "text-xs text-muted", "{hint(&props.plane, defaults.company_name.as_deref())}" }
+                        }
+                        div { class: "space-y-1",
+                            label {
+                                r#for: "brand_legal_name",
+                                class: "block text-sm font-medium text-content",
+                                "Legal name"
+                            }
+                            input {
+                                id: "brand_legal_name",
+                                r#type: "text",
+                                class: "block w-full rounded-md border-line shadow-sm focus:border-accent focus:ring-accent bg-surface text-content sm:text-sm",
+                                placeholder: "Acme IT Services Pty Ltd",
+                                value: "{legal_name}",
+                                disabled,
+                                oninput: move |e: FormEvent| legal_name.set(e.value()),
+                            }
+                            p { class: "text-xs text-muted", "{hint(&props.plane, defaults.legal_name.as_deref())}" }
+                        }
+                    }
+                    div { class: "space-y-1",
+                        label {
+                            r#for: "brand_tax_id",
+                            class: "block text-sm font-medium text-content",
+                            "Tax ID"
+                        }
+                        input {
+                            id: "brand_tax_id",
+                            r#type: "text",
+                            class: "block w-full rounded-md border-line shadow-sm focus:border-accent focus:ring-accent bg-surface text-content sm:text-sm",
+                            placeholder: "ABN 12 345 678 901",
+                            value: "{tax_id}",
+                            disabled,
+                            oninput: move |e: FormEvent| tax_id.set(e.value()),
+                        }
+                        p { class: "text-xs text-muted", "{hint(&props.plane, defaults.tax_id.as_deref())}" }
+                    }
+                    div { class: "space-y-1",
+                        label {
+                            r#for: "brand_postal_address",
+                            class: "block text-sm font-medium text-content",
+                            "Postal address"
+                        }
+                        textarea {
+                            id: "brand_postal_address",
+                            class: "block w-full rounded-md border-line shadow-sm focus:border-accent focus:ring-accent bg-surface text-content sm:text-sm",
+                            rows: "4",
+                            placeholder: "12 Example Street\nSuite 4\nSydney NSW 2000",
+                            value: "{postal_address}",
+                            disabled,
+                            oninput: move |e: FormEvent| postal_address.set(e.value()),
+                        }
+                        p { class: "text-xs text-muted",
+                            "One line per address line. Up to six lines. {hint(&props.plane, defaults.postal_address.as_deref())}"
+                        }
+                    }
+                    if matches!(props.plane, BrandingPlane::StaffTenant) {
+                        div { class: "space-y-1",
+                            label {
+                                r#for: "brand_invoice_template",
+                                class: "block text-sm font-medium text-content",
+                                "Invoice template"
+                            }
+                            select {
+                                id: "brand_invoice_template",
+                                class: "block w-full rounded-md border-line shadow-sm focus:border-accent focus:ring-accent bg-surface text-content sm:text-sm",
+                                value: "{invoice_template}",
+                                disabled,
+                                onchange: move |e: FormEvent| invoice_template.set(e.value()),
+                                option { value: "", "Default (classic)" }
+                                option { value: "classic", "Classic" }
+                                option { value: "modern", "Modern" }
+                                option { value: "compact", "Compact" }
+                            }
+                            p { class: "text-xs text-muted",
+                                "Picks the PDF layout for every invoice this tenant issues. Takes effect at next invoice send; already-sent invoices keep their frozen template."
+                            }
+                        }
+                    }
                 }
                 // Colors + a per-field "Reset" affordance
                 // (MAPPS-635 D6). Native `<input type="color">` has no
@@ -818,7 +941,20 @@ mod tests {
             .find("on_save.call(block);")
             .expect("the closure calls on_save");
         let block = &src[submit..submit + block_end];
-        for key in ["support_email:", "support_phone:", "support_contact_name:"] {
+        for key in [
+            "support_email:",
+            "support_phone:",
+            "support_contact_name:",
+            // MAPPS-1024: invoice-identity keys drive the invoice
+            // "From" line and the template choice. They sit on
+            // every plane's save block so a plane-conditional UI
+            // can never silently drop them on save.
+            "company_name:",
+            "legal_name:",
+            "postal_address:",
+            "tax_id:",
+            "invoice_template:",
+        ] {
             assert!(
                 block.contains(key),
                 "{key} left the save block, so a tenant save would clear it"
