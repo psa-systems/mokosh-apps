@@ -17,3 +17,22 @@
 pub fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<String>, String> {
     crate::platform::download::save_bytes_as_file(bytes, filename)
 }
+
+/// A tab opened before the preview PDF is fetched (MAPPS-1005). Open it
+/// with [`open_preview_tab`] synchronously in the click handler, then hand
+/// it to [`show_bytes_in_tab`] once the bytes arrive.
+pub type PreviewTab = crate::platform::download::PreviewTab;
+
+/// Open a blank tab (or, on the desktop build, a no-op placeholder) before
+/// the PDF is fetched, so a browser's pop-up blocker sees it as a direct
+/// result of the click rather than of an async callback. `Err` means the
+/// tab could not be opened; the caller should fall back to downloading.
+pub fn open_preview_tab() -> Result<PreviewTab, String> {
+    crate::platform::download::open_preview_tab()
+}
+
+/// Show `bytes` as a PDF in `tab`: the browser displays it in place, with
+/// no file saved; the desktop build opens it in the system's PDF viewer.
+pub fn show_bytes_in_tab(tab: PreviewTab, bytes: &[u8]) -> Result<(), String> {
+    crate::platform::download::show_bytes_in_tab(tab, bytes)
+}

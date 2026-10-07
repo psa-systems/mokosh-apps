@@ -1,5 +1,5 @@
-//! A button that fetches a document with the bearer and saves it
-//! (MAPPS-641).
+//! A button that fetches a document with the bearer and either saves it or
+//! previews it (MAPPS-641, MAPPS-1005).
 //!
 //! The SPA holds its token in memory, so a plain link to `/invoices/{id}/pdf`
 //! navigates without an `Authorization` header and gets a 401. The pieces
@@ -10,6 +10,11 @@
 //! (MAPPS-504). Four pages need exactly that sequence with the same three
 //! states (fetching, failed, saved-to-a-path), so it lives here once rather
 //! than as four subtly different copies.
+//!
+//! `preview: true` (MAPPS-1005) skips saving: the browser build opens a
+//! tab before the fetch starts and shows the bytes there once they arrive,
+//! so nothing lands in the user's downloads; the desktop build has no tab
+//! and opens the bytes in the system's PDF viewer instead.
 //!
 //! Failure wording is by kind, not by raw string: a 403 is the wrong role, a
 //! 404 is a document that is gone, a transport error is the network, and a
@@ -111,6 +116,13 @@ pub struct DownloadButtonProps {
     pub title: Option<String>,
     #[props(default)]
     pub disabled: bool,
+    /// Open the PDF in a new tab instead of saving it (MAPPS-1005): for a
+    /// draft that can still change, "Preview PDF" shows what it would look
+    /// like without a file landing in the user's downloads. `false` keeps
+    /// the original save-to-disk behavior for "Download PDF" on a document
+    /// whose bytes are final.
+    #[props(default)]
+    pub preview: bool,
 }
 
 #[component]
@@ -121,6 +133,7 @@ pub fn DownloadButton(props: DownloadButtonProps) -> Element {
     let path = props.path.clone();
     let fallback = props.fallback_name.clone();
     let what = props.what.clone();
+    let preview = props.preview;
     let on_click = move |_| {
         if *busy.read() {
             return;
@@ -130,21 +143,42 @@ pub fn DownloadButton(props: DownloadButtonProps) -> Element {
         let path = path.clone();
         let fallback = fallback.clone();
         let what = what.clone();
+        // Opened here, synchronously, rather than after the fetch below:
+        // a tab opened from an async callback is what Chrome and Firefox's
+        // pop-up blockers catch, so this has to happen inside the click
+        // itself (MAPPS-1005). `None` (not a preview, or the tab could not
+        // be opened) falls back to the save-to-disk path below.
+        let preview_tab = if preview {
+            crate::utils::download::open_preview_tab().ok()
+        } else {
+            None
+        };
         spawn(async move {
             #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::get_authed_bytes_typed(&path).await {
-                    Ok((bytes, name)) => {
-                        let filename = name.unwrap_or(fallback);
-                        match crate::utils::download::save_bytes_as_file(&bytes, &filename) {
-                            Ok(Some(saved)) => outcome.set(Some(Outcome::SavedTo(saved))),
-                            // The browser shows its own download shelf.
-                            Ok(None) => {}
-                            Err(reason) => outcome.set(Some(Outcome::Failed(
-                                DownloadFailure::CouldNotSave(reason).describe(&what),
-                            ))),
+                    Ok((bytes, name)) => match preview_tab {
+                        Some(tab) => {
+                            if let Err(reason) =
+                                crate::utils::download::show_bytes_in_tab(tab, &bytes)
+                            {
+                                outcome.set(Some(Outcome::Failed(
+                                    DownloadFailure::CouldNotSave(reason).describe(&what),
+                                )));
+                            }
                         }
-                    }
+                        None => {
+                            let filename = name.unwrap_or(fallback);
+                            match crate::utils::download::save_bytes_as_file(&bytes, &filename) {
+                                Ok(Some(saved)) => outcome.set(Some(Outcome::SavedTo(saved))),
+                                // The browser shows its own download shelf.
+                                Ok(None) => {}
+                                Err(reason) => outcome.set(Some(Outcome::Failed(
+                                    DownloadFailure::CouldNotSave(reason).describe(&what),
+                                ))),
+                            }
+                        }
+                    },
                     Err(err) => {
                         let failure = DownloadFailure::from_status(
                             err.status_code(),
@@ -161,7 +195,7 @@ pub fn DownloadButton(props: DownloadButtonProps) -> Element {
             }
             #[cfg(not(feature = "app"))]
             {
-                let _ = (path, fallback, what);
+                let _ = (path, fallback, what, preview_tab);
             }
             busy.set(false);
         });
