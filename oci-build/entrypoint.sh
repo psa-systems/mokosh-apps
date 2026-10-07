@@ -87,8 +87,9 @@ build_config_fields() {
     # derivation. Retires the per-MSP `MOKOSH_PORTAL_HOST_SUFFIX` env;
     # see docs/dev-docs/portal-single-host-cutover.md in mokosh-server.
     printf 'portal_host\t%s\n' "${MOKOSH_PORTAL_HOST:-}"
-    # MAPPS-453: documentation subdomain base URL (e.g. https://docs.n.niceguyit.biz).
-    # Unset hides the Documentation menu entry and every contextual help link.
+    # MAPPS-453: documentation subdomain base URL (e.g. https://docs.a8n.systems).
+    # Unset hides the Documentation menu entry and every contextual help link,
+    # unless the SPA can derive it from a `msp.<tld>` host (MAPPS-999).
     # MAPPS-831: renamed from MOKOSH_DOCS_URL to MOKOSH_DOCS_BASE_URL to match
     # the desktop build's env var for the same field (see
     # src/modules/runtime_config.rs, which derives MOKOSH_<FIELD> from the
