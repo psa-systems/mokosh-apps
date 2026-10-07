@@ -588,29 +588,9 @@ fn widget_failed() -> Element {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
-struct DashboardReportLite {
-    #[serde(default)]
-    open_by_priority: Vec<ReportBucket>,
-    #[serde(default)]
-    sla_warnings: i64,
-    #[serde(default)]
-    sla_breached: i64,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct ReportBucket {
-    #[serde(default)]
-    label: String,
-    #[serde(default)]
-    count: i64,
-}
-
 #[component]
 fn WidgetTicketsByStatus() -> Element {
-    let report = crate::hooks::use_remote_resource(|| async {
-        crate::hooks::fetch::api::get_authed::<DashboardReportLite>("/reports/dashboard").await
-    });
+    let report = crate::hooks::use_dashboard_report();
     if report.is_loading() {
         return widget_loading();
     }
@@ -680,9 +660,7 @@ fn WidgetTimeThisWeek() -> Element {
 
 #[component]
 fn WidgetSlaAtRisk() -> Element {
-    let report = crate::hooks::use_remote_resource(|| async {
-        crate::hooks::fetch::api::get_authed::<DashboardReportLite>("/reports/dashboard").await
-    });
+    let report = crate::hooks::use_dashboard_report();
     if report.is_loading() {
         return widget_loading();
     }
