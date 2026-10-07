@@ -396,6 +396,9 @@ fn IntegrationCard(
         let provider = provider.clone();
         let enabled = integration.enabled_capabilities.clone();
         move |(key, on): (String, bool)| {
+            if busy() {
+                return;
+            }
             let mut next: Vec<String> = enabled.clone();
             if on {
                 if !next.contains(&key) {
@@ -409,6 +412,7 @@ fn IntegrationCard(
                 serde_json::to_value(UpdateBody { capabilities: next }).unwrap_or(Value::Null);
             let on_changed = on_changed;
             let on_error = on_error;
+            busy.set(true);
             spawn(async move {
                 #[cfg(feature = "app")]
                 {
@@ -426,6 +430,7 @@ fn IntegrationCard(
                 {
                     let _ = (path, body);
                 }
+                busy.set(false);
             });
         }
     });
@@ -433,6 +438,9 @@ fn IntegrationCard(
     let handle_poll_save = {
         let provider = provider.clone();
         move |_| {
+            if busy() {
+                return;
+            }
             let raw = poll_minutes.read().trim().to_string();
             let parsed = if raw.is_empty() {
                 None
@@ -452,6 +460,7 @@ fn IntegrationCard(
             .unwrap_or(Value::Null);
             let on_changed = on_changed;
             let on_error = on_error;
+            busy.set(true);
             spawn(async move {
                 #[cfg(feature = "app")]
                 {
@@ -469,6 +478,7 @@ fn IntegrationCard(
                 {
                     let _ = (path, body);
                 }
+                busy.set(false);
             });
         }
     };
@@ -729,6 +739,58 @@ mod tests {
             matches!(status_copy(IntegrationStatus::Error).1, BadgeVariant::Red),
             "an integration that is failing cannot look the same as one that is off"
         );
+    }
+
+    /// `toggle_capability` and `handle_poll_save` are a second and third
+    /// mutation against the same integration record, so they have to respect
+    /// the one in-flight guard `handle_connect` and `handle_disconnect`
+    /// already honor (MAPPS-1019), not just read it in their `disabled`
+    /// attribute.
+    ///
+    /// Scanned as source rather than rendered, because `busy` is a
+    /// component-local signal with no handle exposed to a test outside a full
+    /// Dioxus render, and the earlier handlers are already verified this way
+    /// above.
+    #[test]
+    fn toggle_capability_and_poll_save_toggle_the_same_busy_signal_connect_does() {
+        let src = include_str!("settings_integrations.rs");
+        let start = src.find("fn IntegrationCard").expect("the component");
+        let tests_at = src.find("mod tests").expect("this module");
+        let body = &src[start..tests_at];
+
+        let handler_body = |name: &str| -> &str {
+            let handler_at = body.find(name).unwrap_or_else(|| panic!("{name} exists"));
+            let after = &body[handler_at..];
+            let brace_at = after.find('{').expect("a block follows the let");
+            let mut depth = 0i32;
+            let mut end = None;
+            for (i, ch) in after[brace_at..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = Some(brace_at + i + 1);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            &after[..end.expect("the block closes")]
+        };
+
+        for name in ["toggle_capability", "handle_poll_save"] {
+            let handler = handler_body(name);
+            assert!(
+                handler.contains("busy.set(true)"),
+                "{name} must set busy before its request, as handle_connect does"
+            );
+            assert!(
+                handler.contains("busy.set(false)"),
+                "{name} must clear busy once its request resolves, as handle_connect does"
+            );
+        }
     }
 
     /// The page holds no provider list, no capability list and no status
