@@ -1497,6 +1497,12 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
     let mut lines = use_signal(|| vec![DraftLine::new()]);
     let mut error = use_signal(String::new);
     let mut company_error = use_signal(String::new);
+    // MAPPS-1017: field-level error signals so the submit guard can mark
+    // each failing input inline instead of overwriting one shared banner.
+    // `line_errors` is kept in lockstep with `lines` at every add/remove so
+    // the index-to-slot mapping cannot drift.
+    let mut title_error = use_signal(String::new);
+    let mut line_errors = use_signal(|| vec![String::new()]);
     let mut submitting = use_signal(|| false);
     let mut loaded = use_signal(|| false);
 
@@ -1539,6 +1545,10 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
                 })
                 .collect();
             if !seeded.is_empty() {
+                // MAPPS-1017: resize `line_errors` to match the seeded
+                // lines so the submit guard's per-line write by index
+                // stays within bounds on edit.
+                line_errors.set(vec![String::new(); seeded.len()]);
                 lines.set(seeded);
             }
             loaded.set(true);
@@ -1567,22 +1577,47 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
         let draft_lines = lines.read().clone();
 
         let mut guard = FormGuard::new();
+        // MAPPS-1017: clear every error slot so a resubmit starts from a
+        // clean canvas, then collect each miss as both an inline per-field
+        // error AND a label in the top-of-form banner. The old shape set
+        // one shared `error` string per failing check, which meant two
+        // problems only reported the second one.
         company_error.set(String::new());
+        title_error.set(String::new());
+        line_errors.set(vec![String::new(); draft_lines.len()]);
         error.set(String::new());
+
+        let mut missing: Vec<String> = Vec::new();
+
         if company.is_empty() {
             company_error.set("Company is required.".to_string());
+            missing.push("Company".to_string());
             guard.note_invalid(Some("company_id"));
         }
         if title_text.is_empty() {
-            error.set("Title is required.".to_string());
+            title_error.set("Title is required.".to_string());
+            missing.push("Title".to_string());
             guard.note_invalid(Some("title"));
         }
-        if draft_lines
-            .iter()
-            .any(|l| l.description.trim().is_empty() && !l.quantity.trim().is_empty())
-        {
-            error.set("Every line needs a description.".to_string());
-            guard.note_invalid(Some("lines"));
+        for (idx, l) in draft_lines.iter().enumerate() {
+            // A line with an empty description AND an empty quantity is a
+            // placeholder row that the user has not touched: it is dropped
+            // on save and must not count as a required-field miss.
+            if l.description.trim().is_empty() && !l.quantity.trim().is_empty() {
+                if let Some(slot) = line_errors.write().get_mut(idx) {
+                    *slot = "Description is required.".to_string();
+                }
+                missing.push(format!("Line {} description", idx + 1));
+                guard.note_invalid(Some("lines"));
+            }
+        }
+
+        if !missing.is_empty() {
+            error.set(format!(
+                "Please fill in the required field{}: {}.",
+                if missing.len() == 1 { "" } else { "s" },
+                missing.join(", "),
+            ));
         }
         if guard.blocked() {
             return;
@@ -1746,9 +1781,21 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
                 name: "title",
                 label: "Title",
                 value: title.read().clone(),
+                // MAPPS-1017: `required: true` is what paints the `*` on
+                // the label; `rules` continues to drive the per-field
+                // blur-time validator the Input component already owns.
+                required: true,
                 rules: vec![Rule::Required, Rule::MaxLen(255)],
                 maxlength: 255,
-                oninput: move |e: FormEvent| title.set(e.value()),
+                error: title_error.read().clone(),
+                oninput: move |e: FormEvent| {
+                    title.set(e.value());
+                    // Clear the submit-time banner note as soon as the
+                    // user starts fixing the field.
+                    if !title_error.read().is_empty() {
+                        title_error.set(String::new());
+                    }
+                },
             }
             Input {
                 name: "summary",
@@ -1775,12 +1822,34 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
                                 name: "description-{idx}",
                                 label: "Description",
                                 value: line.description.clone(),
+                                // MAPPS-1017: a line is required to have a
+                                // description once any other field on that
+                                // line carries a value (the submit guard
+                                // enforces this, so the `*` matches). The
+                                // per-line inline error is pinned by the
+                                // submit guard when it fires.
+                                required: true,
+                                rules: vec![Rule::Required],
+                                error: line_errors
+                                    .read()
+                                    .get(idx)
+                                    .cloned()
+                                    .unwrap_or_default(),
                                 oninput: move |e: FormEvent| {
                                     let mut current = lines.read().clone();
                                     if let Some(l) = current.get_mut(idx) {
                                         l.description = e.value();
                                     }
                                     lines.set(current);
+                                    // Clear the submit-time inline error
+                                    // once the user starts typing a value.
+                                    let mut errs = line_errors.read().clone();
+                                    if let Some(slot) = errs.get_mut(idx) {
+                                        if !slot.is_empty() {
+                                            *slot = String::new();
+                                            line_errors.set(errs);
+                                        }
+                                    }
                                 },
                             }
                         }
@@ -1839,6 +1908,15 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
                                     if current.len() > 1 {
                                         current.remove(idx);
                                         lines.set(current);
+                                        // MAPPS-1017: keep the per-line
+                                        // error vector sized to the
+                                        // lines vector so the submit
+                                        // guard can index straight in.
+                                        let mut errs = line_errors.read().clone();
+                                        if idx < errs.len() {
+                                            errs.remove(idx);
+                                            line_errors.set(errs);
+                                        }
                                     }
                                 },
                                 "Remove"
@@ -1854,6 +1932,12 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
                         let mut current = lines.read().clone();
                         current.push(DraftLine::new());
                         lines.set(current);
+                        // MAPPS-1017: match the new line with an empty
+                        // error slot so an inline error later indexes
+                        // against a slot that exists.
+                        let mut errs = line_errors.read().clone();
+                        errs.push(String::new());
+                        line_errors.set(errs);
                     },
                     PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                     "Add line"
