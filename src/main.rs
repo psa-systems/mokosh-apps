@@ -8,9 +8,9 @@ use mokosh_apps::hooks::{
     use_kb_categories_provider, use_mention_directory_provider, use_payment_terms_provider,
     use_server_status_monitor, use_session_end_watch, use_sidebar_collapsed_provider,
     use_sidebar_provider, use_sidebar_scroll_provider, use_standalone_token_refresh,
-    use_task_statuses_provider, use_tax_rates_provider, use_theme_sync, use_token_refresh,
-    use_update_check, use_user_roster_provider, use_version_cache_provider,
-    use_work_types_provider,
+    use_task_statuses_provider, use_tax_rates_provider, use_theme_sync,
+    use_ticket_saved_views_provider, use_token_refresh, use_update_check, use_user_roster_provider,
+    use_version_cache_provider, use_work_types_provider,
 };
 use mokosh_apps::Route;
 
@@ -147,6 +147,8 @@ fn App() -> Element {
     use_kb_categories_provider();
     use_payment_terms_provider();
     use_tax_rates_provider();
+    // MAPPS-998: per-user ticket saved views, same shared-cache pattern.
+    use_ticket_saved_views_provider();
     // Background loop: rotates access tokens before expiry. No-op when
     // the user is not signed in. Mounted once at the app root so it
     // keeps running across navigations.

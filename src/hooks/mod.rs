@@ -35,6 +35,7 @@ pub mod task_statuses;
 pub mod tax_rates;
 pub mod theme;
 pub mod theme_sync;
+pub mod ticket_saved_views;
 pub mod toast;
 pub mod tv_view;
 pub mod unsaved_guard;
@@ -64,6 +65,7 @@ pub use task_statuses::{use_task_statuses, use_task_statuses_provider, TaskStatu
 pub use tax_rates::{use_tax_rates, use_tax_rates_provider, TaxRateRow};
 pub use theme::use_apply_theme;
 pub use theme_sync::use_theme_sync;
+pub use ticket_saved_views::{use_ticket_saved_views, use_ticket_saved_views_provider};
 pub use toast::*;
 pub use unsaved_guard::use_unsaved_guard;
 pub use update_check::use_update_check;
