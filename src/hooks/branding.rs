@@ -54,6 +54,20 @@ pub struct EffectiveBranding {
     pub display_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub company_name: Option<String>,
+    // MAPPS-1024: the five identity keys that drive the invoice "From"
+    // block (PMS-911 issuer::resolve: legal_name -> company_name ->
+    // tenant display name) and the invoice template choice (PMS-1006).
+    // Server already accepts them under `branding` on PUT
+    // /tenants/current; invoice_template is tenant-only per
+    // TENANT_ONLY_KEYS on the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legal_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub postal_address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tax_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invoice_template: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support_email: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
