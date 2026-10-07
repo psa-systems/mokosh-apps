@@ -212,12 +212,22 @@
 
 /* Custom base styles */
 @layer base {
+  /* MAPPS-990 (mirrors BUNYIP-867): `<html>` is no longer the scroll
+     container - `AppShell`'s `main` is (src/components/layout.rs) - so both
+     are pinned to the viewport height with nothing of their own to scroll.
+     `<html>` also carries the theme background now, not just `body`, so a
+     classic (non-overlay) Firefox/Windows track never shows bare canvas
+     behind the thumb. */
   html {
-    @apply antialiased;
+    @apply antialiased bg-app;
+    height: 100%;
+    overflow: hidden;
   }
 
   body {
     @apply bg-app text-content;
+    height: 100%;
+    overflow: hidden;
   }
 
   /* MAPPS-423: restore the pointer cursor on clickable controls. Tailwind
@@ -403,7 +413,10 @@
   background-color: color-mix(in srgb, var(--muted) calc(var(--sb-alpha) * 100%), transparent);
 }
 
-/* Firefox lacks ::-webkit-scrollbar and pixel widths, so `thin` is allowed here and nowhere else. */
+/* Firefox lacks ::-webkit-scrollbar and pixel widths, so `thin` is allowed here and nowhere else.
+   MAPPS-990 (mirrors BUNYIP-867): Firefox does not repaint `scrollbar-color` when only a registered
+   custom property it depends on changes, so the old `var(--sb-alpha)` version left the thumb always
+   visible. The value itself now switches literally on the `data-scrollbar-active` attribute instead. */
 @supports not selector(::-webkit-scrollbar) {
   html,
   [class*="overflow-auto"],
@@ -416,7 +429,20 @@
   table,
   textarea {
     scrollbar-width: thin;
-    scrollbar-color: color-mix(in srgb, var(--line-strong) calc(var(--sb-alpha) * 100%), transparent) transparent;
+    scrollbar-color: transparent transparent;
+  }
+
+  html[data-scrollbar-active],
+  [class*="overflow-auto"][data-scrollbar-active],
+  [class*="overflow-x-auto"][data-scrollbar-active],
+  [class*="overflow-y-auto"][data-scrollbar-active],
+  [class*="overflow-scroll"][data-scrollbar-active],
+  [class*="overflow-x-scroll"][data-scrollbar-active],
+  [class*="overflow-y-scroll"][data-scrollbar-active],
+  pre[data-scrollbar-active],
+  table[data-scrollbar-active],
+  textarea[data-scrollbar-active] {
+    scrollbar-color: var(--line-strong) transparent;
   }
 }
 
