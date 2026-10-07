@@ -1983,7 +1983,9 @@ pub fn PageHeader(props: PageHeaderProps) -> Element {
                 }
             }
             div { class: "flex flex-wrap items-start justify-between gap-4",
-                div { class: "min-w-0 flex-1 basis-64",
+                // `flex-auto` sizes the title to its text, so the actions wrap
+                // below before it truncates; `min-w-0` caps it at the row.
+                div { class: "min-w-0 flex-auto",
                     // `leading-7` (28px) was paired with `sm:text-3xl`
                     // (30px font) plus `sm:truncate` (overflow:hidden),
                     // which clipped the descenders of g/j/p/q/y on every
@@ -2004,8 +2006,7 @@ pub fn PageHeader(props: PageHeaderProps) -> Element {
                     }
                 }
                 if let Some(ref actions) = props.actions {
-                    // The title keeps a 16rem floor (basis-64 above); actions
-                    // wrap below it on a tight row instead of overflowing.
+                    // Wraps below the title on a tight row instead of overflowing.
                     div { class: "flex min-w-0 max-w-full flex-wrap items-start gap-3",
                         {actions}
                     }
@@ -2142,6 +2143,21 @@ mod page_header_tests {
             // exactly once, inside PageHeader.
             code.contains(&format!("h{one} {{ class: \"text-2xl font-bold", one = 1)),
             "and the plain heading is still what a page without one gets"
+        );
+    }
+
+    /// MAPPS-1004: a fixed basis (`basis-64`) truncated "Invoice INV-000001"
+    /// beside its actions; the title must size to its text so actions wrap first.
+    #[test]
+    fn the_title_sizes_to_its_text_before_actions_share_the_row() {
+        let code = code_only();
+        assert!(
+            code.contains("div { class: \"min-w-0 flex-auto\","),
+            "the title container is content-sized and shrinkable"
+        );
+        assert!(
+            !code.contains("basis-64"),
+            "no fixed basis that truncates titles wider than it"
         );
     }
 
