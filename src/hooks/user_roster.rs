@@ -94,14 +94,59 @@ pub fn use_user_roster_provider() {
     });
 }
 
+/// Which endpoint [`fetch_roster`] reads from, named rather than inlined so
+/// the choice itself (not the HTTP call it leads to) is unit-testable with no
+/// server underneath it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RosterSource {
+    /// `GET /auth/users`, `RequireManager`.
+    Users,
+    /// `GET /auth/directory` (PMS-921), `RequireAuth`.
+    Directory,
+}
+
+/// A caller meeting the server's `RequireManager` floor keeps the full
+/// roster; anyone else reads the unprivileged directory instead of 403ing.
+fn roster_source(can_manage: bool) -> RosterSource {
+    if can_manage {
+        RosterSource::Users
+    } else {
+        RosterSource::Directory
+    }
+}
+
+/// `GET /auth/directory`'s shape (PMS-921): `id`, `name` and `handle` for
+/// active users only. `handle` is unread here; the roster has no field for
+/// it and nothing downstream of [`UserRow`] matches on it the way the
+/// mention directory does.
+#[derive(serde::Deserialize)]
+struct DirectoryEntry {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+}
+
+/// Map one directory entry onto [`UserRow`]. Only `id` and `full_name` are
+/// populated: the directory carries no `first_name`, `last_name` or `email`,
+/// so [`UserRow::display_name`] falls through those unset fields to `email`
+/// and then `None`, same as a row the roster never knew about.
+fn user_row_from_directory_entry(entry: DirectoryEntry) -> UserRow {
+    UserRow {
+        id: entry.id,
+        full_name: entry.name,
+        ..Default::default()
+    }
+}
+
 /// Fetch the roster from whichever endpoint `can_manage` permits. See the
 /// module doc for why the choice lives here rather than in a fixed endpoint.
 #[cfg(feature = "app")]
 async fn fetch_roster(can_manage: bool) -> Vec<UserRow> {
-    if can_manage {
-        crate::hooks::shared_list::fetch_list::<UserRow>("users", "/auth/users").await
-    } else {
-        fetch_directory_as_rows().await
+    match roster_source(can_manage) {
+        RosterSource::Users => {
+            crate::hooks::shared_list::fetch_list::<UserRow>("users", "/auth/users").await
+        }
+        RosterSource::Directory => fetch_directory_as_rows().await,
     }
 }
 
@@ -110,29 +155,17 @@ async fn fetch_roster(_can_manage: bool) -> Vec<UserRow> {
     Vec::new()
 }
 
-/// `GET /auth/directory` (PMS-921, `RequireAuth`), mapped onto [`UserRow`].
-/// The directory returns `id`, `name` and `handle` for active users only;
-/// only `id` and `full_name` are populated here, so [`UserRow::display_name`]
-/// falls through to the caller's own "Unknown" for a deactivated user the
-/// directory omits, matching the unknown-id fallback that already covers that
-/// case today.
+/// `GET /auth/directory` (PMS-921, `RequireAuth`), mapped onto [`UserRow`]
+/// via [`user_row_from_directory_entry`]. The directory holds active users
+/// only, so a technician sees a deactivated person's name fall back the way
+/// an unknown id does today; that is accepted, not a bug.
 #[cfg(feature = "app")]
 async fn fetch_directory_as_rows() -> Vec<UserRow> {
-    #[derive(serde::Deserialize)]
-    struct DirectoryEntry {
-        id: uuid::Uuid,
-        #[serde(default)]
-        name: String,
-    }
     match crate::hooks::fetch::api::get_all_authed_typed::<DirectoryEntry>("/auth/directory").await
     {
         Ok(rows) => rows
             .into_iter()
-            .map(|d| UserRow {
-                id: d.id,
-                full_name: d.name,
-                ..Default::default()
-            })
+            .map(user_row_from_directory_entry)
             .collect(),
         // Refused for this role is not expected here (the directory is
         // `RequireAuth`), but treated the same as the manager-roster 403: an
@@ -160,4 +193,55 @@ async fn fetch_directory_as_rows() -> Vec<UserRow> {
 /// consumer already cached.
 pub fn use_user_roster(enabled: bool) -> Resource<Vec<UserRow>> {
     crate::hooks::shared_list::use_shared_list::<UserRow>(enabled)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// MAPPS-1010: a caller at or above the manager floor reads the full
+    /// roster; anyone else reads the unprivileged directory instead of
+    /// 403ing against `/auth/users`.
+    #[test]
+    fn source_choice_follows_can_manage() {
+        assert_eq!(roster_source(true), RosterSource::Users);
+        assert_eq!(roster_source(false), RosterSource::Directory);
+    }
+
+    /// The directory carries no `first_name`, `last_name` or `email`, so
+    /// only `id` and `full_name` come across; `display_name` still resolves
+    /// from `full_name` alone.
+    #[test]
+    fn directory_entry_maps_onto_user_row_with_only_id_and_full_name() {
+        let id = uuid::Uuid::new_v4();
+        let row = user_row_from_directory_entry(DirectoryEntry {
+            id,
+            name: "Ada Lovelace".to_string(),
+        });
+        assert_eq!(
+            row,
+            UserRow {
+                id,
+                full_name: "Ada Lovelace".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
+                email: String::new(),
+            }
+        );
+        assert_eq!(row.display_name(), Some("Ada Lovelace".to_string()));
+    }
+
+    /// A directory entry with no name (the server's `#[serde(default)]`
+    /// fallback) still yields `None` from `display_name`, the same as a
+    /// `/auth/users` row with every field blank.
+    #[test]
+    fn directory_entry_with_no_name_maps_to_no_display_name() {
+        let id = uuid::Uuid::new_v4();
+        let row = user_row_from_directory_entry(DirectoryEntry {
+            id,
+            name: String::new(),
+        });
+        assert_eq!(row.id, id);
+        assert_eq!(row.display_name(), None);
+    }
 }
