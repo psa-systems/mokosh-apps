@@ -293,11 +293,13 @@ check-clippy:
 check-fmt:
     cargo fmt --all --check
 
-# MAPPS-824: runs `check`'s check-* dependency list on the host, minus the
-# four cargo-driven members (check-clippy, check-fmt, check-web, check-desktop)
-# that the hook pipeline's cargo legs already cover in-container (fmt on
-# pre-commit; clippy, web and desktop on pre-push), then css-build. Read off
-# the `check:` line itself (the same technique check-ci-parity.sh uses) rather
+# MAPPS-824: runs css-build, then `check`'s check-* dependency list on the
+# host, minus the four cargo-driven members (check-clippy, check-fmt, check-web,
+# check-desktop) that the hook pipeline's cargo legs already cover in-container
+# (fmt on pre-commit; clippy, web and desktop on pre-push). css-build runs first
+# because check-scrollbars and check-prose-layer read assets/styles.css, and a
+# build left over from before a pull fails them on a correct tree (MAPPS-1026).
+# Read off the `check:` line itself (the same technique check-ci-parity.sh uses) rather
 # than a copy of the list, so a guard added to `check` and forgotten here
 # cannot happen: this recipe can only drift stale, never incomplete. Wired in
 # as `pre_commit_prepare`, the only host-side hook common.just's shared
@@ -309,11 +311,12 @@ pre-commit-guards:
     let cargo_covered = ["check-web" "check-desktop" "check-clippy" "check-fmt"]
     let deps_line = (open justfile | lines | where {|l| $l starts-with "check:" } | get 0)
     let guards = ($deps_line | str replace "check:" "" | split row " " | where {|r| $r starts-with "check-" } | where {|r| $r not-in $cargo_covered })
+    print "\n[pre-commit] just css-build"
+    ^just css-build
     for guard in $guards {
         print $"\n[pre-commit] just ($guard)"
         ^just $guard
     }
-    ^just css-build
 
 # Install JS dependencies
 [private]
