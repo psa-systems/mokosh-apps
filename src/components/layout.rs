@@ -165,7 +165,7 @@ pub fn AppShell() -> Element {
                 // on each route component in `src/lib.rs`, so how wide a page
                 // renders is that page's own choice; `KBArticleDetail` is the
                 // first to opt out and fill the window.
-                main { class: "flex-1 overflow-y-auto overscroll-contain py-6 px-4 sm:px-6 lg:px-8",
+                main { class: "flex-1 overflow-y-auto overscroll-contain py-6 px-4 sm:px-6 lg:px-8 @container",
                     Outlet::<crate::Route> {}
                 }
             }

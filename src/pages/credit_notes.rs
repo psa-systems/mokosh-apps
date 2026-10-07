@@ -687,8 +687,8 @@ fn CreditNoteDetailBody(id: String) -> Element {
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "View invoice".to_string());
                 rsx! {
-                    div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
-                        div { class: "lg:col-span-2",
+                    div { class: "grid grid-cols-1 @5xl:grid-cols-3 gap-6",
+                        div { class: "@5xl:col-span-2",
                             Card {
                                 div { class: "flex justify-between mb-8",
                                     div {

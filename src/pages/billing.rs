@@ -2902,8 +2902,8 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                             }
                         }
                     }
-                    div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
-                        div { class: "lg:col-span-2",
+                    div { class: "grid grid-cols-1 @5xl:grid-cols-3 gap-6",
+                        div { class: "@5xl:col-span-2",
                             Card {
                                 // Header
                                 div { class: "flex flex-wrap justify-between gap-4 mb-8",
