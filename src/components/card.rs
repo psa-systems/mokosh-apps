@@ -113,13 +113,13 @@ pub fn CardHeader(props: CardHeaderProps) -> Element {
         ("border-line", "text-content")
     };
     let class = format!(
-        "flex {align} justify-between px-6 pt-6 pb-4 border-b {rule} {}",
+        "flex {align} flex-wrap justify-between gap-x-4 gap-y-2 px-6 pt-6 pb-4 border-b {rule} {}",
         props.class
     );
 
     rsx! {
         div { class: "{class}",
-            div {
+            div { class: "min-w-0 flex-1",
                 h3 { class: "text-lg font-medium {title_color}",
                     "{props.title}"
                 }
@@ -129,7 +129,7 @@ pub fn CardHeader(props: CardHeaderProps) -> Element {
                     }
                 }
             }
-            div { class: "flex items-center space-x-2",
+            div { class: "flex flex-wrap items-center gap-2",
                 {props.actions}
             }
         }
