@@ -11,6 +11,7 @@ pub mod auth;
 pub mod branding;
 pub mod capabilities;
 pub mod contact_auth;
+pub mod dashboard_report;
 pub mod debounce;
 pub mod kb_categories;
 pub mod modules;
@@ -44,6 +45,9 @@ pub mod work_types;
 
 pub use asset_types::{use_asset_types, use_asset_types_provider, AssetTypeRow};
 pub use auth::*;
+pub use dashboard_report::{
+    provide_dashboard_report, use_dashboard_report, DashboardReportLite, ReportBucket,
+};
 pub use debounce::use_debounced_signal;
 pub use dropdown_nav::{use_dropdown_nav, DropdownNav, NavAction, NavRows};
 pub use edit_queue::{use_replay_pending_edits, PendingEdit};

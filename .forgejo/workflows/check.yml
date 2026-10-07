@@ -326,6 +326,14 @@ jobs:
       - name: Company ID copy guard
         run: just check-company-id-copy
 
+      # MAPPS-967: a Card's heading is its `title` prop. 22 cards wrote their own
+      # `h2`/`h3` inside the body instead, so the app carried two heading styles
+      # that differ in size, weight and inset, and both compile and render.
+      - name: Card-heading guard
+        run: |
+          bash scripts/check-card-headings.sh --self-test
+          bash scripts/check-card-headings.sh
+
       - name: Check formatting
         run: cargo fmt --all --check
 

@@ -639,18 +639,16 @@ pub fn ProjectListPage() -> Element {
                                 Link {
                                     key: "{pid}",
                                     to: Route::ProjectDetail { id: pid.clone() },
-                                    Card { class: "hover:shadow-lg transition-shadow cursor-pointer",
-                                        div { class: "flex items-start justify-between mb-4",
-                                            div {
-                                                h3 { class: "text-lg font-medium text-content",
-                                                    "{p.name}"
-                                                }
-                                                p { class: "text-sm text-muted",
-                                                    "{cname}"
-                                                }
-                                            }
+                                    Card {
+                                        class: "hover:shadow-lg transition-shadow cursor-pointer",
+                                        // MAPPS-967: the project's name is what this
+                                        // card is about, and its status badge is the
+                                        // heading-row control.
+                                        title: p.name.clone(),
+                                        subtitle: cname.clone(),
+                                        actions: rsx! {
                                             Badge { variant, "{label}" }
-                                        }
+                                        },
 
                                         // Budget utilization (actual vs budget)
                                         div { class: "mb-4",

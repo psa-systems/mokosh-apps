@@ -712,14 +712,14 @@ pub fn WorkDayStrip() -> Element {
 
     rsx! {
         Card { class: "mb-6",
+            title: "Work day".to_string(),
             div { class: "space-y-4",
-                // Header: the card's name, and (admin only) whose day is
-                // being read. The picker is labelled and out of the action
-                // row: MAPPS-751 read it as a mode selector for the clock,
-                // which it never was.
+                // (Admin only) whose day is being read. MAPPS-967 moved the
+                // card's name to `title`, so this row holds the picker alone
+                // and its former flex spacer went with the heading. The picker
+                // is labelled and out of the action row: MAPPS-751 read it as a
+                // mode selector for the clock, which it never was.
                 div { class: "flex flex-wrap items-center gap-3",
-                    h2 { class: "text-lg font-semibold text-content", "Work day" }
-                    div { class: "flex-1" }
                     if is_admin && !users.is_empty() {
                         label { class: "flex items-center gap-2 text-sm text-muted",
                             "Viewing"
