@@ -77,7 +77,8 @@ END {
     seg = seg c
   }
 
-  bar_w = bar_h = track = thumb = prop = ff_thin = ff_color = 0
+  bar_w = bar_h = track = thumb = prop = ff_thin = ff_rest = ff_active = 0
+  shell_html_h = shell_html_o = shell_body_h = shell_body_o = 0
   for (r = 1; r <= k; r++) {
     sel = rsel[r]; b = rbody[r]; nd = split(b, decls, ";")
     for (d = 1; d <= nd; d++) {
@@ -89,6 +90,8 @@ END {
         report(rline[r], "\047" sel " { " decl " }\047 - hides the WebKit / Chromium bar.")
       if (!rff[r] && decl ~ ("^scrollbar-(width|color)" S ":"))
         report(rline[r], "\047" decl "\047 outside the `@supports not selector(::-webkit-scrollbar)` block - Chromium then drops the webkit styling (YOTUN-208).")
+      if (rff[r] && decl ~ /--sb-alpha/)
+        report(rline[r], "\047" decl "\047 - Firefox does not repaint `scrollbar-color` when only `--sb-alpha` changes; the Firefox block must switch the color literally.")
       if (sel ~ /::-webkit-scrollbar(-track|-track-piece|-corner)?([^a-z-]|$)/ && decl ~ ("^background(-color|-image)?" S ":")) {
         v = decl; sub(/^[^:]*:[[:space:]]*/, "", v)
         if (v !~ ("^(" CLEAR "|none)$"))
@@ -103,7 +106,14 @@ END {
       if (sel ~ ("::-webkit-scrollbar-track" S "(,|$)") && decl ~ ("^background(-color)?" S ":" S CLEAR "$")) track = 1
       if (sel ~ ("::-webkit-scrollbar-thumb" S "(,|$)") && decl ~ ("^background(-color)?" S ":" S ALPHA)) thumb = 1
       if (rff[r] && decl ~ ("^scrollbar-width" S ":" S "thin$")) ff_thin = 1
-      if (rff[r] && decl ~ ("^scrollbar-color" S ":" S ALPHA "[[:space:]]+" CLEAR "$")) ff_color = 1
+      if (rff[r] && sel !~ /data-scrollbar-active/ && decl ~ ("^scrollbar-color" S ":" S CLEAR "[[:space:]]+" CLEAR "$")) ff_rest = 1
+      if (rff[r] && sel ~ /data-scrollbar-active/ && decl ~ ("^scrollbar-color" S ":" S "[^[:space:]]+[[:space:]]+" CLEAR "$") && decl !~ ("^scrollbar-color" S ":" S CLEAR "[[:space:]]+" CLEAR "$")) ff_active = 1
+      # MAPPS-990 (mirrors BUNYIP-867): the shell is the single scroll container, so `html` and
+      # `body` give up their own scrolling - `main` (AppShell) is where `overflow-y: auto` lives.
+      if (sel == "html" || sel == "body") {
+        if (decl ~ ("^height" S ":" S "100%" S "$")) { if (sel == "html") shell_html_h = 1; else shell_body_h = 1 }
+        if (decl ~ ("^overflow" S ":" S "hidden" S "$")) { if (sel == "html") shell_html_o = 1; else shell_body_o = 1 }
+      }
     }
     if (rown[r] == "@property --sb-alpha" && b ~ ("syntax" S ":" S "\"<number>\"") && b ~ ("inherits" S ":" S "true") && b ~ ("initial-value" S ":" S "1" S "(;|$)")) prop = 1
   }
@@ -112,7 +122,9 @@ END {
   if (!track) report(0, "missing a transparent `::-webkit-scrollbar-track`.")
   if (!thumb) report(0, "missing a `::-webkit-scrollbar-thumb` color from a theme token carrying `var(--sb-alpha)` (color-mix in srgb over transparent).")
   if (!prop) report(0, "missing `@property --sb-alpha` registered as an inherited <number> with initial-value 1, which is what fails visible.")
-  if (!ff_thin || !ff_color) report(0, "missing the Firefox `@supports not selector(::-webkit-scrollbar)` block with `scrollbar-width: thin` and a `var(--sb-alpha)` thumb over a transparent track.")
+  if (!ff_thin || !ff_rest || !ff_active) report(0, "missing the Firefox `@supports not selector(::-webkit-scrollbar)` block with `scrollbar-width: thin`, a `transparent transparent` rest color, and a literal non-transparent thumb color under `[data-scrollbar-active]`.")
+  if (!shell_html_h || !shell_html_o) report(0, "missing `html { height: 100%; overflow: hidden }` - `<html>` must give up being the page scroll container so it cannot shift the top bar.")
+  if (!shell_body_h || !shell_body_o) report(0, "missing `body { height: 100%; overflow: hidden }` - `body` must give up being the page scroll container so it cannot shift the top bar.")
 }
 '
 
@@ -155,17 +167,22 @@ self_test() {
   local p_bar=$'::-webkit-scrollbar {\n  width: 14px;\n  height: 14px;\n  background-color: transparent;\n}\n'
   local p_track=$'::-webkit-scrollbar-track,\n::-webkit-scrollbar-corner {\n  background-color: transparent;\n}\n'
   local p_thumb=$'::-webkit-scrollbar-thumb {\n  border: 4px solid transparent;\n  background-clip: padding-box;\n  background-color: '"$alpha"$';\n}\n'
-  local p_firefox=$'@supports not selector(::-webkit-scrollbar) {\n  html,\n  pre {\n    scrollbar-width: thin;\n    scrollbar-color: '"$alpha"$' transparent;\n  }\n}\n'
-  local compliant="$p_property$p_bar$p_track$p_thumb$p_firefox"
-  # What Tailwind emits unminified: a plain-token fallback plus a nested `@supports` for color-mix.
+  # MAPPS-990 (mirrors BUNYIP-867): Firefox never repaints `scrollbar-color` off a `--sb-alpha`
+  # change, so the value switches literally between the rest and `[data-scrollbar-active]` rules.
+  local p_firefox=$'@supports not selector(::-webkit-scrollbar) {\n  html,\n  pre {\n    scrollbar-width: thin;\n    scrollbar-color: transparent transparent;\n  }\n  html[data-scrollbar-active],\n  pre[data-scrollbar-active] {\n    scrollbar-color: var(--line-strong) transparent;\n  }\n}\n'
+  local p_shell=$'html {\n  height: 100%;\n  overflow: hidden;\n}\nbody {\n  height: 100%;\n  overflow: hidden;\n}\n'
+  local compliant="$p_property$p_bar$p_track$p_thumb$p_firefox$p_shell"
+  # What Tailwind emits unminified: a plain-token fallback plus a nested `@supports` for color-mix
+  # (webkit thumb only - Firefox has no color-mix fallback to nest now that it is a literal switch).
   local tw_thumb=$'::-webkit-scrollbar-thumb {\n  background-clip: padding-box;\n  background-color: var(--line-strong);\n  @supports (color: color-mix(in lab, red, red)) {\n    background-color: '"$alpha"$';\n  }\n}\n'
-  local tw_firefox=$'@supports not selector(::-webkit-scrollbar) {\n  html, pre {\n    scrollbar-width: thin;\n    scrollbar-color: var(--line-strong) transparent;\n    @supports (color: color-mix(in lab, red, red)) {\n      scrollbar-color: '"$alpha"$' transparent;\n    }\n  }\n}\n'
-  local tailwind="$p_property$p_bar$p_track$tw_thumb$tw_firefox"
+  local tw_firefox=$'@supports not selector(::-webkit-scrollbar) {\n  html, pre {\n    scrollbar-width: thin;\n    scrollbar-color: transparent transparent;\n  }\n  html[data-scrollbar-active], pre[data-scrollbar-active] {\n    scrollbar-color: var(--line-strong) transparent;\n  }\n}\n'
+  local tailwind="$p_property$p_bar$p_track$tw_thumb$tw_firefox$p_shell"
   # The --minify form: one line, `: ` squeezed, `transparent` as `#0000`, the fallback hoisted out.
   local minified
   minified=$(printf '%s' "$p_property$p_bar$p_track" | sed -E 's/^[[:space:]]+//; s/: /:/g; s/transparent/#0000/g' | tr -d '\n')
   minified+='::-webkit-scrollbar-thumb{background-clip:padding-box;background-color:var(--line-strong)}@supports (color:color-mix(in lab, red, red)){::-webkit-scrollbar-thumb{background-color:color-mix(in srgb, var(--line-strong) calc(var(--sb-alpha) * 100%), transparent)}}'
-  minified+='@supports not selector(::-webkit-scrollbar){html,pre{scrollbar-width:thin;scrollbar-color:var(--line-strong) transparent}@supports (color:color-mix(in lab, red, red)){html,pre{scrollbar-color:color-mix(in srgb, var(--line-strong) calc(var(--sb-alpha) * 100%), transparent) transparent}}}'
+  minified+='@supports not selector(::-webkit-scrollbar){html,pre{scrollbar-width:thin;scrollbar-color:#0000 #0000}html[data-scrollbar-active],pre[data-scrollbar-active]{scrollbar-color:var(--line-strong) #0000}}'
+  minified+='html{height:100%;overflow:hidden}body{height:100%;overflow:hidden}'
 
   local -a names expects whys
   case_css() {
@@ -190,20 +207,24 @@ self_test() {
   case_css painted-track 1 "a painted \`::-webkit-scrollbar-track\`" "$compliant"$'::-webkit-scrollbar-track {\n  background-color: var(--surface-2);\n}\n'
   case_css painted-track-hover 1 "a painted track hover state" "$compliant"$'::-webkit-scrollbar-track:hover{background:#eee}\n'
   case_css painted-track-piece 1 "a painted \`::-webkit-scrollbar-track-piece\`" "$compliant"$'::-webkit-scrollbar-track-piece {\n  background: var(--line);\n}\n'
-  case_css painted-bar 1 "a painted \`::-webkit-scrollbar\`" "$p_property${p_bar/background-color: transparent/background-color: var(--line)}$p_track$p_thumb$p_firefox"
+  case_css painted-bar 1 "a painted \`::-webkit-scrollbar\`" "$p_property${p_bar/background-color: transparent/background-color: var(--line)}$p_track$p_thumb$p_firefox$p_shell"
   case_css painted-corner 1 "a painted \`::-webkit-scrollbar-corner\`" "$compliant"$'::-webkit-scrollbar-corner{background:#fff}\n'
   case_css narrow-bar 1 "a \`::-webkit-scrollbar\` narrower than the 14px zone" "${compliant/width: 14px/width: 5px}"
   case_css short-bar 1 "a horizontal bar lower than the 14px zone" "${compliant/height: 14px/height: 5px}"
-  case_css no-track 1 "no transparent \`::-webkit-scrollbar-track\`" "$p_property$p_bar$p_thumb$p_firefox"
-  case_css static-thumb 1 "a thumb color without \`var(--sb-alpha)\`" "$p_property$p_bar$p_track${p_thumb/"$alpha"/var(--line-strong)}$p_firefox"
-  case_css literal-thumb 1 "a literal thumb color" "$p_property$p_bar$p_track${p_thumb/"$alpha"/#888}$p_firefox"
-  case_css no-property 1 "no \`@property --sb-alpha\` registration" "$p_bar$p_track$p_thumb$p_firefox"
+  case_css no-track 1 "no transparent \`::-webkit-scrollbar-track\`" "$p_property$p_bar$p_thumb$p_firefox$p_shell"
+  case_css static-thumb 1 "a thumb color without \`var(--sb-alpha)\`" "$p_property$p_bar$p_track${p_thumb/"$alpha"/var(--line-strong)}$p_firefox$p_shell"
+  case_css literal-thumb 1 "a literal thumb color" "$p_property$p_bar$p_track${p_thumb/"$alpha"/#888}$p_firefox$p_shell"
+  case_css no-property 1 "no \`@property --sb-alpha\` registration" "$p_bar$p_track$p_thumb$p_firefox$p_shell"
   case_css uninherited 1 "an uninherited \`--sb-alpha\`" "${compliant/inherits: true/inherits: false}"
   case_css hidden-initial 1 "\`--sb-alpha\` starting at 0, which would fail hidden" "${compliant/initial-value: 1/initial-value: 0}"
-  case_css no-firefox 1 "no Firefox \`@supports\` block" "$p_property$p_bar$p_track$p_thumb"
+  case_css no-firefox 1 "no Firefox \`@supports\` block" "$p_property$p_bar$p_track$p_thumb$p_shell"
   case_css firefox-auto 1 "a Firefox block without \`thin\`" "${compliant/scrollbar-width: thin/scrollbar-width: auto}"
-  case_css firefox-static 1 "a Firefox thumb color without \`var(--sb-alpha)\`" "$p_property$p_bar$p_track$p_thumb${p_firefox/"$alpha"/var(--line-strong)}"
+  case_css firefox-alpha 1 "a Firefox thumb color still keyed off \`--sb-alpha\`, which Firefox never repaints" "$p_property$p_bar$p_track$p_thumb"$'@supports not selector(::-webkit-scrollbar) {\n  html,\n  pre {\n    scrollbar-width: thin;\n    scrollbar-color: '"$alpha"$' transparent;\n  }\n}\n'"$p_shell"
+  case_css firefox-no-rest 1 "a Firefox block with no \`transparent transparent\` rest state" "$p_property$p_bar$p_track$p_thumb"$'@supports not selector(::-webkit-scrollbar) {\n  html[data-scrollbar-active],\n  pre[data-scrollbar-active] {\n    scrollbar-width: thin;\n    scrollbar-color: var(--line-strong) transparent;\n  }\n}\n'"$p_shell"
+  case_css firefox-no-active 1 "a Firefox block with no \`[data-scrollbar-active]\` thumb color" "$p_property$p_bar$p_track$p_thumb"$'@supports not selector(::-webkit-scrollbar) {\n  html,\n  pre {\n    scrollbar-width: thin;\n    scrollbar-color: transparent transparent;\n  }\n}\n'"$p_shell"
   case_css gutter-stable 1 "a re-added \`scrollbar-gutter: stable\` (MAPPS-981)" "$compliant"$'html {\n  scrollbar-gutter: stable;\n}\n'
+  case_css no-shell-html 1 "no \`html { height: 100%; overflow: hidden }\`" "$p_property$p_bar$p_track$p_thumb$p_firefox"$'body {\n  height: 100%;\n  overflow: hidden;\n}\n'
+  case_css no-shell-body 1 "no \`body { height: 100%; overflow: hidden }\`" "$p_property$p_bar$p_track$p_thumb$p_firefox"$'html {\n  height: 100%;\n  overflow: hidden;\n}\n'
   case_css unstyled 1 "a stylesheet with the scrollbar styling stripped out" $'body {\n  color: red;\n}\n'
   case_css commented-styling 1 "the styling present only inside a comment" "/* $compliant */"$'\nbody {\n  color: red;\n}\n'
 
