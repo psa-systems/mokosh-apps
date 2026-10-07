@@ -97,6 +97,23 @@ pub fn open_preview_tab() -> Result<PreviewTab, String> {
     Ok(PreviewTab)
 }
 
+#[cfg(target_arch = "wasm32")]
+impl PreviewTab {
+    /// Close a tab [`open_preview_tab`] opened but that will never be
+    /// filled: the fetch behind it failed, so leaving it open would leave
+    /// the user with a blank tab and no indication it will never populate.
+    pub fn close(self) {
+        let _ = self.0.close();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PreviewTab {
+    /// The desktop build never pre-opens anything, so there is nothing to
+    /// close.
+    pub fn close(self) {}
+}
+
 /// Show `bytes` as a PDF: in the tab [`open_preview_tab`] opened on the
 /// browser, or in the system's PDF viewer on the desktop.
 #[cfg(target_arch = "wasm32")]
