@@ -180,6 +180,9 @@ pub fn DownloadButton(props: DownloadButtonProps) -> Element {
                         }
                     },
                     Err(err) => {
+                        if let Some(tab) = preview_tab {
+                            tab.close();
+                        }
                         let failure = DownloadFailure::from_status(
                             err.status_code(),
                             &match &err {
@@ -229,6 +232,26 @@ pub fn DownloadButton(props: DownloadButtonProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::DownloadFailure;
+
+    /// MAPPS-1020: a tab opened for a preview that never arrives must be
+    /// closed, not left blank. Asserted on the source rather than by
+    /// driving a real `web_sys::Window`, which this test target cannot
+    /// create.
+    #[test]
+    fn the_fetch_error_arm_closes_an_already_opened_preview_tab() {
+        let component = include_str!("download_button.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the component has source before its tests");
+        let err_arm = component
+            .split("Err(err) => {")
+            .nth(1)
+            .expect("the fetch has an Err arm");
+        assert!(
+            err_arm.contains("if let Some(tab) = preview_tab") && err_arm.contains("tab.close()"),
+            "the Err arm must close an already-opened preview tab before reporting the failure"
+        );
+    }
 
     /// Every failure the four routes can produce has its own sentence, and
     /// none of them is the raw string the transport hands back.

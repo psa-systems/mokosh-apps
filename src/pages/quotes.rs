@@ -892,11 +892,17 @@ fn QuoteDetailBody(id: String) -> Element {
                                                             code: 501,
                                                             ..
                                                         }) => {
+                                                            if let Some(tab) = preview_tab {
+                                                                tab.close();
+                                                            }
                                                             pdf_error.set(
                                                                 "PDF generation not available yet".to_string(),
                                                             );
                                                         }
                                                         Err(err) => {
+                                                            if let Some(tab) = preview_tab {
+                                                                tab.close();
+                                                            }
                                                             pdf_error.set(format!(
                                                                 "Could not download PDF: {}",
                                                                 err.user_message()
@@ -2059,6 +2065,23 @@ mod tests {
         assert!(
             page.contains("let preview_tab = if previewable {"),
             "opening the tab must follow the same `previewable` flag as the label"
+        );
+    }
+
+    /// MAPPS-1020: a tab opened for a preview that never arrives (the PDF
+    /// fetch fails) must be closed, not left blank. Both failure arms of
+    /// the fetch match. Asserted on the source rather than by driving a
+    /// real `web_sys::Window`, which this test target cannot create.
+    #[test]
+    fn pdf_fetch_failure_arms_close_an_already_opened_preview_tab() {
+        let page = include_str!("quotes.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the page has source before its tests");
+        let closes = page.matches("if let Some(tab) = preview_tab").count();
+        assert_eq!(
+            closes, 2,
+            "both the 501 arm and the general Err arm must close preview_tab"
         );
     }
 }
