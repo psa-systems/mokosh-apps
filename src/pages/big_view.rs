@@ -271,9 +271,9 @@ pub fn BigDispatchPage() -> Element {
     // and therefore the outage state. The unavailable retrofit belongs in
     // calendar.rs, not in this wrapper (out of scope for this one-file task).
     // The existing DispatchBoardPage already owns the per-technician
-    // swimlane render; embed it inside the BigLayout chrome with a
+    // column render; embed it inside the BigLayout chrome with a
     // larger title strip. The board itself reads the day from the
-    // signed-in user's timezone and renders per-tech rows, so the kiosk
+    // signed-in user's timezone and renders per-tech columns, so the kiosk
     // gets the same data without a code-path divergence. MAPPS-280
     // (week / month views) will add a view-mode toggle the operator
     // can drive via `?view=<day|week|month>`.

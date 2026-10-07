@@ -39,8 +39,8 @@ use crate::components::{
 };
 use crate::modules::calendar::{
     AppointmentResponse, CreateAppointmentRequest, CreateSchedulingTemplateRequest,
-    DispatchResponse, OnCallNowResponse, SchedulingTemplateResponse, TimeOffResponse,
-    UpdateAppointmentRequest, UpdateSchedulingTemplateRequest, UserAvailabilityResponse,
+    DispatchResponse, OnCallNowResponse, SchedulingTemplateResponse, UpdateAppointmentRequest,
+    UpdateSchedulingTemplateRequest, UserAvailabilityResponse,
 };
 use crate::Route;
 
@@ -48,7 +48,7 @@ use crate::Route;
 // Shared helpers
 // ============================================================================
 
-/// The day/week time grid and the dispatch timeline span a full 24-hour
+/// The day/week time grid and the dispatch day view span a full 24-hour
 /// day, midnight to midnight (MAPPS-387). Every hour is schedulable: an
 /// appointment at any time renders at its true offset rather than being
 /// clamped into a fixed daytime window, and the grid scrolls inside its
@@ -83,14 +83,14 @@ fn hour_shade_class(hour: u32) -> &'static str {
     }
 }
 
-/// MAPPS-387: on first mount, scroll a grid container so the working-hours
-/// window is in view rather than midnight. `vertical` selects scrollTop
-/// (day/week grids) vs scrollLeft (the horizontal dispatch timeline).
+/// MAPPS-387: on first mount, scroll a vertical grid container so the
+/// working-hours window is in view rather than midnight. Lands half an hour
+/// early so a sticky header cannot cover the first working hour (MAPPS-1015).
 /// No-op when the element is not (yet) in the DOM.
 #[cfg(feature = "app")]
-fn scroll_grid_to_work_hours(id: &str, vertical: bool) {
-    let frac = f64::from(WORK_START_HOUR) / GRID_TOTAL_HOURS;
-    crate::platform::dom::scroll_to_fraction(id, vertical, frac);
+fn scroll_grid_to_work_hours(id: &str) {
+    let frac = (f64::from(WORK_START_HOUR) - 0.5) / GRID_TOTAL_HOURS;
+    crate::platform::dom::scroll_to_fraction(id, true, frac);
 }
 
 /// Which calendar layout is active. Month is the default; Week and Day
@@ -1154,7 +1154,7 @@ fn WeekGrid(props: WeekGridProps) -> Element {
     let dates = week_dates(props.active_date);
     // MAPPS-387: default the scroll to the working-hours window on mount.
     #[cfg(feature = "app")]
-    use_effect(|| scroll_grid_to_work_hours("calendar-grid-scroll-week", true));
+    use_effect(|| scroll_grid_to_work_hours("calendar-grid-scroll-week"));
     rsx! {
         div { class: "overflow-x-auto",
             div { class: "min-w-[700px]",
@@ -1186,9 +1186,8 @@ fn WeekGrid(props: WeekGridProps) -> Element {
                     }
                 }
                 // Body: hour-labeled gutter + 7 positioned day columns.
-                // MAPPS-387: pad the top by the gutter labels' `-mt-2` pull so
-                // the first label (12 AM) clears the sticky header instead of
-                // being tucked behind it at scroll-top.
+                // MAPPS-387: `pt-2` leaves room for the 12 AM label, which sits
+                // half above its line, so the sticky header does not cover it.
                 div { class: "grid grid-cols-[60px_repeat(7,1fr)] pt-2",
                     // Hour gutter.
                     div { class: "relative",
@@ -1196,8 +1195,12 @@ fn WeekGrid(props: WeekGridProps) -> Element {
                             {
                                 let label = hour_label(hour);
                                 rsx! {
-                                    div { class: "h-12 text-right pr-2 text-xs text-subtle -mt-2",
-                                        "{label}"
+                                    // MAPPS-1015: each label is pinned to its own hour line;
+                                    // a stacked `-mt-2` drifted 0.5rem further every hour.
+                                    div { class: "relative h-12",
+                                        span { class: "absolute -top-2 right-2 text-xs leading-4 text-subtle whitespace-nowrap",
+                                            "{label}"
+                                        }
                                     }
                                 }
                             }
@@ -1338,8 +1341,8 @@ fn DayColumn(props: DayColumnProps) -> Element {
 }
 
 /// MAPPS-387: offset% + size% of a `[start_h, end_h)` hour span within the
-/// full midnight-to-midnight grid. Shared by the vertical day/week blocks
-/// and the horizontal dispatch bars: both map hour-of-day linearly onto
+/// full midnight-to-midnight grid. Shared by the day/week and dispatch
+/// blocks and the dispatch availability bands: all map hour-of-day linearly onto
 /// 0..100% with NO clamp into a working-hours sub-window, so a 2 AM or
 /// 11 PM slot lands at its true position instead of being pinned to the
 /// old 7 AM / 7 PM edges. Values are clamped only to the grid itself
@@ -1485,7 +1488,7 @@ fn DayGrid(props: DayGridProps) -> Element {
     let rows = (GRID_END_HOUR - GRID_START_HOUR) as usize;
     // MAPPS-387: default the scroll to the working-hours window on mount.
     #[cfg(feature = "app")]
-    use_effect(|| scroll_grid_to_work_hours("calendar-grid-scroll-day", true));
+    use_effect(|| scroll_grid_to_work_hours("calendar-grid-scroll-day"));
 
     rsx! {
             if day_appts.is_empty() {
@@ -1496,8 +1499,8 @@ fn DayGrid(props: DayGridProps) -> Element {
             div {
                 id: "calendar-grid-scroll-day",
                 class: "overflow-y-auto max-h-[70vh]",
-                // MAPPS-387: `pt-2` offsets the gutter labels' `-mt-2` pull so the
-                // first label (12 AM) is not clipped at the scroll-box top edge.
+                // MAPPS-387: `pt-2` leaves room for the 12 AM label, which sits half
+                // above its line, so it is not clipped at the scroll-box top edge.
                 div { class: "grid grid-cols-[80px_1fr] pt-2",
                 // Hour gutter.
                 div {
@@ -1505,7 +1508,12 @@ fn DayGrid(props: DayGridProps) -> Element {
                         {
                             let label = hour_label(hour);
                             rsx! {
-                                div { class: "h-16 text-right pr-3 text-xs text-subtle -mt-2", "{label}" }
+                                // MAPPS-1015: pinned to its hour line, not stacked with `-mt-2`.
+                                div { class: "relative h-16",
+                                    span { class: "absolute -top-2 right-3 text-xs leading-4 text-subtle whitespace-nowrap",
+                                        "{label}"
+                                    }
+                                }
                             }
                         }
                     }
@@ -2422,17 +2430,17 @@ fn optional(value: &str) -> Option<String> {
 // ============================================================================
 
 /// Dispatch board: aggregated technician view over `GET /api/v1/dispatch`.
-/// Day-by-day navigation; appointments are grouped per assignee and laid
-/// out on a shared 7am-7pm timeline, with availability, time-off, and
-/// on-call context surfaced alongside.
+/// Day-by-day navigation; the Day view gives each assignee a column on a
+/// shared vertical 24-hour axis (MAPPS-1015), with availability, time-off,
+/// and on-call context surfaced alongside.
 #[component]
 pub fn DispatchBoardPage() -> Element {
     use_page_title("Dispatch Board");
     let today_real = user_today();
     let mut active_day = use_signal(|| today_real);
     let mut form_state = use_signal(|| None::<Option<AppointmentResponse>>);
-    // MAPPS-280: Day / Week / Month view-mode toggle. Day stays the
-    // per-technician swimlane (the rich existing render); Week and
+    // MAPPS-280: Day / Week / Month view-mode toggle. Day is the
+    // per-technician column view (the rich existing render); Week and
     // Month re-use the calendar's WeekGrid / MonthGrid against the
     // dispatch appointments so a dispatcher can plan a week without
     // navigating away. The data range expands with the view so the
@@ -2602,7 +2610,7 @@ pub fn DispatchBoardPage() -> Element {
                         "Today"
                     }
                     // MAPPS-280: Day / Week / Month view toggle.
-                    // Day = per-technician swimlane (existing rich
+                    // Day = per-technician columns (existing rich
                     // render). Week / Month re-use the calendar
                     // grids over the dispatch appointments so a
                     // dispatcher can plan a week without leaving
@@ -2731,9 +2739,14 @@ struct DispatchTimelineProps {
     onpick: EventHandler<AppointmentResponse>,
 }
 
+/// Width of the hour gutter and the minimum width of one technician column
+/// on the vertical dispatch day view (MAPPS-1015).
+const DISPATCH_GUTTER_PX: usize = 52;
+const DISPATCH_COLUMN_MIN_PX: usize = 112;
+
 #[component]
 fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
-    // Which user ids to show as rows: everyone who has an appointment,
+    // Which user ids to show as columns: everyone who has an appointment,
     // an availability window, or time off today. Sorted by display name
     // for a stable layout.
     let mut user_ids: Vec<uuid::Uuid> = Vec::new();
@@ -2765,10 +2778,10 @@ fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
     // 0=Sunday .. 6=Saturday for matching availability windows.
     let dow = props.day.weekday().num_days_from_sunday() as i32;
 
-    // MAPPS-387: the 24-hour timeline scrolls horizontally inside its box,
-    // opening on the working-hours window rather than at midnight.
+    // MAPPS-1015: time runs down the page like Google Calendar's day view, so
+    // the 24-hour day scrolls vertically and opens on working hours.
     #[cfg(feature = "app")]
-    use_effect(|| scroll_grid_to_work_hours("calendar-dispatch-scroll", false));
+    use_effect(|| scroll_grid_to_work_hours("calendar-dispatch-scroll"));
 
     if user_ids.is_empty() {
         return rsx! {
@@ -2778,63 +2791,92 @@ fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
         };
     }
 
+    let n = user_ids.len();
+    let rows = (GRID_END_HOUR - GRID_START_HOUR) as usize;
+    let cols_style =
+        format!("grid-template-columns: {DISPATCH_GUTTER_PX}px repeat({n}, minmax(0, 1fr));");
+    // Columns only overflow sideways when there are more technicians than fit.
+    let min_width = DISPATCH_GUTTER_PX + n * DISPATCH_COLUMN_MIN_PX;
+
     rsx! {
         div {
             id: "calendar-dispatch-scroll",
-            class: "overflow-x-auto",
-            // Wider min-width now the axis is 24 hourly columns (MAPPS-387).
-            div { class: "min-w-[1400px]",
-                // Hour header.
-                div { class: "grid border-b border-line",
-                    style: "grid-template-columns: 200px repeat({GRID_END_HOUR - GRID_START_HOUR}, 1fr);",
-                    div { class: "p-2 bg-surface-2 font-medium text-sm text-muted", "Technician" }
-                    for hour in GRID_START_HOUR..GRID_END_HOUR {
+            class: "overflow-auto max-h-[70vh]",
+            div { style: "min-width: {min_width}px;",
+                // Technician header row; sticks to the top while the day scrolls.
+                div { class: "grid border-b border-line sticky top-0 z-20 bg-surface",
+                    style: "{cols_style}",
+                    div { class: "sticky left-0 z-10 bg-surface" }
+                    for id in user_ids.iter() {
                         {
-                            let label = hour_label(hour);
-                            // Working hours read as plain surface; off-hours are
-                            // muted so they recede (MAPPS-387).
-                            let bg = if is_work_hour(hour) { "bg-surface" } else { "bg-surface-2" };
+                            let uid = *id;
+                            let name = name_for(uid);
+                            let initial = name.chars().next().unwrap_or('?').to_string();
+                            let off_kind = props
+                                .dispatch
+                                .time_off
+                                .iter()
+                                .find(|t| t.user_id == uid)
+                                .map(|t| t.kind.clone());
                             rsx! {
-                                div { class: "p-2 {bg} text-center text-xs text-muted border-l border-line",
-                                    "{label}"
+                                div { key: "{uid}",
+                                    class: "p-2 flex items-center gap-2 min-w-0 border-l border-line",
+                                    div { class: "w-8 h-8 shrink-0 rounded-full bg-accent-100 flex items-center justify-center",
+                                        span { class: "text-sm font-medium text-accent", "{initial}" }
+                                    }
+                                    div { class: "min-w-0",
+                                        div { class: "font-medium text-sm text-content truncate", title: "{name}", "{name}" }
+                                        if let Some(kind) = off_kind {
+                                            div { class: "text-xs text-amber-600 dark:text-amber-400 truncate", "Off: {kind}" }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                 }
-                for id in user_ids.iter() {
-                    {
-                        let uid = *id;
-                        let name = name_for(uid);
-                        let row_appts: Vec<AppointmentResponse> = props
-                            .dispatch
-                            .appointments
-                            .iter()
-                            .filter(|a| a.assigned_to_id == uid)
-                            .cloned()
-                            .collect();
-                        let windows: Vec<UserAvailabilityResponse> = props
-                            .dispatch
-                            .availability
-                            .iter()
-                            .filter(|w| w.user_id == uid && w.day_of_week == dow && w.is_available)
-                            .cloned()
-                            .collect();
-                        let time_off: Vec<TimeOffResponse> = props
-                            .dispatch
-                            .time_off
-                            .iter()
-                            .filter(|t| t.user_id == uid)
-                            .cloned()
-                            .collect();
-                        rsx! {
-                            DispatchRow {
-                                key: "{uid}",
-                                name,
-                                appointments: row_appts,
-                                availability: windows,
-                                time_off,
-                                onpick: move |a| props.onpick.call(a),
+                // Body: hour gutter + one positioned column per technician. `pt-2`
+                // leaves room for the 12 AM label, which sits half above its line.
+                div { class: "grid pt-2", style: "{cols_style}",
+                    div { class: "sticky left-0 z-10 bg-surface",
+                        for hour in GRID_START_HOUR..GRID_END_HOUR {
+                            {
+                                let label = hour_label(hour);
+                                rsx! {
+                                    div { class: "relative h-12",
+                                        span { class: "absolute -top-2 right-2 text-xs leading-4 text-subtle whitespace-nowrap",
+                                            "{label}"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    for id in user_ids.iter() {
+                        {
+                            let uid = *id;
+                            let col_appts: Vec<AppointmentResponse> = props
+                                .dispatch
+                                .appointments
+                                .iter()
+                                .filter(|a| a.assigned_to_id == uid)
+                                .cloned()
+                                .collect();
+                            let windows: Vec<UserAvailabilityResponse> = props
+                                .dispatch
+                                .availability
+                                .iter()
+                                .filter(|w| w.user_id == uid && w.day_of_week == dow && w.is_available)
+                                .cloned()
+                                .collect();
+                            rsx! {
+                                DispatchColumn {
+                                    key: "{uid}",
+                                    rows,
+                                    appointments: col_appts,
+                                    availability: windows,
+                                    onpick: move |a| props.onpick.call(a),
+                                }
                             }
                         }
                     }
@@ -2845,86 +2887,64 @@ fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
 }
 
 #[derive(Props, Clone, PartialEq)]
-struct DispatchRowProps {
-    name: String,
+struct DispatchColumnProps {
+    rows: usize,
     appointments: Vec<AppointmentResponse>,
     availability: Vec<UserAvailabilityResponse>,
-    time_off: Vec<TimeOffResponse>,
     onpick: EventHandler<AppointmentResponse>,
 }
 
+/// One technician's column on the dispatch day view (MAPPS-1015): hour rows,
+/// availability bands, and appointment blocks laid out in overlap lanes.
 #[component]
-fn DispatchRow(props: DispatchRowProps) -> Element {
-    let cols = GRID_END_HOUR - GRID_START_HOUR;
-    let off_today = !props.time_off.is_empty();
-    let off_kind = props
-        .time_off
-        .first()
-        .map(|t| t.kind.clone())
-        .unwrap_or_default();
-
+fn DispatchColumn(props: DispatchColumnProps) -> Element {
+    let lanes = overlap_lanes(&props.appointments);
     rsx! {
-        div { class: "grid border-b border-line min-h-16",
-            style: "grid-template-columns: 200px repeat({cols}, 1fr);",
-            // Technician name + status.
-            div { class: "p-2 flex items-center",
-                div { class: "flex items-center",
-                    div { class: "w-8 h-8 rounded-full bg-accent-100 flex items-center justify-center mr-2",
-                        span { class: "text-sm font-medium text-accent",
-                            {props.name.chars().next().unwrap_or('?').to_string()}
-                        }
-                    }
-                    div {
-                        span { class: "font-medium text-sm text-content", "{props.name}" }
-                        if off_today {
-                            div { class: "text-xs text-amber-600 dark:text-amber-400", "Off: {off_kind}" }
+        div { class: "relative border-l border-line",
+            style: "height: {props.rows as f64 * 3.0}rem;",
+            // Hour rows; out-of-hours rows are muted, not struck through (MAPPS-387).
+            for hour in GRID_START_HOUR..GRID_END_HOUR {
+                div { class: "h-12 border-b border-line {hour_shade_class(hour)}" }
+            }
+            // Availability shading (one band per available window today).
+            for w in props.availability.iter() {
+                {
+                    let (top, height) = availability_geometry(w);
+                    rsx! {
+                        div {
+                            class: "absolute inset-x-0 bg-green-100/50 dark:bg-green-900/20 pointer-events-none",
+                            style: "top: {top:.4}%; height: {height:.4}%;",
                         }
                     }
                 }
             }
-
-            // Timeline area spanning the hour columns.
-            div { class: "relative border-l border-line",
-                style: "grid-column: 2 / -1; min-height: 4rem;",
-                // Hour divider lines; out-of-hours columns are muted so the
-                // working-hours window reads as emphasized (MAPPS-387).
-                div { class: "absolute inset-0 grid",
-                    style: "grid-template-columns: repeat({cols}, 1fr);",
-                    for hour in GRID_START_HOUR..GRID_END_HOUR {
-                        div { class: "border-l border-line first:border-l-0 {hour_shade_class(hour)}" }
-                    }
-                }
-                // Availability shading (one band per available window today).
-                for w in props.availability.iter() {
-                    {
-                        let (left, width) = availability_geometry(w);
-                        rsx! {
-                            div {
-                                class: "absolute top-0 bottom-0 bg-green-100/50 dark:bg-green-900/20 pointer-events-none",
-                                style: "left: {left:.4}%; width: {width:.4}%;",
-                            }
-                        }
-                    }
-                }
-                // Appointment blocks.
-                for appt in props.appointments.iter() {
-                    {
-                        let (left, width) = appointment_h_geometry(appt);
-                        let color = type_color(&appt.appointment_type);
-                        let past = past_class(appt);
-                        let appt_clone = appt.clone();
-                        let type_label = appointment_type_label(&appt.appointment_type);
-                        let label = appt.title.clone();
-                        let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
-                        rsx! {
-                            button {
-                                key: "{appt.id}",
-                                r#type: "button",
-                                class: "absolute top-1 bottom-1 rounded-md px-2 py-1 text-xs text-white shadow-sm overflow-hidden text-left hover:opacity-90 {color} {past}",
-                                style: "left: {left:.4}%; width: {width:.4}%;",
-                                title: "{type_label} - {time}: {label}",
-                                onclick: move |_| props.onpick.call(appt_clone.clone()),
-                                "{label}"
+            // MAPPS-1002: concurrent appointments sit side by side in lanes.
+            for (i, appt) in props.appointments.iter().enumerate() {
+                {
+                    let (top, height) = block_geometry(appt);
+                    let (left, width) = lane_h_geometry(lanes[i]);
+                    let color = type_color(&appt.appointment_type);
+                    let past = past_class(appt);
+                    let appt_clone = appt.clone();
+                    let type_label = appointment_type_label(&appt.appointment_type);
+                    let label = appt.title.clone();
+                    let start_time = time_label(appt.start_time);
+                    let start_time_iso = appt.start_time.to_rfc3339();
+                    let end_time = time_label(appt.end_time);
+                    let end_time_iso = appt.end_time.to_rfc3339();
+                    rsx! {
+                        button {
+                            key: "{appt.id}",
+                            r#type: "button",
+                            class: "absolute rounded-md px-1.5 py-0.5 text-xs leading-tight text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color} {past}",
+                            style: "top: {top:.4}%; height: {height:.4}%; left: {left:.4}%; width: {width:.4}%;",
+                            title: "{type_label} - {start_time} - {end_time}: {label}",
+                            onclick: move |_| props.onpick.call(appt_clone.clone()),
+                            div { class: "font-medium truncate", "{label}" }
+                            div { class: "truncate opacity-90",
+                                time { datetime: "{start_time_iso}", "{start_time}" }
+                                " - "
+                                time { datetime: "{end_time_iso}", "{end_time}" }
                             }
                         }
                     }
@@ -2934,14 +2954,8 @@ fn DispatchRow(props: DispatchRowProps) -> Element {
     }
 }
 
-/// Horizontal left/width percentages for an appointment on the full-day
-/// dispatch timeline (MAPPS-387: no clamp into a daytime sub-window).
-fn appointment_h_geometry(appt: &AppointmentResponse) -> (f64, f64) {
-    let (start, end) = local_hour_span(appt);
-    span_geometry(start, end, 2.0)
-}
-
-/// Horizontal band geometry for an availability window (NaiveTime based).
+/// Top offset + height percentages of an availability window (NaiveTime
+/// based) on the full-day dispatch column.
 fn availability_geometry(w: &UserAvailabilityResponse) -> (f64, f64) {
     let start = w.start_time.hour() as f64 + w.start_time.minute() as f64 / 60.0;
     let end = w.end_time.hour() as f64 + w.end_time.minute() as f64 / 60.0;
@@ -3895,5 +3909,49 @@ mod grid_geometry_tests {
             "each create-target still nests at least one real button (the chips), so \
              promoting the cell itself to a button would nest one inside another"
         );
+    }
+}
+
+#[cfg(test)]
+mod dispatch_geometry_tests {
+    use super::availability_geometry;
+    use crate::modules::calendar::UserAvailabilityResponse;
+    use chrono::NaiveTime;
+
+    fn window(start: (u32, u32), end: (u32, u32)) -> UserAvailabilityResponse {
+        UserAvailabilityResponse {
+            id: uuid::Uuid::nil(),
+            user_id: uuid::Uuid::nil(),
+            day_of_week: 1,
+            start_time: NaiveTime::from_hms_opt(start.0, start.1, 0).expect("valid start"),
+            end_time: NaiveTime::from_hms_opt(end.0, end.1, 0).expect("valid end"),
+            is_available: true,
+        }
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-6
+    }
+
+    #[test]
+    fn working_day_window_maps_to_true_vertical_fraction() {
+        // MAPPS-1015: 9:00-17:00 starts 9/24 down the column and fills 8/24 of it.
+        let (top, height) = availability_geometry(&window((9, 0), (17, 0)));
+        assert!(close(top, 9.0 / 24.0 * 100.0));
+        assert!(close(height, 8.0 / 24.0 * 100.0));
+    }
+
+    #[test]
+    fn half_hour_edges_land_mid_row() {
+        let (top, height) = availability_geometry(&window((8, 30), (12, 15)));
+        assert!(close(top, 8.5 / 24.0 * 100.0));
+        assert!(close(height, 3.75 / 24.0 * 100.0));
+    }
+
+    #[test]
+    fn inverted_window_collapses_to_zero_height() {
+        let (top, height) = availability_geometry(&window((14, 0), (10, 0)));
+        assert!(close(top, 14.0 / 24.0 * 100.0));
+        assert!(close(height, 0.0));
     }
 }
