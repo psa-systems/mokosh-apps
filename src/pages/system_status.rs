@@ -185,10 +185,13 @@ pub fn SystemStatusPage() -> Element {
 
             // Client build (always available, no network).
             Card {
-                div { class: "flex items-center justify-between mb-3",
-                    h3 { class: "text-base font-semibold text-content","Client build" }
+                // MAPPS-967: the status badge is a heading-row control, so it moves to
+                // `actions` and stays on the header's baseline.
+                title: "Client build".to_string(),
+                actions: rsx! {
                     Badge { variant: BadgeVariant::Green, "Running" }
-                }
+                },
+
                 StatusRow { label: "Version".to_string(), value: VERSION.to_string() }
                 StatusRow { label: "Commit".to_string(), value: GIT_HASH.to_string() }
                 StatusRow { label: "Built".to_string(), value: BUILD_DATE.to_string() }
@@ -196,8 +199,8 @@ pub fn SystemStatusPage() -> Element {
 
             // API server reachability + server build.
             Card {
-                div { class: "flex items-center justify-between mb-3",
-                    h3 { class: "text-base font-semibold text-content","API server" }
+                title: "API server".to_string(),
+                actions: rsx! {
                     if loading {
                         Badge { variant: BadgeVariant::Gray, "Checking…" }
                     } else if matches!(&snapshot, Some(r) if r.server.is_ok()) {
@@ -205,7 +208,8 @@ pub fn SystemStatusPage() -> Element {
                     } else {
                         Badge { variant: BadgeVariant::Red, "Unreachable" }
                     }
-                }
+                },
+
                 match snapshot.as_ref().map(|r| &r.server) {
                     None => rsx! {
                         p { class: "text-sm text-muted", "Checking the API server…" }
@@ -226,15 +230,18 @@ pub fn SystemStatusPage() -> Element {
 
             // Dependency readiness breakdown.
             Card {
-                div { class: "flex items-center justify-between mb-3",
-                    h3 { class: "text-base font-semibold text-content","Dependencies" }
+                // MAPPS-967: the status badge is a heading-row control, so it moves to
+                // `actions` and stays on the header's baseline.
+                title: "Dependencies".to_string(),
+                actions: rsx! {
                     match snapshot.as_ref().map(|r| &r.readiness) {
                         None => rsx! { Badge { variant: BadgeVariant::Gray, "Checking…" } },
                         Some(Ok(r)) if r.status == "ready" => rsx! { Badge { variant: BadgeVariant::Green, "Ready" } },
                         Some(Ok(_)) => rsx! { Badge { variant: BadgeVariant::Yellow, "Degraded" } },
                         Some(Err(_)) => rsx! { Badge { variant: BadgeVariant::Red, "Unknown" } },
                     }
-                }
+                },
+
                 match snapshot.as_ref().map(|r| &r.readiness) {
                     None => rsx! {
                         p { class: "text-sm text-muted", "Checking dependencies…" }
@@ -259,7 +266,7 @@ pub fn SystemStatusPage() -> Element {
 
             // Resolved runtime endpoints.
             Card {
-                h3 { class: "text-base font-semibold text-content mb-3", "Connection" }
+                title: "Connection".to_string(),
                 StatusRow { label: "API base".to_string(), value: api_base }
                 StatusRow { label: "OIDC issuer".to_string(), value: issuer }
                 StatusRow { label: "Hub".to_string(), value: hub_url }

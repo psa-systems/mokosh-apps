@@ -403,8 +403,8 @@ fn EmailSettingsForm() -> Element {
             }
 
             Card {
+                title: "Send a test email".to_string(),
                 div { class: "space-y-4 max-w-xl",
-                    h2 { class: "text-lg font-semibold text-content", "Send a test email" }
                     if !test_error().is_empty() {
                         ErrorBanner { "{test_error()}" }
                     }
@@ -429,11 +429,9 @@ fn EmailSettingsForm() -> Element {
             }
 
             Card {
+                title: "Verify".to_string(),
+                subtitle: "Check the mailer's connection without sending anything.".to_string(),
                 div { class: "space-y-4 max-w-xl",
-                    h2 { class: "text-lg font-semibold text-content", "Verify" }
-                    p { class: "text-sm text-muted",
-                        "Check the mailer's connection without sending anything."
-                    }
                     if !verify_error().is_empty() {
                         ErrorBanner { "{verify_error()}" }
                     }

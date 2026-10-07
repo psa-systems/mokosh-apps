@@ -349,6 +349,22 @@ pub(crate) fn other_day_note(
     })
 }
 
+/// MAPPS-1009: whether `WorkDayStrip` should skip `GET /workday` rather
+/// than send a request the server is certain to answer 404, because the
+/// module gate is known off. `None` (still loading, or an unreadable
+/// generation) keeps today's behaviour of asking anyway and mapping a 404 to
+/// [`DayLoad::ModulesOff`]; only a loaded [`crate::hooks::modules::ModuleFlags`]
+/// missing either gate module is enough to skip.
+pub(crate) fn should_skip_workday(flags: Option<&crate::hooks::modules::ModuleFlags>) -> bool {
+    match flags {
+        None => false,
+        Some(f) => {
+            !f.enabled.iter().any(|m| m == "timesheets")
+                || !f.enabled.iter().any(|m| m == "time_tracking")
+        }
+    }
+}
+
 /// The `date` query the strip sends: nothing for the server's own today
 /// (the caller's zone, never the UTC day), or the picked day.
 pub(crate) fn day_query(date: Option<NaiveDate>, user_id: Option<uuid::Uuid>) -> String {
@@ -418,11 +434,16 @@ pub fn WorkDayStrip() -> Element {
 
     let date_for_resource = picked_date();
     let user_for_resource = picked_user();
+    let module_flags = crate::hooks::modules::use_module_flags();
+    let skip_workday_request = should_skip_workday(module_flags.as_ref());
     let mut day_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
         let _tick = refetch_tick();
         let path = day_query(date_for_resource, user_for_resource);
+        if skip_workday_request {
+            return Some(DayLoad::ModulesOff);
+        }
         #[cfg(feature = "app")]
         {
             match crate::hooks::fetch::api::get_authed_typed::<RemoteWorkDay>(&path).await {
@@ -691,14 +712,14 @@ pub fn WorkDayStrip() -> Element {
 
     rsx! {
         Card { class: "mb-6",
+            title: "Work day".to_string(),
             div { class: "space-y-4",
-                // Header: the card's name, and (admin only) whose day is
-                // being read. The picker is labelled and out of the action
-                // row: MAPPS-751 read it as a mode selector for the clock,
-                // which it never was.
+                // (Admin only) whose day is being read. MAPPS-967 moved the
+                // card's name to `title`, so this row holds the picker alone
+                // and its former flex spacer went with the heading. The picker
+                // is labelled and out of the action row: MAPPS-751 read it as a
+                // mode selector for the clock, which it never was.
                 div { class: "flex flex-wrap items-center gap-3",
-                    h2 { class: "text-lg font-semibold text-content", "Work day" }
-                    div { class: "flex-1" }
                     if is_admin && !users.is_empty() {
                         label { class: "flex items-center gap-2 text-sm text-muted",
                             "Viewing"
@@ -1452,6 +1473,37 @@ mod tests {
         assert!(ClockState::In.container_class().contains("border-2"));
         assert!(ClockState::OnBreak.container_class().contains("dashed"));
         assert!(!ClockState::Out.container_class().contains("border-2"));
+    }
+
+    /// MAPPS-1009: no request goes out once the flags are loaded and say
+    /// either gate module is off; an unknown state (`None`) still asks, so
+    /// the 404 fallback below keeps covering it.
+    #[test]
+    fn the_request_is_skipped_only_once_both_gates_are_known_on() {
+        assert!(
+            !should_skip_workday(None),
+            "unknown flags still ask, and a 404 maps to ModulesOff as today"
+        );
+        let both_on = crate::hooks::modules::ModuleFlags {
+            generation: 1,
+            enabled: vec!["timesheets".to_string(), "time_tracking".to_string()],
+        };
+        assert!(!should_skip_workday(Some(&both_on)));
+        let timesheets_off = crate::hooks::modules::ModuleFlags {
+            generation: 1,
+            enabled: vec!["time_tracking".to_string()],
+        };
+        assert!(should_skip_workday(Some(&timesheets_off)));
+        let time_tracking_off = crate::hooks::modules::ModuleFlags {
+            generation: 1,
+            enabled: vec!["timesheets".to_string()],
+        };
+        assert!(should_skip_workday(Some(&time_tracking_off)));
+        let both_off = crate::hooks::modules::ModuleFlags {
+            generation: 1,
+            enabled: vec![],
+        };
+        assert!(should_skip_workday(Some(&both_off)));
     }
 
     /// The wire shape decodes with its nested breakdown, and a 404 is not a
