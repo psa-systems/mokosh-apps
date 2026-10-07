@@ -652,11 +652,11 @@ fn CustomerQuoteView(id: String) -> Element {
     rsx! {
         PageHeader { title: "Quote {number}" }
         Card {
+            title: quote.title.clone(),
+            actions: rsx! {
+                Badge { variant: quote_status_variant(&quote.status), "{status::label(&quote.status)}" }
+            },
             div { class: "space-y-4",
-                div { class: "flex flex-wrap items-center justify-between gap-2",
-                    h2 { class: "text-lg font-medium text-content", "{quote.title}" }
-                    Badge { variant: quote_status_variant(&quote.status), "{status::label(&quote.status)}" }
-                }
                 p { class: "text-sm text-muted", "{status_line}" }
                 if let Some(summary) = quote.summary.clone().filter(|s| !s.trim().is_empty()) {
                     p { class: "text-sm text-content", "{summary}" }

@@ -283,10 +283,12 @@ fn GoogleClientForm() -> Element {
             }
 
             Card {
+                title: if view.configured {
+                    "Replace the client".to_string()
+                } else {
+                    "Set the client".to_string()
+                },
                 div { class: "space-y-4 max-w-2xl",
-                    h2 { class: "text-lg font-semibold text-content",
-                        if view.configured { "Replace the client" } else { "Set the client" }
-                    }
                     if !error().is_empty() {
                         ErrorBanner { "{error()}" }
                     }
@@ -342,8 +344,8 @@ fn GoogleClientForm() -> Element {
             }
 
             Card {
+                title: "Creating the client in Google".to_string(),
                 div { class: "space-y-4 max-w-2xl",
-                    h2 { class: "text-lg font-semibold text-content", "Creating the client in Google" }
                     div { class: "space-y-1",
                         p { class: "text-sm font-medium text-content", "Authorized redirect URI" }
                         p { class: "text-sm text-muted",

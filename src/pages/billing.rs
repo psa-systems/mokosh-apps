@@ -2908,6 +2908,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                 // Header
                                 div { class: "flex flex-wrap justify-between gap-4 mb-8",
                                     div {
+                                        // card-heading-allow: the printed document's own title, not the card's label
                                         h2 { class: "text-2xl font-bold text-content", "INVOICE" }
                                         p { class: "text-muted", "{inv.invoice_number}" }
                                     }

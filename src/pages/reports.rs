@@ -292,12 +292,8 @@ struct ReportCategoryProps {
 fn ReportCategory(props: ReportCategoryProps) -> Element {
     rsx! {
         Card {
-            h3 { class: "text-lg font-medium text-content mb-2",
-                "{props.title}"
-            }
-            p { class: "text-sm text-muted mb-4",
-                "{props.description}"
-            }
+            title: props.title.clone(),
+            subtitle: props.description.clone(),
             ul { class: "space-y-2",
                 for (report_type, name) in props.reports.iter() {
                     li {
