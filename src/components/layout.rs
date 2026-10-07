@@ -1982,8 +1982,8 @@ pub fn PageHeader(props: PageHeaderProps) -> Element {
                     {breadcrumbs}
                 }
             }
-            div { class: "md:flex md:items-center md:justify-between",
-                div { class: "min-w-0 flex-1",
+            div { class: "flex flex-wrap items-start justify-between gap-4",
+                div { class: "min-w-0 flex-1 basis-64",
                     // `leading-7` (28px) was paired with `sm:text-3xl`
                     // (30px font) plus `sm:truncate` (overflow:hidden),
                     // which clipped the descenders of g/j/p/q/y on every
@@ -2004,11 +2004,9 @@ pub fn PageHeader(props: PageHeaderProps) -> Element {
                     }
                 }
                 if let Some(ref actions) = props.actions {
-                    // `shrink-0` so the action cluster keeps its width and
-                    // the title (min-w-0 + sm:truncate above) is what gives
-                    // way on a tight row, instead of the buttons collapsing
-                    // into or colliding with a long dynamic title.
-                    div { class: "mt-4 flex items-start shrink-0 md:ml-4 md:mt-0 space-x-3",
+                    // The title keeps a 16rem floor (basis-64 above); actions
+                    // wrap below it on a tight row instead of overflowing.
+                    div { class: "flex min-w-0 max-w-full flex-wrap items-start gap-3",
                         {actions}
                     }
                 }

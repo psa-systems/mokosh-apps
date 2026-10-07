@@ -222,7 +222,7 @@ fn ModalChrome(
 
                     // Footer (optional, pinned)
                     if let Some(footer) = footer {
-                        div { class: "flex-shrink-0 px-4 py-3 border-t border-line flex justify-end space-x-3",
+                        div { class: "flex-shrink-0 px-4 py-3 border-t border-line flex flex-wrap justify-end gap-3",
                             {footer}
                         }
                     }
