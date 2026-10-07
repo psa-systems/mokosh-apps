@@ -270,6 +270,16 @@ struct RemoteTicketPriority {
     is_default: bool,
 }
 
+/// One row from `GET /tickets/queues`. Tenant-scoped lookup the New Ticket
+/// form and the Queue filter on the list both consume. Server's
+/// `TicketFilter` accepts `queue_id: Option<Uuid>`, so a non-UUID would be
+/// silently coerced away.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteTicketQueue {
+    id: uuid::Uuid,
+    name: String,
+}
+
 /// MAPPS-296: minimal shape of a row from `GET /tickets/types` /
 /// `GET /tickets/categories`. Both endpoints share the `(id, name)`
 /// projection the New Ticket form needs; serde drops every other
@@ -428,30 +438,48 @@ struct UpdateNoteBody {
 /// time entry. The permission half: the author, or an admin, which is the
 /// server's own default policy.
 ///
-/// MAPPS-888: this rule mirrors mokosh-server's PMS-974 enforcement
-/// (`src/modules/tickets/service.rs`, `src/modules/tickets/routes.rs`),
-/// which is NOT part of the shared `mokosh-types` crate this app already
-/// depends on; it lives in the server's own binary crate. Moving it into
-/// `mokosh-types` is therefore a change to the mokosh-server repo, out of
-/// scope for a mokosh-apps PR; tracked as MAPPS-891.
+/// The intrinsic row-state gates live in `mokosh_types::tickets::note_is_editable`
+/// (shared with mokosh-server's PMS-974 enforcement; see MAPPS-891 and
+/// mokosh-server #942). This wrapper owns the SPA-specific bits that are not
+/// in the shared contract: the `can_edit` short-circuit the server opts into,
+/// the string-to-`NoteType` decode (an unknown kind means no, since offering
+/// a control that cannot work is worse than hiding one that could), and the
+/// `admin OR author` role resolution the SPA computes rather than fetches.
 fn note_is_editable(note: &RemoteNote, viewer: Option<uuid::Uuid>, viewer_is_admin: bool) -> bool {
     if let Some(server) = note.can_edit {
         return server;
     }
-    if note.created_by_contact_id.is_some() {
+    let Some(note_type) = NoteType::from_str(&note.note_type) else {
         return false;
-    }
-    let kind_allows = match note.note_type.as_str() {
-        "internal" | "resolution" => true,
-        "public" => !note.is_email_sent,
-        // `time_entry`, and anything a future server adds. Unknown means no:
-        // guessing wrong here offers a control that cannot work.
-        _ => false,
     };
-    if !kind_allows {
-        return false;
+    let role_permits = viewer_is_admin || (viewer.is_some() && viewer == note.created_by_id);
+    mokosh_types::tickets::note_is_editable(
+        note_type,
+        note.is_email_sent,
+        note.created_by_contact_id,
+        role_permits,
+    )
+}
+
+/// MAPPS-989: mirrors the server's `RequireManager` floor on
+/// `DELETE /tickets/{id}` (`mokosh-server/src/modules/tickets/routes.rs`),
+/// which allows `super_admin`/`admin`/`manager`. Returns the disabled state
+/// and, when disabled, the reason to show in the button's title.
+fn ticket_delete_gate(
+    deleting: bool,
+    can_mutate: bool,
+    can_manage: bool,
+) -> (bool, Option<&'static str>) {
+    if deleting || !can_mutate {
+        (
+            true,
+            (!can_mutate).then_some("Can't delete while the server is unreachable"),
+        )
+    } else if !can_manage {
+        (true, Some("Only a manager or above can delete a ticket"))
+    } else {
+        (false, None)
     }
-    viewer_is_admin || (viewer.is_some() && viewer == note.created_by_id)
 }
 
 /// MAPPS-613: every `NoteType`, in the order the composer considers them.
@@ -824,7 +852,25 @@ struct JournalEntry {
 
 /// The name to attribute a journal line to. `actor_name` yields "-" for an
 /// id no `/auth/users` row matches, which reads as a broken row in a sentence.
-fn journal_actor(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
+///
+/// `viewer` carries the authenticated session's own `(id, name)` so an entry
+/// attributed to the viewer resolves to the viewer's name even when the
+/// roster is empty or returns an empty `full_name`. The roster is
+/// `RequireManager`-gated on the server and can legitimately not reach every
+/// signed-in operator, and a JIT-provisioned bunyip user starts with an
+/// empty profile name, so a viewer could see their own actions as "Someone"
+/// on their own ticket. The authenticated session always knows its own
+/// identity, so a self-attributed line never falls through to the roster.
+fn journal_actor(
+    users: &[UserOpt],
+    id: &Option<uuid::Uuid>,
+    viewer: Option<(uuid::Uuid, &str)>,
+) -> String {
+    if let (Some(h_id), Some((v_id, v_name))) = (id, viewer) {
+        if *h_id == v_id && !v_name.trim().is_empty() {
+            return v_name.to_string();
+        }
+    }
     let name = actor_name(users, id);
     if name == "-" {
         "Someone".to_string()
@@ -892,9 +938,12 @@ fn build_journal(
     history: &[HistoryEntry],
     time_entries: &[RemoteTimeEntry],
     users: &[UserOpt],
-    viewer: Option<uuid::Uuid>,
+    viewer: Option<(uuid::Uuid, String)>,
     viewer_is_admin: bool,
 ) -> Vec<JournalEntry> {
+    let viewer_id = viewer.as_ref().map(|(id, _)| *id);
+    let viewer_pair: Option<(uuid::Uuid, &str)> =
+        viewer.as_ref().map(|(id, name)| (*id, name.as_str()));
     let mut entries: Vec<JournalEntry> =
         Vec::with_capacity(notes.len() + history.len() + time_entries.len());
 
@@ -929,7 +978,7 @@ fn build_journal(
             action,
             body: (!n.content.trim().is_empty()).then(|| n.content.clone()),
             changes: Vec::new(),
-            editable_note: note_is_editable(n, viewer, viewer_is_admin).then_some(n.id),
+            editable_note: note_is_editable(n, viewer_id, viewer_is_admin).then_some(n.id),
             // Strictly greater: both timestamps come from the same
             // transaction's `NOW()` on insert, so an unedited note has them
             // exactly equal.
@@ -940,7 +989,7 @@ fn build_journal(
     for h in history {
         entries.push(JournalEntry {
             at: h.timestamp,
-            who: journal_actor(users, &h.user_id),
+            who: journal_actor(users, &h.user_id, viewer_pair),
             action: history_action(h),
             body: None,
             changes: history_changes(h),
@@ -959,7 +1008,7 @@ fn build_journal(
         let billable = if e.is_billable { " (billable)" } else { "" };
         entries.push(JournalEntry {
             at,
-            who: journal_actor(users, &e.user_id),
+            who: journal_actor(users, &e.user_id, viewer_pair),
             action: format!("logged {} min on {}{billable}", e.duration_minutes, e.date),
             body: e.notes.clone().filter(|s| !s.trim().is_empty()),
             changes: Vec::new(),
@@ -1215,6 +1264,7 @@ fn TicketListBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut status_filter = use_signal(String::new);
     let mut priority_filter = use_signal(String::new);
+    let mut queue_filter = use_signal(String::new);
     // MAPPS-289: sortable-column state. Sorting here is entirely client-side
     // over the fetched page; the list query sends no `?sort=` at all.
     let mut sort = use_signal(|| Some((TicketSortKey::Updated, SortDirection::Descending)));
@@ -1265,6 +1315,19 @@ fn TicketListBody() -> Element {
                 .await,
         )
     });
+    // MAPPS-997: queue filter options, same shape as the status and priority
+    // resources above. The server's `TicketFilter` already accepts `queue_id`,
+    // so the list page was offering status + priority filtering while queue -
+    // a first-class ticket attribute the create form and the detail view both
+    // show - stayed off the filter card. Empty fetch falls back to just the
+    // "All Queues" placeholder.
+    let queue_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::list_or_empty(
+            "ticket queue filter option",
+            crate::hooks::fetch::api::get_all_authed::<RemoteTicketQueue>("/tickets/queues").await,
+        )
+    });
 
     // MAPPS-438: `None` is a failed load, exactly like the other list pages.
     // The page renders only what the backend returned.
@@ -1299,6 +1362,7 @@ fn TicketListBody() -> Element {
         let q = search_debounced.read().trim().to_string();
         let status_id = status_filter.read().clone();
         let priority_id = priority_filter.read().clone();
+        let queue_id = queue_filter.read().clone();
         let sort_snapshot = *sort.read();
         let current_page = (*page.read()).max(1);
         async move {
@@ -1326,6 +1390,9 @@ fn TicketListBody() -> Element {
             }
             if !priority_id.is_empty() {
                 path.push_str(&format!("&priority_id={priority_id}"));
+            }
+            if !queue_id.is_empty() {
+                path.push_str(&format!("&queue_id={queue_id}"));
             }
             if let Some((key, dir)) = sort_snapshot {
                 path.push_str(&format!(
@@ -1378,7 +1445,8 @@ fn TicketListBody() -> Element {
     // is set.
     let filters_active = !search.read().trim().is_empty()
         || !status_filter.read().is_empty()
-        || !priority_filter.read().is_empty();
+        || !priority_filter.read().is_empty()
+        || !queue_filter.read().is_empty();
 
     // MAPPS-295: build the Status filter options from the tenant's actual
     // status set. A still-loading or empty resource just shows the "All
@@ -1406,6 +1474,14 @@ fn TicketListBody() -> Element {
             p.id.to_string(),
             humanize_priority(&p.name),
         ));
+    }
+
+    // MAPPS-997: queue filter options. Same shape as status/priority above.
+    // A still-loading / failed fetch just renders the placeholder.
+    let tenant_queues = queue_resource.read_unchecked().clone().unwrap_or_default();
+    let mut queue_options = vec![SelectOption::new("", "All Queues")];
+    for q in tenant_queues.iter() {
+        queue_options.push(SelectOption::new(q.id.to_string(), q.name.clone()));
     }
 
     rsx! {
@@ -1453,6 +1529,16 @@ fn TicketListBody() -> Element {
                         placeholder: "Status",
                         onchange: move |e: FormEvent| {
                             status_filter.set(e.value());
+                            page.set(1);
+                        },
+                    }
+                    Select {
+                        name: "queue",
+                        options: queue_options,
+                        value: queue_filter.read().clone(),
+                        placeholder: "Queue",
+                        onchange: move |e: FormEvent| {
+                            queue_filter.set(e.value());
                             page.set(1);
                         },
                     }
@@ -1665,6 +1751,7 @@ fn TicketListBody() -> Element {
                                         set_ticket_search(&mut search, &mut page, String::new());
                                         status_filter.set(String::new());
                                         priority_filter.set(String::new());
+                                        queue_filter.set(String::new());
                                     },
                                     "Clear filters"
                                 }
@@ -2690,6 +2777,11 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     let can_comment = crate::hooks::capabilities::use_capability("tickets:comment");
     let staff_only =
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    // MAPPS-989: the server's `delete_ticket` route is `RequireManager`
+    // (super_admin/admin/manager), not `RequireAdmin`, so the Delete button
+    // gate must match that floor rather than reusing the narrower
+    // `is_admin` pattern used elsewhere.
+    let can_manage = crate::hooks::use_auth().read().can_manage();
     // MAPPS-607: new dual-plane caps introduced by PMS-936. Staff and
     // platform-admin sessions bypass unconditionally via `use_capability`,
     // so the buttons still render for them regardless of the contact
@@ -3047,14 +3139,29 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // page stops responding entirely, and a save that reaches the database goes
     // on rendering the old value, which reads as a stale-data bug and is not
     // one.
-    let (viewer_id, viewer_is_admin) = {
+    let (viewer_id, viewer_name, viewer_is_admin) = {
         let auth = crate::hooks::use_auth();
         let a = auth.read();
-        (
-            a.user.as_ref().map(|u| u.id),
-            a.has_role(crate::modules::auth::UserRole::Admin)
-                || a.has_role(crate::modules::auth::UserRole::SuperAdmin),
-        )
+        let id = a.user.as_ref().map(|u| u.id);
+        // Compose the viewer's display name the way `UserRow::display_name`
+        // does for the roster: "first last", else email. The roster is
+        // `RequireManager`-gated and a JIT-provisioned bunyip row starts with
+        // empty names, so the authenticated session is the one place that
+        // always knows how the viewer wants to be addressed.
+        let name = a.user.as_ref().and_then(|u| {
+            let joined = format!("{} {}", u.first_name, u.last_name);
+            let joined = joined.trim().to_string();
+            if !joined.is_empty() {
+                Some(joined)
+            } else if !u.email.trim().is_empty() {
+                Some(u.email.clone())
+            } else {
+                None
+            }
+        });
+        let admin = a.has_role(crate::modules::auth::UserRole::Admin)
+            || a.has_role(crate::modules::auth::UserRole::SuperAdmin);
+        (id, name, admin)
     };
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
@@ -3257,12 +3364,13 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     };
 
     // MAPPS-517: one stream out of the three sources the page already holds.
+    let viewer_for_journal = viewer_id.zip(viewer_name.clone());
     let journal = build_journal(
         &notes,
         &history,
         &time_entries,
         &users,
-        viewer_id,
+        viewer_for_journal,
         viewer_is_admin,
     );
     let shown_journal_count = journal.len().min(JOURNAL_LIMIT);
@@ -3439,16 +3547,23 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                     }
                     // MAPPS-313: per-ticket Delete affordance, matching
                     // the pattern on Company / Contract / Asset detail.
-                    Button {
-                        variant: ButtonVariant::Danger,
-                        // MAPPS-357: block delete while the server is unreachable.
-                        disabled: deleting_ticket() || !can_mutate,
-                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                        onclick: move |_| {
-                            delete_ticket_error.set(String::new());
-                            confirming_ticket_delete.set(true);
-                        },
-                        "Delete"
+                    {
+                        let (delete_disabled, delete_reason) =
+                            ticket_delete_gate(deleting_ticket(), can_mutate, can_manage);
+                        rsx! {
+                            Button {
+                                variant: ButtonVariant::Danger,
+                                // MAPPS-357: block delete while the server is unreachable.
+                                // MAPPS-989: block delete below the server's manager floor.
+                                disabled: delete_disabled,
+                                title: delete_reason.map(|s| s.to_string()),
+                                onclick: move |_| {
+                                    delete_ticket_error.set(String::new());
+                                    confirming_ticket_delete.set(true);
+                                },
+                                "Delete"
+                            }
+                        }
                     }
                 }
             },
@@ -5823,6 +5938,119 @@ mod mapps517_journal_tests {
             vec!["Someone created the ticket".to_string()]
         );
     }
+
+    /// The viewer's own history line resolves to the viewer's name even when
+    /// the roster is empty. The roster is `RequireManager`-gated on the
+    /// server, so an operator seeing their own ticket can legitimately get
+    /// no row back for themselves, and falling through to "Someone" on
+    /// their own actions reads as the product being broken.
+    #[test]
+    fn the_viewer_resolves_to_their_own_name_even_when_the_roster_misses_them() {
+        let viewer_id =
+            uuid::Uuid::parse_str("11111111-1111-4111-8111-111111111111").expect("uuid");
+        let h = history(
+            r#"{"action":"create","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+
+        let journal = build_journal(
+            &[],
+            &[h],
+            &[],
+            &[],
+            Some((viewer_id, "Alex Doe".to_string())),
+            false,
+        );
+
+        assert_eq!(
+            actions(&journal),
+            vec!["Alex Doe created the ticket".to_string()],
+            "the viewer's own line short-circuits the empty roster"
+        );
+    }
+
+    /// A roster row with an empty `full_name` (JIT-provisioned bunyip user
+    /// whose profile has not been filled in yet) must not pull the viewer's
+    /// own line down to "Someone": `actor_name` filters an empty name back
+    /// to `-`, which the viewer short-circuit above has to beat.
+    #[test]
+    fn the_viewer_resolves_to_their_own_name_when_the_roster_carries_an_empty_full_name() {
+        let viewer_id =
+            uuid::Uuid::parse_str("11111111-1111-4111-8111-111111111111").expect("uuid");
+        let roster: Vec<UserOpt> = vec![serde_json::from_str(
+            r#"{"id":"11111111-1111-4111-8111-111111111111","full_name":""}"#,
+        )
+        .expect("deserialise user")];
+        let h = history(
+            r#"{"action":"create","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+
+        let journal = build_journal(
+            &[],
+            &[h],
+            &[],
+            &roster,
+            Some((viewer_id, "Alex Doe".to_string())),
+            false,
+        );
+
+        assert_eq!(
+            actions(&journal),
+            vec!["Alex Doe created the ticket".to_string()]
+        );
+    }
+
+    /// A line whose actor is NOT the viewer still falls through to the
+    /// roster. The viewer short-circuit must not swallow another operator's
+    /// id just because the current one is signed in.
+    #[test]
+    fn another_user_still_falls_through_to_someone() {
+        let viewer_id =
+            uuid::Uuid::parse_str("22222222-2222-4222-8222-222222222222").expect("uuid");
+        let h = history(
+            r#"{"action":"create","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+
+        let journal = build_journal(
+            &[],
+            &[h],
+            &[],
+            &[],
+            Some((viewer_id, "Alex Doe".to_string())),
+            false,
+        );
+
+        assert_eq!(
+            actions(&journal),
+            vec!["Someone created the ticket".to_string()],
+            "non-viewer ids still rely on the roster"
+        );
+    }
+
+    /// A line whose actor IS in the roster, and the roster carries a usable
+    /// name, resolves from the roster. The viewer short-circuit never
+    /// overrides a non-viewer line even when the shape would allow it.
+    #[test]
+    fn an_actor_in_the_roster_is_still_resolved_from_the_roster() {
+        let viewer_id =
+            uuid::Uuid::parse_str("22222222-2222-4222-8222-222222222222").expect("uuid");
+        let h = history(
+            r#"{"action":"create","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+
+        let journal = build_journal(
+            &[],
+            &[h],
+            &[],
+            &users(),
+            Some((viewer_id, "Alex Doe".to_string())),
+            false,
+        );
+
+        assert_eq!(
+            actions(&journal),
+            vec!["Dana Reeve created the ticket".to_string()]
+        );
+    }
 }
 
 #[cfg(test)]
@@ -6100,7 +6328,7 @@ mod mapps593_note_edit_tests {
             &history,
             &[],
             &users,
-            Some(viewer()),
+            Some((viewer(), "Viewer".to_string())),
             false,
         );
 
@@ -6193,6 +6421,43 @@ mod mapps593_note_edit_tests {
         let save = save.expect("the save handler");
         let window = &code[save..code.len().min(save + 900)];
         assert!(!window.contains("push_toast"), "and not a toast: {window}");
+    }
+}
+
+/// MAPPS-989: pins the Delete button's disabled state at the server's
+/// `RequireManager` floor, across a technician session (no access) and a
+/// manager session (full access), matching the acceptance criteria for the
+/// parity gap this closes.
+#[cfg(test)]
+mod mapps989_ticket_delete_gate_tests {
+    use super::ticket_delete_gate;
+
+    #[test]
+    fn technician_session_is_blocked_even_when_online_and_idle() {
+        let (disabled, reason) = ticket_delete_gate(false, true, false);
+        assert!(disabled, "a technician must not be able to delete a ticket");
+        assert_eq!(reason, Some("Only a manager or above can delete a ticket"));
+    }
+
+    #[test]
+    fn manager_session_is_enabled_when_online_and_idle() {
+        let (disabled, reason) = ticket_delete_gate(false, true, true);
+        assert!(!disabled, "a manager must be able to delete a ticket");
+        assert_eq!(reason, None);
+    }
+
+    #[test]
+    fn offline_blocks_even_a_manager_with_its_own_reason() {
+        let (disabled, reason) = ticket_delete_gate(false, false, true);
+        assert!(disabled);
+        assert_eq!(reason, Some("Can't delete while the server is unreachable"));
+    }
+
+    #[test]
+    fn in_flight_delete_blocks_a_manager_with_no_reason_text() {
+        let (disabled, reason) = ticket_delete_gate(true, true, true);
+        assert!(disabled);
+        assert_eq!(reason, None);
     }
 }
 
@@ -7433,5 +7698,100 @@ mod request_family_tests {
         let page = detail_page();
         assert!(page.contains("!matches!(family, TicketFamily::Parent(rows) if rows.is_empty())"));
         assert!(page.contains("None => rsx! {},"));
+    }
+}
+
+#[cfg(test)]
+mod mapps997_queue_filter_tests {
+    const SRC: &str = include_str!("tickets.rs");
+
+    fn list_body() -> &'static str {
+        let start = SRC
+            .find("fn TicketListBody()")
+            .expect("the list page body is in this file");
+        &SRC[start..]
+    }
+
+    /// The Queue filter sits between Status and Priority on the Tickets list
+    /// filter card. The three Selects are the whole surface the walkthrough
+    /// script needs; a future reshuffle of the card has to notice when the
+    /// one it added disappears.
+    #[test]
+    fn the_queue_filter_sits_between_status_and_priority() {
+        let body = list_body();
+        let status = body
+            .find(r#"name: "status","#)
+            .expect("Status Select is on the list filter card");
+        let queue = body
+            .find(r#"name: "queue","#)
+            .expect("Queue Select is on the list filter card");
+        let priority = body
+            .find(r#"name: "priority","#)
+            .expect("Priority Select is on the list filter card");
+        assert!(
+            status < queue && queue < priority,
+            "the Queue filter is not between Status and Priority: \
+             status at {status}, queue at {queue}, priority at {priority}"
+        );
+    }
+
+    /// The queue filter writes `queue_id=<uuid>` into the list fetch path,
+    /// matching the field `TicketFilter` accepts on the server. The empty
+    /// value is skipped the same way `status_id` and `priority_id` are.
+    #[test]
+    fn the_queue_filter_reaches_the_list_fetch() {
+        let body = list_body();
+        assert!(
+            body.contains(r#"path.push_str(&format!("&queue_id={queue_id}"));"#),
+            "the queue filter is not threaded into the list fetch path"
+        );
+        assert!(
+            body.contains("if !queue_id.is_empty() {"),
+            "an empty queue filter must not land as `queue_id=` on the path"
+        );
+    }
+
+    /// The Clear filters affordance on the empty state clears every filter
+    /// the card can set, including the queue filter. Without this the user
+    /// clears Status and Priority, still sees "No tickets match" because
+    /// Queue is still set, and reads the control as broken.
+    #[test]
+    fn clear_filters_clears_the_queue_filter_too() {
+        let body = list_body();
+        // The first `"Clear filters"` occurrence is actually the comment
+        // introducing the affordance; the second is the button label we
+        // want. Skip the first match so the preamble reads the button
+        // onclick body and nothing from the comment prose.
+        let first = body
+            .find("\"Clear filters\"")
+            .expect("the Clear filters affordance is in this file");
+        let after_first = first + "\"Clear filters\"".len();
+        let second = after_first
+            + body[after_first..]
+                .find("\"Clear filters\"")
+                .expect("the Clear filters button label is in this file");
+        let preamble = &body[second.saturating_sub(400)..second];
+        assert!(
+            preamble.contains("queue_filter.set(String::new());"),
+            "the Clear filters button is not clearing the queue filter: {preamble}"
+        );
+    }
+
+    /// `filters_active` decides which empty-state message renders and whether
+    /// the "Clear filters" button appears. A queue-only filter must count.
+    #[test]
+    fn filters_active_includes_the_queue_filter() {
+        let body = list_body();
+        let marker = body
+            .find("let filters_active = ")
+            .expect("filters_active expression is in the list body");
+        let end = body[marker..]
+            .find(';')
+            .expect("filters_active expression closes");
+        let expr = &body[marker..marker + end];
+        assert!(
+            expr.contains("queue_filter.read().is_empty()"),
+            "filters_active no longer reads the queue filter: {expr}"
+        );
     }
 }

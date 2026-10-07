@@ -250,6 +250,11 @@ pub fn ImportCard(
     on_change: EventHandler<()>,
 ) -> Element {
     let is_admin = crate::pages::settings::use_is_admin();
+    // MAPPS-989: the server's `release_lock` route is `RequireManager`
+    // (super_admin/admin/manager), not `RequireAdmin`, so the Release
+    // button's gate must match that floor rather than `is_admin`, which
+    // would wrongly exclude `manager`.
+    let can_manage = crate::hooks::use_auth().read().can_manage();
     let can_mutate = crate::hooks::use_can_mutate();
     let navigator = use_navigator();
     let mut busy = use_signal(|| false);
@@ -300,6 +305,7 @@ pub fn ImportCard(
         _ => "Imported",
     };
     let disabled = busy() || !can_mutate;
+    let release_disabled = release_lock_disabled(busy(), can_mutate, can_manage);
 
     let release = {
         let contact_id = contact_id.clone();
@@ -443,8 +449,9 @@ pub fn ImportCard(
                                             Button {
                                                 variant: ButtonVariant::Secondary,
                                                 size: ButtonSize::Small,
-                                                disabled,
+                                                disabled: release_disabled,
                                                 aria_label: format!("Release the lock on {label}"),
+                                                title: (!can_manage).then(|| "Only a manager or above can release a lock".to_string()),
                                                 onclick: move |_| confirm_release.set(Some(field.clone())),
                                                 "Release"
                                             }
@@ -549,6 +556,14 @@ pub fn release_message(field: &str, provider: &str) -> String {
         field_label(field),
         later_update(provider)
     )
+}
+
+/// MAPPS-989: mirrors the server's `RequireManager` floor on
+/// `DELETE /contacts/contacts/{id}/sync/locks/{field}`
+/// (`mokosh-server/src/modules/contact_sync/routes.rs`), which allows
+/// `super_admin`/`admin`/`manager`.
+fn release_lock_disabled(busy: bool, can_mutate: bool, can_manage: bool) -> bool {
+    busy || !can_mutate || !can_manage
 }
 
 /// What removal will do, stated before it happens (PSA-70 K).
@@ -678,6 +693,30 @@ mod tests {
         .unwrap();
         assert!(p.is_locked("title"));
         assert!(!p.is_locked("email"));
+    }
+
+    /// MAPPS-989: pins the Release button's disabled state at the server's
+    /// `RequireManager` floor, across a technician session (no access) and a
+    /// manager session (full access).
+    #[test]
+    fn technician_session_cannot_release_a_lock() {
+        assert!(
+            release_lock_disabled(false, true, false),
+            "a technician must not be able to release a lock"
+        );
+    }
+
+    #[test]
+    fn manager_session_can_release_a_lock() {
+        assert!(
+            !release_lock_disabled(false, true, true),
+            "a manager must be able to release a lock"
+        );
+    }
+
+    #[test]
+    fn offline_blocks_even_a_manager() {
+        assert!(release_lock_disabled(false, false, true));
     }
 
     /// Removal is admin only, asks for a reason, and sends a typed body.

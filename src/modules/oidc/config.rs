@@ -24,12 +24,14 @@ pub struct OidcConfig {
     /// trailing slash.
     pub hub_base_url: &'static str,
     /// MAPPS-453: base URL of the documentation subdomain (e.g.
-    /// `https://docs.n.niceguyit.biz`), runtime-injected via
+    /// `https://docs.a8n.systems`), runtime-injected via
     /// `window.__MOKOSH_CONFIG__.docs_base_url` (`MOKOSH_DOCS_BASE_URL` on
     /// both the container and desktop; MAPPS-831 renamed the container and
-    /// compile-time vars from `MOKOSH_DOCS_URL` to match). Empty when
-    /// unconfigured, which hides the Documentation menu entry and the help
-    /// links. No trailing slash.
+    /// compile-time vars from `MOKOSH_DOCS_URL` to match), or (MAPPS-999)
+    /// derived as the `docs.` subdomain of the `msp.<tld>` host's apex,
+    /// matching the `hub_base_url` derivation. Empty when neither resolves,
+    /// which hides the Documentation menu entry and the help links. No
+    /// trailing slash.
     pub docs_base_url: &'static str,
 }
 
@@ -58,9 +60,10 @@ impl OidcConfig {
                 None => "http://localhost:4400",
             },
             // MAPPS-453: empty by default. Set via MOKOSH_DOCS_BASE_URL /
-            // window.__MOKOSH_CONFIG__.docs_base_url; unset means no docs
-            // subdomain, so the menu entry and help links stay hidden rather
-            // than pointing somewhere wrong.
+            // window.__MOKOSH_CONFIG__.docs_base_url, or derived at runtime
+            // from the `msp.<tld>` host (MAPPS-999, see `resolve`); unset
+            // and unresolved means no docs subdomain, so the menu entry and
+            // help links stay hidden rather than pointing somewhere wrong.
             docs_base_url: match option_env!("MOKOSH_DOCS_BASE_URL") {
                 Some(s) => s,
                 None => "",
@@ -75,7 +78,8 @@ impl OidcConfig {
     ///      rebuilding the image.
     ///   2. Host-prefix derivation for the canonical `msp.<tld>`
     ///      deploys: issuer `msp.<tld>` → `https://api.msp.<tld>`,
-    ///      hub `msp.<tld>` → `https://<tld>` (Bunyip apex).
+    ///      hub `msp.<tld>` → `https://<tld>` (Bunyip apex), docs
+    ///      `msp.<tld>` → `https://docs.<tld>` (MAPPS-999).
     ///   3. Compile-time `option_env!` defaults baked into the binary
     ///      (the `Self::from_env()` baseline).
     ///
@@ -162,9 +166,14 @@ impl OidcConfig {
             cfg.hub_base_url = Box::leak(format!("https://{rest}").into_boxed_str());
         }
 
-        // MAPPS-453: docs subdomain is injection/env only (no host derivation).
+        // MAPPS-999: docs subdomain, in the same priority order as hub_base_url
+        // above: injected value first, then derived as `docs.<tld>` from the
+        // `msp.<tld>` host's apex, so the link follows the deployment's base
+        // domain instead of a hardcoded host.
         if let Some(docs) = crate::modules::runtime_config::get("docs_base_url") {
             cfg.docs_base_url = Box::leak(docs.into_boxed_str());
+        } else if let Some(rest) = host_rest.as_deref() {
+            cfg.docs_base_url = Box::leak(derive_docs_base_url(rest).into_boxed_str());
         }
         // name the missing variable when nothing sets it, so an
         // operator following the release runbook sees a hint next to
@@ -177,7 +186,9 @@ impl OidcConfig {
         if !cfg.has_docs() {
             tracing::warn!(
                 "Documentation URL is not configured; the Documentation menu \
-                 entry and the footer link render nothing. Set \
+                 entry and the footer link render nothing. On a `msp.<tld>` \
+                 host this resolves automatically to `https://docs.<tld>`; \
+                 elsewhere (including the desktop build), set \
                  `window.__MOKOSH_CONFIG__.docs_base_url` at deploy time (via \
                  `MOKOSH_DOCS_BASE_URL` on the mokosh-apps container, per \
                  `oci-build/entrypoint.sh`) or `MOKOSH_DOCS_URL` at build \
@@ -267,9 +278,33 @@ impl OidcConfig {
     }
 }
 
+/// MAPPS-999: the `docs.<tld>` URL for a deployment's base domain `tld`
+/// (the apex left after stripping the `msp.` prefix from the deployment's
+/// host, e.g. `a8n.systems`). Split out of [`OidcConfig::resolve`] so the
+/// formula is unit-testable without a browser `window` to read
+/// `platform::location::host()` from.
+fn derive_docs_base_url(tld: &str) -> String {
+    format!("https://docs.{tld}")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::OidcConfig;
+    use super::{derive_docs_base_url, OidcConfig};
+
+    /// Acceptance: with the base domain `a8n.systems`, the documentation
+    /// link renders as `https://docs.a8n.systems`, and a different base
+    /// domain carries through unchanged.
+    #[test]
+    fn derive_docs_base_url_follows_the_deployments_base_domain() {
+        assert_eq!(
+            derive_docs_base_url("a8n.systems"),
+            "https://docs.a8n.systems"
+        );
+        assert_eq!(
+            derive_docs_base_url("psa.systems"),
+            "https://docs.psa.systems"
+        );
+    }
 
     /// MAPPS-822: the compile-time default (no `MOKOSH_OIDC_CLIENT_ID`
     /// baked in) is unconfigured, not the old nil-UUID placeholder, so a

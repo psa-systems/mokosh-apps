@@ -185,6 +185,58 @@ fn contact_sort_query(
 /// that `CompanyRow` keys its badge variant on. Covers every variant of
 /// `mokosh_types::contacts::CompanyType`; unknown values fall through
 /// unchanged so future variants don't disappear.
+/// Render an [`Address`] as the visible lines of a standard US mailing
+/// address: street line 1, street line 2, `city, state postal_code`, and
+/// country. Each line is skipped when empty; separators within the
+/// city/state/postal line collapse so a city alone or `city, state` without
+/// a postal both read cleanly. `country` is omitted when empty or `US`, so a
+/// US address stays short and foreign addresses still identify themselves.
+///
+/// Returns an empty vec when every field is empty; callers hide the whole
+/// block in that case (matching the pre-MAPPS-994 `!address_parts.is_empty()`
+/// guard).
+fn format_mailing_address(address: &Address) -> Vec<String> {
+    let non_empty = |o: &Option<String>| -> Option<String> {
+        o.as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(line1) = non_empty(&address.line1) {
+        lines.push(line1);
+    }
+    if let Some(line2) = non_empty(&address.line2) {
+        lines.push(line2);
+    }
+
+    let city = non_empty(&address.city);
+    let state = non_empty(&address.state);
+    let postal = non_empty(&address.postal_code);
+    let csp = match (city, state, postal) {
+        (Some(c), Some(s), Some(p)) => Some(format!("{c}, {s} {p}")),
+        (Some(c), Some(s), None) => Some(format!("{c}, {s}")),
+        (Some(c), None, Some(p)) => Some(format!("{c} {p}")),
+        (Some(c), None, None) => Some(c),
+        (None, Some(s), Some(p)) => Some(format!("{s} {p}")),
+        (None, Some(s), None) => Some(s),
+        (None, None, Some(p)) => Some(p),
+        (None, None, None) => None,
+    };
+    if let Some(line) = csp {
+        lines.push(line);
+    }
+
+    if let Some(country) = non_empty(&address.country) {
+        if !country.eq_ignore_ascii_case("US") {
+            lines.push(country);
+        }
+    }
+
+    lines
+}
+
 fn humanize_company_type(raw: &str) -> String {
     match raw {
         "client" => "Client".to_string(),
@@ -224,39 +276,9 @@ struct RemoteCompany {
 /// changed the rules: the dialog kept warning about projects, appointments and
 /// sub-companies long after those started unlinking instead of blocking.
 ///
-/// MAPPS-888: this mirrors mokosh-server's `CompanyDeletionPreview`
-/// (`src/modules/contacts/service.rs`), which is NOT part of the shared
-/// `mokosh-types` crate this app already depends on; it lives in the
-/// server's own binary crate. Moving it into `mokosh-types` is therefore a
-/// change to the mokosh-server repo, out of scope for a mokosh-apps PR;
-/// tracked as MAPPS-891.
-#[derive(Clone, Debug, Default, Deserialize)]
-struct DeletionPreview {
-    #[serde(default)]
-    can_delete: bool,
-    /// Refused for what the company IS (the tenant's own company, PMS-919)
-    /// rather than for what references it, so `blocking` is empty and the
-    /// delete still fails.
-    #[serde(default)]
-    is_own_company: bool,
-    #[serde(default)]
-    blocking: Vec<DeletionRecords>,
-    #[serde(default)]
-    unlinked: Vec<DeletionRecords>,
-    #[serde(default)]
-    removed: Vec<DeletionRecords>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-struct DeletionRecords {
-    label: String,
-    count: i64,
-    /// PMS-920: these exist to be KEPT. Telling somebody to clear their
-    /// invoices to tidy a client list destroys the record the refusal is
-    /// protecting, so the two read differently.
-    #[serde(default)]
-    retained: bool,
-}
+/// The wire type lives in `mokosh_types::contacts` (see MAPPS-891 /
+/// mokosh-server #942), so the server and this client share one definition.
+use mokosh_types::contacts::{CompanyDeletionPreview as DeletionPreview, DeletionRecords};
 
 /// Server-side paginated envelope (`PaginatedResponse<CompanyResponse>`).
 #[derive(Clone, Debug, Deserialize)]
@@ -380,6 +402,7 @@ struct CompanyFormBody {
     industry: Option<String>,
     website: Option<String>,
     phone: Option<String>,
+    fax: Option<String>,
     address: Address,
     /// MAPPS-614: always a string, never null, which is why this is a `String`
     /// where the DTO has `Option<String>`. See `clearable_string`.
@@ -946,6 +969,7 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
                     industry: payload.industry.clone().unwrap_or_default(),
                     website: payload.website.clone().unwrap_or_default(),
                     phone: payload.phone.clone().unwrap_or_default(),
+                    fax: payload.fax.clone().unwrap_or_default(),
                     address_line1: payload.address.line1.clone().unwrap_or_default(),
                     address_line2: payload.address.line2.clone().unwrap_or_default(),
                     address_city: payload.address.city.clone().unwrap_or_default(),
@@ -980,6 +1004,8 @@ struct CompanyEditPayload {
     #[serde(default)]
     phone: Option<String>,
     #[serde(default)]
+    fax: Option<String>,
+    #[serde(default)]
     address: Address,
     // MAPPS-614 / PMS-952: the free-text note, held and rendered as Markdown.
     #[serde(default)]
@@ -994,6 +1020,7 @@ struct CompanyFormValues {
     industry: String,
     website: String,
     phone: String,
+    fax: String,
     address_line1: String,
     address_line2: String,
     address_city: String,
@@ -1062,6 +1089,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         .unwrap_or_default();
     let mut website = use_signal(|| initial.website.clone());
     let phone = use_signal(|| initial.phone.clone());
+    let fax = use_signal(|| initial.fax.clone());
     let line1 = use_signal(|| initial.address_line1.clone());
     let line2 = use_signal(|| initial.address_line2.clone());
     let city = use_signal(|| initial.address_city.clone());
@@ -1078,6 +1106,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let mut status_err = use_signal(String::new);
     let mut website_err = use_signal(String::new);
     let mut phone_err = use_signal(String::new);
+    let mut fax_err = use_signal(String::new);
     let mut postal_err = use_signal(String::new);
     // MAPPS-480: advisory note under the Website field carrying the background
     // probe's state, and the value that probe was last fired for so tabbing
@@ -1113,6 +1142,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             || *industry.read() != initial_for_dirty.industry
             || *website.read() != initial_for_dirty.website
             || *phone.read() != initial_for_dirty.phone
+            || *fax.read() != initial_for_dirty.fax
             || *line1.read() != initial_for_dirty.address_line1
             || *line2.read() != initial_for_dirty.address_line2
             || *city.read() != initial_for_dirty.address_city
@@ -1272,6 +1302,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         status_err.set(String::new());
         website_err.set(String::new());
         phone_err.set(String::new());
+        fax_err.set(String::new());
         postal_err.set(String::new());
         line1_err.set(String::new());
         line2_err.set(String::new());
@@ -1312,6 +1343,11 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             phone_err.set(msg.clone());
             guard.note_invalid(Some("phone"));
         }
+        let fax_res = validate_phone_field(&fax.read(), "Fax");
+        if let Err(msg) = &fax_res {
+            fax_err.set(msg.clone());
+            guard.note_invalid(Some("fax"));
+        }
         let postal_res = validate_postal_field(&postal.read());
         if let Err(msg) = &postal_res {
             postal_err.set(msg.clone());
@@ -1339,6 +1375,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         let status_value = status_res.expect("status validated above");
         let website_value = website_res.expect("website validated above");
         let phone_value = phone_res.expect("phone validated above");
+        let fax_value = fax_res.expect("fax validated above");
         let postal_value = postal_res.expect("postal validated above");
         // PMS-581: US-only. A blank country defaults to "US"; a preserved
         // legacy value passes through unchanged.
@@ -1358,6 +1395,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             industry: optional_string(&industry.read()),
             website: website_value,
             phone: phone_value,
+            fax: fax_value,
             address: Address {
                 line1: optional_string(&line1.read()),
                 line2: optional_string(&line2.read()),
@@ -1442,6 +1480,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                                     "name" => name_err.set(fe.message.clone()),
                                     "website" => website_err.set(fe.message.clone()),
                                     "phone" => phone_err.set(fe.message.clone()),
+                                    "fax" => fax_err.set(fe.message.clone()),
                                     "postal_code" | "address.postal_code" => {
                                         postal_err.set(fe.message.clone())
                                     }
@@ -1546,6 +1585,14 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         value: phone.read().clone(),
                         error: phone_err(),
                         oninput: clear_on_edit(phone, phone_err),
+                    }
+                    crate::components::Input {
+                        name: "fax",
+                        label: "Fax",
+                        placeholder: "(555) 555-5555",
+                        value: fax.read().clone(),
+                        error: fax_err(),
+                        oninput: clear_on_edit(fax, fax_err),
                     }
                 }
 
@@ -2631,18 +2678,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 }
             },
             Some(Some(company)) => {
-                let address_parts: Vec<String> = [
-                    company.address.line1.clone(),
-                    company.address.line2.clone(),
-                    company.address.city.clone(),
-                    company.address.state.clone(),
-                    company.address.postal_code.clone(),
-                    company.address.country.clone(),
-                ]
-                .into_iter()
-                .flatten()
-                .filter(|s| !s.is_empty())
-                .collect();
+                let address_lines = format_mailing_address(&company.address);
                 let type_label = humanize_company_type(&company.company_type);
                 let is_archived = company.status == "inactive";
                 let status_label = match company.status.as_str() {
@@ -2655,6 +2691,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 };
                 let website = company.website.clone();
                 let phone = company.phone.clone();
+                let fax = company.fax.clone();
                 let industry = company.industry.clone();
                 let am_name = company.account_manager_name.clone();
                 // MAPPS-644: the billing contact's row, once its read lands.
@@ -2664,8 +2701,8 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 let contact_count = company.contact_count.unwrap_or(0).max(0);
                 let site_count = company.site_count.unwrap_or(0).max(0);
                 rsx! {
-                    div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
-                        div { class: "lg:col-span-2 space-y-6",
+                    div { class: "grid grid-cols-1 @5xl:grid-cols-3 gap-6",
+                        div { class: "@5xl:col-span-2 space-y-6",
                             // Contacts
                             CompanyContactsCard {
                                 company_id: company_id_str.clone(),
@@ -2816,6 +2853,14 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                             }
                                         }
                                     }
+                                    if let Some(fax) = fax {
+                                        if !fax.is_empty() {
+                                            div { class: "flex justify-between",
+                                                dt { class: "text-sm text-muted", "Fax" }
+                                                dd { class: "text-sm", {format_phone(&fax)} }
+                                            }
+                                        }
+                                    }
                                     if let Some(website) = website {
                                         if !website.is_empty() {
                                             div { class: "flex justify-between",
@@ -2903,11 +2948,36 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                             }
                                         }
                                     }
-                                    if !address_parts.is_empty() {
+                                    if !address_lines.is_empty() {
                                         div {
-                                            dt { class: "text-sm text-muted mb-1", "Address" }
-                                            dd { class: "text-sm space-y-0.5",
-                                                for line in address_parts.iter() {
+                                            dt { class: "flex items-center justify-between gap-2 text-sm text-muted mb-1",
+                                                span { "Address" }
+                                                {
+                                                    let joined = address_lines.join("\n");
+                                                    rsx! {
+                                                        Button {
+                                                            variant: ButtonVariant::Secondary,
+                                                            size: ButtonSize::Small,
+                                                            onclick: move |_| {
+                                                                let text = joined.clone();
+                                                                #[cfg(target_arch = "wasm32")]
+                                                                if let Some(win) = web_sys::window() {
+                                                                    let _ = win.navigator().clipboard().write_text(&text);
+                                                                    crate::hooks::toast::push_toast(
+                                                                        crate::components::AlertType::Success,
+                                                                        "Address copied to clipboard.".to_string(),
+                                                                    );
+                                                                }
+                                                                #[cfg(not(target_arch = "wasm32"))]
+                                                                let _ = text;
+                                                            },
+                                                            "Copy"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            dd { class: "text-sm text-content space-y-0.5",
+                                                for line in address_lines.iter() {
                                                     p { "{line}" }
                                                 }
                                             }
@@ -2975,6 +3045,8 @@ struct CompanyDetail {
     website: Option<String>,
     #[serde(default)]
     phone: Option<String>,
+    #[serde(default)]
+    fax: Option<String>,
     #[serde(default)]
     address: Address,
     #[serde(default)]
@@ -3831,12 +3903,20 @@ fn EditPortalRolesButton(
                         onclick: move |_| open.set(false),
                         "Cancel"
                     }
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        disabled: saving(),
-                        loading: saving(),
-                        onclick: submit,
-                        "Save"
+                    {
+                        let no_roles_configured = all_roles.is_empty();
+                        let disabled_title: Option<String> = no_roles_configured
+                            .then(|| "Create a portal role in Settings before assigning any.".to_string());
+                        rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                disabled: saving() || no_roles_configured,
+                                loading: saving(),
+                                onclick: submit,
+                                title: disabled_title,
+                                "Save"
+                            }
+                        }
                     }
                 },
                 div { class: "space-y-4",
@@ -7703,8 +7783,8 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                     });
                 };
                 rsx! {
-                    div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
-                        div { class: "lg:col-span-2 space-y-6",
+                    div { class: "grid grid-cols-1 @5xl:grid-cols-3 gap-6",
+                        div { class: "@5xl:col-span-2 space-y-6",
                             ContactTicketsCard { tickets_resource: tickets }
                             // MAPPS-568: beside Recent Tickets, because the two
                             // answer different questions - which tickets exist,
@@ -8794,12 +8874,26 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                             onclick: move |_| modal_open.set(false),
                             "Cancel"
                         }
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            disabled: !can_mutate || *mutating.read(),
-                            loading: *mutating.read(),
-                            onclick: submit_grant,
-                            if is_portal_user { "Update roles" } else { "Send invitation" }
+                        {
+                            let no_roles_configured = roles_fetch_error.is_none() && roles.is_empty();
+                            let disabled_title: Option<String> = no_roles_configured.then(|| {
+                                if is_portal_user {
+                                    "Create a portal role in Settings before assigning any."
+                                } else {
+                                    "Create a portal role in Settings before inviting a contact."
+                                }
+                                .to_string()
+                            });
+                            rsx! {
+                                Button {
+                                    variant: ButtonVariant::Primary,
+                                    disabled: !can_mutate || *mutating.read() || no_roles_configured,
+                                    loading: *mutating.read(),
+                                    onclick: submit_grant,
+                                    title: disabled_title,
+                                    if is_portal_user { "Update roles" } else { "Send invitation" }
+                                }
+                            }
                         }
                     },
                     div { class: "space-y-4",
@@ -8928,6 +9022,132 @@ mod company_type_tests {
     #[test]
     fn unknown_tag_falls_through_unchanged() {
         assert_eq!(humanize_company_type("franchisee"), "franchisee");
+    }
+}
+
+#[cfg(test)]
+mod mailing_address_tests {
+    use super::format_mailing_address;
+    use crate::modules::contacts::Address;
+
+    fn address(
+        line1: Option<&str>,
+        line2: Option<&str>,
+        city: Option<&str>,
+        state: Option<&str>,
+        postal: Option<&str>,
+        country: Option<&str>,
+    ) -> Address {
+        Address {
+            line1: line1.map(str::to_string),
+            line2: line2.map(str::to_string),
+            city: city.map(str::to_string),
+            state: state.map(str::to_string),
+            postal_code: postal.map(str::to_string),
+            country: country.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_fully_populated_us_address_renders_three_lines() {
+        let addr = address(
+            Some("120 Main St"),
+            Some("Suite 200"),
+            Some("Fairview"),
+            Some("OH"),
+            Some("43990"),
+            Some("US"),
+        );
+        assert_eq!(
+            format_mailing_address(&addr),
+            vec![
+                "120 Main St".to_string(),
+                "Suite 200".to_string(),
+                "Fairview, OH 43990".to_string(),
+            ],
+            "country `US` is implicit on a US-shaped block"
+        );
+    }
+
+    #[test]
+    fn a_missing_second_line_collapses_without_a_blank_row() {
+        let addr = address(
+            Some("120 Main St"),
+            None,
+            Some("Fairview"),
+            Some("OH"),
+            Some("43990"),
+            Some("US"),
+        );
+        assert_eq!(
+            format_mailing_address(&addr),
+            vec!["120 Main St".to_string(), "Fairview, OH 43990".to_string(),]
+        );
+    }
+
+    #[test]
+    fn city_state_without_a_postal_drops_the_trailing_space() {
+        let addr = address(
+            Some("120 Main St"),
+            None,
+            Some("Fairview"),
+            Some("OH"),
+            None,
+            None,
+        );
+        assert_eq!(
+            format_mailing_address(&addr),
+            vec!["120 Main St".to_string(), "Fairview, OH".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_city_alone_stays_one_line() {
+        let addr = address(None, None, Some("Fairview"), None, None, None);
+        assert_eq!(format_mailing_address(&addr), vec!["Fairview".to_string()]);
+    }
+
+    #[test]
+    fn a_non_us_country_renders_a_fourth_line() {
+        let addr = address(
+            Some("1 King St W"),
+            None,
+            Some("Toronto"),
+            Some("ON"),
+            Some("M5H 1A1"),
+            Some("CA"),
+        );
+        assert_eq!(
+            format_mailing_address(&addr),
+            vec![
+                "1 King St W".to_string(),
+                "Toronto, ON M5H 1A1".to_string(),
+                "CA".to_string(),
+            ],
+            "a non-US country identifies itself under the city/state line"
+        );
+    }
+
+    #[test]
+    fn an_empty_address_returns_no_lines_so_the_block_hides() {
+        let addr = Address::default();
+        assert!(format_mailing_address(&addr).is_empty());
+    }
+
+    #[test]
+    fn whitespace_only_fields_count_as_empty() {
+        let addr = address(Some("   "), None, Some(""), None, None, None);
+        assert!(format_mailing_address(&addr).is_empty());
+    }
+
+    #[test]
+    fn country_matches_us_case_insensitively() {
+        let addr = address(Some("120 Main St"), None, None, None, None, Some("us"));
+        assert_eq!(
+            format_mailing_address(&addr),
+            vec!["120 Main St".to_string()],
+            "a lowercase `us` is still implicit"
+        );
     }
 }
 
@@ -10591,6 +10811,7 @@ mod shared_dto_tests {
             industry,
             website,
             phone,
+            fax,
             address: address.unwrap_or_default(),
             // MAPPS-614: sent as a string so an emptied note clears the record.
             notes: notes.unwrap_or_default(),
@@ -10598,14 +10819,13 @@ mod shared_dto_tests {
         // The "Create this company" recovery on contact detail (MAPPS-484),
         // which has a typed name and nothing else.
         let _ = CreateCompanyFromNameBody { name };
-        // Deliberately not sent by this form: the company hierarchy, the fax
-        // and billing address, the tax and account identifiers, the account
+        // Deliberately not sent by this form: the company hierarchy and
+        // billing address, the tax and account identifiers, the account
         // manager, SLA and payment terms all belong to surfaces this page does
         // not own, `custom_fields` and `tags` have no editor anywhere yet, and
         // `portal_enabled` is managed per contact from the Portal Access card.
         let _ = (
             parent_company_id,
-            fax,
             billing_address,
             tax_id,
             account_number,
@@ -10657,13 +10877,14 @@ mod shared_dto_tests {
             company_type: company_type.unwrap_or_default(),
             status: status.unwrap_or_default(),
             industry,
-            // PMS-1392: `website` / `phone` grew a second `Option` layer so a
-            // PATCH can distinguish "leave alone" (`None`) from "clear"
-            // (`Some(None)`) from "set" (`Some(Some(_))`). This page's PUT
-            // always sends a value for both, so both layers collapse the same
-            // way `name` etc. do above.
+            // PMS-1392: `website` / `phone` / `fax` grew a second `Option`
+            // layer so a PATCH can distinguish "leave alone" (`None`) from
+            // "clear" (`Some(None)`) from "set" (`Some(Some(_))`). This page's
+            // PUT always sends a value for all three, so both layers collapse
+            // the same way `name` etc. do above.
             website: website.flatten(),
             phone: phone.flatten(),
+            fax: fax.flatten(),
             address: address.unwrap_or_default(),
             notes: notes.unwrap_or_default(),
         };
@@ -10695,7 +10916,6 @@ mod shared_dto_tests {
         // editor on this page either; the contract default is set from billing.
         let _ = (
             parent_company_id,
-            fax,
             billing_address,
             tax_id,
             account_number,
@@ -10708,6 +10928,54 @@ mod shared_dto_tests {
             custom_fields,
             tags,
         );
+    }
+
+    /// MAPPS-988: company `fax` set, clear and display, the same coverage
+    /// `phone` has above. `validate_phone_field` is shared with Phone (it
+    /// takes the field's label only for its error message), and
+    /// `CompanyFormBody` has no `#[serde(skip_serializing_if)]` on `fax`, so a
+    /// cleared field always serializes as `"fax": null` per PMS-1392's
+    /// double-option contract, never an omitted key or an empty string.
+    #[test]
+    fn company_fax_sets_clears_and_serializes_like_phone() {
+        assert_eq!(validate_phone_field("  ", "Fax").unwrap(), None);
+        assert_eq!(
+            validate_phone_field("+1 (415) 555-1234", "Fax").unwrap(),
+            Some("+14155551234".to_string())
+        );
+        assert!(validate_phone_field("not-a-fax", "Fax").is_err());
+
+        let cleared = CompanyFormBody {
+            name: "Acme".to_string(),
+            company_type: CompanyType::Client,
+            status: CompanyStatus::Active,
+            industry: None,
+            website: None,
+            phone: None,
+            fax: None,
+            address: Address::default(),
+            notes: String::new(),
+        };
+        let value = serde_json::to_value(&cleared).expect("CompanyFormBody serializes");
+        assert!(value["fax"].is_null());
+
+        let set = CompanyFormBody {
+            fax: Some("+14155551234".to_string()),
+            ..cleared
+        };
+        let value = serde_json::to_value(&set).expect("CompanyFormBody serializes");
+        assert_eq!(value["fax"], serde_json::json!("+14155551234"));
+
+        // Display: `CompanyDetail` (the detail page's read site) carries
+        // `fax` straight off the wire, so a value set via the API is never
+        // unreadable through the SPA (the ticket's reported runtime
+        // consequence).
+        let detail: CompanyDetail = serde_json::from_value(serde_json::json!({
+            "name": "Acme",
+            "fax": "+14155551234",
+        }))
+        .expect("CompanyDetail decodes a fax field");
+        assert_eq!(detail.fax, Some("+14155551234".to_string()));
     }
 
     #[allow(dead_code)]
@@ -10758,6 +11026,7 @@ mod shared_dto_tests {
             industry: industry.clone(),
             website: website.clone(),
             phone: phone.clone(),
+            fax: fax.clone(),
             address: address.clone(),
             notes: notes.clone(),
         };
@@ -10769,6 +11038,7 @@ mod shared_dto_tests {
             industry,
             website,
             phone,
+            fax,
             address,
             account_manager_name,
             notes,
@@ -10796,7 +11066,6 @@ mod shared_dto_tests {
             sla_id,
             default_contract_id,
             tags,
-            fax,
             created_at,
             updated_at,
         );
@@ -11398,6 +11667,55 @@ mod mapps882_name_lock_marker_tests {
         assert!(
             slot.contains("LockMarker { locked: name_locked }"),
             "the header title_slot no longer renders the name's LockMarker"
+        );
+    }
+}
+
+#[cfg(test)]
+mod portal_role_modal_tests {
+    const SRC: &str = include_str!("contacts.rs");
+
+    /// Both portal-role modals disable their primary action when the role
+    /// catalog is empty: the modal body already tells the operator to
+    /// create one in Settings, and keeping the button clickable surfaces
+    /// a confusing "Pick at least one role" validation on a form that
+    /// cannot pick anything. Encoded as a source-scan over the two
+    /// `disabled:` conditions, so a future refactor cannot regress one.
+    #[test]
+    fn both_role_pickers_disable_submit_when_no_roles_configured() {
+        let save_marker = r#"disabled: saving() || no_roles_configured,"#;
+        assert!(
+            SRC.contains(save_marker),
+            "the \"Save\" button on the role-editor modal no longer disables \
+             on an empty role catalog ({save_marker})",
+        );
+
+        let grant_marker = r#"disabled: !can_mutate || *mutating.read() || no_roles_configured,"#;
+        assert!(
+            SRC.contains(grant_marker),
+            "the \"Send invitation\" / \"Update roles\" button on the \
+             assign-portal-roles modal no longer disables on an empty role \
+             catalog ({grant_marker})",
+        );
+    }
+
+    /// The `no_roles_configured` flag is derived from the SAME list the
+    /// empty-state copy renders from. If a future edit drifts one, the
+    /// button and the body disagree about whether anything can be
+    /// picked, which is exactly the shape this fix closed.
+    #[test]
+    fn no_roles_configured_reads_the_rendered_role_list() {
+        assert!(
+            SRC.contains("let no_roles_configured = all_roles.is_empty();"),
+            "the role-editor derives `no_roles_configured` from a different \
+             list than the one it renders",
+        );
+        assert!(
+            SRC.contains(
+                "let no_roles_configured = roles_fetch_error.is_none() && roles.is_empty();"
+            ),
+            "the assign-portal-roles modal derives `no_roles_configured` \
+             from a different list than the one it renders",
         );
     }
 }

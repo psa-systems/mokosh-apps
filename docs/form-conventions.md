@@ -186,54 +186,53 @@ place to start typing.
 
 ### Company picker - every call site uses `CompanyPicker`
 
-Ticket, Contact, Asset, Contract (create), Project, Invoice, the Record-Payment
-form, and the KB article form's company scope all use `CompanyPicker`. The Contract **edit** form keeps a disabled `Select`
-because a contract's company is immutable after creation (not a drift).
+`assets.rs`, `billing.rs`, `contacts.rs`, `contracts.rs`, `knowledge_base.rs`,
+`projects.rs`, `quotes.rs`, `request_links.rs`, `settings.rs`, `statements.rs`,
+and `tickets.rs` all use `CompanyPicker`. The Contract **edit** form keeps a
+disabled `Select` because a contract's company is immutable after creation
+(not a drift).
 
 `CompanyPicker` props: `value` (display name), `selected_id: Option<String>`,
-`required: bool`, `allow_inline_create: bool` (the "+ Create new company"
-affordance, PMS-352), `show_create_button: bool` (MAPPS-484, the same create
-modal on a "+ New company" button beside the input, so it is reachable without
-opening the dropdown; needs `allow_inline_create`, which owns the modal),
-`onselect: (id, name)`, `onclear`.
+`required: bool`, `allow_inline_create: bool` (the dropdown's own "Create new
+company" row, PMS-352: a query that matches nothing offers to create a company
+under exactly what was typed), `onselect: (id, name)`, `onclear`.
 
-### The contact form's two company paths
+### The contact form's single company control
 
 The Contact form is the one form that can save a company name **without** a
-company (MAPPS-251 / PMS-402: a bare name and phone with no CRM record to point
-at). The two paths produce different data and are named for it (MAPPS-484):
+company (MAPPS-251 / PMS-402: a bare name and phone with no CRM record to
+point at). Since MAPPS-757 this is one search control, not a choice between
+controls (`src/pages/contacts.rs:7182-7193`):
 
-| Path | Control | Result |
-| --- | --- | --- |
-| Linked | `CompanyPicker`, including its "+ New company" button, reached from the "Add another company" button | A `contact_companies` row per link (PMS-806). The names appear under Companies. |
-| Typed | the "Enter a name without creating a company" text link under the list | `company_name` on the contact only. No `companies` row, no link. |
-
-Rules that follow from the split:
-
-- The only control on the form labelled like a create is the picker's, and it
-  creates. A label of the "+ Add Company" shape on the typed path is the defect
-  MAPPS-484 fixed, and `company_source_tests` in `src/pages/contacts.rs` fails
-  if it returns. Since MAPPS-481 the company block also carries an "Add another
-  company" button; "add" there means add another LINK, never create a record,
-  which is why the create wording stays on the picker's own button.
-- The typed path is the **no-linked-company** case, so it is offered only while
-  the list is empty, and linking the first company clears the typed value. The
-  server rejects a non-empty `companies` list alongside a non-empty
-  `company_name` with a 422.
-- Switching paths clears the other path's value, so exactly one company source
-  is ever submitted (the server rejects both together).
-- While the typed field holds a value, the form states the outcome in that
-  value: "Saved as a typed name. `<value>` will not appear under Companies."
-- **Any surface showing a company name says which of the two it is.** Link
-  colour is not a signal on its own: the contact detail page prints a muted
-  "not a company record" note under a typed name, and the contacts list appends
-  a muted "(typed)" in the company cell. A linked company shows neither.
+- Typing a name that matches an existing company and picking it links that
+  company: a `contact_companies` row per link (PMS-806, MAPPS-481: a contact
+  can link several companies, one of them primary once there are two). The
+  names appear under Companies.
+- The same box stays visible after a link is made, so linking another company
+  is just using it again; there is no separate "add another" control.
+- A query that matches nothing offers, via `allow_inline_create`, to create a
+  company under exactly what was typed and link it in one step.
+- A `company_name` typed on the contact before MAPPS-757 still displays, with
+  a note that it is "Typed name - not a company record" and a control to
+  remove it, but it cannot be edited or re-entered: linking a company is what
+  the search box does instead (`src/pages/contacts.rs:7253-7272`). Linking a
+  company clears this legacy value, and the server rejects a non-empty
+  `companies` list alongside a non-empty `company_name`.
+- **Any surface showing a company name says whether it is a link or a legacy
+  typed name.** The contact detail page prints a muted "not a company record"
+  note under a typed name, and the contacts list appends a muted "(typed)" in
+  the company cell. A linked company shows neither.
 - A typed name is recoverable: the contact detail page's "Create this company"
   POSTs `/contacts/companies` and then PUTs the contact's `company_id`. The
   server clears the stored freeform name when `company_id` is set, so the name
   becomes a link. Both calls report failure inline and log at `warn`; a created
   company with a failed link says the company exists and the contact still
   needs linking.
+
+A regression test, `the_company_control_is_one_search_box` in
+`src/pages/contacts.rs`, asserts there is exactly one `CompanyPicker` on the
+form and fails if any of the four retired labels for the old multi-control UI
+comes back.
 
 ### Known follow-up
 
@@ -402,6 +401,8 @@ Two layout rules every page follows, so cards neither touch nor sit twice as far
 - **`Card` headings use `title` / `subtitle`, never an inner `p-6`.** `Card` pads its own body (`p-6`, or `px-6 pb-6 pt-4` under a header), so a child that adds another `p-6` puts the content 48px from the edge and leaves an empty band above a hand-rolled heading. The heading comes from `title` and `subtitle` (PMS-765), and a control that belongs beside it goes in `actions`. A card whose body must sit flush, such as a full-bleed table, passes `padding: false` instead.
 
 The profile page is the reference: one `mx-auto w-full max-w-5xl space-y-6` column (the width `settings.rs` uses since MAPPS-257), with every card headed by `title` / `subtitle`.
+
+MAPPS-967 converted the other 22 cards that wrote their own heading and `scripts/check-card-headings.sh` keeps them converted: it fails an `h2` or `h3` in a card's heading slot, which is its first rendered element reached through any plain wrapper `div`. Four shapes legitimately keep a heading in the body and carry `// card-heading-allow: <reason>` on the line above it: a centred empty state whose icon comes first, a document preview whose heading is the invoice's or credit note's own title, a heading that is a focus target (`tabindex: "-1"` plus an `onmounted` that moves focus to it, neither of which a string prop can hold), and an empty-state message styled as a heading but read as prose.
 
 ## Modal vs full page
 

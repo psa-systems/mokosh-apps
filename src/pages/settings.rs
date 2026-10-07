@@ -32,9 +32,10 @@ use uuid::Uuid;
 
 use crate::components::{
     use_page_title, Badge, BadgeVariant, BannerTone, BreadcrumbItem, Breadcrumbs, Button,
-    ButtonVariant, Card, Checkbox, DataTable, ErrorBanner, FileField, IconSize, Input, PageHeader,
-    PlusIcon, SearchInput, Select, SelectOption, SettingFormModal, StatusBanner, Table, TableBody,
-    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, ThemePicker,
+    ButtonVariant, Card, Checkbox, ChevronDownIcon, DataTable, ErrorBanner, FileField, IconSize,
+    Input, PageHeader, PlusIcon, SearchInput, Select, SelectOption, SettingFormModal, StatusBanner,
+    Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    Textarea, ThemePicker,
 };
 use crate::utils::money::format_money_str;
 use crate::utils::Paginated;
@@ -244,6 +245,29 @@ enum SettingsGroupKey {
 }
 
 impl SettingsGroupKey {
+    /// The stable slug in this group's disclosure preference key (MAPPS-979).
+    ///
+    /// Deliberately not derived from [`Self::title`]: that is display copy and has
+    /// already changed once (MAPPS-426 widened "Data" to "Organization & Data"),
+    /// and a key derived from it would have silently collapsed every user's
+    /// expanded group on that rename. The route slug is the same reasoning the
+    /// `/settings/group/data` path follows.
+    fn pref_key(self) -> &'static str {
+        match self {
+            SettingsGroupKey::Personalization => "personalization",
+            SettingsGroupKey::ServiceTypes => "service_types",
+            SettingsGroupKey::Billing => "billing",
+            SettingsGroupKey::Tickets => "tickets",
+            SettingsGroupKey::Integrations => "integrations",
+            SettingsGroupKey::Data => "data",
+        }
+    }
+
+    /// This group's disclosure preference key.
+    fn advanced_pref(self) -> String {
+        format!("{PREF_ADVANCED_PREFIX}{}", self.pref_key())
+    }
+
     /// Heading on the index and the middle crumb in a leaf's breadcrumb.
     fn title(self) -> &'static str {
         match self {
@@ -364,7 +388,18 @@ struct SettingsSurface {
 
 /// localStorage key for the basic/advanced toggle (MAPPS-258). Defaults to
 /// basic (false) so casual users are not shown the advanced surfaces.
-const PREF_SHOW_ADVANCED: &str = "settings_show_advanced";
+/// Per-group disclosure state (MAPPS-979), keyed `settings_advanced_<group>`.
+///
+/// Replaces the single `settings_show_advanced`, whose whole problem was that its
+/// effect was on another page: David could not find Payment Gateways under
+/// Billing, and the fix was to walk back to the Settings index and turn on a
+/// switch. A toggle whose consequence is somewhere else is not discoverable, and
+/// the group page is where somebody is standing when they cannot find a setting.
+///
+/// The old key is left where it is rather than migrated. It is a browser
+/// preference: reading it would restore a global mode this build no longer has,
+/// and nothing is lost by a group starting collapsed.
+const PREF_ADVANCED_PREFIX: &str = "settings_advanced_";
 
 /// Single source of truth for every settings surface. Order within a group
 /// is the display order on the index, group landing, and search results.
@@ -495,7 +530,11 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         title: "Payment Gateways",
         description: "Connect and configure payment providers.",
         group: SettingsGroupKey::Billing,
-        advanced: true,
+        // MAPPS-979: basic. Taking payment is a billing setup step, not an
+        // expert one, and this entry being advanced is the specific thing that
+        // made David unable to find it on staging: he was on the Billing page,
+        // where it belongs, and it was not there.
+        advanced: false,
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -561,6 +600,17 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         route: Route::SettingsEmail {},
         title: "Email",
         description: "The SMTP server this deployment sends mail through. Test-send and verify without leaving the page.",
+        group: SettingsGroupKey::Integrations,
+        advanced: false,
+        visibility: SurfaceVisibility::StaffAdmin,
+    },
+    // MAPPS-971: the integrations page (server PMS-1310). Listed first in the
+    // group and not advanced: it is the overview the per-provider pages below
+    // are reached from.
+    SettingsSurface {
+        route: Route::SettingsIntegrations {},
+        title: "Integrations",
+        description: "What this organization delegates to other systems, and what each one is allowed to do.",
         group: SettingsGroupKey::Integrations,
         advanced: false,
         visibility: SurfaceVisibility::StaffAdmin,
@@ -779,6 +829,26 @@ impl SurfaceContext {
 
 /// Surfaces filed under `group`, honoring the basic/advanced filter
 /// AND the per-surface visibility check.
+/// How many of this group's surfaces are advanced and visible to this caller.
+///
+/// Drives the "Advanced (N)" label and, at zero, the absence of the whole
+/// disclosure row. Counted with the same visibility filter as the list, so a
+/// group whose only advanced surface is hidden from this caller shows no chevron
+/// rather than one that expands to nothing (MAPPS-979).
+fn advanced_count_in_group(group: SettingsGroupKey, ctx: SurfaceContext) -> usize {
+    SETTINGS_SURFACES
+        .iter()
+        .filter(|s| s.group == group && s.advanced && ctx.allows(s.visibility))
+        .count()
+}
+
+/// This group's surfaces, with the advanced ones included only when the group's
+/// own disclosure is open.
+///
+/// `show_advanced` used to mean the global mode. Since MAPPS-979 it means THIS
+/// group is expanded, which is why the index passes `false` for every group and
+/// the landing page passes its own state: the two callers now ask different
+/// questions of the same function.
 fn surfaces_in_group(
     group: SettingsGroupKey,
     show_advanced: bool,
@@ -798,25 +868,28 @@ pub fn SettingsHomePage() -> Element {
     // taxonomy plus a local search/advanced toggle, with no server fetch that an
     // outage could blank, so there is no unavailable state to render.
     let mut query = use_signal(String::new);
-    let mut show_advanced = use_signal(|| crate::utils::prefs::get_bool(PREF_SHOW_ADVANCED, false));
 
-    let adv = *show_advanced.read();
     let q = query.read().trim().to_lowercase();
     let ctx = SurfaceContext::snapshot();
 
     // Personalization renders as a direct leaf (it is not nested).
+    // MAPPS-979: the index lists BASIC surfaces only. Advanced ones are revealed
+    // on their own group's page, where the person looking for one is standing.
     let personalization: Vec<&SettingsSurface> =
-        surfaces_in_group(SettingsGroupKey::Personalization, adv, ctx).collect();
+        surfaces_in_group(SettingsGroupKey::Personalization, false, ctx).collect();
 
-    // A group card is shown only when the group has at least one visible
-    // surface in the current mode (so an all-advanced group like
-    // Integrations drops off the basic index instead of leading to an
-    // empty landing).
+    // A group card is shown when the group has at least one visible surface,
+    // advanced or not. It used to require a BASIC one, so that an all-advanced
+    // group dropped off the index rather than leading to a landing page that
+    // said "go back and turn on the toggle". MAPPS-979 removes that reason: the
+    // landing can now disclose its own advanced surfaces, so hiding the card
+    // would make them reachable only by search. No group is all-advanced today;
+    // this is so the next one that is does not vanish.
     let group_cards: Vec<(SettingsGroupKey, Route, &'static str, &'static str)> =
         SETTINGS_GROUP_ORDER
             .iter()
             .copied()
-            .filter(|g| surfaces_in_group(*g, adv, ctx).next().is_some())
+            .filter(|g| surfaces_in_group(*g, true, ctx).next().is_some())
             .filter_map(|g| {
                 g.landing()
                     .map(|route| (g, route, g.title(), g.description()))
@@ -830,7 +903,10 @@ pub fn SettingsHomePage() -> Element {
     } else {
         SETTINGS_SURFACES
             .iter()
-            .filter(|s| adv || !s.advanced)
+            // MAPPS-979: search reaches advanced surfaces unconditionally. It
+            // used to need the global toggle, which made the search box lie
+            // about what existed; somebody typing a setting's name has already
+            // told you which one they want.
             .filter(|s| ctx.allows(s.visibility))
             .filter(|s| {
                 s.title.to_lowercase().contains(&q) || s.description.to_lowercase().contains(&q)
@@ -857,19 +933,6 @@ pub fn SettingsHomePage() -> Element {
                     placeholder: "Search settings…".to_string(),
                     oninput: move |e: FormEvent| query.set(e.value()),
                 }
-            }
-            label { class: "flex shrink-0 items-center gap-2 text-sm text-content select-none",
-                input {
-                    r#type: "checkbox",
-                    class: "h-4 w-4 rounded border-line text-accent focus:ring-accent",
-                    checked: adv,
-                    onchange: move |_| {
-                        let next = !*show_advanced.read();
-                        show_advanced.set(next);
-                        crate::utils::prefs::set_bool(PREF_SHOW_ADVANCED, next);
-                    },
-                }
-                "Show advanced settings"
             }
         }
 
@@ -975,10 +1038,27 @@ fn SettingsGroupLanding(group: SettingsGroupKey) -> Element {
         color: group.color(),
         prominent: group.prominent(),
     });
-    let show_advanced = crate::utils::prefs::get_bool(PREF_SHOW_ADVANCED, false);
+    // MAPPS-979: this group's own disclosure, remembered per group. A signal so
+    // the chevron expands in place, seeded from the preference so a reload keeps
+    // it, and written back on every toggle.
+    let pref = group.advanced_pref();
+    let mut expanded = use_signal({
+        let pref = pref.clone();
+        move || crate::utils::prefs::get_bool(&pref, false)
+    });
+    let is_expanded = *expanded.read();
+
     let title = group.title();
     let ctx = SurfaceContext::snapshot();
-    let visible: Vec<&SettingsSurface> = surfaces_in_group(group, show_advanced, ctx).collect();
+    let basic: Vec<&SettingsSurface> = surfaces_in_group(group, false, ctx).collect();
+    let advanced_count = advanced_count_in_group(group, ctx);
+    let advanced: Vec<&SettingsSurface> = if is_expanded {
+        surfaces_in_group(group, true, ctx)
+            .filter(|s| s.advanced)
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     use_page_title(title.to_string());
     rsx! {
@@ -999,25 +1079,59 @@ fn SettingsGroupLanding(group: SettingsGroupKey) -> Element {
                 }
             },
         }
-        if visible.is_empty() {
-            Card {
-                div { class: "text-sm text-muted",
-                    "These settings are marked advanced. Turn on \"Show advanced settings\" on the "
-                    Link {
-                        to: Route::SettingsHome {},
-                        class: "font-medium text-accent hover:opacity-90",
-                        "Settings home"
-                    }
-                    " to view them."
+        // MAPPS-979: no "go back and turn on the toggle" notice any more. A group
+        // with only advanced surfaces shows an empty basic grid and its chevron,
+        // which is a page that works rather than a page that sends you away.
+        div { class: "{group_grid_class(group.prominent())}",
+            for surface in basic {
+                SettingsCard {
+                    to: surface.route.clone(),
+                    title: surface.title.to_string(),
+                    description: surface.description.to_string(),
                 }
             }
-        } else {
-            div { class: "{group_grid_class(group.prominent())}",
-                for surface in visible {
-                    SettingsCard {
-                        to: surface.route.clone(),
-                        title: surface.title.to_string(),
-                        description: surface.description.to_string(),
+        }
+
+        // The disclosure. Absent entirely when the group has no advanced
+        // surfaces, which is the difference between "there is more here" and "
+        // there is nothing behind this chevron".
+        if advanced_count > 0 {
+            div { class: "mt-6",
+                button {
+                    r#type: "button",
+                    class: "flex w-full items-center gap-2 rounded-md border border-line px-4 py-3 text-left text-sm font-medium text-content hover:bg-surface-2 focus:outline-none focus:ring-2 focus:ring-accent",
+                    "aria-expanded": if is_expanded { "true" } else { "false" },
+                    "data-testid": "settings-advanced-disclosure",
+                    onclick: {
+                        let pref = pref.clone();
+                        move |_| {
+                            let next = !*expanded.read();
+                            expanded.set(next);
+                            crate::utils::prefs::set_bool(&pref, next);
+                        }
+                    },
+                    // Rotated rather than swapped for a second icon: one glyph
+                    // that turns reads as the same control in two states.
+                    ChevronDownIcon {
+                        size: IconSize::Small,
+                        class: if is_expanded {
+                            "transition-transform motion-safe:duration-150".to_string()
+                        } else {
+                            "-rotate-90 transition-transform motion-safe:duration-150".to_string()
+                        },
+                    }
+                    "Advanced ({advanced_count})"
+                }
+
+                if is_expanded {
+                    div { class: "mt-4 {group_grid_class(group.prominent())}",
+                        for surface in advanced {
+                            SettingsCard {
+                                to: surface.route.clone(),
+                                title: surface.title.to_string(),
+                                description: surface.description.to_string(),
+                            }
+                        }
                     }
                 }
             }
@@ -1821,8 +1935,8 @@ fn OrganizationSettingsBody() -> Element {
             // organisation form below.
             if app_name_owned {
             Card {
+                title: "App name".to_string(),
                 div { class: "space-y-4 max-w-xl",
-                    h2 { class: "text-lg font-semibold text-content", "App name" }
                     if !app_name_error().is_empty() {
                         ErrorBanner { "{app_name_error()}" }
                     }
@@ -2268,11 +2382,9 @@ fn ExportPanel() -> Element {
 
     rsx! {
         Card {
+            title: "Export".to_string(),
+            subtitle: "Download a JSON snapshot of all of this tenant's data. The file contains your records. Store it somewhere safe.".to_string(),
             div { class: "space-y-3",
-                h3 { class: "text-base font-semibold text-content", "Export" }
-                p { class: "text-sm text-muted",
-                    "Download a JSON snapshot of all of this tenant's data. The file contains your records. Store it somewhere safe."
-                }
                 if !error.read().is_empty() {
                     ErrorBanner { "{error.read()}" }
                 }
@@ -2347,8 +2459,8 @@ fn ImportPanel(tenant_name: String) -> Element {
 
     rsx! {
         Card {
+            title: "Import".to_string(),
             div { class: "space-y-4",
-                h3 { class: "text-base font-semibold text-content", "Import" }
                 ErrorBanner {
                     strong { "This replaces all current data for this tenant." }
                     " Importing wipes every existing record and restores from the uploaded file. This cannot be undone. Export a fresh snapshot first."
@@ -2489,11 +2601,11 @@ fn SeedDemoPanel() -> Element {
 
     rsx! {
         Card {
+            title: "Load demo data".to_string(),
+            // Dynamic, so a `format!` rather than a literal, which is the shape
+            // MAPPS-966 used for the profile page's headings.
+            subtitle: format!("Populate this tenant with a small sample dataset (a company, two contacts, and a few tickets) so you can explore {brand}. This only loads into an empty tenant. It never overwrites existing data."),
             div { class: "space-y-3",
-                h3 { class: "text-base font-semibold text-content", "Load demo data" }
-                p { class: "text-sm text-muted",
-                    "Populate this tenant with a small sample dataset (a company, two contacts, and a few tickets) so you can explore {brand}. This only loads into an empty tenant. It never overwrites existing data."
-                }
                 if !error.read().is_empty() {
                     ErrorBanner { "{error.read()}" }
                 }
@@ -2573,11 +2685,11 @@ fn SettingsCard(
 
 // ============================================================================
 // Scheduling: standard due date (MAPPS-345 / PMS-345)
-// GET/PUT `/settings/scheduling/default_due_business_days`
+// GET `/settings/scheduling` (the category), PUT `/settings/scheduling/default_due_business_days`
 // ============================================================================
 
-/// Shape of the per-key tenant setting response. Only `value` is read; the
-/// server stores the business-day offset as a JSON integer.
+/// Shape of the per-key PUT response. Only `value` is read; the server stores
+/// the business-day offset as a JSON integer.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct SettingValueRow {
     #[serde(default)]
@@ -2586,7 +2698,7 @@ struct SettingValueRow {
 
 /// Read the whole number a per-key setting row stores.
 ///
-/// A missing row (404) is the unconfigured state and each caller handles it
+/// An unset key is the unconfigured state and each caller handles it
 /// separately. A row that exists holding something that is not a whole number
 /// is a stored-data fault nobody can see from the form, so it is logged before
 /// `default` stands in rather than substituted in silence (MAPPS-700).
@@ -2624,20 +2736,21 @@ fn SchedulingSettingsBody() -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         #[cfg(feature = "app")]
         {
-            // A missing setting (404) is the unconfigured state, not an
-            // error: treat it as `0` (no default due date). Any other
-            // failure is surfaced so the form does not silently seed 0.
-            match crate::hooks::fetch::api::get_authed_typed::<SettingValueRow>(
-                DEFAULT_DUE_SETTING_PATH,
-            )
-            .await
+            // An unset setting is the unconfigured state, not an error:
+            // treat it as `0` (no default due date). A failed read is
+            // surfaced so the form does not silently seed 0.
+            match crate::modules::tenant_settings::get("scheduling", "default_due_business_days")
+                .await
             {
-                Ok(row) => Some(
-                    setting_u64(&row.value, DEFAULT_DUE_SETTING_PATH, 0)
+                Ok(Some(value)) => Some(
+                    setting_u64(&value, DEFAULT_DUE_SETTING_PATH, 0)
                         .min(u64::from(MAX_DUE_BUSINESS_DAYS)) as u32,
                 ),
-                Err(e) if e.status_code() == Some(404) => Some(0u32),
-                Err(_) => None,
+                Ok(None) => Some(0u32),
+                Err(e) => {
+                    tracing::error!("default due-date setting load failed: {e}");
+                    None
+                }
             }
         }
         #[cfg(not(feature = "app"))]
@@ -3088,12 +3201,12 @@ fn PaymentRemindersForm(initial: ReminderSettings) -> Element {
 
 // ============================================================================
 // Time tracking: max hours per day (MAPPS-244 / PMS-396)
-// GET/PUT `/settings/time_tracking/max_hours_per_day`
+// GET `/settings/time_tracking` (the category), PUT `/settings/time_tracking/max_hours_per_day`
 // ============================================================================
 
 const MAX_HOURS_PER_DAY_SETTING_PATH: &str = "/settings/time_tracking/max_hours_per_day";
 /// Server stores the cap as an integer number of hours validated `1..=24`;
-/// an unconfigured tenant (404) falls back to a full 24-hour day.
+/// an unconfigured tenant falls back to a full 24-hour day.
 const MAX_HOURS_PER_DAY_CEILING: u32 = 24;
 const DEFAULT_MAX_HOURS_PER_DAY: u32 = 24;
 
@@ -3121,24 +3234,23 @@ fn MaxHoursPerDaySettingsBody() -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         #[cfg(feature = "app")]
         {
-            // A missing setting (404) is the unconfigured state, not an
-            // error: treat it as the full 24-hour default. Any other failure
-            // is surfaced so the form does not silently seed a wrong cap.
-            match crate::hooks::fetch::api::get_authed_typed::<SettingValueRow>(
-                MAX_HOURS_PER_DAY_SETTING_PATH,
-            )
-            .await
-            {
-                Ok(row) => Some(
+            // An unset setting is the unconfigured state, not an error: treat
+            // it as the full 24-hour default. A failed read is surfaced so the
+            // form does not silently seed a wrong cap.
+            match crate::modules::tenant_settings::get("time_tracking", "max_hours_per_day").await {
+                Ok(Some(value)) => Some(
                     setting_u64(
-                        &row.value,
+                        &value,
                         MAX_HOURS_PER_DAY_SETTING_PATH,
                         u64::from(DEFAULT_MAX_HOURS_PER_DAY),
                     )
                     .clamp(1, u64::from(MAX_HOURS_PER_DAY_CEILING)) as u32,
                 ),
-                Err(e) if e.status_code() == Some(404) => Some(DEFAULT_MAX_HOURS_PER_DAY),
-                Err(_) => None,
+                Ok(None) => Some(DEFAULT_MAX_HOURS_PER_DAY),
+                Err(e) => {
+                    tracing::error!("max-hours-per-day setting load failed: {e}");
+                    None
+                }
             }
         }
         #[cfg(not(feature = "app"))]
@@ -9666,5 +9778,191 @@ mod tests {
             is_active,
             sort_order: i64::from(sort_order),
         };
+    }
+}
+
+#[cfg(test)]
+mod mapps979_per_group_advanced_tests {
+    use super::{
+        advanced_count_in_group, surfaces_in_group, SettingsGroupKey, SurfaceContext,
+        PREF_ADVANCED_PREFIX, SETTINGS_GROUP_ORDER, SETTINGS_SURFACES,
+    };
+
+    /// A caller who sees everything, so these cases are about the ADVANCED
+    /// filter and not about visibility.
+    fn everything() -> SurfaceContext {
+        SurfaceContext {
+            is_staff_admin: true,
+            has_manage_branding_cap: true,
+        }
+    }
+
+    /// Collapsed and expanded differ by exactly the group's advanced surfaces.
+    ///
+    /// Asserted as a set difference rather than by counting, because the failure
+    /// worth catching is not "the number is wrong" but "expanding a group shows
+    /// another group's surfaces", which a count would miss entirely.
+    #[test]
+    fn expanding_a_group_adds_exactly_that_groups_advanced_surfaces() {
+        let ctx = everything();
+        for group in SETTINGS_GROUP_ORDER.iter().copied() {
+            let collapsed: Vec<&str> = surfaces_in_group(group, false, ctx)
+                .map(|s| s.title)
+                .collect();
+            let expanded: Vec<&str> = surfaces_in_group(group, true, ctx)
+                .map(|s| s.title)
+                .collect();
+
+            assert!(
+                collapsed.iter().all(|t| expanded.contains(t)),
+                "{group:?}: expanding must only ADD, never replace: {collapsed:?} vs {expanded:?}"
+            );
+            assert!(
+                collapsed.iter().all(|title| SETTINGS_SURFACES
+                    .iter()
+                    .any(|s| s.title == *title && !s.advanced)),
+                "{group:?}: a collapsed group shows no advanced surface: {collapsed:?}"
+            );
+
+            let revealed: Vec<&str> = expanded
+                .iter()
+                .copied()
+                .filter(|t| !collapsed.contains(t))
+                .collect();
+            assert_eq!(
+                revealed.len(),
+                advanced_count_in_group(group, ctx),
+                "{group:?}: the chevron's count has to be what expanding reveals, or the label \
+                 lies: revealed {revealed:?}"
+            );
+            for title in revealed.iter().copied() {
+                let surface = SETTINGS_SURFACES
+                    .iter()
+                    .find(|s| s.title == title)
+                    .expect("a revealed surface exists");
+                assert_eq!(
+                    surface.group, group,
+                    "expanding {group:?} revealed {title:?}, which belongs to {:?}",
+                    surface.group
+                );
+                assert!(
+                    surface.advanced,
+                    "{title:?} was revealed but is not advanced"
+                );
+            }
+        }
+    }
+
+    /// A group with no advanced surfaces counts zero, which is what removes the
+    /// chevron row entirely.
+    ///
+    /// The row is rendered on `advanced_count_in_group(..) > 0`, so this is the
+    /// negative case the acceptance criteria name: a chevron that expands to
+    /// nothing is worse than no chevron, because it promises something.
+    #[test]
+    fn a_group_with_no_advanced_surfaces_counts_zero() {
+        let ctx = everything();
+        let mut saw_a_zero = false;
+        for group in SETTINGS_GROUP_ORDER.iter().copied() {
+            let count = advanced_count_in_group(group, ctx);
+            let collapsed = surfaces_in_group(group, false, ctx).count();
+            let expanded = surfaces_in_group(group, true, ctx).count();
+            assert_eq!(expanded - collapsed, count, "{group:?}");
+            if count == 0 {
+                saw_a_zero = true;
+                assert_eq!(
+                    collapsed, expanded,
+                    "{group:?} has no advanced surfaces, so expanding changes nothing"
+                );
+            }
+        }
+        assert!(
+            saw_a_zero,
+            "at least one group has no advanced surfaces today, so the no-chevron path is \
+             reachable; if that stops being true this test is no longer covering it"
+        );
+    }
+
+    /// Payment Gateways is basic and under Billing, which is the whole incident.
+    ///
+    /// Named explicitly rather than counted: David could not find it on the
+    /// Billing page on staging, and the reason was this one flag. A test that
+    /// only checked "some Billing surface is basic" would not have caught it.
+    #[test]
+    fn payment_gateways_is_a_basic_billing_surface() {
+        let gateways = SETTINGS_SURFACES
+            .iter()
+            .find(|s| s.title == "Payment Gateways")
+            .expect("Payment Gateways is a settings surface");
+        assert_eq!(gateways.group, SettingsGroupKey::Billing);
+        assert!(
+            !gateways.advanced,
+            "taking payment is a billing setup step, not an expert one"
+        );
+        assert!(
+            surfaces_in_group(SettingsGroupKey::Billing, false, everything())
+                .any(|s| s.title == "Payment Gateways"),
+            "it has to appear with the group collapsed and no disclosure opened"
+        );
+    }
+
+    /// Every group's preference key is distinct and prefixed, so expanding one
+    /// cannot expand another.
+    ///
+    /// The shared-key failure would be invisible in the UI until two groups
+    /// moved together, and then it would look like a rendering bug rather than a
+    /// key collision.
+    #[test]
+    fn each_group_has_its_own_disclosure_key() {
+        let keys: Vec<String> = SETTINGS_GROUP_ORDER
+            .iter()
+            .map(|g| g.advanced_pref())
+            .collect();
+        let mut unique = keys.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            keys.len(),
+            "two groups share a disclosure key, so expanding one expands the other: {keys:?}"
+        );
+        for key in &keys {
+            assert!(
+                key.starts_with(PREF_ADVANCED_PREFIX) && key.len() > PREF_ADVANCED_PREFIX.len(),
+                "{key} is not a prefixed, non-empty preference key"
+            );
+        }
+    }
+
+    /// The global toggle and its "go and turn it on" notice are gone.
+    ///
+    /// Scanned as source because what is being asserted is an absence, and the
+    /// absence is the acceptance criterion: a toggle left behind would keep
+    /// working and keep hiding settings behind a switch on another page.
+    #[test]
+    fn the_global_advanced_toggle_is_gone() {
+        let src = include_str!("settings.rs");
+        let all = &src[..src
+            .find("mod mapps979_per_group_advanced_tests")
+            .expect("this module")];
+        // Comment lines are exempt: this page DOCUMENTS the preference it
+        // replaced, and a guard that cannot be documented gets reworded instead
+        // of understood. What it defends is the code.
+        let head: String = all
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let head = head.as_str();
+        for banned in [
+            concat!("settings_show", "_advanced"),
+            "Show advanced settings",
+            "Turn on \\\"Show advanced",
+        ] {
+            assert!(
+                !head.contains(banned),
+                "{banned:?} is still in this page; the global mode is what MAPPS-979 removed"
+            );
+        }
     }
 }

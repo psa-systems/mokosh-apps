@@ -74,6 +74,7 @@ comment):
 | --- | --- |
 | `check-auth-error-prose.sh` | The `/auth/callback` failure classifies on the `FlowError` variant, never by matching the rendered error string. |
 | `check-cancel-routes.sh` | A shared create/edit form's Cancel routes back to the record being edited, plus the global pointer-cursor rule. |
+| `check-card-headings.sh` | A `Card`'s heading comes from its `title` prop; an `h2`/`h3` in the heading slot needs a `// card-heading-allow:` reason. |
 | `check-ci-parity.sh` | Every command a `check` recipe runs, including its `--self-test`, has a matching step in `.forgejo/workflows/check.yml`. |
 | `check-class-omissions.sh` | Three specific Tailwind class omissions (auth heading, form-grid breakpoint, table name-cell colour) stay fixed. |
 | `check-company-id-copy.sh` | No "Portal ID" copy under `src/pages/contact_portal/`; the user-facing name is "Company ID". |
@@ -134,8 +135,9 @@ with the outcome either way. It is not a recipe, so it has no `just` entry.
 
 | Recipe | What it does |
 | --- | --- |
-| `just install-hooks` *(common)* | Write the `.git/hooks/pre-commit` stub. Run once per fresh clone. |
-| `just pre-commit` *(common)* | Run the same checks CI runs, in the builder image. |
+| `just install-hooks` *(common)* | Write the `.git/hooks/pre-commit` and `.git/hooks/pre-push` stubs. Run once per fresh clone, and again after pulling a bump to `common` that changes the hooks. |
+| `just pre-commit` *(common)* | Run `check-tree-ownership` and a fmt-only check. |
+| `just pre-push` *(common)* | Run the same checks CI runs, in the builder image. |
 | `just check-justfile` *(common)* | Fail if this justfile redefines a recipe that must come from `common`. |
 | `just check-tree-ownership` *(common)* | Fail if the working tree holds a path the host user does not own. |
 

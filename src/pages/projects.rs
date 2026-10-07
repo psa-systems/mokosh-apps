@@ -639,18 +639,16 @@ pub fn ProjectListPage() -> Element {
                                 Link {
                                     key: "{pid}",
                                     to: Route::ProjectDetail { id: pid.clone() },
-                                    Card { class: "hover:shadow-lg transition-shadow cursor-pointer",
-                                        div { class: "flex items-start justify-between mb-4",
-                                            div {
-                                                h3 { class: "text-lg font-medium text-content",
-                                                    "{p.name}"
-                                                }
-                                                p { class: "text-sm text-muted",
-                                                    "{cname}"
-                                                }
-                                            }
+                                    Card {
+                                        class: "hover:shadow-lg transition-shadow cursor-pointer",
+                                        // MAPPS-967: the project's name is what this
+                                        // card is about, and its status badge is the
+                                        // heading-row control.
+                                        title: p.name.clone(),
+                                        subtitle: cname.clone(),
+                                        actions: rsx! {
                                             Badge { variant, "{label}" }
-                                        }
+                                        },
 
                                         // Budget utilization (actual vs budget)
                                         div { class: "mb-4",
@@ -1457,9 +1455,9 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                 let remaining_h = p.budget_hours.unwrap_or(0.0) - logged_h;
                 let description = p.description.clone().filter(|d| !d.trim().is_empty());
                 rsx! {
-                    div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
+                    div { class: "grid grid-cols-1 @5xl:grid-cols-3 gap-6",
                         // Main content
-                        div { class: "lg:col-span-2 space-y-6",
+                        div { class: "@5xl:col-span-2 space-y-6",
                             Card {
                                 title: "Overview",
                                 // MAPPS-245: explain why the Add Task control is
