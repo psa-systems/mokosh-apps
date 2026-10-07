@@ -7,15 +7,16 @@ use serde::{Deserialize, Serialize};
 use crate::components::{
     clear_selection, ticket_status_badge, use_bulk_selection, use_page_title, AlertType, Badge,
     BadgeVariant, BulkActionsBar, BulkSelection, Button, ButtonVariant, Card, Checkbox, ClockIcon,
-    DataTable, ErrorBanner, IconSize, Input, MailIcon, Modal, PageHeader, PencilIcon, PlusIcon,
-    SearchInput, Select, SelectAllHeader, SelectOption, SelectRowCell, SortDirection, Table,
-    TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea,
+    DataTable, ErrorBanner, IconSize, Input, MailIcon, Modal, ModalSize, PageHeader, PencilIcon,
+    PlusIcon, SearchInput, Select, SelectAllHeader, SelectOption, SelectRowCell, SortDirection,
+    Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    Textarea,
 };
 use crate::components::{ChangeDetails, ChangeLine};
 // MAPPS-596: shared with the project, task and asset change-history panes.
 use crate::modules::audit::{action_label, fields_label, title_field};
 use crate::utils::{FormGuard, Paginated, Rule};
-use mokosh_types::tickets::NoteType;
+use mokosh_types::tickets::{NoteType, TicketSavedView};
 
 /// MAPPS-546: rows per page on the ticket list, sent to the server rather than
 /// written into the table as a constant.
@@ -1064,6 +1065,39 @@ fn ticket_sort_param(key: TicketSortKey) -> &'static str {
     }
 }
 
+/// MAPPS-998: the inverse of [`ticket_sort_param`], for turning a saved
+/// view's stored sort key back into a [`TicketSortKey`] when the view is
+/// applied. An unrecognised key (a server allow-list entry this page never
+/// sent, or a stale value from a dropped column) falls back to `None` rather
+/// than guessing, so the fetch below runs unsorted instead of silently
+/// picking the wrong column.
+fn ticket_sort_key_from_param(param: &str) -> Option<TicketSortKey> {
+    match param {
+        "ticket_number" => Some(TicketSortKey::Ticket),
+        "company_name" => Some(TicketSortKey::Company),
+        "status" => Some(TicketSortKey::Status),
+        "priority" => Some(TicketSortKey::Priority),
+        "assigned_to_name" => Some(TicketSortKey::Assigned),
+        "updated_at" => Some(TicketSortKey::Updated),
+        _ => None,
+    }
+}
+
+fn sort_direction_param(dir: SortDirection) -> &'static str {
+    match dir {
+        SortDirection::Ascending => "asc",
+        SortDirection::Descending => "desc",
+    }
+}
+
+fn sort_direction_from_param(s: &str) -> Option<SortDirection> {
+    match s {
+        "asc" => Some(SortDirection::Ascending),
+        "desc" => Some(SortDirection::Descending),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod pms897_sort_tests {
     use super::{ticket_sort_param, TicketSortKey};
@@ -1150,6 +1184,77 @@ fn toggle_ticket_sort(
     };
     current.set(next);
     page.set(1);
+}
+
+/// MAPPS-998: the four filter axes a saved view captures, serialized verbatim
+/// into `TicketSavedView::filter`. `#[serde(default)]` on every field so a
+/// view saved before a fifth axis (asset, team, ...) exists still
+/// deserializes once this struct grows one.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+struct SavedViewFilter {
+    #[serde(default)]
+    search: String,
+    #[serde(default)]
+    status_id: String,
+    #[serde(default)]
+    priority_id: String,
+    #[serde(default)]
+    queue_id: String,
+}
+
+/// MAPPS-998: the sort axis a saved view captures, serialized into
+/// `TicketSavedView::sort`. `key` is the server's sort-param string
+/// ([`ticket_sort_param`]'s output), so a saved sort round-trips through the
+/// same allow-list the live fetch is checked against.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct SavedViewSort {
+    key: String,
+    direction: String,
+}
+
+/// MAPPS-998: write a saved view's filter + sort into the live signals that
+/// already drive the fetch, the same signals "Clear filters" resets. Does NOT
+/// touch `selected_view_id` or `views_open`; callers set those around this.
+fn apply_saved_view(
+    view: &TicketSavedView,
+    search: &mut Signal<String>,
+    status_filter: &mut Signal<String>,
+    priority_filter: &mut Signal<String>,
+    queue_filter: &mut Signal<String>,
+    sort: &mut Signal<Option<(TicketSortKey, SortDirection)>>,
+    page: &mut Signal<usize>,
+) {
+    let filter: SavedViewFilter = serde_json::from_value(view.filter.clone()).unwrap_or_default();
+    search.set(filter.search);
+    status_filter.set(filter.status_id);
+    priority_filter.set(filter.priority_id);
+    queue_filter.set(filter.queue_id);
+    let next_sort = serde_json::from_value::<SavedViewSort>(view.sort.clone())
+        .ok()
+        .and_then(|s| {
+            let key = ticket_sort_key_from_param(&s.key)?;
+            let dir = sort_direction_from_param(&s.direction)?;
+            Some((key, dir))
+        });
+    sort.set(next_sort);
+    page.set(1);
+}
+
+/// MAPPS-998: `POST /tickets/saved-views` body.
+#[derive(Serialize)]
+struct SavedViewSaveBody {
+    name: String,
+    filter: SavedViewFilter,
+    sort: Option<SavedViewSort>,
+}
+
+/// MAPPS-998: `PUT /tickets/saved-views/{id}` body for a rename. Filter and
+/// sort are omitted (left `None`), which the server's `UpdateTicketSavedViewRequest`
+/// treats as "leave unchanged" - a rename does not re-capture the current
+/// filters, it only renames what was already saved.
+#[derive(Serialize)]
+struct RenameViewBody {
+    name: String,
 }
 
 /// MAPPS-837: setting a new search term must reset the page too, for the same
@@ -1282,6 +1387,26 @@ fn TicketListBody() -> Element {
     // the bulk path bypassed it before this fix.
     let mut bulk_delete_confirm = use_signal::<Option<Vec<String>>>(|| None);
     let mut bulk_delete_running = use_signal(|| false);
+
+    // MAPPS-998: per-user saved views (search + status + priority + queue +
+    // sort), read through the MAPPS-860 shared-resource cache so the Views
+    // control and any future consumer share one `GET /tickets/saved-views`.
+    let mut saved_views_resource = crate::hooks::use_ticket_saved_views(true);
+    let mut selected_view_id = use_signal::<Option<String>>(|| None);
+    let mut views_open = use_signal(|| false);
+    let mut show_save_modal = use_signal(|| false);
+    let mut new_view_name = use_signal(String::new);
+    let mut save_error = use_signal(String::new);
+    let mut saving_view = use_signal(|| false);
+    // `(id, current name)` while the rename modal is open.
+    let mut renaming_view = use_signal::<Option<(String, String)>>(|| None);
+    let mut rename_name = use_signal(String::new);
+    let mut rename_error = use_signal(String::new);
+    let mut renaming_saving = use_signal(|| false);
+    // `(id, name)` while the delete confirmation is open.
+    let mut deleting_view = use_signal::<Option<(String, String)>>(|| None);
+    let mut delete_error = use_signal(String::new);
+    let mut deleting_saving = use_signal(|| false);
 
     // MAPPS-295: source the status-filter options from the tenant's
     // configured `ticket_statuses` table instead of a hand-rolled slug
@@ -1448,6 +1573,156 @@ fn TicketListBody() -> Element {
         || !priority_filter.read().is_empty()
         || !queue_filter.read().is_empty();
 
+    // MAPPS-998: the caller's own saved views, alphabetical (the server
+    // already orders `name ASC`; sorting again client-side keeps this
+    // correct even if a cached page predates that ordering).
+    let mut sorted_views: Vec<TicketSavedView> = saved_views_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    sorted_views.sort_by(|a, b| {
+        a.name
+            .to_ascii_lowercase()
+            .cmp(&b.name.to_ascii_lowercase())
+    });
+    let active_view_label = selected_view_id
+        .read()
+        .as_ref()
+        .and_then(|id| sorted_views.iter().find(|v| &v.id.to_string() == id))
+        .map(|v| v.name.clone())
+        .unwrap_or_else(|| "No view".to_string());
+
+    let mut submit_save_view = move || {
+        if saving_view() {
+            return;
+        }
+        let name = new_view_name.read().trim().to_string();
+        if name.is_empty() {
+            save_error.set("Enter a view name.".to_string());
+            return;
+        }
+        if name.chars().count() > 100 {
+            save_error.set("View names are capped at 100 characters.".to_string());
+            return;
+        }
+        let filter = SavedViewFilter {
+            search: search.read().trim().to_string(),
+            status_id: status_filter.read().clone(),
+            priority_id: priority_filter.read().clone(),
+            queue_id: queue_filter.read().clone(),
+        };
+        let sort_body = sort.read().as_ref().map(|(key, dir)| SavedViewSort {
+            key: ticket_sort_param(*key).to_string(),
+            direction: sort_direction_param(*dir).to_string(),
+        });
+        saving_view.set(true);
+        save_error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                use crate::hooks::fetch::api::ApiError;
+                let body = SavedViewSaveBody {
+                    name,
+                    filter,
+                    sort: sort_body,
+                };
+                match crate::hooks::fetch::api::post_authed_typed::<TicketSavedView, _>(
+                    crate::hooks::ticket_saved_views::ENDPOINT,
+                    &body,
+                )
+                .await
+                {
+                    Ok(created) => {
+                        saved_views_resource.restart();
+                        selected_view_id.set(Some(created.id.to_string()));
+                        show_save_modal.set(false);
+                    }
+                    Err(ApiError::Status {
+                        code: 409, message, ..
+                    }) => {
+                        save_error.set(message);
+                    }
+                    Err(e) => save_error.set(e.user_message()),
+                }
+            }
+            saving_view.set(false);
+        });
+    };
+
+    let mut submit_rename_view = move || {
+        if renaming_saving() {
+            return;
+        }
+        let Some((id, _)) = renaming_view.read().clone() else {
+            return;
+        };
+        let name = rename_name.read().trim().to_string();
+        if name.is_empty() {
+            rename_error.set("Enter a view name.".to_string());
+            return;
+        }
+        if name.chars().count() > 100 {
+            rename_error.set("View names are capped at 100 characters.".to_string());
+            return;
+        }
+        renaming_saving.set(true);
+        rename_error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                use crate::hooks::fetch::api::ApiError;
+                let body = RenameViewBody { name };
+                let path = format!("{}/{id}", crate::hooks::ticket_saved_views::ENDPOINT);
+                match crate::hooks::fetch::api::put_authed_typed::<TicketSavedView, _>(&path, &body)
+                    .await
+                {
+                    Ok(_updated) => {
+                        saved_views_resource.restart();
+                        renaming_view.set(None);
+                    }
+                    Err(ApiError::Status {
+                        code: 409, message, ..
+                    }) => {
+                        rename_error.set(message);
+                    }
+                    Err(e) => rename_error.set(e.user_message()),
+                }
+            }
+            renaming_saving.set(false);
+        });
+    };
+
+    let mut submit_delete_view = move |id: String| {
+        if deleting_saving() {
+            return;
+        }
+        deleting_saving.set(true);
+        delete_error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                use crate::hooks::fetch::api::ApiError;
+                let path = format!("{}/{id}", crate::hooks::ticket_saved_views::ENDPOINT);
+                let outcome = crate::hooks::fetch::api::delete_authed_typed(&path).await;
+                match outcome {
+                    // 404 is "already gone", which for somebody who just asked
+                    // to delete it is the state they wanted.
+                    Ok(()) | Err(ApiError::Status { code: 404, .. }) => {
+                        saved_views_resource.restart();
+                        if selected_view_id.read().as_deref() == Some(id.as_str()) {
+                            selected_view_id.set(None);
+                        }
+                        deleting_view.set(None);
+                    }
+                    Err(e) => delete_error.set(e.user_message()),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            let _ = id;
+            deleting_saving.set(false);
+        });
+    };
+
     // MAPPS-295: build the Status filter options from the tenant's actual
     // status set. A still-loading or empty resource just shows the "All
     // Statuses" placeholder option.
@@ -1514,6 +1789,117 @@ fn TicketListBody() -> Element {
         // Filters
         Card { class: "mb-6",
             div { class: "flex flex-col sm:flex-row gap-4",
+                // MAPPS-998: Views sits to the LEFT of Search, same row.
+                div { class: "shrink-0 sm:w-48",
+                    crate::components::Popover {
+                        open: views_open(),
+                        label: "Views",
+                        trigger_class: "w-full flex items-center justify-between gap-2 rounded-md border border-line bg-surface px-3 py-2 text-sm text-content shadow-sm hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+                        trigger: rsx! {
+                            span { class: "truncate", "{active_view_label}" }
+                        },
+                        width: "w-64",
+                        ontoggle: move |_| {
+                            let next = !*views_open.read();
+                            views_open.set(next);
+                        },
+                        onclose: move |_| views_open.set(false),
+                        div { class: "px-3 py-2 text-xs uppercase tracking-wide text-subtle", "Views" }
+                        button {
+                            r#type: "button",
+                            class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
+                            onclick: move |_| {
+                                selected_view_id.set(None);
+                                views_open.set(false);
+                            },
+                            "No view"
+                        }
+                        if sorted_views.is_empty() {
+                            div { class: "px-3 py-2 text-sm text-subtle", "No saved views yet." }
+                        } else {
+                            {sorted_views.iter().map(|v| {
+                                let id = v.id.to_string();
+                                let name = v.name.clone();
+                                let is_active = selected_view_id.read().as_deref() == Some(id.as_str());
+                                let view = v.clone();
+                                rsx! {
+                                    div {
+                                        key: "{id}",
+                                        class: if is_active {
+                                            "flex items-stretch gap-1 rounded-md bg-surface-2"
+                                        } else {
+                                            "flex items-stretch gap-1 rounded-md hover:bg-surface-2"
+                                        },
+                                        button {
+                                            r#type: "button",
+                                            class: "flex-1 min-w-0 text-left rounded-md px-3 py-2 text-sm text-content truncate",
+                                            onclick: {
+                                                let view = view.clone();
+                                                move |_| {
+                                                    apply_saved_view(
+                                                        &view,
+                                                        &mut search,
+                                                        &mut status_filter,
+                                                        &mut priority_filter,
+                                                        &mut queue_filter,
+                                                        &mut sort,
+                                                        &mut page,
+                                                    );
+                                                    selected_view_id.set(Some(view.id.to_string()));
+                                                    views_open.set(false);
+                                                }
+                                            },
+                                            "{name}"
+                                        }
+                                        button {
+                                            r#type: "button",
+                                            class: "shrink-0 self-center rounded-md px-2 py-1 text-xs text-subtle hover:text-content focus:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+                                            "aria-label": "Rename {name}",
+                                            onclick: {
+                                                let id = id.clone();
+                                                let name = name.clone();
+                                                move |_| {
+                                                    renaming_view.set(Some((id.clone(), name.clone())));
+                                                    rename_name.set(name.clone());
+                                                    rename_error.set(String::new());
+                                                    views_open.set(false);
+                                                }
+                                            },
+                                            "Rename"
+                                        }
+                                        button {
+                                            r#type: "button",
+                                            class: "shrink-0 self-center rounded-md px-2 py-1 mr-1 text-xs text-subtle hover:text-red-600 dark:hover:text-red-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+                                            "aria-label": "Delete {name}",
+                                            onclick: {
+                                                let id = id.clone();
+                                                let name = name.clone();
+                                                move |_| {
+                                                    deleting_view.set(Some((id.clone(), name.clone())));
+                                                    delete_error.set(String::new());
+                                                    views_open.set(false);
+                                                }
+                                            },
+                                            "Delete"
+                                        }
+                                    }
+                                }
+                            })}
+                        }
+                        div { class: "border-t border-line my-1" }
+                        button {
+                            r#type: "button",
+                            class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
+                            onclick: move |_| {
+                                new_view_name.set(String::new());
+                                save_error.set(String::new());
+                                show_save_modal.set(true);
+                                views_open.set(false);
+                            },
+                            "+ Save current view"
+                        }
+                    }
+                }
                 div { class: "flex-1",
                     SearchInput {
                         value: search.read().clone(),
@@ -1552,6 +1938,140 @@ fn TicketListBody() -> Element {
                             page.set(1);
                         },
                     }
+                }
+            }
+        }
+
+        // MAPPS-998: save the current filter+sort+search as a named view.
+        Modal {
+            open: show_save_modal(),
+            title: "Save current view".to_string(),
+            size: ModalSize::Small,
+            onclose: move |_| {
+                show_save_modal.set(false);
+                save_error.set(String::new());
+            },
+            form {
+                class: "space-y-4",
+                onsubmit: move |evt: Event<FormData>| {
+                    evt.prevent_default();
+                    submit_save_view();
+                },
+                Input {
+                    name: "view_name",
+                    label: "View name",
+                    r#type: "text".to_string(),
+                    value: new_view_name(),
+                    required: true,
+                    maxlength: Some(100),
+                    disabled: saving_view(),
+                    oninput: move |e: FormEvent| {
+                        save_error.set(String::new());
+                        new_view_name.set(e.value());
+                    },
+                }
+                if !save_error().is_empty() {
+                    p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{save_error}" }
+                }
+                div { class: "flex gap-2 justify-end pt-2",
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        r#type: "button".to_string(),
+                        disabled: saving_view(),
+                        onclick: move |_| {
+                            show_save_modal.set(false);
+                            save_error.set(String::new());
+                        },
+                        "Cancel"
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        r#type: "submit".to_string(),
+                        disabled: saving_view(),
+                        loading: saving_view(),
+                        "Save view"
+                    }
+                }
+            }
+        }
+
+        // MAPPS-998: rename one of the signed-in user's own saved views.
+        Modal {
+            open: renaming_view.read().is_some(),
+            title: "Rename view".to_string(),
+            size: ModalSize::Small,
+            onclose: move |_| {
+                renaming_view.set(None);
+                rename_error.set(String::new());
+            },
+            form {
+                class: "space-y-4",
+                onsubmit: move |evt: Event<FormData>| {
+                    evt.prevent_default();
+                    submit_rename_view();
+                },
+                Input {
+                    name: "rename_view_name",
+                    label: "View name",
+                    r#type: "text".to_string(),
+                    value: rename_name(),
+                    required: true,
+                    maxlength: Some(100),
+                    disabled: renaming_saving(),
+                    oninput: move |e: FormEvent| {
+                        rename_error.set(String::new());
+                        rename_name.set(e.value());
+                    },
+                }
+                if !rename_error().is_empty() {
+                    p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{rename_error}" }
+                }
+                div { class: "flex gap-2 justify-end pt-2",
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        r#type: "button".to_string(),
+                        disabled: renaming_saving(),
+                        onclick: move |_| {
+                            renaming_view.set(None);
+                            rename_error.set(String::new());
+                        },
+                        "Cancel"
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        r#type: "submit".to_string(),
+                        disabled: renaming_saving(),
+                        loading: renaming_saving(),
+                        "Rename"
+                    }
+                }
+            }
+        }
+
+        // MAPPS-998: delete one of the signed-in user's own saved views.
+        {
+            let pending_delete = deleting_view.read().clone();
+            let delete_message = pending_delete
+                .as_ref()
+                .map(|(_, name)| format!("Delete the saved view \"{name}\"? This cannot be undone."))
+                .unwrap_or_default();
+            rsx! {
+                crate::components::ConfirmDialog {
+                    open: pending_delete.is_some(),
+                    title: "Delete view".to_string(),
+                    message: delete_message,
+                    confirm_text: "Delete",
+                    destructive: true,
+                    loading: deleting_saving(),
+                    error: delete_error(),
+                    onconfirm: move |_| {
+                        let Some((id, _)) = deleting_view.read().clone() else { return };
+                        submit_delete_view(id);
+                    },
+                    oncancel: move |_| {
+                        deleting_view.set(None);
+                        delete_error.set(String::new());
+                    },
                 }
             }
         }
@@ -6492,12 +7012,14 @@ mod mapps594_in_page_edit_tests {
             !code.contains("ModalSize::Full"),
             "and it was not simply widened"
         );
-        // The one Modal left on this page is the approvals request, which is a
-        // short self-contained task and is what a modal is for.
+        // The approvals request modal predates this test; MAPPS-998 adds the
+        // save-view and rename-view modals, both short self-contained tasks
+        // and what a modal is for, same as approvals. None of the three is
+        // the old full-page Edit Ticket modal the asserts above rule out.
         assert_eq!(
             code.matches("Modal { open:").count(),
-            1,
-            "only the approvals modal remains: {code:?}"
+            3,
+            "expected the approvals, save-view and rename-view modals only: {code:?}"
         );
     }
 
@@ -7792,6 +8314,84 @@ mod mapps997_queue_filter_tests {
         assert!(
             expr.contains("queue_filter.read().is_empty()"),
             "filters_active no longer reads the queue filter: {expr}"
+        );
+    }
+}
+
+/// MAPPS-998: per-user saved views on the Tickets list filter card. Source
+/// scan tests, same shape as [`mapps997_queue_filter_tests`] above: no DOM,
+/// so these pin the structural invariants the acceptance criteria actually
+/// name (Views to the left of Search, saves going to the saved-views
+/// endpoint) rather than the rendered pixels.
+#[cfg(test)]
+mod mapps998_saved_views_tests {
+    const SRC: &str = include_str!("tickets.rs");
+
+    fn list_body() -> &'static str {
+        let start = SRC
+            .find("fn TicketListBody()")
+            .expect("the list page body is in this file");
+        &SRC[start..]
+    }
+
+    /// The issue's acceptance criteria put the Views control "to the LEFT of
+    /// Search" on the filter card. A future reshuffle that swaps the two has
+    /// to notice here, the same way the queue-filter ordering test above
+    /// catches a Status/Queue/Priority reshuffle.
+    #[test]
+    fn the_views_control_sits_left_of_search() {
+        let body = list_body();
+        let views = body
+            .find("crate::components::Popover {")
+            .expect("the Views Popover is on the list filter card");
+        let search = body
+            .find("SearchInput {")
+            .expect("SearchInput is on the list filter card");
+        assert!(
+            views < search,
+            "the Views control is not left of Search: views at {views}, search at {search}"
+        );
+    }
+
+    /// Saving a view POSTs to the shared saved-views endpoint rather than a
+    /// hand-rolled path, so a future server route rename only has to touch
+    /// `ticket_saved_views::ENDPOINT`.
+    #[test]
+    fn saving_a_view_posts_to_the_saved_views_endpoint() {
+        let body = list_body();
+        let submit = body
+            .find("let mut submit_save_view")
+            .expect("submit_save_view is in the list body");
+        let end = body[submit..]
+            .find("let mut submit_rename_view")
+            .expect("submit_rename_view follows submit_save_view");
+        let scope = &body[submit..submit + end];
+        assert!(
+            scope.contains("crate::hooks::fetch::api::post_authed_typed::<TicketSavedView, _>(")
+                && scope.contains("crate::hooks::ticket_saved_views::ENDPOINT,"),
+            "submit_save_view is not POSTing to ticket_saved_views::ENDPOINT: {scope}"
+        );
+    }
+
+    /// Picking "No view" clears the active selection instead of leaving a
+    /// stale id pointed at nothing once a view is deleted elsewhere.
+    #[test]
+    fn no_view_clears_the_selected_view() {
+        let body = list_body();
+        // The first `"No view"` is the fallback label text for the trigger
+        // button; the second is the panel option this test cares about.
+        let first = body
+            .find("\"No view\"")
+            .expect("the No view label is in the Views control");
+        let after_first = first + "\"No view\"".len();
+        let no_view = after_first
+            + body[after_first..]
+                .find("\"No view\"")
+                .expect("the No view option is in the Views panel");
+        let preamble = &body[no_view.saturating_sub(200)..no_view];
+        assert!(
+            preamble.contains("selected_view_id.set(None);"),
+            "the No view option is not clearing selected_view_id: {preamble}"
         );
     }
 }
