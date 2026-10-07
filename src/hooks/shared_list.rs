@@ -90,7 +90,10 @@ fn signed_in() -> bool {
 }
 
 #[cfg(feature = "app")]
-async fn fetch_list<T: serde::de::DeserializeOwned>(what: &'static str, endpoint: &str) -> Vec<T> {
+pub(crate) async fn fetch_list<T: serde::de::DeserializeOwned>(
+    what: &'static str,
+    endpoint: &str,
+) -> Vec<T> {
     match crate::hooks::fetch::api::get_all_authed_typed::<T>(endpoint).await {
         Ok(rows) => {
             if rows.is_empty() {
@@ -117,7 +120,7 @@ async fn fetch_list<T: serde::de::DeserializeOwned>(what: &'static str, endpoint
 }
 
 #[cfg(not(feature = "app"))]
-async fn fetch_list<T>(_what: &'static str, _endpoint: &str) -> Vec<T> {
+pub(crate) async fn fetch_list<T>(_what: &'static str, _endpoint: &str) -> Vec<T> {
     Vec::new()
 }
 
