@@ -90,7 +90,10 @@ fn signed_in() -> bool {
 }
 
 #[cfg(feature = "app")]
-async fn fetch_list<T: serde::de::DeserializeOwned>(what: &'static str, endpoint: &str) -> Vec<T> {
+pub(crate) async fn fetch_list<T: serde::de::DeserializeOwned>(
+    what: &'static str,
+    endpoint: &str,
+) -> Vec<T> {
     match crate::hooks::fetch::api::get_all_authed_typed::<T>(endpoint).await {
         Ok(rows) => {
             if rows.is_empty() {
@@ -117,7 +120,7 @@ async fn fetch_list<T: serde::de::DeserializeOwned>(what: &'static str, endpoint
 }
 
 #[cfg(not(feature = "app"))]
-async fn fetch_list<T>(_what: &'static str, _endpoint: &str) -> Vec<T> {
+pub(crate) async fn fetch_list<T>(_what: &'static str, _endpoint: &str) -> Vec<T> {
     Vec::new()
 }
 
@@ -257,6 +260,12 @@ mod tests {
             let seen: Seen = Rc::default();
             let mut dom = VirtualDom::new_with_props(
                 |(asked, seen): (List, Seen)| {
+                    // MAPPS-1010: the roster provider now reads the auth
+                    // context to choose its source endpoint, so this scope
+                    // needs one, same as the real App root provides via
+                    // `use_auth_provider`.
+                    let auth_signal = use_signal(crate::hooks::auth::AuthContext::default);
+                    use_context_provider(|| auth_signal);
                     crate::hooks::use_user_roster_provider();
                     crate::hooks::use_mention_directory_provider();
                     crate::hooks::use_work_types_provider();
