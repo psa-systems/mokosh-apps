@@ -434,12 +434,16 @@ pub fn WorkDayStrip() -> Element {
 
     let date_for_resource = picked_date();
     let user_for_resource = picked_user();
-    let module_flags = crate::hooks::modules::use_module_flags();
-    let skip_workday_request = should_skip_workday(module_flags.as_ref());
     let mut day_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
         let _tick = refetch_tick();
+        // MAPPS-1022: read inside this closure, not captured from the
+        // component body, so a flags change restarts this resource on its
+        // own account instead of waiting for the tenant, connectivity or
+        // tick dependency to happen to fire too.
+        let module_flags = crate::hooks::modules::use_module_flags();
+        let skip_workday_request = should_skip_workday(module_flags.as_ref());
         let path = day_query(date_for_resource, user_for_resource);
         if skip_workday_request {
             return Some(DayLoad::ModulesOff);
