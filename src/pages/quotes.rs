@@ -819,6 +819,12 @@ fn QuoteDetailBody(id: String) -> Element {
                 // server enforces, so a disabled button means "not in
                 // this state" rather than "this might 409".
                 let can_edit = status::allows_content_edit(&st) && can_mutate;
+                // MAPPS-1005: a quote still open for content edits renders
+                // live, like a draft invoice, so its PDF previews rather
+                // than downloads (`status::allows_content_edit` alone, not
+                // gated on `can_mutate`: a read-only mirror still shows a
+                // preview of a draft, it just cannot edit it).
+                let previewable = status::allows_content_edit(&st);
                 let header_title = q.quote_number.clone().unwrap_or_else(|| "Quote".to_string());
                 rsx! {
                     PageHeader {
@@ -849,22 +855,39 @@ fn QuoteDetailBody(id: String) -> Element {
                                             pdf_error.set(String::new());
                                             pdf_downloading.set(true);
                                             let id = id_for_pdf.clone();
+                                            // MAPPS-1005: opened synchronously, before
+                                            // the fetch below, so the pop-up blocker
+                                            // sees it as a direct result of the click.
+                                            let preview_tab = if previewable {
+                                                crate::utils::download::open_preview_tab().ok()
+                                            } else {
+                                                None
+                                            };
                                             spawn(async move {
                                                 #[cfg(feature = "web")]
                                                 {
                                                     let path = format!("/quotes/{id}/pdf");
                                                     match crate::hooks::fetch::api::get_authed_any_bytes(&path).await {
-                                                        Ok((bytes, filename)) => {
-                                                            let name = filename
-                                                                .unwrap_or_else(|| format!("quote-{id}.pdf"));
-                                                            if let Err(e) =
-                                                                crate::utils::download::save_bytes_as_file(&bytes, &name)
-                                                            {
-                                                                pdf_error.set(format!(
-                                                                    "Fetched the PDF but could not save it: {e}"
-                                                                ));
+                                                        Ok((bytes, filename)) => match preview_tab {
+                                                            Some(tab) => {
+                                                                if let Err(e) = crate::utils::download::show_bytes_in_tab(tab, &bytes) {
+                                                                    pdf_error.set(format!(
+                                                                        "Fetched the PDF but could not show it: {e}"
+                                                                    ));
+                                                                }
                                                             }
-                                                        }
+                                                            None => {
+                                                                let name = filename
+                                                                    .unwrap_or_else(|| format!("quote-{id}.pdf"));
+                                                                if let Err(e) =
+                                                                    crate::utils::download::save_bytes_as_file(&bytes, &name)
+                                                                {
+                                                                    pdf_error.set(format!(
+                                                                        "Fetched the PDF but could not save it: {e}"
+                                                                    ));
+                                                                }
+                                                            }
+                                                        },
                                                         Err(crate::hooks::fetch::api::ApiError::Status {
                                                             code: 501,
                                                             ..
@@ -882,12 +905,12 @@ fn QuoteDetailBody(id: String) -> Element {
                                                     }
                                                 }
                                                 #[cfg(not(feature = "web"))]
-                                                let _ = &id;
+                                                let _ = (&id, preview_tab);
                                                 pdf_downloading.set(false);
                                             });
                                         }
                                     },
-                                    "Download PDF"
+                                    if previewable { "Preview PDF" } else { "Download PDF" }
                                 }
                             }
                             if can_edit && staff_only {
@@ -1928,6 +1951,31 @@ mod tests {
         let mut l = DraftLine::new();
         l.unit_price = "-25".into();
         assert_eq!(l.preview_total(), Decimal::from(-25));
+    }
+
+    /// MAPPS-1005: the quote PDF button previews (new tab) exactly while
+    /// `status::allows_content_edit` holds and downloads otherwise, mirroring
+    /// the invoice PDF button in billing.rs. The label and the tab-opening
+    /// both read `previewable`, so this cannot regress to one agreeing and
+    /// the other not.
+    #[test]
+    fn pdf_button_wires_label_and_preview_to_the_same_flag() {
+        let page = include_str!("quotes.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the page has source before its tests");
+        assert!(
+            page.contains("let previewable = status::allows_content_edit(&st);"),
+            "the preview decision must come from the server's own editability rule"
+        );
+        assert!(
+            page.contains("if previewable { \"Preview PDF\" } else { \"Download PDF\" }"),
+            "the button's label must follow `previewable`"
+        );
+        assert!(
+            page.contains("let preview_tab = if previewable {"),
+            "opening the tab must follow the same `previewable` flag as the label"
+        );
     }
 }
 
