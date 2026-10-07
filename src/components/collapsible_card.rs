@@ -90,11 +90,11 @@ pub fn CollapsibleCard(props: CollapsibleCardProps) -> Element {
                 // centring the actions against the pair leaves them floating
                 // beside the description instead of level with the title.
                 class: if props.subtitle.is_empty() {
-                    "flex items-center justify-between px-6 pt-6 pb-4 border-b border-line"
+                    "flex items-center flex-wrap justify-between gap-x-4 gap-y-2 px-6 pt-6 pb-4 border-b border-line"
                 } else {
-                    "flex items-start justify-between px-6 pt-6 pb-4 border-b border-line"
+                    "flex items-start flex-wrap justify-between gap-x-4 gap-y-2 px-6 pt-6 pb-4 border-b border-line"
                 },
-                div {
+                div { class: "min-w-0 flex-1",
                     button {
                         r#type: "button",
                         class: "flex items-center gap-2 text-left",
@@ -123,7 +123,7 @@ pub fn CollapsibleCard(props: CollapsibleCardProps) -> Element {
                         p { class: "mt-1 ml-6 text-sm text-muted", "{props.subtitle}" }
                     }
                 }
-                div { class: "flex items-center space-x-2",
+                div { class: "flex flex-wrap items-center gap-2",
                     {props.actions}
                 }
             }
@@ -177,11 +177,13 @@ mod mapps597_subtitle_tests {
     fn a_card_without_a_subtitle_is_unchanged() {
         let code = code_only();
         assert!(
-            code.contains("if props.subtitle.is_empty() { \"flex items-center justify-between"),
+            code.contains(
+                "if props.subtitle.is_empty() { \"flex items-center flex-wrap justify-between"
+            ),
             "no subtitle keeps the centred header"
         );
         assert!(
-            code.contains("} else { \"flex items-start justify-between"),
+            code.contains("} else { \"flex items-start flex-wrap justify-between"),
             "and a subtitle switches to items-start, as CardHeader does, so the \
              actions sit level with the title rather than beside the description"
         );
