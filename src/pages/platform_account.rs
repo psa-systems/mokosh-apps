@@ -18,8 +18,8 @@ use dioxus::prelude::*;
 use serde::Serialize;
 
 use crate::components::{
-    use_page_title, BannerTone, Button, ButtonVariant, Card, ErrorBanner, Input, Modal, PageHeader,
-    StatusBanner,
+    use_page_title, Badge, BadgeVariant, BannerTone, Button, ButtonVariant, Card, ErrorBanner,
+    Input, Modal, PageHeader, StatusBanner,
 };
 
 /// Body for `PUT /platform/me/password`. Matches mokosh-server's
@@ -246,8 +246,10 @@ fn PlatformMfaCard(props: PlatformMfaCardProps) -> Element {
                 .to_string(),
             div { class: "flex items-center justify-between gap-4",
                 div {
-                    p { class: "text-sm font-medium text-content",
-                        if enabled() { "Enabled" } else { "Not enabled" }
+                    if enabled() {
+                        Badge { variant: BadgeVariant::Green, "Enabled" }
+                    } else {
+                        Badge { "Disabled" }
                     }
                 }
                 if enabled() {

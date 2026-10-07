@@ -778,7 +778,7 @@ fn CustomReportBuilder() -> Element {
         } else if loading {
             crate::components::DetailSkeleton {} // PMS-353
         } else {
-            div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
+            div { class: "grid grid-cols-1 @5xl:grid-cols-3 gap-6",
                 // Builder controls
                 Card { title: "Build",
                     div { class: "space-y-5",
@@ -904,7 +904,7 @@ fn CustomReportBuilder() -> Element {
                 }
 
                 // Results
-                div { class: "lg:col-span-2",
+                div { class: "@5xl:col-span-2",
                     Card { title: "Result",
                         match result() {
                             None => rsx! {

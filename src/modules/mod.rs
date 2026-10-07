@@ -13,6 +13,7 @@ pub mod quotes;
 pub mod runtime_config;
 pub mod sla;
 pub mod system;
+pub mod tenant_settings;
 pub mod tenants;
 pub mod theme;
 pub mod tickets;

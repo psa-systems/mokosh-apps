@@ -2685,11 +2685,11 @@ fn SettingsCard(
 
 // ============================================================================
 // Scheduling: standard due date (MAPPS-345 / PMS-345)
-// GET/PUT `/settings/scheduling/default_due_business_days`
+// GET `/settings/scheduling` (the category), PUT `/settings/scheduling/default_due_business_days`
 // ============================================================================
 
-/// Shape of the per-key tenant setting response. Only `value` is read; the
-/// server stores the business-day offset as a JSON integer.
+/// Shape of the per-key PUT response. Only `value` is read; the server stores
+/// the business-day offset as a JSON integer.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct SettingValueRow {
     #[serde(default)]
@@ -2698,7 +2698,7 @@ struct SettingValueRow {
 
 /// Read the whole number a per-key setting row stores.
 ///
-/// A missing row (404) is the unconfigured state and each caller handles it
+/// An unset key is the unconfigured state and each caller handles it
 /// separately. A row that exists holding something that is not a whole number
 /// is a stored-data fault nobody can see from the form, so it is logged before
 /// `default` stands in rather than substituted in silence (MAPPS-700).
@@ -2736,20 +2736,21 @@ fn SchedulingSettingsBody() -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         #[cfg(feature = "app")]
         {
-            // A missing setting (404) is the unconfigured state, not an
-            // error: treat it as `0` (no default due date). Any other
-            // failure is surfaced so the form does not silently seed 0.
-            match crate::hooks::fetch::api::get_authed_typed::<SettingValueRow>(
-                DEFAULT_DUE_SETTING_PATH,
-            )
-            .await
+            // An unset setting is the unconfigured state, not an error:
+            // treat it as `0` (no default due date). A failed read is
+            // surfaced so the form does not silently seed 0.
+            match crate::modules::tenant_settings::get("scheduling", "default_due_business_days")
+                .await
             {
-                Ok(row) => Some(
-                    setting_u64(&row.value, DEFAULT_DUE_SETTING_PATH, 0)
+                Ok(Some(value)) => Some(
+                    setting_u64(&value, DEFAULT_DUE_SETTING_PATH, 0)
                         .min(u64::from(MAX_DUE_BUSINESS_DAYS)) as u32,
                 ),
-                Err(e) if e.status_code() == Some(404) => Some(0u32),
-                Err(_) => None,
+                Ok(None) => Some(0u32),
+                Err(e) => {
+                    tracing::error!("default due-date setting load failed: {e}");
+                    None
+                }
             }
         }
         #[cfg(not(feature = "app"))]
@@ -3200,12 +3201,12 @@ fn PaymentRemindersForm(initial: ReminderSettings) -> Element {
 
 // ============================================================================
 // Time tracking: max hours per day (MAPPS-244 / PMS-396)
-// GET/PUT `/settings/time_tracking/max_hours_per_day`
+// GET `/settings/time_tracking` (the category), PUT `/settings/time_tracking/max_hours_per_day`
 // ============================================================================
 
 const MAX_HOURS_PER_DAY_SETTING_PATH: &str = "/settings/time_tracking/max_hours_per_day";
 /// Server stores the cap as an integer number of hours validated `1..=24`;
-/// an unconfigured tenant (404) falls back to a full 24-hour day.
+/// an unconfigured tenant falls back to a full 24-hour day.
 const MAX_HOURS_PER_DAY_CEILING: u32 = 24;
 const DEFAULT_MAX_HOURS_PER_DAY: u32 = 24;
 
@@ -3233,24 +3234,23 @@ fn MaxHoursPerDaySettingsBody() -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         #[cfg(feature = "app")]
         {
-            // A missing setting (404) is the unconfigured state, not an
-            // error: treat it as the full 24-hour default. Any other failure
-            // is surfaced so the form does not silently seed a wrong cap.
-            match crate::hooks::fetch::api::get_authed_typed::<SettingValueRow>(
-                MAX_HOURS_PER_DAY_SETTING_PATH,
-            )
-            .await
-            {
-                Ok(row) => Some(
+            // An unset setting is the unconfigured state, not an error: treat
+            // it as the full 24-hour default. A failed read is surfaced so the
+            // form does not silently seed a wrong cap.
+            match crate::modules::tenant_settings::get("time_tracking", "max_hours_per_day").await {
+                Ok(Some(value)) => Some(
                     setting_u64(
-                        &row.value,
+                        &value,
                         MAX_HOURS_PER_DAY_SETTING_PATH,
                         u64::from(DEFAULT_MAX_HOURS_PER_DAY),
                     )
                     .clamp(1, u64::from(MAX_HOURS_PER_DAY_CEILING)) as u32,
                 ),
-                Err(e) if e.status_code() == Some(404) => Some(DEFAULT_MAX_HOURS_PER_DAY),
-                Err(_) => None,
+                Ok(None) => Some(DEFAULT_MAX_HOURS_PER_DAY),
+                Err(e) => {
+                    tracing::error!("max-hours-per-day setting load failed: {e}");
+                    None
+                }
             }
         }
         #[cfg(not(feature = "app"))]

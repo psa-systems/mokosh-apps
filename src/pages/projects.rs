@@ -1455,9 +1455,9 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                 let remaining_h = p.budget_hours.unwrap_or(0.0) - logged_h;
                 let description = p.description.clone().filter(|d| !d.trim().is_empty());
                 rsx! {
-                    div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
+                    div { class: "grid grid-cols-1 @5xl:grid-cols-3 gap-6",
                         // Main content
-                        div { class: "lg:col-span-2 space-y-6",
+                        div { class: "@5xl:col-span-2 space-y-6",
                             Card {
                                 title: "Overview",
                                 // MAPPS-245: explain why the Add Task control is

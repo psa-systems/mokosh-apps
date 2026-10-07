@@ -906,8 +906,11 @@ fn QuoteDetailBody(id: String) -> Element {
                         ErrorBanner { class: "mb-3", "{pdf_error}" }
                     }
 
-                    div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
-                        div { class: "lg:col-span-2 space-y-6",
+                    // Split on main's container width, not the viewport: `lg:` ignores the
+                    // sidebar rail, so a wide viewport with the sidebar expanded can still
+                    // leave the 2/3 column too narrow for the line-items table (MAPPS-1013).
+                    div { class: "grid grid-cols-1 @5xl:grid-cols-3 gap-6",
+                        div { class: "@5xl:col-span-2 space-y-6",
                             Card { title: "Scope",
                                 div { class: "flex items-center gap-2 mb-3",
                                     Badge { variant: quote_status_variant(&st), "{status::label(&st)}" }
