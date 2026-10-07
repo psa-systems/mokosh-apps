@@ -8330,6 +8330,20 @@ pub(crate) struct PortalRoleSummaryWire {
     pub(crate) contacts_count: Option<u32>,
 }
 
+/// Whether the assign-portal-roles modal should claim "no roles
+/// configured". `None` is the roles resource still pending, not an
+/// empty-and-error-free resolution, so it must read false like the
+/// `Err` case rather than falling through to the same `true` an
+/// actually-empty catalog produces (MAPPS-1021).
+fn assign_portal_roles_no_roles_configured(
+    roles_snap: &Option<Result<Vec<PortalRoleSummaryWire>, String>>,
+) -> bool {
+    match roles_snap {
+        Some(Ok(roles)) => roles.is_empty(),
+        Some(Err(_)) | None => false,
+    }
+}
+
 /// MAPPS-757: the action is an invitation, not a grant of access.
 ///
 /// What changed is the words and nothing else. The button said "Grant
@@ -8619,6 +8633,11 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
         Some(Err(e)) => Some(e.to_string()),
         _ => None,
     };
+    // MAPPS-1021: `None` means the roles resource is still pending, not
+    // that the catalog resolved empty; the modal must keep showing a
+    // loading state (and the submit button disabled) rather than the
+    // "no roles configured" title until the fetch actually resolves.
+    let no_roles_configured = assign_portal_roles_no_roles_configured(&roles_snap);
     let assigned = assigned_resource
         .read_unchecked()
         .clone()
@@ -8875,7 +8894,6 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                             "Cancel"
                         }
                         {
-                            let no_roles_configured = roles_fetch_error.is_none() && roles.is_empty();
                             let disabled_title: Option<String> = no_roles_configured.then(|| {
                                 if is_portal_user {
                                     "Create a portal role in Settings before assigning any."
@@ -8908,7 +8926,9 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                         p { class: "text-xs text-muted",
                             "Paying an invoice needs a role that allows it, such as Billing Contact. That is separate from the company's billing contact, who is simply the person invoices are emailed to."
                         }
-                        if let Some(err_msg) = roles_fetch_error.as_deref() {
+                        if roles_snap.is_none() {
+                            crate::components::DetailSkeleton { rows: 2 } // MAPPS-1021
+                        } else if let Some(err_msg) = roles_fetch_error.as_deref() {
                             p { role: "alert", class: "text-sm text-red-600 dark:text-red-400",
                                 "Could not load portal roles: {err_msg}"
                             }
@@ -11712,10 +11732,32 @@ mod portal_role_modal_tests {
         );
         assert!(
             SRC.contains(
-                "let no_roles_configured = roles_fetch_error.is_none() && roles.is_empty();"
+                "let no_roles_configured = assign_portal_roles_no_roles_configured(&roles_snap);"
             ),
             "the assign-portal-roles modal derives `no_roles_configured` \
              from a different list than the one it renders",
         );
+    }
+
+    /// MAPPS-1021: a pending roles resource (`None`) is not the same as an
+    /// empty, error-free resolution. Until the fetch resolves, the modal
+    /// must not claim "no roles configured".
+    #[test]
+    fn no_roles_configured_is_false_while_roles_resource_is_pending() {
+        assert!(!super::assign_portal_roles_no_roles_configured(&None));
+    }
+
+    #[test]
+    fn no_roles_configured_is_true_once_resolved_empty() {
+        assert!(super::assign_portal_roles_no_roles_configured(&Some(Ok(
+            Vec::new()
+        ))));
+    }
+
+    #[test]
+    fn no_roles_configured_is_false_on_fetch_error() {
+        assert!(!super::assign_portal_roles_no_roles_configured(&Some(Err(
+            "boom".to_string()
+        ))));
     }
 }
