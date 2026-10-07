@@ -881,6 +881,15 @@ pub(crate) fn can_write_off(status: &str) -> bool {
 /// Cloud as the reference: the item stays visible and says why. The alternative
 /// the page used was to render nothing, which is indistinguishable from a
 /// feature that does not exist.
+/// MAPPS-1005: a draft or pending invoice renders live, so its PDF opens in a
+/// new tab rather than saving a file; once sent, the stored bytes are a
+/// record and the button downloads them. Mirrors the `editable` check that
+/// also gates Edit and Record Payment, kept as its own function so a test
+/// can pin the preview/download split without reaching into the page.
+pub(crate) fn invoice_pdf_previews(status: &str) -> bool {
+    matches!(status, "draft" | "pending")
+}
+
 pub(crate) fn edit_unavailable(status: &str) -> Option<String> {
     match status {
         "draft" | "pending" => None,
@@ -2543,6 +2552,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                             fallback_name: format!("{}.pdf", inv.invoice_number),
                             what: "the invoice PDF".to_string(),
                             label: if editable { "Preview PDF".to_string() } else { "Download PDF".to_string() },
+                            preview: invoice_pdf_previews(&status),
                             title: if editable {
                                 "Shows this draft as it would look now. Nothing is stored until you send it.".to_string()
                             } else {
@@ -7389,7 +7399,7 @@ mod overdue_tests {
 mod invoice_action_availability_tests {
     use super::{
         action_block, amend_unavailable, credit_note_unavailable, edit_unavailable,
-        void_unavailable, write_off_unavailable,
+        invoice_pdf_previews, void_unavailable, write_off_unavailable,
     };
 
     /// Every status an invoice can be in, so a table below cannot quietly omit
@@ -7433,6 +7443,20 @@ mod invoice_action_availability_tests {
                 (edit, amend, credit, write_off, void),
                 expected,
                 "availability for {status}"
+            );
+        }
+    }
+
+    /// MAPPS-1005: the PDF button opens a new tab exactly while editing is
+    /// possible, and downloads for everything else, same as `edit`'s column
+    /// above.
+    #[test]
+    fn pdf_previews_exactly_while_editable() {
+        for status in STATUSES {
+            assert_eq!(
+                invoice_pdf_previews(status),
+                edit_unavailable(status).is_none(),
+                "PDF preview-vs-download disagrees with editability for {status}"
             );
         }
     }
