@@ -41,6 +41,7 @@ wasm_check := "true"
 # check-web` and the CI wasm step, so a wasm lint fails at commit
 # time rather than being caught in CI.
 wasm_check_step := "clippy"
+wasm_check_args := "--all-targets -- -D warnings"
 
 # Mirrors check.yml's `cargo test --lib`: the tests live on the library target.
 test_args := "--lib"
