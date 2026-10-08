@@ -7984,7 +7984,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                 },
                             }
                             ContactPortalCard {
-                                contact_id: portal_id,
+                                contact_id: portal_id.clone(),
                                 // MAPPS-590 (prompt 012): thread the
                                 // contact's Company id so the role
                                 // picker fetches the scope-aware
@@ -7995,6 +7995,18 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                 is_portal_user,
                                 toggling: portal_toggling,
                                 on_change: move |_| { contact.restart(); },
+                            }
+                            // PMS-1326: assigning the billing contact is
+                            // a company FK, not a portal grant: no email
+                            // and no account required. Hidden on a
+                            // contact with no linked Company (the FK
+                            // would have nothing to update).
+                            if let Some(cid) = company_id.clone() {
+                                BillingContactCard {
+                                    contact_id: portal_id.clone(),
+                                    company_id: cid,
+                                    on_change: move |_| { contact.restart(); },
+                                }
                             }
                         }
                     }
@@ -9000,6 +9012,161 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                 }
             }
         }
+    }
+}
+
+/// PMS-1326: the sidebar card that lets a contact be made the Company's
+/// billing contact without granting portal access. Fetches the Company's
+/// current `default_billing_contact_id` and offers a "Make billing
+/// contact" button when this contact is not it; renders a static "Billing
+/// contact for {company}" badge when it is. No email, no portal account.
+#[derive(Props, Clone, PartialEq)]
+struct BillingContactCardProps {
+    contact_id: String,
+    company_id: String,
+    on_change: EventHandler<()>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CompanyBillingContactPayload {
+    #[serde(default)]
+    default_billing_contact_id: Option<uuid::Uuid>,
+}
+
+#[component]
+fn BillingContactCard(props: BillingContactCardProps) -> Element {
+    let contact_id_for_save = props.contact_id.clone();
+    let company_id_for_resource = props.company_id.clone();
+    let company_id_for_save = props.company_id.clone();
+    let on_change = props.on_change;
+
+    let mut company_resource = use_resource(move || {
+        let cid = company_id_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<CompanyBillingContactPayload>(&format!(
+                "/contacts/companies/{cid}"
+            ))
+            .await
+            .inspect_err(|e| tracing::warn!("billing-contact company load failed: {e}"))
+            .ok()
+        }
+    });
+
+    let mut saving = use_signal(|| false);
+    let can_mutate = crate::hooks::use_can_mutate();
+    let contact_uuid = uuid::Uuid::parse_str(&contact_id_for_save).ok();
+    let is_billing = match company_resource.read_unchecked().as_ref() {
+        Some(Some(p)) => p.default_billing_contact_id == contact_uuid,
+        _ => false,
+    };
+
+    let on_assign = move |_| {
+        if *saving.read() {
+            return;
+        }
+        let Some(cid) = contact_uuid else {
+            return;
+        };
+        saving.set(true);
+        let path = format!("/contacts/companies/{company_id_for_save}");
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let body = UpdateCompanyBody {
+                    default_billing_contact_id: Some(cid),
+                    ..UpdateCompanyBody::default()
+                };
+                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                    .await
+                {
+                    Ok(_) => {
+                        crate::hooks::toast::push_toast(
+                            crate::components::AlertType::Success,
+                            "Set as the billing contact.".to_string(),
+                        );
+                        company_resource.restart();
+                        on_change.call(());
+                    }
+                    Err(err) => crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Error,
+                        format!("Could not set the billing contact: {err}"),
+                    ),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = (&path, cid);
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        Card { title: "Billing Contact",
+            if is_billing {
+                div { class: "flex items-center justify-between",
+                    span { class: "text-sm text-muted", "Status" }
+                    Badge { variant: BadgeVariant::Green, "Billing contact" }
+                }
+                p { class: "text-xs text-muted mt-2",
+                    "Invoices for this Company are addressed to this contact. No portal account is required."
+                }
+            } else {
+                div { class: "space-y-3",
+                    div { class: "flex items-center justify-between",
+                        span { class: "text-sm text-muted", "Status" }
+                        Badge { variant: BadgeVariant::Gray, "Not set" }
+                    }
+                    p { class: "text-xs text-muted",
+                        "Mark this contact as the billing contact for the Company so invoices are addressed to them. No portal account is created and no email is sent."
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        disabled: !can_mutate || *saving.read(),
+                        loading: *saving.read(),
+                        title: (!can_mutate).then(|| "Can't change the billing contact while the server is unreachable".to_string()),
+                        onclick: on_assign,
+                        "Make billing contact"
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod billing_contact_card_tests {
+    /// The save closure writes ONLY `default_billing_contact_id` on the
+    /// Company and never calls a portal-grant path, so a contact with no
+    /// portal account can be made the billing contact without a side
+    /// effect that creates one.
+    #[test]
+    fn the_assign_closure_never_touches_portal_access() {
+        let src = include_str!("contacts.rs");
+        let start = src
+            .find("fn BillingContactCard(")
+            .expect("BillingContactCard is in this file");
+        let end = src[start..]
+            .find("\n#[cfg(test)]")
+            .unwrap_or(src.len() - start);
+        let body = &src[start..start + end];
+        assert!(
+            body.contains("default_billing_contact_id: Some(cid)"),
+            "save sets default_billing_contact_id to the contact: {body}"
+        );
+        assert!(
+            !body.contains("grant-portal-access"),
+            "save never calls the portal grant path: {body}"
+        );
+        assert!(
+            !body.contains("is_portal_user"),
+            "save never flips is_portal_user: {body}"
+        );
+        assert!(
+            !body.contains("role_ids"),
+            "save never assigns a portal role: {body}"
+        );
     }
 }
 
