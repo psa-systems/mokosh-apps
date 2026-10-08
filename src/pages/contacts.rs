@@ -5403,7 +5403,7 @@ fn CompanyBackupStatusCard(resource: Resource<Option<CompanyBackupStatusWire>>) 
                         TableEmpty { columns: 3, message: "No monitored systems for this client yet.".to_string() }
                     },
                     Some(Some(wire)) => {
-                        let rows: Vec<_> = wire.systems.iter().cloned().collect();
+                        let rows = wire.systems.to_vec();
                         rsx! {
                             TableBody {
                                 for system in rows.into_iter() {
