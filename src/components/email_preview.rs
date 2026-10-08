@@ -87,9 +87,6 @@ pub struct BuiltinEmail {
     /// sends (a minted link), listed in `unresolved`.
     pub body: String,
     pub unresolved: Vec<String>,
-    /// Why Send would email nobody, each a full sentence. Empty when every
-    /// condition the server checks is met as far as the page can tell.
-    pub blockers: Vec<String>,
     /// What the message will lack without stopping it (MAPPS-663): a pay
     /// link with no gateway connected. Rendered as information, not a
     /// warning, because Send still mails.
@@ -180,17 +177,6 @@ pub fn EmailPreview(
 
             div { class: "space-y-4",
                 if let Some(mail) = builtin.as_ref() {
-                    if !mail.blockers.is_empty() {
-                        crate::components::StatusBanner {
-                            tone: crate::components::BannerTone::Warning,
-                            p { class: "font-medium", "Send will be refused as things stand." }
-                            ul { class: "mt-1 list-disc pl-5 space-y-1",
-                                for reason in mail.blockers.iter() {
-                                    li { key: "{reason}", "{reason}" }
-                                }
-                            }
-                        }
-                    }
                     if !mail.notes.is_empty() {
                         crate::components::StatusBanner {
                             tone: crate::components::BannerTone::Info,

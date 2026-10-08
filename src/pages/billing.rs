@@ -816,8 +816,8 @@ struct InvoiceDetail {
     notes: Option<String>,
     #[serde(default)]
     po_number: Option<String>,
-    /// PMS-992: who the invoice went to and when, or nothing when it was
-    /// marked sent without emailing.
+    /// PMS-992 / PMS-1462: who the invoice was emailed to and when, or
+    /// nothing on a non-email delivery (postal / other).
     #[serde(default)]
     emailed_at: Option<String>,
     #[serde(default)]
@@ -1141,7 +1141,6 @@ pub(crate) fn invoice_pay_now_preview(
     balance_due: &str,
     currency: &str,
     due_date: &str,
-    contact_email: Option<Option<&str>>,
     gateway: Option<bool>,
 ) -> crate::components::BuiltinEmail {
     let org = if org_name.trim().is_empty() {
@@ -1154,28 +1153,12 @@ pub(crate) fn invoice_pay_now_preview(
     } else {
         currency.trim()
     };
-    // MAPPS-663: the two real blockers are the server's 409s (PMS-992). The
-    // gateway is not one since PMS-991: the invoice goes as a PDF regardless,
-    // and the pay link is the part that needs a gateway.
-    let mut blockers = Vec::new();
+    // MAPPS-1014 (PMS-1462): the pre-send blockers banner is gone - the
+    // server owns the "can this invoice be emailed" rule now, and the
+    // dialog's Email option carries the reason. The preview is purely
+    // informational; it never predicts a refusal.
     let mut notes = Vec::new();
-    let recipient = match contact_email {
-        None => {
-            blockers.push(
-                "This invoice has no billing contact and the company has no default one, so Send is refused. Set one with Edit, or pick one on the company."
-                    .to_string(),
-            );
-            "The billing contact (none set)".to_string()
-        }
-        Some(None) => {
-            blockers.push(
-                "The billing contact has no email address on file, so Send is refused. Add one on the contact."
-                    .to_string(),
-            );
-            "The billing contact (no email address on file)".to_string()
-        }
-        Some(Some(email)) => email.to_string(),
-    };
+    let recipient = "The billing contact".to_string();
     let pay_link = match gateway {
         Some(true) => true,
         Some(false) => {
@@ -1223,7 +1206,6 @@ pub(crate) fn invoice_pay_now_preview(
              {{{{contact_line}}}}"
         ),
         unresolved,
-        blockers,
         notes,
     }
 }
@@ -1241,10 +1223,6 @@ struct RemoteContactEmail {
 }
 
 impl RemoteContactEmail {
-    fn email(&self) -> Option<String> {
-        self.email.clone().filter(|e| !e.trim().is_empty())
-    }
-
     fn display_name(&self) -> String {
         format!("{} {}", self.first_name.trim(), self.last_name.trim())
             .trim()
@@ -1830,11 +1808,19 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     // PMS-1004: a Send the server refused with a 409 (no billing contact, or
     // one with no address, PMS-992). The reason, kept apart from
     // `action_error` because it gets a panel with the ways out rather than a
-    // bare banner: pick the contact here, or mark the invoice sent without
-    // emailing (`skip_email`, the server's explicit path for an invoice
-    // delivered another way).
+    // bare banner: pick the contact here, or pick a non-email delivery from
+    // the Send dialog.
     let mut send_blocked = use_signal(|| None::<String>);
-    let mut confirming_skip = use_signal(|| false);
+    // MAPPS-1014: the email went out and the relay refused it. Shown as a
+    // dismissable "The email was not sent." banner above the invoice with
+    // an expandable detail and a Retry button that reopens the Send dialog.
+    let mut send_failed = use_signal(|| None::<String>);
+    // MAPPS-1014 (PMS-1462): the delivery method the operator has picked in
+    // the Send dialog, and the note (required on `other`). Carried in the
+    // dialog's state and serialised onto the PUT body when the operator
+    // clicks Send.
+    let mut send_method = use_signal(|| "email".to_string());
+    let mut send_note = use_signal(String::new);
     // MAPPS-189: the Void button opens the styled ConfirmDialog; the void
     // request fires from `on_confirm_void` once the user confirms.
     let mut confirming_void = use_signal(|| false);
@@ -1885,27 +1871,42 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         });
     };
 
-    // MAPPS-1006: the Send confirmation's own request, moved out of the
-    // header button's `onclick`. A 409 ("nobody to email") closes the dialog
-    // and surfaces the existing blocked-send panel with its ways out; any
-    // other failure stays in the dialog instead of the page.
+    // MAPPS-1006 (PMS-1462): the Send confirmation's own request, moved out
+    // of the header button's `onclick`. The dialog carries the delivery
+    // method (`email` | `postal` | `other`) and the note; the request body
+    // is `{"status": "sent", "delivery": {...}}`. A 409 ("nobody to email")
+    // closes the dialog and surfaces the blocked-send panel with its ways
+    // out; a 502 (relay refused) closes the dialog and surfaces the
+    // separate send-failed banner with its Retry; any other failure stays
+    // inside the dialog.
     let mut on_confirm_send = move |_: ()| {
         if *busy.read() {
+            return;
+        }
+        let method = send_method.read().clone();
+        let note = send_note.read().trim().to_string();
+        // The note is required on `other`; the dialog's confirm_disabled
+        // guard renders Send disabled until it is non-blank, but a
+        // keyboard-driven confirm could still land here, so we re-check.
+        if method == "other" && note.is_empty() {
+            send_error.set("Describe how the invoice was delivered.".to_string());
             return;
         }
         busy.set(true);
         send_error.set(String::new());
         let path = invoice_send_path(&id_for_send);
-        // Cloned so the `async move` block below moves only this copy,
-        // leaving the closure's own `id_for_send` intact to borrow again
-        // on the next confirm (mirrors `on_confirm_void`'s `path` above).
         let invoice_id_for_log = id_for_send.clone();
         spawn(async move {
             #[cfg(feature = "app")]
             {
-                let body = serde_json::json!({ "status": "sent" });
-                // Typed, so a 409 can be told from any other refusal
-                // (PMS-1004).
+                // `other` carries the note; email / postal store NULL on
+                // the server, so omit it rather than send empty.
+                let delivery = if method == "other" {
+                    serde_json::json!({ "method": method, "note": note })
+                } else {
+                    serde_json::json!({ "method": method })
+                };
+                let body = serde_json::json!({ "status": "sent", "delivery": delivery });
                 match crate::hooks::fetch::api::put_authed_typed::<serde_json::Value, _>(
                     &path, &body,
                 )
@@ -1914,15 +1915,31 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                     Ok(_) => {
                         confirming_send.set(false);
                         send_blocked.set(None);
+                        send_failed.set(None);
+                        // Reset the dialog's local state so the next open
+                        // starts on `email`, not the method just used.
+                        send_method.set("email".to_string());
+                        send_note.set(String::new());
                         invoice_resource.restart();
                     }
                     // PMS-1004: a 409 is "nobody to email", and it gets the
-                    // panel with the ways out rather than the dialog's error.
+                    // panel with the ways out rather than the dialog's
+                    // error. Reachable only on `email`.
                     Err(crate::hooks::fetch::api::ApiError::Status {
                         code: 409, message, ..
                     }) => {
                         confirming_send.set(false);
                         send_blocked.set(Some(message));
+                    }
+                    // MAPPS-1014: the relay refused the mail. Dialog
+                    // closes; the banner above the invoice carries the
+                    // detail and the Retry.
+                    Err(crate::hooks::fetch::api::ApiError::Status { code, message, .. })
+                        if (500..=599).contains(&code) =>
+                    {
+                        tracing::warn!("send failed for invoice {invoice_id_for_log}: {message}");
+                        confirming_send.set(false);
+                        send_failed.set(Some(message));
                     }
                     Err(err) => {
                         tracing::warn!("send failed for invoice {invoice_id_for_log}: {err:?}");
@@ -1967,35 +1984,10 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         });
     };
 
-    // PMS-1004: the explicit no-email send. The same transition Send makes,
-    // with `skip_email`, so the server records that nobody was emailed
-    // rather than refusing.
-    let id_for_skip = props.id.clone();
-    let on_confirm_skip = move |_: ()| {
-        if *busy.read() {
-            return;
-        }
-        busy.set(true);
-        action_error.set(String::new());
-        let path = invoice_send_path(&id_for_skip);
-        spawn(async move {
-            #[cfg(feature = "app")]
-            {
-                let body = serde_json::json!({ "status": "sent", "skip_email": true });
-                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
-                    .await
-                {
-                    Ok(_) => {
-                        send_blocked.set(None);
-                        invoice_resource.restart();
-                    }
-                    Err(err) => action_error.set(format!("Could not mark the invoice sent: {err}")),
-                }
-            }
-            busy.set(false);
-            confirming_skip.set(false);
-        });
-    };
+    // MAPPS-1014 (PMS-1462): the explicit no-email path is now a method on
+    // the Send dialog's radio group, not a separate button. The dialog
+    // handles the "same transition Send makes, with the delivery recorded"
+    // case directly.
     // PMS-1004: setting the billing contact from the blocked-send panel. A
     // plain field update; the operator then sends again, on purpose.
     let id_for_contact = props.id.clone();
@@ -2242,98 +2234,158 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 }
             },
         }
-        // MAPPS-1006: Send is a one-way door that emails the client and
-        // locks the invoice, so it gets a confirmation like Void's rather
-        // than firing on click. `EmailPreview` sits in the dialog's body: it
-        // used to sit beside the Send button, but most visits to an invoice
-        // are not sends.
-        crate::components::ConfirmDialog {
-            open: confirming_send(),
-            title: "Send invoice".to_string(),
-            message: "Sending finalizes the invoice: it locks and nothing on it can change afterwards. The PDF goes to the billing contact's email, with a pay link when a payment gateway is connected.".to_string(),
-            confirm_text: "Send invoice".to_string(),
-            cancel_text: "Cancel".to_string(),
-            destructive: false,
-            loading: *busy.read(),
-            error: send_error.read().clone(),
-            body: rsx! {
-                p { class: "mb-2 text-sm text-muted",
-                    "Use Preview email to read the message first."
-                }
-                crate::components::EmailPreview {
-                    event_type: "billing.invoice_pay_now".to_string(),
-                    context: {
-                        let invoice_number = invoice
-                            .as_ref()
-                            .map(|i| i.invoice_number.clone())
-                            .unwrap_or_default();
-                        let company_name = invoice
-                            .as_ref()
-                            .and_then(|i| i.company_name.clone())
-                            .unwrap_or_default();
-                        let total = invoice
-                            .as_ref()
-                            .map(|i| i.total.clone())
-                            .unwrap_or_default();
-                        let due_date = invoice
-                            .as_ref()
-                            .and_then(|i| i.due_date.clone())
-                            .unwrap_or_default();
-                        move || serde_json::json!({
-                            "invoice_number": invoice_number.clone(),
-                            "company_name": company_name.clone(),
-                            "total": total.clone(),
-                            "due_date": due_date.clone(),
-                        })
+        // MAPPS-1006 (PMS-1462): Send is a one-way door that locks the
+        // invoice, so it gets a confirmation like Void's rather than firing
+        // on click. The dialog's body carries the delivery choice: Email,
+        // Postal mail or Other. Email shows the message preview; Other
+        // reveals a required note.
+        {
+            let method = send_method.read().clone();
+            let note = send_note.read().trim().to_string();
+            let other_invalid = method == "other" && note.is_empty();
+            let invoice_pdf_path = format!("/api/v1/invoices/{}/pdf", props.id);
+            rsx! {
+                crate::components::ConfirmDialog {
+                    open: confirming_send(),
+                    title: "Send invoice".to_string(),
+                    message: "Sending finalizes the invoice: it locks and nothing on it can change afterwards.".to_string(),
+                    confirm_text: "Send".to_string(),
+                    cancel_text: "Cancel".to_string(),
+                    destructive: false,
+                    loading: *busy.read(),
+                    error: send_error.read().clone(),
+                    confirm_disabled: other_invalid,
+                    body: rsx! {
+                        div { class: "space-y-3",
+                            p { class: "text-sm font-medium text-content", "How is it being sent?" }
+                            // Email
+                            label { class: "flex items-start gap-2 text-sm",
+                                input {
+                                    r#type: "radio",
+                                    name: "invoice_send_method",
+                                    value: "email",
+                                    checked: method == "email",
+                                    onchange: move |_| send_method.set("email".to_string()),
+                                }
+                                span {
+                                    span { class: "font-medium", "Email" }
+                                    span { class: "block text-xs text-muted",
+                                        "Mokosh emails the PDF to the billing contact."
+                                    }
+                                }
+                            }
+                            // Postal
+                            label { class: "flex items-start gap-2 text-sm",
+                                input {
+                                    r#type: "radio",
+                                    name: "invoice_send_method",
+                                    value: "postal",
+                                    checked: method == "postal",
+                                    onchange: move |_| send_method.set("postal".to_string()),
+                                }
+                                span {
+                                    span { class: "font-medium", "Postal mail" }
+                                    span { class: "block text-xs text-muted",
+                                        "Print the PDF and mail it. "
+                                        a {
+                                            href: "{invoice_pdf_path}",
+                                            target: "_blank",
+                                            class: "text-accent hover:underline",
+                                            "Open PDF"
+                                        }
+                                    }
+                                }
+                            }
+                            // Other
+                            label { class: "flex items-start gap-2 text-sm",
+                                input {
+                                    r#type: "radio",
+                                    name: "invoice_send_method",
+                                    value: "other",
+                                    checked: method == "other",
+                                    onchange: move |_| send_method.set("other".to_string()),
+                                }
+                                span {
+                                    span { class: "font-medium", "Other" }
+                                    span { class: "block text-xs text-muted",
+                                        "Attach to a message, hand-deliver, etc."
+                                    }
+                                }
+                            }
+                            if method == "other" {
+                                div { class: "space-y-1",
+                                    label {
+                                        r#for: "invoice_send_note",
+                                        class: "block text-xs font-medium text-content",
+                                        "How was it delivered?"
+                                    }
+                                    textarea {
+                                        id: "invoice_send_note",
+                                        rows: "3",
+                                        class: "block w-full rounded-md border-line shadow-sm focus:border-accent focus:ring-accent bg-surface text-content sm:text-sm",
+                                        placeholder: "e.g. Attached to an Outlook message to ap@client.example",
+                                        value: "{send_note.read()}",
+                                        oninput: move |e: FormEvent| send_note.set(e.value()),
+                                    }
+                                    p { class: "text-xs text-muted", "Required." }
+                                }
+                            }
+                            if method == "email" {
+                                div { class: "pt-2 border-t border-line",
+                                    p { class: "mb-2 text-xs text-muted", "Preview of the email the client will receive." }
+                                    crate::components::EmailPreview {
+                                        event_type: "billing.invoice_pay_now".to_string(),
+                                        context: {
+                                            let invoice_number = invoice
+                                                .as_ref()
+                                                .map(|i| i.invoice_number.clone())
+                                                .unwrap_or_default();
+                                            let company_name = invoice
+                                                .as_ref()
+                                                .and_then(|i| i.company_name.clone())
+                                                .unwrap_or_default();
+                                            let total = invoice
+                                                .as_ref()
+                                                .map(|i| i.total.clone())
+                                                .unwrap_or_default();
+                                            let due_date = invoice
+                                                .as_ref()
+                                                .and_then(|i| i.due_date.clone())
+                                                .unwrap_or_default();
+                                            move || serde_json::json!({
+                                                "invoice_number": invoice_number.clone(),
+                                                "company_name": company_name.clone(),
+                                                "total": total.clone(),
+                                                "due_date": due_date.clone(),
+                                            })
+                                        },
+                                        builtin: invoice.as_ref().map(|inv| {
+                                            invoice_pay_now_preview(
+                                                crate::hooks::use_auth()
+                                                    .read()
+                                                    .active_org_name()
+                                                    .unwrap_or_default(),
+                                                &inv.invoice_number,
+                                                &inv.balance_due,
+                                                inv.currency.as_deref().unwrap_or_default(),
+                                                inv.due_date.as_deref().unwrap_or_default(),
+                                                (*gateway_resource.read_unchecked()).flatten(),
+                                            )
+                                        }),
+                                    }
+                                }
+                            }
+                        }
                     },
-                    // MAPPS-642: the server-built message, with the
-                    // conditions under which Send mails nobody.
-                    builtin: invoice.as_ref().map(|inv| {
-                        let contact_email: Option<Option<String>> = inv
-                            .billing_contact_id
-                            .map(|_| {
-                                contact_resource
-                                    .read_unchecked()
-                                    .clone()
-                                    .flatten()
-                                    .and_then(|c| c.email())
-                            });
-                        invoice_pay_now_preview(
-                            crate::hooks::use_auth()
-                                .read()
-                                .active_org_name()
-                                .unwrap_or_default(),
-                            &inv.invoice_number,
-                            &inv.balance_due,
-                            inv.currency.as_deref().unwrap_or_default(),
-                            inv.due_date.as_deref().unwrap_or_default(),
-                            contact_email.as_ref().map(|e| e.as_deref()),
-                            (*gateway_resource.read_unchecked()).flatten(),
-                        )
-                    }),
+                    onconfirm: move |_| on_confirm_send(()),
+                    oncancel: move |_| {
+                        if !*busy.read() {
+                            confirming_send.set(false);
+                            send_error.set(String::new());
+                        }
+                    },
                 }
-            },
-            onconfirm: move |_| on_confirm_send(()),
-            oncancel: move |_| {
-                if !*busy.read() {
-                    confirming_send.set(false);
-                    send_error.set(String::new());
-                }
-            },
-        }
-        crate::components::ConfirmDialog {
-            open: confirming_skip(),
-            title: "Mark as sent without emailing".to_string(),
-            message: "Mark this invoice as sent without emailing it? It becomes a finalized record, exactly as a sent invoice does, and it records that nobody was emailed. Use this when the invoice is delivered another way.".to_string(),
-            confirm_text: "Mark as sent".to_string(),
-            cancel_text: "Cancel".to_string(),
-            loading: *busy.read(),
-            onconfirm: on_confirm_skip,
-            oncancel: move |_| {
-                if !*busy.read() {
-                    confirming_skip.set(false);
-                }
-            },
+            }
         }
         PageHeader {
             title: "{header_title}",
@@ -2764,15 +2816,15 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
             }
         }
 
-        // PMS-1004: the server refused Send because there is nobody to email.
-        // Its sentence names the company or the contact; the panel offers the
-        // ways out it points at, in place, rather than leaving the operator
-        // to find them.
+        // PMS-1004 (PMS-1462): the server refused Send with a 409 because
+        // email is impossible (no billing contact or no address). The panel
+        // offers the ways out it points at, in place; the operator can
+        // also just open Send again and pick postal / other.
         if let Some(reason) = send_blocked.read().clone() {
             crate::components::StatusBanner {
                 tone: crate::components::BannerTone::Warning,
                 class: "mb-3",
-                p { class: "font-medium", "The invoice was not sent." }
+                p { class: "font-medium", "The invoice was not emailed." }
                 p { class: "mt-1", "{reason}" }
                 div { class: "mt-3 space-y-3",
                     crate::components::ContactPicker {
@@ -2783,21 +2835,48 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                         onselect: on_pick_contact,
                         onclear: move |_| {},
                     }
-                    div { class: "flex flex-wrap items-center gap-3",
-                        Button {
-                            variant: ButtonVariant::Secondary,
-                            size: ButtonSize::Small,
-                            disabled: *busy.read(),
-                            onclick: move |_| confirming_skip.set(true),
-                            "Mark as sent without emailing"
-                        }
-                        if !pay_company_id.is_empty() {
+                    if !pay_company_id.is_empty() {
+                        div { class: "flex flex-wrap items-center gap-3",
                             Link {
                                 to: Route::CompanyDetail { id: pay_company_id.clone() },
                                 class: "text-sm text-accent hover:opacity-90",
                                 "Open the company to set its default billing contact"
                             }
                         }
+                    }
+                }
+            }
+        }
+        // MAPPS-1014: the email went out and the relay refused it. The
+        // dialog closed with the mail unsent, and the banner carries the
+        // reason + a Retry that reopens Send with the method and note
+        // the operator had.
+        if let Some(reason) = send_failed.read().clone() {
+            crate::components::StatusBanner {
+                tone: crate::components::BannerTone::Warning,
+                class: "mb-3",
+                p { class: "font-medium", "The email was not sent." }
+                details { class: "mt-1 text-xs text-muted",
+                    summary { class: "cursor-pointer", "Show details" }
+                    p { class: "mt-1", "{reason}" }
+                }
+                div { class: "mt-3 flex flex-wrap items-center gap-3",
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        size: ButtonSize::Small,
+                        disabled: *busy.read(),
+                        onclick: move |_| {
+                            send_failed.set(None);
+                            confirming_send.set(true);
+                        },
+                        "Retry"
+                    }
+                    Button {
+                        variant: ButtonVariant::Ghost,
+                        size: ButtonSize::Small,
+                        disabled: *busy.read(),
+                        onclick: move |_| send_failed.set(None),
+                        "Dismiss"
                     }
                 }
             }
@@ -7716,18 +7795,18 @@ mod invoice_preview_tests {
     /// "nothing will be sent" over a send that would mail (MAPPS-663).
     #[test]
     fn each_missing_condition_is_named_and_a_complete_setup_has_no_blockers() {
+        // PMS-1462 / MAPPS-1014: no blockers field any more; the server
+        // owns refusal.
         let ok = invoice_pay_now_preview(
             "Acme MSP",
             "INV-000001",
             "50.00",
             "USD",
             "2026-09-30",
-            Some(Some("ap@client.example")),
             Some(true),
         );
-        assert!(ok.blockers.is_empty(), "{:?}", ok.blockers);
         assert!(ok.notes.is_empty(), "{:?}", ok.notes);
-        assert_eq!(ok.recipient, "ap@client.example");
+        assert_eq!(ok.recipient, "The billing contact");
         assert_eq!(
             ok.subject,
             "Invoice INV-000001 from Acme MSP is ready to pay"
@@ -7737,25 +7816,7 @@ mod invoice_preview_tests {
         assert!(ok.body.contains("{{portal_link}}"));
         assert_eq!(ok.unresolved, vec!["portal_link", "contact_line"]);
 
-        let no_contact =
-            invoice_pay_now_preview("Acme MSP", "INV-1", "1", "", "", None, Some(true));
-        assert_eq!(no_contact.blockers.len(), 1);
-        assert!(no_contact.blockers[0].contains("no billing contact"));
-
-        let no_email =
-            invoice_pay_now_preview("Acme MSP", "INV-1", "1", "", "", Some(None), Some(true));
-        assert!(no_email.blockers[0].contains("no email address"));
-
-        let no_gateway = invoice_pay_now_preview(
-            "Acme MSP",
-            "INV-1",
-            "1",
-            "",
-            "",
-            Some(Some("a@b.c")),
-            Some(false),
-        );
-        assert!(no_gateway.blockers.is_empty(), "{:?}", no_gateway.blockers);
+        let no_gateway = invoice_pay_now_preview("Acme MSP", "INV-1", "1", "", "", Some(false));
         assert!(no_gateway.notes[0].contains("No payment gateway"));
         assert_eq!(no_gateway.subject, "Invoice INV-1 from Acme MSP");
         assert!(
@@ -7765,7 +7826,7 @@ mod invoice_preview_tests {
         );
         assert_eq!(no_gateway.unresolved, vec!["contact_line"]);
 
-        let unknown = invoice_pay_now_preview("", "INV-1", "1", "", "", Some(Some("a@b.c")), None);
+        let unknown = invoice_pay_now_preview("", "INV-1", "1", "", "", None);
         assert!(unknown.notes[0].contains("Could not check"));
         assert!(unknown
             .subject

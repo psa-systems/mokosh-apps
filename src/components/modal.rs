@@ -280,6 +280,14 @@ pub struct ConfirmDialogProps {
     /// is the wasted effort this flag exists to remove.
     #[props(default = false)]
     blocked: bool,
+    /// MAPPS-1014: the confirm button is kept rendered but disabled, for the
+    /// case where the caller has an in-dialog form the user has not yet
+    /// filled in (e.g. the Send dialog's required note for `other`). The
+    /// `blocked` flag withholds the button entirely, which is the wrong tool
+    /// here: a stub-filled Send is a one-field-away click, not a refused
+    /// action with an alternative.
+    #[props(default = false)]
+    confirm_disabled: bool,
     /// MAPPS-577: an alternative action in the footer, for the case where the
     /// destructive one is refused and there IS something useful to do instead.
     #[props(default)]
@@ -327,6 +335,7 @@ pub fn ConfirmDialog(props: ConfirmDialogProps) -> Element {
             error: props.error.clone(),
             body: props.body.clone(),
             blocked: props.blocked,
+            confirm_disabled: props.confirm_disabled,
             alternative: props.alternative.clone(),
             onconfirm: props.onconfirm,
             oncancel: props.oncancel,
@@ -349,6 +358,7 @@ fn OpenConfirmDialog(
     error: String,
     body: Option<Element>,
     blocked: bool,
+    confirm_disabled: bool,
     alternative: Option<Element>,
     onconfirm: EventHandler<()>,
     oncancel: EventHandler<()>,
@@ -368,7 +378,7 @@ fn OpenConfirmDialog(
     // phrase to unlock.
     let gated = !blocked && !confirm_phrase.trim().is_empty();
     let satisfied = confirm_phrase_satisfied(&typed.read(), &confirm_phrase);
-    let confirm_disabled = loading || !satisfied;
+    let confirm_disabled = loading || !satisfied || confirm_disabled;
     let phrase = confirm_phrase.clone();
 
     rsx! {
