@@ -2746,25 +2746,40 @@ const DISPATCH_COLUMN_MIN_PX: usize = 112;
 
 #[component]
 fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
+    // 0=Sunday .. 6=Saturday for matching availability windows.
+    let dow = props.day.weekday().num_days_from_sunday() as i32;
+
+    // MAPPS-1028: group appointments and availability by technician in one
+    // pass each, instead of re-scanning the whole day's collections once per
+    // column. `user_ids` is deduped via the HashMap/HashSet keys rather than
+    // three O(n) `Vec::contains` checks per id.
+    let mut appts_by_user: std::collections::HashMap<uuid::Uuid, Vec<AppointmentResponse>> =
+        std::collections::HashMap::new();
+    for a in props.dispatch.appointments.iter() {
+        appts_by_user
+            .entry(a.assigned_to_id)
+            .or_default()
+            .push(a.clone());
+    }
+    let mut windows_by_user: std::collections::HashMap<uuid::Uuid, Vec<UserAvailabilityResponse>> =
+        std::collections::HashMap::new();
+    for av in props.dispatch.availability.iter() {
+        if av.day_of_week == dow && av.is_available {
+            windows_by_user
+                .entry(av.user_id)
+                .or_default()
+                .push(av.clone());
+        }
+    }
+
     // Which user ids to show as columns: everyone who has an appointment,
     // an availability window, or time off today. Sorted by display name
     // for a stable layout.
-    let mut user_ids: Vec<uuid::Uuid> = Vec::new();
-    for a in props.dispatch.appointments.iter() {
-        if !user_ids.contains(&a.assigned_to_id) {
-            user_ids.push(a.assigned_to_id);
-        }
-    }
-    for av in props.dispatch.availability.iter() {
-        if !user_ids.contains(&av.user_id) {
-            user_ids.push(av.user_id);
-        }
-    }
-    for t in props.dispatch.time_off.iter() {
-        if !user_ids.contains(&t.user_id) {
-            user_ids.push(t.user_id);
-        }
-    }
+    let mut seen_ids: std::collections::HashSet<uuid::Uuid> = std::collections::HashSet::new();
+    seen_ids.extend(props.dispatch.appointments.iter().map(|a| a.assigned_to_id));
+    seen_ids.extend(props.dispatch.availability.iter().map(|av| av.user_id));
+    seen_ids.extend(props.dispatch.time_off.iter().map(|t| t.user_id));
+    let mut user_ids: Vec<uuid::Uuid> = seen_ids.into_iter().collect();
     let name_for = |id: uuid::Uuid| {
         props
             .users
@@ -2774,9 +2789,6 @@ fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
             .unwrap_or_else(|| "Unknown".to_string())
     };
     user_ids.sort_by_key(|id| name_for(*id));
-
-    // 0=Sunday .. 6=Saturday for matching availability windows.
-    let dow = props.day.weekday().num_days_from_sunday() as i32;
 
     // MAPPS-1015: time runs down the page like Google Calendar's day view, so
     // the 24-hour day scrolls vertically and opens on working hours.
@@ -2855,20 +2867,8 @@ fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
                     for id in user_ids.iter() {
                         {
                             let uid = *id;
-                            let col_appts: Vec<AppointmentResponse> = props
-                                .dispatch
-                                .appointments
-                                .iter()
-                                .filter(|a| a.assigned_to_id == uid)
-                                .cloned()
-                                .collect();
-                            let windows: Vec<UserAvailabilityResponse> = props
-                                .dispatch
-                                .availability
-                                .iter()
-                                .filter(|w| w.user_id == uid && w.day_of_week == dow && w.is_available)
-                                .cloned()
-                                .collect();
+                            let col_appts = appts_by_user.remove(&uid).unwrap_or_default();
+                            let windows = windows_by_user.remove(&uid).unwrap_or_default();
                             rsx! {
                                 DispatchColumn {
                                     key: "{uid}",
