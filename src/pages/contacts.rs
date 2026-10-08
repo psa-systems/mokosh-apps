@@ -2304,6 +2304,21 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     // a human-readable type name in the Assets card (MAPPS-940).
     let asset_types_resource = crate::hooks::use_asset_types(true);
 
+    let company_id_for_backup = company_id_str.clone();
+    let backup_status_resource = use_resource(move || {
+        let id = company_id_for_backup.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
+            crate::hooks::fetch::api::get_authed::<CompanyBackupStatusWire>(&format!(
+                "/status/companies/{id}/backup"
+            ))
+            .await
+            .inspect_err(|e| tracing::error!("company backup status load failed for {id}: {e}"))
+            .ok()
+        }
+    });
+
     // MAPPS-619: tenant branding defaults so the per-Company branding
     // card can render "Inherits from MSP default: X" hints per field.
     // The response is the full Tenant DTO; we only need the `branding`
@@ -2790,6 +2805,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                 assets_resource,
                                 asset_types_resource,
                             }
+                            CompanyBackupStatusCard { resource: backup_status_resource }
                             // MAPPS-619: per-Company branding overrides.
                             // Reads current values off the Company detail
                             // response + tenant defaults for the "Inherits
@@ -5325,6 +5341,103 @@ struct AssetSummary {
     asset_type_id: Option<uuid::Uuid>,
     #[serde(default)]
     status: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct CompanyBackupStatusWire {
+    #[serde(default)]
+    systems: Vec<CompanySystemBackupWire>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct CompanySystemBackupWire {
+    monitored_system_id: uuid::Uuid,
+    #[serde(default)]
+    system_name: String,
+    #[serde(default)]
+    latest: Option<CurrentObservationWire>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct CurrentObservationWire {
+    #[serde(default)]
+    outcome: String,
+    observed_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn backup_outcome_badge(outcome: &str) -> (BadgeVariant, &'static str) {
+    match outcome {
+        "success" => (BadgeVariant::Green, "Succeeded"),
+        "warning" => (BadgeVariant::Yellow, "Warning"),
+        "failure" => (BadgeVariant::Red, "Failed"),
+        _ => (BadgeVariant::Gray, "Unknown"),
+    }
+}
+
+#[component]
+fn CompanyBackupStatusCard(resource: Resource<Option<CompanyBackupStatusWire>>) -> Element {
+    let snap = resource.read_unchecked();
+    let count = match &*snap {
+        Some(Some(wire)) => Some(wire.systems.len() as u64),
+        _ => None,
+    };
+    rsx! {
+        CollapsibleCard {
+            title: "Backup Status",
+            count,
+            padding: false,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "System" }
+                        TableHeader { "Backup" }
+                        TableHeader { "Last Observed" }
+                    }
+                }
+                match &*snap {
+                    None => rsx! { TableLoading { columns: 3, rows: 3 } },
+                    Some(None) => rsx! {
+                        TableEmpty { columns: 3, message: "Could not load backup status.".to_string() }
+                    },
+                    Some(Some(wire)) if wire.systems.is_empty() => rsx! {
+                        TableEmpty { columns: 3, message: "No monitored systems for this client yet.".to_string() }
+                    },
+                    Some(Some(wire)) => {
+                        let rows: Vec<_> = wire.systems.iter().cloned().collect();
+                        rsx! {
+                            TableBody {
+                                for system in rows.into_iter() {
+                                    {
+                                        let key = system.monitored_system_id.to_string();
+                                        let name = if system.system_name.trim().is_empty() {
+                                            key.clone()
+                                        } else {
+                                            system.system_name.clone()
+                                        };
+                                        let (variant, label, observed) = match system.latest.as_ref() {
+                                            Some(obs) => {
+                                                let (v, l) = backup_outcome_badge(&obs.outcome);
+                                                let when = crate::utils::datetime::fmt_relative(obs.observed_at);
+                                                (v, l, when)
+                                            }
+                                            None => (BadgeVariant::Gray, "No data", "-".to_string()),
+                                        };
+                                        rsx! {
+                                            TableRow { key: "{key}",
+                                                TableCell { class: "font-medium", "{name}" }
+                                                TableCell { Badge { variant, "{label}" } }
+                                                TableCell { class: "text-muted", "{observed}" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        }
+    }
 }
 
 #[component]
