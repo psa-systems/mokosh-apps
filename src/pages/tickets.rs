@@ -969,13 +969,20 @@ fn build_journal(
             // costs something if it is wrong.
             _ => "added a note".to_string(),
         };
+        // A self-authored note from a JIT-provisioned bunyip user whose
+        // profile name is still empty would otherwise read as "Someone" on
+        // their own ticket; threading created_by_id through journal_actor
+        // closes the same gap history + time entries already handle. A
+        // note from someone else with an empty server-sent name still
+        // falls through to "Someone" since the viewer-id match misses.
+        let who = if n.created_by_name.trim().is_empty() {
+            journal_actor(users, &n.created_by_id, viewer_pair)
+        } else {
+            n.created_by_name.clone()
+        };
         entries.push(JournalEntry {
             at: n.created_at,
-            who: if n.created_by_name.trim().is_empty() {
-                "Someone".to_string()
-            } else {
-                n.created_by_name.clone()
-            },
+            who,
             action,
             body: (!n.content.trim().is_empty()).then(|| n.content.clone()),
             changes: Vec::new(),
@@ -6543,6 +6550,65 @@ mod mapps517_journal_tests {
             actions(&journal),
             vec!["Someone created the ticket".to_string()],
             "non-viewer ids still rely on the roster"
+        );
+    }
+
+    /// A note from the viewer with an empty server-sent name (the JIT
+    /// bunyip profile case) resolves to the viewer's own name through
+    /// journal_actor, closing the gap the history + time-entry branches
+    /// already handled.
+    #[test]
+    fn a_self_authored_note_with_an_empty_name_resolves_to_the_viewer() {
+        let viewer_id =
+            uuid::Uuid::parse_str("11111111-1111-4111-8111-111111111111").expect("uuid");
+        let n = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000001","note_type":"internal",
+                "content":"ran the restart","created_by_name":"",
+                "created_by_id":"11111111-1111-4111-8111-111111111111",
+                "created_at":"2026-08-20T09:00:00Z"}"#,
+        );
+
+        let journal = build_journal(
+            &[n],
+            &[],
+            &[],
+            &[],
+            Some((viewer_id, "Alex Doe".to_string())),
+            false,
+        );
+
+        assert_eq!(
+            actions(&journal),
+            vec!["Alex Doe added an internal note".to_string()]
+        );
+    }
+
+    /// A note from someone else with an empty server-sent name still falls
+    /// through to "Someone"; the viewer short-circuit must not swallow
+    /// another author's id just because the current viewer is signed in.
+    #[test]
+    fn a_note_from_another_author_with_an_empty_name_still_reads_as_someone() {
+        let viewer_id =
+            uuid::Uuid::parse_str("22222222-2222-4222-8222-222222222222").expect("uuid");
+        let n = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000002","note_type":"internal",
+                "content":"ran the restart","created_by_name":"",
+                "created_by_id":"11111111-1111-4111-8111-111111111111",
+                "created_at":"2026-08-20T09:00:00Z"}"#,
+        );
+
+        let journal = build_journal(
+            &[n],
+            &[],
+            &[],
+            &[],
+            Some((viewer_id, "Alex Doe".to_string())),
+            false,
+        );
+
+        assert_eq!(
+            actions(&journal),
+            vec!["Someone added an internal note".to_string()]
         );
     }
 
