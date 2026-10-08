@@ -434,12 +434,16 @@ pub fn WorkDayStrip() -> Element {
 
     let date_for_resource = picked_date();
     let user_for_resource = picked_user();
-    let module_flags = crate::hooks::modules::use_module_flags();
-    let skip_workday_request = should_skip_workday(module_flags.as_ref());
     let mut day_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
         let _tick = refetch_tick();
+        // MAPPS-1022: read inside this closure, not captured from the
+        // component body, so a flags change restarts this resource on its
+        // own account instead of waiting for the tenant, connectivity or
+        // tick dependency to happen to fire too.
+        let module_flags = crate::hooks::modules::use_module_flags();
+        let skip_workday_request = should_skip_workday(module_flags.as_ref());
         let path = day_query(date_for_resource, user_for_resource);
         if skip_workday_request {
             return Some(DayLoad::ModulesOff);
@@ -1574,6 +1578,99 @@ mod mapps746_strip_says_why_tests {
         assert!(
             !MODULES_OFF_NOTICE.contains("Settings"),
             "no link is promised that the client cannot make"
+        );
+    }
+}
+
+/// MAPPS-1022: `should_skip_workday`'s input must be read inside
+/// `day_resource`'s own closure so Dioxus's dependency tracker attaches the
+/// resource's own subscription to it, the same defect class MAPPS-847 fixed
+/// for `page`/`search`/`status` on the other list pages. This reproduces
+/// that shape with a signal standing in for `MODULE_FLAGS` (a `GlobalSignal`
+/// shared across the whole test binary is not safe to flip from one test)
+/// and proves that resolving it from `None` to a value that flips
+/// `should_skip_workday`'s answer, with nothing else touched, restarts the
+/// resource on its own account rather than riding an unrelated re-render.
+///
+/// `tokio` is only a dev-dependency on non-wasm targets, so this module is
+/// skipped on `check-web`'s wasm32 target rather than failing there for a
+/// crate it cannot see.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod mapps1022_reactive_dependency_tests {
+    use super::should_skip_workday;
+    use crate::hooks::modules::ModuleFlags;
+    use dioxus::dioxus_core::NoOpMutations;
+    use dioxus::prelude::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    #[derive(Default)]
+    struct RunCounter {
+        component: usize,
+        resource: usize,
+    }
+
+    #[tokio::test]
+    async fn resolving_module_flags_alone_restarts_the_day_resource() {
+        let counter = Rc::new(RefCell::new(RunCounter::default()));
+
+        let mut dom = VirtualDom::new_with_props(
+            |counter: Rc<RefCell<RunCounter>>| {
+                counter.borrow_mut().component += 1;
+
+                let mut module_flags = use_signal(|| None::<ModuleFlags>);
+
+                let _resource = {
+                    let counter = counter.clone();
+                    use_resource(move || {
+                        // Mirrors the fixed shape in `WorkDayStrip`: the
+                        // read happens here, inside the resource's own
+                        // closure, so resolving `module_flags` alone
+                        // restarts this resource on its own account.
+                        let _skip = should_skip_workday(module_flags.read().as_ref());
+                        counter.borrow_mut().resource += 1;
+                        async move {}
+                    })
+                };
+
+                // Stands in for `refresh_module_flags()` landing some time
+                // after the initial render, with nothing else on the page
+                // prompting a re-render.
+                use_future(move || async move {
+                    module_flags.set(Some(ModuleFlags {
+                        generation: 1,
+                        enabled: vec!["time_tracking".to_string()],
+                    }));
+                });
+
+                rsx! {}
+            },
+            counter.clone(),
+        );
+
+        dom.rebuild_in_place();
+        // `wait_for_work` drives the resource's own restart-watching task to
+        // completion as a side effect of polling it, but only returns once
+        // new renderable mutations are pending; since none of this
+        // harness's own scopes ever go dirty, it never resolves on its own,
+        // so its completion is not the signal to wait for (mirrors dioxus's
+        // own `effects_rerun_without_rerender` test).
+        tokio::select! {
+            _ = dom.wait_for_work() => {}
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+        };
+        dom.render_immediate(&mut NoOpMutations);
+
+        let final_counts = counter.borrow();
+        assert_eq!(
+            final_counts.component, 1,
+            "the component itself must not have re-rendered"
+        );
+        assert_eq!(
+            final_counts.resource, 2,
+            "resolving module_flags alone, with nothing else re-rendering, must \
+             restart the resource on its own account"
         );
     }
 }

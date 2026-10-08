@@ -898,11 +898,17 @@ fn QuoteDetailBody(id: String) -> Element {
                                                             code: 501,
                                                             ..
                                                         }) => {
+                                                            if let Some(tab) = preview_tab {
+                                                                tab.close();
+                                                            }
                                                             pdf_error.set(
                                                                 "PDF generation not available yet".to_string(),
                                                             );
                                                         }
                                                         Err(err) => {
+                                                            if let Some(tab) = preview_tab {
+                                                                tab.close();
+                                                            }
                                                             pdf_error.set(format!(
                                                                 "Could not download PDF: {}",
                                                                 err.user_message()
@@ -1579,6 +1585,15 @@ impl DraftLine {
         let p: Decimal = self.unit_price.trim().parse().unwrap_or_default();
         q * p
     }
+
+    /// A line the user has started (quantity or unit price filled) but left
+    /// without a description is a required-field miss, not the untouched
+    /// placeholder row MAPPS-1017 exempts. Both the submit guard and the
+    /// payload filter below key off this, so they cannot diverge again.
+    fn needs_description(&self) -> bool {
+        self.description.trim().is_empty()
+            && (!self.quantity.trim().is_empty() || !self.unit_price.trim().is_empty())
+    }
 }
 
 #[component]
@@ -1728,10 +1743,11 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
             guard.note_invalid(Some("title"));
         }
         for (idx, l) in draft_lines.iter().enumerate() {
-            // A line with an empty description AND an empty quantity is a
-            // placeholder row that the user has not touched: it is dropped
-            // on save and must not count as a required-field miss.
-            if l.description.trim().is_empty() && !l.quantity.trim().is_empty() {
+            // A line with an empty description AND an empty quantity AND an
+            // empty unit price is a placeholder row that the user has not
+            // touched: it is dropped on save and must not count as a
+            // required-field miss.
+            if l.needs_description() {
                 if let Some(slot) = line_errors.write().get_mut(idx) {
                     *slot = "Description is required.".to_string();
                 }
@@ -2157,6 +2173,44 @@ mod tests {
         assert_eq!(l.preview_total(), Decimal::ZERO);
     }
 
+    /// MAPPS-1018: a line with only `unit_price` filled must be flagged as
+    /// missing its description, the same as a line with only `quantity`
+    /// filled. Before this fix, only the quantity-filled case was caught by
+    /// the submit guard, so a price-only line fell through the guard and
+    /// then the payload filter dropped it with no error shown.
+    #[test]
+    fn price_only_line_needs_a_description() {
+        let mut l = DraftLine::new();
+        l.quantity = "".into();
+        l.unit_price = "100".into();
+        assert!(l.needs_description());
+    }
+
+    #[test]
+    fn quantity_only_line_still_needs_a_description() {
+        let mut l = DraftLine::new();
+        l.quantity = "2".into();
+        l.unit_price = "".into();
+        assert!(l.needs_description());
+    }
+
+    #[test]
+    fn untouched_placeholder_line_does_not_need_a_description() {
+        let mut l = DraftLine::new();
+        l.quantity = "".into();
+        l.unit_price = "".into();
+        assert!(!l.needs_description());
+    }
+
+    #[test]
+    fn line_with_a_description_does_not_need_one() {
+        let mut l = DraftLine::new();
+        l.description = "Consulting".into();
+        l.quantity = "".into();
+        l.unit_price = "100".into();
+        assert!(!l.needs_description());
+    }
+
     #[test]
     fn negative_lines_reduce_the_preview_total() {
         // A discount line is legitimate and must subtract.
@@ -2187,6 +2241,23 @@ mod tests {
         assert!(
             page.contains("let preview_tab = if previewable {"),
             "opening the tab must follow the same `previewable` flag as the label"
+        );
+    }
+
+    /// MAPPS-1020: a tab opened for a preview that never arrives (the PDF
+    /// fetch fails) must be closed, not left blank. Both failure arms of
+    /// the fetch match. Asserted on the source rather than by driving a
+    /// real `web_sys::Window`, which this test target cannot create.
+    #[test]
+    fn pdf_fetch_failure_arms_close_an_already_opened_preview_tab() {
+        let page = include_str!("quotes.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the page has source before its tests");
+        let closes = page.matches("if let Some(tab) = preview_tab").count();
+        assert_eq!(
+            closes, 2,
+            "both the 501 arm and the general Err arm must close preview_tab"
         );
     }
 }
