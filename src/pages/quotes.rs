@@ -775,6 +775,12 @@ fn QuoteDetailBody(id: String) -> Element {
     // MAPPS-436: Cancel quote is destructive and has no undo, so the button
     // only opens the dialog and the DELETE fires from `onconfirm`.
     let mut confirming_cancel = use_signal(|| false);
+    // MAPPS-1014 (PMS-1462): the Send dialog's local state. `send_method`
+    // defaults to `email`; `send_note` is required when `send_method` ==
+    // `other`. The confirm button is disabled until the state is valid.
+    let mut confirming_send = use_signal(|| false);
+    let mut send_method = use_signal(|| "email".to_string());
+    let mut send_note = use_signal(String::new);
 
     let id_for_fetch = id.clone();
     let quote_resource = use_resource(move || {
@@ -1111,12 +1117,7 @@ fn QuoteDetailBody(id: String) -> Element {
                                         Button {
                                             variant: ButtonVariant::Primary,
                                             disabled: !can_mutate || *busy.read(),
-                                            onclick: {
-                                                let qid = quote_id.clone();
-                                                move |_| {
-                                                    send_quote(qid.clone(), version, busy, action_error);
-                                                }
-                                            },
+                                            onclick: move |_| confirming_send.set(true),
                                             MailIcon { size: IconSize::Small, class: "mr-2".to_string() }
                                             "Send to client"
                                         }
@@ -1144,7 +1145,123 @@ fn QuoteDetailBody(id: String) -> Element {
                                             empty_note: QUOTE_PREVIEW_NOTE.to_string(),
                                         }
                                         p { class: "text-xs text-subtle",
-                                            "Emails your customer's billing contact a link to accept or decline."
+                                            "Sending gives your customer the quote to accept or decline."
+                                        }
+                                        // MAPPS-1014 (PMS-1462): Send dialog with
+                                        // the method choice. Mirrors the invoice side.
+                                        {
+                                            let method = send_method.read().clone();
+                                            let note = send_note.read().trim().to_string();
+                                            let other_invalid = method == "other" && note.is_empty();
+                                            let pdf_path = format!("/api/v1/quotes/{}/pdf", q.id);
+                                            let qid = quote_id.clone();
+                                            rsx! {
+                                                crate::components::ConfirmDialog {
+                                                    open: confirming_send(),
+                                                    title: "Send quote".to_string(),
+                                                    message: "Sending gives your customer the quote to accept or decline.".to_string(),
+                                                    confirm_text: "Send".to_string(),
+                                                    cancel_text: "Cancel".to_string(),
+                                                    loading: *busy.read(),
+                                                    confirm_disabled: other_invalid,
+                                                    body: rsx! {
+                                                        div { class: "space-y-3",
+                                                            p { class: "text-sm font-medium text-content", "How is it being sent?" }
+                                                            label { class: "flex items-start gap-2 text-sm",
+                                                                input {
+                                                                    r#type: "radio",
+                                                                    name: "quote_send_method",
+                                                                    value: "email",
+                                                                    checked: method == "email",
+                                                                    onchange: move |_| send_method.set("email".to_string()),
+                                                                }
+                                                                span {
+                                                                    span { class: "font-medium", "Email" }
+                                                                    span { class: "block text-xs text-muted",
+                                                                        "Mokosh emails the sign-off link to the billing contact."
+                                                                    }
+                                                                }
+                                                            }
+                                                            label { class: "flex items-start gap-2 text-sm",
+                                                                input {
+                                                                    r#type: "radio",
+                                                                    name: "quote_send_method",
+                                                                    value: "postal",
+                                                                    checked: method == "postal",
+                                                                    onchange: move |_| send_method.set("postal".to_string()),
+                                                                }
+                                                                span {
+                                                                    span { class: "font-medium", "Postal mail" }
+                                                                    span { class: "block text-xs text-muted",
+                                                                        "Print the PDF and mail it. "
+                                                                        a {
+                                                                            href: "{pdf_path}",
+                                                                            target: "_blank",
+                                                                            class: "text-accent hover:underline",
+                                                                            "Open PDF"
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            label { class: "flex items-start gap-2 text-sm",
+                                                                input {
+                                                                    r#type: "radio",
+                                                                    name: "quote_send_method",
+                                                                    value: "other",
+                                                                    checked: method == "other",
+                                                                    onchange: move |_| send_method.set("other".to_string()),
+                                                                }
+                                                                span {
+                                                                    span { class: "font-medium", "Other" }
+                                                                    span { class: "block text-xs text-muted",
+                                                                        "Attach to a message, hand-deliver, etc."
+                                                                    }
+                                                                }
+                                                            }
+                                                            if method == "other" {
+                                                                div { class: "space-y-1",
+                                                                    label {
+                                                                        r#for: "quote_send_note",
+                                                                        class: "block text-xs font-medium text-content",
+                                                                        "How was it delivered?"
+                                                                    }
+                                                                    textarea {
+                                                                        id: "quote_send_note",
+                                                                        rows: "3",
+                                                                        class: "block w-full rounded-md border-line shadow-sm focus:border-accent focus:ring-accent bg-surface text-content sm:text-sm",
+                                                                        placeholder: "e.g. Attached to an Outlook message",
+                                                                        value: "{send_note.read()}",
+                                                                        oninput: move |e: FormEvent| send_note.set(e.value()),
+                                                                    }
+                                                                    p { class: "text-xs text-muted", "Required." }
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    onconfirm: {
+                                                        let qid = qid.clone();
+                                                        move |_| {
+                                                            if *busy.read() {
+                                                                return;
+                                                            }
+                                                            let m = send_method.read().clone();
+                                                            let n = (m == "other").then(|| send_note.read().trim().to_string());
+                                                            if m == "other" && n.as_deref().map(str::is_empty).unwrap_or(true) {
+                                                                return;
+                                                            }
+                                                            confirming_send.set(false);
+                                                            send_quote(qid.clone(), m, n, version, busy, action_error);
+                                                            send_method.set("email".to_string());
+                                                            send_note.set(String::new());
+                                                        }
+                                                    },
+                                                    oncancel: move |_| {
+                                                        if !*busy.read() {
+                                                            confirming_send.set(false);
+                                                        }
+                                                    },
+                                                }
+                                            }
                                         }
                                     }
                                     if status::awaiting_client(&st) {
@@ -1248,6 +1365,8 @@ fn set_status(
 
 fn send_quote(
     quote_id: String,
+    method: String,
+    note: Option<String>,
     mut version: Signal<u32>,
     mut busy: Signal<bool>,
     mut action_error: Signal<String>,
@@ -1255,18 +1374,27 @@ fn send_quote(
     busy.set(true);
     action_error.set(String::new());
     spawn(async move {
-        let empty = serde_json::json!({});
+        // PMS-1462: the server reads `{ method, note }`. `note` is only
+        // meaningful on `other`, where the client already required it.
+        let body = match (method.as_str(), note.as_deref()) {
+            ("other", Some(n)) => {
+                serde_json::json!({ "method": "other", "note": n })
+            }
+            _ => serde_json::json!({ "method": method }),
+        };
         match crate::hooks::fetch::api::post_authed::<QuoteResponse, _>(
             &format!("/quotes/{quote_id}/send"),
-            &empty,
+            &body,
         )
         .await
         {
             Ok(_) => {
-                crate::hooks::toast::push_toast(
-                    crate::components::AlertType::Success,
-                    "Quote sent to the client",
-                );
+                let msg = match method.as_str() {
+                    "email" => "Quote emailed to the client",
+                    "postal" => "Quote recorded as sent by postal mail",
+                    _ => "Quote recorded as sent",
+                };
+                crate::hooks::toast::push_toast(crate::components::AlertType::Success, msg);
                 version += 1;
             }
             Err(e) => action_error.set(format!("Could not send the quote: {e}")),

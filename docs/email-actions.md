@@ -84,10 +84,14 @@ removes the note.
 
 The invoice send and the ticket note are **conditional server-side**, which the
 other two are not. `notify_invoice_pay_now` fires only on the first transition
-into `sent`, and skips the mail entirely when the tenant has no active payment
-gateway, when the invoice has no billing contact, or when that contact has no
-email on file. The page says so under the header rather than promising an email
-that may not go.
+into `sent` AND only when the operator picks `email` on the Send dialog's
+method radio (PMS-1462). The dialog's Email option is disabled with a hover
+tooltip when `GET /invoices/{id}/delivery-options` reports it unavailable, so
+the operator sees the reason in place (no mailer configured, no billing
+contact, no email on file) rather than guessing from the header; postal and
+other remain available on that same dialog and freeze the invoice without
+emailing. The pay link paragraph is added only when a payment gateway is
+connected.
 
 The ticket note (MAPPS-517) is conditional twice over. `add_note` mails only a
 PUBLIC note whose `send_email` flag is on, and only when the ticket has a
