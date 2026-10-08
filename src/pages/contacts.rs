@@ -2319,6 +2319,21 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         }
     });
 
+    let company_id_for_opps = company_id_str.clone();
+    let opportunities_resource = use_resource(move || {
+        let id = company_id_for_opps.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
+            crate::hooks::fetch::api::get_authed::<Vec<OpportunityWire>>(&format!(
+                "/crm/opportunities?company_id={id}&closed=false"
+            ))
+            .await
+            .inspect_err(|e| tracing::error!("company opportunities load failed for {id}: {e}"))
+            .ok()
+        }
+    });
+
     // MAPPS-619: tenant branding defaults so the per-Company branding
     // card can render "Inherits from MSP default: X" hints per field.
     // The response is the full Tenant DTO; we only need the `branding`
@@ -2806,6 +2821,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                 asset_types_resource,
                             }
                             CompanyBackupStatusCard { resource: backup_status_resource }
+                            CompanyOpportunitiesCard { resource: opportunities_resource }
                             // MAPPS-619: per-Company branding overrides.
                             // Reads current values off the Company detail
                             // response + tenant defaults for the "Inherits
@@ -5371,6 +5387,99 @@ fn backup_outcome_badge(outcome: &str) -> (BadgeVariant, &'static str) {
         "warning" => (BadgeVariant::Yellow, "Warning"),
         "failure" => (BadgeVariant::Red, "Failed"),
         _ => (BadgeVariant::Gray, "Unknown"),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct OpportunityWire {
+    id: uuid::Uuid,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    stage: String,
+    #[serde(default)]
+    value_amount: Option<rust_decimal::Decimal>,
+    #[serde(default)]
+    currency: String,
+    #[serde(default)]
+    expected_close_date: Option<chrono::NaiveDate>,
+}
+
+fn opportunity_stage_badge(stage: &str) -> (BadgeVariant, &'static str) {
+    match stage {
+        "lead" => (BadgeVariant::Gray, "Lead"),
+        "qualified" => (BadgeVariant::Blue, "Qualified"),
+        "proposal" => (BadgeVariant::Yellow, "Proposal"),
+        "negotiation" => (BadgeVariant::Orange, "Negotiation"),
+        "won" => (BadgeVariant::Green, "Won"),
+        "lost" => (BadgeVariant::Red, "Lost"),
+        _ => (BadgeVariant::Gray, "Unknown"),
+    }
+}
+
+#[component]
+fn CompanyOpportunitiesCard(resource: Resource<Option<Vec<OpportunityWire>>>) -> Element {
+    let snap = resource.read_unchecked();
+    let count = match &*snap {
+        Some(Some(rows)) => Some(rows.len() as u64),
+        _ => None,
+    };
+    rsx! {
+        CollapsibleCard {
+            title: "Opportunities",
+            count,
+            padding: false,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Title" }
+                        TableHeader { "Stage" }
+                        TableHeader { "Value" }
+                        TableHeader { "Expected Close" }
+                    }
+                }
+                match &*snap {
+                    None => rsx! { TableLoading { columns: 4, rows: 3 } },
+                    Some(None) => rsx! {
+                        TableEmpty { columns: 4, message: "Could not load opportunities.".to_string() }
+                    },
+                    Some(Some(rows)) if rows.is_empty() => rsx! {
+                        TableEmpty { columns: 4, message: "No open opportunities for this client yet.".to_string() }
+                    },
+                    Some(Some(rows)) => {
+                        let rows = rows.to_vec();
+                        rsx! {
+                            TableBody {
+                                for opp in rows.into_iter() {
+                                    {
+                                        let key = opp.id.to_string();
+                                        let title = if opp.title.trim().is_empty() {
+                                            "Untitled".to_string()
+                                        } else {
+                                            opp.title.clone()
+                                        };
+                                        let (variant, stage_label) = opportunity_stage_badge(&opp.stage);
+                                        let value = crate::utils::money::format_money_opt(opp.value_amount);
+                                        let close = match opp.expected_close_date {
+                                            Some(d) => d.format("%Y-%m-%d").to_string(),
+                                            None => "-".to_string(),
+                                        };
+                                        rsx! {
+                                            TableRow { key: "{key}",
+                                                TableCell { class: "font-medium", "{title}" }
+                                                TableCell { Badge { variant, "{stage_label}" } }
+                                                TableCell { class: "text-muted", "{value}" }
+                                                TableCell { class: "text-muted", "{close}" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        }
     }
 }
 
