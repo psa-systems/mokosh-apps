@@ -828,23 +828,53 @@ fn InvitationsTab(can_mutate: bool) -> Element {
     });
     let snap = invites.read_unchecked();
     let mut cancel_error: Signal<String> = use_signal(String::new);
+    let mut pending_cancel: Signal<Option<(uuid::Uuid, String)>> = use_signal(|| None);
+    let mut cancelling: Signal<bool> = use_signal(|| false);
 
-    let mut on_cancel = move |invite_id: uuid::Uuid| {
+    let on_confirm_cancel = move |_| {
+        let Some((invite_id, _email)) = pending_cancel.read().clone() else {
+            return;
+        };
+        cancelling.set(true);
         cancel_error.set(String::new());
         spawn(async move {
             #[cfg(feature = "app")]
             {
                 let path = format!("/invitations/{invite_id}");
                 match crate::hooks::fetch::api::delete_authed(&path).await {
-                    Ok(()) => invites.restart(),
-                    Err(e) => cancel_error.set(format!("Could not cancel: {e}")),
+                    Ok(()) => {
+                        pending_cancel.set(None);
+                        cancelling.set(false);
+                        invites.restart();
+                    }
+                    Err(e) => {
+                        cancelling.set(false);
+                        cancel_error.set(format!("Could not cancel: {e}"));
+                    }
                 }
             }
             #[cfg(not(feature = "app"))]
             {
                 let _ = invite_id;
+                cancelling.set(false);
             }
         });
+    };
+
+    let on_cancel_dialog = move |_| {
+        if !*cancelling.read() {
+            pending_cancel.set(None);
+            cancel_error.set(String::new());
+        }
+    };
+
+    let (confirm_title, confirm_message) = match &*pending_cancel.read() {
+        Some((_, email)) => (
+            format!("Cancel invitation for {email}?"),
+            "They will no longer be able to accept this invite. You can send a new one later."
+                .to_string(),
+        ),
+        None => (String::new(), String::new()),
     };
 
     rsx! {
@@ -900,7 +930,13 @@ fn InvitationsTab(can_mutate: bool) -> Element {
                                                 button {
                                                     r#type: "button",
                                                     class: "text-sm text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300",
-                                                    onclick: move |_| on_cancel(id),
+                                                    onclick: {
+                                                        let email_for_prompt = email.clone();
+                                                        move |_| {
+                                                            cancel_error.set(String::new());
+                                                            pending_cancel.set(Some((id, email_for_prompt.clone())));
+                                                        }
+                                                    },
                                                     "Cancel"
                                                 }
                                             }
@@ -912,6 +948,18 @@ fn InvitationsTab(can_mutate: bool) -> Element {
                     }
                 }
             },
+        }
+        ConfirmDialog {
+            open: pending_cancel.read().is_some(),
+            title: confirm_title,
+            message: confirm_message,
+            confirm_text: "Cancel invitation".to_string(),
+            cancel_text: "Keep invitation".to_string(),
+            destructive: true,
+            loading: *cancelling.read(),
+            error: cancel_error.read().clone(),
+            onconfirm: on_confirm_cancel,
+            oncancel: on_cancel_dialog,
         }
     }
 }
