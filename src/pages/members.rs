@@ -26,8 +26,8 @@ use serde::Deserialize;
 
 use crate::components::{
     use_page_title, AlertType, Badge, BadgeVariant, BannerTone, Button, ButtonVariant,
-    ConfirmDialog, ContentUnavailable, Input, Modal, PageHeader, Select, SelectOption,
-    StatusBanner,
+    ConfirmDialog, ContentUnavailable, IconSize, Input, MailIcon, Modal, PageHeader, Select,
+    SelectOption, StatusBanner,
 };
 use crate::Route;
 
@@ -467,6 +467,16 @@ fn InviteUserModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Elem
         .map(|(v, l)| SelectOption::new(*v, *l))
         .collect();
 
+    // Shape mirrors `src/pages/invitations.rs`'s preview_context: the
+    // server builds the accept link and expiry at send time, so the
+    // preview only needs the recipient and role the form holds today.
+    let preview_context = move |_: ()| {
+        serde_json::json!({
+            "recipient_email": email.read().trim(),
+            "role": role.read().clone(),
+        })
+    };
+
     let submit = move |_| {
         if saving() {
             return;
@@ -517,10 +527,16 @@ fn InviteUserModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Elem
                     onclick: move |_| { if !saving() { onclose.call(()); } },
                     "Cancel"
                 }
+                crate::components::EmailPreview {
+                    event_type: "invitations.created".to_string(),
+                    context: preview_context,
+                    empty_note: "The invitation email is built into the server rather than by a notification rule, so there is nothing to render yet. An invitation email is still sent.".to_string(),
+                }
                 Button {
                     variant: ButtonVariant::Primary,
                     loading: saving(),
                     onclick: submit,
+                    MailIcon { size: IconSize::Small, class: "mr-2".to_string() }
                     "Send invite"
                 }
             },
