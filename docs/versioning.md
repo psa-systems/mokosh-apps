@@ -62,7 +62,10 @@ compares against `CARGO_PKG_VERSION` (see below).
   the same three values plus the server's reported build.
 - **Update banner** -
   [`src/components/update_banner.rs`](../src/components/update_banner.rs)
-  (admins only) surfaces a prompt when an update is available.
+  (admins on a standalone deployment only) surfaces a prompt when an
+  update is available. It is hidden on SaaS (`is_standalone()` false)
+  for every role, including `SuperAdmin`, because the remediation
+  requires host access that no SaaS user has.
 - **New-version banner** -
   [`src/components/update_available_banner.rs`](../src/components/update_available_banner.rs)
   (all users) surfaces a "reload this page" prompt when the loaded
@@ -96,12 +99,14 @@ pairs it with the SPA's own `CARGO_PKG_VERSION`:
   one of two messages:
   - **Client behind** (server on a newer minor, `update_available()`): the
     loaded bundle is a minor behind. "Update available" prompts the admin to
-    bump the image tag(s) in `compose.yml` and re-pull.
+    bump the image tag(s) in `compose.yml` and re-pull. Shown only on a
+    standalone deployment: the remediation needs host access, which a SaaS
+    tenant admin does not have.
   - **Server behind** (client on a newer minor, `running_ahead()`): the
     client bundle is a minor *ahead* of the server (e.g. mokosh-www 0.8.x
     while mokosh-server stays 0.7.x). "Server needs updating" prompts the
     admin to upgrade the **server** image; it clears once the server catches
-    up.
+    up. Also standalone-only, for the same reason.
   A shared release line (any patch delta), an unknown, or an unparseable
   version shows nothing. Each side parses to `(major, minor, patch)` and the
   compare uses `(major, minor)`, so multi-digit fields order numerically
