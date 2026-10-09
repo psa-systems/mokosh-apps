@@ -46,6 +46,15 @@ pub struct QuoteResponse {
     pub currency: Option<String>,
     pub requested_by_id: Option<Uuid>,
     pub sent_at: Option<DateTime<Utc>>,
+    /// PMS-1462 (MAPPS-1031): how, by whom and with what note the quote was
+    /// sent. `None` on a draft and on a pre-PMS-1462 sent row with no
+    /// recorded delivery.
+    #[serde(default)]
+    pub delivery_method: Option<String>,
+    #[serde(default)]
+    pub delivery_note: Option<String>,
+    #[serde(default)]
+    pub delivered_by_name: Option<String>,
     pub decided_at: Option<DateTime<Utc>>,
     pub decided_by_contact_id: Option<Uuid>,
     pub decision_notes: Option<String>,
