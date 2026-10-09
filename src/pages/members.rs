@@ -26,9 +26,10 @@ use serde::Deserialize;
 
 use crate::components::{
     use_page_title, AlertType, Badge, BadgeVariant, BannerTone, Button, ButtonVariant,
-    ConfirmDialog, ContentUnavailable, IconSize, Input, MailIcon, Modal, PageHeader, Select,
-    SelectOption, StatusBanner,
+    ConfirmDialog, ContentUnavailable, IconSize, Input, MailIcon, Modal, PageHeader, SearchInput,
+    Select, SelectOption, StatusBanner,
 };
+use crate::utils::url::urlencoding_minimal;
 use crate::Route;
 
 /// The six-ish roles the server accepts on both `/users` and `/grants`.
@@ -45,6 +46,21 @@ const ROLE_PICKER: &[(&str, &str)] = &[
     ("finance", "Finance"),
     ("read_only", "Read-only"),
 ];
+
+/// `kind` filter options, matching the two non-default literals
+/// `mokosh-server/src/modules/members/service.rs`'s `ALLOWED_KINDS`
+/// accepts. The third literal (`everyone`) is the unset/"All kinds" state
+/// below, so it is never sent as an explicit value.
+const KIND_PICKER: &[(&str, &str)] = &[("user", "Users"), ("guest", "Guests")];
+
+/// Team filter options, from `GET /teams`. Mirrors `invitations.rs`'s
+/// `TeamOption` (id + name + is_active).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct TeamOption {
+    id: uuid::Uuid,
+    name: String,
+    is_active: bool,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -153,13 +169,44 @@ pub struct MembersResponse {
 /// the loop below mirrors it for this one endpoint and keeps the first
 /// response's `bunyip_reachable` + `total` while concatenating the rows
 /// from every subsequent page until a short page arrives.
+/// Filter values threaded into `fetch_all_members`'s query string. Each
+/// field is appended as its same-named query parameter when non-empty and
+/// omitted otherwise, matching the server's `MembersFilter` (MAPPS-1032).
+#[derive(Clone, Debug, Default, PartialEq)]
+struct MembersFilters {
+    q: String,
+    role: String,
+    kind: String,
+    team_id: String,
+}
+
+impl MembersFilters {
+    fn query_suffix(&self) -> String {
+        let mut suffix = String::new();
+        if !self.q.is_empty() {
+            suffix.push_str(&format!("&q={}", urlencoding_minimal(&self.q)));
+        }
+        if !self.role.is_empty() {
+            suffix.push_str(&format!("&role={}", urlencoding_minimal(&self.role)));
+        }
+        if !self.kind.is_empty() {
+            suffix.push_str(&format!("&kind={}", urlencoding_minimal(&self.kind)));
+        }
+        if !self.team_id.is_empty() {
+            suffix.push_str(&format!("&team_id={}", urlencoding_minimal(&self.team_id)));
+        }
+        suffix
+    }
+}
+
 #[cfg(feature = "app")]
-async fn fetch_all_members() -> Result<MembersResponse, String> {
+async fn fetch_all_members(filters: &MembersFilters) -> Result<MembersResponse, String> {
     use crate::hooks::fetch::api::MAX_PER_PAGE;
     const MAX_PAGES: u32 = 100;
+    let suffix = filters.query_suffix();
     let mut combined: Option<MembersResponse> = None;
     for page in 1..=MAX_PAGES {
-        let path = format!("/members?page={page}&per_page={MAX_PER_PAGE}");
+        let path = format!("/members?page={page}&per_page={MAX_PER_PAGE}{suffix}");
         let resp: MembersResponse =
             crate::hooks::fetch::api::get_authed::<MembersResponse>(&path).await?;
         let full = (resp.rows.len() as u32) >= MAX_PER_PAGE;
@@ -178,7 +225,7 @@ async fn fetch_all_members() -> Result<MembersResponse, String> {
 }
 
 #[cfg(not(feature = "app"))]
-async fn fetch_all_members() -> Result<MembersResponse, String> {
+async fn fetch_all_members(_filters: &MembersFilters) -> Result<MembersResponse, String> {
     Ok(MembersResponse::default())
 }
 
@@ -573,13 +620,69 @@ fn InviteUserModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Elem
 
 #[component]
 fn PeoplePane(can_mutate: bool) -> Element {
-    let mut members = use_resource(move || async move {
+    let mut search = use_signal(String::new);
+    let mut role_filter = use_signal(String::new);
+    let mut kind_filter = use_signal(String::new);
+    let mut team_filter = use_signal(String::new);
+    // MAPPS-855 pattern: debounce the search box so a burst of keystrokes
+    // fires one refetch per pause in typing rather than one per keystroke.
+    let search_debounced = crate::hooks::use_debounced_signal(search, 300);
+
+    // Team filter options, mirroring the invite modal's team picker
+    // (`invitations.rs`): every active team, fetched once via the paging
+    // helper so a tenant with more teams than one page still lists them all.
+    let teams_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        let _reachable = crate::hooks::use_server_reachable();
-        fetch_all_members()
-            .await
-            .inspect_err(|e| tracing::error!("members list load failed: {e}"))
-            .ok()
+        #[cfg(feature = "app")]
+        {
+            crate::hooks::fetch::api::get_all_authed::<TeamOption>("/teams")
+                .await
+                .inspect_err(|e| tracing::warn!("team filter load failed: {e}"))
+                .ok()
+        }
+        #[cfg(not(feature = "app"))]
+        {
+            Some(Vec::<TeamOption>::new())
+        }
+    });
+    let team_options: Vec<SelectOption> = {
+        let mut opts = vec![SelectOption::new("", "All teams")];
+        if let Some(Some(teams)) = teams_resource.read_unchecked().as_ref() {
+            opts.extend(
+                teams
+                    .iter()
+                    .filter(|t| t.is_active)
+                    .map(|t| SelectOption::new(t.id.to_string(), &t.name)),
+            );
+        }
+        opts
+    };
+    let role_options: Vec<SelectOption> = {
+        let mut opts = vec![SelectOption::new("", "All roles")];
+        opts.extend(ROLE_PICKER.iter().map(|(v, l)| SelectOption::new(*v, *l)));
+        opts
+    };
+    let kind_options: Vec<SelectOption> = {
+        let mut opts = vec![SelectOption::new("", "All kinds")];
+        opts.extend(KIND_PICKER.iter().map(|(v, l)| SelectOption::new(*v, *l)));
+        opts
+    };
+
+    let mut members = use_resource(move || {
+        let filters = MembersFilters {
+            q: search_debounced.read().trim().to_string(),
+            role: role_filter.read().clone(),
+            kind: kind_filter.read().clone(),
+            team_id: team_filter.read().clone(),
+        };
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
+            fetch_all_members(&filters)
+                .await
+                .inspect_err(|e| tracing::error!("members list load failed: {e}"))
+                .ok()
+        }
     });
     let snap = members.read_unchecked();
     // Action state: the row the operator picked for removal, and the last
@@ -663,6 +766,33 @@ fn PeoplePane(can_mutate: bool) -> Element {
     };
 
     rsx! {
+        div { class: "flex flex-wrap gap-3 mb-4",
+            div { class: "flex-1 min-w-[12rem]",
+                SearchInput {
+                    value: search.read().clone(),
+                    placeholder: "Search people…",
+                    oninput: move |e: FormEvent| search.set(e.value()),
+                }
+            }
+            Select {
+                name: "people_role_filter",
+                options: role_options,
+                value: role_filter.read().clone(),
+                onchange: move |e: FormEvent| role_filter.set(e.value()),
+            }
+            Select {
+                name: "people_kind_filter",
+                options: kind_options,
+                value: kind_filter.read().clone(),
+                onchange: move |e: FormEvent| kind_filter.set(e.value()),
+            }
+            Select {
+                name: "people_team_filter",
+                options: team_options,
+                value: team_filter.read().clone(),
+                onchange: move |e: FormEvent| team_filter.set(e.value()),
+            }
+        }
         match &*snap {
             None => rsx! {
                 crate::components::DetailSkeleton {}
@@ -1025,8 +1155,28 @@ mod tests {
     //! silently drop a bunyip-side invariant; this is the test that
     //! catches it before CI runs.
 
-    use super::{change_role_path, remove_action_path, MemberRow};
+    use super::{change_role_path, remove_action_path, MemberRow, MembersFilters};
     use uuid::Uuid;
+
+    #[test]
+    fn members_filters_query_suffix_omits_unset_fields() {
+        let filters = MembersFilters::default();
+        assert_eq!(filters.query_suffix(), "");
+    }
+
+    #[test]
+    fn members_filters_query_suffix_includes_set_fields() {
+        let filters = MembersFilters {
+            q: "a b".to_string(),
+            role: "manager".to_string(),
+            kind: "guest".to_string(),
+            team_id: "11111111-1111-4111-8111-111111111111".to_string(),
+        };
+        assert_eq!(
+            filters.query_suffix(),
+            "&q=a%20b&role=manager&kind=guest&team_id=11111111-1111-4111-8111-111111111111"
+        );
+    }
 
     fn native_user() -> MemberRow {
         MemberRow::User {
