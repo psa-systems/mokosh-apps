@@ -25,7 +25,7 @@ pub fn TeamsPage() -> Element {
     // means a caller sees "going to Members" instead of a blank screen on
     // a slow network.
     rsx! {
-        div { class: "max-w-7xl mx-auto min-h-screen flex items-center justify-center text-sm text-muted",
+        div { class: "max-w-7xl mx-auto p-6 text-sm text-muted",
             "Redirecting to Members / Teams…"
         }
     }
