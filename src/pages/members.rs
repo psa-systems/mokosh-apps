@@ -106,6 +106,13 @@ impl Tab {
 // server renames a field, the mismatch surfaces here at the first fetch
 // rather than through a mokosh-types bump that could silently change the
 // SPA's deserialize behaviour.
+//
+// This mirror is hand-maintained: a field added to the server's
+// `MemberRow` (`mokosh-server/crates/mokosh-types/src/members.rs`) is
+// backward compatible on the wire and will NOT surface as a fetch error,
+// so it silently never reaches this enum unless someone cross-checks the
+// two definitions by hand (MAPPS-1033). Check both variants against the
+// server's whenever either changes.
 
 /// One row of the unified list.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -124,6 +131,8 @@ pub enum MemberRow {
         #[serde(default)]
         status: String,
         #[serde(default)]
+        last_login_at: Option<chrono::DateTime<chrono::Utc>>,
+        #[serde(default)]
         team_memberships: Vec<TeamChip>,
         /// `Some(_)` when this `users` row was placed by a cross-account
         /// grant (BUNYIP-674). The SPA renders "Guest" beside the name
@@ -140,6 +149,8 @@ pub enum MemberRow {
         grantee_name: Option<String>,
         #[serde(default)]
         role: String,
+        #[serde(default)]
+        granted_at: Option<chrono::DateTime<chrono::Utc>>,
     },
 }
 
@@ -331,6 +342,38 @@ fn row_teams(row: &MemberRow) -> &[TeamChip] {
             team_memberships, ..
         } => team_memberships,
         MemberRow::UnplacedGuest { .. } => &[],
+    }
+}
+
+/// `last_login_at` as a relative-time string beside the role, or
+/// `"never"` when the user has not yet signed in. Not meaningful for
+/// `UnplacedGuest`, which has no `last_login_at`.
+fn row_last_login_label(row: &MemberRow) -> String {
+    match row {
+        MemberRow::User {
+            last_login_at: Some(dt),
+            ..
+        } => crate::utils::datetime::fmt_relative(*dt),
+        MemberRow::User {
+            last_login_at: None,
+            ..
+        } => "never".to_string(),
+        MemberRow::UnplacedGuest { .. } => String::new(),
+    }
+}
+
+/// `granted_at` as a relative-time string beside the "Awaiting first
+/// sign-in" badge. Empty for `User`, which has no `granted_at`.
+fn row_granted_at_label(row: &MemberRow) -> String {
+    match row {
+        MemberRow::UnplacedGuest {
+            granted_at: Some(dt),
+            ..
+        } => crate::utils::datetime::fmt_relative(*dt),
+        MemberRow::UnplacedGuest {
+            granted_at: None, ..
+        } => String::new(),
+        MemberRow::User { .. } => String::new(),
     }
 }
 
@@ -885,14 +928,24 @@ fn PeopleBody(props: PeopleBodyProps) -> Element {
                             let email = row_email(row);
                             let role = row_role(row).to_string();
                             let teams = row_teams(row).to_vec();
+                            let last_login_label = row_last_login_label(row);
+                            let granted_at_label = row_granted_at_label(row);
                             rsx! {
                                 tr { key: "{key}", class: "border-t border-line",
                                     td { class: "py-2 pr-4 font-medium", "{display_name}" }
                                     td { class: "py-2 pr-4 text-muted", "{email}" }
                                     td { class: "py-2 pr-4",
                                         Badge { variant, "{kind_label}" }
+                                        if !granted_at_label.is_empty() {
+                                            span { class: "ml-2 text-xs text-muted", "{granted_at_label}" }
+                                        }
                                     }
-                                    td { class: "py-2 pr-4", "{role}" }
+                                    td { class: "py-2 pr-4",
+                                        "{role}"
+                                        if !last_login_label.is_empty() {
+                                            span { class: "ml-2 text-xs text-muted", "{last_login_label}" }
+                                        }
+                                    }
                                     td { class: "py-2 pr-4",
                                         {
                                             let shown: Vec<_> = teams.iter().take(3).cloned().collect();
@@ -1155,7 +1208,11 @@ mod tests {
     //! silently drop a bunyip-side invariant; this is the test that
     //! catches it before CI runs.
 
-    use super::{change_role_path, remove_action_path, MemberRow, MembersFilters};
+    use super::{
+        change_role_path, remove_action_path, row_granted_at_label, row_last_login_label,
+        MemberRow, MembersFilters,
+    };
+    use chrono::{TimeZone, Utc};
     use uuid::Uuid;
 
     #[test]
@@ -1186,6 +1243,7 @@ mod tests {
             last_name: "Native".to_string(),
             role: "manager".to_string(),
             status: "active".to_string(),
+            last_login_at: None,
             team_memberships: Vec::new(),
             placed_by_grant_id: None,
         }
@@ -1199,6 +1257,7 @@ mod tests {
             last_name: "Guest".to_string(),
             role: "manager".to_string(),
             status: "active".to_string(),
+            last_login_at: None,
             team_memberships: Vec::new(),
             placed_by_grant_id: Some(grant_id.to_string()),
         }
@@ -1210,7 +1269,40 @@ mod tests {
             grantee_email: None,
             grantee_name: None,
             role: "finance".to_string(),
+            granted_at: None,
         }
+    }
+
+    #[test]
+    fn row_last_login_label_is_never_when_absent_and_relative_when_present() {
+        assert_eq!(row_last_login_label(&native_user()), "never");
+        let logged_in = MemberRow::User {
+            user_id: Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
+            email: "native@acme.example".to_string(),
+            first_name: "Nat".to_string(),
+            last_name: "Native".to_string(),
+            role: "manager".to_string(),
+            status: "active".to_string(),
+            last_login_at: Some(Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap()),
+            team_memberships: Vec::new(),
+            placed_by_grant_id: None,
+        };
+        assert!(!row_last_login_label(&logged_in).is_empty());
+        assert_eq!(row_last_login_label(&unplaced_guest("grant-abc")), "");
+    }
+
+    #[test]
+    fn row_granted_at_label_is_empty_for_users_and_absent_guests() {
+        assert_eq!(row_granted_at_label(&native_user()), "");
+        assert_eq!(row_granted_at_label(&unplaced_guest("grant-abc")), "");
+        let granted = MemberRow::UnplacedGuest {
+            grant_id: "grant-abc".to_string(),
+            grantee_email: None,
+            grantee_name: None,
+            role: "finance".to_string(),
+            granted_at: Some(Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap()),
+        };
+        assert!(!row_granted_at_label(&granted).is_empty());
     }
 
     #[test]
