@@ -284,6 +284,39 @@ check-types-pin-strict:
     bash scripts/check-types-pin.sh --self-test
     bash scripts/check-types-pin.sh --strict
 
+# MAPPS-943: dev_image wrap of check-types-pin for pre-commit, since the host
+# may have no cargo on PATH (containers-only toolchain rule). Mounts the same
+# per-user cargo cache volumes the shared pre-commit-docker leg uses so the
+# first `cargo update --package mokosh-types` is not cold.
+[private]
+[group: 'hooks']
+check-types-pin-docker:
+    #!/usr/bin/env nu
+    let img = "{{ dev_image }}"
+    if ($img | is-empty) {
+        let red = (ansi red)
+        let reset = (ansi reset)
+        print $"($red)dev_image is unset($reset)"
+        exit 1
+    }
+    let user = ($env.USER? | default "dev")
+    let uid = (^id --user | str trim)
+    let gid = (^id --group | str trim)
+    let cache_mounts = [
+        --volume $"dev-{{app}}-cargo-target-($user):/cargo-target"
+        --volume $"dev-{{app}}-cargo-registry-($user):/usr/local/cargo/registry"
+        --volume $"dev-{{app}}-cargo-git-($user):/usr/local/cargo/git"
+    ]
+    let mounts = [
+        --volume $"($env.PWD):/build"
+        --workdir /build
+        --env CARGO_TARGET_DIR=/cargo-target
+        --user $"($uid):($gid)"
+    ] ++ $cache_mounts
+    ^docker run --rm ...$cache_mounts $img chown -R $"($uid):($gid)" /cargo-target /usr/local/cargo/registry /usr/local/cargo/git
+    ^docker run --rm ...$mounts $img bash scripts/check-types-pin.sh --self-test
+    ^docker run --rm ...$mounts $img bash scripts/check-types-pin.sh
+
 # Run clippy lints
 [group: 'check']
 check-clippy:
@@ -309,7 +342,14 @@ check-fmt:
 [group: 'hooks']
 pre-commit-guards:
     #!/usr/bin/env nu
-    let cargo_covered = ["check-web" "check-desktop" "check-clippy" "check-fmt"]
+    # `cargo_covered` names guards that invoke cargo. They are not run on the
+    # host here because the host may have no toolchain (containers-only rule);
+    # the cargo-driven ones (check-web, check-desktop, check-clippy, check-fmt)
+    # are run inside dev_image by the common pre-commit-docker leg. The one
+    # exception is check-types-pin, which is cargo-driven but not covered by
+    # common.just: it runs via check-types-pin-docker below so a host without
+    # cargo still exercises the guard (MAPPS-943).
+    let cargo_covered = ["check-web" "check-desktop" "check-clippy" "check-fmt" "check-types-pin"]
     let deps_line = (open justfile | lines | where {|l| $l starts-with "check:" } | get 0)
     let guards = ($deps_line | str replace "check:" "" | split row " " | where {|r| $r starts-with "check-" } | where {|r| $r not-in $cargo_covered })
     print "\n[pre-commit] just css-build"
@@ -318,6 +358,10 @@ pre-commit-guards:
         print $"\n[pre-commit] just ($guard)"
         ^just $guard
     }
+    # check-types-pin is cargo-driven, so run it in dev_image rather than on
+    # the host, matching the posture of the other cargo guards.
+    print "\n[pre-commit] just check-types-pin-docker"
+    ^just check-types-pin-docker
 
 # Install JS dependencies
 [private]
