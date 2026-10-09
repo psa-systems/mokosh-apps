@@ -183,7 +183,7 @@ pub fn TeamsTab() -> Element {
     // Defensive sort by name on the SPA side so a server-side reorder
     // (phase 1's `ORDER BY name` is a soft contract that could flip
     // between releases) does not shift the row order under the user.
-    teams.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    teams.sort_by_key(|a| a.name.to_lowercase());
     let current_page = (*page.read()).max(1);
 
     rsx! {

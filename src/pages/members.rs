@@ -168,7 +168,7 @@ async fn fetch_all_members() -> Result<MembersResponse, String> {
             None => combined = Some(resp),
         }
         if !full {
-            return Ok(combined.unwrap_or_else(MembersResponse::default));
+            return Ok(combined.unwrap_or_default());
         }
     }
     Err(format!(
