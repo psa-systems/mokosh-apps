@@ -38,6 +38,10 @@ pub mod kb_activity;
 pub mod kb_inline;
 pub mod knowledge_base;
 pub mod login;
+#[cfg(feature = "multi-tenant")]
+pub mod members;
+#[cfg(feature = "multi-tenant")]
+pub mod members_teams_tab;
 pub mod not_found;
 pub mod onboarding;
 pub mod pick_tenant;

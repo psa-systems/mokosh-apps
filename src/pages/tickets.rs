@@ -7898,6 +7898,11 @@ mod mapps686_shared_dto_tests {
             note_type,
             content,
             send_email,
+            // PMS-1359: structured note fields (time_minutes, work_summary,
+            // parts_used, follow_up) are not sent from this page yet; the
+            // separate `TimeEntry` form carries time + parts today. Picked up
+            // in a follow-up on the ticket-detail layout.
+            ..
         } = req;
         let _ = CreateNoteBody {
             note_type,
@@ -8066,6 +8071,11 @@ mod mapps686_shared_dto_tests {
             created_at,
             updated_at,
             can_edit,
+            // PMS-1359: structured note fields (time_minutes, work_summary,
+            // parts_used, follow_up) are not rendered on this page yet; the
+            // journal reads only the free-text body today. Rendering lands in
+            // a follow-up on the ticket-detail layout.
+            ..
         } = resp;
         let _ = RemoteNote {
             id,

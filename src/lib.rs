@@ -1167,11 +1167,25 @@ pub enum Route {
     Invitations {},
     #[route("/admin/team")]
     TeamLegacyRedirect {},
-    // PMS-791 phase 2: the actual teams management page (list + create +
-    // edit + membership).
+    // Deprecated alias. The teams management surface lives on the
+    // Teams tab of the unified members page; `/admin/teams` now
+    // renders a redirect stub (see `pages::teams::TeamsPage`) that
+    // navigates to `/settings/members?tab=teams`. Kept so old
+    // bookmarks and emails still land somewhere useful; schedule the
+    // route for deletion once the alias traffic drops to zero.
     #[cfg(feature = "multi-tenant")]
     #[route("/admin/teams")]
     Teams {},
+
+    // MAPPS-877 phase 2: unified members page. Three tabs (People, Teams,
+    // Invitations) under one `/settings/members` route; `?tab=` picks the
+    // active pane and survives reload. People / Teams / Invitations panes
+    // are stubs here, each lands in its own phase (3 / 4 / 5). The old
+    // `/admin/teams` keeps resolving via the Teams wrapper's redirect
+    // stub so saved links and bookmarks still open.
+    #[cfg(feature = "multi-tenant")]
+    #[route("/settings/members?:tab")]
+    MembersPage { tab: String },
 
     // MAPPS-946: platform-admin self-service (password + MFA), mirroring
     // MAPPS-830's tenant-user MFA surface. Renders for a caller who holds
@@ -2535,9 +2549,23 @@ fn TeamLegacyRedirect() -> Element {
 #[cfg(feature = "multi-tenant")]
 #[component]
 fn Teams() -> Element {
+    // MAPPS-877 phase 2: the stand-alone teams page retired in favour of the
+    // Teams tab on `/settings/members`. The route stays so a saved bookmark
+    // or shared link resolves rather than 404s; the TeamsPage body was
+    // reduced to a redirect stub, so this wrapper just renders it.
     rsx! {
         div { class: "max-w-7xl mx-auto",
             teams::TeamsPage {}
+        }
+    }
+}
+
+#[cfg(feature = "multi-tenant")]
+#[component]
+fn MembersPage(tab: String) -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            members::MembersPage { tab }
         }
     }
 }
