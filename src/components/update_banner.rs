@@ -7,6 +7,14 @@
 //! this component, not the layout, so adding it does not change
 //! non-admin renders).
 //!
+//! MAPPS-1040: also gated on [`crate::modules::oidc::is_standalone`].
+//! The banner's remediation (`docker compose pull && docker compose up
+//! --detach` on the host) only makes sense to someone who controls the
+//! host, the compose file, and the image tags. On a SaaS deployment
+//! every signed-in user is a tenant-scoped admin with no host access,
+//! so the banner is suppressed (and `/api/v1/version` is never
+//! fetched) regardless of role, including `SuperAdmin`.
+//!
 //! Dismissal is keyed on the latest version string so a *new* update
 //! resurfaces after the user clicked dismiss on the previous one.
 
@@ -38,6 +46,13 @@ fn dismissal_key(v: &SystemVersion) -> String {
     format!("{DISMISS_KEY_PREFIX}s{s}-c{c}")
 }
 
+/// MAPPS-1040: the banner's remediation only applies to a standalone
+/// operator who controls the host; a SaaS tenant admin does not, so role
+/// alone is no longer sufficient.
+fn should_check_for_update(is_admin: bool, standalone: bool) -> bool {
+    is_admin && standalone
+}
+
 #[component]
 pub fn UpdateBanner() -> Element {
     // Hooks first, gating render afterwards. Dioxus requires the set
@@ -57,6 +72,13 @@ pub fn UpdateBanner() -> Element {
     // notifies when the bool actually changes, so /version is fetched once.
     let auth = use_auth();
     let is_admin = use_memo(move || auth.read().user.as_ref().is_some_and(|u| u.role.is_admin()));
+    // MAPPS-1040: standalone-ness never changes within a session (it is
+    // derived from build-time OIDC config), but folding it into the same
+    // memo that keys the fetch below keeps the gate in one place and
+    // reuses the identical value for the render-time early return.
+    let should_check = use_memo(move || {
+        should_check_for_update(is_admin(), crate::modules::oidc::is_standalone())
+    });
     let mut dismissed_local = use_signal(|| false);
     // MAPPS-203: read the cached App-root version signal first. If it
     // already carries a result, the banner skips its `Reserving` state
@@ -69,9 +91,9 @@ pub fn UpdateBanner() -> Element {
     // mounts benefit. The non-admin early-out below means we still
     // skip the network call entirely for non-admins (MAPPS-187).
     let version_resource = use_resource(move || {
-        let admin = is_admin();
+        let check = should_check();
         async move {
-            if !admin {
+            if !check {
                 return Err("not admin".to_string());
             }
             get_version().await
@@ -90,7 +112,7 @@ pub fn UpdateBanner() -> Element {
         }
     });
 
-    if !is_admin() {
+    if !should_check() {
         return rsx! {};
     }
 
@@ -247,5 +269,30 @@ pub fn UpdateBanner() -> Element {
                 }}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_check_for_update;
+
+    #[test]
+    fn admin_and_standalone_checks() {
+        assert!(should_check_for_update(true, true));
+    }
+
+    #[test]
+    fn admin_but_not_standalone_does_not_check() {
+        assert!(!should_check_for_update(true, false));
+    }
+
+    #[test]
+    fn standalone_but_not_admin_does_not_check() {
+        assert!(!should_check_for_update(false, true));
+    }
+
+    #[test]
+    fn not_admin_and_not_standalone_does_not_check() {
+        assert!(!should_check_for_update(false, false));
     }
 }
