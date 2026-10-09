@@ -338,6 +338,21 @@ struct RemoteNote {
     /// note the moment this build met an older server.
     #[serde(default)]
     can_edit: Option<bool>,
+    /// MAPPS-1034: structured fields a technician captured alongside the
+    /// body (PMS-1359). Wire-identical to `TicketNoteResponse`: absent from a
+    /// plain free-text note, so this stays `None` for one.
+    #[serde(default)]
+    time_minutes: Option<i32>,
+    #[serde(default)]
+    work_summary: Option<String>,
+    #[serde(default)]
+    parts_used: Option<Vec<String>>,
+    /// `{ needed: bool, description: text|null, target_date: date|null }`
+    /// (PMS-1359's migration). Left as the wire JSON rather than a typed
+    /// struct because the shared `TicketNoteResponse.follow_up` is itself
+    /// `serde_json::Value`.
+    #[serde(default)]
+    follow_up: Option<serde_json::Value>,
 }
 
 // ============================================================================
@@ -411,6 +426,17 @@ struct CreateNoteBody {
     note_type: NoteType,
     content: String,
     send_email: bool,
+    /// MAPPS-1034: PMS-1359's structured fields. Omitted, not sent as null,
+    /// for any the operator left blank, matching `UpdateTicketBody`'s rule
+    /// above: the server defaults each to NULL on its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    time_minutes: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    work_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parts_used: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    follow_up: Option<serde_json::Value>,
 }
 
 /// `PUT /api/v1/tickets/{id}/notes/{note_id}`, sent by the inline note editor.
@@ -460,6 +486,43 @@ fn note_is_editable(note: &RemoteNote, viewer: Option<uuid::Uuid>, viewer_is_adm
         note.created_by_contact_id,
         role_permits,
     )
+}
+
+/// MAPPS-1034: the (label, value) lines for whichever of PMS-1359's four
+/// structured fields this note carries, in the migration's own order.
+/// Parallel to how a time entry's minutes/billable flag renders on its own
+/// journal line: present only for a note that has the field, so a plain
+/// free-text note (every field `None`) renders no extra lines at all.
+fn note_structured_lines(note: &RemoteNote) -> Vec<(&'static str, String)> {
+    let mut lines = Vec::new();
+    if let Some(minutes) = note.time_minutes {
+        lines.push(("Time", format!("{minutes} min")));
+    }
+    if let Some(summary) = note.work_summary.as_ref().filter(|s| !s.trim().is_empty()) {
+        lines.push(("Work summary", summary.clone()));
+    }
+    if let Some(parts) = note.parts_used.as_ref().filter(|p| !p.is_empty()) {
+        lines.push(("Parts used", parts.join(", ")));
+    }
+    if let Some(follow_up) = note.follow_up.as_ref() {
+        let needed = follow_up
+            .get("needed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let mut value = if needed {
+            "Needed".to_string()
+        } else {
+            "Not needed".to_string()
+        };
+        if let Some(description) = follow_up.get("description").and_then(|v| v.as_str()) {
+            value.push_str(&format!(" - {description}"));
+        }
+        if let Some(target_date) = follow_up.get("target_date").and_then(|v| v.as_str()) {
+            value.push_str(&format!(" (target {target_date})"));
+        }
+        lines.push(("Follow-up", value));
+    }
+    lines
 }
 
 /// MAPPS-989: mirrors the server's `RequireManager` floor on
@@ -849,6 +912,10 @@ struct JournalEntry {
     /// screen, because an unmarked edit means the reader cannot tell that the
     /// text in front of them is not what was written.
     edited: bool,
+    /// MAPPS-1034: the (label, value) lines for PMS-1359's structured note
+    /// fields that are present on this note. Empty for a history line, a time
+    /// entry, or a note that carries none of the four.
+    structured: Vec<(&'static str, String)>,
 }
 
 /// The name to attribute a journal line to. `actor_name` yields "-" for an
@@ -991,6 +1058,7 @@ fn build_journal(
             // transaction's `NOW()` on insert, so an unedited note has them
             // exactly equal.
             edited: n.updated_at.is_some_and(|u| u > n.created_at),
+            structured: note_structured_lines(n),
         });
     }
 
@@ -1003,6 +1071,7 @@ fn build_journal(
             changes: history_changes(h),
             editable_note: None,
             edited: false,
+            structured: Vec::new(),
         });
     }
 
@@ -1022,6 +1091,7 @@ fn build_journal(
             changes: Vec::new(),
             editable_note: None,
             edited: false,
+            structured: Vec::new(),
         });
     }
 
@@ -3376,6 +3446,19 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // that has to be said next to the control rather than posted as a string
     // the server will refuse.
     let mut note_type_error = use_signal(String::new);
+    // MAPPS-1034: the four PMS-1359 structured fields, wired into the note
+    // composer. Each is optional and sent only when the operator filled it
+    // (`CreateNoteBody`'s `skip_serializing_if`), matching the server's own
+    // NULL default. `note_time_minutes` is a bare minute count (not the
+    // H:MM duration `time.rs` parses) validated against the same bound as
+    // the server's `time_minutes > 0` CHECK.
+    let mut note_time_minutes = use_signal(String::new);
+    let mut note_time_minutes_error = use_signal(String::new);
+    let mut note_work_summary = use_signal(String::new);
+    let mut note_parts_used = use_signal(String::new);
+    let mut note_follow_up_needed = use_signal(|| false);
+    let mut note_follow_up_description = use_signal(String::new);
+    let mut note_follow_up_target_date = use_signal(String::new);
     let mut note_submitting = use_signal(|| false);
     let mut note_error = use_signal(String::new);
     let ticket_id_for_note = props.id.clone();
@@ -4690,6 +4773,64 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                 }
                             }
                         }
+                        // MAPPS-1034: PMS-1359's structured fields. All four are
+                        // optional, matching the server's own NULL default, and
+                        // live on every note type: a time entry's own `TimeEntry`
+                        // form covers the common "time + parts" case, but a
+                        // technician can still capture them on an internal or
+                        // resolution note.
+                        div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                            Input {
+                                name: "note_time_minutes",
+                                label: "Time (minutes)",
+                                r#type: "number",
+                                min: "1".to_string(),
+                                value: note_time_minutes.read().clone(),
+                                error: note_time_minutes_error.read().clone(),
+                                rules: vec![Rule::Number { min: Some(1.0), max: None, max_decimals: Some(0) }],
+                                oninput: move |e: FormEvent| {
+                                    note_time_minutes_error.set(String::new());
+                                    note_time_minutes.set(e.value());
+                                },
+                            }
+                            Input {
+                                name: "note_work_summary",
+                                label: "Work summary",
+                                maxlength: 200,
+                                value: note_work_summary.read().clone(),
+                                rules: vec![Rule::MaxLen(200)],
+                                oninput: move |e: FormEvent| note_work_summary.set(e.value()),
+                            }
+                        }
+                        Input {
+                            name: "note_parts_used",
+                            label: "Parts used",
+                            help: "Comma-separated, e.g. \"PSU, fan\".".to_string(),
+                            value: note_parts_used.read().clone(),
+                            oninput: move |e: FormEvent| note_parts_used.set(e.value()),
+                        }
+                        Checkbox {
+                            name: "note_follow_up_needed",
+                            label: "Follow-up needed",
+                            checked: note_follow_up_needed(),
+                            onchange: move |e: FormEvent| note_follow_up_needed.set(e.checked()),
+                        }
+                        if note_follow_up_needed() {
+                            div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                                Input {
+                                    name: "note_follow_up_description",
+                                    label: "Follow-up description",
+                                    value: note_follow_up_description.read().clone(),
+                                    oninput: move |e: FormEvent| note_follow_up_description.set(e.value()),
+                                }
+                                crate::components::DateField {
+                                    name: "note_follow_up_target_date",
+                                    label: "Follow-up target date",
+                                    value: note_follow_up_target_date.read().clone(),
+                                    oninput: move |e: FormEvent| note_follow_up_target_date.set(e.value()),
+                                }
+                            }
+                        }
                         div { class: "flex items-center justify-end gap-3",
                             // MAPPS-482 / docs/email-actions.md: this submit
                             // mails a client whenever the toggle is on, so it
@@ -4736,6 +4877,16 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         "Content",
                                         &[Rule::Required],
                                     ));
+                                    // MAPPS-1034: optional, but still validated through the
+                                    // same guard so a malformed minute count is reported
+                                    // alongside a missing Content rather than posted anyway.
+                                    let time_minutes_v = note_time_minutes.read().clone();
+                                    note_time_minutes_error.set(guard.field(
+                                        "note_time_minutes",
+                                        time_minutes_v.trim(),
+                                        "Time (minutes)",
+                                        &[Rule::Number { min: Some(1.0), max: None, max_decimals: Some(0) }],
+                                    ));
                                     if guard.blocked() {
                                         return;
                                     }
@@ -4756,6 +4907,35 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         return;
                                     };
                                     note_type_error.set(String::new());
+                                    // MAPPS-1034: each sent only when the operator
+                                    // filled it; `CreateNoteBody`'s `skip_serializing_if`
+                                    // then omits whichever of these stays `None`.
+                                    let time_minutes_v = {
+                                        let t = time_minutes_v.trim();
+                                        (!t.is_empty()).then(|| t.parse::<f64>().unwrap_or_default() as i32)
+                                    };
+                                    let work_summary_v = {
+                                        let t = note_work_summary.read().trim().to_string();
+                                        (!t.is_empty()).then_some(t)
+                                    };
+                                    let parts_used_v = {
+                                        let t = note_parts_used.read().clone();
+                                        let parts: Vec<String> = t
+                                            .split(',')
+                                            .map(|p| p.trim().to_string())
+                                            .filter(|p| !p.is_empty())
+                                            .collect();
+                                        (!parts.is_empty()).then_some(parts)
+                                    };
+                                    let follow_up_v = note_follow_up_needed().then(|| {
+                                        let description = note_follow_up_description.read().trim().to_string();
+                                        let target_date = note_follow_up_target_date.read().trim().to_string();
+                                        serde_json::json!({
+                                            "needed": true,
+                                            "description": (!description.is_empty()).then_some(description),
+                                            "target_date": (!target_date.is_empty()).then_some(target_date),
+                                        })
+                                    });
                                     note_submitting.set(true);
                                     spawn(async move {
                                         #[cfg(feature = "app")]
@@ -4764,6 +4944,10 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 note_type: type_kind,
                                                 content: content_v,
                                                 send_email: email_v,
+                                                time_minutes: time_minutes_v,
+                                                work_summary: work_summary_v,
+                                                parts_used: parts_used_v,
+                                                follow_up: follow_up_v,
                                             };
                                             let path = format!("/tickets/{id}/notes");
                                             match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(&path, &body).await {
@@ -4773,6 +4957,12 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                     // Back to the default for the next
                                                     // note rather than staying armed.
                                                     note_send_email.set(false);
+                                                    note_time_minutes.set(String::new());
+                                                    note_work_summary.set(String::new());
+                                                    note_parts_used.set(String::new());
+                                                    note_follow_up_needed.set(false);
+                                                    note_follow_up_description.set(String::new());
+                                                    note_follow_up_target_date.set(String::new());
                                                     // Refresh the journal so the new note shows.
                                                     let mut nr = notes_resource;
                                                     nr.restart();
@@ -4835,6 +5025,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             changes: entry.changes.clone(),
                                             editable_note: entry.editable_note,
                                             edited: entry.edited,
+                                            structured: entry.structured.clone(),
                                             ticket_id: props.id.clone(),
                                             can_edit: can_mutate,
                                             on_saved: move |()| {
@@ -5547,6 +5738,11 @@ struct TimelineItemProps {
     /// of each of up to 50 journal entries fetching its own copy.
     #[props(default)]
     people: Vec<crate::utils::mentions::Mention>,
+    /// MAPPS-1034: PMS-1359's structured fields present on this note, as
+    /// (label, value) lines. Empty for a history line, a time entry, or a
+    /// note carrying none of the four.
+    #[props(default)]
+    structured: Vec<(&'static str, String)>,
 }
 
 #[component]
@@ -5741,6 +5937,21 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                                 // resolves (MAPPS-578), which is the upside.
                                 div { class: "mt-2 bg-surface-2 rounded-md p-3",
                                     crate::components::Markdown { content: content.clone(), people: Some(props.people.clone()) }
+                                }
+                            }
+                            // MAPPS-1034: PMS-1359's structured fields, parallel to
+                            // how a time entry's own minutes/billable flag renders
+                            // on its headline above - here as a small list under
+                            // the note body, present only for a note that carries
+                            // at least one of the four.
+                            if !editing() && !props.structured.is_empty() {
+                                dl { class: "mt-2 space-y-0.5 text-sm text-muted",
+                                    for (label , value) in props.structured.iter() {
+                                        div { class: "flex gap-2",
+                                            dt { class: "flex-shrink-0 font-medium text-content", "{label}:" }
+                                            dd { "{value}" }
+                                        }
+                                    }
                                 }
                             }
                             ChangeDetails { changes: props.changes.clone() }
@@ -6417,6 +6628,56 @@ mod mapps517_journal_tests {
                 "Dana Reeve added a public note (not emailed)".to_string(),
                 "Dana Reeve added an internal note".to_string(),
             ]
+        );
+    }
+
+    /// MAPPS-1034: PMS-1359's four structured fields render as (label, value)
+    /// lines on the note's journal entry, in the migration's own order, and a
+    /// plain note (none of the four) carries no lines at all.
+    #[test]
+    fn a_notes_structured_fields_render_as_lines() {
+        let structured = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000005","note_type":"internal","content":"c",
+                "created_by_name":"Dana Reeve","created_at":"2026-08-20T09:00:00Z",
+                "time_minutes":30,"work_summary":"Swapped PSU","parts_used":["PSU","fan"],
+                "follow_up":{"needed":true,"description":"Order a spare","target_date":"2026-11-01"}}"#,
+        );
+        let plain = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000006","note_type":"internal","content":"c",
+                "created_by_name":"Dana Reeve","created_at":"2026-08-20T08:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[structured, plain], &[], &[], &users(), None, false);
+
+        assert_eq!(
+            journal[0].structured,
+            vec![
+                ("Time", "30 min".to_string()),
+                ("Work summary", "Swapped PSU".to_string()),
+                ("Parts used", "PSU, fan".to_string()),
+                (
+                    "Follow-up",
+                    "Needed - Order a spare (target 2026-11-01)".to_string()
+                ),
+            ]
+        );
+        assert!(journal[1].structured.is_empty());
+    }
+
+    /// A follow-up answered "no" still renders, distinct from one left blank.
+    #[test]
+    fn a_follow_up_answered_no_still_renders() {
+        let n = note(
+            r#"{"id":"aaaaaaaa-0000-4000-8000-000000000007","note_type":"internal","content":"c",
+                "created_by_name":"Dana Reeve","created_at":"2026-08-20T09:00:00Z",
+                "follow_up":{"needed":false}}"#,
+        );
+
+        let journal = build_journal(&[n], &[], &[], &users(), None, false);
+
+        assert_eq!(
+            journal[0].structured,
+            vec![("Follow-up", "Not needed".to_string())]
         );
     }
 
@@ -7736,9 +7997,27 @@ mod mapps686_shared_dto_tests {
                 note_type: super::NoteType::Public,
                 content: "Replaced the PSU".to_string(),
                 send_email: true,
+                time_minutes: None,
+                work_summary: None,
+                parts_used: None,
+                follow_up: None,
             })
             .expect("serialise the note body"),
             r#"{"note_type":"public","content":"Replaced the PSU","send_email":true}"#
+        );
+        // MAPPS-1034: the four structured fields, sent only when filled.
+        assert_eq!(
+            serde_json::to_string(&CreateNoteBody {
+                note_type: super::NoteType::Internal,
+                content: "Swapped the PSU".to_string(),
+                send_email: false,
+                time_minutes: Some(30),
+                work_summary: Some("Swapped PSU".to_string()),
+                parts_used: Some(vec!["PSU".to_string(), "fan".to_string()]),
+                follow_up: Some(serde_json::json!({"needed": true, "description": "Order a spare", "target_date": "2026-11-01"})),
+            })
+            .expect("serialise the structured note body"),
+            r#"{"note_type":"internal","content":"Swapped the PSU","send_email":false,"time_minutes":30,"work_summary":"Swapped PSU","parts_used":["PSU","fan"],"follow_up":{"description":"Order a spare","needed":true,"target_date":"2026-11-01"}}"#
         );
         assert_eq!(
             serde_json::to_string(&UpdateNoteBody {
@@ -7898,16 +8177,20 @@ mod mapps686_shared_dto_tests {
             note_type,
             content,
             send_email,
-            // PMS-1359: structured note fields (time_minutes, work_summary,
-            // parts_used, follow_up) are not sent from this page yet; the
-            // separate `TimeEntry` form carries time + parts today. Picked up
-            // in a follow-up on the ticket-detail layout.
-            ..
+            // MAPPS-1034: wired into the note composer below.
+            time_minutes,
+            work_summary,
+            parts_used,
+            follow_up,
         } = req;
         let _ = CreateNoteBody {
             note_type,
             content,
             send_email,
+            time_minutes,
+            work_summary,
+            parts_used,
+            follow_up,
         };
     }
 
@@ -8071,11 +8354,11 @@ mod mapps686_shared_dto_tests {
             created_at,
             updated_at,
             can_edit,
-            // PMS-1359: structured note fields (time_minutes, work_summary,
-            // parts_used, follow_up) are not rendered on this page yet; the
-            // journal reads only the free-text body today. Rendering lands in
-            // a follow-up on the ticket-detail layout.
-            ..
+            // MAPPS-1034: wired into the note's read view below.
+            time_minutes,
+            work_summary,
+            parts_used,
+            follow_up,
         } = resp;
         let _ = RemoteNote {
             id,
@@ -8100,6 +8383,10 @@ mod mapps686_shared_dto_tests {
             // sends nothing, and `note_is_editable` falls back to its local
             // rules rather than hiding every Edit control.
             can_edit: Some(can_edit),
+            time_minutes,
+            work_summary,
+            parts_used,
+            follow_up,
         };
     }
 
