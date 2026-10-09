@@ -1155,8 +1155,28 @@ mod tests {
     //! silently drop a bunyip-side invariant; this is the test that
     //! catches it before CI runs.
 
-    use super::{change_role_path, remove_action_path, MemberRow};
+    use super::{change_role_path, remove_action_path, MemberRow, MembersFilters};
     use uuid::Uuid;
+
+    #[test]
+    fn members_filters_query_suffix_omits_unset_fields() {
+        let filters = MembersFilters::default();
+        assert_eq!(filters.query_suffix(), "");
+    }
+
+    #[test]
+    fn members_filters_query_suffix_includes_set_fields() {
+        let filters = MembersFilters {
+            q: "a b".to_string(),
+            role: "manager".to_string(),
+            kind: "guest".to_string(),
+            team_id: "11111111-1111-4111-8111-111111111111".to_string(),
+        };
+        assert_eq!(
+            filters.query_suffix(),
+            "&q=a%20b&role=manager&kind=guest&team_id=11111111-1111-4111-8111-111111111111"
+        );
+    }
 
     fn native_user() -> MemberRow {
         MemberRow::User {
