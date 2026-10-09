@@ -15,15 +15,29 @@ use crate::Route;
 
 #[component]
 pub fn TeamsPage() -> Element {
+    let auth = crate::hooks::use_auth();
+    // Same gate the live Members page runs so a non-admin cannot read
+    // the redirect's "going to Members / Teams" hint via this legacy
+    // URL. Matches the admin-route role-gate contract (`is_admin`).
+    let is_admin = auth
+        .read()
+        .user
+        .as_ref()
+        .map(|u| u.role.is_admin())
+        .unwrap_or(false);
+    if !is_admin {
+        return rsx! {
+            div { class: "max-w-7xl mx-auto p-6 text-sm text-muted",
+                "You do not have access to this page."
+            }
+        };
+    }
     let navigator = use_navigator();
     use_effect(move || {
         navigator.replace(Route::MembersPage {
             tab: "teams".to_string(),
         });
     });
-    // Rendered for one frame before the navigator lands; a visible line
-    // means a caller sees "going to Members" instead of a blank screen on
-    // a slow network.
     rsx! {
         div { class: "max-w-7xl mx-auto p-6 text-sm text-muted",
             "Redirecting to Members / Teams…"

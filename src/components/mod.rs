@@ -48,6 +48,7 @@ mod tenant_switcher;
 mod theme_picker;
 mod update_available_banner;
 mod update_banner;
+mod user_picker;
 
 pub use access_required::*;
 pub use account_deleted_overlay::*;
@@ -97,3 +98,4 @@ pub use tenant_switcher::*;
 pub use theme_picker::*;
 pub use update_available_banner::*;
 pub use update_banner::*;
+pub use user_picker::*;

@@ -15,9 +15,11 @@
 //! - The em-dash between the member's name and their email on the roster
 //!   line is swapped for a hyphen, per the project's no-em-dash rule.
 //!
-//! The 867-line pre-phase-2 body is preserved substantially intact so a
-//! future UserPicker swap (phase 4b) can rework the Add flow in one
-//! focused diff.
+//! The 867-line pre-phase-2 body is preserved substantially intact.
+//! The Add-member flow now uses the shared `UserPicker` component
+//! (`/auth/users` search), replacing the earlier raw-UUID input, and
+//! the roster's user ids are passed as `exclude_ids` so an already-
+//! added member doesn't show up as a selectable match.
 //!
 //! `/admin/teams`'s original source lives at `src/pages/teams.rs`, which
 //! is now a one-component redirect stub pointing at this tab.
@@ -634,7 +636,9 @@ fn MembersSection(props: MembersSectionProps) -> Element {
         Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
-    let mut new_user_id = use_signal(String::new);
+    let exclude_ids: Vec<uuid::Uuid> = members.iter().map(|m| m.user_id).collect();
+    let mut picked_user_id: Signal<Option<uuid::Uuid>> = use_signal(|| None);
+    let mut picked_user_name = use_signal(String::new);
     // MAPPS-436: per-member ConfirmDialog gate for the destructive Remove.
     // `pending_remove` names the member whose confirm dialog is open;
     // `removing` is the in-flight spinner; `remove_error` surfaces the
@@ -677,11 +681,10 @@ fn MembersSection(props: MembersSectionProps) -> Element {
     };
 
     let add = move |_| {
-        let raw = new_user_id.read().trim().to_string();
-        let Ok(uid) = raw.parse::<uuid::Uuid>() else {
+        let Some(uid) = *picked_user_id.read() else {
             crate::hooks::toast::push_toast(
                 AlertType::Warning,
-                "Enter a valid user UUID (temporary UX; a user picker lands in a follow-up).",
+                "Pick a user from the dropdown first.",
             );
             return;
         };
@@ -702,7 +705,8 @@ fn MembersSection(props: MembersSectionProps) -> Element {
                     Ok(_) => {
                         crate::hooks::toast::push_toast(AlertType::Success, "Member added.");
                         roster.restart();
-                        new_user_id.set(String::new());
+                        picked_user_id.set(None);
+                        picked_user_name.set(String::new());
                     }
                     Err(e) => crate::hooks::toast::push_toast(AlertType::Warning, e.user_message()),
                 }
@@ -741,17 +745,28 @@ fn MembersSection(props: MembersSectionProps) -> Element {
                 }
             }
             div { class: "flex items-end gap-2",
-                Input {
-                    name: "new_member_user_id",
-                    label: "Add user (UUID)",
-                    r#type: "text".to_string(),
-                    value: new_user_id(),
-                    disabled: *props.saving_parent.read(),
-                    oninput: move |e: FormEvent| { new_user_id.set(e.value()); },
+                div { class: "flex-1 min-w-0",
+                    crate::components::UserPicker {
+                        label: "Add user".to_string(),
+                        placeholder: "Search users…".to_string(),
+                        value: picked_user_name(),
+                        selected_id: picked_user_id().map(|u| u.to_string()),
+                        exclude_ids: exclude_ids.clone(),
+                        onselect: move |(id, name): (String, String)| {
+                            if let Ok(uid) = id.parse::<uuid::Uuid>() {
+                                picked_user_id.set(Some(uid));
+                                picked_user_name.set(name);
+                            }
+                        },
+                        onclear: move |_| {
+                            picked_user_id.set(None);
+                            picked_user_name.set(String::new());
+                        },
+                    }
                 }
                 Button {
                     variant: ButtonVariant::Secondary,
-                    disabled: *props.saving_parent.read(),
+                    disabled: *props.saving_parent.read() || picked_user_id.read().is_none(),
                     onclick: move |_| add(()),
                     "Add"
                 }

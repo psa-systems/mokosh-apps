@@ -1142,12 +1142,7 @@ fn MembersNavItem(props: MembersNavItemProps) -> Element {
         return rsx! {};
     }
     rsx! {
-        NavItem {
-            to: Route::MembersPage { tab: "people".to_string() },
-            icon: rsx!(UserGroupIcon {}),
-            label: "Members",
-            collapsed,
-        }
+        NavItem { to: Route::MembersPage { tab: "people".to_string() }, icon: rsx!(UserGroupIcon {}), label: "Members", collapsed }
     }
 }
 
