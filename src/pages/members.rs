@@ -760,7 +760,7 @@ fn PeopleBody(props: PeopleBodyProps) -> Element {
                                                     rsx! {
                                                         button {
                                                             r#type: "button",
-                                                            class: "text-sm text-red-600 hover:text-red-700",
+                                                            class: "text-sm text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300",
                                                             onclick: move |_| on_remove.call(row_for_remove.clone()),
                                                             "Remove"
                                                         }
@@ -899,7 +899,7 @@ fn InvitationsTab(can_mutate: bool) -> Element {
                                             td { class: "py-2 pr-4",
                                                 button {
                                                     r#type: "button",
-                                                    class: "text-sm text-red-600 hover:text-red-700",
+                                                    class: "text-sm text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300",
                                                     onclick: move |_| on_cancel(id),
                                                     "Cancel"
                                                 }
