@@ -375,9 +375,7 @@ pub fn MembersPage(props: MembersPageProps) -> Element {
                 crate::pages::members_teams_tab::TeamsTab {}
             },
             Tab::Invitations => rsx! {
-                p { class: "text-sm text-muted",
-                    "Invitations pane coming in a later phase."
-                }
+                InvitationsTab { can_mutate: is_admin }
             },
         }
     }
@@ -640,6 +638,143 @@ fn PeopleBody(props: PeopleBodyProps) -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Invitations tab (MAPPS-877 phase 5)
+//
+// The design calls for a cross-account grant-invitation list from
+// `/grants?role=owner`, but that server surface does not exist in this
+// branch: the grants mirror in `mokosh_bunyip_grants` carries only
+// granted / revoked state, no pending-invitation lifecycle (PMS-1208
+// filed as the follow-up for that). The pragmatic Invitations tab here
+// shows the EXISTING pending team-invitations (`GET /invitations`), the
+// same source `/admin/invitations` reads, so the operator has a working
+// "who have I invited" view in one place inside the members page.
+// Cancel per row stays optimistic (no confirm; the invitee has never
+// had access, so cancelling costs nothing) matching the design's
+// Cancel-is-one-click posture.
+//
+// When PMS-1208 ships the grant-invitation surface, this tab's fetch
+// swaps to the richer `/grants?role=owner` shape and the two sources
+// become one list; nothing on the SPA shell changes.
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct TeamInvitation {
+    id: uuid::Uuid,
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    role: String,
+    expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct PaginatedInvitations {
+    #[serde(default)]
+    data: Vec<TeamInvitation>,
+}
+
+#[component]
+fn InvitationsTab(can_mutate: bool) -> Element {
+    let mut invites = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _reachable = crate::hooks::use_server_reachable();
+        crate::hooks::fetch::api::get_authed::<PaginatedInvitations>(
+            "/invitations?page=1&per_page=100",
+        )
+        .await
+        .inspect_err(|e| tracing::error!("invitations list load failed: {e}"))
+        .ok()
+    });
+    let snap = invites.read_unchecked();
+    let mut cancel_error: Signal<String> = use_signal(String::new);
+
+    let mut on_cancel = move |invite_id: uuid::Uuid| {
+        cancel_error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let path = format!("/invitations/{invite_id}");
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => invites.restart(),
+                    Err(e) => cancel_error.set(format!("Could not cancel: {e}")),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = invite_id;
+            }
+        });
+    };
+
+    rsx! {
+        if !cancel_error.read().is_empty() {
+            StatusBanner { tone: BannerTone::Error, class: "mb-3".to_string(),
+                {cancel_error.read().clone()}
+            }
+        }
+        match &*snap {
+            None => rsx! { p { class: "text-sm text-muted", "Loading…" } },
+            Some(None) => rsx! {
+                StatusBanner { tone: BannerTone::Warning, class: "mb-3".to_string(),
+                    "Couldn't load pending invitations. Refresh to try again."
+                }
+            },
+            Some(Some(payload)) if payload.data.is_empty() => rsx! {
+                p { class: "text-sm text-muted",
+                    "No pending invitations. Invite a user from the "
+                    Link {
+                        to: Route::MembersPage { tab: "people".to_string() },
+                        class: "text-accent hover:opacity-90",
+                        "People tab"
+                    }
+                    " to send one."
+                }
+            },
+            Some(Some(payload)) => rsx! {
+                table { class: "min-w-full text-sm",
+                    thead {
+                        tr { class: "text-left text-muted",
+                            th { class: "py-2 pr-4", "Email" }
+                            th { class: "py-2 pr-4", "Role" }
+                            th { class: "py-2 pr-4", "Expires" }
+                            if can_mutate {
+                                th { class: "py-2 pr-4", span { class: "sr-only", "Actions" } }
+                            }
+                        }
+                    }
+                    tbody {
+                        for invite in payload.data.iter() {
+                            {
+                                let id = invite.id;
+                                let email = invite.email.clone();
+                                let role = invite.role.clone();
+                                let expires = invite.expires_at.format("%Y-%m-%d").to_string();
+                                rsx! {
+                                    tr { key: "{id}", class: "border-t border-line",
+                                        td { class: "py-2 pr-4 font-medium", "{email}" }
+                                        td { class: "py-2 pr-4 text-muted", "{role}" }
+                                        td { class: "py-2 pr-4 text-muted", "{expires}" }
+                                        if can_mutate {
+                                            td { class: "py-2 pr-4",
+                                                button {
+                                                    r#type: "button",
+                                                    class: "text-sm text-red-600 hover:text-red-700",
+                                                    onclick: move |_| on_cancel(id),
+                                                    "Cancel"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
         }
     }
 }
