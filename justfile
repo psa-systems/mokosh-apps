@@ -294,7 +294,9 @@ check-types-pin-docker:
     #!/usr/bin/env nu
     let img = "{{ dev_image }}"
     if ($img | is-empty) {
-        print $"(ansi red)dev_image is unset(ansi reset)"
+        let red = (ansi red)
+        let reset = (ansi reset)
+        print $"($red)dev_image is unset($reset)"
         exit 1
     }
     let user = ($env.USER? | default "dev")
