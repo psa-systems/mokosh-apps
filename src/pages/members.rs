@@ -136,7 +136,7 @@ pub struct TeamChip {
     pub color: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct MembersResponse {
     #[serde(default)]
     pub rows: Vec<MemberRow>,
@@ -144,6 +144,42 @@ pub struct MembersResponse {
     pub total: u64,
     #[serde(default)]
     pub bunyip_reachable: bool,
+}
+
+/// Walk `/members` page by page so the UI gets the whole roster instead of
+/// the server's silently-clamped first 100 rows. `MembersResponse` is not a
+/// `PaginatedResponse<T>` wrapper (it carries `bunyip_reachable` + `total`
+/// alongside `rows`), so the shared `get_all_authed` helper does not fit;
+/// the loop below mirrors it for this one endpoint and keeps the first
+/// response's `bunyip_reachable` + `total` while concatenating the rows
+/// from every subsequent page until a short page arrives.
+#[cfg(feature = "app")]
+async fn fetch_all_members() -> Result<MembersResponse, String> {
+    use crate::hooks::fetch::api::MAX_PER_PAGE;
+    const MAX_PAGES: u32 = 100;
+    let mut combined: Option<MembersResponse> = None;
+    for page in 1..=MAX_PAGES {
+        let path = format!("/members?page={page}&per_page={MAX_PER_PAGE}");
+        let resp: MembersResponse =
+            crate::hooks::fetch::api::get_authed::<MembersResponse>(&path).await?;
+        let full = (resp.rows.len() as u32) >= MAX_PER_PAGE;
+        match combined.as_mut() {
+            Some(acc) => acc.rows.extend(resp.rows),
+            None => combined = Some(resp),
+        }
+        if !full {
+            return Ok(combined.unwrap_or_else(MembersResponse::default));
+        }
+    }
+    Err(format!(
+        "/members returned more than {MAX_PAGES} full pages of {MAX_PER_PAGE} rows; \
+         refusing to render a list that is silently short"
+    ))
+}
+
+#[cfg(not(feature = "app"))]
+async fn fetch_all_members() -> Result<MembersResponse, String> {
+    Ok(MembersResponse::default())
 }
 
 // ---------------------------------------------------------------------------
@@ -523,7 +559,7 @@ fn PeoplePane(can_mutate: bool) -> Element {
     let mut members = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_authed::<MembersResponse>("/members?per_page=100")
+        fetch_all_members()
             .await
             .inspect_err(|e| tracing::error!("members list load failed: {e}"))
             .ok()
@@ -808,23 +844,22 @@ struct TeamInvitation {
     expires_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-struct PaginatedInvitations {
-    #[serde(default)]
-    data: Vec<TeamInvitation>,
-}
-
 #[component]
 fn InvitationsTab(can_mutate: bool) -> Element {
     let mut invites = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_authed::<PaginatedInvitations>(
-            "/invitations?page=1&per_page=100",
-        )
-        .await
-        .inspect_err(|e| tracing::error!("invitations list load failed: {e}"))
-        .ok()
+        #[cfg(feature = "app")]
+        {
+            crate::hooks::fetch::api::get_all_authed::<TeamInvitation>("/invitations")
+                .await
+                .inspect_err(|e| tracing::error!("invitations list load failed: {e}"))
+                .ok()
+        }
+        #[cfg(not(feature = "app"))]
+        {
+            Some(Vec::<TeamInvitation>::new())
+        }
     });
     let snap = invites.read_unchecked();
     let mut cancel_error: Signal<String> = use_signal(String::new);
@@ -890,7 +925,7 @@ fn InvitationsTab(can_mutate: bool) -> Element {
                     "Couldn't load pending invitations. Refresh to try again."
                 }
             },
-            Some(Some(payload)) if payload.data.is_empty() => rsx! {
+            Some(Some(rows)) if rows.is_empty() => rsx! {
                 p { class: "text-sm text-muted",
                     "No pending invitations. Invite a user from the "
                     Link {
@@ -901,7 +936,7 @@ fn InvitationsTab(can_mutate: bool) -> Element {
                     " to send one."
                 }
             },
-            Some(Some(payload)) => rsx! {
+            Some(Some(rows)) => rsx! {
                 table { class: "min-w-full text-sm",
                     thead {
                         tr { class: "text-left text-muted",
@@ -914,7 +949,7 @@ fn InvitationsTab(can_mutate: bool) -> Element {
                         }
                     }
                     tbody {
-                        for invite in payload.data.iter() {
+                        for invite in rows.iter() {
                             {
                                 let id = invite.id;
                                 let email = invite.email.clone();
