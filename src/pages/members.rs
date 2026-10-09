@@ -24,7 +24,9 @@
 use dioxus::prelude::*;
 use serde::Deserialize;
 
-use crate::components::{use_page_title, Badge, BadgeVariant, ContentUnavailable, PageHeader};
+use crate::components::{
+    use_page_title, Badge, BadgeVariant, BannerTone, ContentUnavailable, PageHeader, StatusBanner,
+};
 use crate::Route;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -344,7 +346,7 @@ fn PeoplePane(can_mutate: bool) -> Element {
 fn PeopleBody(payload: MembersResponse, can_mutate: bool) -> Element {
     rsx! {
         if !payload.bunyip_reachable {
-            div { class: "mb-3 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 px-3 py-2 text-sm text-amber-800 dark:text-amber-200",
+            StatusBanner { tone: BannerTone::Warning, class: "mb-3".to_string(),
                 "Guest list unavailable: the identity service could not be reached. Native users are shown; guests may be missing."
             }
         }
