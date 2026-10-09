@@ -816,12 +816,20 @@ struct InvoiceDetail {
     notes: Option<String>,
     #[serde(default)]
     po_number: Option<String>,
-    /// PMS-992 / PMS-1462: who the invoice was emailed to and when, or
-    /// nothing on a non-email delivery (postal / other).
+    /// PMS-1462 (MAPPS-1031): how, when and by whom the invoice was sent.
+    /// `delivery_method` is `None` on a draft and on a pre-PMS-1462 sent row
+    /// with no recorded delivery; `sent_at` covers all three methods (the
+    /// old email-only `emailed_at` is gone from the client, PMS-992's
+    /// `emailed_to` with it, now that the recipient comes from
+    /// `delivery-options` instead).
     #[serde(default)]
-    emailed_at: Option<String>,
+    sent_at: Option<String>,
     #[serde(default)]
-    emailed_to: Option<String>,
+    delivery_method: Option<String>,
+    #[serde(default)]
+    delivery_note: Option<String>,
+    #[serde(default)]
+    delivered_by_name: Option<String>,
     /// PMS-1029: the rate the tax was derived from, frozen on the invoice;
     /// both absent when the tax was a given amount.
     #[serde(default)]
@@ -1078,13 +1086,33 @@ pub(crate) fn is_zero_amount(raw: &str) -> bool {
     t.is_empty() || t.chars().all(|c| c == '0' || c == '.')
 }
 
-/// PMS-1004: the Details row for a sent invoice. The address, and the date
-/// part of the timestamp when there is one; the time of day says nothing an
-/// operator acts on.
-pub(crate) fn emailed_line(to: &str, at: Option<&str>) -> String {
-    match at.map(|a| a.chars().take(10).collect::<String>()) {
-        Some(date) if !date.is_empty() => format!("{to} on {date}"),
-        _ => to.to_string(),
+/// MAPPS-1031 (PMS-1462): the Details row for how an invoice or quote
+/// reached the customer, covering the three delivery methods plus the
+/// no-record case. `None` on a draft (no `sent_at`); `Some("Delivery not
+/// recorded")` on a sent document from before PMS-1462 tracked the method
+/// (the server's own description of that case, mokosh-server
+/// `src/modules/billing/models.rs`). Takes only the four fields MAPPS-1014
+/// named: `delivery_method`, `delivery_note`, `delivered_by_name`,
+/// `sent_at`; the recipient address now lives in the Send dialog's preview
+/// via `delivery-options`, not this row.
+pub(crate) fn sent_line(
+    delivery_method: Option<&str>,
+    delivery_note: Option<&str>,
+    delivered_by_name: Option<&str>,
+    sent_at: Option<&str>,
+) -> Option<String> {
+    let sent_at = sent_at.filter(|s| !s.is_empty());
+    match delivery_method {
+        Some("email") => Some(format!("Emailed{}", stamped_by(sent_at, delivered_by_name))),
+        Some("postal") => Some(format!("Mailed{}", stamped_by(sent_at, delivered_by_name))),
+        Some("other") => {
+            let base = match delivery_note.map(str::trim).filter(|n| !n.is_empty()) {
+                Some(note) => format!("Delivered: {note}"),
+                None => "Delivered".to_string(),
+            };
+            Some(format!("{base}{}", stamped_by(sent_at, delivered_by_name)))
+        }
+        _ => sent_at.map(|_| "Delivery not recorded".to_string()),
     }
 }
 
@@ -1142,6 +1170,7 @@ pub(crate) fn invoice_pay_now_preview(
     currency: &str,
     due_date: &str,
     gateway: Option<bool>,
+    recipient: Option<&str>,
 ) -> crate::components::BuiltinEmail {
     let org = if org_name.trim().is_empty() {
         "Your organisation"
@@ -1158,7 +1187,16 @@ pub(crate) fn invoice_pay_now_preview(
     // dialog's Email option carries the reason. The preview is purely
     // informational; it never predicts a refusal.
     let mut notes = Vec::new();
-    let recipient = "The billing contact".to_string();
+    // MAPPS-1031 (PMS-1462): `recipient` comes from `GET
+    // /invoices/{id}/delivery-options`, which names the real billing-contact
+    // address; a failed or not-yet-loaded fetch falls back to the generic
+    // label rather than blocking the preview, per MAPPS-1014's own stated
+    // fallback.
+    let recipient = recipient
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .unwrap_or("The billing contact")
+        .to_string();
     let pay_link = match gateway {
         Some(true) => true,
         Some(false) => {
@@ -1228,6 +1266,37 @@ impl RemoteContactEmail {
             .trim()
             .to_string()
     }
+}
+
+/// MAPPS-1031 (PMS-1462): one method's slot in the Send dialog, from `GET
+/// /invoices/{id}/delivery-options` (quotes: `/quotes/{id}/delivery-options`).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct DeliveryOption {
+    #[serde(default)]
+    pub(crate) method: String,
+    #[serde(default)]
+    pub(crate) available: bool,
+    #[serde(default)]
+    pub(crate) recipient: Option<String>,
+    #[serde(default)]
+    pub(crate) reason: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct DeliveryOptionsResponse {
+    #[serde(default)]
+    pub(crate) methods: Vec<DeliveryOption>,
+}
+
+/// The slot for `method`, or `None` when the fetch failed, has not loaded,
+/// or the response did not name it (a server predating PMS-1462 sends an
+/// empty list). `None` means "no opinion": the caller leaves the method
+/// selectable with no tooltip, MAPPS-1014's stated fallback.
+pub(crate) fn find_delivery_option<'a>(
+    options: Option<&'a [DeliveryOption]>,
+    method: &str,
+) -> Option<&'a DeliveryOption> {
+    options?.iter().find(|o| o.method == method)
 }
 
 /// The path the invoice **send** transition writes to (MAPPS-539).
@@ -1575,6 +1644,30 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 .await
                 .inspect_err(|e| tracing::error!("invoice detail load failed for {id}: {e}"))
                 .ok()
+        }
+    });
+
+    // MAPPS-1031 (PMS-1462): the Send dialog's per-method availability,
+    // recipient and refusal reason. Staff-only, the same gate as the Send
+    // button itself. Reads `invoice_resource` so a restart of the invoice
+    // (after Send, Void, etc.) restarts this too, the same subscribe-by-read
+    // `poll_tick` uses above. A failed or not-yet-loaded fetch resolves to
+    // `None`, which leaves every method selectable with no tooltip.
+    let id_for_delivery = props.id.clone();
+    let delivery_options_resource = use_resource(move || {
+        let id = id_for_delivery.clone();
+        async move {
+            if !staff_only {
+                return None;
+            }
+            let _invoice = invoice_resource.read_unchecked().clone();
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<DeliveryOptionsResponse>(&format!(
+                "/invoices/{id}/delivery-options"
+            ))
+            .await
+            .inspect_err(|e| tracing::warn!("delivery options load failed for invoice {id}: {e}"))
+            .ok()
         }
     });
 
@@ -2242,6 +2335,17 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         {
             let method = send_method.read().clone();
             let note = send_note.read().trim().to_string();
+            // MAPPS-1031 (PMS-1462): `None` (fetch failed or has not loaded)
+            // leaves Email selectable with no tooltip, MAPPS-1014's own
+            // stated fallback.
+            let delivery_options = (*delivery_options_resource.read_unchecked())
+                .clone()
+                .flatten()
+                .map(|r| r.methods);
+            let email_option = find_delivery_option(delivery_options.as_deref(), "email").cloned();
+            let email_unavailable = email_option.as_ref().is_some_and(|o| !o.available);
+            let email_reason = email_option.as_ref().and_then(|o| o.reason.clone());
+            let email_recipient = email_option.as_ref().and_then(|o| o.recipient.clone());
             let other_invalid = method == "other" && note.is_empty();
             let invoice_pdf_path = format!("/api/v1/invoices/{}/pdf", props.id);
             rsx! {
@@ -2254,17 +2358,21 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                     destructive: false,
                     loading: *busy.read(),
                     error: send_error.read().clone(),
-                    confirm_disabled: other_invalid,
+                    confirm_disabled: other_invalid || (method == "email" && email_unavailable),
                     body: rsx! {
                         div { class: "space-y-3",
                             p { class: "text-sm font-medium text-content", "How is it being sent?" }
                             // Email
-                            label { class: "flex items-start gap-2 text-sm",
+                            label {
+                                class: "flex items-start gap-2 text-sm",
+                                title: email_reason.clone().unwrap_or_default(),
                                 input {
                                     r#type: "radio",
                                     name: "invoice_send_method",
                                     value: "email",
                                     checked: method == "email",
+                                    disabled: email_unavailable,
+                                    title: email_reason.clone().unwrap_or_default(),
                                     onchange: move |_| send_method.set("email".to_string()),
                                 }
                                 span {
@@ -2370,6 +2478,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                                 inv.currency.as_deref().unwrap_or_default(),
                                                 inv.due_date.as_deref().unwrap_or_default(),
                                                 (*gateway_resource.read_unchecked()).flatten(),
+                                                email_recipient.as_deref(),
                                             )
                                         }),
                                     }
@@ -2939,10 +3048,12 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 // gets no link to follow. Empty against a server that predates
                 // the field, and the cell then renders a dash.
                 let billing_contact_name = inv.billing_contact_name.clone().unwrap_or_default();
-                let emailed = inv
-                    .emailed_to
-                    .as_deref()
-                    .map(|to| emailed_line(to, inv.emailed_at.as_deref()));
+                let sent_line_text = sent_line(
+                    inv.delivery_method.as_deref(),
+                    inv.delivery_note.as_deref(),
+                    inv.delivered_by_name.as_deref(),
+                    inv.sent_at.as_deref(),
+                );
                 // MAPPS-727: the write-off block, when there was one.
                 let write_off = inv.written_off_at.as_deref().map(|at| {
                     write_off_line(
@@ -3245,10 +3356,10 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                             }
                                         }
                                     }
-                                    if let Some(sent_to) = emailed.clone() {
+                                    if let Some(sent) = sent_line_text.clone() {
                                         div { class: "flex justify-between gap-4",
-                                            dt { class: "text-muted shrink-0", "Emailed to" }
-                                            dd { class: "text-right break-all", "{sent_to}" }
+                                            dt { class: "text-muted shrink-0", "Sent" }
+                                            dd { class: "text-right break-all", "{sent}" }
                                         }
                                     }
                                     if let Some(wo) = write_off.clone() {
@@ -7804,6 +7915,7 @@ mod invoice_preview_tests {
             "USD",
             "2026-09-30",
             Some(true),
+            None,
         );
         assert!(ok.notes.is_empty(), "{:?}", ok.notes);
         assert_eq!(ok.recipient, "The billing contact");
@@ -7816,7 +7928,8 @@ mod invoice_preview_tests {
         assert!(ok.body.contains("{{portal_link}}"));
         assert_eq!(ok.unresolved, vec!["portal_link", "contact_line"]);
 
-        let no_gateway = invoice_pay_now_preview("Acme MSP", "INV-1", "1", "", "", Some(false));
+        let no_gateway =
+            invoice_pay_now_preview("Acme MSP", "INV-1", "1", "", "", Some(false), None);
         assert!(no_gateway.notes[0].contains("No payment gateway"));
         assert_eq!(no_gateway.subject, "Invoice INV-1 from Acme MSP");
         assert!(
@@ -7826,31 +7939,100 @@ mod invoice_preview_tests {
         );
         assert_eq!(no_gateway.unresolved, vec!["contact_line"]);
 
-        let unknown = invoice_pay_now_preview("", "INV-1", "1", "", "", None);
+        let unknown = invoice_pay_now_preview("", "INV-1", "1", "", "", None, None);
         assert!(unknown.notes[0].contains("Could not check"));
         assert!(unknown
             .subject
             .starts_with("Invoice INV-1 from Your organisation"));
     }
+
+    /// MAPPS-1031: the real recipient from delivery-options replaces the
+    /// generic label; a blank or missing one falls back to it instead of
+    /// showing an empty recipient line.
+    #[test]
+    fn recipient_comes_from_delivery_options_with_a_fallback() {
+        let named = invoice_pay_now_preview(
+            "Acme MSP",
+            "INV-1",
+            "1",
+            "",
+            "",
+            Some(true),
+            Some("ap@client.example"),
+        );
+        assert_eq!(named.recipient, "ap@client.example");
+
+        let blank =
+            invoice_pay_now_preview("Acme MSP", "INV-1", "1", "", "", Some(true), Some("  "));
+        assert_eq!(blank.recipient, "The billing contact");
+    }
 }
 
 #[cfg(test)]
-mod emailed_line_tests {
-    use super::emailed_line;
+mod sent_line_tests {
+    use super::sent_line;
 
-    /// The address and the date it went, and the address alone when the
-    /// timestamp is missing or empty.
     #[test]
-    fn the_row_says_who_and_when() {
+    fn email_names_the_method_and_who_and_when() {
         assert_eq!(
-            emailed_line("ap@client.example", Some("2026-09-02T14:03:11Z")),
-            "ap@client.example on 2026-09-02"
+            sent_line(
+                Some("email"),
+                None,
+                Some("Jamie Lee"),
+                Some("2026-09-02T14:03:11Z")
+            ),
+            Some("Emailed on 2026-09-02 by Jamie Lee".to_string())
         );
-        assert_eq!(emailed_line("ap@client.example", None), "ap@client.example");
+    }
+
+    #[test]
+    fn postal_names_the_method() {
         assert_eq!(
-            emailed_line("ap@client.example", Some("")),
-            "ap@client.example"
+            sent_line(Some("postal"), None, None, Some("2026-09-02T14:03:11Z")),
+            Some("Mailed on 2026-09-02".to_string())
         );
+    }
+
+    #[test]
+    fn other_carries_the_note() {
+        assert_eq!(
+            sent_line(
+                Some("other"),
+                Some("Handed to the client at the site visit"),
+                Some("Jamie Lee"),
+                Some("2026-09-02T14:03:11Z")
+            ),
+            Some(
+                "Delivered: Handed to the client at the site visit on 2026-09-02 by Jamie Lee"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn other_with_a_blank_note_still_says_delivered() {
+        assert_eq!(
+            sent_line(
+                Some("other"),
+                Some("  "),
+                None,
+                Some("2026-09-02T14:03:11Z")
+            ),
+            Some("Delivered on 2026-09-02".to_string())
+        );
+    }
+
+    #[test]
+    fn a_sent_document_with_no_recorded_method_says_so() {
+        assert_eq!(
+            sent_line(None, None, None, Some("2026-09-02T14:03:11Z")),
+            Some("Delivery not recorded".to_string())
+        );
+    }
+
+    #[test]
+    fn a_draft_with_no_send_renders_no_row() {
+        assert_eq!(sent_line(None, None, None, None), None);
     }
 }
 
