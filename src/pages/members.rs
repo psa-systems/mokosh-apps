@@ -25,9 +25,25 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, BannerTone, ContentUnavailable, PageHeader, StatusBanner,
+    use_page_title, Badge, BadgeVariant, BannerTone, ConfirmDialog, ContentUnavailable, PageHeader,
+    Select, SelectOption, StatusBanner,
 };
 use crate::Route;
+
+/// The six-ish roles the server accepts on both `/users` and `/grants`.
+/// Matches the PMS-1162 projection; a seventh role (`super_admin`) is
+/// deliberately absent from the picker because it is bootstrap-only and
+/// the server refuses to assign it through either endpoint. Rendered as
+/// `SelectOption`s on every row's role picker.
+const ROLE_PICKER: &[(&str, &str)] = &[
+    ("admin", "Admin"),
+    ("manager", "Manager"),
+    ("technician", "Technician"),
+    ("dispatcher", "Dispatcher"),
+    ("sales", "Sales"),
+    ("finance", "Finance"),
+    ("read_only", "Read-only"),
+];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -234,6 +250,62 @@ fn row_teams(row: &MemberRow) -> &[TeamChip] {
     }
 }
 
+/// Dispatch a role change on `row` to `new_role` through the right
+/// endpoint for the row kind. Native users route through `PUT /users` so
+/// the role lands on the users row; placed and unplaced guests route
+/// through `PATCH /grants` because the role lives on the grant, not on
+/// the users row. The pure path functions above are used so a refactor
+/// that touches the URL table has one place to look.
+#[cfg(feature = "app")]
+async fn change_role(row: &MemberRow, new_role: &str) -> Result<(), String> {
+    let path = change_role_path(row);
+    let body = serde_json::json!({ "role": new_role });
+    match row {
+        MemberRow::User {
+            placed_by_grant_id: None,
+            ..
+        } => crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+            .await
+            .map(|_| ()),
+        MemberRow::User {
+            placed_by_grant_id: Some(_),
+            ..
+        }
+        | MemberRow::UnplacedGuest { .. } => {
+            crate::hooks::fetch::api::patch_authed::<serde_json::Value, _>(&path, &body)
+                .await
+                .map(|_| ())
+        }
+    }
+}
+
+/// Dispatch a remove on `row` through the right endpoint for the row
+/// kind. A native user is DEACTIVATED (status=inactive); a guest (placed
+/// or unplaced) has its grant REVOKED. The two outcomes read the same to
+/// the operator (the row disappears from the roster) but differ in what
+/// gets written: the users row stays, tombstoned, where the grant row is
+/// updated with `revoked_at`.
+#[cfg(feature = "app")]
+async fn remove(row: &MemberRow) -> Result<(), String> {
+    let path = remove_action_path(row);
+    match row {
+        MemberRow::User {
+            placed_by_grant_id: None,
+            ..
+        } => crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+            &path,
+            &serde_json::json!({ "status": "inactive" }),
+        )
+        .await
+        .map(|_| ()),
+        MemberRow::User {
+            placed_by_grant_id: Some(_),
+            ..
+        }
+        | MemberRow::UnplacedGuest { .. } => crate::hooks::fetch::api::delete_authed(&path).await,
+    }
+}
+
 #[derive(Props, Clone, PartialEq)]
 pub struct MembersPageProps {
     pub tab: String,
@@ -315,7 +387,7 @@ pub fn MembersPage(props: MembersPageProps) -> Element {
 
 #[component]
 fn PeoplePane(can_mutate: bool) -> Element {
-    let members = use_resource(move || async move {
+    let mut members = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_authed::<MembersResponse>("/members?per_page=100")
@@ -324,6 +396,85 @@ fn PeoplePane(can_mutate: bool) -> Element {
             .ok()
     });
     let snap = members.read_unchecked();
+    // Action state: the row the operator picked for removal, and the last
+    // dispatch error (rendered inside the confirm dialog so it sits next
+    // to the button that produced it, matching the ConfirmDialog's
+    // `error` prop contract).
+    let mut remove_target: Signal<Option<MemberRow>> = use_signal(|| None);
+    let mut remove_error: Signal<String> = use_signal(String::new);
+    let mut remove_busy: Signal<bool> = use_signal(|| false);
+    let mut role_error: Signal<String> = use_signal(String::new);
+
+    let on_change_role = move |(row, new_role): (MemberRow, String)| {
+        role_error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                match change_role(&row, &new_role).await {
+                    Ok(()) => members.restart(),
+                    Err(e) => role_error.set(format!("Could not change role: {e}")),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = (row, new_role);
+            }
+        });
+    };
+
+    let on_confirm_remove = move |_| {
+        let Some(row) = remove_target.read().clone() else {
+            return;
+        };
+        remove_busy.set(true);
+        remove_error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                match remove(&row).await {
+                    Ok(()) => {
+                        remove_target.set(None);
+                        remove_busy.set(false);
+                        members.restart();
+                    }
+                    Err(e) => {
+                        remove_busy.set(false);
+                        remove_error.set(format!("Could not remove: {e}"));
+                    }
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = row;
+                remove_busy.set(false);
+            }
+        });
+    };
+
+    let on_cancel_remove = move |_| {
+        remove_target.set(None);
+        remove_error.set(String::new());
+    };
+
+    let (confirm_title, confirm_message, confirm_text) = match &*remove_target.read() {
+        Some(MemberRow::User {
+            placed_by_grant_id: None,
+            ..
+        }) => {
+            let target = remove_target.read().clone().unwrap();
+            (
+                format!("Deactivate {}?", row_display_name(&target)),
+                "Their access to this workspace ends. You can reactivate them later.".to_string(),
+                "Deactivate".to_string(),
+            )
+        }
+        Some(row) => (
+            format!("Revoke access for {}?", row_display_name(row)),
+            "They lose access to this workspace immediately. You can re-invite later.".to_string(),
+            "Revoke access".to_string(),
+        ),
+        None => (String::new(), String::new(), "Confirm".to_string()),
+    };
 
     rsx! {
         match &*snap {
@@ -336,14 +487,50 @@ fn PeoplePane(can_mutate: bool) -> Element {
                 }
             },
             Some(Some(payload)) => rsx! {
-                PeopleBody { payload: payload.clone(), can_mutate }
+                if !role_error.read().is_empty() {
+                    StatusBanner { tone: BannerTone::Error, class: "mb-3".to_string(),
+                        {role_error.read().clone()}
+                    }
+                }
+                PeopleBody {
+                    payload: payload.clone(),
+                    can_mutate,
+                    on_change_role,
+                    on_remove: move |row: MemberRow| {
+                        remove_error.set(String::new());
+                        remove_target.set(Some(row));
+                    },
+                }
             },
+        }
+        ConfirmDialog {
+            open: remove_target.read().is_some(),
+            title: confirm_title,
+            message: confirm_message,
+            confirm_text,
+            destructive: true,
+            loading: *remove_busy.read(),
+            error: remove_error.read().clone(),
+            onconfirm: on_confirm_remove,
+            oncancel: on_cancel_remove,
         }
     }
 }
 
+#[derive(Props, Clone, PartialEq)]
+struct PeopleBodyProps {
+    payload: MembersResponse,
+    can_mutate: bool,
+    on_change_role: EventHandler<(MemberRow, String)>,
+    on_remove: EventHandler<MemberRow>,
+}
+
 #[component]
-fn PeopleBody(payload: MembersResponse, can_mutate: bool) -> Element {
+fn PeopleBody(props: PeopleBodyProps) -> Element {
+    let payload = props.payload;
+    let can_mutate = props.can_mutate;
+    let on_change_role = props.on_change_role;
+    let on_remove = props.on_remove;
     rsx! {
         if !payload.bunyip_reachable {
             StatusBanner { tone: BannerTone::Warning, class: "mb-3".to_string(),
@@ -415,8 +602,38 @@ fn PeopleBody(payload: MembersResponse, can_mutate: bool) -> Element {
                                         }
                                     }
                                     if can_mutate {
-                                        td { class: "py-2 pr-4 text-muted text-xs",
-                                            "Actions pending phase 3b"
+                                        td { class: "py-2 pr-4",
+                                            div { class: "flex items-center gap-2",
+                                                {
+                                                    let row_for_role = row.clone();
+                                                    let options: Vec<SelectOption> = ROLE_PICKER
+                                                        .iter()
+                                                        .map(|(v, l)| SelectOption::new(*v, *l))
+                                                        .collect();
+                                                    rsx! {
+                                                        Select {
+                                                            name: format!("role-{key}"),
+                                                            options,
+                                                            value: role.clone(),
+                                                            onchange: move |e: FormEvent| {
+                                                                on_change_role
+                                                                    .call((row_for_role.clone(), e.value()));
+                                                            },
+                                                        }
+                                                    }
+                                                }
+                                                {
+                                                    let row_for_remove = row.clone();
+                                                    rsx! {
+                                                        button {
+                                                            r#type: "button",
+                                                            class: "text-sm text-red-600 hover:text-red-700",
+                                                            onclick: move |_| on_remove.call(row_for_remove.clone()),
+                                                            "Remove"
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
