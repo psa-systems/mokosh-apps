@@ -538,6 +538,26 @@ pub(crate) fn customer_decision_prompt(accept: bool, number: &str, total: &str) 
     }
 }
 
+/// MAPPS-1031 (PMS-1462): the Details row for how a quote reached the
+/// customer, covering the three delivery methods plus the no-record case.
+/// `None` on a draft (no `sent_at`); `Some("Delivery not recorded")` on a
+/// sent quote from before PMS-1462 tracked the method. Mirrors
+/// `crate::pages::billing::sent_line` exactly, on the same four fields
+/// MAPPS-1014 named.
+pub(crate) fn sent_line(
+    delivery_method: Option<&str>,
+    delivery_note: Option<&str>,
+    delivered_by_name: Option<&str>,
+    sent_at: Option<&str>,
+) -> Option<String> {
+    crate::pages::billing::sent_line(delivery_method, delivery_note, delivered_by_name, sent_at)
+}
+
+/// MAPPS-1031 (PMS-1462): one method's slot in the Send dialog, from `GET
+/// /quotes/{id}/delivery-options`. Mirrors `crate::pages::billing`'s own
+/// `DeliveryOption` / `find_delivery_option`.
+pub(crate) use crate::pages::billing::{find_delivery_option, DeliveryOptionsResponse};
+
 /// MAPPS-779: the line under the title, which tells the customer whether the
 /// next move is theirs.
 pub(crate) fn customer_quote_status_line(status: &str, valid_until: Option<&str>) -> String {
@@ -796,6 +816,27 @@ fn QuoteDetailBody(id: String) -> Element {
         }
     });
 
+    // MAPPS-1031 (PMS-1462): the Send dialog's per-method availability,
+    // recipient and refusal reason, mirroring the invoice page. Reads
+    // `quote_resource` so a restart of the quote restarts this too.
+    let id_for_delivery = id.clone();
+    let delivery_options_resource = use_resource(move || {
+        let qid = id_for_delivery.clone();
+        async move {
+            if !staff_only {
+                return None;
+            }
+            let _quote = quote_resource.read_unchecked().clone();
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<DeliveryOptionsResponse>(&format!(
+                "/quotes/{qid}/delivery-options"
+            ))
+            .await
+            .inspect_err(|e| tracing::warn!("delivery options load failed for quote {qid}: {e}"))
+            .ok()
+        }
+    });
+
     let snapshot = quote_resource.read_unchecked();
     let loading = snapshot.is_none();
     let quote: Option<QuoteResponse> = match &*snapshot {
@@ -1021,20 +1062,16 @@ fn QuoteDetailBody(id: String) -> Element {
                                             }
                                         }
                                     }
-                                    if let Some(sent) = q.sent_at {
-                                        {
-                                            let sent_iso = sent.to_rfc3339();
-                                            let sent = crate::utils::datetime::fmt_user_dt_in(
-                                                sent,
-                                                pref.as_deref(),
-                                                tz,
-                                                Some("%b %-d, %Y"),
-                                            );
-                                            rsx! {
-                                                div {
-                                                    dt { class: "text-subtle", "Sent" }
-                                                    dd { time { datetime: "{sent_iso}", "{sent}" } }
-                                                }
+                                    if let Some(sent_at_iso) = q.sent_at.map(|s| s.to_rfc3339()) {
+                                        if let Some(sent) = sent_line(
+                                            q.delivery_method.as_deref(),
+                                            q.delivery_note.as_deref(),
+                                            q.delivered_by_name.as_deref(),
+                                            Some(&sent_at_iso),
+                                        ) {
+                                            div {
+                                                dt { class: "text-subtle", "Sent" }
+                                                dd { time { datetime: "{sent_at_iso}", "{sent}" } }
                                             }
                                         }
                                     }
@@ -1152,6 +1189,19 @@ fn QuoteDetailBody(id: String) -> Element {
                                         {
                                             let method = send_method.read().clone();
                                             let note = send_note.read().trim().to_string();
+                                            // MAPPS-1031 (PMS-1462): `None` (fetch
+                                            // failed or has not loaded) leaves Email
+                                            // selectable with no tooltip.
+                                            let delivery_options = (*delivery_options_resource.read_unchecked())
+                                                .clone()
+                                                .flatten()
+                                                .map(|r| r.methods);
+                                            let email_option =
+                                                find_delivery_option(delivery_options.as_deref(), "email").cloned();
+                                            let email_unavailable =
+                                                email_option.as_ref().is_some_and(|o| !o.available);
+                                            let email_reason =
+                                                email_option.as_ref().and_then(|o| o.reason.clone());
                                             let other_invalid = method == "other" && note.is_empty();
                                             let pdf_path = format!("/api/v1/quotes/{}/pdf", q.id);
                                             let qid = quote_id.clone();
@@ -1163,16 +1213,20 @@ fn QuoteDetailBody(id: String) -> Element {
                                                     confirm_text: "Send".to_string(),
                                                     cancel_text: "Cancel".to_string(),
                                                     loading: *busy.read(),
-                                                    confirm_disabled: other_invalid,
+                                                    confirm_disabled: other_invalid || (method == "email" && email_unavailable),
                                                     body: rsx! {
                                                         div { class: "space-y-3",
                                                             p { class: "text-sm font-medium text-content", "How is it being sent?" }
-                                                            label { class: "flex items-start gap-2 text-sm",
+                                                            label {
+                                                                class: "flex items-start gap-2 text-sm",
+                                                                title: email_reason.clone().unwrap_or_default(),
                                                                 input {
                                                                     r#type: "radio",
                                                                     name: "quote_send_method",
                                                                     value: "email",
                                                                     checked: method == "email",
+                                                                    disabled: email_unavailable,
+                                                                    title: email_reason.clone().unwrap_or_default(),
                                                                     onchange: move |_| send_method.set("email".to_string()),
                                                                 }
                                                                 span {
@@ -2313,5 +2367,59 @@ mod customer_quote_tests {
             let line = customer_quote_status_line(status, Some("2026-10-01"));
             assert!(!line.contains("Waiting"), "{status}: {line}");
         }
+    }
+}
+
+#[cfg(test)]
+mod quote_sent_line_tests {
+    use super::sent_line;
+
+    /// MAPPS-1031: the quote page's Sent row covers the same four cases as
+    /// the invoice page's, because it delegates to the same function.
+    #[test]
+    fn email_names_the_method() {
+        assert_eq!(
+            sent_line(
+                Some("email"),
+                None,
+                Some("Jamie Lee"),
+                Some("2026-09-02T14:03:11Z")
+            ),
+            Some("Emailed on 2026-09-02 by Jamie Lee".to_string())
+        );
+    }
+
+    #[test]
+    fn postal_names_the_method() {
+        assert_eq!(
+            sent_line(Some("postal"), None, None, Some("2026-09-02T14:03:11Z")),
+            Some("Mailed on 2026-09-02".to_string())
+        );
+    }
+
+    #[test]
+    fn other_carries_the_note() {
+        assert_eq!(
+            sent_line(
+                Some("other"),
+                Some("Handed to the client"),
+                None,
+                Some("2026-09-02T14:03:11Z")
+            ),
+            Some("Delivered: Handed to the client on 2026-09-02".to_string())
+        );
+    }
+
+    #[test]
+    fn no_recorded_method_says_so() {
+        assert_eq!(
+            sent_line(None, None, None, Some("2026-09-02T14:03:11Z")),
+            Some("Delivery not recorded".to_string())
+        );
+    }
+
+    #[test]
+    fn a_draft_renders_no_row() {
+        assert_eq!(sent_line(None, None, None, None), None);
     }
 }
