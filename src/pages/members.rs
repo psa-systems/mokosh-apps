@@ -364,6 +364,9 @@ pub fn MembersPage(props: MembersPageProps) -> Element {
     let is_org_tenant = auth.read().is_org_tenant();
     let navigator = use_navigator();
     let active = Tab::from_query(&props.tab);
+    // MAPPS-602: every hook runs before the first early return below so
+    // the hook count stays stable across renders.
+    let mut show_invite_user = use_signal(|| false);
 
     // Members is an org-tenant concept; a personal tenant has one user
     // and nothing to list, so the page refuses rather than renders an
@@ -378,8 +381,6 @@ pub fn MembersPage(props: MembersPageProps) -> Element {
             ContentUnavailable { title: "Members".to_string() }
         };
     }
-
-    let mut show_invite_user = use_signal(|| false);
 
     rsx! {
         PageHeader {
