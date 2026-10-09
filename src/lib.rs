@@ -1167,8 +1167,12 @@ pub enum Route {
     Invitations {},
     #[route("/admin/team")]
     TeamLegacyRedirect {},
-    // PMS-791 phase 2: the actual teams management page (list + create +
-    // edit + membership).
+    // Deprecated alias. The teams management surface lives on the
+    // Teams tab of the unified members page; `/admin/teams` now
+    // renders a redirect stub (see `pages::teams::TeamsPage`) that
+    // navigates to `/settings/members?tab=teams`. Kept so old
+    // bookmarks and emails still land somewhere useful; schedule the
+    // route for deletion once the alias traffic drops to zero.
     #[cfg(feature = "multi-tenant")]
     #[route("/admin/teams")]
     Teams {},
