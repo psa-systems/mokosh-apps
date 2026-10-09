@@ -25,8 +25,9 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, BannerTone, ConfirmDialog, ContentUnavailable, PageHeader,
-    Select, SelectOption, StatusBanner,
+    use_page_title, AlertType, Badge, BadgeVariant, BannerTone, Button, ButtonVariant,
+    ConfirmDialog, ContentUnavailable, Input, Modal, PageHeader, Select, SelectOption,
+    StatusBanner,
 };
 use crate::Route;
 
@@ -342,8 +343,35 @@ pub fn MembersPage(props: MembersPageProps) -> Element {
         };
     }
 
+    let mut show_invite_user = use_signal(|| false);
+
     rsx! {
-        PageHeader { title: "Members".to_string() }
+        PageHeader {
+            title: "Members".to_string(),
+            actions: if is_admin && active == Tab::People {
+                Some(rsx! {
+                    // "Invite guest" would create a bunyip grant invitation
+                    // that lands this tenant in another workspace's roster
+                    // through the webhook that feeds `mokosh_bunyip_grants`.
+                    // The endpoint is not here yet (follow-up on the server),
+                    // so the affordance is shown but disabled with a hint
+                    // instead of fabricating a flow.
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        disabled: true,
+                        title: "Guest invitations are issued from the Bunyip hub. Coming soon.".to_string(),
+                        "Invite guest"
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        onclick: move |_| show_invite_user.set(true),
+                        "Invite user"
+                    }
+                })
+            } else {
+                None
+            },
+        }
         div { class: "flex gap-2 border-b border-line mb-4",
             for t in [Tab::People, Tab::Teams, Tab::Invitations] {
                 {
@@ -377,6 +405,115 @@ pub fn MembersPage(props: MembersPageProps) -> Element {
             Tab::Invitations => rsx! {
                 InvitationsTab { can_mutate: is_admin }
             },
+        }
+        if show_invite_user() {
+            InviteUserModal {
+                onclose: move |_| show_invite_user.set(false),
+                onsaved: move |_| {
+                    show_invite_user.set(false);
+                    navigator.replace(Route::MembersPage { tab: "invitations".to_string() });
+                },
+            }
+        }
+    }
+}
+
+#[component]
+fn InviteUserModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Element {
+    let mut email = use_signal(String::new);
+    let mut role = use_signal(|| String::from("technician"));
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let role_options: Vec<SelectOption> = ROLE_PICKER
+        .iter()
+        .map(|(v, l)| SelectOption::new(*v, *l))
+        .collect();
+
+    let submit = move |_| {
+        if saving() {
+            return;
+        }
+        let e = email.read().trim().to_string();
+        if e.is_empty() {
+            error.set("Email is required.".to_string());
+            return;
+        }
+        let r = role.read().clone();
+        saving.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let body = serde_json::json!({ "email": e, "role": r });
+                #[derive(serde::Deserialize)]
+                struct Created {
+                    #[allow(dead_code)]
+                    id: uuid::Uuid,
+                }
+                match crate::hooks::fetch::api::post_authed::<Created, _>("/invitations", &body)
+                    .await
+                {
+                    Ok(_) => {
+                        crate::hooks::toast::push_toast(AlertType::Success, "Invitation sent.");
+                        onsaved.call(());
+                    }
+                    Err(err) => error.set(format!("Could not send invite: {err}")),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = (e, r);
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        Modal {
+            open: true,
+            title: "Invite user".to_string(),
+            onclose: move |_| { if !saving() { onclose.call(()); } },
+            footer: rsx! {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| { if !saving() { onclose.call(()); } },
+                    "Cancel"
+                }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    loading: saving(),
+                    onclick: submit,
+                    "Send invite"
+                }
+            },
+            div { class: "space-y-3",
+                if !error.read().is_empty() {
+                    StatusBanner { tone: BannerTone::Error, class: String::new(),
+                        {error.read().clone()}
+                    }
+                }
+                Input {
+                    name: "invite_email",
+                    label: "Email",
+                    r#type: "email".to_string(),
+                    value: email(),
+                    required: true,
+                    disabled: saving(),
+                    oninput: move |e: FormEvent| { error.set(String::new()); email.set(e.value()); },
+                }
+                Select {
+                    name: "invite_role",
+                    label: "Role",
+                    options: role_options,
+                    value: role(),
+                    disabled: saving(),
+                    onchange: move |e: FormEvent| { role.set(e.value()); },
+                }
+                p { class: "text-xs text-muted",
+                    "The invitee receives an email with a link to accept and set their password."
+                }
+            }
         }
     }
 }
