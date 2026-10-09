@@ -372,9 +372,7 @@ pub fn MembersPage(props: MembersPageProps) -> Element {
         match active {
             Tab::People => rsx! { PeoplePane { can_mutate: is_admin } },
             Tab::Teams => rsx! {
-                p { class: "text-sm text-muted",
-                    "Teams pane coming in a later phase."
-                }
+                crate::pages::members_teams_tab::TeamsTab {}
             },
             Tab::Invitations => rsx! {
                 p { class: "text-sm text-muted",
