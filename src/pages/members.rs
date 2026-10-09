@@ -649,7 +649,7 @@ fn PeoplePane(can_mutate: bool) -> Element {
     rsx! {
         match &*snap {
             None => rsx! {
-                p { class: "text-sm text-muted", "Loading…" }
+                crate::components::DetailSkeleton {}
             },
             Some(None) => rsx! {
                 p { class: "text-sm text-muted",
@@ -920,7 +920,7 @@ fn InvitationsTab(can_mutate: bool) -> Element {
             }
         }
         match &*snap {
-            None => rsx! { p { class: "text-sm text-muted", "Loading…" } },
+            None => rsx! { crate::components::DetailSkeleton {} },
             Some(None) => rsx! {
                 StatusBanner { tone: BannerTone::Warning, class: "mb-3".to_string(),
                     "Couldn't load pending invitations. Refresh to try again."
