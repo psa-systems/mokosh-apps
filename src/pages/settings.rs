@@ -9819,6 +9819,48 @@ mod tests {
             sort_order: i64::from(sort_order),
         };
     }
+
+    /// MAPPS-1039: named, unresolved and not-set for the RMM connection
+    /// column, fed by the server-sent `rmm_connection_name` (PMS-1479).
+    #[test]
+    fn rmm_connection_label_covers_named_unresolved_and_not_set() {
+        let id = Uuid::new_v4();
+        assert_eq!(
+            rmm_connection_label(Some(id), Some("Acme RMM")),
+            ("Acme RMM".to_string(), None)
+        );
+        let (shown, title) = rmm_connection_label(Some(id), None);
+        assert_eq!(shown, "Unknown");
+        assert_eq!(title, Some(format!("Unresolved RMM connection {id}")));
+        // A blank name is treated the same as a missing one.
+        let (shown, title) = rmm_connection_label(Some(id), Some("   "));
+        assert_eq!(shown, "Unknown");
+        assert!(title.is_some());
+        assert_eq!(
+            rmm_connection_label(None, None),
+            ("Not set".to_string(), None)
+        );
+    }
+
+    /// MAPPS-1039: named, unresolved and not-set for the category Parent
+    /// column, fed by the server-sent `parent_name` (PMS-1479); a `Some`
+    /// `parent_id` with no name is "Unknown" with a tooltip, never the empty
+    /// cell the old by-hand join produced on a miss.
+    #[test]
+    fn ticket_category_parent_label_covers_named_unresolved_and_not_set() {
+        let id = Uuid::new_v4();
+        assert_eq!(
+            ticket_category_parent_label(Some(id), Some("Hardware")),
+            ("Hardware".to_string(), None)
+        );
+        let (shown, title) = ticket_category_parent_label(Some(id), None);
+        assert_eq!(shown, "Unknown");
+        assert_eq!(title, Some(format!("Unresolved category {id}")));
+        assert_eq!(
+            ticket_category_parent_label(None, None),
+            ("Not set".to_string(), None)
+        );
+    }
 }
 
 #[cfg(test)]
