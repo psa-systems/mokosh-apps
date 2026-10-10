@@ -9765,6 +9765,7 @@ mod tests {
         let mokosh_types::tickets::TicketCategoryResponse {
             id,
             parent_id,
+            parent_name: _,
             name,
             description,
             is_active,
