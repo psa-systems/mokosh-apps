@@ -7036,6 +7036,11 @@ struct TicketCategoryRow {
     id: Uuid,
     #[serde(default)]
     parent_id: Option<Uuid>,
+    // PMS-1479: server-resolved parent name, `None` for a root category
+    // (absence by contract) or when `parent_id` points at a gone row
+    // (MAPPS-1039).
+    #[serde(default)]
+    parent_name: Option<String>,
     #[serde(default)]
     name: String,
     #[serde(default)]
@@ -7044,6 +7049,34 @@ struct TicketCategoryRow {
     is_active: bool,
     #[serde(default)]
     sort_order: i64,
+}
+
+/// Label + tooltip for a category's Parent column. MAPPS-1039: reads the
+/// server-resolved `parent_name` (PMS-1479) instead of a second full-list
+/// fetch joined by hand. `None` `parent_id` is a root category (absence by
+/// contract: "Not set"); a `Some` `parent_id` with no `parent_name` is an
+/// unresolved reference ("Unknown" with a tooltip and an INFO log through
+/// the MAPPS-1036 helper), never the empty cell the old join produced on a
+/// miss.
+fn ticket_category_parent_label(
+    parent_id: Option<Uuid>,
+    parent_name: Option<&str>,
+) -> (String, Option<String>) {
+    match parent_id {
+        None => ("Not set".to_string(), None),
+        Some(id) => match parent_name.filter(|n| !n.trim().is_empty()) {
+            Some(n) => (n.to_string(), None),
+            None => {
+                let title = crate::utils::unresolved(
+                    "settings.ticket_category.parent",
+                    "category",
+                    Some(id),
+                    "Unknown",
+                );
+                ("Unknown".to_string(), Some(title))
+            }
+        },
+    }
 }
 
 #[component]
@@ -7120,9 +7153,6 @@ fn TicketCategoriesSettingsBody() -> Element {
         Some(list) => list.clone(),
         None => Vec::new(),
     };
-    let name_by_id: std::collections::HashMap<Uuid, String> =
-        all_cats.iter().map(|r| (r.id, r.name.clone())).collect();
-
     rsx! {
         PageHeader {
             title: "Ticket Categories",
@@ -7188,10 +7218,10 @@ fn TicketCategoriesSettingsBody() -> Element {
                                 let key = row.id.to_string();
                                 let edit_state = TicketCategoryFormState::from_existing(&row);
                                 let name = row.name.clone();
-                                let parent = row
-                                    .parent_id
-                                    .and_then(|pid| name_by_id.get(&pid).cloned())
-                                    .unwrap_or_default();
+                                let (parent, parent_title) = ticket_category_parent_label(
+                                    row.parent_id,
+                                    row.parent_name.as_deref(),
+                                );
                                 let active = row.is_active;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
@@ -7206,10 +7236,10 @@ fn TicketCategoriesSettingsBody() -> Element {
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell {
-                                            if parent.is_empty() {
-                                                span { class: "text-subtle", "-" }
-                                            } else {
-                                                span { class: "text-sm text-content", "{parent}" }
+                                            span {
+                                                class: "text-sm text-content",
+                                                title: parent_title.clone().unwrap_or_default(),
+                                                "{parent}"
                                             }
                                         }
                                         TableCell { ActiveBadge { active } }
@@ -7489,6 +7519,31 @@ fn rmm_provider_label(value: &str) -> String {
         .find(|(v, _)| *v == value)
         .map(|(_, l)| (*l).to_string())
         .unwrap_or_else(|| value.to_string())
+}
+
+/// Label + tooltip for a device mapping's or alert rule's connection column.
+/// MAPPS-1039: the server (PMS-1479) now resolves `rmm_connection_name` in the
+/// same query, so this reads the response field instead of joining against
+/// the separately-fetched connections list (kept only to feed the create/edit
+/// picker). `None` id is the explicit not-set state; a `Some` id with no name
+/// is an unresolved reference: "Unknown" with a tooltip and an INFO log,
+/// through the MAPPS-1036 helper.
+fn rmm_connection_label(id: Option<Uuid>, name: Option<&str>) -> (String, Option<String>) {
+    match id {
+        None => ("Not set".to_string(), None),
+        Some(id) => match name.filter(|n| !n.trim().is_empty()) {
+            Some(n) => (n.to_string(), None),
+            None => {
+                let title = crate::utils::unresolved(
+                    "settings.rmm_connection",
+                    "RMM connection",
+                    Some(id),
+                    "Unknown",
+                );
+                ("Unknown".to_string(), Some(title))
+            }
+        },
+    }
 }
 
 /// A coloured badge for a connection's last sync/test status.
@@ -8073,6 +8128,10 @@ struct RmmDeviceMappingRow {
     id: Uuid,
     #[serde(default)]
     rmm_connection_id: Option<Uuid>,
+    // PMS-1479: server-resolved connection name, so the row doesn't need the
+    // connections list to label itself (MAPPS-1039).
+    #[serde(default)]
+    rmm_connection_name: Option<String>,
     #[serde(default)]
     rmm_device_id: String,
     #[serde(default)]
@@ -8163,23 +8222,6 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
             crate::components::ContentUnavailable { title: "RMM Device Mappings".to_string() }
         };
     }
-
-    let conn_label = |id: Option<Uuid>| -> String {
-        match id {
-            Some(id) => connections
-                .iter()
-                .find(|c| c.id == id)
-                .map(|c| {
-                    if c.name.trim().is_empty() {
-                        id.to_string()
-                    } else {
-                        c.name.clone()
-                    }
-                })
-                .unwrap_or_else(|| id.to_string()),
-            None => "-".to_string(),
-        }
-    };
 
     let no_connections = connections.is_empty();
     let pending = pending_delete.read().clone();
@@ -8276,7 +8318,10 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                                     device
                                 };
                                 let device_id = row.rmm_device_id.clone();
-                                let connection = conn_label(row.rmm_connection_id);
+                                let (connection, connection_title) = rmm_connection_label(
+                                    row.rmm_connection_id,
+                                    row.rmm_connection_name.as_deref(),
+                                );
                                 let status = row.sync_status.clone();
                                 let is_deleting = *deleting_id.read() == Some(rid);
                                 rsx! {
@@ -8287,7 +8332,9 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                                         TableCell {
                                             span { class: "font-mono text-xs text-muted break-all", "{device_id}" }
                                         }
-                                        TableCell { "{connection}" }
+                                        TableCell {
+                                            span { title: connection_title.clone().unwrap_or_default(), "{connection}" }
+                                        }
                                         TableCell { RmmStatusBadge { status } }
                                         TableCell { class: "text-right",
                                             Button {
@@ -8545,6 +8592,9 @@ struct RmmAlertRuleRow {
     id: Uuid,
     #[serde(default)]
     rmm_connection_id: Option<Uuid>,
+    // PMS-1479: server-resolved connection name (MAPPS-1039).
+    #[serde(default)]
+    rmm_connection_name: Option<String>,
     #[serde(default)]
     name: String,
     #[serde(default)]
@@ -8638,23 +8688,6 @@ fn RmmAlertRulesSettingsBody() -> Element {
         };
     }
 
-    let conn_label = |id: Option<Uuid>| -> String {
-        match id {
-            Some(id) => connections
-                .iter()
-                .find(|c| c.id == id)
-                .map(|c| {
-                    if c.name.trim().is_empty() {
-                        id.to_string()
-                    } else {
-                        c.name.clone()
-                    }
-                })
-                .unwrap_or_else(|| id.to_string()),
-            None => "-".to_string(),
-        }
-    };
-
     let no_connections = connections.is_empty();
     let pending = pending_delete.read().clone();
 
@@ -8744,7 +8777,10 @@ fn RmmAlertRulesSettingsBody() -> Element {
                                 let key = row.id.to_string();
                                 let rid = row.id;
                                 let name = row.name.clone();
-                                let connection = conn_label(row.rmm_connection_id);
+                                let (connection, connection_title) = rmm_connection_label(
+                                    row.rmm_connection_id,
+                                    row.rmm_connection_name.as_deref(),
+                                );
                                 let alert_type = row.alert_type.clone().unwrap_or_default();
                                 let alert_type_display = if alert_type.trim().is_empty() {
                                     "Any".to_string()
@@ -8758,7 +8794,9 @@ fn RmmAlertRulesSettingsBody() -> Element {
                                         TableCell {
                                             span { class: "font-medium text-content", "{name}" }
                                         }
-                                        TableCell { "{connection}" }
+                                        TableCell {
+                                            span { title: connection_title.clone().unwrap_or_default(), "{connection}" }
+                                        }
                                         TableCell { "{alert_type_display}" }
                                         TableCell {
                                             if auto {
@@ -9765,6 +9803,7 @@ mod tests {
         let mokosh_types::tickets::TicketCategoryResponse {
             id,
             parent_id,
+            parent_name,
             name,
             description,
             is_active,
@@ -9773,6 +9812,7 @@ mod tests {
         let _ = TicketCategoryRow {
             id,
             parent_id,
+            parent_name,
             name,
             description,
             is_active,
