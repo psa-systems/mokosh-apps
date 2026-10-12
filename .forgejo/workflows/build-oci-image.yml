@@ -105,7 +105,7 @@ jobs:
         # The list is deliberately symmetric so this works on either
         # host arch without follow-up edits.
         run: |
-          docker run --privileged --rm tonistiigi/binfmt:latest --install amd64,arm64
+          docker run --privileged --rm tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0 --install amd64,arm64 # latest as of 2026-10-12
 
       - name: Set up buildx builder
         uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/setup-buildx@e728773130496a6e84e0d87de9390f3d98939019 # main
