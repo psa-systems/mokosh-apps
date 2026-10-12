@@ -63,9 +63,20 @@ pub fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<String>
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
 
-    let path = unique_path(&dir, filename);
+    let filename = sanitize_filename(filename);
+    let path = unique_path(&dir, &filename);
     std::fs::write(&path, bytes).map_err(|e| format!("could not write {}: {e}", path.display()))?;
     Ok(Some(path.display().to_string()))
+}
+
+/// Keep only the final path component of `filename`, discarding any `..`
+/// or absolute-path prefix, so it is always safe to `dir.join` directly.
+#[cfg(not(target_arch = "wasm32"))]
+fn sanitize_filename(filename: &str) -> String {
+    std::path::Path::new(filename)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "download".to_string())
 }
 
 /// A browser tab opened before the PDF bytes exist, so the pop-up blocker
@@ -162,15 +173,16 @@ pub fn show_bytes_in_tab(_tab: PreviewTab, bytes: &[u8]) -> Result<(), String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn unique_path(dir: &std::path::Path, filename: &str) -> std::path::PathBuf {
-    let candidate = dir.join(filename);
+    let filename = sanitize_filename(filename);
+    let candidate = dir.join(&filename);
     if !candidate.exists() {
         return candidate;
     }
-    let path = std::path::Path::new(filename);
+    let path = std::path::Path::new(&filename);
     let stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| filename.to_string());
+        .unwrap_or_else(|| filename.clone());
     let ext = path
         .extension()
         .map(|e| format!(".{}", e.to_string_lossy()))
@@ -185,4 +197,42 @@ fn unique_path(dir: &std::path::Path, filename: &str) -> std::path::PathBuf {
         }
     }
     dir.join(format!("{stem} (1000){ext}"))
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_filename_strips_traversal_and_absolute_paths() {
+        assert_eq!(sanitize_filename("../../evil"), "evil");
+        assert_eq!(sanitize_filename("/etc/evil"), "evil");
+        assert_eq!(sanitize_filename("report.pdf"), "report.pdf");
+    }
+
+    #[test]
+    fn unique_path_never_escapes_dir() {
+        let dir = std::env::temp_dir().join("mokosh-apps-unique-path-test");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        for filename in ["../../evil", "/etc/evil"] {
+            let candidate = unique_path(&dir, filename);
+            assert_eq!(candidate.parent(), Some(dir.as_path()));
+        }
+    }
+
+    #[test]
+    fn save_bytes_as_file_never_escapes_resolved_dir() {
+        let resolved_dir = dirs::download_dir()
+            .or_else(dirs::document_dir)
+            .or_else(dirs::home_dir)
+            .expect("a downloads/documents/home dir must exist to run this test");
+
+        for filename in ["../../evil", "/etc/evil"] {
+            let saved = save_bytes_as_file(b"test", filename).expect("save should succeed");
+            let saved_path = std::path::PathBuf::from(saved.expect("desktop build returns a path"));
+            assert_eq!(saved_path.parent(), Some(resolved_dir.as_path()));
+            let _ = std::fs::remove_file(&saved_path);
+        }
+    }
 }
