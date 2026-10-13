@@ -783,9 +783,6 @@ fn QuoteDetailBody(id: String) -> Element {
     // `quotes:download_pdf` cap. Staff / platform bypass unconditionally
     // through `use_capability`.
     let can_download_pdf = crate::hooks::capabilities::use_capability("quotes:download_pdf");
-    let mut pdf_downloading = use_signal(|| false);
-    let mut pdf_error = use_signal(String::new);
-    let id_for_pdf = id.clone();
     let mut version = use_signal(|| 0u32);
     // Not `mut` locally: these are handed by value to the action helpers,
     // which take their own mutable binding.
@@ -890,80 +887,12 @@ fn QuoteDetailBody(id: String) -> Element {
                         },
                         actions: rsx! {
                             if can_download_pdf {
-                                Button {
-                                    variant: ButtonVariant::Secondary,
-                                    loading: *pdf_downloading.read(),
-                                    onclick: {
-                                        let id_for_pdf = id_for_pdf.clone();
-                                        move |_| {
-                                            if *pdf_downloading.read() {
-                                                return;
-                                            }
-                                            pdf_error.set(String::new());
-                                            pdf_downloading.set(true);
-                                            let id = id_for_pdf.clone();
-                                            // MAPPS-1005: opened synchronously, before
-                                            // the fetch below, so the pop-up blocker
-                                            // sees it as a direct result of the click.
-                                            let preview_tab = if previewable {
-                                                crate::utils::download::open_preview_tab().ok()
-                                            } else {
-                                                None
-                                            };
-                                            spawn(async move {
-                                                #[cfg(feature = "web")]
-                                                {
-                                                    let path = format!("/quotes/{id}/pdf");
-                                                    match crate::hooks::fetch::api::get_authed_any_bytes(&path).await {
-                                                        Ok((bytes, filename)) => match preview_tab {
-                                                            Some(tab) => {
-                                                                if let Err(e) = crate::utils::download::show_bytes_in_tab(tab, &bytes) {
-                                                                    pdf_error.set(format!(
-                                                                        "Fetched the PDF but could not show it: {e}"
-                                                                    ));
-                                                                }
-                                                            }
-                                                            None => {
-                                                                let name = filename
-                                                                    .unwrap_or_else(|| format!("quote-{id}.pdf"));
-                                                                if let Err(e) =
-                                                                    crate::utils::download::save_bytes_as_file(&bytes, &name)
-                                                                {
-                                                                    pdf_error.set(format!(
-                                                                        "Fetched the PDF but could not save it: {e}"
-                                                                    ));
-                                                                }
-                                                            }
-                                                        },
-                                                        Err(crate::hooks::fetch::api::ApiError::Status {
-                                                            code: 501,
-                                                            ..
-                                                        }) => {
-                                                            if let Some(tab) = preview_tab {
-                                                                tab.close();
-                                                            }
-                                                            pdf_error.set(
-                                                                "PDF generation not available yet".to_string(),
-                                                            );
-                                                        }
-                                                        Err(err) => {
-                                                            if let Some(tab) = preview_tab {
-                                                                tab.close();
-                                                            }
-                                                            pdf_error.set(format!(
-                                                                "Could not download PDF: {}",
-                                                                err.user_message()
-                                                            ));
-                                                        }
-                                                    }
-                                                }
-                                                #[cfg(not(feature = "web"))]
-                                                let _ = (&id, preview_tab);
-                                                pdf_downloading.set(false);
-                                            });
-                                        }
-                                    },
-                                    if previewable { "Preview PDF" } else { "Download PDF" }
+                                crate::components::DownloadButton {
+                                    path: format!("/quotes/{}/pdf", q.id),
+                                    fallback_name: format!("quote-{}.pdf", q.id),
+                                    what: "the quote PDF".to_string(),
+                                    label: if previewable { "Preview PDF".to_string() } else { "Download PDF".to_string() },
+                                    preview: previewable,
                                 }
                             }
                             if can_edit && staff_only {
@@ -977,9 +906,6 @@ fn QuoteDetailBody(id: String) -> Element {
 
                     if !action_error.read().is_empty() {
                         ErrorBanner { class: "mb-3", "{action_error}" }
-                    }
-                    if !pdf_error.read().is_empty() {
-                        ErrorBanner { class: "mb-3", "{pdf_error}" }
                     }
 
                     // Split on main's container width, not the viewport: `lg:` ignores the
