@@ -757,6 +757,12 @@ pub fn AssetListPage() -> Element {
     // PMS-745: row-level navigation for the list below.
     let navigator = use_navigator();
     let mut search = use_signal(String::new);
+    // Phase 2 asset inline edit: a row click opens the drawer over the
+    // list when `assets:inline_edit` is on; otherwise the pre-phase-2
+    // navigation to `AssetDetail` stays in place. Reused across the
+    // row click + the drawer's own refetch after a save.
+    let inline_edit_enabled = crate::hooks::capabilities::use_capability("assets:inline_edit");
+    let mut open_drawer: Signal<Option<uuid::Uuid>> = use_signal(|| None);
     // MAPPS-303: page-scoped bulk selection (built on MAPPS-290's
     // `use_bulk_selection`). Drives the per-row checkbox, the
     // `SelectAllHeader`, and the `BulkActionsBar` "Bulk edit" verb
@@ -959,6 +965,20 @@ pub fn AssetListPage() -> Element {
     let filtered: Vec<&RemoteAsset> = assets.iter().collect();
 
     rsx! {
+        // Phase 2 asset inline edit: a right-side drawer slides over
+        // the list when `assets:inline_edit` is on. Esc or backdrop
+        // closes; a save refetches the list so the row reads back the
+        // new values.
+        if let Some(open_id) = *open_drawer.read() {
+            crate::pages::asset_drawer::AssetDrawer {
+                asset_id: open_id,
+                onclose: move |_| {
+                    open_drawer.set(None);
+                    assets_resource.restart();
+                },
+            }
+        }
+
         PageHeader {
             title: "Assets",
             subtitle: "Configuration items and customer assets",
@@ -1311,7 +1331,13 @@ pub fn AssetListPage() -> Element {
                                             TableRow { key: "{aid}",
                                                 clickable: true,
                                                 onclick: move |_| {
-                                                    navigator.push(Route::AssetDetail { id: row_id.clone() });
+                                                    if inline_edit_enabled {
+                                                        if let Ok(id) = row_id.parse::<uuid::Uuid>() {
+                                                            open_drawer.set(Some(id));
+                                                        }
+                                                    } else {
+                                                        navigator.push(Route::AssetDetail { id: row_id.clone() });
+                                                    }
                                                 },
                                                 crate::components::SelectRowCell {
                                                     selection,
