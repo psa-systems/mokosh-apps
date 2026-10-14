@@ -897,6 +897,7 @@ pub fn AssetListPage() -> Element {
                 &body,
             )
             .await
+            .inspect_err(|e| tracing::warn!("asset facets load failed: {e}"))
             .ok()
         }
     });
