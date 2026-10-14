@@ -84,6 +84,9 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
     // `use_callback` gives a `Copy` handle so the closure can be cloned
     // into every editor's `onblur`/`onkeydown` without a per-site move.
     let commit = use_callback(move |raw: String| {
+        if saving() {
+            return;
+        }
         let path = path.clone();
         let patch_field = patch_field.clone();
         spawn(async move {
@@ -158,6 +161,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                                     value: "{draft.read()}",
                                     placeholder,
                                     maxlength,
+                                    disabled: saving(),
                                     oninput: move |e: FormEvent| draft.set(e.value()),
                                     onkeydown: move |e: KeyboardEvent| {
                                         let key = e.key();
@@ -180,6 +184,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                                     value: "{draft.read()}",
                                     placeholder,
                                     rows: rows as i64,
+                                    disabled: saving(),
                                     oninput: move |e: FormEvent| draft.set(e.value()),
                                     onkeydown: move |e: KeyboardEvent| {
                                         if matches!(e.key(), Key::Escape) {
@@ -198,6 +203,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                                     class: "block w-full rounded-md border border-line bg-surface text-content \
                                             px-2 py-1 text-sm shadow-sm focus:border-accent focus:ring-accent",
                                     value: "{draft.read()}",
+                                    disabled: saving(),
                                     oninput: move |e: FormEvent| draft.set(e.value()),
                                     onkeydown: move |e: KeyboardEvent| {
                                         if matches!(e.key(), Key::Enter) {
@@ -217,6 +223,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                                     class: "block w-full rounded-md border border-line bg-surface text-content \
                                             px-2 py-1 text-sm shadow-sm focus:border-accent focus:ring-accent",
                                     value: "{draft.read()}",
+                                    disabled: saving(),
                                     onchange: move |e: FormEvent| {
                                         draft.set(e.value());
                                         commit.call(e.value());
@@ -263,6 +270,98 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                     "{display_text}"
                 }
             }
+        }
+    }
+}
+
+/// MAPPS-1054: `commit` is a `use_callback` shared by every keystroke/blur
+/// handler, so a fast double-Enter (or Enter then blur) can fire it twice
+/// before the first `spawn`ed PATCH resolves. The regression is a re-entrant
+/// `commit` invocation issuing a second `patch_authed_typed` call while one is
+/// already in flight.
+///
+/// Scanned as source rather than driven through a rendered `VirtualDom`,
+/// mirroring `toggle_capability_and_poll_save_toggle_the_same_busy_signal_connect_does`
+/// in `settings_integrations.rs` (MAPPS-1019): `saving` is a component-local
+/// signal with no handle exposed outside a full Dioxus render, and the real
+/// commit path is a network PATCH this test suite has no server to answer, so
+/// the guard that prevents the second call is checked where it lives instead.
+#[cfg(test)]
+mod mapps1054_commit_guard_tests {
+    /// `needle` must end with the opening `{` of the block to capture, so the
+    /// brace this starts counting from is unambiguous even when `needle`
+    /// itself contains earlier, unrelated braces (as the `InlineFieldKind`
+    /// match-arm patterns do).
+    fn block_body<'a>(src: &'a str, needle: &str) -> &'a str {
+        assert!(
+            needle.ends_with('{'),
+            "{needle} must end with the block's opening brace"
+        );
+        let at = src
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle} exists"));
+        let after = &src[at..];
+        let brace_at = needle.len() - 1;
+        let mut depth = 0i32;
+        let mut end = None;
+        for (i, ch) in after[brace_at..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(brace_at + i + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        &after[..end.expect("the block closes")]
+    }
+
+    #[test]
+    fn commit_returns_early_when_a_save_is_already_in_flight() {
+        let src = include_str!("inline_field_editor.rs");
+        let commit = block_body(src, "let commit = use_callback(move |raw: String| {");
+        let guard_at = commit
+            .find("if saving() {")
+            .expect("commit must check saving() before doing any work");
+        let spawn_at = commit
+            .find("spawn(async move {")
+            .expect("commit spawns the PATCH");
+        assert!(
+            guard_at < spawn_at,
+            "the in-flight guard must run before spawn, or a re-entrant call still races the PATCH"
+        );
+        let guard_block = block_body(&commit[guard_at..], "if saving() {");
+        assert!(
+            guard_block.contains("return;"),
+            "commit must return immediately rather than queue behind the in-flight save"
+        );
+    }
+
+    #[test]
+    fn every_editable_control_disables_itself_while_saving() {
+        let src = include_str!("inline_field_editor.rs");
+        for (kind, needle) in [
+            (
+                "Text",
+                "InlineFieldKind::Text { placeholder, maxlength, required: _ } => rsx! {",
+            ),
+            (
+                "TextArea",
+                "InlineFieldKind::TextArea { placeholder, rows } => rsx! {",
+            ),
+            ("Date", "InlineFieldKind::Date => rsx! {"),
+            ("Select", "InlineFieldKind::Select { options } => rsx! {"),
+        ] {
+            let block = block_body(src, needle);
+            assert!(
+                block.contains("disabled: saving()"),
+                "{kind}'s control must carry `disabled: saving()` so a user cannot trigger \
+                 a second keystroke-driven commit while one is outstanding"
+            );
         }
     }
 }
