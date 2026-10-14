@@ -7,9 +7,9 @@ use serde::Deserialize;
 
 use crate::components::{
     asset_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card,
-    DataTable, ErrorBanner, IconSize, Input, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput,
-    Select, SelectOption, Table, TableBody, TableCell, TableEmptyRow, TableHead, TableHeader,
-    TableRow, Textarea, TrashIcon,
+    DataTable, ErrorBanner, FilterPill, FilterPillBar, IconSize, Input, Modal, PageHeader,
+    PencilIcon, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell,
+    TableEmptyRow, TableHead, TableHeader, TableRow, Textarea, TrashIcon,
 };
 use crate::components::{ChangeHistoryEntry, ChangeLine};
 use crate::utils::{FormGuard, Paginated, Rule};
@@ -378,29 +378,59 @@ pub fn AssetListPage() -> Element {
     // fires one full-page refetch per pause in typing rather than one per
     // keystroke.
     let search_debounced = crate::hooks::use_debounced_signal(search, 300);
+    // Phase 1 asset search v2: structured filter pills. The dropdowns
+    // below write into this vector; a chip in the bar removes an entry.
+    // The fetch below tries POST /assets/search (new, structured) first
+    // and falls back to GET /assets?q= on 404 (the server returns 404
+    // when the `assets_search_v2` toggle is off).
+    let pills: Signal<Vec<FilterPill>> = use_signal(Vec::new);
     let mut assets_resource = use_resource(move || {
         let q = search_debounced.read().trim().to_string();
         let current_page = (*page.read()).max(1);
+        let filters: Vec<FilterPill> = pills.read().clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let _reachable = crate::hooks::use_server_reachable();
-            let mut path = format!("/assets?page={current_page}&per_page={PER_PAGE}");
-            if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
-                path.push_str(&format!("&company_id={company_id}"));
+            // Try the structured search first. The contact-plane bearer
+            // selection stays implicit via `get_authed_any` / `post_authed_typed`.
+            let path_new = format!("/assets/search?page={current_page}&per_page={PER_PAGE}");
+            let body = serde_json::json!({
+                "q": if q.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(q.clone()) },
+                "filters": filters.iter().map(|p| serde_json::json!({
+                    "field": p.field,
+                    "op": p.op,
+                    "values": p.values,
+                })).collect::<Vec<_>>(),
+            });
+            match crate::hooks::fetch::api::post_authed_typed::<Paginated<RemoteAsset>, _>(
+                &path_new, &body,
+            )
+            .await
+            {
+                Ok(p) => Some(p),
+                Err(crate::hooks::fetch::api::ApiError::Status { code: 404, .. }) => {
+                    // Feature toggle off (or old server). Fall back to the
+                    // legacy GET /assets?q= path so the list still works.
+                    let mut path = format!("/assets?page={current_page}&per_page={PER_PAGE}");
+                    if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
+                        path.push_str(&format!("&company_id={company_id}"));
+                    }
+                    if !q.is_empty() {
+                        path.push_str(&format!(
+                            "&q={}",
+                            crate::utils::url::encode_uri_component(&q)
+                        ));
+                    }
+                    crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteAsset>>(&path)
+                        .await
+                        .inspect_err(|e| tracing::error!("asset list load failed: {e}"))
+                        .ok()
+                }
+                Err(e) => {
+                    tracing::error!("asset list load failed: {e}");
+                    None
+                }
             }
-            if !q.is_empty() {
-                path.push_str(&format!(
-                    "&q={}",
-                    crate::utils::url::encode_uri_component(&q)
-                ));
-            }
-            // MAPPS-604: contact-first bearer selection so a signed-in
-            // contact sees only their Company's assets. Staff sessions
-            // continue to use the workspace bearer, unchanged.
-            crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteAsset>>(&path)
-                .await
-                .inspect_err(|e| tracing::error!("asset list load failed: {e}"))
-                .ok()
         }
     });
     // MAPPS-940: shared asset-types cache, not a per-page fetch.
@@ -482,11 +512,127 @@ pub fn AssetListPage() -> Element {
         Card { class: "mb-6",
             SearchInput {
                 value: search.read().clone(),
-                placeholder: "Search by name or serial…",
+                placeholder: "Search by name, serial, hostname, IP, MAC…",
                 oninput: move |e: FormEvent| {
                     search.set(e.value());
                     page.set(1);
                 },
+            }
+            // Phase 1 asset search v2: three facet dropdowns + a pill
+            // bar. Selecting a dropdown adds a pill and refetches; the
+            // "x" on a pill removes it. The dropdowns reset to blank
+            // once the pill is in the bar so the operator can add
+            // another `status in [...]`-style pill by picking a second
+            // value (future MR teaches the chip itself to carry the
+            // `in` op and multi-select).
+            div { class: "mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3",
+                {
+                    let mut pills_sig = pills;
+                    let types_opts = types.clone();
+                    let companies_opts = companies.clone();
+                    rsx! {
+                        Select {
+                            name: "filter-status".to_string(),
+                            label: "Status".to_string(),
+                            value: String::new(),
+                            placeholder: "Any status".to_string(),
+                            options: vec![
+                                SelectOption::new("active", "Active"),
+                                SelectOption::new("in_stock", "In Stock"),
+                                SelectOption::new("in_repair", "In Repair"),
+                                SelectOption::new("retired", "Retired"),
+                                SelectOption::new("inactive", "Inactive"),
+                            ],
+                            onchange: move |e: FormEvent| {
+                                let v = e.value();
+                                if v.is_empty() { return; }
+                                let label = match v.as_str() {
+                                    "active" => "Active".to_string(),
+                                    "in_stock" => "In Stock".to_string(),
+                                    "in_repair" => "In Repair".to_string(),
+                                    "retired" => "Retired".to_string(),
+                                    "inactive" => "Inactive".to_string(),
+                                    _ => v.clone(),
+                                };
+                                let mut next = pills_sig.read().clone();
+                                next.retain(|p| p.field != "status");
+                                next.push(FilterPill::eq("status", label, serde_json::Value::String(v)));
+                                pills_sig.set(next);
+                                page.set(1);
+                            },
+                        }
+                        Select {
+                            name: "filter-type".to_string(),
+                            label: "Type".to_string(),
+                            value: String::new(),
+                            placeholder: "Any type".to_string(),
+                            options: types_opts
+                                .iter()
+                                .map(|t| SelectOption::new(t.id.to_string(), t.name.clone()))
+                                .collect::<Vec<_>>(),
+                            onchange: move |e: FormEvent| {
+                                let v = e.value();
+                                if v.is_empty() { return; }
+                                let label = types_opts
+                                    .iter()
+                                    .find(|t| t.id.to_string() == v)
+                                    .map(|t| t.name.clone())
+                                    .unwrap_or_else(|| v.clone());
+                                let mut next = pills_sig.read().clone();
+                                next.retain(|p| p.field != "asset_type");
+                                next.push(FilterPill::eq("asset_type", label, serde_json::Value::String(v)));
+                                pills_sig.set(next);
+                                page.set(1);
+                            },
+                        }
+                        Select {
+                            name: "filter-company".to_string(),
+                            label: "Company".to_string(),
+                            value: String::new(),
+                            placeholder: "Any company".to_string(),
+                            options: companies_opts
+                                .iter()
+                                .map(|c| SelectOption::new(c.id.to_string(), c.name.clone()))
+                                .collect::<Vec<_>>(),
+                            onchange: move |e: FormEvent| {
+                                let v = e.value();
+                                if v.is_empty() { return; }
+                                let label = companies_opts
+                                    .iter()
+                                    .find(|c| c.id.to_string() == v)
+                                    .map(|c| c.name.clone())
+                                    .unwrap_or_else(|| v.clone());
+                                let mut next = pills_sig.read().clone();
+                                next.retain(|p| p.field != "company");
+                                next.push(FilterPill::eq("company", label, serde_json::Value::String(v)));
+                                pills_sig.set(next);
+                                page.set(1);
+                            },
+                        }
+                    }
+                }
+            }
+            {
+                let mut pills_sig = pills;
+                let current = pills.read().clone();
+                rsx! {
+                    FilterPillBar {
+                        pills: current,
+                        class: "mt-3".to_string(),
+                        onremove: move |i: usize| {
+                            let mut next = pills_sig.read().clone();
+                            if i < next.len() {
+                                next.remove(i);
+                                pills_sig.set(next);
+                                page.set(1);
+                            }
+                        },
+                        onclear: move |_| {
+                            pills_sig.set(Vec::new());
+                            page.set(1);
+                        },
+                    }
+                }
             }
         }
 
