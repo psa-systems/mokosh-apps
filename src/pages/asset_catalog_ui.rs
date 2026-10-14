@@ -105,6 +105,7 @@ pub fn SignatureBanner(props: SignatureBannerProps) -> Element {
             "/asset-models/signature-detector",
         )
         .await
+        .inspect_err(|e| tracing::warn!("asset signature detector load failed: {e}"))
         .ok()
     });
     if dismissed() {
