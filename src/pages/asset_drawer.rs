@@ -78,6 +78,7 @@ pub fn AssetDrawer(props: AssetDrawerProps) -> Element {
         let path = format!("/assets/{asset_id}");
         crate::hooks::fetch::api::get_authed_any::<DrawerAsset>(&path)
             .await
+            .inspect_err(|e| tracing::error!("asset drawer load failed: {e}"))
             .ok()
     });
 
