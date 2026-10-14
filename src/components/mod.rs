@@ -28,6 +28,7 @@ mod form;
 mod global_search;
 mod icon_button;
 mod icons;
+mod inline_field_editor;
 mod layout;
 mod markdown;
 mod markdown_editor;
@@ -77,6 +78,7 @@ pub use form::*;
 pub use global_search::*;
 pub use icon_button::*;
 pub use icons::*;
+pub use inline_field_editor::*;
 pub use layout::*;
 pub use markdown::*;
 /// MAPPS-745: the id of a `MarkdownEditor`'s preview box, for the KB editor's inline highlights.
