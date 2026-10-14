@@ -24,7 +24,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::components::{
-    Button, ButtonVariant, ErrorBanner, Modal, ModalSize, Select, SelectOption, Textarea,
+    BannerTone, Button, ButtonVariant, ErrorBanner, Modal, ModalSize, Select, SelectOption,
+    StatusBanner, Textarea,
 };
 use crate::hooks::fetch::api::ApiError;
 
@@ -121,26 +122,28 @@ pub fn SignatureBanner(props: SignatureBannerProps) -> Element {
     let model = cand.model.clone();
     let candidate = cand.clone();
     rsx! {
-        div {
-            class: "mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border \
-                    border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-800 dark:bg-amber-900/30",
-            div { class: "text-sm text-content",
-                span { class: "font-semibold", "You have {count} {make} {model}s." }
-                " Save as a template to add more in one step."
-            }
-            div { class: "flex items-center gap-2",
-                Button {
-                    variant: ButtonVariant::Primary,
-                    onclick: move |_| props.onsave.call(candidate.clone()),
-                    "Save as template"
+        StatusBanner {
+            tone: BannerTone::Warning,
+            class: "mb-4".to_string(),
+            div { class: "flex flex-wrap items-center justify-between gap-3",
+                div {
+                    span { class: "font-semibold", "You have {count} {make} {model}s." }
+                    " Save as a template to add more in one step."
                 }
-                Button {
-                    variant: ButtonVariant::Secondary,
-                    onclick: move |_| {
-                        mark_dismissed_for_30_days();
-                        dismissed.set(true);
-                    },
-                    "Dismiss"
+                div { class: "flex items-center gap-2",
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        onclick: move |_| props.onsave.call(candidate.clone()),
+                        "Save as template"
+                    }
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| {
+                            mark_dismissed_for_30_days();
+                            dismissed.set(true);
+                        },
+                        "Dismiss"
+                    }
                 }
             }
         }
