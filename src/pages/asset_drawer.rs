@@ -122,7 +122,7 @@ pub fn AssetDrawer(props: AssetDrawerProps) -> Element {
             }
             div { class: "p-4",
                 if is_loading {
-                    p { class: "text-sm text-subtle", "Loading..." }
+                    p { class: "text-sm text-subtle", "Loading…" }
                 } else if load_failed {
                     ErrorBanner { "Could not load this asset." }
                 } else if let Some(a) = asset {

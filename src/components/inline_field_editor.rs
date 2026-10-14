@@ -246,7 +246,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                     }
                     if saving() {
                         span { class: "text-xs text-subtle whitespace-nowrap pt-1.5",
-                            "Saving..."
+                            "Saving…"
                         }
                     }
                 }
