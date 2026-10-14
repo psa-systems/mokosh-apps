@@ -181,8 +181,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
     let notify = move |_v: Option<String>| on_patched.call(());
     rsx! {
         // -- Identity ----------------------------------------------
-        Card { class: "mb-4",
-            h3 { class: "mb-2 text-xs font-semibold text-muted uppercase tracking-wide", "Identity" }
+        Card { class: "mb-4", title: "Identity".to_string(),
             InlineFieldEditor {
                 label: "Name".to_string(),
                 value: Some(a.name.clone()),
@@ -221,8 +220,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
         }
 
         // -- Hardware ---------------------------------------------
-        Card { class: "mb-4",
-            h3 { class: "mb-2 text-xs font-semibold text-muted uppercase tracking-wide", "Hardware" }
+        Card { class: "mb-4", title: "Hardware".to_string(),
             InlineFieldEditor {
                 label: "Manufacturer".to_string(),
                 value: a.manufacturer.clone(),
@@ -317,8 +315,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
         }
 
         // -- Dates -----------------------------------------------
-        Card { class: "mb-4",
-            h3 { class: "mb-2 text-xs font-semibold text-muted uppercase tracking-wide", "Dates" }
+        Card { class: "mb-4", title: "Dates".to_string(),
             InlineFieldEditor {
                 label: "Purchase date".to_string(),
                 value: a.purchase_date.clone(),
@@ -358,8 +355,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
         }
 
         // -- Lifecycle + Notes -----------------------------------
-        Card { class: "mb-4",
-            h3 { class: "mb-2 text-xs font-semibold text-muted uppercase tracking-wide", "Lifecycle" }
+        Card { class: "mb-4", title: "Lifecycle".to_string(),
             InlineFieldEditor {
                 label: "ITIL stage".to_string(),
                 value: a.itil_lifecycle_stage.clone(),
