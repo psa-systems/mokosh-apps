@@ -759,10 +759,13 @@ pub fn AssetListPage() -> Element {
     let mut search = use_signal(String::new);
     // Phase 2 asset inline edit: a row click opens the drawer over the
     // list when `assets:inline_edit` is on; otherwise the pre-phase-2
-    // navigation to `AssetDetail` stays in place. Reused across the
-    // row click + the drawer's own refetch after a save.
+    // navigation to `AssetDetail` stays in place.
     let inline_edit_enabled = crate::hooks::capabilities::use_capability("assets:inline_edit");
     let mut open_drawer: Signal<Option<uuid::Uuid>> = use_signal(|| None);
+    // Phase 3 asset catalog: "Bulk create" button + signature banner
+    // on top of the list, both gated on `use_capability("assets:catalog")`.
+    let catalog_enabled = crate::hooks::capabilities::use_capability("assets:catalog");
+    let mut bulk_catalog_open = use_signal(|| false);
     // MAPPS-303: page-scoped bulk selection (built on MAPPS-290's
     // `use_bulk_selection`). Drives the per-row checkbox, the
     // `SelectAllHeader`, and the `BulkActionsBar` "Bulk edit" verb
@@ -983,6 +986,14 @@ pub fn AssetListPage() -> Element {
             title: "Assets",
             subtitle: "Configuration items and customer assets",
             actions: rsx! {
+                if catalog_enabled {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        class: "mr-2".to_string(),
+                        onclick: move |_| bulk_catalog_open.set(true),
+                        "Bulk create"
+                    }
+                }
                 Link {
                     to: Route::AssetNew {},
                     Button {
@@ -991,6 +1002,34 @@ pub fn AssetListPage() -> Element {
                         "New Asset"
                     }
                 }
+            },
+        }
+
+        if catalog_enabled {
+            crate::pages::asset_catalog_ui::SignatureBanner {
+                onsave: move |_cand: crate::pages::asset_catalog_ui::SignatureCandidate| {
+                    // Phase 3 MR2 wires the Save-as-template modal. For
+                    // now, clicking the banner opens the bulk-create
+                    // modal pre-populated by typing; the model row the
+                    // operator eventually picks will be the auto_derived
+                    // one from this signature.
+                    bulk_catalog_open.set(true);
+                },
+            }
+        }
+        crate::pages::asset_catalog_ui::AssetBulkCreateModal {
+            open: bulk_catalog_open(),
+            companies: companies.iter().map(|c| crate::pages::asset_catalog_ui::CompanyOpt {
+                id: c.id,
+                name: c.name.clone(),
+            }).collect::<Vec<_>>(),
+            onclose: move |_| bulk_catalog_open.set(false),
+            oncreated: move |count: usize| {
+                crate::hooks::toast::push_toast(
+                    crate::components::AlertType::Success,
+                    format!("Created {count} assets."),
+                );
+                assets_resource.restart();
             },
         }
 
