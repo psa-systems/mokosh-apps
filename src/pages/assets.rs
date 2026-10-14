@@ -690,7 +690,7 @@ fn FacetCountChip(props: FacetCountChipProps) -> Element {
         button {
             r#type: "button",
             class: "inline-flex items-center rounded-md border border-line bg-surface px-2 py-1 \
-                    text-xs text-content hover:bg-surface-hover",
+                    text-xs text-content hover:bg-surface-2",
             onclick: move |_| props.onclick.call(()),
             "{props.label}"
         }
@@ -726,7 +726,7 @@ fn ColumnVisibilityPopover(props: ColumnVisibilityPopoverProps) -> Element {
                                 label {
                                     key: "col-{col.tag()}",
                                     class: "flex items-center gap-2 text-sm px-2 py-1 rounded \
-                                            hover:bg-surface-hover cursor-pointer",
+                                            hover:bg-surface-2 cursor-pointer",
                                     input {
                                         r#type: "checkbox",
                                         checked,
