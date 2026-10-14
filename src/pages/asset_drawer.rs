@@ -123,7 +123,7 @@ pub fn AssetDrawer(props: AssetDrawerProps) -> Element {
             }
             div { class: "p-4",
                 if is_loading {
-                    p { class: "text-sm text-subtle", "Loading…" }
+                    crate::components::DetailSkeleton {}
                 } else if load_failed {
                     ErrorBanner { "Could not load this asset." }
                 } else if let Some(a) = asset {
