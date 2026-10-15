@@ -80,15 +80,15 @@ pub fn resolve_person(
     viewer: Option<(uuid::Uuid, &str)>,
     roster: &[crate::hooks::UserRow],
 ) -> PersonRef {
-    let Some(uid) = id else {
-        return PersonRef::System;
-    };
     if let Some(name) = server_name {
         let name = name.trim();
         if !name.is_empty() {
             return PersonRef::Named(name.to_string());
         }
     }
+    let Some(uid) = id else {
+        return PersonRef::System;
+    };
     if let Some((viewer_id, viewer_name)) = viewer {
         if *uid == viewer_id && !viewer_name.trim().is_empty() {
             return PersonRef::Named(viewer_name.to_string());
