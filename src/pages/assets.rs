@@ -142,6 +142,10 @@ struct AuditEntry {
     performed_at: Option<String>,
     #[serde(default)]
     performed_by_id: Option<uuid::Uuid>,
+    /// PMS-1478: the actor's display name, sent alongside `performed_by_id`
+    /// so the client no longer needs the roster to print it.
+    #[serde(default)]
+    performed_by_name: Option<String>,
     #[serde(default)]
     changes: Option<serde_json::Value>,
 }
@@ -218,8 +222,6 @@ fn fmt_datetime(s: &Option<String>, pref: Option<&str>, tz: chrono_tz::Tz) -> St
     }
 }
 
-/// Resolve an actor id to a display name via the loaded user list; "-" when
-/// unknown so the audit/edited markers never show a bare UUID.
 /// The headline for one asset audit entry (MAPPS-596).
 ///
 /// An asset's `changes` is an object `{event: ...}` for a reveal operation and
@@ -253,16 +255,16 @@ fn change_lines(e: &AuditEntry) -> Vec<ChangeLine> {
         .collect()
 }
 
-fn actor_name(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
-    match id {
-        Some(uid) => users
-            .iter()
-            .find(|u| &u.id == uid)
-            .map(|u| u.full_name.clone())
-            .filter(|n| !n.trim().is_empty())
-            .unwrap_or_else(|| "-".to_string()),
-        None => "-".to_string(),
-    }
+/// Resolve an asset audit entry's actor (MAPPS-1037): the server-sent name,
+/// then the roster.
+fn audit_actor(users: &[UserOpt], e: &AuditEntry) -> crate::utils::unresolved_person::PersonRef {
+    crate::utils::unresolved_person::resolve_person(
+        "asset_audit",
+        e.performed_by_name.as_deref(),
+        &e.performed_by_id,
+        None,
+        users,
+    )
 }
 
 /// `""` to `None`, otherwise `Some(trimmed)`. Lets an edit form send `null`
@@ -2506,13 +2508,21 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             _ => None,
         };
         latest.map(|e| {
-            let who = actor_name(&users, &e.performed_by_id);
+            let who = audit_actor(&users, e);
             let when = fmt_datetime(&e.performed_at, pref.as_deref(), tz);
             let when_iso = e.performed_at.clone().unwrap_or_default();
-            if who == "-" {
-                rsx! { "Edited " time { datetime: "{when_iso}", "{when}" } }
+            let who_class = if who.is_system() {
+                "text-subtle italic"
             } else {
-                rsx! { "Edited " time { datetime: "{when_iso}", "{when}" } " by {who}" }
+                ""
+            };
+            let who_text = who.text().to_string();
+            let who_tooltip = who.tooltip().unwrap_or_default().to_string();
+            rsx! {
+                "Edited "
+                time { datetime: "{when_iso}", "{when}" }
+                " by "
+                span { class: "{who_class}", title: "{who_tooltip}", "{who_text}" }
             }
         })
     } else {
@@ -3119,7 +3129,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     div { class: "space-y-3 text-sm",
                                         for e in audit.iter().take(15) {
                                             {
-                                                let who = actor_name(&users, &e.performed_by_id);
+                                                let who = audit_actor(&users, e);
                                                 // The audit row carries no id of its own, so the
                                                 // key is the timestamp it was written at.
                                                 let key = e.performed_at.clone().unwrap_or_default();
@@ -3127,11 +3137,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                     ChangeHistoryEntry {
                                                         key: "{key}",
                                                         headline: audit_headline(e),
-                                                        // MAPPS-596: "-" is this page's sentinel for an
-                                                        // actor no `/auth/users` row matches. The shared
-                                                        // entry omits the line for an empty name, so the
-                                                        // sentinel is dropped here rather than printed.
-                                                        who: if who == "-" { String::new() } else { who },
+                                                        who: who.text().to_string(),
+                                                        who_tooltip: who.tooltip().unwrap_or_default().to_string(),
+                                                        who_muted: who.is_system(),
                                                         when: fmt_datetime(&e.performed_at, pref.as_deref(), tz),
                                                         when_iso: e.performed_at.clone().unwrap_or_default(),
                                                         changes: change_lines(e),
@@ -4274,5 +4282,61 @@ mod dsl_tests {
         );
         assert_eq!(q, "company:\"Nowhere Inc\"");
         assert!(pills.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod mapps1037_audit_actor_tests {
+    use super::{audit_actor, AuditEntry, UserOpt};
+
+    fn entry(json: &str) -> AuditEntry {
+        serde_json::from_str(json).expect("deserialise audit entry")
+    }
+
+    fn roster() -> Vec<UserOpt> {
+        vec![serde_json::from_str(
+            r#"{"id":"11111111-1111-4111-8111-111111111111","full_name":"Dana Reeve"}"#,
+        )
+        .expect("deserialise user")]
+    }
+
+    #[test]
+    fn server_sent_name_renders_with_an_empty_roster() {
+        let e = entry(
+            r#"{"action":"update","performed_by_id":"11111111-1111-4111-8111-111111111111","performed_by_name":"Server Name"}"#,
+        );
+        let who = audit_actor(&[], &e);
+        assert_eq!(who.text(), "Server Name");
+    }
+
+    #[test]
+    fn no_server_name_falls_back_to_the_roster() {
+        let e = entry(
+            r#"{"action":"update","performed_by_id":"11111111-1111-4111-8111-111111111111"}"#,
+        );
+        let who = audit_actor(&roster(), &e);
+        assert_eq!(who.text(), "Dana Reeve");
+    }
+
+    #[test]
+    fn nothing_resolves_it_is_someone_with_a_tooltip() {
+        let e = entry(
+            r#"{"action":"update","performed_by_id":"22222222-2222-4222-8222-222222222222"}"#,
+        );
+        let who = audit_actor(&[], &e);
+        assert_eq!(who.text(), "Someone");
+        assert_eq!(
+            who.tooltip(),
+            Some("Unresolved user 22222222-2222-4222-8222-222222222222")
+        );
+    }
+
+    #[test]
+    fn a_none_actor_id_is_system() {
+        let e = entry(r#"{"action":"update"}"#);
+        let who = audit_actor(&[], &e);
+        assert!(who.is_system());
+        assert_eq!(who.text(), "System");
+        assert!(who.tooltip().is_none());
     }
 }

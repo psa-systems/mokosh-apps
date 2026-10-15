@@ -90,6 +90,10 @@ struct HistoryEntry {
     action: String,
     #[serde(default)]
     user_id: Option<uuid::Uuid>,
+    /// PMS-1478: the actor's display name, sent alongside `user_id` so the
+    /// client no longer needs the roster to print it.
+    #[serde(default)]
+    user_name: Option<String>,
     #[serde(default)]
     changed_fields: Vec<String>,
     #[serde(default)]
@@ -153,18 +157,19 @@ fn change_lines(changes: &[FieldChange]) -> Vec<ChangeLine> {
         .collect()
 }
 
-/// Resolve a history actor id to a display name; "" when unknown (the caller
-/// then omits the "by ..." suffix rather than printing a UUID). PMS-184.
-fn actor_name(users: &[RemoteUser], id: &Option<uuid::Uuid>) -> String {
-    match id {
-        Some(uid) => users
-            .iter()
-            .find(|u| &u.id == uid)
-            .map(|u| u.full_name.clone())
-            .filter(|n| !n.trim().is_empty())
-            .unwrap_or_default(),
-        None => String::new(),
-    }
+/// Resolve a history entry's actor (MAPPS-1037): the server-sent name, then
+/// the roster. PMS-184.
+fn history_actor(
+    users: &[RemoteUser],
+    e: &HistoryEntry,
+) -> crate::utils::unresolved_person::PersonRef {
+    crate::utils::unresolved_person::resolve_person(
+        "project_history",
+        e.user_name.as_deref(),
+        &e.user_id,
+        None,
+        users,
+    )
 }
 
 /// Validate an optional `yyyy-mm-dd` date field (PMS-317 / PMS-346). Blank is
@@ -1189,17 +1194,19 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         .iter()
         .find(|e| e.action == "update")
         .map(|e| {
-            let who = actor_name(&users, &e.user_id);
+            let who = history_actor(&users, e);
             let when = crate::utils::datetime::fmt_user_dt_in(
                 e.timestamp,
                 pref.as_deref(),
                 tz,
                 Some("%b %-d, %Y %H:%M"),
             );
-            if who.is_empty() {
-                format!("Edited {when}")
-            } else {
-                format!("Edited {when} by {who}")
+            let who_class = if who.is_system() { "italic" } else { "" };
+            let who_text = who.text().to_string();
+            let who_tooltip = who.tooltip().unwrap_or_default().to_string();
+            rsx! {
+                "Edited {when} by "
+                span { class: "{who_class}", title: "{who_tooltip}", "{who_text}" }
             }
         });
     let proj_status_options = vec![
@@ -1519,7 +1526,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     p { class: "text-sm text-subtle italic", "No description provided." }
                                 }
                                 if let Some(m) = project_edited.clone() {
-                                    p { class: "text-xs text-subtle italic mt-3", "{m}" }
+                                    p { class: "text-xs text-subtle italic mt-3", {m} }
                                 }
                             }
                             Card { title: "Tasks",
@@ -1614,10 +1621,15 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 } else {
                                     div { class: "space-y-3 text-sm",
                                         for e in project_history.iter().take(20) {
+                                            {
+                                                let who = history_actor(&users, e);
+                                                rsx! {
                                             ChangeHistoryEntry {
                                                 key: "{e.timestamp}",
                                                 headline: headline(&e.action, &e.changed_fields),
-                                                who: actor_name(&users, &e.user_id),
+                                                who: who.text().to_string(),
+                                                who_tooltip: who.tooltip().unwrap_or_default().to_string(),
+                                                who_muted: who.is_system(),
                                                 when: crate::utils::datetime::fmt_user_dt_in(
                                                     e.timestamp,
                                                     pref.as_deref(),
@@ -1626,6 +1638,8 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                 ),
                                                 when_iso: e.timestamp.to_rfc3339(),
                                                 changes: change_lines(&e.changes),
+                                            }
+                                                }
                                             }
                                         }
                                     }
@@ -2374,17 +2388,19 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
         .clone()
         .unwrap_or_default();
     let task_edited = task_history.iter().find(|e| e.action == "update").map(|e| {
-        let who = actor_name(&users, &e.user_id);
+        let who = history_actor(&users, e);
         let when = crate::utils::datetime::fmt_user_dt_in(
             e.timestamp,
             pref.as_deref(),
             tz,
             Some("%b %-d, %Y %H:%M"),
         );
-        if who.is_empty() {
-            format!("Edited {when}")
-        } else {
-            format!("Edited {when} by {who}")
+        let who_class = if who.is_system() { "italic" } else { "" };
+        let who_text = who.text().to_string();
+        let who_tooltip = who.tooltip().unwrap_or_default().to_string();
+        rsx! {
+            "Edited {when} by "
+            span { class: "{who_class}", title: "{who_tooltip}", "{who_text}" }
         }
     });
 
@@ -2554,7 +2570,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                     p { class: "text-sm text-red-600 dark:text-red-400", "{te_error}" }
                 }
                 if let Some(m) = task_edited {
-                    p { class: "text-xs text-subtle italic", "{m}" }
+                    p { class: "text-xs text-subtle italic", {m} }
                 }
                 Input {
                     name: "te-title",
@@ -2625,10 +2641,15 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                     } else {
                         div { class: "space-y-2 text-sm max-h-48 overflow-y-auto",
                             for e in task_history.iter().take(20) {
+                                {
+                                    let who = history_actor(&users, e);
+                                    rsx! {
                                 ChangeHistoryEntry {
                                     key: "{e.timestamp}",
                                     headline: headline(&e.action, &e.changed_fields),
-                                    who: actor_name(&users, &e.user_id),
+                                    who: who.text().to_string(),
+                                    who_tooltip: who.tooltip().unwrap_or_default().to_string(),
+                                    who_muted: who.is_system(),
                                     when: crate::utils::datetime::fmt_user_dt_in(
                                         e.timestamp,
                                         pref.as_deref(),
@@ -2637,6 +2658,8 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                                     ),
                                     when_iso: e.timestamp.to_rfc3339(),
                                     changes: change_lines(&e.changes),
+                                }
+                                    }
                                 }
                             }
                         }
@@ -2714,5 +2737,63 @@ mod validation_tests {
         // Genuinely non-numeric input still reports the format message.
         let bad = validate_budget_hours("abc").unwrap_err();
         assert!(bad.contains("must be a number"), "got: {bad}");
+    }
+}
+
+#[cfg(test)]
+mod mapps1037_history_actor_tests {
+    use super::{history_actor, HistoryEntry, RemoteUser};
+
+    fn entry(json: &str) -> HistoryEntry {
+        serde_json::from_str(json).expect("deserialise history entry")
+    }
+
+    fn roster() -> Vec<RemoteUser> {
+        vec![serde_json::from_str(
+            r#"{"id":"11111111-1111-4111-8111-111111111111","full_name":"Dana Reeve"}"#,
+        )
+        .expect("deserialise user")]
+    }
+
+    #[test]
+    fn server_sent_name_renders_with_an_empty_roster() {
+        let e = entry(
+            r#"{"action":"update","user_id":"11111111-1111-4111-8111-111111111111","user_name":"Server Name","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+        let who = history_actor(&[], &e);
+        assert_eq!(who.text(), "Server Name");
+    }
+
+    #[test]
+    fn no_server_name_falls_back_to_the_roster() {
+        let e = entry(
+            r#"{"action":"update","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+        let who = history_actor(&roster(), &e);
+        assert_eq!(who.text(), "Dana Reeve");
+    }
+
+    #[test]
+    fn nothing_resolves_it_is_someone_with_a_tooltip() {
+        let e = entry(
+            r#"{"action":"update","user_id":"22222222-2222-4222-8222-222222222222","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+        let who = history_actor(&[], &e);
+        assert_eq!(who.text(), "Someone");
+        assert_eq!(
+            who.tooltip(),
+            Some("Unresolved user 22222222-2222-4222-8222-222222222222")
+        );
+    }
+
+    #[test]
+    fn a_none_actor_id_is_system() {
+        let e = entry(
+            r#"{"action":"update","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+        let who = history_actor(&[], &e);
+        assert!(who.is_system());
+        assert_eq!(who.text(), "System");
+        assert!(who.tooltip().is_none());
     }
 }
