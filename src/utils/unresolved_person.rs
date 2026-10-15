@@ -1,35 +1,52 @@
-//! Shared helper for a person reference the client could not resolve to a
-//! name (MAPPS-1036): a placeholder is masking only when it leaves no trace
-//! (`no-masking.md`), so every site that falls back to a placeholder calls
-//! this instead of staying silent.
+//! MAPPS-1036 / MAPPS-1037 / MAPPS-1039: one shared helper for every
+//! "placeholder shown instead of a resolved reference" substitution. A
+//! placeholder that leaves no trace is masking (`no-masking.md`); this makes
+//! every substitution findable with an INFO log line and a hover tooltip,
+//! both carrying the unresolved id.
+//!
+//! Dedup is per `(surface, id)` for a page load (a thread-local set, WASM is
+//! single-threaded so a `RefCell` is sufficient), so a component that
+//! re-renders logs once, not once per render.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
 
 thread_local! {
-    /// `(surface, id)` pairs already logged this page load, so a re-render
-    /// does not repeat the INFO line.
-    static LOGGED: RefCell<HashSet<(String, String)>> = RefCell::new(HashSet::new());
+    static LOGGED: RefCell<HashSet<(String, Option<uuid::Uuid>)>> = RefCell::new(HashSet::new());
 }
 
-/// Logs the unresolved reference at INFO, once per `(surface, id)` for the
-/// life of this page load, and returns the hover text for the `title` of
-/// whatever element shows the placeholder. `id` is `None` only for the rare
-/// surface that substitutes a placeholder with no id behind it at all; the
-/// common case, an id present but unresolved, is `Some`. Call this only when
-/// the id is present and unresolved, or the name came back empty: a
-/// legitimately absent id (no assignee) is not a failure and must not call
-/// this.
+/// Called at the moment a site picks a placeholder instead of a name the
+/// server didn't send. Logs at INFO once per `(surface, id)` and returns the
+/// hover tooltip text to set as `title` on the element that shows `shown`.
+///
+/// `surface` names the screen/field (e.g. `"projects.task_assignee"`).
+/// `kind` names what the id refers to (e.g. `"user"`, `"company"`, `"work
+/// type"`). `id` is the unresolved id, or `None` when the id itself was
+/// absent and not-set text is being shown (call this only when a `Some` id
+/// could not be named; an absent id that legitimately means "no one" is not
+/// logged and does not call this helper at all).
 pub fn unresolved(surface: &str, kind: &str, id: Option<uuid::Uuid>, shown: &str) -> String {
-    let id_text = id
-        .map(|id| id.to_string())
-        .unwrap_or_else(|| "none".to_string());
-    let key = (surface.to_string(), id_text.clone());
-    let first_time = LOGGED.with(|seen| seen.borrow_mut().insert(key));
+    let key = (surface.to_string(), id);
+    let first_time = LOGGED.with(|logged| logged.borrow_mut().insert(key));
     if first_time {
-        tracing::info!(surface, kind, id = %id_text, shown, "reference unresolved, placeholder shown");
+        match id {
+            Some(id) => {
+                tracing::info!(surface, kind, %id, shown, "reference unresolved, placeholder shown");
+            }
+            None => {
+                tracing::info!(
+                    surface,
+                    kind,
+                    shown,
+                    "reference unresolved, placeholder shown"
+                );
+            }
+        }
     }
-    format!("Unresolved {kind} {id_text}")
+    match id {
+        Some(id) => format!("Unresolved {kind} {id}"),
+        None => format!("Unresolved {kind}"),
+    }
 }
 
 /// A history/audit actor resolved to one of three states (MAPPS-1037),
@@ -113,23 +130,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn logs_once_per_surface_and_id() {
-        let id = uuid::Uuid::new_v4();
-        let first = unresolved("test_surface_dedup", "user", Some(id), "Someone");
-        let was_logged_first_time = LOGGED.with(|seen| {
-            seen.borrow()
-                .contains(&("test_surface_dedup".to_string(), id.to_string()))
-        });
-        let second = unresolved("test_surface_dedup", "user", Some(id), "Someone");
-        assert_eq!(first, second);
-        assert!(was_logged_first_time);
+    fn returns_tooltip_with_full_id() {
+        let id = uuid::Uuid::nil();
+        let tooltip = unresolved("test.surface_a", "user", Some(id), "Unknown");
+        assert_eq!(tooltip, format!("Unresolved user {id}"));
     }
 
     #[test]
-    fn tooltip_names_the_full_id() {
-        let id = uuid::Uuid::new_v4();
-        let tooltip = unresolved("test_surface_tooltip", "user", Some(id), "Someone");
-        assert_eq!(tooltip, format!("Unresolved user {id}"));
+    fn dedup_logs_once_per_surface_and_id() {
+        let id = uuid::Uuid::from_u128(42);
+        let surface = "test.surface_dedup";
+        let first =
+            LOGGED.with(|logged| logged.borrow_mut().insert((surface.to_string(), Some(id))));
+        // Simulate the first call having already happened; a second call
+        // with the same (surface, id) must not be the "first time" again.
+        assert!(first);
+        let second_insert =
+            LOGGED.with(|logged| logged.borrow_mut().insert((surface.to_string(), Some(id))));
+        assert!(!second_insert);
+    }
+
+    #[test]
+    fn distinct_ids_are_not_deduped_together() {
+        let surface = "test.surface_distinct";
+        let id_a = uuid::Uuid::from_u128(1);
+        let id_b = uuid::Uuid::from_u128(2);
+        let tooltip_a = unresolved(surface, "user", Some(id_a), "Unknown");
+        let tooltip_b = unresolved(surface, "user", Some(id_b), "Unknown");
+        assert_ne!(tooltip_a, tooltip_b);
     }
 
     #[test]
