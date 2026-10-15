@@ -7,9 +7,9 @@ use serde::Deserialize;
 
 use crate::components::{
     asset_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card,
-    DataTable, ErrorBanner, IconSize, Input, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput,
-    Select, SelectOption, Table, TableBody, TableCell, TableEmptyRow, TableHead, TableHeader,
-    TableRow, Textarea, TrashIcon,
+    DataTable, ErrorBanner, FilterPill, FilterPillBar, IconSize, Input, Modal, PageHeader,
+    PencilIcon, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell,
+    TableEmptyRow, TableHead, TableHeader, TableRow, Textarea, TrashIcon,
 };
 use crate::components::{ChangeHistoryEntry, ChangeLine};
 use crate::utils::{FormGuard, Paginated, Rule};
@@ -73,7 +73,7 @@ struct RemoteAsset {
     updated_at: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 struct CompanyOpt {
     id: uuid::Uuid,
     #[serde(default)]
@@ -328,12 +328,503 @@ fn warranty_refresh_status(s: &Option<String>) -> WarrantyRefreshStatus {
     }
 }
 
+/// Phase 1 asset-search DSL (MAPPS-xxxx MR2).
+///
+/// Splits the typed search string into a free-text remainder + zero or
+/// more [`FilterPill`]s the server receives as structured filters. The
+/// visible input keeps the user's full text (so an operator's typing
+/// is never surprising); the fetch strips recognised tokens from `q`
+/// and promotes them to `filters` so pg_trgm matches the actual words
+/// and the structured facet does the equality / tag / within work.
+///
+/// Recognised shapes (plan doc docs/mokosh-assets/02-search-redesign.md):
+/// - `status:active` -> status eq active
+/// - `tag:kiosk` -> tags contains_tag kiosk
+/// - `warranty:30` -> warranty_expiry within {days: 30}
+/// - `eol:expired` -> end_of_life before today
+/// - `dept:Sales` or `department:Sales` -> department eq Sales
+/// - `manuf:dell` / `make:dell` -> manufacturer eq dell
+/// - `model:latitude` -> model eq latitude
+///
+/// Anything the parser does not recognise stays as free text. Company /
+/// assigned-user DSL tokens need a resolver round trip (name -> uuid)
+/// and are deliberately deferred to the facet-popover MR; the dropdowns
+/// already cover the common company case.
+/// Companies-aware variant. The host passes the already-fetched company
+/// list so the parser can resolve `company:"Main Street Dental"` to the
+/// `company` pill the structured search expects (uuid value). A name
+/// that does not resolve falls back to free text, matching the handling
+/// of unknown keys so the fetch still returns something sensible rather
+/// than a silent empty.
+fn parse_asset_dsl_with_companies(
+    input: &str,
+    companies: &[(String, uuid::Uuid)],
+) -> (String, Vec<FilterPill>) {
+    let mut free = Vec::<String>::new();
+    let mut pills = Vec::<FilterPill>::new();
+    let tokens = tokenise_dsl(input);
+    for raw in tokens {
+        let (key, value) = match raw.split_once(':') {
+            Some((k, v)) if !v.is_empty() => (k.to_ascii_lowercase(), v.to_string()),
+            _ => {
+                free.push(raw);
+                continue;
+            }
+        };
+        let mut recognised_key = true;
+        let pill: Option<FilterPill> = match key.as_str() {
+            "status" => Some(FilterPill::eq(
+                "status",
+                format!("Status: {}", humanise(&value)),
+                serde_json::Value::String(value.clone()),
+            )),
+            "tag" => Some(FilterPill {
+                field: "tags".to_string(),
+                op: "contains_tag".to_string(),
+                values: vec![serde_json::Value::String(value.clone())],
+                label: format!("Tag: {value}"),
+            }),
+            "warranty" => value.parse::<i64>().ok().map(|days| FilterPill {
+                field: "warranty_expiry".to_string(),
+                op: "within".to_string(),
+                values: vec![serde_json::json!({"days": days})],
+                label: format!("Warranty <= {days}d"),
+            }),
+            "eol" if value.eq_ignore_ascii_case("expired") => Some(FilterPill {
+                field: "end_of_life".to_string(),
+                op: "before".to_string(),
+                values: vec![serde_json::Value::String("NOW".to_string())],
+                label: "End of life passed".to_string(),
+            }),
+            "dept" | "department" => Some(FilterPill::eq(
+                "department",
+                format!("Dept: {value}"),
+                serde_json::Value::String(value.clone()),
+            )),
+            "manuf" | "make" | "manufacturer" => Some(FilterPill::eq(
+                "manufacturer",
+                format!("Make: {value}"),
+                serde_json::Value::String(value.clone()),
+            )),
+            "model" => Some(FilterPill::eq(
+                "model",
+                format!("Model: {value}"),
+                serde_json::Value::String(value.clone()),
+            )),
+            "company" => {
+                // Strip surrounding quotes so `company:"Main Street Dental"`
+                // and `company:MainStreet` both work. Match case-insensitively.
+                let needle = strip_quotes(&value).to_ascii_lowercase();
+                companies
+                    .iter()
+                    .find(|(name, _)| name.to_ascii_lowercase() == needle)
+                    .map(|(name, id)| {
+                        FilterPill::eq(
+                            "company",
+                            format!("Co: {name}"),
+                            serde_json::Value::String(id.to_string()),
+                        )
+                    })
+            }
+            _ => {
+                recognised_key = false;
+                None
+            }
+        };
+        match pill {
+            Some(p) => pills.push(p),
+            None => {
+                // Un-recognised key, OR recognised key with an un-usable
+                // value (e.g. `warranty:soon`, or `company:"<unknown>"`):
+                // keep the token as free text so pg_trgm can still see it.
+                let _ = recognised_key;
+                free.push(raw);
+            }
+        }
+    }
+    (free.join(" "), pills)
+}
+
+/// Split the input on whitespace, but keep quoted substrings together so
+/// `company:"Main Street Dental"` is one token, not three.
+fn tokenise_dsl(input: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    for ch in input.chars() {
+        match ch {
+            '"' => {
+                in_quotes = !in_quotes;
+                cur.push(ch);
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+fn strip_quotes(s: &str) -> &str {
+    let trimmed = s.trim();
+    trimmed
+        .strip_prefix('"')
+        .and_then(|t| t.strip_suffix('"'))
+        .unwrap_or(trimmed)
+}
+
+fn humanise(v: &str) -> String {
+    v.replace('_', " ")
+        .split_whitespace()
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Facet counts the sidebar renders (one key per `AssetFacetsResponse` row).
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+struct AssetFacetsResponseWire {
+    #[serde(default)]
+    status: Vec<FacetValueCountWire>,
+    #[serde(default)]
+    asset_type: Vec<FacetValueCountWire>,
+    #[serde(default)]
+    company: Vec<FacetValueCountWire>,
+    #[serde(default)]
+    department: Vec<FacetValueCountWire>,
+    #[serde(default)]
+    manufacturer: Vec<FacetValueCountWire>,
+    #[serde(default)]
+    warranty_expiring_in_30_days: i64,
+    #[serde(default)]
+    end_of_life_passed: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct FacetValueCountWire {
+    value: serde_json::Value,
+    #[serde(default)]
+    label: Option<String>,
+    count: i64,
+}
+
+/// Operator-persisted column visibility (MAPPS-504 prefs). Default is
+/// every column visible; a stored row keyed with the new "v1" suffix so
+/// a future column add (or rename) does not read an older bitmap as its
+/// own. The key is deliberately per-tenant-blind: operators who switch
+/// tenants keep their column layout, since it is a layout preference,
+/// not a tenant decision.
+const COLUMN_PREFS_KEY: &str = "mokosh:assets:columns:v1";
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum AssetColumn {
+    Type,
+    Company,
+    SerialTag,
+    Status,
+}
+
+impl AssetColumn {
+    const ALL: &'static [AssetColumn] = &[
+        AssetColumn::Type,
+        AssetColumn::Company,
+        AssetColumn::SerialTag,
+        AssetColumn::Status,
+    ];
+    fn tag(self) -> &'static str {
+        match self {
+            AssetColumn::Type => "type",
+            AssetColumn::Company => "company",
+            AssetColumn::SerialTag => "serial",
+            AssetColumn::Status => "status",
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            AssetColumn::Type => "Type",
+            AssetColumn::Company => "Company",
+            AssetColumn::SerialTag => "Serial / Tag",
+            AssetColumn::Status => "Status",
+        }
+    }
+    fn from_tag(t: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|c| c.tag() == t)
+    }
+}
+
+fn load_column_visibility() -> std::collections::HashSet<AssetColumn> {
+    let stored = crate::platform::prefs::get(COLUMN_PREFS_KEY).unwrap_or_default();
+    if stored.is_empty() {
+        return AssetColumn::ALL.iter().copied().collect();
+    }
+    stored
+        .split(',')
+        .filter_map(AssetColumn::from_tag)
+        .collect()
+}
+
+fn save_column_visibility(set: &std::collections::HashSet<AssetColumn>) {
+    let tags: Vec<&str> = AssetColumn::ALL
+        .iter()
+        .filter(|c| set.contains(c))
+        .map(|c| c.tag())
+        .collect();
+    crate::platform::prefs::set(COLUMN_PREFS_KEY, &tags.join(","));
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct FacetCountChipRowProps {
+    facets: AssetFacetsResponseWire,
+    companies: Vec<CompanyOpt>,
+    types: Vec<crate::hooks::asset_types::AssetTypeRow>,
+    onadd: EventHandler<FilterPill>,
+}
+
+/// Compact chip row showing the top three values per facet beside their
+/// counts. Clicking a chip adds that `FilterPill`; the page replaces
+/// any existing pill with the same `field`.
+#[component]
+fn FacetCountChipRow(props: FacetCountChipRowProps) -> Element {
+    let FacetCountChipRowProps {
+        facets,
+        companies,
+        types,
+        onadd,
+    } = props;
+    let top = |xs: &[FacetValueCountWire]| xs.iter().take(3).cloned().collect::<Vec<_>>();
+    let status = top(&facets.status);
+    let type_counts = top(&facets.asset_type);
+    let company_counts = top(&facets.company);
+    let dept = top(&facets.department);
+    let manuf = top(&facets.manufacturer);
+    let warranty = facets.warranty_expiring_in_30_days;
+    let eol = facets.end_of_life_passed;
+    rsx! {
+        {
+            status.into_iter().map(|v| {
+                let value_str = v.value.as_str().map(String::from).unwrap_or_default();
+                let display = v.label.clone().unwrap_or_else(|| humanise(&value_str));
+
+                rsx! {
+                    FacetCountChip {
+                        key: "status-{value_str}",
+                        label: format!("Status: {display}  {}", v.count),
+                        onclick: move |_| onadd.call(FilterPill::eq(
+                            "status",
+                            format!("Status: {display}"),
+                            serde_json::Value::String(value_str.clone()),
+                        )),
+                    }
+                }
+            })
+        }
+        {
+            type_counts.into_iter().map(|v| {
+                let value_str = v.value.as_str().map(String::from).unwrap_or_default();
+                let display = v.label.clone().or_else(|| {
+                    types.iter()
+                        .find(|t| t.id.to_string() == value_str)
+                        .map(|t| t.name.clone())
+                }).unwrap_or_else(|| value_str.clone());
+
+                rsx! {
+                    FacetCountChip {
+                        key: "type-{value_str}",
+                        label: format!("Type: {display}  {}", v.count),
+                        onclick: move |_| onadd.call(FilterPill::eq(
+                            "asset_type",
+                            format!("Type: {display}"),
+                            serde_json::Value::String(value_str.clone()),
+                        )),
+                    }
+                }
+            })
+        }
+        {
+            company_counts.into_iter().map(|v| {
+                let value_str = v.value.as_str().map(String::from).unwrap_or_default();
+                let display = v.label.clone().or_else(|| {
+                    companies.iter()
+                        .find(|c| c.id.to_string() == value_str)
+                        .map(|c| c.name.clone())
+                }).unwrap_or_else(|| value_str.clone());
+
+                rsx! {
+                    FacetCountChip {
+                        key: "company-{value_str}",
+                        label: format!("Co: {display}  {}", v.count),
+                        onclick: move |_| onadd.call(FilterPill::eq(
+                            "company",
+                            format!("Co: {display}"),
+                            serde_json::Value::String(value_str.clone()),
+                        )),
+                    }
+                }
+            })
+        }
+        {
+            dept.into_iter().map(|v| {
+                let value_str = v.value.as_str().map(String::from).unwrap_or_default();
+                let display = v.label.clone().unwrap_or_else(|| value_str.clone());
+
+                rsx! {
+                    FacetCountChip {
+                        key: "dept-{value_str}",
+                        label: format!("Dept: {display}  {}", v.count),
+                        onclick: move |_| onadd.call(FilterPill::eq(
+                            "department",
+                            format!("Dept: {display}"),
+                            serde_json::Value::String(value_str.clone()),
+                        )),
+                    }
+                }
+            })
+        }
+        {
+            manuf.into_iter().map(|v| {
+                let value_str = v.value.as_str().map(String::from).unwrap_or_default();
+                let display = v.label.clone().unwrap_or_else(|| value_str.clone());
+
+                rsx! {
+                    FacetCountChip {
+                        key: "manuf-{value_str}",
+                        label: format!("Make: {display}  {}", v.count),
+                        onclick: move |_| onadd.call(FilterPill::eq(
+                            "manufacturer",
+                            format!("Make: {display}"),
+                            serde_json::Value::String(value_str.clone()),
+                        )),
+                    }
+                }
+            })
+        }
+        if warranty > 0 {
+            FacetCountChip {
+                key: "{warranty}-warranty-30",
+                label: format!("Warranty <=30d  {warranty}"),
+                onclick: move |_| onadd.call(FilterPill {
+                    field: "warranty_expiry".to_string(),
+                    op: "within".to_string(),
+                    values: vec![serde_json::json!({"days": 30})],
+                    label: "Warranty <= 30d".to_string(),
+                }),
+            }
+        }
+        if eol > 0 {
+            FacetCountChip {
+                key: "{eol}-eol-passed",
+                label: format!("EOL passed  {eol}"),
+                onclick: move |_| onadd.call(FilterPill {
+                    field: "end_of_life".to_string(),
+                    op: "before".to_string(),
+                    values: vec![serde_json::Value::String("NOW".to_string())],
+                    label: "End of life passed".to_string(),
+                }),
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct FacetCountChipProps {
+    label: String,
+    onclick: EventHandler<()>,
+}
+
+#[component]
+fn FacetCountChip(props: FacetCountChipProps) -> Element {
+    rsx! {
+        button {
+            r#type: "button",
+            class: "inline-flex items-center rounded-md border border-line bg-surface px-2 py-1 \
+                    text-xs text-content hover:bg-surface-2",
+            onclick: move |_| props.onclick.call(()),
+            "{props.label}"
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct ColumnVisibilityPopoverProps {
+    visible: std::collections::HashSet<AssetColumn>,
+    onchange: EventHandler<std::collections::HashSet<AssetColumn>>,
+}
+
+#[component]
+fn ColumnVisibilityPopover(props: ColumnVisibilityPopoverProps) -> Element {
+    let mut open = use_signal(|| false);
+    rsx! {
+        div { class: "relative inline-block",
+            Button {
+                variant: ButtonVariant::Secondary,
+                onclick: move |_| open.set(!open()),
+                "Columns"
+            }
+            if open() {
+                div {
+                    class: "absolute right-0 z-10 mt-1 w-48 rounded-md border border-line \
+                            bg-surface shadow-lg p-2 space-y-1",
+                    for col in AssetColumn::ALL.iter().copied() {
+                        {
+                            let checked = props.visible.contains(&col);
+                            let visible = props.visible.clone();
+                            let onchange = props.onchange;
+                            rsx! {
+                                label {
+                                    key: "col-{col.tag()}",
+                                    class: "flex items-center gap-2 text-sm px-2 py-1 rounded \
+                                            hover:bg-surface-2 cursor-pointer",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked,
+                                        onchange: move |e: FormEvent| {
+                                            let mut next = visible.clone();
+                                            if e.checked() {
+                                                next.insert(col);
+                                            } else {
+                                                next.remove(&col);
+                                            }
+                                            onchange.call(next);
+                                        },
+                                    }
+                                    "{col.label()}"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Asset list page
 #[component]
 pub fn AssetListPage() -> Element {
     // PMS-745: row-level navigation for the list below.
     let navigator = use_navigator();
     let mut search = use_signal(String::new);
+    // Phase 2 asset inline edit: a row click opens the drawer over the
+    // list when `assets:inline_edit` is on; otherwise the pre-phase-2
+    // navigation to `AssetDetail` stays in place.
+    let inline_edit_enabled = crate::hooks::capabilities::use_capability("assets:inline_edit");
+    let mut open_drawer: Signal<Option<uuid::Uuid>> = use_signal(|| None);
+    // Phase 3 asset catalog: "Bulk create" button + signature banner
+    // on top of the list, both gated on `use_capability("assets:catalog")`.
+    let catalog_enabled = crate::hooks::capabilities::use_capability("assets:catalog");
+    let mut bulk_catalog_open = use_signal(|| false);
     // MAPPS-303: page-scoped bulk selection (built on MAPPS-290's
     // `use_bulk_selection`). Drives the per-row checkbox, the
     // `SelectAllHeader`, and the `BulkActionsBar` "Bulk edit" verb
@@ -378,33 +869,19 @@ pub fn AssetListPage() -> Element {
     // fires one full-page refetch per pause in typing rather than one per
     // keystroke.
     let search_debounced = crate::hooks::use_debounced_signal(search, 300);
-    let mut assets_resource = use_resource(move || {
-        let q = search_debounced.read().trim().to_string();
-        let current_page = (*page.read()).max(1);
-        async move {
-            let _gen = crate::hooks::fetch::active_tenant_generation();
-            let _reachable = crate::hooks::use_server_reachable();
-            let mut path = format!("/assets?page={current_page}&per_page={PER_PAGE}");
-            if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
-                path.push_str(&format!("&company_id={company_id}"));
-            }
-            if !q.is_empty() {
-                path.push_str(&format!(
-                    "&q={}",
-                    crate::utils::url::encode_uri_component(&q)
-                ));
-            }
-            // MAPPS-604: contact-first bearer selection so a signed-in
-            // contact sees only their Company's assets. Staff sessions
-            // continue to use the workspace bearer, unchanged.
-            crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteAsset>>(&path)
-                .await
-                .inspect_err(|e| tracing::error!("asset list load failed: {e}"))
-                .ok()
-        }
-    });
-    // MAPPS-940: shared asset-types cache, not a per-page fetch.
-    let types_resource = crate::hooks::use_asset_types(true);
+    // Phase 1 asset search v2: structured filter pills. The dropdowns
+    // below write into this vector; a chip in the bar removes an entry.
+    // The fetch below tries POST /assets/search (new, structured) first
+    // and falls back to GET /assets?q= on 404 (the server returns 404
+    // when the `assets_search_v2` toggle is off).
+    let mut pills: Signal<Vec<FilterPill>> = use_signal(Vec::new);
+    // Column visibility: load once; writes persist (platform::prefs).
+    let mut visible_columns: Signal<std::collections::HashSet<AssetColumn>> =
+        use_signal(load_column_visibility);
+    // Loaded before the asset list so both the DSL `company:"<name>"`
+    // resolver and the fallback's `company_id=` serialisation can read
+    // the current set. Read inside each resource closure that depends
+    // on it so Dioxus re-runs the fetch when companies land.
     let companies_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::list_or_empty(
@@ -412,6 +889,208 @@ pub fn AssetListPage() -> Element {
             crate::hooks::fetch::api::get_all_authed::<CompanyOpt>("/contacts/companies").await,
         )
     });
+    let mut assets_resource = use_resource(move || {
+        let typed = search_debounced.read().trim().to_string();
+        let current_page = (*page.read()).max(1);
+        let manual_pills: Vec<FilterPill> = pills.read().clone();
+        let companies_now: Vec<CompanyOpt> = companies_resource
+            .read_unchecked()
+            .clone()
+            .unwrap_or_default();
+        let company_lookup: Vec<(String, uuid::Uuid)> = companies_now
+            .iter()
+            .map(|c| (c.name.clone(), c.id))
+            .collect();
+        // Phase 1 DSL: strip recognised tokens from the text buffer and
+        // promote them to pills. The visible input is unchanged; the
+        // fetch sees `q = free_remainder` + `filters = manual + dsl`.
+        let (q, dsl_pills) = parse_asset_dsl_with_companies(&typed, &company_lookup);
+        let mut filters = manual_pills;
+        for p in dsl_pills {
+            if !filters.iter().any(|m| m.field == p.field && m.op == p.op) {
+                filters.push(p);
+            }
+        }
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
+            // Try the structured search first. The contact-plane bearer
+            // selection stays implicit via `get_authed_any` / `post_authed_typed`.
+            let path_new = format!("/assets/search?page={current_page}&per_page={PER_PAGE}");
+            let body = serde_json::json!({
+                "q": if q.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(q.clone()) },
+                "filters": filters.iter().map(|p| serde_json::json!({
+                    "field": p.field,
+                    "op": p.op,
+                    "values": p.values,
+                })).collect::<Vec<_>>(),
+            });
+            match crate::hooks::fetch::api::post_authed_typed::<Paginated<RemoteAsset>, _>(
+                &path_new, &body,
+            )
+            .await
+            {
+                Ok(p) => Some(p),
+                Err(crate::hooks::fetch::api::ApiError::Status { code: 404, .. }) => {
+                    // Feature toggle off (or old server). Fall back to the
+                    // legacy GET /assets?q= path so the list still works.
+                    // Server-side `AssetFilter` (per PMS-1489) accepts
+                    // company_id, asset_type_id, site_id, assigned_user_id,
+                    // status, department, manufacturer, model, tag,
+                    // warranty_within_days, end_of_life_before, q. Each
+                    // SPA pill field + op lowers to the matching query
+                    // param here. An unknown field or op still logs at
+                    // debug so a future SPA-only pill the server has
+                    // not caught up to becomes visible.
+                    let mut path = format!("/assets?page={current_page}&per_page={PER_PAGE}");
+                    if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
+                        path.push_str(&format!("&company_id={company_id}"));
+                    }
+                    for p in &filters {
+                        let first_str = p.values.first().and_then(|v| v.as_str());
+                        let encoded_first = first_str.map(crate::utils::url::encode_uri_component);
+                        match (p.field.as_str(), p.op.as_str()) {
+                            ("status", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&status={e}"));
+                                }
+                            }
+                            ("asset_type", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&asset_type_id={e}"));
+                                }
+                            }
+                            ("company", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&company_id={e}"));
+                                }
+                            }
+                            ("site", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&site_id={e}"));
+                                }
+                            }
+                            ("assigned_user", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&assigned_user_id={e}"));
+                                }
+                            }
+                            ("department", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&department={e}"));
+                                }
+                            }
+                            ("manufacturer", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&manufacturer={e}"));
+                                }
+                            }
+                            ("model", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&model={e}"));
+                                }
+                            }
+                            ("tags", "contains_tag") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&tag={e}"));
+                                }
+                            }
+                            ("warranty_expiry", "within") => {
+                                // Shape: values[0] = { "days": N }.
+                                if let Some(days) = p
+                                    .values
+                                    .first()
+                                    .and_then(|v| v.get("days"))
+                                    .and_then(|v| v.as_i64())
+                                {
+                                    path.push_str(&format!("&warranty_within_days={days}"));
+                                }
+                            }
+                            ("end_of_life", "before") => {
+                                // The SPA ships `"NOW"` as a sentinel for "today"
+                                // so the chip label stays stable; the server wants
+                                // a concrete date. Resolve to the operator's local
+                                // date before serialising.
+                                let v = first_str.unwrap_or_default();
+                                let resolved = if v.eq_ignore_ascii_case("NOW") {
+                                    chrono::Local::now().date_naive().to_string()
+                                } else {
+                                    v.to_string()
+                                };
+                                let encoded = crate::utils::url::encode_uri_component(&resolved);
+                                path.push_str(&format!("&end_of_life_before={encoded}"));
+                            }
+                            (field, op) => {
+                                tracing::debug!(
+                                    field,
+                                    op,
+                                    "legacy /assets fallback drops unsupported pill; the server contract has not caught up to this (field, op) pair",
+                                );
+                            }
+                        }
+                    }
+                    if !q.is_empty() {
+                        path.push_str(&format!(
+                            "&q={}",
+                            crate::utils::url::encode_uri_component(&q)
+                        ));
+                    }
+                    crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteAsset>>(&path)
+                        .await
+                        .inspect_err(|e| tracing::error!("asset list load failed: {e}"))
+                        .ok()
+                }
+                Err(e) => {
+                    tracing::error!("asset list load failed: {e}");
+                    None
+                }
+            }
+        }
+    });
+    // Phase 1 asset-search v2: facet counts rail. One POST per
+    // (q, filters) change. Non-blocking: the list renders without
+    // waiting on this; a 404 means the toggle is off and nothing shows.
+    let facets_resource = use_resource(move || {
+        let typed = search_debounced.read().trim().to_string();
+        let manual_pills: Vec<FilterPill> = pills.read().clone();
+        let companies_now: Vec<CompanyOpt> = companies_resource
+            .read_unchecked()
+            .clone()
+            .unwrap_or_default();
+        let company_lookup: Vec<(String, uuid::Uuid)> = companies_now
+            .iter()
+            .map(|c| (c.name.clone(), c.id))
+            .collect();
+        let (q, dsl_pills) = parse_asset_dsl_with_companies(&typed, &company_lookup);
+        let mut filters = manual_pills;
+        for p in dsl_pills {
+            if !filters.iter().any(|m| m.field == p.field && m.op == p.op) {
+                filters.push(p);
+            }
+        }
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let body = serde_json::json!({
+                "q": if q.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(q) },
+                "filters": filters.iter().map(|p| serde_json::json!({
+                    "field": p.field,
+                    "op": p.op,
+                    "values": p.values,
+                })).collect::<Vec<_>>(),
+            });
+            crate::hooks::fetch::api::post_authed_typed::<AssetFacetsResponseWire, _>(
+                "/assets/search/facets",
+                &body,
+            )
+            .await
+            .inspect_err(|e| tracing::warn!("asset facets load failed: {e}"))
+            .ok()
+        }
+    });
+    let facets_snapshot: Option<AssetFacetsResponseWire> =
+        facets_resource.read_unchecked().clone().flatten();
+    // MAPPS-940: shared asset-types cache, not a per-page fetch.
+    let types_resource = crate::hooks::use_asset_types(true);
 
     let snapshot = assets_resource.read_unchecked().clone();
     let is_loading = snapshot.is_none();
@@ -459,10 +1138,32 @@ pub fn AssetListPage() -> Element {
     let filtered: Vec<&RemoteAsset> = assets.iter().collect();
 
     rsx! {
+        // Phase 2 asset inline edit: a right-side drawer slides over
+        // the list when `assets:inline_edit` is on. Esc or backdrop
+        // closes; a save refetches the list so the row reads back the
+        // new values.
+        if let Some(open_id) = *open_drawer.read() {
+            crate::pages::asset_drawer::AssetDrawer {
+                asset_id: open_id,
+                onclose: move |_| {
+                    open_drawer.set(None);
+                    assets_resource.restart();
+                },
+            }
+        }
+
         PageHeader {
             title: "Assets",
             subtitle: "Configuration items and customer assets",
             actions: rsx! {
+                if catalog_enabled {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        class: "mr-2".to_string(),
+                        onclick: move |_| bulk_catalog_open.set(true),
+                        "Bulk create"
+                    }
+                }
                 Link {
                     to: Route::AssetNew {},
                     Button {
@@ -474,6 +1175,34 @@ pub fn AssetListPage() -> Element {
             },
         }
 
+        if catalog_enabled {
+            crate::pages::asset_catalog_ui::SignatureBanner {
+                onsave: move |_cand: crate::pages::asset_catalog_ui::SignatureCandidate| {
+                    // Phase 3 MR2 wires the Save-as-template modal. For
+                    // now, clicking the banner opens the bulk-create
+                    // modal pre-populated by typing; the model row the
+                    // operator eventually picks will be the auto_derived
+                    // one from this signature.
+                    bulk_catalog_open.set(true);
+                },
+            }
+        }
+        crate::pages::asset_catalog_ui::AssetBulkCreateModal {
+            open: bulk_catalog_open(),
+            companies: companies.iter().map(|c| crate::pages::asset_catalog_ui::CompanyOpt {
+                id: c.id,
+                name: c.name.clone(),
+            }).collect::<Vec<_>>(),
+            onclose: move |_| bulk_catalog_open.set(false),
+            oncreated: move |count: usize| {
+                crate::hooks::toast::push_toast(
+                    crate::components::AlertType::Success,
+                    format!("Created {count} assets."),
+                );
+                assets_resource.restart();
+            },
+        }
+
         // MAPPS-321: scope indicator (see ticket for the rationale).
         crate::components::ContextFilterBanner {
             scope: crate::components::ContextFilterScope::Assets,
@@ -482,11 +1211,144 @@ pub fn AssetListPage() -> Element {
         Card { class: "mb-6",
             SearchInput {
                 value: search.read().clone(),
-                placeholder: "Search by name or serial…",
+                placeholder: "Search by name, serial, hostname, IP, MAC…",
                 oninput: move |e: FormEvent| {
                     search.set(e.value());
                     page.set(1);
                 },
+            }
+            // Phase 1 asset search v2: three facet dropdowns + a pill
+            // bar. Selecting a dropdown adds a pill and refetches; the
+            // "x" on a pill removes it. The dropdowns reset to blank
+            // once the pill is in the bar so the operator can add
+            // another `status in [...]`-style pill by picking a second
+            // value (future MR teaches the chip itself to carry the
+            // `in` op and multi-select).
+            div { class: "mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3",
+                {
+                    let mut pills_sig = pills;
+                    let types_opts = types.clone();
+                    let companies_opts = companies.clone();
+                    // Each Select mirrors the currently-active eq pill for
+                    // that field, so an operator who picked "Active" sees
+                    // "Active" in the dropdown rather than "Any status" with
+                    // only the pill reflecting the state. Clearing the pill
+                    // (via its × or the "Clear all" link) resets the display
+                    // to "Any ...".
+                    let pill_value = |field: &str| -> String {
+                        pills_sig
+                            .read()
+                            .iter()
+                            .find(|p| p.field == field && p.op == "eq")
+                            .and_then(|p| p.values.first().and_then(|v| v.as_str()).map(String::from))
+                            .unwrap_or_default()
+                    };
+                    let current_status = pill_value("status");
+                    let current_type = pill_value("asset_type");
+                    let current_company = pill_value("company");
+                    rsx! {
+                        Select {
+                            name: "filter-status".to_string(),
+                            label: "Status".to_string(),
+                            value: current_status,
+                            placeholder: "Any status".to_string(),
+                            options: vec![
+                                SelectOption::new("active", "Active"),
+                                SelectOption::new("in_stock", "In Stock"),
+                                SelectOption::new("in_repair", "In Repair"),
+                                SelectOption::new("retired", "Retired"),
+                                SelectOption::new("inactive", "Inactive"),
+                            ],
+                            onchange: move |e: FormEvent| {
+                                let v = e.value();
+                                if v.is_empty() { return; }
+                                let label = match v.as_str() {
+                                    "active" => "Active".to_string(),
+                                    "in_stock" => "In Stock".to_string(),
+                                    "in_repair" => "In Repair".to_string(),
+                                    "retired" => "Retired".to_string(),
+                                    "inactive" => "Inactive".to_string(),
+                                    _ => v.clone(),
+                                };
+                                let mut next = pills_sig.read().clone();
+                                next.retain(|p| p.field != "status");
+                                next.push(FilterPill::eq("status", label, serde_json::Value::String(v)));
+                                pills_sig.set(next);
+                                page.set(1);
+                            },
+                        }
+                        Select {
+                            name: "filter-type".to_string(),
+                            label: "Type".to_string(),
+                            value: current_type,
+                            placeholder: "Any type".to_string(),
+                            options: types_opts
+                                .iter()
+                                .map(|t| SelectOption::new(t.id.to_string(), t.name.clone()))
+                                .collect::<Vec<_>>(),
+                            onchange: move |e: FormEvent| {
+                                let v = e.value();
+                                if v.is_empty() { return; }
+                                let label = types_opts
+                                    .iter()
+                                    .find(|t| t.id.to_string() == v)
+                                    .map(|t| t.name.clone())
+                                    .unwrap_or_else(|| v.clone());
+                                let mut next = pills_sig.read().clone();
+                                next.retain(|p| p.field != "asset_type");
+                                next.push(FilterPill::eq("asset_type", label, serde_json::Value::String(v)));
+                                pills_sig.set(next);
+                                page.set(1);
+                            },
+                        }
+                        Select {
+                            name: "filter-company".to_string(),
+                            label: "Company".to_string(),
+                            value: current_company,
+                            placeholder: "Any company".to_string(),
+                            options: companies_opts
+                                .iter()
+                                .map(|c| SelectOption::new(c.id.to_string(), c.name.clone()))
+                                .collect::<Vec<_>>(),
+                            onchange: move |e: FormEvent| {
+                                let v = e.value();
+                                if v.is_empty() { return; }
+                                let label = companies_opts
+                                    .iter()
+                                    .find(|c| c.id.to_string() == v)
+                                    .map(|c| c.name.clone())
+                                    .unwrap_or_else(|| v.clone());
+                                let mut next = pills_sig.read().clone();
+                                next.retain(|p| p.field != "company");
+                                next.push(FilterPill::eq("company", label, serde_json::Value::String(v)));
+                                pills_sig.set(next);
+                                page.set(1);
+                            },
+                        }
+                    }
+                }
+            }
+            {
+                let mut pills_sig = pills;
+                let current = pills.read().clone();
+                rsx! {
+                    FilterPillBar {
+                        pills: current,
+                        class: "mt-3".to_string(),
+                        onremove: move |i: usize| {
+                            let mut next = pills_sig.read().clone();
+                            if i < next.len() {
+                                next.remove(i);
+                                pills_sig.set(next);
+                                page.set(1);
+                            }
+                        },
+                        onclear: move |_| {
+                            pills_sig.set(Vec::new());
+                            page.set(1);
+                        },
+                    }
+                }
             }
         }
 
@@ -589,81 +1451,146 @@ pub fn AssetListPage() -> Element {
             }
         }
 
-        DataTable {
-            total_items: total,
-            current_page: (*page.read()).max(1),
-            per_page: PER_PAGE,
-            columns: 5,
-            onpagechange: move |p| page.set(p),
-            Table {
-                TableHead {
-                    TableRow {
-                        // MAPPS-303: select-all checkbox for the page.
-                        crate::components::SelectAllHeader {
-                            selection,
-                            ids: filtered.iter().map(|a| a.id.to_string()).collect::<Vec<_>>(),
-                        }
-                        TableHeader { "Asset" }
-                        TableHeader { "Type" }
-                        TableHeader { "Company" }
-                        TableHeader { "Serial / Tag" }
-                        TableHeader { "Status" }
-                    }
-                }
-                TableBody {
-                    if is_loading {
-                        TableRow { TableCell { class: "text-subtle", "Loading…" } }
-                    } else if filtered.is_empty() {
-                        // MAPPS-388: centered across the table, not left-aligned.
-                        TableEmptyRow { columns: 5, class: "text-subtle italic",
-                            if assets.is_empty() {
-                                "No assets yet. Create one to get started."
-                            } else {
-                                "No assets match the search."
+        // Phase 1 asset-search v2 MR2: facet counts rail + action row.
+        // Rail shows the top-ten-per-facet count the server computed
+        // under the currently applied filters. Clicking a chip adds
+        // that pill. "Save as view" is wired disabled (phase 2
+        // persistence), and the Columns popover persists the visible
+        // set to `platform::prefs`.
+        {
+            let visible = visible_columns.read().clone();
+            rsx! {
+                div { class: "mb-3 flex flex-wrap items-start justify-between gap-3",
+                    // Left: facet counts rail (chip row).
+                    div { class: "flex flex-wrap items-center gap-2 min-h-[2rem]",
+                        if let Some(f) = facets_snapshot.as_ref() {
+                            FacetCountChipRow {
+                                facets: f.clone(),
+                                companies: companies.clone(),
+                                types: types.clone(),
+                                onadd: move |pill: FilterPill| {
+                                    let mut next = pills.read().clone();
+                                    next.retain(|p| p.field != pill.field);
+                                    next.push(pill);
+                                    pills.set(next);
+                                    page.set(1);
+                                },
                             }
                         }
-                    } else {
-                        for a in filtered.iter() {
-                            {
-                                let (variant, label) = asset_status_badge(&a.status);
-                                let tname = type_name(&a.asset_type_id);
-                                let cname = company_name(&a.company_id);
-                                let serial = a
-                                    .serial_number
-                                    .clone()
-                                    .or_else(|| a.asset_tag.clone())
-                                    .unwrap_or_else(|| "-".to_string());
-                                let aid = a.id.to_string();
-                                let row_id = aid.clone();
-                                rsx! {
-                                    TableRow { key: "{aid}",
-                                        // PMS-745: the whole row navigates, matching
-                                        // ContractRow / TicketRow. `clickable` also
-                                        // restores the hover background and pointer
-                                        // cursor, which TableRow scopes to interactive
-                                        // rows (MAPPS-389).
-                                        clickable: true,
-                                        onclick: move |_| {
-                                            navigator.push(Route::AssetDetail { id: row_id.clone() });
-                                        },
-                                        // MAPPS-303: per-row checkbox. Its cell stops
-                                        // propagation, so selecting a row does not also
-                                        // open it.
-                                        crate::components::SelectRowCell {
-                                            selection,
-                                            id: aid.clone(),
-                                        }
-                                        TableCell {
-                                            Link {
-                                                to: Route::AssetDetail { id: aid.clone() },
-                                                class: "font-medium text-accent hover:opacity-90",
-                                                "{a.name}"
+                    }
+                    // Right: Columns popover + "Save as view" (disabled).
+                    div { class: "flex items-center gap-2",
+                        ColumnVisibilityPopover {
+                            visible,
+                            onchange: move |next: std::collections::HashSet<AssetColumn>| {
+                                save_column_visibility(&next);
+                                visible_columns.set(next);
+                            },
+                        }
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            disabled: true,
+                            title: Some("Saved views are coming in the next release".to_string()),
+                            "Save as view"
+                        }
+                    }
+                }
+            }
+        }
+
+        {
+            let visible = visible_columns.read().clone();
+            let col_count: usize = 1
+                + 1 // Asset
+                + AssetColumn::ALL.iter().filter(|c| visible.contains(c)).count();
+            let visible_type = visible.contains(&AssetColumn::Type);
+            let visible_company = visible.contains(&AssetColumn::Company);
+            let visible_serial = visible.contains(&AssetColumn::SerialTag);
+            let visible_status = visible.contains(&AssetColumn::Status);
+            let any_filter_active =
+                !search.read().trim().is_empty() || !pills.read().is_empty();
+            rsx! {
+                DataTable {
+                    total_items: total,
+                    current_page: (*page.read()).max(1),
+                    per_page: PER_PAGE,
+                    columns: col_count,
+                    onpagechange: move |p| page.set(p),
+                    Table {
+                        TableHead {
+                            TableRow {
+                                // MAPPS-303: select-all checkbox for the page.
+                                crate::components::SelectAllHeader {
+                                    selection,
+                                    ids: filtered.iter().map(|a| a.id.to_string()).collect::<Vec<_>>(),
+                                }
+                                TableHeader { "Asset" }
+                                if visible_type { TableHeader { "Type" } }
+                                if visible_company { TableHeader { "Company" } }
+                                if visible_serial { TableHeader { "Serial / Tag" } }
+                                if visible_status { TableHeader { "Status" } }
+                            }
+                        }
+                        TableBody {
+                            if is_loading {
+                                TableRow { TableCell { class: "text-subtle", "Loading…" } }
+                            } else if filtered.is_empty() {
+                                // `assets.is_empty()` and `filtered.is_empty()` are the same
+                                // today (the server returns a filtered page, and the client
+                                // keeps `filtered = assets.iter()`), so the "no match" branch
+                                // never fired before this change. Branch on "is any filter
+                                // active?" instead so the operator sees "No assets match the
+                                // search" the moment a pill, a free-text search or a DSL
+                                // token is in play.
+                                TableEmptyRow { columns: col_count, class: "text-subtle italic",
+                                    if any_filter_active {
+                                        "No assets match the search."
+                                    } else {
+                                        "No assets yet. Create one to get started."
+                                    }
+                                }
+                            } else {
+                                for a in filtered.iter() {
+                                    {
+                                        let (variant, label) = asset_status_badge(&a.status);
+                                        let tname = type_name(&a.asset_type_id);
+                                        let cname = company_name(&a.company_id);
+                                        let serial = a
+                                            .serial_number
+                                            .clone()
+                                            .or_else(|| a.asset_tag.clone())
+                                            .unwrap_or_else(|| "-".to_string());
+                                        let aid = a.id.to_string();
+                                        let row_id = aid.clone();
+                                        rsx! {
+                                            TableRow { key: "{aid}",
+                                                clickable: true,
+                                                onclick: move |_| {
+                                                    if inline_edit_enabled {
+                                                        if let Ok(id) = row_id.parse::<uuid::Uuid>() {
+                                                            open_drawer.set(Some(id));
+                                                        }
+                                                    } else {
+                                                        navigator.push(Route::AssetDetail { id: row_id.clone() });
+                                                    }
+                                                },
+                                                crate::components::SelectRowCell {
+                                                    selection,
+                                                    id: aid.clone(),
+                                                }
+                                                TableCell {
+                                                    Link {
+                                                        to: Route::AssetDetail { id: aid.clone() },
+                                                        class: "font-medium text-accent hover:opacity-90",
+                                                        "{a.name}"
+                                                    }
+                                                }
+                                                if visible_type { TableCell { "{tname}" } }
+                                                if visible_company { TableCell { "{cname}" } }
+                                                if visible_serial { TableCell { class: "font-mono text-sm", "{serial}" } }
+                                                if visible_status { TableCell { Badge { variant, "{label}" } } }
                                             }
                                         }
-                                        TableCell { "{tname}" }
-                                        TableCell { "{cname}" }
-                                        TableCell { class: "font-mono text-sm", "{serial}" }
-                                        TableCell { Badge { variant, "{label}" } }
                                     }
                                 }
                             }
@@ -3202,5 +4129,128 @@ mod validation_tests {
             ASSET_SERIAL_MAX
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod dsl_tests {
+    use super::{parse_asset_dsl_with_companies, FilterPill};
+
+    fn parse_asset_dsl(input: &str) -> (String, Vec<FilterPill>) {
+        parse_asset_dsl_with_companies(input, &[])
+    }
+
+    #[test]
+    fn plain_text_stays_as_free_text() {
+        let (q, pills) = parse_asset_dsl("lenovo thinkpad");
+        assert_eq!(q, "lenovo thinkpad");
+        assert!(pills.is_empty());
+    }
+
+    #[test]
+    fn status_token_lowers_to_eq_pill_and_leaves_rest_as_free_text() {
+        let (q, pills) = parse_asset_dsl("foo status:active bar");
+        assert_eq!(q, "foo bar");
+        assert_eq!(pills.len(), 1);
+        assert_eq!(pills[0].field, "status");
+        assert_eq!(pills[0].op, "eq");
+        assert_eq!(
+            pills[0].values[0],
+            serde_json::Value::String("active".into())
+        );
+    }
+
+    #[test]
+    fn warranty_number_lowers_to_within_days() {
+        let (q, pills) = parse_asset_dsl("warranty:30");
+        assert_eq!(q, "");
+        assert_eq!(pills.len(), 1);
+        assert_eq!(pills[0].field, "warranty_expiry");
+        assert_eq!(pills[0].op, "within");
+        assert_eq!(pills[0].values[0], serde_json::json!({"days": 30}));
+    }
+
+    #[test]
+    fn tag_token_lowers_to_contains_tag() {
+        let (_q, pills) = parse_asset_dsl("tag:kiosk");
+        assert_eq!(pills[0].field, "tags");
+        assert_eq!(pills[0].op, "contains_tag");
+    }
+
+    #[test]
+    fn eol_expired_lowers_to_before_now() {
+        let (_q, pills) = parse_asset_dsl("eol:expired");
+        assert_eq!(pills[0].field, "end_of_life");
+        assert_eq!(pills[0].op, "before");
+    }
+
+    #[test]
+    fn unrecognised_prefix_stays_as_free_text() {
+        let (q, pills) = parse_asset_dsl("foo:bar baz");
+        assert_eq!(q, "foo:bar baz");
+        assert!(pills.is_empty());
+    }
+
+    #[test]
+    fn warranty_non_number_stays_as_free_text() {
+        let (q, pills) = parse_asset_dsl("warranty:soon");
+        assert_eq!(q, "warranty:soon");
+        assert!(pills.is_empty());
+    }
+
+    #[test]
+    fn dept_and_department_both_resolve() {
+        let (_, a) = parse_asset_dsl("dept:Sales");
+        let (_, b) = parse_asset_dsl("department:Sales");
+        assert_eq!(a[0].field, "department");
+        assert_eq!(b[0].field, "department");
+    }
+
+    #[test]
+    fn make_manuf_and_manufacturer_all_resolve_to_the_same_field() {
+        for token in ["make:dell", "manuf:dell", "manufacturer:dell"] {
+            let (_, pills) = parse_asset_dsl(token);
+            assert_eq!(pills.len(), 1, "{token}");
+            assert_eq!(pills[0].field, "manufacturer", "{token}");
+        }
+    }
+
+    #[test]
+    fn company_quoted_name_resolves_to_eq_uuid() {
+        let id = uuid::Uuid::new_v4();
+        let (q, pills) = parse_asset_dsl_with_companies(
+            "foo company:\"Main Street Dental\" bar",
+            &[("Main Street Dental".to_string(), id)],
+        );
+        assert_eq!(q, "foo bar");
+        assert_eq!(pills.len(), 1);
+        assert_eq!(pills[0].field, "company");
+        assert_eq!(pills[0].op, "eq");
+        assert_eq!(
+            pills[0].values[0],
+            serde_json::Value::String(id.to_string())
+        );
+    }
+
+    #[test]
+    fn company_unquoted_name_also_resolves_case_insensitively() {
+        let id = uuid::Uuid::new_v4();
+        let (_, pills) =
+            parse_asset_dsl_with_companies("company:acmecorp", &[("AcmeCorp".to_string(), id)]);
+        assert_eq!(pills.len(), 1);
+        assert_eq!(
+            pills[0].values[0],
+            serde_json::Value::String(id.to_string())
+        );
+    }
+
+    #[test]
+    fn company_unknown_name_falls_back_to_free_text() {
+        let (q, pills) = parse_asset_dsl_with_companies(
+            "company:\"Nowhere Inc\"",
+            &[("AcmeCorp".to_string(), uuid::Uuid::new_v4())],
+        );
+        assert_eq!(q, "company:\"Nowhere Inc\"");
+        assert!(pills.is_empty());
     }
 }

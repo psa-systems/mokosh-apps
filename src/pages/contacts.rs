@@ -9278,10 +9278,8 @@ fn BillingContactCard(props: BillingContactCardProps) -> Element {
     let mut saving = use_signal(|| false);
     let can_mutate = crate::hooks::use_can_mutate();
     let contact_uuid = uuid::Uuid::parse_str(&contact_id_for_save).ok();
-    let is_billing = match company_resource.read_unchecked().as_ref() {
-        Some(Some(p)) => p.default_billing_contact_id == contact_uuid,
-        _ => false,
-    };
+    let (is_billing, pending, failed) =
+        billing_contact_status(company_resource.read_unchecked().as_ref(), contact_uuid);
 
     let on_assign = move |_| {
         if *saving.read() {
@@ -9324,9 +9322,24 @@ fn BillingContactCard(props: BillingContactCardProps) -> Element {
         });
     };
 
+    if pending {
+        return rsx! {
+            crate::components::DetailSkeleton { rows: 1 }
+        };
+    }
+
     rsx! {
         Card { title: "Billing Contact",
-            if is_billing {
+            if failed {
+                div { class: "space-y-3",
+                    ErrorBanner { "Could not load the billing contact. Try again." }
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| { company_resource.restart(); },
+                        "Retry"
+                    }
+                }
+            } else if is_billing {
                 div { class: "flex items-center justify-between",
                     span { class: "text-sm text-muted", "Status" }
                     Badge { variant: BadgeVariant::Green, "Billing contact" }
@@ -9357,8 +9370,25 @@ fn BillingContactCard(props: BillingContactCardProps) -> Element {
     }
 }
 
+/// MAPPS-1053: names the resource's three real states before computing
+/// `is_billing`, so a pending or failed fetch cannot fall through to the same
+/// `false` result as "fetch resolved but the ids don't match" and render a
+/// permanently-wrong "Not set" badge.
+fn billing_contact_status(
+    snap: Option<&Option<CompanyBillingContactPayload>>,
+    contact_uuid: Option<uuid::Uuid>,
+) -> (bool, bool, bool) {
+    match snap {
+        None => (false, true, false),
+        Some(None) => (false, false, true),
+        Some(Some(p)) => (p.default_billing_contact_id == contact_uuid, false, false),
+    }
+}
+
 #[cfg(test)]
 mod billing_contact_card_tests {
+    use super::*;
+
     /// The save closure writes ONLY `default_billing_contact_id` on the
     /// Company and never calls a portal-grant path, so a contact with no
     /// portal account can be made the billing contact without a side
@@ -9388,6 +9418,47 @@ mod billing_contact_card_tests {
         assert!(
             !body.contains("role_ids"),
             "save never assigns a portal role: {body}"
+        );
+    }
+
+    /// MAPPS-1053: the pending (`None`) and failed (`Some(None)`) resource
+    /// states must not be silently treated as "fetch resolved, ids don't
+    /// match" - each gets its own flag so the card can't render "Not set"
+    /// while loading or after a fetch error.
+    #[test]
+    fn billing_contact_status_names_pending_and_failed_separately() {
+        let contact_uuid = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let other_uuid = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
+
+        assert_eq!(
+            billing_contact_status(None, Some(contact_uuid)),
+            (false, true, false),
+            "pending resource must not render Not set or an actionable button"
+        );
+        assert_eq!(
+            billing_contact_status(Some(&None), Some(contact_uuid)),
+            (false, false, true),
+            "a failed fetch must not be reported as Not set"
+        );
+        assert_eq!(
+            billing_contact_status(
+                Some(&Some(CompanyBillingContactPayload {
+                    default_billing_contact_id: Some(contact_uuid),
+                })),
+                Some(contact_uuid),
+            ),
+            (true, false, false),
+            "a resolved payload matching the viewed contact is the billing contact"
+        );
+        assert_eq!(
+            billing_contact_status(
+                Some(&Some(CompanyBillingContactPayload {
+                    default_billing_contact_id: Some(other_uuid),
+                })),
+                Some(contact_uuid),
+            ),
+            (false, false, false),
+            "a resolved payload for a different contact is genuinely Not set"
         );
     }
 }

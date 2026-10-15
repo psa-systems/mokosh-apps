@@ -9,6 +9,8 @@
 //! the hub.
 
 pub mod approvals;
+pub mod asset_catalog_ui;
+pub mod asset_drawer;
 pub mod assets;
 pub mod audit_log;
 pub mod auth_callback;
