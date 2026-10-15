@@ -253,6 +253,14 @@ pub struct ChangeHistoryEntryProps {
     /// printing a dash or a UUID.
     #[props(default)]
     pub who: String,
+    /// MAPPS-1037: hover text naming the unresolved id, empty when `who` is
+    /// resolved or is the "System" placeholder.
+    #[props(default)]
+    pub who_tooltip: String,
+    /// MAPPS-1037: `who` is the "System" placeholder for a system-issued
+    /// row; rendered in the muted style used for other "not set" values.
+    #[props(default = false)]
+    pub who_muted: bool,
     /// Formatted timestamp, right-aligned.
     pub when: String,
     /// ISO-8601 form of `when`, for the wrapping `time` element's
@@ -270,7 +278,14 @@ pub fn ChangeHistoryEntry(props: ChangeHistoryEntryProps) -> Element {
             div { class: "min-w-0",
                 p { class: "text-content", "{props.headline}" }
                 if !props.who.is_empty() {
-                    p { class: "text-xs text-subtle", "by {props.who}" }
+                    p { class: "text-xs text-subtle",
+                        "by "
+                        span {
+                            class: if props.who_muted { "italic" } else { "" },
+                            title: "{props.who_tooltip}",
+                            "{props.who}"
+                        }
+                    }
                 }
                 ChangeDetails { changes: props.changes.clone() }
             }
