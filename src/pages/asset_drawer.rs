@@ -170,6 +170,11 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
     let a = props.asset;
     let path = props.path;
     let on_patched = props.on_patched;
+    // One registry per drawer, threaded into every `InlineFieldEditor`
+    // so clicking one field closes the previously open one. See the
+    // comment on `InlineFieldEditorProps::open_field` for why this
+    // belongs at the host rather than inside the primitive.
+    let open_field: Signal<Option<String>> = use_signal(|| None);
 
     let status_opts = vec![
         ("active".to_string(), "Active".to_string()),
@@ -193,6 +198,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "name".to_string(),
                 optional: false,
+                open_field: Some(open_field),
                 on_patched: notify,
             }
             InlineFieldEditor {
@@ -206,6 +212,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "asset_tag".to_string(),
                 optional: true,
+                open_field: Some(open_field),
                 on_patched: notify,
             }
             InlineFieldEditor {
@@ -215,6 +222,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "status".to_string(),
                 optional: false,
+                open_field: Some(open_field),
                 on_patched: notify,
             }
         }
@@ -232,6 +240,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "manufacturer".to_string(),
                 optional: true,
+                open_field: Some(open_field),
                 on_patched: notify,
             }
             InlineFieldEditor {
@@ -245,6 +254,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "model".to_string(),
                 optional: true,
+                open_field: Some(open_field),
                 on_patched: notify,
             }
             InlineFieldEditor {
@@ -258,6 +268,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "serial_number".to_string(),
                 optional: true,
+                open_field: Some(open_field),
                 on_patched: notify,
             }
             InlineFieldEditor {
@@ -271,6 +282,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "hostname".to_string(),
                 optional: true,
+                open_field: Some(open_field),
                 on_patched: notify,
             }
             InlineFieldEditor {
@@ -284,6 +296,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "ip_address".to_string(),
                 optional: true,
+                open_field: Some(open_field),
                 on_patched: notify,
             }
             InlineFieldEditor {
@@ -297,6 +310,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "mac_address".to_string(),
                 optional: true,
+                open_field: Some(open_field),
                 on_patched: notify,
             }
             InlineFieldEditor {
@@ -310,6 +324,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "department".to_string(),
                 optional: true,
+                open_field: Some(open_field),
                 on_patched: notify,
             }
         }
@@ -323,6 +338,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "purchase_date".to_string(),
                 optional: true,
+                open_field: Some(open_field),
                 on_patched: notify,
             }
             InlineFieldEditor {
@@ -332,6 +348,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "installed_date".to_string(),
                 optional: true,
+                open_field: Some(open_field),
                 on_patched: notify,
             }
             InlineFieldEditor {
@@ -341,6 +358,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "warranty_expiry".to_string(),
                 optional: true,
+                open_field: Some(open_field),
                 on_patched: notify,
             }
             InlineFieldEditor {
@@ -350,6 +368,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "end_of_life".to_string(),
                 optional: true,
+                open_field: Some(open_field),
                 on_patched: notify,
             }
         }
@@ -367,6 +386,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "itil_lifecycle_stage".to_string(),
                 optional: true,
+                open_field: Some(open_field),
                 on_patched: notify,
             }
             InlineFieldEditor {
@@ -379,8 +399,28 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path,
                 patch_field: "notes".to_string(),
                 optional: true,
+                open_field: Some(open_field),
                 on_patched: notify,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod drawer_single_editor_tests {
+    #[test]
+    fn drawer_body_declares_one_open_field_registry_and_threads_it_into_every_editor() {
+        let src = include_str!("asset_drawer.rs");
+        assert!(
+            src.contains("let open_field: Signal<Option<String>> = use_signal(|| None);"),
+            "DrawerBody must declare the per-drawer `open_field` registry"
+        );
+        let field_count = src.matches("open_field: Some(open_field),").count();
+        let editor_count = src.matches("InlineFieldEditor {").count();
+        assert_eq!(
+            field_count, editor_count,
+            "every InlineFieldEditor in the drawer must pass the registry \
+             (got {editor_count} editors, {field_count} wire-ups)"
+        );
     }
 }
