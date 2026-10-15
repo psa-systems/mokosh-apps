@@ -15,6 +15,37 @@ use dioxus::prelude::*;
 
 use crate::hooks::fetch::api::ApiError;
 
+/// Last-mile sanitiser for a server-returned error message that reaches
+/// the inline hint beside the input. The server-side validator landed in
+/// PMS-1488 should always 422 with a field envelope for bad IP / MAC
+/// shapes, but if a future path leaks a raw Postgres cast error through
+/// the top-level `message` (e.g. `Database operation failed`,
+/// `invalid input syntax for type inet`), the operator sees a generic
+/// "Invalid value for this field." instead and the raw text goes to
+/// `tracing::warn!` for the dev / ops console. `from_envelope` is true
+/// when the message came from `fields[]` and should be trusted verbatim;
+/// only the top-level fallback gets sanitised.
+fn sanitise_server_message(raw: &str, from_envelope: bool, field: &str) -> String {
+    if from_envelope {
+        return raw.to_string();
+    }
+    let lower = raw.to_ascii_lowercase();
+    let looks_like_db_leak = lower == "database operation failed"
+        || lower.contains("invalid input syntax")
+        || lower.contains("sqlx")
+        || lower.contains("database error");
+    if looks_like_db_leak {
+        tracing::warn!(
+            field,
+            raw_message = raw,
+            "server returned raw DB message for field; sanitising",
+        );
+        "Invalid value for this field.".to_string()
+    } else {
+        raw.to_string()
+    }
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub enum InlineFieldKind {
     /// Single-line text. Validation: trimmed, non-empty when `required`.
@@ -75,6 +106,22 @@ pub struct InlineFieldEditorProps {
     pub open_field: Option<Signal<Option<String>>>,
 }
 
+/// Read-mode display for a Select: when the host did not pass a `display`
+/// override, map the stored enum value (`in_stock`, `active`) through the
+/// Select's `(value, label)` pairs so the drawer reads "In Stock" /
+/// "Active", not the raw enum. Any non-Select kind returns None so the
+/// outer `or_else` chain falls through to `value`.
+fn select_label_for(kind: &InlineFieldKind, value: Option<&str>) -> Option<String> {
+    let InlineFieldKind::Select { options } = kind else {
+        return None;
+    };
+    let v = value?;
+    options
+        .iter()
+        .find(|(val, _)| val == v)
+        .map(|(_, label)| label.clone())
+}
+
 #[component]
 pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
     let mut editing = use_signal(|| false);
@@ -85,6 +132,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
     let display_text = props
         .display
         .clone()
+        .or_else(|| select_label_for(&props.kind, props.value.as_deref()))
         .or_else(|| props.value.clone())
         .unwrap_or_else(|| "-".to_string());
 
@@ -152,15 +200,15 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                 Err(ApiError::Status {
                     message, fields, ..
                 }) => {
-                    let field_msg = fields
+                    let (chosen, from_envelope) = fields
                         .into_iter()
                         .find(|f| f.field == patch_field)
-                        .map(|f| f.message)
-                        .unwrap_or(message);
-                    err.set(if field_msg.is_empty() {
+                        .map(|f| (f.message, true))
+                        .unwrap_or((message, false));
+                    err.set(if chosen.is_empty() {
                         "Save failed".to_string()
                     } else {
-                        field_msg
+                        sanitise_server_message(&chosen, from_envelope, &patch_field)
                     });
                     saving.set(false);
                 }
@@ -415,5 +463,95 @@ mod mapps1054_commit_guard_tests {
                  a second keystroke-driven commit while one is outstanding"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod sanitise_tests {
+    use super::sanitise_server_message;
+
+    #[test]
+    fn field_envelope_message_passes_through_verbatim() {
+        let msg = sanitise_server_message("Not a valid IP address", true, "ip_address");
+        assert_eq!(msg, "Not a valid IP address");
+    }
+
+    #[test]
+    fn well_formed_top_level_message_passes_through_verbatim() {
+        let msg = sanitise_server_message("Required.", false, "name");
+        assert_eq!(msg, "Required.");
+    }
+
+    #[test]
+    fn raw_db_leak_replaced_by_generic_message() {
+        for leak in [
+            "Database operation failed",
+            "database operation failed",
+            "invalid input syntax for type inet: \"999.999.999.999\"",
+            "sqlx::Error ...",
+            "database error occurred",
+        ] {
+            let msg = sanitise_server_message(leak, false, "ip_address");
+            assert_eq!(
+                msg, "Invalid value for this field.",
+                "leak {leak:?} must be sanitised"
+            );
+        }
+    }
+
+    #[test]
+    fn db_leak_in_field_envelope_still_passes_through() {
+        let msg = sanitise_server_message("Database operation failed", true, "ip_address");
+        assert_eq!(
+            msg, "Database operation failed",
+            "field-envelope messages are trusted; sanitising them would hide a validator the server team wrote on purpose"
+        );
+    }
+}
+
+#[cfg(test)]
+mod select_label_tests {
+    use super::{select_label_for, InlineFieldKind};
+
+    fn status_kind() -> InlineFieldKind {
+        InlineFieldKind::Select {
+            options: vec![
+                ("active".into(), "Active".into()),
+                ("in_stock".into(), "In Stock".into()),
+                ("retired".into(), "Retired".into()),
+            ],
+        }
+    }
+
+    #[test]
+    fn maps_raw_enum_to_select_label() {
+        assert_eq!(
+            select_label_for(&status_kind(), Some("in_stock")),
+            Some("In Stock".to_string())
+        );
+        assert_eq!(
+            select_label_for(&status_kind(), Some("active")),
+            Some("Active".to_string())
+        );
+    }
+
+    #[test]
+    fn unknown_value_returns_none_so_caller_falls_through_to_value() {
+        assert_eq!(select_label_for(&status_kind(), Some("mystery")), None);
+    }
+
+    #[test]
+    fn missing_value_returns_none() {
+        assert_eq!(select_label_for(&status_kind(), None), None);
+    }
+
+    #[test]
+    fn non_select_kinds_pass_through() {
+        let text = InlineFieldKind::Text {
+            placeholder: "n/a".into(),
+            maxlength: None,
+            required: false,
+        };
+        assert_eq!(select_label_for(&text, Some("in_stock")), None);
     }
 }
