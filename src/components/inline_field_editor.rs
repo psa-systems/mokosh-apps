@@ -61,6 +61,18 @@ pub struct InlineFieldEditorProps {
     /// to the stored string.
     #[props(default)]
     pub display: Option<String>,
+    /// Optional per-host registry of which editor is currently in edit
+    /// mode. The host (drawer) creates one `Signal<Option<String>>` and
+    /// passes it to every editor; each editor compares its own
+    /// `patch_field` against the signal to decide whether to render
+    /// edit mode. Clicking a different editor flips the signal and
+    /// closes the previously open one, which is the behaviour browser
+    /// blur alone does not guarantee when focus moves between inputs
+    /// in the same component tree. When omitted (any host that only
+    /// renders one editor at a time), the component falls back to its
+    /// own local `editing` signal and the behaviour is unchanged.
+    #[props(default)]
+    pub open_field: Option<Signal<Option<String>>>,
 }
 
 #[component]
@@ -78,8 +90,24 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
 
     let path = props.path.clone();
     let patch_field = props.patch_field.clone();
+    let open_patch_field = patch_field.clone();
+    let close_patch_field = patch_field.clone();
+    let is_editing_patch_field = patch_field.clone();
     let optional = props.optional;
     let on_patched = props.on_patched;
+    // Per-host "which editor is open" registry. When a parent passes
+    // one (the drawer does), this editor renders edit mode only while
+    // the registry names its own `patch_field`. Clicking a different
+    // editor flips the registry and this editor's render drops to
+    // read mode on the next pass, which closes it even when the
+    // browser's blur event fails to fire between focus moves inside
+    // the same component tree. Without a registry, falls back to the
+    // local `editing` signal and the behaviour is unchanged.
+    let open_field = props.open_field;
+    let is_editing_now = match open_field {
+        Some(sig) => sig.read().as_deref() == Some(is_editing_patch_field.as_str()),
+        None => editing(),
+    };
 
     // `use_callback` gives a `Copy` handle so the closure can be cloned
     // into every editor's `onblur`/`onkeydown` without a per-site move.
@@ -110,6 +138,11 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                 Ok(_) => {
                     saving.set(false);
                     editing.set(false);
+                    if let Some(mut sig) = open_field {
+                        if sig.read().as_deref() == Some(patch_field.as_str()) {
+                            sig.set(None);
+                        }
+                    }
                     on_patched.call(if trimmed.is_empty() {
                         None
                     } else {
@@ -143,13 +176,29 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
     let kind = props.kind.clone();
     let current = props.value.clone().unwrap_or_default();
 
+    // Close helper shared by Esc on every kind + the "clear draft on
+    // registry hand-off" path. Flips both the local signal (so a host
+    // without a registry still sees the state change) and the
+    // registry (so a host that does, drops the "which editor is open"
+    // entry when this editor is the one closing). `use_callback` gives
+    // a `Copy` handle so each event closure can take it without a
+    // per-site clone.
+    let close_editor = use_callback(move |()| {
+        editing.set(false);
+        if let Some(mut sig) = open_field {
+            if sig.read().as_deref() == Some(close_patch_field.as_str()) {
+                sig.set(None);
+            }
+        }
+    });
+
     rsx! {
         div { class: "mb-3",
             label {
                 class: "block text-xs font-medium text-muted mb-1",
                 "{label}"
             }
-            if editing() {
+            if is_editing_now {
                 div { class: "flex items-start gap-2",
                     div { class: "flex-1",
                         match kind {
@@ -168,7 +217,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                                         if matches!(key, Key::Enter) {
                                             commit.call(draft.read().clone());
                                         } else if matches!(key, Key::Escape) {
-                                            editing.set(false);
+                                            close_editor.call(());
                                             draft.set(current.clone());
                                             err.set(String::new());
                                         }
@@ -188,7 +237,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                                     oninput: move |e: FormEvent| draft.set(e.value()),
                                     onkeydown: move |e: KeyboardEvent| {
                                         if matches!(e.key(), Key::Escape) {
-                                            editing.set(false);
+                                            close_editor.call(());
                                             draft.set(current.clone());
                                             err.set(String::new());
                                         }
@@ -209,7 +258,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                                         if matches!(e.key(), Key::Enter) {
                                             commit.call(draft.read().clone());
                                         } else if matches!(e.key(), Key::Escape) {
-                                            editing.set(false);
+                                            close_editor.call(());
                                             draft.set(current.clone());
                                             err.set(String::new());
                                         }
@@ -230,7 +279,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                                     },
                                     onkeydown: move |e: KeyboardEvent| {
                                         if matches!(e.key(), Key::Escape) {
-                                            editing.set(false);
+                                            close_editor.call(());
                                             draft.set(current.clone());
                                             err.set(String::new());
                                         }
@@ -266,6 +315,9 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                         draft.set(current.clone());
                         err.set(String::new());
                         editing.set(true);
+                        if let Some(mut sig) = open_field {
+                            sig.set(Some(open_patch_field.clone()));
+                        }
                     },
                     "{display_text}"
                 }
