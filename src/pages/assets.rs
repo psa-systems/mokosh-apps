@@ -1320,6 +1320,8 @@ pub fn AssetListPage() -> Element {
             let visible_company = visible.contains(&AssetColumn::Company);
             let visible_serial = visible.contains(&AssetColumn::SerialTag);
             let visible_status = visible.contains(&AssetColumn::Status);
+            let any_filter_active =
+                !search.read().trim().is_empty() || !pills.read().is_empty();
             rsx! {
                 DataTable {
                     total_items: total,
@@ -1346,11 +1348,18 @@ pub fn AssetListPage() -> Element {
                             if is_loading {
                                 TableRow { TableCell { class: "text-subtle", "Loading…" } }
                             } else if filtered.is_empty() {
+                                // `assets.is_empty()` and `filtered.is_empty()` are the same
+                                // today (the server returns a filtered page, and the client
+                                // keeps `filtered = assets.iter()`), so the "no match" branch
+                                // never fired before this change. Branch on "is any filter
+                                // active?" instead so the operator sees "No assets match the
+                                // search" the moment a pill, a free-text search or a DSL
+                                // token is in play.
                                 TableEmptyRow { columns: col_count, class: "text-subtle italic",
-                                    if assets.is_empty() {
-                                        "No assets yet. Create one to get started."
-                                    } else {
+                                    if any_filter_active {
                                         "No assets match the search."
+                                    } else {
+                                        "No assets yet. Create one to get started."
                                     }
                                 }
                             } else {
