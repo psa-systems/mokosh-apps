@@ -191,6 +191,12 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
     let mut serials_raw = use_signal(String::new);
     let mut err = use_signal(String::new);
     let mut submitting = use_signal(|| false);
+    // Debounce the pasted serials so the pre-flight collision lookup
+    // (PMS-1490 / MAPPS-1065) fires once per pause in typing rather than
+    // once per keystroke. 400ms matches the shape used elsewhere in the
+    // SPA (asset list search is 300; bulk-create is one weightier POST,
+    // so err slightly longer).
+    let serials_debounced = crate::hooks::use_debounced_signal(serials_raw, 400);
 
     // Typeahead against /asset-models?q=. Returns an empty vec on 404
     // (feature off) so the modal fails gracefully with a message.
@@ -226,10 +232,6 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
     let (serials_dedup, serials_duplicates) = dedup_preserving_order(&serials_vec);
     let serials_raw_count = serials_vec.len();
     let serials_dedup_count = serials_dedup.len();
-    let serials_count_str = format!("{serials_dedup_count}");
-    // The 500-cap applies to what the server will see (post-dedup), so
-    // a paste of 501 lines with one duplicate is 500 unique and submits.
-    let serials_over_cap = serials_dedup_count > 500;
     let dup_count = serials_duplicates.len();
     let duplicates_preview = {
         let shown: Vec<String> = serials_duplicates.iter().take(5).cloned().collect();
@@ -240,6 +242,84 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
             shown.join(", ")
         }
     };
+
+    // Pre-flight collision lookup. Fires once per debounced pause after
+    // the operator pastes serials AND picks a company. 404 from the
+    // endpoint (feature off / older server) returns an empty vec so the
+    // modal behaves exactly as pre-MAPPS-1065. Any other error logs at
+    // warn and also drops to empty - the server unique constraint stays
+    // the authoritative guard; this is the UX layer.
+    let existing_resource = use_resource(move || {
+        let company_raw = selected_company_id.read().clone();
+        let raw = serials_debounced.read().clone();
+        async move {
+            let Ok(company_id) = company_raw.parse::<Uuid>() else {
+                return Vec::<String>::new();
+            };
+            let (unique, _) = dedup_preserving_order(
+                &raw.lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .collect::<Vec<_>>(),
+            );
+            if unique.is_empty() {
+                return Vec::new();
+            }
+            let body = serde_json::json!({
+                "company_id": company_id,
+                "serials": unique,
+            });
+            #[derive(serde::Deserialize)]
+            struct Resp {
+                #[serde(default)]
+                existing: Vec<String>,
+            }
+            match crate::hooks::fetch::api::post_authed_typed::<Resp, _>("/assets/exists", &body)
+                .await
+            {
+                Ok(r) => r.existing,
+                Err(ApiError::Status { code: 404, .. }) => Vec::new(),
+                Err(e) => {
+                    tracing::warn!("asset exists lookup failed: {e}");
+                    Vec::new()
+                }
+            }
+        }
+    });
+    let serials_existing: Vec<String> = existing_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let existing_lookup: std::collections::HashSet<String> =
+        serials_existing.iter().map(|s| s.to_lowercase()).collect();
+    let serials_to_create: Vec<String> = serials_dedup
+        .iter()
+        .filter(|s| !existing_lookup.contains(&s.to_lowercase()))
+        .cloned()
+        .collect();
+    let serials_to_create_count = serials_to_create.len();
+    let serials_count_str = format!("{serials_to_create_count}");
+    // 500-cap applies to what the server will actually see post-dedup
+    // AND post-exists-trim, so a paste of 501 lines where one is already
+    // present is 500 unique new and submits.
+    let serials_over_cap = serials_to_create_count > 500;
+    let existing_count = serials_existing.len();
+    let existing_preview = {
+        let shown: Vec<String> = serials_existing.iter().take(5).cloned().collect();
+        let more = serials_existing.len().saturating_sub(5);
+        if more > 0 {
+            format!("{} and {more} more", shown.join(", "))
+        } else {
+            shown.join(", ")
+        }
+    };
+    let selected_company_name = props
+        .companies
+        .iter()
+        .find(|c| c.id.to_string() == *selected_company_id.read())
+        .map(|c| c.name.clone())
+        .unwrap_or_default();
+
     let model_picked = selected_model.read().is_some();
     let model_typed = !model_query.read().trim().is_empty();
     let company_picked = selected_company_id.read().parse::<Uuid>().is_ok();
@@ -247,7 +327,8 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
     // The on-submit guards below stay as a safety net for races (the
     // click lands before the latest signal read), but the operator
     // never sees a confident "Create 501 assets" that cannot fire.
-    let can_submit = model_picked && company_picked && serials_dedup_count > 0 && !serials_over_cap;
+    let can_submit =
+        model_picked && company_picked && serials_to_create_count > 0 && !serials_over_cap;
 
     let companies = props.companies.clone();
     let company_options: Vec<SelectOption> = companies
@@ -283,8 +364,14 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
         // a given line survive the dedup. The server also enforces the
         // unique constraint; this is the UX layer.
         let (unique, _dupes) = dedup_preserving_order(&raw_lines);
+        // Trim serials that already belong to an asset at the selected
+        // company (per the debounced /assets/exists lookup, PMS-1490). If
+        // the lookup is stale (operator pasted a new serial a millisecond
+        // ago), the server's unique constraint still catches it; this is
+        // the UX layer, not the final guard.
         let serials: Vec<BulkSerialBody> = unique
             .into_iter()
+            .filter(|s| !existing_lookup.contains(&s.to_lowercase()))
             .map(|serial_number| BulkSerialBody { serial_number })
             .collect();
         if serials.is_empty() {
@@ -447,14 +534,25 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
                         p { class: "mt-1 text-xs text-amber-700 dark:text-amber-400",
                             "{serials_raw_count} lines pasted, {dup_count} duplicate(s) dropped: "
                             span { class: "font-mono", "{duplicates_preview}" }
-                            ". {serials_dedup_count} will be created."
+                            ". {serials_dedup_count} remain."
+                        }
+                    }
+                    if existing_count > 0 {
+                        p { class: "mt-1 text-xs text-amber-700 dark:text-amber-400",
+                            if selected_company_name.is_empty() {
+                                "{existing_count} of {serials_dedup_count} serial(s) already belong to an asset at this company: "
+                            } else {
+                                "{existing_count} of {serials_dedup_count} serial(s) already belong to {selected_company_name}: "
+                            }
+                            span { class: "font-mono", "{existing_preview}" }
+                            ". {serials_to_create_count} will be created."
                         }
                     }
                     if serials_over_cap {
                         p { class: "mt-1 text-xs text-red-600 dark:text-red-400",
                             "Up to 500 serials per batch; split into two."
                         }
-                    } else if dup_count == 0 {
+                    } else if dup_count == 0 && existing_count == 0 {
                         p { class: "mt-1 text-xs text-subtle",
                             "The server names each asset "
                             span { class: "font-mono", "{{manufacturer}} {{model}} #{{serial}}" }
