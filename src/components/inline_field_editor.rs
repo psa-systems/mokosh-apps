@@ -15,6 +15,37 @@ use dioxus::prelude::*;
 
 use crate::hooks::fetch::api::ApiError;
 
+/// Last-mile sanitiser for a server-returned error message that reaches
+/// the inline hint beside the input. The server-side validator landed in
+/// PMS-1488 should always 422 with a field envelope for bad IP / MAC
+/// shapes, but if a future path leaks a raw Postgres cast error through
+/// the top-level `message` (e.g. `Database operation failed`,
+/// `invalid input syntax for type inet`), the operator sees a generic
+/// "Invalid value for this field." instead and the raw text goes to
+/// `tracing::warn!` for the dev / ops console. `from_envelope` is true
+/// when the message came from `fields[]` and should be trusted verbatim;
+/// only the top-level fallback gets sanitised.
+fn sanitise_server_message(raw: &str, from_envelope: bool, field: &str) -> String {
+    if from_envelope {
+        return raw.to_string();
+    }
+    let lower = raw.to_ascii_lowercase();
+    let looks_like_db_leak = lower == "database operation failed"
+        || lower.contains("invalid input syntax")
+        || lower.contains("sqlx")
+        || lower.contains("database error");
+    if looks_like_db_leak {
+        tracing::warn!(
+            field,
+            raw_message = raw,
+            "server returned raw DB message for field; sanitising",
+        );
+        "Invalid value for this field.".to_string()
+    } else {
+        raw.to_string()
+    }
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub enum InlineFieldKind {
     /// Single-line text. Validation: trimmed, non-empty when `required`.
@@ -119,15 +150,15 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                 Err(ApiError::Status {
                     message, fields, ..
                 }) => {
-                    let field_msg = fields
+                    let (chosen, from_envelope) = fields
                         .into_iter()
                         .find(|f| f.field == patch_field)
-                        .map(|f| f.message)
-                        .unwrap_or(message);
-                    err.set(if field_msg.is_empty() {
+                        .map(|f| (f.message, true))
+                        .unwrap_or((message, false));
+                    err.set(if chosen.is_empty() {
                         "Save failed".to_string()
                     } else {
-                        field_msg
+                        sanitise_server_message(&chosen, from_envelope, &patch_field)
                     });
                     saving.set(false);
                 }
@@ -363,5 +394,48 @@ mod mapps1054_commit_guard_tests {
                  a second keystroke-driven commit while one is outstanding"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod sanitise_tests {
+    use super::sanitise_server_message;
+
+    #[test]
+    fn field_envelope_message_passes_through_verbatim() {
+        let msg = sanitise_server_message("Not a valid IP address", true, "ip_address");
+        assert_eq!(msg, "Not a valid IP address");
+    }
+
+    #[test]
+    fn well_formed_top_level_message_passes_through_verbatim() {
+        let msg = sanitise_server_message("Required.", false, "name");
+        assert_eq!(msg, "Required.");
+    }
+
+    #[test]
+    fn raw_db_leak_replaced_by_generic_message() {
+        for leak in [
+            "Database operation failed",
+            "database operation failed",
+            "invalid input syntax for type inet: \"999.999.999.999\"",
+            "sqlx::Error ...",
+            "database error occurred",
+        ] {
+            let msg = sanitise_server_message(leak, false, "ip_address");
+            assert_eq!(
+                msg, "Invalid value for this field.",
+                "leak {leak:?} must be sanitised"
+            );
+        }
+    }
+
+    #[test]
+    fn db_leak_in_field_envelope_still_passes_through() {
+        let msg = sanitise_server_message("Database operation failed", true, "ip_address");
+        assert_eq!(
+            msg, "Database operation failed",
+            "field-envelope messages are trusted; sanitising them would hide a validator the server team wrote on purpose"
+        );
     }
 }
