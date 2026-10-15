@@ -223,6 +223,15 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
         .filter(|l| !l.trim().is_empty())
         .count();
     let serials_count_str = format!("{serials_count}");
+    let serials_over_cap = serials_count > 500;
+    let model_picked = selected_model.read().is_some();
+    let model_typed = !model_query.read().trim().is_empty();
+    let company_picked = selected_company_id.read().parse::<Uuid>().is_ok();
+    // The submit button is enabled only when every field is valid.
+    // The on-submit guards below stay as a safety net for races (the
+    // click lands before the latest signal read), but the operator
+    // never sees a confident "Create 501 assets" that cannot fire.
+    let can_submit = model_picked && company_picked && serials_count > 0 && !serials_over_cap;
 
     let companies = props.companies.clone();
     let company_options: Vec<SelectOption> = companies
@@ -325,7 +334,7 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
                 }
                 Button {
                     variant: ButtonVariant::Primary,
-                    disabled: submitting(),
+                    disabled: submitting() || !can_submit,
                     onclick: on_submit,
                     if submitting() { "Creating…" } else { "Create {serials_count_str} assets" }
                 }
@@ -356,6 +365,10 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
                         p { class: "mt-1 text-xs text-subtle",
                             "Picked: "
                             span { class: "font-mono text-content", "{selected_label}" }
+                        }
+                    } else if model_typed && model_rows.is_empty() && feature_on {
+                        p { class: "mt-1 text-xs text-red-600 dark:text-red-400",
+                            "Pick a result from the dropdown to continue."
                         }
                     } else if !model_rows.is_empty() {
                         ul { class: "mt-1 max-h-40 overflow-y-auto rounded-md border border-line bg-surface",
@@ -392,7 +405,11 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
                 div {
                     label { class: "block text-xs font-medium text-muted mb-1",
                         "Serial numbers ("
-                        span { class: "font-mono", "{serials_count_str}" }
+                        if serials_over_cap {
+                            span { class: "font-mono text-red-600 dark:text-red-400", "{serials_count_str} of 500" }
+                        } else {
+                            span { class: "font-mono", "{serials_count_str} of 500" }
+                        }
                         ")"
                     }
                     Textarea {
@@ -402,10 +419,16 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
                         rows: 8,
                         oninput: move |e: FormEvent| serials_raw.set(e.value()),
                     }
-                    p { class: "mt-1 text-xs text-subtle",
-                        "The server names each asset "
-                        span { class: "font-mono", "{{manufacturer}} {{model}} #{{serial}}" }
-                        " by default."
+                    if serials_over_cap {
+                        p { class: "mt-1 text-xs text-red-600 dark:text-red-400",
+                            "Up to 500 serials per batch; split into two."
+                        }
+                    } else {
+                        p { class: "mt-1 text-xs text-subtle",
+                            "The server names each asset "
+                            span { class: "font-mono", "{{manufacturer}} {{model}} #{{serial}}" }
+                            " by default."
+                        }
                     }
                 }
             }
