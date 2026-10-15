@@ -350,10 +350,20 @@ fn warranty_refresh_status(s: &Option<String>) -> WarrantyRefreshStatus {
 /// assigned-user DSL tokens need a resolver round trip (name -> uuid)
 /// and are deliberately deferred to the facet-popover MR; the dropdowns
 /// already cover the common company case.
-fn parse_asset_dsl(input: &str) -> (String, Vec<FilterPill>) {
-    let mut free = Vec::<&str>::new();
+/// Companies-aware variant. The host passes the already-fetched company
+/// list so the parser can resolve `company:"Main Street Dental"` to the
+/// `company` pill the structured search expects (uuid value). A name
+/// that does not resolve falls back to free text, matching the handling
+/// of unknown keys so the fetch still returns something sensible rather
+/// than a silent empty.
+fn parse_asset_dsl_with_companies(
+    input: &str,
+    companies: &[(String, uuid::Uuid)],
+) -> (String, Vec<FilterPill>) {
+    let mut free = Vec::<String>::new();
     let mut pills = Vec::<FilterPill>::new();
-    for raw in input.split_whitespace() {
+    let tokens = tokenise_dsl(input);
+    for raw in tokens {
         let (key, value) = match raw.split_once(':') {
             Some((k, v)) if !v.is_empty() => (k.to_ascii_lowercase(), v.to_string()),
             _ => {
@@ -401,6 +411,21 @@ fn parse_asset_dsl(input: &str) -> (String, Vec<FilterPill>) {
                 format!("Model: {value}"),
                 serde_json::Value::String(value.clone()),
             )),
+            "company" => {
+                // Strip surrounding quotes so `company:"Main Street Dental"`
+                // and `company:MainStreet` both work. Match case-insensitively.
+                let needle = strip_quotes(&value).to_ascii_lowercase();
+                companies
+                    .iter()
+                    .find(|(name, _)| name.to_ascii_lowercase() == needle)
+                    .map(|(name, id)| {
+                        FilterPill::eq(
+                            "company",
+                            format!("Co: {name}"),
+                            serde_json::Value::String(id.to_string()),
+                        )
+                    })
+            }
             _ => {
                 recognised_key = false;
                 None
@@ -410,14 +435,48 @@ fn parse_asset_dsl(input: &str) -> (String, Vec<FilterPill>) {
             Some(p) => pills.push(p),
             None => {
                 // Un-recognised key, OR recognised key with an un-usable
-                // value (e.g. `warranty:soon`): keep the token as free
-                // text so pg_trgm can still see it.
+                // value (e.g. `warranty:soon`, or `company:"<unknown>"`):
+                // keep the token as free text so pg_trgm can still see it.
                 let _ = recognised_key;
                 free.push(raw);
             }
         }
     }
     (free.join(" "), pills)
+}
+
+/// Split the input on whitespace, but keep quoted substrings together so
+/// `company:"Main Street Dental"` is one token, not three.
+fn tokenise_dsl(input: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    for ch in input.chars() {
+        match ch {
+            '"' => {
+                in_quotes = !in_quotes;
+                cur.push(ch);
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+fn strip_quotes(s: &str) -> &str {
+    let trimmed = s.trim();
+    trimmed
+        .strip_prefix('"')
+        .and_then(|t| t.strip_suffix('"'))
+        .unwrap_or(trimmed)
 }
 
 fn humanise(v: &str) -> String {
@@ -819,14 +878,33 @@ pub fn AssetListPage() -> Element {
     // Column visibility: load once; writes persist (platform::prefs).
     let mut visible_columns: Signal<std::collections::HashSet<AssetColumn>> =
         use_signal(load_column_visibility);
+    // Loaded before the asset list so both the DSL `company:"<name>"`
+    // resolver and the fallback's `company_id=` serialisation can read
+    // the current set. Read inside each resource closure that depends
+    // on it so Dioxus re-runs the fetch when companies land.
+    let companies_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::list_or_empty(
+            "asset company filter option",
+            crate::hooks::fetch::api::get_all_authed::<CompanyOpt>("/contacts/companies").await,
+        )
+    });
     let mut assets_resource = use_resource(move || {
         let typed = search_debounced.read().trim().to_string();
         let current_page = (*page.read()).max(1);
         let manual_pills: Vec<FilterPill> = pills.read().clone();
+        let companies_now: Vec<CompanyOpt> = companies_resource
+            .read_unchecked()
+            .clone()
+            .unwrap_or_default();
+        let company_lookup: Vec<(String, uuid::Uuid)> = companies_now
+            .iter()
+            .map(|c| (c.name.clone(), c.id))
+            .collect();
         // Phase 1 DSL: strip recognised tokens from the text buffer and
         // promote them to pills. The visible input is unchanged; the
         // fetch sees `q = free_remainder` + `filters = manual + dsl`.
-        let (q, dsl_pills) = parse_asset_dsl(&typed);
+        let (q, dsl_pills) = parse_asset_dsl_with_companies(&typed, &company_lookup);
         let mut filters = manual_pills;
         for p in dsl_pills {
             if !filters.iter().any(|m| m.field == p.field && m.op == p.op) {
@@ -856,9 +934,40 @@ pub fn AssetListPage() -> Element {
                 Err(crate::hooks::fetch::api::ApiError::Status { code: 404, .. }) => {
                     // Feature toggle off (or old server). Fall back to the
                     // legacy GET /assets?q= path so the list still works.
+                    // The legacy `AssetFilter` on the server (as of
+                    // mokosh-server AssetFilter in src/modules/assets/models.rs)
+                    // accepts company_id, asset_type_id, status, q only;
+                    // richer pill fields (department, manufacturer, tags, ...)
+                    // need an `assets_search_v2`-on server. Serialise the
+                    // ones the legacy handler honours; drop the rest with a
+                    // debug trace so operators do not silently see unfiltered
+                    // results.
                     let mut path = format!("/assets?page={current_page}&per_page={PER_PAGE}");
                     if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
                         path.push_str(&format!("&company_id={company_id}"));
+                    }
+                    for p in &filters {
+                        if p.op != "eq" {
+                            tracing::debug!(
+                                field = %p.field,
+                                op = %p.op,
+                                "legacy /assets fallback drops non-eq pill; enable assets_search_v2 to honour it",
+                            );
+                            continue;
+                        }
+                        let Some(v) = p.values.first().and_then(|v| v.as_str()) else {
+                            continue;
+                        };
+                        let encoded = crate::utils::url::encode_uri_component(v);
+                        match p.field.as_str() {
+                            "status" => path.push_str(&format!("&status={encoded}")),
+                            "asset_type" => path.push_str(&format!("&asset_type_id={encoded}")),
+                            "company" => path.push_str(&format!("&company_id={encoded}")),
+                            other => tracing::debug!(
+                                field = %other,
+                                "legacy /assets fallback drops unknown pill field; enable assets_search_v2 to honour it",
+                            ),
+                        }
                     }
                     if !q.is_empty() {
                         path.push_str(&format!(
@@ -884,7 +993,15 @@ pub fn AssetListPage() -> Element {
     let facets_resource = use_resource(move || {
         let typed = search_debounced.read().trim().to_string();
         let manual_pills: Vec<FilterPill> = pills.read().clone();
-        let (q, dsl_pills) = parse_asset_dsl(&typed);
+        let companies_now: Vec<CompanyOpt> = companies_resource
+            .read_unchecked()
+            .clone()
+            .unwrap_or_default();
+        let company_lookup: Vec<(String, uuid::Uuid)> = companies_now
+            .iter()
+            .map(|c| (c.name.clone(), c.id))
+            .collect();
+        let (q, dsl_pills) = parse_asset_dsl_with_companies(&typed, &company_lookup);
         let mut filters = manual_pills;
         for p in dsl_pills {
             if !filters.iter().any(|m| m.field == p.field && m.op == p.op) {
@@ -914,13 +1031,6 @@ pub fn AssetListPage() -> Element {
         facets_resource.read_unchecked().clone().flatten();
     // MAPPS-940: shared asset-types cache, not a per-page fetch.
     let types_resource = crate::hooks::use_asset_types(true);
-    let companies_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::list_or_empty(
-            "asset company filter option",
-            crate::hooks::fetch::api::get_all_authed::<CompanyOpt>("/contacts/companies").await,
-        )
-    });
 
     let snapshot = assets_resource.read_unchecked().clone();
     let is_loading = snapshot.is_none();
@@ -3938,7 +4048,11 @@ mod validation_tests {
 
 #[cfg(test)]
 mod dsl_tests {
-    use super::parse_asset_dsl;
+    use super::{parse_asset_dsl_with_companies, FilterPill};
+
+    fn parse_asset_dsl(input: &str) -> (String, Vec<FilterPill>) {
+        parse_asset_dsl_with_companies(input, &[])
+    }
 
     #[test]
     fn plain_text_stays_as_free_text() {
@@ -4013,5 +4127,44 @@ mod dsl_tests {
             assert_eq!(pills.len(), 1, "{token}");
             assert_eq!(pills[0].field, "manufacturer", "{token}");
         }
+    }
+
+    #[test]
+    fn company_quoted_name_resolves_to_eq_uuid() {
+        let id = uuid::Uuid::new_v4();
+        let (q, pills) = parse_asset_dsl_with_companies(
+            "foo company:\"Main Street Dental\" bar",
+            &[("Main Street Dental".to_string(), id)],
+        );
+        assert_eq!(q, "foo bar");
+        assert_eq!(pills.len(), 1);
+        assert_eq!(pills[0].field, "company");
+        assert_eq!(pills[0].op, "eq");
+        assert_eq!(
+            pills[0].values[0],
+            serde_json::Value::String(id.to_string())
+        );
+    }
+
+    #[test]
+    fn company_unquoted_name_also_resolves_case_insensitively() {
+        let id = uuid::Uuid::new_v4();
+        let (_, pills) =
+            parse_asset_dsl_with_companies("company:acmecorp", &[("AcmeCorp".to_string(), id)]);
+        assert_eq!(pills.len(), 1);
+        assert_eq!(
+            pills[0].values[0],
+            serde_json::Value::String(id.to_string())
+        );
+    }
+
+    #[test]
+    fn company_unknown_name_falls_back_to_free_text() {
+        let (q, pills) = parse_asset_dsl_with_companies(
+            "company:\"Nowhere Inc\"",
+            &[("AcmeCorp".to_string(), uuid::Uuid::new_v4())],
+        );
+        assert_eq!(q, "company:\"Nowhere Inc\"");
+        assert!(pills.is_empty());
     }
 }
