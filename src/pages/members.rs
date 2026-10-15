@@ -738,7 +738,11 @@ fn PeoplePane(can_mutate: bool) -> Element {
     let mut remove_busy: Signal<bool> = use_signal(|| false);
     let mut role_error: Signal<String> = use_signal(String::new);
 
-    let on_change_role = move |(row, new_role): (MemberRow, String)| {
+    // `use_callback` gives a stable handle across `PeoplePane` renders so
+    // `PeopleBodyProps::eq`'s closure-identity comparison does not force
+    // `PeopleBody` to re-execute (and re-clone the roster) on an unrelated
+    // signal change (e.g. `remove_busy`, `remove_error`, `role_error`).
+    let on_change_role = use_callback(move |(row, new_role): (MemberRow, String)| {
         role_error.set(String::new());
         spawn(async move {
             #[cfg(feature = "app")]
@@ -753,7 +757,7 @@ fn PeoplePane(can_mutate: bool) -> Element {
                 let _ = (row, new_role);
             }
         });
-    };
+    });
 
     let on_confirm_remove = move |_| {
         let Some(row) = remove_target.read().clone() else {
@@ -788,6 +792,11 @@ fn PeoplePane(can_mutate: bool) -> Element {
         remove_target.set(None);
         remove_error.set(String::new());
     };
+
+    let on_remove = use_callback(move |row: MemberRow| {
+        remove_error.set(String::new());
+        remove_target.set(Some(row));
+    });
 
     let (confirm_title, confirm_message, confirm_text) = match &*remove_target.read() {
         Some(MemberRow::User {
@@ -850,10 +859,7 @@ fn PeoplePane(can_mutate: bool) -> Element {
             },
             can_mutate,
             on_change_role,
-            on_remove: move |row: MemberRow| {
-                remove_error.set(String::new());
-                remove_target.set(Some(row));
-            },
+            on_remove,
         }
         ConfirmDialog {
             open: remove_target.read().is_some(),
