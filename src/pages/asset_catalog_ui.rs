@@ -217,13 +217,29 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
         }
     });
 
-    let serials_count = serials_raw
+    let serials_vec: Vec<String> = serials_raw
         .read()
         .lines()
-        .filter(|l| !l.trim().is_empty())
-        .count();
-    let serials_count_str = format!("{serials_count}");
-    let serials_over_cap = serials_count > 500;
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let (serials_dedup, serials_duplicates) = dedup_preserving_order(&serials_vec);
+    let serials_raw_count = serials_vec.len();
+    let serials_dedup_count = serials_dedup.len();
+    let serials_count_str = format!("{serials_dedup_count}");
+    // The 500-cap applies to what the server will see (post-dedup), so
+    // a paste of 501 lines with one duplicate is 500 unique and submits.
+    let serials_over_cap = serials_dedup_count > 500;
+    let dup_count = serials_duplicates.len();
+    let duplicates_preview = {
+        let shown: Vec<String> = serials_duplicates.iter().take(5).cloned().collect();
+        let more = serials_duplicates.len().saturating_sub(5);
+        if more > 0 {
+            format!("{} and {more} more", shown.join(", "))
+        } else {
+            shown.join(", ")
+        }
+    };
     let model_picked = selected_model.read().is_some();
     let model_typed = !model_query.read().trim().is_empty();
     let company_picked = selected_company_id.read().parse::<Uuid>().is_ok();
@@ -231,7 +247,7 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
     // The on-submit guards below stay as a safety net for races (the
     // click lands before the latest signal read), but the operator
     // never sees a confident "Create 501 assets" that cannot fire.
-    let can_submit = model_picked && company_picked && serials_count > 0 && !serials_over_cap;
+    let can_submit = model_picked && company_picked && serials_dedup_count > 0 && !serials_over_cap;
 
     let companies = props.companies.clone();
     let company_options: Vec<SelectOption> = companies
@@ -257,10 +273,18 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
             err.set("Pick a company first.".to_string());
             return;
         };
-        let serials: Vec<BulkSerialBody> = raw
+        let raw_lines: Vec<String> = raw
             .lines()
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty())
+            .collect();
+        // Preserve first-occurrence order so any future per-row overrides
+        // (hostname, mac, ip, asset_tag; see MAPPS-xxxx follow-up) tied to
+        // a given line survive the dedup. The server also enforces the
+        // unique constraint; this is the UX layer.
+        let (unique, _dupes) = dedup_preserving_order(&raw_lines);
+        let serials: Vec<BulkSerialBody> = unique
+            .into_iter()
             .map(|serial_number| BulkSerialBody { serial_number })
             .collect();
         if serials.is_empty() {
@@ -419,11 +443,18 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
                         rows: 8,
                         oninput: move |e: FormEvent| serials_raw.set(e.value()),
                     }
+                    if dup_count > 0 {
+                        p { class: "mt-1 text-xs text-amber-700 dark:text-amber-400",
+                            "{serials_raw_count} lines pasted, {dup_count} duplicate(s) dropped: "
+                            span { class: "font-mono", "{duplicates_preview}" }
+                            ". {serials_dedup_count} will be created."
+                        }
+                    }
                     if serials_over_cap {
                         p { class: "mt-1 text-xs text-red-600 dark:text-red-400",
                             "Up to 500 serials per batch; split into two."
                         }
-                    } else {
+                    } else if dup_count == 0 {
                         p { class: "mt-1 text-xs text-subtle",
                             "The server names each asset "
                             span { class: "font-mono", "{{manufacturer}} {{model}} #{{serial}}" }
@@ -433,5 +464,64 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
                 }
             }
         }
+    }
+}
+
+/// Return `(unique, duplicate_values)` from `input`, preserving the first
+/// occurrence of each value and reporting each duplicated serial exactly
+/// once. Exact-match comparison on purpose: serial numbers are case- and
+/// whitespace-sensitive for some vendors; the caller trims whitespace
+/// before handing them in.
+fn dedup_preserving_order(input: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut seen = std::collections::HashSet::<String>::new();
+    let mut unique = Vec::<String>::new();
+    let mut dupes = Vec::<String>::new();
+    for s in input {
+        if seen.insert(s.clone()) {
+            unique.push(s.clone());
+        } else if !dupes.contains(s) {
+            dupes.push(s.clone());
+        }
+    }
+    (unique, dupes)
+}
+
+#[cfg(test)]
+mod dedup_tests {
+    use super::dedup_preserving_order;
+
+    #[test]
+    fn no_duplicates_returns_input_order() {
+        let (u, d) = dedup_preserving_order(&["A".into(), "B".into(), "C".into()]);
+        assert_eq!(u, vec!["A", "B", "C"]);
+        assert!(d.is_empty());
+    }
+
+    #[test]
+    fn duplicates_dropped_once_in_preview() {
+        let (u, d) =
+            dedup_preserving_order(&["A".into(), "B".into(), "A".into(), "C".into(), "A".into()]);
+        assert_eq!(u, vec!["A", "B", "C"]);
+        assert_eq!(d, vec!["A"]);
+    }
+
+    #[test]
+    fn case_sensitive_match() {
+        let (u, d) = dedup_preserving_order(&["abc".into(), "ABC".into()]);
+        assert_eq!(u, vec!["abc", "ABC"]);
+        assert!(d.is_empty());
+    }
+
+    #[test]
+    fn empty_input_returns_empty_pair() {
+        let (u, d) = dedup_preserving_order(&[]);
+        assert!(u.is_empty());
+        assert!(d.is_empty());
+    }
+
+    #[test]
+    fn each_duplicate_reported_once_even_if_repeated_more() {
+        let (_u, d) = dedup_preserving_order(&["A".into(), "A".into(), "A".into(), "A".into()]);
+        assert_eq!(d, vec!["A"]);
     }
 }
