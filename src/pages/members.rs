@@ -174,14 +174,12 @@ pub struct MembersResponse {
     pub bunyip_reachable: bool,
 }
 
-/// Walk `/members` page by page so the UI gets the whole roster instead of
-/// the server's silently-clamped first 100 rows. `MembersResponse` is not a
-/// `PaginatedResponse<T>` wrapper (it carries `bunyip_reachable` + `total`
-/// alongside `rows`), so the shared `get_all_authed` helper does not fit;
-/// the loop below mirrors it for this one endpoint and keeps the first
-/// response's `bunyip_reachable` + `total` while concatenating the rows
-/// from every subsequent page until a short page arrives.
-/// Filter values threaded into `fetch_all_members`'s query string. Each
+/// Matches the `per_page` sent server-side, so the requested page size and
+/// the `DataTable`'s pager math agree. Mirrors the Teams tab
+/// (`members_teams_tab.rs`) and the rest of the app's list pages.
+const PER_PAGE: usize = 25;
+
+/// Filter values threaded into `fetch_members_page`'s query string. Each
 /// field is appended as its same-named query parameter when non-empty and
 /// omitted otherwise, matching the server's `MembersFilter` (MAPPS-1032).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -211,33 +209,25 @@ impl MembersFilters {
     }
 }
 
+/// Fetch exactly one page of `/members` (MAPPS-1069): one request per
+/// filter settle, the same server-side pagination pattern the Teams tab
+/// (`members_teams_tab.rs:154-173`) already uses, instead of the retired
+/// `fetch_all_members` helper's page-walking loop.
 #[cfg(feature = "app")]
-async fn fetch_all_members(filters: &MembersFilters) -> Result<MembersResponse, String> {
-    use crate::hooks::fetch::api::MAX_PER_PAGE;
-    const MAX_PAGES: u32 = 100;
+async fn fetch_members_page(
+    filters: &MembersFilters,
+    page: usize,
+) -> Result<MembersResponse, String> {
     let suffix = filters.query_suffix();
-    let mut combined: Option<MembersResponse> = None;
-    for page in 1..=MAX_PAGES {
-        let path = format!("/members?page={page}&per_page={MAX_PER_PAGE}{suffix}");
-        let resp: MembersResponse =
-            crate::hooks::fetch::api::get_authed::<MembersResponse>(&path).await?;
-        let full = (resp.rows.len() as u32) >= MAX_PER_PAGE;
-        match combined.as_mut() {
-            Some(acc) => acc.rows.extend(resp.rows),
-            None => combined = Some(resp),
-        }
-        if !full {
-            return Ok(combined.unwrap_or_default());
-        }
-    }
-    Err(format!(
-        "/members returned more than {MAX_PAGES} full pages of {MAX_PER_PAGE} rows; \
-         refusing to render a list that is silently short"
-    ))
+    let path = format!("/members?page={page}&per_page={PER_PAGE}{suffix}");
+    crate::hooks::fetch::api::get_authed::<MembersResponse>(&path).await
 }
 
 #[cfg(not(feature = "app"))]
-async fn fetch_all_members(_filters: &MembersFilters) -> Result<MembersResponse, String> {
+async fn fetch_members_page(
+    _filters: &MembersFilters,
+    _page: usize,
+) -> Result<MembersResponse, String> {
     Ok(MembersResponse::default())
 }
 
@@ -671,6 +661,11 @@ fn PeoplePane(can_mutate: bool) -> Element {
     // MAPPS-855 pattern: debounce the search box so a burst of keystrokes
     // fires one refetch per pause in typing rather than one per keystroke.
     let search_debounced = crate::hooks::use_debounced_signal(search, 300);
+    // MAPPS-1069: paging state for the roster, reset to page 1 on every
+    // search/filter change (the `assets.rs` pattern) so a stale page number
+    // from a bigger result set never strands the operator on an out-of-range
+    // page of a smaller one.
+    let mut current_page = use_signal(|| 1usize);
 
     // Team filter options, mirroring the invite modal's team picker
     // (`invitations.rs`): every active team, fetched once via the paging
@@ -719,10 +714,11 @@ fn PeoplePane(can_mutate: bool) -> Element {
             kind: kind_filter.read().clone(),
             team_id: team_filter.read().clone(),
         };
+        let page = (*current_page.read()).max(1);
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let _reachable = crate::hooks::use_server_reachable();
-            fetch_all_members(&filters)
+            fetch_members_page(&filters, page)
                 .await
                 .inspect_err(|e| tracing::error!("members list load failed: {e}"))
                 .ok()
@@ -815,26 +811,38 @@ fn PeoplePane(can_mutate: bool) -> Element {
                 SearchInput {
                     value: search.read().clone(),
                     placeholder: "Search people…",
-                    oninput: move |e: FormEvent| search.set(e.value()),
+                    oninput: move |e: FormEvent| {
+                        search.set(e.value());
+                        current_page.set(1);
+                    },
                 }
             }
             Select {
                 name: "people_role_filter",
                 options: role_options,
                 value: role_filter.read().clone(),
-                onchange: move |e: FormEvent| role_filter.set(e.value()),
+                onchange: move |e: FormEvent| {
+                    role_filter.set(e.value());
+                    current_page.set(1);
+                },
             }
             Select {
                 name: "people_kind_filter",
                 options: kind_options,
                 value: kind_filter.read().clone(),
-                onchange: move |e: FormEvent| kind_filter.set(e.value()),
+                onchange: move |e: FormEvent| {
+                    kind_filter.set(e.value());
+                    current_page.set(1);
+                },
             }
             Select {
                 name: "people_team_filter",
                 options: team_options,
                 value: team_filter.read().clone(),
-                onchange: move |e: FormEvent| team_filter.set(e.value()),
+                onchange: move |e: FormEvent| {
+                    team_filter.set(e.value());
+                    current_page.set(1);
+                },
             }
         }
         if !role_error.read().is_empty() {
@@ -849,11 +857,14 @@ fn PeoplePane(can_mutate: bool) -> Element {
                 _ => None,
             },
             can_mutate,
+            current_page: (*current_page.read()).max(1),
+            per_page: PER_PAGE,
             on_change_role,
             on_remove: move |row: MemberRow| {
                 remove_error.set(String::new());
                 remove_target.set(Some(row));
             },
+            on_page_change: move |p| current_page.set(p),
         }
         ConfirmDialog {
             open: remove_target.read().is_some(),
@@ -879,8 +890,11 @@ struct PeopleBodyProps {
     /// their own wording, matching Teams' loading/empty split.
     payload: Option<MembersResponse>,
     can_mutate: bool,
+    current_page: usize,
+    per_page: usize,
     on_change_role: EventHandler<(MemberRow, String)>,
     on_remove: EventHandler<MemberRow>,
+    on_page_change: EventHandler<usize>,
 }
 
 #[component]
@@ -888,10 +902,14 @@ fn PeopleBody(props: PeopleBodyProps) -> Element {
     let loading = props.loading;
     let payload = props.payload;
     let can_mutate = props.can_mutate;
+    let current_page = props.current_page;
+    let per_page = props.per_page;
     let on_change_role = props.on_change_role;
     let on_remove = props.on_remove;
+    let on_page_change = props.on_page_change;
     let columns = if can_mutate { 6 } else { 5 };
     let rows: Vec<MemberRow> = payload.as_ref().map(|p| p.rows.clone()).unwrap_or_default();
+    let total_items = payload.as_ref().map(|p| p.total as usize).unwrap_or(0);
 
     rsx! {
         if let Some(payload) = &payload {
@@ -903,7 +921,11 @@ fn PeopleBody(props: PeopleBodyProps) -> Element {
         }
         DataTable {
             loading,
+            total_items,
+            current_page,
+            per_page,
             columns,
+            onpagechange: move |p| on_page_change.call(p),
             Table {
                 TableHead {
                     TableRow {
