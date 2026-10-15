@@ -237,13 +237,16 @@ features = [
 # MAPPS-505 adds `net` + `io-util` on top of `time`: the RFC 8252 loopback
 # redirect listener accepts one connection on 127.0.0.1 and reads the
 # request line off it. The runtime itself comes from dioxus-desktop, which
-# builds a multi-threaded one with every driver enabled.
+# builds a multi-threaded one with every driver enabled. `rt` adds
+# `spawn_blocking`, used to keep blocking filesystem writes (MAPPS-1070)
+# off the async worker pool.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.tokio]
 version = "1"
 features = [
     "time",
     "net",
     "io-util",
+    "rt",
 ]
 
 [dev-dependencies]

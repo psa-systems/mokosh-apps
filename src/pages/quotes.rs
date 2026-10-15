@@ -917,7 +917,7 @@ fn QuoteDetailBody(id: String) -> Element {
                                                     match crate::hooks::fetch::api::get_authed_any_bytes(&path).await {
                                                         Ok((bytes, filename)) => match preview_tab {
                                                             Some(tab) => {
-                                                                if let Err(e) = crate::utils::download::show_bytes_in_tab(tab, &bytes) {
+                                                                if let Err(e) = crate::utils::download::show_bytes_in_tab(tab, &bytes).await {
                                                                     pdf_error.set(format!(
                                                                         "Fetched the PDF but could not show it: {e}"
                                                                     ));
@@ -928,6 +928,7 @@ fn QuoteDetailBody(id: String) -> Element {
                                                                     .unwrap_or_else(|| format!("quote-{id}.pdf"));
                                                                 if let Err(e) =
                                                                     crate::utils::download::save_bytes_as_file(&bytes, &name)
+                                                                        .await
                                                                 {
                                                                     pdf_error.set(format!(
                                                                         "Fetched the PDF but could not save it: {e}"

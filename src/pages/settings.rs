@@ -2360,7 +2360,7 @@ fn ExportPanel() -> Element {
                 match crate::hooks::fetch::api::get_authed_bytes("/data/export").await {
                     Ok((bytes, filename)) => {
                         let name = filename.unwrap_or_else(|| "mokosh-export.json".to_string());
-                        match crate::utils::download::save_bytes_as_file(&bytes, &name) {
+                        match crate::utils::download::save_bytes_as_file(&bytes, &name).await {
                             // MAPPS-504: a browser shows its own download
                             // shelf, so `None` needs no message from us. The
                             // desktop build chose the destination itself, and
