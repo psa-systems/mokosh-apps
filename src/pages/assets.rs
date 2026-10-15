@@ -355,13 +355,17 @@ fn warranty_refresh_status(s: &Option<String>) -> WarrantyRefreshStatus {
 /// `company` pill the structured search expects (uuid value). A name
 /// that does not resolve falls back to free text, matching the handling
 /// of unknown keys so the fetch still returns something sensible rather
-/// than a silent empty.
+/// than a silent empty; the stripped name goes into the third return,
+/// so the host can surface a "No company named X" hint on the search
+/// box instead of leaving the operator guessing why the filter did
+/// nothing.
 fn parse_asset_dsl_with_companies(
     input: &str,
     companies: &[(String, uuid::Uuid)],
-) -> (String, Vec<FilterPill>) {
+) -> (String, Vec<FilterPill>, Vec<String>) {
     let mut free = Vec::<String>::new();
     let mut pills = Vec::<FilterPill>::new();
+    let mut unresolved_companies = Vec::<String>::new();
     let tokens = tokenise_dsl(input);
     for raw in tokens {
         let (key, value) = match raw.split_once(':') {
@@ -414,8 +418,9 @@ fn parse_asset_dsl_with_companies(
             "company" => {
                 // Strip surrounding quotes so `company:"Main Street Dental"`
                 // and `company:MainStreet` both work. Match case-insensitively.
-                let needle = strip_quotes(&value).to_ascii_lowercase();
-                companies
+                let display = strip_quotes(&value).to_string();
+                let needle = display.to_ascii_lowercase();
+                let matched = companies
                     .iter()
                     .find(|(name, _)| name.to_ascii_lowercase() == needle)
                     .map(|(name, id)| {
@@ -424,7 +429,11 @@ fn parse_asset_dsl_with_companies(
                             format!("Co: {name}"),
                             serde_json::Value::String(id.to_string()),
                         )
-                    })
+                    });
+                if matched.is_none() && !unresolved_companies.contains(&display) {
+                    unresolved_companies.push(display);
+                }
+                matched
             }
             _ => {
                 recognised_key = false;
@@ -442,7 +451,7 @@ fn parse_asset_dsl_with_companies(
             }
         }
     }
-    (free.join(" "), pills)
+    (free.join(" "), pills, unresolved_companies)
 }
 
 /// Split the input on whitespace, but keep quoted substrings together so
@@ -904,7 +913,7 @@ pub fn AssetListPage() -> Element {
         // Phase 1 DSL: strip recognised tokens from the text buffer and
         // promote them to pills. The visible input is unchanged; the
         // fetch sees `q = free_remainder` + `filters = manual + dsl`.
-        let (q, dsl_pills) = parse_asset_dsl_with_companies(&typed, &company_lookup);
+        let (q, dsl_pills, _unresolved) = parse_asset_dsl_with_companies(&typed, &company_lookup);
         let mut filters = manual_pills;
         for p in dsl_pills {
             if !filters.iter().any(|m| m.field == p.field && m.op == p.op) {
@@ -1001,7 +1010,7 @@ pub fn AssetListPage() -> Element {
             .iter()
             .map(|c| (c.name.clone(), c.id))
             .collect();
-        let (q, dsl_pills) = parse_asset_dsl_with_companies(&typed, &company_lookup);
+        let (q, dsl_pills, _unresolved) = parse_asset_dsl_with_companies(&typed, &company_lookup);
         let mut filters = manual_pills;
         for p in dsl_pills {
             if !filters.iter().any(|m| m.field == p.field && m.op == p.op) {
@@ -1156,6 +1165,40 @@ pub fn AssetListPage() -> Element {
                     search.set(e.value());
                     page.set(1);
                 },
+            }
+            // DSL hint: name any `company:"<x>"` that did not resolve
+            // against the loaded companies list. Warning tone (the
+            // fetch still runs - the token falls through to free text);
+            // the hint is a quiet nudge so the operator can fix the
+            // typo without comparing against the full company list.
+            {
+                let typed = search.read().clone();
+                let company_lookup: Vec<(String, uuid::Uuid)> = companies
+                    .iter()
+                    .map(|c| (c.name.clone(), c.id))
+                    .collect();
+                let (_q, _pills, unresolved) =
+                    parse_asset_dsl_with_companies(typed.trim(), &company_lookup);
+                if !unresolved.is_empty() {
+                    let names = unresolved
+                        .iter()
+                        .map(|s| format!("\"{s}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let noun = if unresolved.len() == 1 {
+                        "No company named"
+                    } else {
+                        "No companies named"
+                    };
+                    rsx! {
+                        p {
+                            class: "mt-1 text-xs text-amber-700 dark:text-amber-400",
+                            "{noun} {names}."
+                        }
+                    }
+                } else {
+                    rsx! {}
+                }
             }
             // Phase 1 asset search v2: three facet dropdowns + a pill
             // bar. Selecting a dropdown adds a pill and refetches; the
@@ -4051,7 +4094,8 @@ mod dsl_tests {
     use super::{parse_asset_dsl_with_companies, FilterPill};
 
     fn parse_asset_dsl(input: &str) -> (String, Vec<FilterPill>) {
-        parse_asset_dsl_with_companies(input, &[])
+        let (q, pills, _unresolved) = parse_asset_dsl_with_companies(input, &[]);
+        (q, pills)
     }
 
     #[test]
@@ -4132,7 +4176,7 @@ mod dsl_tests {
     #[test]
     fn company_quoted_name_resolves_to_eq_uuid() {
         let id = uuid::Uuid::new_v4();
-        let (q, pills) = parse_asset_dsl_with_companies(
+        let (q, pills, unresolved) = parse_asset_dsl_with_companies(
             "foo company:\"Main Street Dental\" bar",
             &[("Main Street Dental".to_string(), id)],
         );
@@ -4144,27 +4188,52 @@ mod dsl_tests {
             pills[0].values[0],
             serde_json::Value::String(id.to_string())
         );
+        assert!(unresolved.is_empty());
     }
 
     #[test]
     fn company_unquoted_name_also_resolves_case_insensitively() {
         let id = uuid::Uuid::new_v4();
-        let (_, pills) =
+        let (_, pills, unresolved) =
             parse_asset_dsl_with_companies("company:acmecorp", &[("AcmeCorp".to_string(), id)]);
         assert_eq!(pills.len(), 1);
         assert_eq!(
             pills[0].values[0],
             serde_json::Value::String(id.to_string())
         );
+        assert!(unresolved.is_empty());
     }
 
     #[test]
-    fn company_unknown_name_falls_back_to_free_text() {
-        let (q, pills) = parse_asset_dsl_with_companies(
+    fn company_unknown_name_falls_back_to_free_text_and_lists_unresolved() {
+        let (q, pills, unresolved) = parse_asset_dsl_with_companies(
             "company:\"Nowhere Inc\"",
             &[("AcmeCorp".to_string(), uuid::Uuid::new_v4())],
         );
         assert_eq!(q, "company:\"Nowhere Inc\"");
         assert!(pills.is_empty());
+        assert_eq!(unresolved, vec!["Nowhere Inc".to_string()]);
+    }
+
+    #[test]
+    fn multiple_unknown_companies_each_reported_once() {
+        let (_q, _pills, unresolved) = parse_asset_dsl_with_companies(
+            "company:\"Alpha\" company:\"Beta\" company:\"Alpha\"",
+            &[],
+        );
+        // The parser deduplicates the unresolved vec by display name so
+        // the hint reads cleanly even when the typo repeats.
+        assert_eq!(unresolved, vec!["Alpha".to_string(), "Beta".to_string()]);
+    }
+
+    #[test]
+    fn resolved_and_unresolved_can_coexist() {
+        let id = uuid::Uuid::new_v4();
+        let (_q, pills, unresolved) = parse_asset_dsl_with_companies(
+            "company:\"AcmeCorp\" company:\"Nowhere\"",
+            &[("AcmeCorp".to_string(), id)],
+        );
+        assert_eq!(pills.len(), 1);
+        assert_eq!(unresolved, vec!["Nowhere".to_string()]);
     }
 }
