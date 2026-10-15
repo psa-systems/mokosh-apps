@@ -1028,7 +1028,7 @@ fn build_journal(
         // note from someone else with an empty server-sent name still
         // falls through to "Someone" since the viewer-id match misses.
         let server_name =
-            (!n.created_by_name.trim().is_empty()).then(|| n.created_by_name.as_str());
+            (!n.created_by_name.trim().is_empty()).then_some(n.created_by_name.as_str());
         let who = journal_actor(users, &n.created_by_id, server_name, viewer_pair);
         entries.push(JournalEntry {
             at: n.created_at,
