@@ -934,39 +934,99 @@ pub fn AssetListPage() -> Element {
                 Err(crate::hooks::fetch::api::ApiError::Status { code: 404, .. }) => {
                     // Feature toggle off (or old server). Fall back to the
                     // legacy GET /assets?q= path so the list still works.
-                    // The legacy `AssetFilter` on the server (as of
-                    // mokosh-server AssetFilter in src/modules/assets/models.rs)
-                    // accepts company_id, asset_type_id, status, q only;
-                    // richer pill fields (department, manufacturer, tags, ...)
-                    // need an `assets_search_v2`-on server. Serialise the
-                    // ones the legacy handler honours; drop the rest with a
-                    // debug trace so operators do not silently see unfiltered
-                    // results.
+                    // Server-side `AssetFilter` (per PMS-1489) accepts
+                    // company_id, asset_type_id, site_id, assigned_user_id,
+                    // status, department, manufacturer, model, tag,
+                    // warranty_within_days, end_of_life_before, q. Each
+                    // SPA pill field + op lowers to the matching query
+                    // param here. An unknown field or op still logs at
+                    // debug so a future SPA-only pill the server has
+                    // not caught up to becomes visible.
                     let mut path = format!("/assets?page={current_page}&per_page={PER_PAGE}");
                     if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
                         path.push_str(&format!("&company_id={company_id}"));
                     }
                     for p in &filters {
-                        if p.op != "eq" {
-                            tracing::debug!(
-                                field = %p.field,
-                                op = %p.op,
-                                "legacy /assets fallback drops non-eq pill; enable assets_search_v2 to honour it",
-                            );
-                            continue;
-                        }
-                        let Some(v) = p.values.first().and_then(|v| v.as_str()) else {
-                            continue;
-                        };
-                        let encoded = crate::utils::url::encode_uri_component(v);
-                        match p.field.as_str() {
-                            "status" => path.push_str(&format!("&status={encoded}")),
-                            "asset_type" => path.push_str(&format!("&asset_type_id={encoded}")),
-                            "company" => path.push_str(&format!("&company_id={encoded}")),
-                            other => tracing::debug!(
-                                field = %other,
-                                "legacy /assets fallback drops unknown pill field; enable assets_search_v2 to honour it",
-                            ),
+                        let first_str = p.values.first().and_then(|v| v.as_str());
+                        let encoded_first = first_str.map(crate::utils::url::encode_uri_component);
+                        match (p.field.as_str(), p.op.as_str()) {
+                            ("status", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&status={e}"));
+                                }
+                            }
+                            ("asset_type", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&asset_type_id={e}"));
+                                }
+                            }
+                            ("company", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&company_id={e}"));
+                                }
+                            }
+                            ("site", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&site_id={e}"));
+                                }
+                            }
+                            ("assigned_user", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&assigned_user_id={e}"));
+                                }
+                            }
+                            ("department", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&department={e}"));
+                                }
+                            }
+                            ("manufacturer", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&manufacturer={e}"));
+                                }
+                            }
+                            ("model", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&model={e}"));
+                                }
+                            }
+                            ("tags", "contains_tag") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&tag={e}"));
+                                }
+                            }
+                            ("warranty_expiry", "within") => {
+                                // Shape: values[0] = { "days": N }.
+                                if let Some(days) = p
+                                    .values
+                                    .first()
+                                    .and_then(|v| v.get("days"))
+                                    .and_then(|v| v.as_i64())
+                                {
+                                    path.push_str(&format!("&warranty_within_days={days}"));
+                                }
+                            }
+                            ("end_of_life", "before") => {
+                                // The SPA ships `"NOW"` as a sentinel for "today"
+                                // so the chip label stays stable; the server wants
+                                // a concrete date. Resolve to the operator's local
+                                // date before serialising.
+                                let v = first_str.unwrap_or_default();
+                                let resolved = if v.eq_ignore_ascii_case("NOW") {
+                                    chrono::Local::now().date_naive().to_string()
+                                } else {
+                                    v.to_string()
+                                };
+                                let encoded = crate::utils::url::encode_uri_component(&resolved);
+                                path.push_str(&format!("&end_of_life_before={encoded}"));
+                            }
+                            (field, op) => {
+                                tracing::debug!(
+                                    field,
+                                    op,
+                                    "legacy /assets fallback drops unsupported pill; the server contract has not caught up to this (field, op) pair",
+                                );
+                            }
                         }
                     }
                     if !q.is_empty() {
