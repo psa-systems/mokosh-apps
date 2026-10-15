@@ -1059,11 +1059,28 @@ pub fn AssetListPage() -> Element {
                     let mut pills_sig = pills;
                     let types_opts = types.clone();
                     let companies_opts = companies.clone();
+                    // Each Select mirrors the currently-active eq pill for
+                    // that field, so an operator who picked "Active" sees
+                    // "Active" in the dropdown rather than "Any status" with
+                    // only the pill reflecting the state. Clearing the pill
+                    // (via its × or the "Clear all" link) resets the display
+                    // to "Any ...".
+                    let pill_value = |field: &str| -> String {
+                        pills_sig
+                            .read()
+                            .iter()
+                            .find(|p| p.field == field && p.op == "eq")
+                            .and_then(|p| p.values.first().and_then(|v| v.as_str()).map(String::from))
+                            .unwrap_or_default()
+                    };
+                    let current_status = pill_value("status");
+                    let current_type = pill_value("asset_type");
+                    let current_company = pill_value("company");
                     rsx! {
                         Select {
                             name: "filter-status".to_string(),
                             label: "Status".to_string(),
-                            value: String::new(),
+                            value: current_status,
                             placeholder: "Any status".to_string(),
                             options: vec![
                                 SelectOption::new("active", "Active"),
@@ -1093,7 +1110,7 @@ pub fn AssetListPage() -> Element {
                         Select {
                             name: "filter-type".to_string(),
                             label: "Type".to_string(),
-                            value: String::new(),
+                            value: current_type,
                             placeholder: "Any type".to_string(),
                             options: types_opts
                                 .iter()
@@ -1117,7 +1134,7 @@ pub fn AssetListPage() -> Element {
                         Select {
                             name: "filter-company".to_string(),
                             label: "Company".to_string(),
-                            value: String::new(),
+                            value: current_company,
                             placeholder: "Any company".to_string(),
                             options: companies_opts
                                 .iter()
