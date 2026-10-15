@@ -12,7 +12,7 @@
 
 /// Save `bytes` as `filename`.
 #[cfg(target_arch = "wasm32")]
-pub fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<String>, String> {
+pub async fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<String>, String> {
     use wasm_bindgen::JsCast;
 
     let array = js_sys::Uint8Array::from(bytes);
@@ -55,18 +55,28 @@ pub fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<String>
 /// a browser does it, so re-running an export never destroys the
 /// previous one.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<String>, String> {
-    let dir = dirs::download_dir()
-        .or_else(dirs::document_dir)
-        .or_else(dirs::home_dir)
-        .ok_or_else(|| "could not find a directory to save into".to_string())?;
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+pub async fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<String>, String> {
+    let filename = filename.to_string();
+    let bytes = bytes.to_vec();
+    // The blocking `std::fs` calls run on tokio's blocking pool, not the
+    // async worker pool, so a slow disk does not stall other in-flight
+    // async UI work sharing that pool.
+    tokio::task::spawn_blocking(move || {
+        let dir = dirs::download_dir()
+            .or_else(dirs::document_dir)
+            .or_else(dirs::home_dir)
+            .ok_or_else(|| "could not find a directory to save into".to_string())?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
 
-    let filename = sanitize_filename(filename);
-    let path = unique_path(&dir, &filename);
-    std::fs::write(&path, bytes).map_err(|e| format!("could not write {}: {e}", path.display()))?;
-    Ok(Some(path.display().to_string()))
+        let filename = sanitize_filename(&filename);
+        let path = unique_path(&dir, &filename);
+        std::fs::write(&path, &bytes)
+            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        Ok(Some(path.display().to_string()))
+    })
+    .await
+    .map_err(|e| format!("the save task panicked: {e}"))?
 }
 
 /// Keep only the final path component of `filename`, discarding any `..`
@@ -128,7 +138,7 @@ impl PreviewTab {
 /// Show `bytes` as a PDF: in the tab [`open_preview_tab`] opened on the
 /// browser, or in the system's PDF viewer on the desktop.
 #[cfg(target_arch = "wasm32")]
-pub fn show_bytes_in_tab(tab: PreviewTab, bytes: &[u8]) -> Result<(), String> {
+pub async fn show_bytes_in_tab(tab: PreviewTab, bytes: &[u8]) -> Result<(), String> {
     use wasm_bindgen::{closure::Closure, JsCast};
 
     let array = js_sys::Uint8Array::from(bytes);
@@ -159,16 +169,24 @@ pub fn show_bytes_in_tab(tab: PreviewTab, bytes: &[u8]) -> Result<(), String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn show_bytes_in_tab(_tab: PreviewTab, bytes: &[u8]) -> Result<(), String> {
+pub async fn show_bytes_in_tab(_tab: PreviewTab, bytes: &[u8]) -> Result<(), String> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let path = std::env::temp_dir().join(format!("mokosh-preview-{nonce}.pdf"));
-    std::fs::write(&path, bytes).map_err(|e| format!("could not write {}: {e}", path.display()))?;
-    open::that_detached(&path).map_err(|e| format!("could not open the system PDF viewer: {e}"))
+    let bytes = bytes.to_vec();
+    // See `save_bytes_as_file`: the write (and the viewer launch) run on
+    // tokio's blocking pool rather than the async worker pool.
+    tokio::task::spawn_blocking(move || {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!("mokosh-preview-{nonce}.pdf"));
+        std::fs::write(&path, &bytes)
+            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        open::that_detached(&path).map_err(|e| format!("could not open the system PDF viewer: {e}"))
+    })
+    .await
+    .map_err(|e| format!("the preview task panicked: {e}"))?
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -221,15 +239,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn save_bytes_as_file_never_escapes_resolved_dir() {
+    #[tokio::test]
+    async fn save_bytes_as_file_never_escapes_resolved_dir() {
         let resolved_dir = dirs::download_dir()
             .or_else(dirs::document_dir)
             .or_else(dirs::home_dir)
             .expect("a downloads/documents/home dir must exist to run this test");
 
         for filename in ["../../evil", "/etc/evil"] {
-            let saved = save_bytes_as_file(b"test", filename).expect("save should succeed");
+            let saved = save_bytes_as_file(b"test", filename)
+                .await
+                .expect("save should succeed");
             let saved_path = std::path::PathBuf::from(saved.expect("desktop build returns a path"));
             assert_eq!(saved_path.parent(), Some(resolved_dir.as_path()));
             let _ = std::fs::remove_file(&saved_path);

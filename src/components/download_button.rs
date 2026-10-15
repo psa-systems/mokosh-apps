@@ -160,7 +160,7 @@ pub fn DownloadButton(props: DownloadButtonProps) -> Element {
                     Ok((bytes, name)) => match preview_tab {
                         Some(tab) => {
                             if let Err(reason) =
-                                crate::utils::download::show_bytes_in_tab(tab, &bytes)
+                                crate::utils::download::show_bytes_in_tab(tab, &bytes).await
                             {
                                 outcome.set(Some(Outcome::Failed(
                                     DownloadFailure::CouldNotSave(reason).describe(&what),
@@ -169,7 +169,9 @@ pub fn DownloadButton(props: DownloadButtonProps) -> Element {
                         }
                         None => {
                             let filename = name.unwrap_or(fallback);
-                            match crate::utils::download::save_bytes_as_file(&bytes, &filename) {
+                            match crate::utils::download::save_bytes_as_file(&bytes, &filename)
+                                .await
+                            {
                                 Ok(Some(saved)) => outcome.set(Some(Outcome::SavedTo(saved))),
                                 // The browser shows its own download shelf.
                                 Ok(None) => {}

@@ -1109,6 +1109,30 @@ pub fn AssetListPage() -> Element {
         .clone()
         .unwrap_or_default();
 
+    // F3: a `HashMap` rebuilt via `use_memo` only when the underlying
+    // resource changes, not an `O(n)` `.iter().find(...)` scan repeated
+    // for every asset row on every render. Declared before the early
+    // return below so the hook always runs, matching every other hook
+    // in this component.
+    let type_names = use_memo(move || {
+        types_resource
+            .read_unchecked()
+            .clone()
+            .unwrap_or_default()
+            .iter()
+            .map(|t| (t.id, t.name.clone()))
+            .collect::<HashMap<_, _>>()
+    });
+    let company_names = use_memo(move || {
+        companies_resource
+            .read_unchecked()
+            .clone()
+            .unwrap_or_default()
+            .iter()
+            .map(|c| (c.id, c.name.clone()))
+            .collect::<HashMap<_, _>>()
+    });
+
     use_page_title("Assets");
 
     // MAPPS-357: a failed primary load while the server is flagged down is an
@@ -1125,13 +1149,11 @@ pub fn AssetListPage() -> Element {
     }
 
     let type_name = |id: &Option<uuid::Uuid>| -> String {
-        id.and_then(|tid| types.iter().find(|t| t.id == tid))
-            .map(|t| t.name.clone())
+        id.and_then(|tid| type_names.read().get(&tid).cloned())
             .unwrap_or_else(|| "-".to_string())
     };
     let company_name = |id: &Option<uuid::Uuid>| -> String {
-        id.and_then(|cid| companies.iter().find(|c| c.id == cid))
-            .map(|c| c.name.clone())
+        id.and_then(|cid| company_names.read().get(&cid).cloned())
             .unwrap_or_else(|| "-".to_string())
     };
 
