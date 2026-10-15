@@ -609,6 +609,12 @@ struct HistoryEntry {
     action: String,
     #[serde(default)]
     user_id: Option<uuid::Uuid>,
+    /// PMS-1478: the actor's display name, sent alongside `user_id` so the
+    /// client no longer needs the roster to print it. `None` on a server
+    /// that predates PMS-1478, or for a system-issued row (`user_id` is also
+    /// `None` then).
+    #[serde(default)]
+    user_name: Option<String>,
     #[serde(default)]
     changed_fields: Vec<String>,
     #[serde(default)]
@@ -865,20 +871,6 @@ fn fmt_datetime_in(dt: DateTime<Utc>, pref: Option<&str>, tz: chrono_tz::Tz) -> 
     crate::utils::datetime::fmt_user_dt_in(dt, pref, tz, Some("%b %d, %Y %H:%M"))
 }
 
-/// Resolve a history actor id to a display name; "-" when unknown so the
-/// change-history feed never shows a bare UUID (PMS-182).
-fn actor_name(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
-    match id {
-        Some(uid) => users
-            .iter()
-            .find(|u| &u.id == uid)
-            .map(|u| u.full_name.clone())
-            .filter(|n| !n.trim().is_empty())
-            .unwrap_or_else(|| "-".to_string()),
-        None => "-".to_string(),
-    }
-}
-
 /// MAPPS-517: one line of the ticket journal, whatever source it came from.
 ///
 /// The journal replaced an Activity card that rendered notes alone, so a
@@ -887,8 +879,9 @@ fn actor_name(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
 #[derive(Clone, Debug, PartialEq)]
 struct JournalEntry {
     at: DateTime<Utc>,
-    /// Display name of whoever did it, or "Someone" when unresolvable.
-    who: String,
+    /// Whoever did it: a resolved name, "System" for a system-issued row, or
+    /// the unresolved placeholder with its tooltip (MAPPS-1037).
+    who: crate::utils::unresolved_person::PersonRef,
     /// Predicate, rendered after the name: "added an internal note".
     action: String,
     /// Body block under the headline: the note text or a time entry's notes.
@@ -918,33 +911,25 @@ struct JournalEntry {
     structured: Vec<(&'static str, String)>,
 }
 
-/// The name to attribute a journal line to. `actor_name` yields "-" for an
-/// id no `/auth/users` row matches, which reads as a broken row in a sentence.
-///
-/// `viewer` carries the authenticated session's own `(id, name)` so an entry
-/// attributed to the viewer resolves to the viewer's name even when the
-/// roster is empty or returns an empty `full_name`. The roster is
-/// `RequireManager`-gated on the server and can legitimately not reach every
-/// signed-in operator, and a JIT-provisioned bunyip user starts with an
-/// empty profile name, so a viewer could see their own actions as "Someone"
-/// on their own ticket. The authenticated session always knows its own
-/// identity, so a self-attributed line never falls through to the roster.
+/// The actor to attribute a journal line to (MAPPS-1037): the server-sent
+/// name, then the viewer's own name so an entry attributed to the viewer
+/// resolves even when the roster is empty or returns an empty `full_name`
+/// (the roster is `RequireManager`-gated on the server and can legitimately
+/// not reach every signed-in operator, and a JIT-provisioned bunyip user
+/// starts with an empty profile name), then the roster.
 fn journal_actor(
     users: &[UserOpt],
     id: &Option<uuid::Uuid>,
+    server_name: Option<&str>,
     viewer: Option<(uuid::Uuid, &str)>,
-) -> String {
-    if let (Some(h_id), Some((v_id, v_name))) = (id, viewer) {
-        if *h_id == v_id && !v_name.trim().is_empty() {
-            return v_name.to_string();
-        }
-    }
-    let name = actor_name(users, id);
-    if name == "-" {
-        "Someone".to_string()
-    } else {
-        name
-    }
+) -> crate::utils::unresolved_person::PersonRef {
+    crate::utils::unresolved_person::resolve_person(
+        "ticket_journal",
+        server_name,
+        id,
+        viewer,
+        users,
+    )
 }
 
 /// Headline for an audit-log entry. A single-column edit gets the phrasing a
@@ -1042,11 +1027,9 @@ fn build_journal(
         // closes the same gap history + time entries already handle. A
         // note from someone else with an empty server-sent name still
         // falls through to "Someone" since the viewer-id match misses.
-        let who = if n.created_by_name.trim().is_empty() {
-            journal_actor(users, &n.created_by_id, viewer_pair)
-        } else {
-            n.created_by_name.clone()
-        };
+        let server_name =
+            (!n.created_by_name.trim().is_empty()).then(|| n.created_by_name.as_str());
+        let who = journal_actor(users, &n.created_by_id, server_name, viewer_pair);
         entries.push(JournalEntry {
             at: n.created_at,
             who,
@@ -1065,7 +1048,7 @@ fn build_journal(
     for h in history {
         entries.push(JournalEntry {
             at: h.timestamp,
-            who: journal_actor(users, &h.user_id, viewer_pair),
+            who: journal_actor(users, &h.user_id, h.user_name.as_deref(), viewer_pair),
             action: history_action(h),
             body: None,
             changes: history_changes(h),
@@ -1085,7 +1068,7 @@ fn build_journal(
         let billable = if e.is_billable { " (billable)" } else { "" };
         entries.push(JournalEntry {
             at,
-            who: journal_actor(users, &e.user_id, viewer_pair),
+            who: journal_actor(users, &e.user_id, None, viewer_pair),
             action: format!("logged {} min on {}{billable}", e.duration_minutes, e.date),
             body: e.notes.clone().filter(|s| !s.trim().is_empty()),
             changes: Vec::new(),
@@ -3861,20 +3844,27 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
         .iter()
         .find(|e| e.action == "update" && e.changed_fields.iter().any(|f| f == "description"))
         .map(|e| {
-            let who = actor_name(&users, &e.user_id);
+            let who = crate::utils::unresolved_person::resolve_person(
+                "ticket_journal",
+                e.user_name.as_deref(),
+                &e.user_id,
+                None,
+                &users,
+            );
             let when = fmt_datetime_in(e.timestamp, pref.as_deref(), tz);
             let when_iso = e.timestamp.to_rfc3339();
-            if who == "-" {
-                rsx! {
-                    "Edited "
-                    time { datetime: "{when_iso}", "{when}" }
-                }
+            let who_class = if who.is_system() {
+                "text-subtle italic"
             } else {
-                rsx! {
-                    "Edited "
-                    time { datetime: "{when_iso}", "{when}" }
-                    " by {who}"
-                }
+                ""
+            };
+            let who_text = who.text().to_string();
+            let who_tooltip = who.tooltip().unwrap_or_default().to_string();
+            rsx! {
+                "Edited "
+                time { datetime: "{when_iso}", "{when}" }
+                " by "
+                span { class: "{who_class}", title: "{who_tooltip}", "{who_text}" }
             }
         });
     let notes_snap = notes_resource.read_unchecked().clone();
@@ -5017,7 +5007,9 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             rsx! {
                                         TimelineItem {
                                             key: "{entry_key}",
-                                            user: entry.who.clone(),
+                                            user: entry.who.text().to_string(),
+                                            user_tooltip: entry.who.tooltip().unwrap_or_default().to_string(),
+                                            user_muted: entry.who.is_system(),
                                             action: entry.action.clone(),
                                             time: fmt_datetime_in(entry.at, pref.as_deref(), tz),
                                             time_iso: entry.at.to_rfc3339(),
@@ -5703,6 +5695,14 @@ fn DetailItem(props: DetailItemProps) -> Element {
 #[derive(Props, Clone, PartialEq)]
 struct TimelineItemProps {
     user: String,
+    /// MAPPS-1037: hover text naming the unresolved id, empty when `user` is
+    /// resolved or is the "System" placeholder.
+    #[props(default)]
+    user_tooltip: String,
+    /// MAPPS-1037: `user` is the "System" placeholder for a system-issued
+    /// row; rendered in the muted style used for other "not set" values.
+    #[props(default = false)]
+    user_muted: bool,
     action: String,
     time: String,
     /// ISO-8601 form of `time`, for the wrapping `time` element's `datetime`
@@ -5824,7 +5824,11 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                     div { class: "flex min-w-0 flex-1 justify-between space-x-4 pt-1.5",
                         div {
                             p { class: "text-sm text-muted",
-                                span { class: "font-medium text-content", "{props.user}" }
+                                span {
+                                    class: if props.user_muted { "font-medium text-subtle italic" } else { "font-medium text-content" },
+                                    title: "{props.user_tooltip}",
+                                    "{props.user}"
+                                }
                                 " {props.action}"
                                 if props.edited {
                                     // MAPPS-593: an unmarked edit means the
@@ -6502,7 +6506,7 @@ mod mapps517_journal_tests {
     fn actions(entries: &[JournalEntry]) -> Vec<String> {
         entries
             .iter()
-            .map(|e| format!("{} {}", e.who, e.action))
+            .map(|e| format!("{} {}", e.who.text(), e.action))
             .collect()
     }
 
@@ -6711,10 +6715,31 @@ mod mapps517_journal_tests {
         assert!(journal.iter().all(|e| e.body.is_none()));
     }
 
-    /// An actor no `/auth/users` row matches reads as "Someone", never as the
-    /// bare "-" the change-history pane used in a column of its own.
+    /// An actor id present but matched by neither the server name, the
+    /// viewer nor the roster reads as "Someone", never as the bare "-" the
+    /// change-history pane used in a column of its own (MAPPS-1037).
     #[test]
     fn an_unresolvable_actor_reads_as_someone() {
+        let h = history(
+            r#"{"action":"create","user_id":"22222222-2222-4222-8222-222222222222","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[], &[h], &[], &users(), None, false);
+
+        assert_eq!(
+            actions(&journal),
+            vec!["Someone created the ticket".to_string()]
+        );
+        assert_eq!(
+            journal[0].who.tooltip(),
+            Some("Unresolved user 22222222-2222-4222-8222-222222222222")
+        );
+    }
+
+    /// A `None` `user_id` is a system-issued row, not an unresolvable actor:
+    /// it reads as "System", muted, with no tooltip (MAPPS-1037).
+    #[test]
+    fn a_none_actor_id_reads_as_system() {
         let h = history(
             r#"{"action":"create","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
         );
@@ -6723,7 +6748,26 @@ mod mapps517_journal_tests {
 
         assert_eq!(
             actions(&journal),
-            vec!["Someone created the ticket".to_string()]
+            vec!["System created the ticket".to_string()]
+        );
+        assert!(journal[0].who.is_system());
+        assert!(journal[0].who.tooltip().is_none());
+    }
+
+    /// The server-sent `user_name` on a history entry is preferred over the
+    /// roster, so a history line renders correctly even with an empty
+    /// roster (MAPPS-1037 / PMS-1478).
+    #[test]
+    fn server_sent_user_name_wins_with_an_empty_roster() {
+        let h = history(
+            r#"{"action":"create","user_id":"22222222-2222-4222-8222-222222222222","user_name":"Server Name","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[], &[h], &[], &[], None, false);
+
+        assert_eq!(
+            actions(&journal),
+            vec!["Server Name created the ticket".to_string()]
         );
     }
 

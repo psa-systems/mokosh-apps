@@ -21,6 +21,7 @@ pub mod rate_limit;
 pub mod sort_keys;
 // MAPPS-582: invisible-character sanitizing for every text input.
 pub mod text;
+pub mod unresolved_person;
 pub mod url;
 pub mod validation;
 pub mod version;
