@@ -806,8 +806,8 @@ fn PeoplePane(can_mutate: bool) -> Element {
     };
 
     rsx! {
-        div { class: "flex flex-wrap gap-3 mb-4",
-            div { class: "flex-1 min-w-[12rem]",
+        div { class: "flex flex-col sm:flex-row gap-4",
+            div { class: "flex-1",
                 SearchInput {
                     value: search.read().clone(),
                     placeholder: "Search people…",
