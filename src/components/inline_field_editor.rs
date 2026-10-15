@@ -94,6 +94,22 @@ pub struct InlineFieldEditorProps {
     pub display: Option<String>,
 }
 
+/// Read-mode display for a Select: when the host did not pass a `display`
+/// override, map the stored enum value (`in_stock`, `active`) through the
+/// Select's `(value, label)` pairs so the drawer reads "In Stock" /
+/// "Active", not the raw enum. Any non-Select kind returns None so the
+/// outer `or_else` chain falls through to `value`.
+fn select_label_for(kind: &InlineFieldKind, value: Option<&str>) -> Option<String> {
+    let InlineFieldKind::Select { options } = kind else {
+        return None;
+    };
+    let v = value?;
+    options
+        .iter()
+        .find(|(val, _)| val == v)
+        .map(|(_, label)| label.clone())
+}
+
 #[component]
 pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
     let mut editing = use_signal(|| false);
@@ -104,6 +120,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
     let display_text = props
         .display
         .clone()
+        .or_else(|| select_label_for(&props.kind, props.value.as_deref()))
         .or_else(|| props.value.clone())
         .unwrap_or_else(|| "-".to_string());
 
@@ -437,5 +454,52 @@ mod sanitise_tests {
             msg, "Database operation failed",
             "field-envelope messages are trusted; sanitising them would hide a validator the server team wrote on purpose"
         );
+    }
+}
+
+#[cfg(test)]
+mod select_label_tests {
+    use super::{select_label_for, InlineFieldKind};
+
+    fn status_kind() -> InlineFieldKind {
+        InlineFieldKind::Select {
+            options: vec![
+                ("active".into(), "Active".into()),
+                ("in_stock".into(), "In Stock".into()),
+                ("retired".into(), "Retired".into()),
+            ],
+        }
+    }
+
+    #[test]
+    fn maps_raw_enum_to_select_label() {
+        assert_eq!(
+            select_label_for(&status_kind(), Some("in_stock")),
+            Some("In Stock".to_string())
+        );
+        assert_eq!(
+            select_label_for(&status_kind(), Some("active")),
+            Some("Active".to_string())
+        );
+    }
+
+    #[test]
+    fn unknown_value_returns_none_so_caller_falls_through_to_value() {
+        assert_eq!(select_label_for(&status_kind(), Some("mystery")), None);
+    }
+
+    #[test]
+    fn missing_value_returns_none() {
+        assert_eq!(select_label_for(&status_kind(), None), None);
+    }
+
+    #[test]
+    fn non_select_kinds_pass_through() {
+        let text = InlineFieldKind::Text {
+            placeholder: "n/a".into(),
+            maxlength: None,
+            required: false,
+        };
+        assert_eq!(select_label_for(&text, Some("in_stock")), None);
     }
 }
