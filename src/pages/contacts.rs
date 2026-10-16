@@ -370,6 +370,13 @@ struct RemoteContact {
     /// one entered by hand. `#[serde(default)]` so an older server decodes.
     #[serde(default)]
     imported_from: Option<crate::pages::contact_provenance::ImportedFrom>,
+    /// Portal roles the contact holds, resolved server-side (PMS-1074) via a
+    /// tenant-scoped LEFT JOIN on `portal_roles`. Lets the roster render the
+    /// Roles column without a per-row `GET /contacts/{id}/portal-roles` request.
+    /// `None`/empty on a server that predates the field, in which case the
+    /// badges fall back to the per-row fetch.
+    #[serde(default)]
+    portal_role_names: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -3734,6 +3741,7 @@ fn CompanyPortalAccessCard(
                                                         ContactRoleBadges {
                                                             contact_id: contact_id_str.clone(),
                                                             all_roles: all_roles_snap.clone(),
+                                                            names_hint: contact.portal_role_names.clone(),
                                                         }
                                                     } else {
                                                         span { class: "text-xs text-muted", "-" }
@@ -4009,18 +4017,29 @@ fn EditPortalRolesButton(
 }
 
 /// MAPPS-608: render the assigned portal roles for one contact as a
-/// row of small blue badges. Fetches the contact's role_ids inline via
-/// `GET /contacts/contacts/{id}/portal-roles`, translates them against
-/// the parent's tenant-role snapshot (name lookup by id). Rendering "-"
-/// when the fetch is still loading, has failed, or has resolved to
-/// zero assignments keeps the column concise for the "granted but no
-/// roles yet" corner case.
+/// row of small blue badges. When the roster response already carries the
+/// resolved role names (PMS-1074, `portal_role_names`), render them directly
+/// and skip the per-row `GET /contacts/{id}/portal-roles`. An older server
+/// (empty `names_hint`) falls back to the previous resource that fetches the
+/// role ids and translates them against the tenant-role snapshot. Rendering
+/// "-" when the fetch is still loading, has failed, or has resolved to zero
+/// assignments keeps the column concise for the "granted but no roles yet"
+/// corner case.
 #[component]
-fn ContactRoleBadges(contact_id: String, all_roles: Vec<PortalRoleSummaryWire>) -> Element {
+fn ContactRoleBadges(
+    contact_id: String,
+    all_roles: Vec<PortalRoleSummaryWire>,
+    #[props(default)] names_hint: Vec<String>,
+) -> Element {
+    let hint_only = !names_hint.is_empty();
     let contact_id_for_resource = contact_id.clone();
     let assigned = use_resource(move || {
         let id = contact_id_for_resource.clone();
         async move {
+            if hint_only {
+                // The server-sent hint covers this row; no per-row fetch.
+                return Vec::<uuid::Uuid>::new();
+            }
             let _gen = crate::hooks::fetch::active_tenant_generation();
             // MAPPS-635 F: subscribe to the per-role-write generation
             // so a successful "Update roles" / "Grant + send email"
@@ -4036,16 +4055,21 @@ fn ContactRoleBadges(contact_id: String, all_roles: Vec<PortalRoleSummaryWire>) 
             )
         }
     });
-    let assigned_snap: Vec<uuid::Uuid> = assigned.read_unchecked().clone().unwrap_or_default();
-    let names: Vec<String> = assigned_snap
-        .iter()
-        .filter_map(|role_id| {
-            all_roles
-                .iter()
-                .find(|r| r.id == *role_id)
-                .map(|r| r.name.clone())
-        })
-        .collect();
+    let names: Vec<String> = if hint_only {
+        names_hint
+    } else {
+        let assigned_snap: Vec<uuid::Uuid> =
+            assigned.read_unchecked().clone().unwrap_or_default();
+        assigned_snap
+            .iter()
+            .filter_map(|role_id| {
+                all_roles
+                    .iter()
+                    .find(|r| r.id == *role_id)
+                    .map(|r| r.name.clone())
+            })
+            .collect()
+    };
     rsx! {
         if names.is_empty() {
             span { class: "text-xs text-muted", "-" }
