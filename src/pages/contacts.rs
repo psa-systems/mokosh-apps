@@ -5355,6 +5355,10 @@ struct AssetSummary {
     name: String,
     #[serde(default)]
     asset_type_id: Option<uuid::Uuid>,
+    /// Server-resolved display name for `asset_type_id` (PMS-1067); see the
+    /// hint on `RemoteAsset` in `src/pages/assets.rs` for the full note.
+    #[serde(default)]
+    asset_type_name: Option<String>,
     #[serde(default)]
     status: String,
 }
@@ -5938,7 +5942,11 @@ fn CompanyAssetsCard(
                                         let edit_id = id.clone();
                                         let delete_path = format!("/assets/{id}");
                                         let name = asset.name.clone();
-                                        let tname = type_name(&asset.asset_type_id);
+                                        let tname = asset
+                                            .asset_type_name
+                                            .clone()
+                                            .filter(|s| !s.is_empty())
+                                            .unwrap_or_else(|| type_name(&asset.asset_type_id));
                                         let (variant, label) = asset_status_badge(&asset.status);
                                         rsx! {
                                             TableRow { key: "{key}", class: "group",

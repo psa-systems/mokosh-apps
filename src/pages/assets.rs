@@ -43,6 +43,12 @@ struct RemoteAsset {
     asset_tag: Option<String>,
     #[serde(default)]
     asset_type_id: Option<uuid::Uuid>,
+    /// Server-resolved display name for `asset_type_id` (PMS-1067), joined via
+    /// a tenant-scoped LEFT JOIN on `asset_types`. Lets the list render the
+    /// type label without the shared `/asset-types` resource; `None` on a
+    /// server that predates the field.
+    #[serde(default)]
+    asset_type_name: Option<String>,
     #[serde(default)]
     company_id: Option<uuid::Uuid>,
     // The owning company's name, resolved server-side by a LEFT JOIN in the
@@ -1595,7 +1601,11 @@ pub fn AssetListPage() -> Element {
                                 for a in filtered.iter() {
                                     {
                                         let (variant, label) = asset_status_badge(&a.status);
-                                        let tname = type_name(&a.asset_type_id);
+                                        let tname = a
+                                            .asset_type_name
+                                            .clone()
+                                            .filter(|s| !s.is_empty())
+                                            .unwrap_or_else(|| type_name(&a.asset_type_id));
                                         let company = asset_company("assets.list_company", a);
                                         let cname = company.text(NO_COMPANY).to_string();
                                         let cname_title = company.tooltip().map(str::to_string);
