@@ -39,6 +39,12 @@ struct RemoteProject {
     company_name: Option<String>,
     #[serde(default)]
     project_manager_id: Option<uuid::Uuid>,
+    /// MAPPS-1044 / PMS-1481: project-manager display name, resolved by the
+    /// server in the same query that returns the row. Lets the detail
+    /// page render the owner without joining `project_manager_id` against
+    /// the fetched user roster.
+    #[serde(default)]
+    project_manager_name: Option<String>,
     #[serde(default)]
     start_date: Option<String>,
     #[serde(default)]
@@ -1465,11 +1471,22 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
             {
                 let p = project.clone().unwrap();
                 let (status_variant, status_label) = status_badge(&p.status);
-                let (pm, pm_title) = user_name_with_tooltip(
-                    &users,
-                    &p.project_manager_id,
-                    "projects.project_manager",
-                );
+                // MAPPS-1044: render the project manager from the server's
+                // own `project_manager_name` (PMS-1481); the client-side
+                // roster join that used to supply it is gone. The
+                // unresolved case still logs via `user_name_with_tooltip`
+                // when the id did not resolve server-side.
+                let (pm, pm_title) = match p.project_manager_name.as_deref() {
+                    Some(name) if !name.trim().is_empty() => (name.to_string(), None),
+                    _ => match p.project_manager_id {
+                        Some(_) => user_name_with_tooltip(
+                            &[],
+                            &p.project_manager_id,
+                            "projects.project_manager",
+                        ),
+                        None => ("Unassigned".to_string(), None),
+                    },
+                };
                 let spent = p.actual_amount.unwrap_or(0.0);
                 let budget = p.budget_amount.unwrap_or(0.0);
                 let remaining = budget - spent;

@@ -528,7 +528,13 @@ fn CreditNoteDetailBody(id: String) -> Element {
     use_page_title(&header_title);
 
     let status = note.as_ref().map(|n| n.status.clone()).unwrap_or_default();
-    let is_issued = status == "issued";
+    // MAPPS-936: parse against the shared `CreditNoteStatus` vocabulary; an
+    // unknown value falls to "not issued", so a mismatched client / server
+    // version does not flip "void" into "issued".
+    let is_issued = matches!(
+        mokosh_types::billing::CreditNoteStatus::from_str(&status),
+        Some(mokosh_types::billing::CreditNoteStatus::Issued)
+    );
 
     let id_for_void = id.clone();
     let on_confirm_void = move |_: ()| {
@@ -639,7 +645,10 @@ fn CreditNoteDetailBody(id: String) -> Element {
         if let Some(n) = note.as_ref() {
             div {
                 class: "mb-3 text-xs text-muted bg-surface-2 border border-line rounded-md px-3 py-2",
-                if n.status == "void" {
+                if matches!(
+                    mokosh_types::billing::CreditNoteStatus::from_str(&n.status),
+                    Some(mokosh_types::billing::CreditNoteStatus::Void)
+                ) {
                     "This credit note has been voided and is kept on record. Its amount no longer counts against the invoice."
                 } else {
                     "This credit note was issued the moment it was created, so it is locked: nothing on it can change. If it is wrong, void it and raise another."

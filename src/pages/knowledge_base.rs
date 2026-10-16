@@ -2187,11 +2187,23 @@ pub(crate) fn change_kind_label(kind: &str, restored_from: Option<i32>) -> Strin
 /// MAPPS-739: a name the server sent, "Unknown" when it sent none. The
 /// server already prints "Unknown" for a user row that is gone; this covers
 /// a build of the server from before it sent names at all.
+///
+/// MAPPS-1063: when the server dropped a name, log the substitution through
+/// the shared helper so the "Unknown" fallback is findable. Called with
+/// `surface` naming the KB subsite; the version-history row does not carry
+/// an id, so dedup keys on `(surface, None)` for the page load.
 pub(crate) fn person_label(name: Option<&str>) -> String {
-    name.map(str::trim)
-        .filter(|n| !n.is_empty())
-        .unwrap_or("Unknown")
-        .to_string()
+    person_label_logged(name, "kb.person")
+}
+
+pub(crate) fn person_label_logged(name: Option<&str>, surface: &str) -> String {
+    match name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => n.to_string(),
+        None => {
+            let _ = crate::utils::unresolved(surface, "user", None, "Unknown");
+            "Unknown".to_string()
+        }
+    }
 }
 
 /// MAPPS-739: the body of one version against another, line by line, the
@@ -2330,7 +2342,10 @@ fn VersionHistoryCard(
                                     });
                                     let title_changed = previous.is_some_and(|p| p.title != version.title);
                                     let kind = change_kind_label(&version.change_kind, version.restored_from_version);
-                                    let who = person_label(version.edited_by_name.as_deref());
+                                    let who = person_label_logged(
+                                        version.edited_by_name.as_deref(),
+                                        "kb.version_editor",
+                                    );
                                     let when = when_label(&version.created_at);
                                     let when_iso = version.created_at.map(|d| d.to_rfc3339()).unwrap_or_default();
                                     let note = version

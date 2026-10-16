@@ -89,7 +89,12 @@ pub(crate) fn approver_label(
     } else if let Some(c) = named(contact) {
         format!("To: {c} (customer contact)")
     } else {
-        "(unassigned approver)".to_string()
+        // MAPPS-1063: the server resolved neither a user, role, nor
+        // contact name. The approval row doesn't carry an id to key on,
+        // but the substitution still deserves to be findable.
+        let shown = "(unassigned approver)".to_string();
+        let _ = crate::utils::unresolved("approvals.approver", "user", None, &shown);
+        shown
     }
 }
 
@@ -101,7 +106,12 @@ pub(crate) fn requester_label(user: Option<&str>, contact: Option<&str>) -> Stri
     } else if let Some(c) = named(contact) {
         format!("{c} (customer contact)")
     } else {
-        "(unknown requester)".to_string()
+        // MAPPS-1063: an approval row without a requester name on either
+        // plane is a server-side gap, not a legitimate absence; log it so
+        // the "(unknown requester)" substitution is findable.
+        let shown = "(unknown requester)".to_string();
+        let _ = crate::utils::unresolved("approvals.requester", "user", None, &shown);
+        shown
     }
 }
 
