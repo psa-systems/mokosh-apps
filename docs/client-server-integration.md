@@ -475,6 +475,46 @@ Two sit just outside that rule and stay ungated for their own reason.
 super-admin list and sends no body. `onboarding.rs` reads a single
 completion flag.
 
+## A screen prints the name the response carries
+
+The per-page decode structs above narrow a response to what the page
+renders, and three screens narrowed away a field they then went and
+re-derived. MAPPS-1038 is the sweep that fixed them.
+
+The assets list, the asset detail panel and the projects list each
+dropped `company_name` from their decode struct, fetched
+`GET /contacts/companies` and joined it against `company_id` to label
+the row. The Timesheets grid dropped `ticket_number`, `ticket_title`
+and `project_name` and fetched the whole of `GET /tickets` and
+`GET /projects` to do the same. The server resolves all of those in the
+same query that returns the row (PMS-335 for projects, PMS-336 for
+assets, PMS-332 for time entries, each of them written to avoid an N+1
+on the client), so the compensating fetches were doing work the
+response had already paid for.
+
+Redundant work is the smaller half. The joins also could not fail
+honestly: a list that was late, truncated by the server's page cap or
+failed outright produced a miss, and a miss rendered as "-" / "Unknown
+company" / "Ticket 4f3a1b2c" - the same output as a row that genuinely
+has no company, and the same output as the server field going missing
+entirely. A fallback that works is how a field stops being noticed.
+
+So the rule: a screen renders the name its own response carries, and a
+reference list is fetched only when something USES it as a list (an
+option list for a picker, or the `company:` search-DSL pill on the
+assets list, which resolves typed text to an id). When a `Some` id
+arrives with no name beside it, the screen shows a placeholder that
+says so, through `src/utils/unresolved_person.rs`: an INFO log line and
+a `title` tooltip, both carrying the full id (MAPPS-1036, MAPPS-1037,
+MAPPS-1038). An absent id is not that case and is not logged; it is
+rendered with each screen's own existing not-set wording.
+
+A name the server does NOT send is a different question, and the
+answer is not this rule. The asset type column and the project-manager
+line still join a fetched lookup, because `AssetResponse` and
+`ProjectResponse` carry no name field for them: joining is the only
+option there, and a server-side name is the ticket to file.
+
 ## Not only DTOs
 
 The crate carries two things that are not response shapes but are just
