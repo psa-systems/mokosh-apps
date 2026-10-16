@@ -81,10 +81,22 @@ struct RemoteTask {
     description: Option<String>,
     #[serde(default)]
     status_id: Option<uuid::Uuid>,
+    /// Server-resolved display name for `status_id` (PMS-1071), joined via a
+    /// tenant-scoped LEFT JOIN on `task_statuses`. Lets the badge render even
+    /// when the local `statuses` lookup is stale; the completion flag still
+    /// comes from the lookup (color), the name falls back to this hint.
+    #[serde(default)]
+    status_name: Option<String>,
     #[serde(default)]
     priority: Option<String>,
     #[serde(default)]
     assigned_to_id: Option<uuid::Uuid>,
+    /// Server-resolved display name for `assigned_to_id` (PMS-1071), joined via
+    /// a tenant-scoped LEFT JOIN on `users`. Lets a task row render the
+    /// assignee without walking the members roster; `None` on a server that
+    /// predates the field.
+    #[serde(default)]
+    assigned_to_name: Option<String>,
     #[serde(default, deserialize_with = "de_flex_f64")]
     estimated_hours: Option<f64>,
     // Approved-only hours (PMS-51). MAPPS-167: `logged_hours` is all
@@ -141,22 +153,30 @@ type RemoteUser = crate::hooks::UserRow;
 fn task_status_badge(
     statuses: &[RemoteTaskStatus],
     id: &Option<uuid::Uuid>,
+    name_hint: Option<&str>,
 ) -> (BadgeVariant, String) {
     match (id, id.and_then(|sid| statuses.iter().find(|s| s.id == sid))) {
         (_, Some(s)) if s.is_completed => (BadgeVariant::Green, s.name.clone()),
         (_, Some(s)) => (BadgeVariant::Blue, s.name.clone()),
         // MAPPS-1063: a task row that carries a status id with no matching
-        // lookup is an unresolved reference, not an absent status; log it
-        // through the shared helper so the "Unknown" placeholder is findable.
-        (Some(sid), None) => {
-            let _ = crate::utils::unresolved(
-                "projects.task_status",
-                "task status",
-                Some(*sid),
-                "Unknown",
-            );
-            (BadgeVariant::Gray, "Unknown".to_string())
-        }
+        // lookup is an unresolved reference, not an absent status. The server
+        // (PMS-1071) resolves `status_name` alongside the id via a tenant-scoped
+        // LEFT JOIN, so an id-with-no-local-lookup-but-with-a-hint renders the
+        // name (color stays Blue, since completion lives on the lookup) rather
+        // than falling to "Unknown"; a bare id with no hint still goes through
+        // the shared unresolved helper so the placeholder is findable.
+        (Some(sid), None) => match name_hint {
+            Some(name) if !name.is_empty() => (BadgeVariant::Blue, name.to_string()),
+            _ => {
+                let _ = crate::utils::unresolved(
+                    "projects.task_status",
+                    "task status",
+                    Some(*sid),
+                    "Unknown",
+                );
+                (BadgeVariant::Gray, "Unknown".to_string())
+            }
+        },
         (None, None) => (BadgeVariant::Gray, "Unknown".to_string()),
     }
 }
@@ -2153,12 +2173,16 @@ fn ProjectTaskTable(props: ProjectTaskTableProps) -> Element {
                     } else {
                         for t in tasks.iter() {
                             {
-                                let (tv, tl) = task_status_badge(&statuses, &t.status_id);
-                                let (who, who_title) = user_name_with_tooltip(
-                                    &users,
-                                    &t.assigned_to_id,
-                                    "projects.task_assignee",
-                                );
+                                let (tv, tl) =
+                                    task_status_badge(&statuses, &t.status_id, t.status_name.as_deref());
+                                let (who, who_title) = match (&t.assigned_to_name, &t.assigned_to_id) {
+                                    (Some(name), _) if !name.is_empty() => (name.clone(), None),
+                                    _ => user_name_with_tooltip(
+                                        &users,
+                                        &t.assigned_to_id,
+                                        "projects.task_assignee",
+                                    ),
+                                };
                                 let due = fmt_date(&t.due_date);
                                 let due_iso = t.due_date.clone().unwrap_or_default();
                                 // Logged = all non-rejected time (PMS-329),
