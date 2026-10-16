@@ -685,10 +685,25 @@ pub fn WorkDayStrip() -> Element {
         .map(|d| d.format("%A, %-d %b").to_string())
         .unwrap_or_else(|_| date_value.clone());
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
-    let viewing_name = picked_user()
-        .and_then(|id| users.iter().find(|u| u.id == id))
-        .and_then(|u| u.display_name())
-        .unwrap_or_default();
+    // MAPPS-1063: an empty `viewing_name` renders as "'s day" with no trace of
+    // who the day belongs to. Log the substitution through the shared helper
+    // when the picked id did not resolve against the roster.
+    let viewing_name = match picked_user() {
+        Some(id) => {
+            let resolved = users
+                .iter()
+                .find(|u| u.id == id)
+                .and_then(|u| u.display_name());
+            match resolved {
+                Some(name) => name,
+                None => {
+                    let _ = crate::utils::unresolved("work_day.viewing_user", "user", Some(id), "");
+                    String::new()
+                }
+            }
+        }
+        None => String::new(),
+    };
     let disabled_title =
         (!can_mutate).then(|| "Can't change the day while the server is unreachable".to_string());
 

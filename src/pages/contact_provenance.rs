@@ -438,13 +438,40 @@ pub fn ImportCard(
                                 {
                                     let field = lock.field.clone();
                                     let label = field_label(&lock.field).to_string();
-                                    let who = lock.locked_by_name.clone().unwrap_or_else(|| "someone".to_string());
+                                    // MAPPS-1063: a lock with no `locked_by_name` is still an
+                                    // audit event with an unknown actor; log the substitution
+                                    // through the shared helper so it is findable.
+                                    let (who, who_title) = match lock
+                                        .locked_by_name
+                                        .clone()
+                                        .filter(|n| !n.trim().is_empty())
+                                    {
+                                        Some(name) => (name, None),
+                                        None => {
+                                            let shown = "someone".to_string();
+                                            let title = crate::utils::unresolved(
+                                                "contact_provenance.field_lock",
+                                                "user",
+                                                None,
+                                                &shown,
+                                            );
+                                            (shown, Some(title))
+                                        }
+                                    };
                                     let when = crate::utils::datetime::fmt_datetime_pref(lock.locked_at);
                                     rsx! {
                                         li { key: "{lock.field}", class: "flex flex-wrap items-center justify-between gap-2",
                                             span { class: "text-content",
                                                 "{label}"
-                                                span { class: "ml-2 text-xs text-subtle", "edited by {who}, {when}" }
+                                                if let Some(ref t) = who_title {
+                                                    span {
+                                                        class: "ml-2 text-xs text-subtle",
+                                                        title: "{t}",
+                                                        "edited by {who}, {when}"
+                                                    }
+                                                } else {
+                                                    span { class: "ml-2 text-xs text-subtle", "edited by {who}, {when}" }
+                                                }
                                             }
                                             Button {
                                                 variant: ButtonVariant::Secondary,
