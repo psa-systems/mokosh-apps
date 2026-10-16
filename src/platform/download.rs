@@ -56,16 +56,48 @@ pub async fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<S
 /// previous one.
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<String>, String> {
+    save_bytes_into(resolved_download_dir()?, bytes, filename).await
+}
+
+/// Where [`save_bytes_as_file`] puts a file: the per-user downloads
+/// directory, else documents, else home.
+///
+/// Split out so the write below can be driven against a directory chosen by
+/// the caller (MAPPS-1073). The test for the traversal rule used to call
+/// `save_bytes_as_file` itself, which meant it wrote into whichever of these
+/// three the machine actually had: a developer's real Downloads folder, and
+/// inside `just pre-push`'s container, `/`, because that container runs as a
+/// uid with no passwd entry and no `HOME`, so all three resolvers fall
+/// through to the root. The test failed there on every clean checkout
+/// (`could not write /evil: Permission denied`), which is tracked upstream as
+/// PC-94; a unit test should not have been reaching for a real user directory
+/// either way.
+#[cfg(not(target_arch = "wasm32"))]
+fn resolved_download_dir() -> Result<std::path::PathBuf, String> {
+    dirs::download_dir()
+        .or_else(dirs::document_dir)
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| "could not find a directory to save into".to_string())
+}
+
+/// Write `bytes` into `dir` as `filename`, never outside `dir`.
+///
+/// The containment is the property worth stating: `filename` arrives from a
+/// server-sent `Content-Disposition` or a caller-built name, so it goes
+/// through `sanitize_filename` (MAPPS-1046) before any `join`, and
+/// `unique_path` then picks a non-colliding name inside the same directory.
+#[cfg(not(target_arch = "wasm32"))]
+async fn save_bytes_into(
+    dir: std::path::PathBuf,
+    bytes: &[u8],
+    filename: &str,
+) -> Result<Option<String>, String> {
     let filename = filename.to_string();
     let bytes = bytes.to_vec();
     // The blocking `std::fs` calls run on tokio's blocking pool, not the
     // async worker pool, so a slow disk does not stall other in-flight
     // async UI work sharing that pool.
     tokio::task::spawn_blocking(move || {
-        let dir = dirs::download_dir()
-            .or_else(dirs::document_dir)
-            .or_else(dirs::home_dir)
-            .ok_or_else(|| "could not find a directory to save into".to_string())?;
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
 
@@ -239,20 +271,73 @@ mod tests {
         }
     }
 
+    /// MAPPS-1073: the same property MAPPS-1046 added, asserted against a
+    /// directory this test owns.
+    ///
+    /// It used to call `save_bytes_as_file`, which resolves
+    /// downloads-else-documents-else-home, so the assertion ran against
+    /// whatever real directory the machine had: a developer's actual Downloads
+    /// folder, and `/` inside `just pre-push`'s container, where it failed on
+    /// every clean checkout because that container runs as a uid with no
+    /// `HOME` (PC-94). Driving `save_bytes_into` states the containment
+    /// without depending on the environment having a writable per-user
+    /// directory, or on the test cleaning up after itself in someone's home.
     #[tokio::test]
-    async fn save_bytes_as_file_never_escapes_resolved_dir() {
-        let resolved_dir = dirs::download_dir()
-            .or_else(dirs::document_dir)
-            .or_else(dirs::home_dir)
-            .expect("a downloads/documents/home dir must exist to run this test");
+    async fn save_bytes_into_never_escapes_the_directory_it_was_given() {
+        let dir = std::env::temp_dir().join(format!(
+            "mokosh-apps-save-bytes-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
 
         for filename in ["../../evil", "/etc/evil"] {
-            let saved = save_bytes_as_file(b"test", filename)
+            let saved = save_bytes_into(dir.clone(), b"test", filename)
                 .await
                 .expect("save should succeed");
             let saved_path = std::path::PathBuf::from(saved.expect("desktop build returns a path"));
-            assert_eq!(saved_path.parent(), Some(resolved_dir.as_path()));
-            let _ = std::fs::remove_file(&saved_path);
+            assert_eq!(
+                saved_path.parent(),
+                Some(dir.as_path()),
+                "{filename} escaped the directory it was given"
+            );
+            assert_eq!(
+                std::fs::read(&saved_path).expect("the bytes landed"),
+                b"test",
+                "the write has to actually happen, or containment is trivially true"
+            );
+        }
+
+        // A second save of the same name goes beside the first, not over it
+        // (`unique_path`), and still inside the directory.
+        let again = save_bytes_into(dir.clone(), b"second", "../../evil")
+            .await
+            .expect("save should succeed")
+            .expect("desktop build returns a path");
+        let again = std::path::PathBuf::from(again);
+        assert_eq!(again.parent(), Some(dir.as_path()));
+        assert_ne!(
+            again.file_name(),
+            Some(std::ffi::OsStr::new("evil")),
+            "the first file must not be overwritten"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The directory the real entry point writes into is still the
+    /// downloads-else-documents-else-home chain, and resolving it writes
+    /// nothing.
+    ///
+    /// Asserted without a filesystem write, which is the point: in an
+    /// environment with no per-user directory at all this reports the error
+    /// instead of attempting `/`.
+    #[test]
+    fn the_resolved_directory_is_absolute_or_an_error() {
+        match resolved_download_dir() {
+            Ok(dir) => assert!(dir.is_absolute(), "{} is not absolute", dir.display()),
+            Err(e) => assert!(
+                e.contains("could not find a directory to save into"),
+                "unexpected error: {e}"
+            ),
         }
     }
 }

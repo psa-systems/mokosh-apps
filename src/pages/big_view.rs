@@ -123,6 +123,8 @@ struct BigTicketRow {
     status: BigStatusRef,
     priority: BigStatusRef,
     #[serde(default)]
+    assigned_to_id: Option<uuid::Uuid>,
+    #[serde(default)]
     assigned_to_name: Option<String>,
     #[serde(default)]
     updated_at: Option<String>,
@@ -236,10 +238,21 @@ fn BigTicketCard(props: BigTicketCardProps) -> Element {
         "low" => BadgeVariant::Green,
         _ => BadgeVariant::Gray,
     };
-    let assignee = t
-        .assigned_to_name
-        .clone()
-        .unwrap_or_else(|| "Unassigned".to_string());
+    // MAPPS-1063: a ticket with an `assigned_to_id` but no server-sent name is
+    // an unresolved reference, not a legitimately unassigned ticket. Log it
+    // through the shared helper so the "Unassigned" substitution is findable.
+    let (assignee, assignee_title) = match t.assigned_to_name.clone() {
+        Some(name) => (name, None),
+        None => match t.assigned_to_id {
+            Some(uid) => {
+                let shown = "Unassigned".to_string();
+                let title =
+                    crate::utils::unresolved("big_view.ticket_assignee", "user", Some(uid), &shown);
+                (shown, Some(title))
+            }
+            None => ("Unassigned".to_string(), None),
+        },
+    };
     rsx! {
         div { class: "rounded-lg border border-line bg-surface px-6 py-4 shadow-sm",
             div { class: "flex items-center justify-between",
@@ -252,7 +265,11 @@ fn BigTicketCard(props: BigTicketCardProps) -> Element {
             p { class: "mt-2 text-2xl font-medium truncate", "{t.title}" }
             div { class: "mt-2 flex items-center justify-between text-sm text-muted",
                 span { "{t.company_name}" }
-                span { "Assigned: {assignee}" }
+                if let Some(ref title) = assignee_title {
+                    span { title: "{title}", "Assigned: {assignee}" }
+                } else {
+                    span { "Assigned: {assignee}" }
+                }
             }
         }
     }

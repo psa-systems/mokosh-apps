@@ -161,15 +161,26 @@ fn task_status_badge(
     }
 }
 
-/// Resolve a user id to a display name; "Unassigned" when none.
-fn user_name(users: &[RemoteUser], id: &Option<uuid::Uuid>) -> String {
+/// MAPPS-1063: resolve a user id to a display name plus the tooltip the
+/// UI should hang off the element showing it. `None` tooltip means the id
+/// was absent (`"Unassigned"`) or resolved cleanly; `Some(title)` is the
+/// unresolved-reference hint already keyed through
+/// `crate::utils::unresolved`.
+fn user_name_with_tooltip(
+    users: &[RemoteUser],
+    id: &Option<uuid::Uuid>,
+    surface: &str,
+) -> (String, Option<String>) {
     match id {
-        Some(uid) => users
-            .iter()
-            .find(|u| &u.id == uid)
-            .map(|u| u.full_name.clone())
-            .unwrap_or_else(|| "Unknown".to_string()),
-        None => "Unassigned".to_string(),
+        Some(uid) => match users.iter().find(|u| &u.id == uid) {
+            Some(u) => (u.full_name.clone(), None),
+            None => {
+                let shown = "Unknown".to_string();
+                let title = crate::utils::unresolved(surface, "user", Some(*uid), &shown);
+                (shown, Some(title))
+            }
+        },
+        None => ("Unassigned".to_string(), None),
     }
 }
 
@@ -1454,7 +1465,11 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
             {
                 let p = project.clone().unwrap();
                 let (status_variant, status_label) = status_badge(&p.status);
-                let pm = user_name(&users, &p.project_manager_id);
+                let (pm, pm_title) = user_name_with_tooltip(
+                    &users,
+                    &p.project_manager_id,
+                    "projects.project_manager",
+                );
                 let spent = p.actual_amount.unwrap_or(0.0);
                 let budget = p.budget_amount.unwrap_or(0.0);
                 let remaining = budget - spent;
@@ -1580,7 +1595,11 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     }
                                     div { class: "flex justify-between",
                                         dt { class: "text-sm text-muted", "Project Manager" }
-                                        dd { class: "text-sm", "{pm}" }
+                                        if let Some(ref t) = pm_title {
+                                            dd { class: "text-sm", title: "{t}", "{pm}" }
+                                        } else {
+                                            dd { class: "text-sm", "{pm}" }
+                                        }
                                     }
                                 }
                             }
@@ -2135,7 +2154,11 @@ fn ProjectTaskTable(props: ProjectTaskTableProps) -> Element {
                         for t in tasks.iter() {
                             {
                                 let (tv, tl) = task_status_badge(&statuses, &t.status_id);
-                                let who = user_name(&users, &t.assigned_to_id);
+                                let (who, who_title) = user_name_with_tooltip(
+                                    &users,
+                                    &t.assigned_to_id,
+                                    "projects.task_assignee",
+                                );
                                 let due = fmt_date(&t.due_date);
                                 let due_iso = t.due_date.clone().unwrap_or_default();
                                 // Logged = all non-rejected time (PMS-329),
@@ -2163,6 +2186,8 @@ fn ProjectTaskTable(props: ProjectTaskTableProps) -> Element {
                                         TableCell {
                                             if unassigned {
                                                 span { class: "text-subtle italic", "Unassigned" }
+                                            } else if let Some(ref t) = who_title {
+                                                span { title: "{t}", "{who}" }
                                             } else {
                                                 "{who}"
                                             }
