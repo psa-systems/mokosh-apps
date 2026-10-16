@@ -8547,6 +8547,8 @@ mod mapps686_shared_dto_tests {
             ticket_title,
             project_name,
             task_title,
+            user_name,
+            work_type_name,
         } = resp;
         // Both `Some(...)` are fields the server always sends that this page
         // still decodes as optional, the same stated read-path tolerance as
@@ -8590,6 +8592,8 @@ mod mapps686_shared_dto_tests {
             ticket_title,
             project_name,
             task_title,
+            user_name,
+            work_type_name,
         );
     }
 }
