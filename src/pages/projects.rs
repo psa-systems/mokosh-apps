@@ -142,10 +142,22 @@ fn task_status_badge(
     statuses: &[RemoteTaskStatus],
     id: &Option<uuid::Uuid>,
 ) -> (BadgeVariant, String) {
-    match id.and_then(|sid| statuses.iter().find(|s| s.id == sid)) {
-        Some(s) if s.is_completed => (BadgeVariant::Green, s.name.clone()),
-        Some(s) => (BadgeVariant::Blue, s.name.clone()),
-        None => (BadgeVariant::Gray, "Unknown".to_string()),
+    match (id, id.and_then(|sid| statuses.iter().find(|s| s.id == sid))) {
+        (_, Some(s)) if s.is_completed => (BadgeVariant::Green, s.name.clone()),
+        (_, Some(s)) => (BadgeVariant::Blue, s.name.clone()),
+        // MAPPS-1063: a task row that carries a status id with no matching
+        // lookup is an unresolved reference, not an absent status; log it
+        // through the shared helper so the "Unknown" placeholder is findable.
+        (Some(sid), None) => {
+            let _ = crate::utils::unresolved(
+                "projects.task_status",
+                "task status",
+                Some(*sid),
+                "Unknown",
+            );
+            (BadgeVariant::Gray, "Unknown".to_string())
+        }
+        (None, None) => (BadgeVariant::Gray, "Unknown".to_string()),
     }
 }
 
