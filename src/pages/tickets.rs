@@ -8343,6 +8343,7 @@ mod mapps686_shared_dto_tests {
             company_name: company_name.clone(),
             status: status_summary.clone(),
             priority: priority_summary.clone(),
+            assigned_to_id: None,
             assigned_to_name,
             updated_at,
         };
