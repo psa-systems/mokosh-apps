@@ -3581,6 +3581,8 @@ mod tests {
             ticket_title,
             project_name,
             task_title,
+            user_name,
+            work_type_name,
         } = resp;
         // The one widening: the server types minutes as `i32` and this page
         // sums a day's and a week's worth as `i64`. Annotated so the widening
@@ -3624,6 +3626,8 @@ mod tests {
             hourly_rate,
             total_amount,
             approval_status,
+            user_name,
+            work_type_name,
         );
     }
 
