@@ -30,6 +30,13 @@ struct RemoteProject {
     status: String,
     #[serde(default)]
     company_id: Option<uuid::Uuid>,
+    // The owning company's name, resolved server-side in the same query that
+    // returns the row (PMS-335, "without an N+1 lookup per project").
+    // MAPPS-1038: the list used to fetch /contacts/companies and join on
+    // `company_id` instead, which re-derived a name the response already
+    // carried and printed "Unknown company" whenever that list was late.
+    #[serde(default)]
+    company_name: Option<String>,
     #[serde(default)]
     project_manager_id: Option<uuid::Uuid>,
     #[serde(default)]
@@ -46,13 +53,22 @@ struct RemoteProject {
     actual_amount: Option<f64>,
 }
 
-/// A company, used to resolve `company_id` to a name and to populate the
-/// New Project picker.
-#[derive(Clone, Debug, Deserialize)]
-struct CompanyOption {
-    id: uuid::Uuid,
-    #[serde(default)]
-    name: String,
+/// The projects list's existing wording for a project with no company. Kept
+/// as it was: MAPPS-1038 changes where the name comes from, not the copy.
+const NO_COMPANY: &str = "No company";
+
+/// The company shown on a project card, from the name the response carried
+/// (PMS-335) rather than a client-side join against `/contacts/companies`.
+///
+/// Free function rather than a closure over a fetched list, which is what it
+/// replaces, so the three states it has to tell apart are unit-testable: a
+/// name, an id the server could not name, and no company at all.
+fn project_company(p: &RemoteProject) -> crate::utils::unresolved_person::CompanyRef {
+    crate::utils::unresolved_person::resolve_company(
+        "projects.list_company",
+        p.company_name.as_deref(),
+        p.company_id,
+    )
 }
 
 /// A task (`GET /api/v1/projects/:id/tasks`).
@@ -452,17 +468,6 @@ pub fn ProjectListPage() -> Element {
             .inspect_err(|e| tracing::error!("project summary load failed: {e}"))
             .ok()
     });
-    // Company names are a SECONDARY lookup: a missing list just renders
-    // "Unknown company", so it keeps degrading to a default rather than
-    // gating the whole page on an outage.
-    let companies_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::list_or_empty(
-            "project company name",
-            crate::hooks::fetch::api::get_all_authed::<CompanyOption>("/contacts/companies").await,
-        )
-    });
-
     // MAPPS-357: primary resource unavailable (failed while the server is
     // flagged down) -> explicit outage body. Placed after every hook.
     if projects_resource.is_unavailable() {
@@ -474,21 +479,6 @@ pub fn ProjectListPage() -> Element {
     let page_envelope = projects_resource.value_or_default();
     let total = page_envelope.meta.total as usize;
     let projects: Vec<RemoteProject> = page_envelope.data;
-    let companies = companies_resource
-        .read_unchecked()
-        .clone()
-        .unwrap_or_default();
-
-    let company_name = |id: &Option<uuid::Uuid>| -> String {
-        match id {
-            Some(cid) => companies
-                .iter()
-                .find(|c| &c.id == cid)
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| "Unknown company".to_string()),
-            None => "No company".to_string(),
-        }
-    };
 
     // MAPPS-546: tenant-wide totals from `/projects/summary`, not from the rows
     // on screen. Counting the fetched page reported one page as the tenant.
@@ -623,7 +613,9 @@ pub fn ProjectListPage() -> Element {
                     for p in filtered.iter() {
                         {
                             let (variant, label) = status_badge(&p.status);
-                            let cname = company_name(&p.company_id);
+                            let company = project_company(p);
+                            let cname = company.text(NO_COMPANY).to_string();
+                            let cname_title = company.tooltip().map(str::to_string);
                             let util = match (p.actual_amount, p.budget_amount) {
                                 (Some(a), Some(b)) if b > 0.0 => {
                                     Some(((a / b) * 100.0).clamp(0.0, 100.0).round() as u32)
@@ -651,6 +643,7 @@ pub fn ProjectListPage() -> Element {
                                         // heading-row control.
                                         title: p.name.clone(),
                                         subtitle: cname.clone(),
+                                        subtitle_title: cname_title.clone(),
                                         actions: rsx! {
                                             Badge { variant, "{label}" }
                                         },
@@ -2795,5 +2788,52 @@ mod mapps1037_history_actor_tests {
         assert!(who.is_system());
         assert_eq!(who.text(), "System");
         assert!(who.tooltip().is_none());
+    }
+}
+
+/// MAPPS-1038: a project card's company line reads the name the response
+/// carried (PMS-335), not a join against `/contacts/companies`.
+#[cfg(test)]
+mod mapps1038_company_tests {
+    use super::{project_company, RemoteProject, NO_COMPANY};
+
+    fn project(json: &str) -> RemoteProject {
+        serde_json::from_str(json).expect("deserialise project")
+    }
+
+    #[test]
+    fn the_response_name_is_rendered_with_no_company_list_in_sight() {
+        let p = project(
+            r#"{"id":"11111111-1111-4111-8111-111111111111","company_id":"22222222-2222-4222-8222-222222222222","company_name":"Riverside Clinic"}"#,
+        );
+        let company = project_company(&p);
+        assert_eq!(company.text(NO_COMPANY), "Riverside Clinic");
+        assert!(company.tooltip().is_none());
+    }
+
+    /// "Unknown company" was also what an empty or late company list printed,
+    /// so the text stays and the tooltip plus the INFO log are what now tell
+    /// the two apart.
+    #[test]
+    fn an_unnamed_company_id_is_unknown_company_with_the_id_in_the_tooltip() {
+        let p = project(
+            r#"{"id":"11111111-1111-4111-8111-111111111111","company_id":"22222222-2222-4222-8222-222222222222"}"#,
+        );
+        let company = project_company(&p);
+        assert_eq!(company.text(NO_COMPANY), "Unknown company");
+        assert_eq!(
+            company.tooltip(),
+            Some("Unresolved company 22222222-2222-4222-8222-222222222222")
+        );
+    }
+
+    /// An internal project legitimately has no company: the existing explicit
+    /// wording, and no log line.
+    #[test]
+    fn no_company_id_keeps_the_explicit_no_company_wording() {
+        let p = project(r#"{"id":"11111111-1111-4111-8111-111111111111"}"#);
+        let company = project_company(&p);
+        assert_eq!(company.text(NO_COMPANY), "No company");
+        assert!(company.tooltip().is_none());
     }
 }
