@@ -33,6 +33,24 @@ fn asset_company(surface: &str, a: &RemoteAsset) -> crate::utils::unresolved_per
     )
 }
 
+/// MAPPS-1044 / PMS-1481: render an asset's type name from the server-sent
+/// field. `None` name with a `Some` id logs an unresolved reference through
+/// the shared helper (same shape as the company and user resolutions above);
+/// an asset with no type id at all renders as a plain dash and is not logged
+/// (not every asset carries a type).
+fn asset_type_label(surface: &str, name: Option<&str>, id: Option<uuid::Uuid>) -> String {
+    match name.filter(|n| !n.trim().is_empty()) {
+        Some(n) => n.to_string(),
+        None => match id {
+            Some(id) => {
+                let _ = crate::utils::unresolved(surface, "asset type", Some(id), "-");
+                "-".to_string()
+            }
+            None => "-".to_string(),
+        },
+    }
+}
+
 /// An asset (`GET /api/v1/assets`).
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteAsset {
@@ -43,6 +61,13 @@ struct RemoteAsset {
     asset_tag: Option<String>,
     #[serde(default)]
     asset_type_id: Option<uuid::Uuid>,
+    /// MAPPS-1044 / PMS-1481: asset-type display name resolved server-side
+    /// in the same query that returns the row, so this page stops joining
+    /// against a separately fetched `/asset-types` list to label rows.
+    /// `None` only when the server-side JOIN missed; `#[serde(default)]`
+    /// keeps the response readable against an older server too.
+    #[serde(default)]
+    asset_type_name: Option<String>,
     #[serde(default)]
     company_id: Option<uuid::Uuid>,
     // The owning company's name, resolved server-side by a LEFT JOIN in the
@@ -1130,21 +1155,11 @@ pub fn AssetListPage() -> Element {
     let assets: Vec<RemoteAsset> = page_envelope.map(|p| p.data).unwrap_or_default();
     let types = types_resource.read_unchecked().clone().unwrap_or_default();
 
-    // F3: a `HashMap` rebuilt via `use_memo` only when the underlying
-    // resource changes, not an `O(n)` `.iter().find(...)` scan repeated
-    // for every asset row on every render. Declared before the early
-    // return below so the hook always runs, matching every other hook
-    // in this component.
-    let type_names = use_memo(move || {
-        types_resource
-            .read_unchecked()
-            .clone()
-            .unwrap_or_default()
-            .iter()
-            .map(|t| (t.id, t.name.clone()))
-            .collect::<HashMap<_, _>>()
-    });
-
+    // MAPPS-1044: the per-row type-name display is served off the response's
+    // own `asset_type_name` now (PMS-1481), so the `types_resource` lookup
+    // table that used to compensate for its absence is gone. The resource
+    // itself stays for the create/edit form `<select>` option list below.
+    //
     // MAPPS-1038: the fetched company list stays for the OPTION lists below
     // (the create form, the bulk-edit company field and the catalog UI) and
     // for the `company:` search-DSL pill, which resolves a typed name to an
@@ -1169,11 +1184,6 @@ pub fn AssetListPage() -> Element {
             crate::components::ContentUnavailable { title: "Assets".to_string() }
         };
     }
-
-    let type_name = |id: &Option<uuid::Uuid>| -> String {
-        id.and_then(|tid| type_names.read().get(&tid).cloned())
-            .unwrap_or_else(|| "-".to_string())
-    };
 
     // MAPPS-546: no client-side filter. The rows are the page the server
     // matched, and `total` is its count of every match - not of this page.
@@ -1595,7 +1605,15 @@ pub fn AssetListPage() -> Element {
                                 for a in filtered.iter() {
                                     {
                                         let (variant, label) = asset_status_badge(&a.status);
-                                        let tname = type_name(&a.asset_type_id);
+                                        // MAPPS-1044: use the server-sent asset-type
+                                        // name directly rather than joining the
+                                        // response's `asset_type_id` against a
+                                        // separately fetched `/asset-types` list.
+                                        let tname = asset_type_label(
+                                            "assets.list_type",
+                                            a.asset_type_name.as_deref(),
+                                            a.asset_type_id,
+                                        );
                                         let company = asset_company("assets.list_company", a);
                                         let cname = company.text(NO_COMPANY).to_string();
                                         let cname_title = company.tooltip().map(str::to_string);
