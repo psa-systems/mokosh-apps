@@ -1642,11 +1642,16 @@ fn AgendaCard(props: AgendaCardProps) -> Element {
                             let time = time_label(appt.start_time);
                             let time_iso = appt.start_time.to_rfc3339();
                             let title = appt.title.clone();
-                            let who = props
-                                .users
-                                .iter()
-                                .find(|u| u.id == appt.assigned_to_id)
-                                .and_then(|u| u.display_name())
+                            let who = appt
+                                .assigned_to_name
+                                .clone()
+                                .or_else(|| {
+                                    props
+                                        .users
+                                        .iter()
+                                        .find(|u| u.id == appt.assigned_to_id)
+                                        .and_then(|u| u.display_name())
+                                })
                                 .unwrap_or_default();
                             rsx! {
                                 div { class: "border-l-4 {border} bg-surface-2 p-3 rounded-r {past}",

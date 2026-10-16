@@ -47,6 +47,12 @@ pub struct AppointmentResponse {
     #[serde(default)]
     pub site_id: Option<Uuid>,
     pub assigned_to_id: Uuid,
+    /// Resolved display name for `assigned_to_id` (PMS-1069), joined server-side
+    /// via a tenant-scoped LEFT JOIN on `users`. Lets a calendar cell render the
+    /// tech without walking the users list. `None` on a server that predates
+    /// the field, in which case callers fall back to their own id -> name map.
+    #[serde(default)]
+    pub assigned_to_name: Option<String>,
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
     #[serde(default)]
