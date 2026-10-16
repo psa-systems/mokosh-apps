@@ -85,6 +85,11 @@ pub struct KbArticle {
     /// article means no client can see it.
     #[serde(default)]
     pub company_ids: Vec<Uuid>,
+    /// Companies joined server-side (PMS-1073), one name per id in `company_ids`
+    /// order, so pages can render the scope chips without a `/contacts/companies`
+    /// side fetch. Empty on a server that predates the field.
+    #[serde(default)]
+    pub company_names: Vec<String>,
     #[serde(default)]
     pub created_at: Option<DateTime<Utc>>,
     #[serde(default)]

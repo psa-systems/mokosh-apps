@@ -402,9 +402,24 @@ struct CompanyNameRow {
 /// labels the row with the id and says the name is unavailable). Dropping the
 /// id instead would silently revoke that client's access to the article on
 /// the next save.
-async fn resolve_company_names(ids: &[uuid::Uuid]) -> Vec<(String, String)> {
+/// Takes the article's own `company_names` hint from the server. When the
+/// hint carries one name per id in the right order (PMS-1073, resolved
+/// server-side via a tenant-scoped LEFT JOIN), skip the `/contacts/companies`
+/// fetch entirely. Older servers send an empty vec, which falls back to the
+/// historical whole-list lookup.
+async fn resolve_company_names_with_hints(
+    ids: &[uuid::Uuid],
+    hints: &[String],
+) -> Vec<(String, String)> {
     if ids.is_empty() {
         return Vec::new();
+    }
+    if hints.len() == ids.len() {
+        return ids
+            .iter()
+            .zip(hints.iter())
+            .map(|(id, name)| (id.to_string(), name.clone()))
+            .collect();
     }
     let companies =
         crate::hooks::fetch::api::get_all_authed::<CompanyNameRow>("/contacts/companies")
@@ -1494,14 +1509,17 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     // A failed name lookup keeps the id as the chip label rather than
     // dropping the company from the list.
     let mut scope_ids = use_signal(Vec::<uuid::Uuid>::new);
+    let mut scope_hints = use_signal(Vec::<String>::new);
     use_effect(move || {
         if let Some(Some(a)) = &*article_resource.read_unchecked() {
             scope_ids.set(a.company_ids.clone());
+            scope_hints.set(a.company_names.clone());
         }
     });
     let scoped_companies_resource = use_resource(move || {
         let ids = scope_ids();
-        async move { resolve_company_names(&ids).await }
+        let hints = scope_hints();
+        async move { resolve_company_names_with_hints(&ids, &hints).await }
     });
     let scoped_companies: Vec<(String, String)> = match &*scoped_companies_resource.read_unchecked()
     {
@@ -2554,7 +2572,11 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
                 // the form mounts with its company rows already seeded (its
                 // signals seed once, from `initial`).
                 Ok(article) => {
-                    let companies = resolve_company_names(&article.company_ids).await;
+                    let companies = resolve_company_names_with_hints(
+                        &article.company_ids,
+                        &article.company_names,
+                    )
+                    .await;
                     Some((article, companies))
                 }
                 Err(err) => {
