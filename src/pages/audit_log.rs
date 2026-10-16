@@ -130,8 +130,11 @@ fn display_field_value(
                     }
                     // Known FK field but the user is not in our cache (deleted,
                     // or beyond this page of /auth/users): short prefix, not the
-                    // full noisy UUID.
-                    return s.chars().take(8).collect();
+                    // full noisy UUID. MAPPS-1063: log the unresolved reference
+                    // via the shared helper so the substitution is findable.
+                    let shown: String = s.chars().take(8).collect();
+                    let _ = crate::utils::unresolved("audit_log.user_fk", "user", Some(id), &shown);
+                    return shown;
                 }
             }
             s.clone()
@@ -701,11 +704,20 @@ fn AuditRow(props: AuditRowProps) -> Element {
         .clone()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| short_uuid(entry.entity_id));
-    let user_label = entry
-        .user_name
-        .clone()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "System".to_string());
+    // MAPPS-1063: a `None` name with a `Some` id is an unresolved reference,
+    // not a system-issued row. Log it; the plain "System" fallback stays for
+    // rows that legitimately carry no user id.
+    let user_label = match entry.user_name.clone().filter(|s| !s.trim().is_empty()) {
+        Some(name) => name,
+        None => match entry.user_id {
+            Some(id) => {
+                let shown = "System".to_string();
+                let _ = crate::utils::unresolved("audit_log.actor", "user", Some(id), &shown);
+                shown
+            }
+            None => "System".to_string(),
+        },
+    };
 
     let is_open = *expanded.read();
 
