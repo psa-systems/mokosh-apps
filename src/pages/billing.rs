@@ -1088,31 +1088,87 @@ pub(crate) fn is_zero_amount(raw: &str) -> bool {
 
 /// MAPPS-1031 (PMS-1462): the Details row for how an invoice or quote
 /// reached the customer, covering the three delivery methods plus the
-/// no-record case. `None` on a draft (no `sent_at`); `Some("Delivery not
-/// recorded")` on a sent document from before PMS-1462 tracked the method
-/// (the server's own description of that case, mokosh-server
-/// `src/modules/billing/models.rs`). Takes only the four fields MAPPS-1014
-/// named: `delivery_method`, `delivery_note`, `delivered_by_name`,
-/// `sent_at`; the recipient address now lives in the Send dialog's preview
-/// via `delivery-options`, not this row.
+/// no-record case. `None` on a draft (no `sent_at_display`);
+/// `Some("Delivery not recorded")` on a sent document from before
+/// PMS-1462 tracked the method (the server's own description of that
+/// case, mokosh-server `src/modules/billing/models.rs`). Takes only the
+/// four fields MAPPS-1014 named: `delivery_method`, `delivery_note`,
+/// `delivered_by_name`, `sent_at_display`; the recipient address now
+/// lives in the Send dialog's preview via `delivery-options`, not this
+/// row.
+///
+/// MAPPS-1041: the date is PRE-FORMATTED by the caller (via
+/// `fmt_user_dt_in` with the viewer's timezone + format preference), not
+/// built from the ISO UTC string here. Slicing the first 10 chars of an
+/// RFC 3339 UTC stamp returns the UTC date, which for a late-evening
+/// write-off in a non-UTC viewer's timezone rendered as the next day.
+/// `stamped_by` still slices for `write_off_line` and `voided_line`;
+/// their callers passed the raw ISO string and the dates stayed UTC in
+/// their rows, which is out of scope for MAPPS-1041 and left unchanged.
+/// MAPPS-1041: shared helper for both the invoice and quote callers. Parses
+/// an ISO 8601 UTC string and formats it through the viewer's `tz` + format
+/// `pref` (via `fmt_user_dt_in`). Date-only fallback `"%b %d, %Y"` when no
+/// pref is set, matching the previous rendering shape (which was
+/// `YYYY-MM-DD` in UTC - this is the local-timezone counterpart).
+pub(crate) fn format_sent_date(sent_at: Option<&str>) -> Option<String> {
+    format_sent_date_in(
+        sent_at,
+        crate::utils::datetime::user_format_pref().as_deref(),
+        crate::utils::datetime::user_timezone(),
+    )
+}
+
+/// Pure core of [`format_sent_date`]: takes `pref` and `tz` explicitly so a
+/// unit test can prove the late-evening UTC date-shift behaviour without a
+/// live Dioxus context.
+pub(crate) fn format_sent_date_in(
+    sent_at: Option<&str>,
+    pref: Option<&str>,
+    tz: chrono_tz::Tz,
+) -> Option<String> {
+    let raw = sent_at.map(str::trim).filter(|s| !s.is_empty())?;
+    let dt = chrono::DateTime::parse_from_rfc3339(raw)
+        .ok()?
+        .with_timezone(&chrono::Utc);
+    Some(crate::utils::datetime::fmt_user_dt_in(
+        dt,
+        pref,
+        tz,
+        Some("%b %d, %Y"),
+    ))
+}
+
 pub(crate) fn sent_line(
     delivery_method: Option<&str>,
     delivery_note: Option<&str>,
     delivered_by_name: Option<&str>,
-    sent_at: Option<&str>,
+    sent_at_display: Option<&str>,
 ) -> Option<String> {
-    let sent_at = sent_at.filter(|s| !s.is_empty());
+    let sent_at_display = sent_at_display.map(str::trim).filter(|s| !s.is_empty());
+    // Inline tail builder (not `stamped_by`, which still slices on
+    // `at.chars().take(10)` for write_off_line + voided_line). The sent
+    // row needs the viewer's timezone-formatted date verbatim.
+    let tail = {
+        let mut line = String::new();
+        if let Some(date) = sent_at_display {
+            line.push_str(&format!(" on {date}"));
+        }
+        if let Some(who) = delivered_by_name.map(str::trim).filter(|w| !w.is_empty()) {
+            line.push_str(&format!(" by {who}"));
+        }
+        line
+    };
     match delivery_method {
-        Some("email") => Some(format!("Emailed{}", stamped_by(sent_at, delivered_by_name))),
-        Some("postal") => Some(format!("Mailed{}", stamped_by(sent_at, delivered_by_name))),
+        Some("email") => Some(format!("Emailed{tail}")),
+        Some("postal") => Some(format!("Mailed{tail}")),
         Some("other") => {
             let base = match delivery_note.map(str::trim).filter(|n| !n.is_empty()) {
                 Some(note) => format!("Delivered: {note}"),
                 None => "Delivered".to_string(),
             };
-            Some(format!("{base}{}", stamped_by(sent_at, delivered_by_name)))
+            Some(format!("{base}{tail}"))
         }
-        _ => sent_at.map(|_| "Delivery not recorded".to_string()),
+        _ => sent_at_display.map(|_| "Delivery not recorded".to_string()),
     }
 }
 
@@ -3048,11 +3104,12 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 // gets no link to follow. Empty against a server that predates
                 // the field, and the cell then renders a dash.
                 let billing_contact_name = inv.billing_contact_name.clone().unwrap_or_default();
+                let sent_at_display = format_sent_date(inv.sent_at.as_deref());
                 let sent_line_text = sent_line(
                     inv.delivery_method.as_deref(),
                     inv.delivery_note.as_deref(),
                     inv.delivered_by_name.as_deref(),
-                    inv.sent_at.as_deref(),
+                    sent_at_display.as_deref(),
                 );
                 // MAPPS-727: the write-off block, when there was one.
                 let write_off = inv.written_off_at.as_deref().map(|at| {
@@ -7970,26 +8027,21 @@ mod invoice_preview_tests {
 
 #[cfg(test)]
 mod sent_line_tests {
-    use super::sent_line;
+    use super::{format_sent_date_in, sent_line};
 
     #[test]
     fn email_names_the_method_and_who_and_when() {
         assert_eq!(
-            sent_line(
-                Some("email"),
-                None,
-                Some("Jamie Lee"),
-                Some("2026-09-02T14:03:11Z")
-            ),
-            Some("Emailed on 2026-09-02 by Jamie Lee".to_string())
+            sent_line(Some("email"), None, Some("Jamie Lee"), Some("Sep 02, 2026"),),
+            Some("Emailed on Sep 02, 2026 by Jamie Lee".to_string())
         );
     }
 
     #[test]
     fn postal_names_the_method() {
         assert_eq!(
-            sent_line(Some("postal"), None, None, Some("2026-09-02T14:03:11Z")),
-            Some("Mailed on 2026-09-02".to_string())
+            sent_line(Some("postal"), None, None, Some("Sep 02, 2026")),
+            Some("Mailed on Sep 02, 2026".to_string())
         );
     }
 
@@ -8000,10 +8052,10 @@ mod sent_line_tests {
                 Some("other"),
                 Some("Handed to the client at the site visit"),
                 Some("Jamie Lee"),
-                Some("2026-09-02T14:03:11Z")
+                Some("Sep 02, 2026"),
             ),
             Some(
-                "Delivered: Handed to the client at the site visit on 2026-09-02 by Jamie Lee"
+                "Delivered: Handed to the client at the site visit on Sep 02, 2026 by Jamie Lee"
                     .to_string()
             )
         );
@@ -8012,20 +8064,15 @@ mod sent_line_tests {
     #[test]
     fn other_with_a_blank_note_still_says_delivered() {
         assert_eq!(
-            sent_line(
-                Some("other"),
-                Some("  "),
-                None,
-                Some("2026-09-02T14:03:11Z")
-            ),
-            Some("Delivered on 2026-09-02".to_string())
+            sent_line(Some("other"), Some("  "), None, Some("Sep 02, 2026")),
+            Some("Delivered on Sep 02, 2026".to_string())
         );
     }
 
     #[test]
     fn a_sent_document_with_no_recorded_method_says_so() {
         assert_eq!(
-            sent_line(None, None, None, Some("2026-09-02T14:03:11Z")),
+            sent_line(None, None, None, Some("Sep 02, 2026")),
             Some("Delivery not recorded".to_string())
         );
     }
@@ -8033,6 +8080,67 @@ mod sent_line_tests {
     #[test]
     fn a_draft_with_no_send_renders_no_row() {
         assert_eq!(sent_line(None, None, None, None), None);
+    }
+
+    #[test]
+    fn format_sent_date_renders_utc_date_in_viewer_timezone() {
+        // 23:03 UTC on Sep 2 is 19:03 EDT on Sep 2 - same calendar day, so
+        // the Sent row reads "Sep 02, 2026" in both timezones.
+        let utc = format_sent_date_in(Some("2026-09-02T23:03:11Z"), None, chrono_tz::UTC);
+        assert_eq!(utc.as_deref(), Some("Sep 02, 2026"));
+        let edt = format_sent_date_in(
+            Some("2026-09-02T23:03:11Z"),
+            None,
+            chrono_tz::America::New_York,
+        );
+        assert_eq!(edt.as_deref(), Some("Sep 02, 2026"));
+    }
+
+    #[test]
+    fn format_sent_date_shifts_a_late_utc_evening_to_the_next_local_day() {
+        // 23:03 UTC on Sep 2 is 09:03 the next day in Sydney (AEST, +10).
+        // The old sliced-first-10 shape rendered "2026-09-02" for a viewer in
+        // Sydney looking at a timestamp that was already Sep 3 locally; this
+        // test proves the new shape returns the local date.
+        let sydney = format_sent_date_in(
+            Some("2026-09-02T23:03:11Z"),
+            None,
+            chrono_tz::Australia::Sydney,
+        );
+        assert_eq!(sydney.as_deref(), Some("Sep 03, 2026"));
+    }
+
+    #[test]
+    fn format_sent_date_shifts_an_early_utc_morning_to_the_previous_local_day() {
+        // 02:30 UTC on Sep 3 is 22:30 the previous day in New York (EDT, -4).
+        let ny = format_sent_date_in(
+            Some("2026-09-03T02:30:00Z"),
+            None,
+            chrono_tz::America::New_York,
+        );
+        assert_eq!(ny.as_deref(), Some("Sep 02, 2026"));
+    }
+
+    #[test]
+    fn format_sent_date_honours_user_format_pref_when_set() {
+        // The pref uses Moment.js-style tokens (`YYYY`, `MM`, `HH`, `mm`),
+        // not strftime. The test proves the pref takes precedence over the
+        // date-only fallback; includes the time so the pref clearly did
+        // the formatting.
+        let got = format_sent_date_in(
+            Some("2026-09-02T14:03:11Z"),
+            Some("YYYY-MM-DD HH:mm"),
+            chrono_tz::UTC,
+        );
+        assert_eq!(got.as_deref(), Some("2026-09-02 14:03"));
+    }
+
+    #[test]
+    fn format_sent_date_rejects_a_malformed_iso_string() {
+        assert_eq!(
+            format_sent_date_in(Some("not an iso stamp"), None, chrono_tz::UTC),
+            None
+        );
     }
 }
 

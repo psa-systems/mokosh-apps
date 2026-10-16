@@ -125,6 +125,78 @@ pub fn resolve_person(
     }
 }
 
+/// A company reference resolved to one of three states (MAPPS-1038), the
+/// company-shaped sibling of [`PersonRef`].
+///
+/// The three states are not interchangeable and the old code could not tell
+/// two of them apart: a client-side join against a fetched company list
+/// answered the same "-" / "Unknown company" for "this row has no company",
+/// "the list has not arrived yet" and "the id resolves to nothing". The first
+/// is a fact about the row, the second is a timing artefact that should not
+/// reach the screen at all now that the server sends the name, and only the
+/// third is worth a log line.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CompanyRef {
+    /// No `company_id` at all: absence by contract (an internal project).
+    NotSet,
+    /// The name the response carried.
+    Named(String),
+    /// An id is present and the response carried no name for it. `shown` is
+    /// the placeholder text; `tooltip` names the unresolved id.
+    Unresolved { shown: String, tooltip: String },
+}
+
+impl CompanyRef {
+    /// The text to render. `not_set` is the caller's existing "no company"
+    /// wording, which differs per screen ("-" on the asset screens, "No
+    /// company" on the projects list) and is deliberately NOT unified here:
+    /// changing visible copy is not what MAPPS-1038 is for.
+    pub fn text<'a>(&'a self, not_set: &'a str) -> &'a str {
+        match self {
+            CompanyRef::NotSet => not_set,
+            CompanyRef::Named(name) => name,
+            CompanyRef::Unresolved { shown, .. } => shown,
+        }
+    }
+
+    pub fn tooltip(&self) -> Option<&str> {
+        match self {
+            CompanyRef::Unresolved { tooltip, .. } => Some(tooltip),
+            _ => None,
+        }
+    }
+}
+
+/// Resolve a company reference from the name the response carried and the id
+/// beside it (MAPPS-1038).
+///
+/// There is no roster fallback on purpose, which is the whole point of the
+/// ticket: the server resolves the name in the same query that returns the row
+/// (PMS-335 / PMS-336), so a client-side join against a separately fetched
+/// company list is redundant work that also masks the server field going
+/// missing. A `Some` id with no name is therefore terminal: it logs and
+/// tooltips through [`unresolved`] rather than being quietly papered over.
+pub fn resolve_company(
+    surface: &str,
+    server_name: Option<&str>,
+    id: Option<uuid::Uuid>,
+) -> CompanyRef {
+    if let Some(name) = server_name {
+        let name = name.trim();
+        if !name.is_empty() {
+            return CompanyRef::Named(name.to_string());
+        }
+    }
+    let Some(cid) = id else {
+        return CompanyRef::NotSet;
+    };
+    let shown = "Unknown company";
+    CompanyRef::Unresolved {
+        shown: shown.to_string(),
+        tooltip: unresolved(surface, "company", Some(cid), shown),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,5 +292,48 @@ mod tests {
             state.tooltip(),
             Some(format!("Unresolved user {id}")).as_deref()
         );
+    }
+    #[test]
+    fn a_company_name_from_the_response_is_used_as_sent() {
+        let state = resolve_company(
+            "test.company_named",
+            Some("Main Street Dental"),
+            Some(uuid::Uuid::new_v4()),
+        );
+        assert_eq!(state, CompanyRef::Named("Main Street Dental".to_string()));
+        assert_eq!(state.text("-"), "Main Street Dental");
+        assert!(state.tooltip().is_none());
+    }
+
+    /// The state the client-side join could not distinguish from "no company".
+    #[test]
+    fn an_id_with_no_name_is_unresolved_with_the_id_in_the_tooltip() {
+        let id = uuid::Uuid::from_u128(0x1038);
+        let state = resolve_company("test.company_unresolved", None, Some(id));
+        assert_eq!(state.text("-"), "Unknown company");
+        assert_eq!(
+            state.tooltip(),
+            Some(format!("Unresolved company {id}")).as_deref()
+        );
+    }
+
+    /// An empty string is the server saying nothing, not a company named "".
+    #[test]
+    fn a_blank_name_is_not_a_name() {
+        let id = uuid::Uuid::from_u128(0x1039);
+        let state = resolve_company("test.company_blank", Some("   "), Some(id));
+        assert_eq!(state.text("-"), "Unknown company");
+        assert!(state.tooltip().is_some());
+    }
+
+    /// No id is absence by contract: each screen keeps its own wording and
+    /// nothing is logged, because nothing failed.
+    #[test]
+    fn no_id_is_not_set_and_keeps_the_callers_wording() {
+        let state = resolve_company("test.company_absent", None, None);
+        assert_eq!(state, CompanyRef::NotSet);
+        assert_eq!(state.text("-"), "-");
+        assert_eq!(state.text("No company"), "No company");
+        assert!(state.tooltip().is_none());
     }
 }
