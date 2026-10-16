@@ -832,13 +832,20 @@ pub fn DashboardTvPage() -> Element {
         .unwrap_or_else(empty_dispatch);
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
 
+    // MAPPS-1063: a roster user with no server-side name still gets a map
+    // entry, but we log the "Unknown" substitution so it is findable. The
+    // appointments table's cell wiring handles the different case (an id
+    // that is NOT in the roster at all).
     let users_map: std::collections::HashMap<uuid::Uuid, String> = users
         .iter()
         .map(|u| {
-            (
-                u.id,
-                u.display_name().unwrap_or_else(|| "Unknown".to_string()),
-            )
+            let name = u.display_name().unwrap_or_else(|| {
+                let shown = "Unknown".to_string();
+                let _ =
+                    crate::utils::unresolved("dashboard.roster_name", "user", Some(u.id), &shown);
+                shown
+            });
+            (u.id, name)
         })
         .collect();
 
