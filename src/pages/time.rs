@@ -36,6 +36,12 @@ struct RemoteTimeEntry {
     duration_minutes: i64,
     #[serde(default)]
     work_type_id: Option<uuid::Uuid>,
+    /// Server-resolved display name for `work_type_id` (PMS-1072), joined via
+    /// a tenant-scoped LEFT JOIN on `work_types`. Lets the Work Type column
+    /// render without the shared `/work-types` resource; `None` on a server
+    /// that predates the field.
+    #[serde(default)]
+    work_type_name: Option<String>,
     #[serde(default)]
     ticket_id: Option<uuid::Uuid>,
     #[serde(default)]
@@ -498,8 +504,12 @@ pub fn TimeEntryListPage() -> Element {
                                 let status = e.billing_status;
                                 let wi_label = work_item_label(e);
                                 let wt_label = e
-                                    .work_type_id
-                                    .and_then(|id| work_type_name_by_id.get(&id).cloned())
+                                    .work_type_name
+                                    .clone()
+                                    .or_else(|| {
+                                        e.work_type_id
+                                            .and_then(|id| work_type_name_by_id.get(&id).cloned())
+                                    })
                                     .unwrap_or_else(|| "-".to_string());
                                 let entry = e.clone();
                                 rsx! {
@@ -3597,6 +3607,7 @@ mod tests {
             date,
             duration_minutes: i64::from(minutes),
             work_type_id: Some(work_type_id),
+            work_type_name,
             ticket_id,
             project_id,
             work_category,
@@ -3627,7 +3638,6 @@ mod tests {
             total_amount,
             approval_status,
             user_name,
-            work_type_name,
         );
     }
 
