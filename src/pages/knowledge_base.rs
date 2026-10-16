@@ -4533,6 +4533,7 @@ mod tests {
             published_at: None,
             tags: vec![],
             company_ids: vec![],
+            company_names: vec![],
             created_at: None,
             updated_at: None,
         }
