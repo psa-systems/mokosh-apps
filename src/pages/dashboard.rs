@@ -911,10 +911,22 @@ pub fn DashboardTvPage() -> Element {
                                 } else {
                                     for a in appointments.iter() {
                                         {
-                                            let tech = users_map
+                                            let (tech, tech_title) = match users_map
                                                 .get(&a.assigned_to_id)
                                                 .cloned()
-                                                .unwrap_or_else(|| short_id(&a.assigned_to_id));
+                                            {
+                                                Some(name) => (name, None),
+                                                None => {
+                                                    let shown = short_id(&a.assigned_to_id);
+                                                    let title = crate::utils::unresolved(
+                                                        "dashboard.appointment_tech",
+                                                        "user",
+                                                        Some(a.assigned_to_id),
+                                                        &shown,
+                                                    );
+                                                    (shown, Some(title))
+                                                }
+                                            };
                                             let loc = a
                                                 .location
                                                 .clone()
@@ -942,7 +954,13 @@ pub fn DashboardTvPage() -> Element {
                                             let aid = a.id.to_string();
                                             rsx! {
                                                 TableRow { key: "{aid}",
-                                                    TableCell { class: "font-medium", "{tech}" }
+                                                    TableCell { class: "font-medium",
+                                                        if let Some(ref t) = tech_title {
+                                                            span { title: "{t}", "{tech}" }
+                                                        } else {
+                                                            "{tech}"
+                                                        }
+                                                    }
                                                     TableCell { "{a.title}" }
                                                     TableCell { class: "text-muted", "{loc}" }
                                                     TableCell { class: "text-muted whitespace-nowrap",

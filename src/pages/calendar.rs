@@ -2723,16 +2723,38 @@ fn OnCallBanner(props: OnCallBannerProps) -> Element {
             div { class: "flex flex-wrap gap-x-6 gap-y-1",
                 for entry in props.on_call.iter() {
                     {
-                        let who = entry
+                        let resolved = entry
                             .on_call_user_id
-                            .and_then(|id| props.users.iter().find(|u| u.id == id))
-                            .and_then(|u| u.display_name())
-                            .unwrap_or_else(|| "Unassigned".to_string());
+                            .and_then(|id| {
+                                props
+                                    .users
+                                    .iter()
+                                    .find(|u| u.id == id)
+                                    .and_then(|u| u.display_name())
+                            });
+                        let (who, who_title) = match (entry.on_call_user_id, resolved) {
+                            (Some(uid), None) => {
+                                let shown = "Unassigned".to_string();
+                                let title = crate::utils::unresolved(
+                                    "calendar.on_call_user",
+                                    "user",
+                                    Some(uid),
+                                    &shown,
+                                );
+                                (shown, Some(title))
+                            }
+                            (_, Some(name)) => (name, None),
+                            (None, None) => ("Unassigned".to_string(), None),
+                        };
                         let name = entry.schedule_name.clone();
                         rsx! {
                             span { key: "{entry.schedule_id}",
                                 span { class: "font-medium", "{name}: " }
-                                "{who}"
+                                if let Some(ref t) = who_title {
+                                    span { title: "{t}", "{who}" }
+                                } else {
+                                    "{who}"
+                                }
                             }
                         }
                     }
@@ -2791,15 +2813,26 @@ fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
     seen_ids.extend(props.dispatch.availability.iter().map(|av| av.user_id));
     seen_ids.extend(props.dispatch.time_off.iter().map(|t| t.user_id));
     let mut user_ids: Vec<uuid::Uuid> = seen_ids.into_iter().collect();
-    let name_for = |id: uuid::Uuid| {
-        props
+    // MAPPS-1063: tuple carries the display label plus the unresolved-ref
+    // tooltip when the id did not match a roster row. `None` means the id
+    // resolved cleanly and no tooltip is needed.
+    let name_for = |id: uuid::Uuid| -> (String, Option<String>) {
+        match props
             .users
             .iter()
             .find(|u| u.id == id)
             .and_then(|u| u.display_name())
-            .unwrap_or_else(|| "Unknown".to_string())
+        {
+            Some(name) => (name, None),
+            None => {
+                let shown = "Unknown".to_string();
+                let title =
+                    crate::utils::unresolved("calendar.technician", "user", Some(id), &shown);
+                (shown, Some(title))
+            }
+        }
     };
-    user_ids.sort_by_key(|id| name_for(*id));
+    user_ids.sort_by_key(|id| name_for(*id).0);
 
     // MAPPS-1015: time runs down the page like Google Calendar's day view, so
     // the 24-hour day scrolls vertically and opens on working hours.
@@ -2833,8 +2866,12 @@ fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
                     for id in user_ids.iter() {
                         {
                             let uid = *id;
-                            let name = name_for(uid);
+                            let (name, name_title) = name_for(uid);
                             let initial = name.chars().next().unwrap_or('?').to_string();
+                            // When the id did not resolve, surface the unresolved
+                            // hint; otherwise keep the plain-name tooltip the
+                            // truncate-ellipsis column needs.
+                            let header_title = name_title.clone().unwrap_or_else(|| name.clone());
                             let off_kind = props
                                 .dispatch
                                 .time_off
@@ -2848,7 +2885,7 @@ fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
                                         span { class: "text-sm font-medium text-accent", "{initial}" }
                                     }
                                     div { class: "min-w-0",
-                                        div { class: "font-medium text-sm text-content truncate", title: "{name}", "{name}" }
+                                        div { class: "font-medium text-sm text-content truncate", title: "{header_title}", "{name}" }
                                         if let Some(kind) = off_kind {
                                             div { class: "text-xs text-amber-600 dark:text-amber-400 truncate", "Off: {kind}" }
                                         }
