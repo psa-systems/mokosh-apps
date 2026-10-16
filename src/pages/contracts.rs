@@ -3190,9 +3190,10 @@ fn RateCardItemsCard(
                                 for item in rows.into_iter() {
                                     {
                                         let key = item.id.to_string();
-                                        let wt_name = name_by_id
-                                            .get(&item.work_type_id)
-                                            .cloned()
+                                        let wt_name = item
+                                            .work_type_name
+                                            .clone()
+                                            .or_else(|| name_by_id.get(&item.work_type_id).cloned())
                                             .unwrap_or_else(|| item.work_type_id.to_string());
                                         let hourly = format_money(item.hourly_rate);
                                         let after = format_money_opt(item.after_hours_rate);
