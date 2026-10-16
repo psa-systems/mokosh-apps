@@ -38,15 +38,22 @@ const PER_PAGE: usize = 25;
 use crate::utils::money::format_money_str;
 
 /// Map the server's snake_case `PaymentMethod` tag to a readable label.
+///
+/// MAPPS-936: parses through `mokosh_types::billing::PaymentMethod` so the
+/// vocabulary is shared with the server. An unknown value (older or newer
+/// enum variant) falls through to the raw string; the enum's `from_str`
+/// returning `None` is the "didn't match" signal.
 pub(crate) fn humanize_payment_method(raw: &str) -> String {
-    match raw {
-        "check" => "Check".to_string(),
-        "credit_card" => "Credit Card".to_string(),
-        "ach" => "ACH Transfer".to_string(),
-        "wire" => "Wire Transfer".to_string(),
-        "cash" => "Cash".to_string(),
-        "other" => "Other".to_string(),
-        other => other.to_string(),
+    use mokosh_types::billing::PaymentMethod;
+    match PaymentMethod::from_str(raw) {
+        Some(PaymentMethod::Check) => "Check".to_string(),
+        Some(PaymentMethod::CreditCard) => "Credit Card".to_string(),
+        Some(PaymentMethod::Ach) => "ACH Transfer".to_string(),
+        Some(PaymentMethod::Wire) => "Wire Transfer".to_string(),
+        Some(PaymentMethod::Cash) => "Cash".to_string(),
+        Some(PaymentMethod::Paypal) => "PayPal".to_string(),
+        Some(PaymentMethod::Other) => "Other".to_string(),
+        None => raw.to_string(),
     }
 }
 
@@ -1901,8 +1908,28 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         .as_ref()
         .map(|i| i.status.clone())
         .unwrap_or_default();
-    let editable = matches!(status.as_str(), "draft" | "pending");
-    let collectible = matches!(status.as_str(), "pending" | "sent" | "partially_paid");
+    // MAPPS-936: parse the server's status once through the shared enum, so
+    // the editable/collectible/frozen decisions below cannot drift from the
+    // vocabulary mokosh-server owns (`InvoiceStatus`). An unknown value
+    // (older/newer server variant) resolves to `None`, which means the
+    // caller is not editable, collectible or frozen; the gating buttons
+    // stay off rather than guessing.
+    let parsed_status = mokosh_types::billing::InvoiceStatus::from_str(status.as_str());
+    let editable = matches!(
+        parsed_status,
+        Some(
+            mokosh_types::billing::InvoiceStatus::Draft
+                | mokosh_types::billing::InvoiceStatus::Pending
+        )
+    );
+    let collectible = matches!(
+        parsed_status,
+        Some(
+            mokosh_types::billing::InvoiceStatus::Pending
+                | mokosh_types::billing::InvoiceStatus::Sent
+                | mokosh_types::billing::InvoiceStatus::PartiallyPaid
+        )
+    );
     // PMS-1334: no `write_offable` binding any more. The write-off button is on
     // the page for every status now, and `write_off_unavailable` asks
     // `can_write_off` itself to decide whether it is greyed and what the reason
@@ -1915,10 +1942,10 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     // rather than disabled on a draft: the server refuses to credit a
     // document that can still be edited, and a control that can never work
     // should not be on the page.
-    let frozen = matches!(
-        status.as_str(),
-        "sent" | "partially_paid" | "paid" | "void" | "written_off"
-    );
+    // MAPPS-936: use the shared `is_frozen` rule rather than re-listing its
+    // five arms here, so moving a status into or out of the frozen set is
+    // one edit in mokosh-types instead of a silent drift between repos.
+    let frozen = parsed_status.is_some_and(|s| s.is_frozen());
     let remaining_to_credit = invoice
         .as_ref()
         .and_then(|i| {
@@ -2245,7 +2272,11 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     // needs words on it, and "Pay Now" is what it said before any of this.
     let pay_fallback_label = "Pay Now".to_string();
     let pay_err = pay_error.read().clone();
-    let is_paid = status == "paid";
+    // MAPPS-936: same shared-enum route as the detail-page's status matches.
+    let is_paid = matches!(
+        mokosh_types::billing::InvoiceStatus::from_str(&status),
+        Some(mokosh_types::billing::InvoiceStatus::Paid)
+    );
     // MAPPS-673: partial-payment state. The input renders only when the
     // server said the caller may mint a partial checkout (cap held, gateway
     // ready, invoice payable); a caller without the cap or on a paid
