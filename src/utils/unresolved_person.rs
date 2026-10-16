@@ -13,6 +13,11 @@ use std::collections::HashSet;
 
 thread_local! {
     static LOGGED: RefCell<HashSet<(String, Option<uuid::Uuid>)>> = RefCell::new(HashSet::new());
+    /// MAPPS-1063 non-person variant: dedup set for references keyed by a
+    /// string identifier (e.g. a dashboard widget_key) rather than a Uuid.
+    /// Separate from `LOGGED` so neither call site can starve the other's
+    /// dedup budget.
+    static LOGGED_BY_KEY: RefCell<HashSet<(String, String)>> = RefCell::new(HashSet::new());
 }
 
 /// Called at the moment a site picks a placeholder instead of a name the
@@ -47,6 +52,25 @@ pub fn unresolved(surface: &str, kind: &str, id: Option<uuid::Uuid>, shown: &str
         Some(id) => format!("Unresolved {kind} {id}"),
         None => format!("Unresolved {kind}"),
     }
+}
+
+/// MAPPS-1063: the same contract as [`unresolved`] but keyed on a string
+/// identifier instead of a `Uuid`. For references the server tracks by
+/// name (a dashboard widget_key, a feature flag, etc.) rather than by id.
+/// Dedup is per `(surface, key)` for a page load.
+pub fn unresolved_by_key(surface: &str, kind: &str, key: &str, shown: &str) -> String {
+    let entry = (surface.to_string(), key.to_string());
+    let first_time = LOGGED_BY_KEY.with(|logged| logged.borrow_mut().insert(entry));
+    if first_time {
+        tracing::info!(
+            surface,
+            kind,
+            key,
+            shown,
+            "reference unresolved, placeholder shown",
+        );
+    }
+    format!("Unresolved {kind} {key}")
 }
 
 /// A history/audit actor resolved to one of three states (MAPPS-1037),
