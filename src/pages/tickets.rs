@@ -507,22 +507,36 @@ fn note_structured_lines(note: &RemoteNote) -> Vec<(&'static str, String)> {
         lines.push(("Parts used", parts.join(", ")));
     }
     if let Some(follow_up) = note.follow_up.as_ref() {
-        let needed = follow_up
-            .get("needed")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let mut value = if needed {
-            "Needed".to_string()
-        } else {
-            "Not needed".to_string()
-        };
-        if let Some(description) = follow_up.get("description").and_then(|v| v.as_str()) {
-            value.push_str(&format!(" - {description}"));
+        // MAPPS-1042: the server's `264_note_structured_fields.sql` CHECKs
+        // that `needed` is a boolean; a missing or non-boolean value is a
+        // contract violation. The old `unwrap_or(false)` rendered it as
+        // "Not needed", indistinguishable from a real `false`. Branch
+        // explicitly on the three cases so an invalid payload reads as
+        // an explicit, logged failure rather than a plausible value.
+        match follow_up.get("needed") {
+            Some(serde_json::Value::Bool(needed)) => {
+                let mut value = if *needed {
+                    "Needed".to_string()
+                } else {
+                    "Not needed".to_string()
+                };
+                if let Some(description) = follow_up.get("description").and_then(|v| v.as_str()) {
+                    value.push_str(&format!(" - {description}"));
+                }
+                if let Some(target_date) = follow_up.get("target_date").and_then(|v| v.as_str()) {
+                    value.push_str(&format!(" (target {target_date})"));
+                }
+                lines.push(("Follow-up", value));
+            }
+            _ => {
+                tracing::warn!(
+                    note_id = %note.id,
+                    raw = ?follow_up,
+                    "note.follow_up carries a non-boolean or absent `needed`; contract-breaking payload"
+                );
+                lines.push(("Follow-up", "Invalid follow-up data".to_string()));
+            }
         }
-        if let Some(target_date) = follow_up.get("target_date").and_then(|v| v.as_str()) {
-            value.push_str(&format!(" (target {target_date})"));
-        }
-        lines.push(("Follow-up", value));
     }
     lines
 }
@@ -4801,7 +4815,14 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                 min: "1".to_string(),
                                 value: note_time_minutes.read().clone(),
                                 error: note_time_minutes_error.read().clone(),
-                                rules: vec![Rule::Number { min: Some(1.0), max: None, max_decimals: Some(0) }],
+                                // MAPPS-1042: `max: Some(i32::MAX as f64)` so a
+                                // live-typed over-i32 value shows a field error on
+                                // input, not just at submit.
+                                rules: vec![Rule::Number {
+                                    min: Some(1.0),
+                                    max: Some(i32::MAX as f64),
+                                    max_decimals: Some(0),
+                                }],
                                 oninput: move |e: FormEvent| {
                                     note_time_minutes_error.set(String::new());
                                     note_time_minutes.set(e.value());
@@ -4894,12 +4915,23 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     // MAPPS-1034: optional, but still validated through the
                                     // same guard so a malformed minute count is reported
                                     // alongside a missing Content rather than posted anyway.
+                                    //
+                                    // MAPPS-1042: cap at `i32::MAX` so an operator-pasted
+                                    // "99999999999" is rejected while the operator is still
+                                    // in the form instead of silently saturating to
+                                    // `i32::MAX` on the `as i32` cast below. The server's
+                                    // own CHECK is only `> 0`; the ceiling here is the wire
+                                    // type's.
                                     let time_minutes_v = note_time_minutes.read().clone();
                                     note_time_minutes_error.set(guard.field(
                                         "note_time_minutes",
                                         time_minutes_v.trim(),
                                         "Time (minutes)",
-                                        &[Rule::Number { min: Some(1.0), max: None, max_decimals: Some(0) }],
+                                        &[Rule::Number {
+                                            min: Some(1.0),
+                                            max: Some(i32::MAX as f64),
+                                            max_decimals: Some(0),
+                                        }],
                                     ));
                                     if guard.blocked() {
                                         return;
@@ -4924,9 +4956,29 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     // MAPPS-1034: each sent only when the operator
                                     // filled it; `CreateNoteBody`'s `skip_serializing_if`
                                     // then omits whichever of these stays `None`.
+                                    //
+                                    // MAPPS-1042: parse to `i32` directly (not `f64 as
+                                    // i32` which saturates silently). A parse failure
+                                    // here fires `note_time_minutes_error` naming the
+                                    // offending value and returns without posting. The
+                                    // guard above should have caught anything out of
+                                    // range already; this is the belt-and-braces last
+                                    // check so no over-range value reaches the server.
                                     let time_minutes_v = {
                                         let t = time_minutes_v.trim();
-                                        (!t.is_empty()).then(|| t.parse::<f64>().unwrap_or_default() as i32)
+                                        if t.is_empty() {
+                                            None
+                                        } else {
+                                            match t.parse::<i32>() {
+                                                Ok(n) => Some(n),
+                                                Err(_) => {
+                                                    note_time_minutes_error.set(format!(
+                                                        "{t} is not a valid minute count"
+                                                    ));
+                                                    return;
+                                                }
+                                            }
+                                        }
                                     };
                                     let work_summary_v = {
                                         let t = note_work_summary.read().trim().to_string();
@@ -8824,6 +8876,97 @@ mod mapps998_saved_views_tests {
         assert!(
             preamble.contains("selected_view_id.set(None);"),
             "the No view option is not clearing selected_view_id: {preamble}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mapps1042_note_structured_tests {
+    use super::{note_structured_lines, RemoteNote};
+    use chrono::Utc;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    fn note_with_follow_up(follow_up: Option<serde_json::Value>) -> RemoteNote {
+        RemoteNote {
+            id: Uuid::new_v4(),
+            note_type: "internal".to_string(),
+            content: String::new(),
+            created_by_name: String::new(),
+            is_email_sent: false,
+            created_by_id: None,
+            created_by_contact_id: None,
+            created_at: Utc::now(),
+            updated_at: None,
+            can_edit: None,
+            time_minutes: None,
+            work_summary: None,
+            parts_used: None,
+            follow_up,
+        }
+    }
+
+    #[test]
+    fn follow_up_missing_needed_renders_invalid_data() {
+        let note = note_with_follow_up(Some(json!({})));
+        let lines = note_structured_lines(&note);
+        let follow_up_line = lines
+            .iter()
+            .find(|(label, _)| *label == "Follow-up")
+            .expect("Follow-up line");
+        assert_eq!(follow_up_line.1, "Invalid follow-up data");
+    }
+
+    #[test]
+    fn follow_up_non_boolean_needed_renders_invalid_data() {
+        let note = note_with_follow_up(Some(json!({ "needed": "true" })));
+        let lines = note_structured_lines(&note);
+        let follow_up_line = lines
+            .iter()
+            .find(|(label, _)| *label == "Follow-up")
+            .expect("Follow-up line");
+        assert_eq!(
+            follow_up_line.1, "Invalid follow-up data",
+            "a stringy \"true\" is still a contract break; must not render as Needed"
+        );
+    }
+
+    #[test]
+    fn follow_up_needed_false_still_reads_as_not_needed() {
+        let note = note_with_follow_up(Some(json!({ "needed": false })));
+        let lines = note_structured_lines(&note);
+        let follow_up_line = lines
+            .iter()
+            .find(|(label, _)| *label == "Follow-up")
+            .expect("Follow-up line");
+        assert_eq!(follow_up_line.1, "Not needed");
+    }
+
+    #[test]
+    fn follow_up_needed_true_with_description_and_target_renders_together() {
+        let note = note_with_follow_up(Some(json!({
+            "needed": true,
+            "description": "Call back about the printer",
+            "target_date": "2026-10-20",
+        })));
+        let lines = note_structured_lines(&note);
+        let follow_up_line = lines
+            .iter()
+            .find(|(label, _)| *label == "Follow-up")
+            .expect("Follow-up line");
+        assert_eq!(
+            follow_up_line.1,
+            "Needed - Call back about the printer (target 2026-10-20)"
+        );
+    }
+
+    #[test]
+    fn no_follow_up_field_renders_no_follow_up_line() {
+        let note = note_with_follow_up(None);
+        let lines = note_structured_lines(&note);
+        assert!(
+            lines.iter().all(|(label, _)| *label != "Follow-up"),
+            "no follow-up on the note means no Follow-up line"
         );
     }
 }
