@@ -176,15 +176,6 @@ struct TaskPick {
     title: String,
 }
 
-/// A project (`GET /api/v1/projects`), used to label project-linked time in
-/// the timesheet grid.
-#[derive(Clone, Debug, Deserialize)]
-struct ProjectOption {
-    id: uuid::Uuid,
-    #[serde(default)]
-    name: String,
-}
-
 /// A week summary (`GET /api/v1/timesheets`). The endpoint aggregates a
 /// `(user, week)` over `time_entries`; the grid pivots the raw entries
 /// itself, so only the week-level `approval_status` is consumed here.
@@ -236,6 +227,70 @@ fn monday_of_week(date: NaiveDate) -> NaiveDate {
         Weekday::Sun => 6,
     };
     date - Duration::days(offset)
+}
+
+/// One pivoted row of the timesheet grid: a work item, the seven day buckets
+/// it accumulates, and where its name came from.
+///
+/// A struct rather than the `(String, Option<Route>, [i64; 7])` tuple it
+/// replaces, because MAPPS-1038 adds a fourth member that is easy to read as
+/// one of the other two at a call site: `tooltip` is the unresolved id, set
+/// only when the response named no work item.
+struct TimesheetRow {
+    label: String,
+    tooltip: Option<String>,
+    route: Option<Route>,
+    buckets: [i64; 7],
+}
+
+/// The timesheet grid's label for one entry, with the tooltip that explains a
+/// placeholder and the route to the work item.
+///
+/// Reads `ticket_number` / `ticket_title` / `project_name`, which the server
+/// joins into the same response (PMS-332). MAPPS-1038: the grid used to fetch
+/// the whole of `GET /tickets` and `GET /projects` and join on id, printing
+/// "Ticket 4f3a1b2c" from the id itself when the list was late, truncated by
+/// pagination or simply failed. That fallback LOOKED like a degraded label and
+/// was indistinguishable from a tenant whose ticket had been deleted.
+///
+/// `task_title` is deliberately not part of the label here, unlike the entry
+/// list's `work_item_label`: the label is this grid's pivot KEY, so folding
+/// the task into it would split one project row into one row per task. That is
+/// a change to what the grid counts, not to where a name comes from, and
+/// MAPPS-1038 is the latter.
+fn grid_work_item(e: &RemoteTimeEntry) -> (String, Option<String>, Option<Route>) {
+    use crate::utils::unresolved_person::unresolved;
+    if let Some(tid) = e.ticket_id {
+        let route = Some(Route::TicketDetail {
+            id: tid.to_string(),
+        });
+        return match (e.ticket_number.as_deref(), e.ticket_title.as_deref()) {
+            (Some(n), Some(t)) if !n.is_empty() && !t.is_empty() => {
+                (format!("{n}: {t}"), None, route)
+            }
+            (Some(n), _) if !n.is_empty() => (n.to_string(), None, route),
+            _ => {
+                let shown = "Ticket";
+                let tooltip = unresolved("time.timesheet_ticket", "ticket", Some(tid), shown);
+                (shown.to_string(), Some(tooltip), route)
+            }
+        };
+    }
+    if let Some(pid) = e.project_id {
+        let route = Some(Route::ProjectDetail {
+            id: pid.to_string(),
+        });
+        return match e.project_name.as_deref() {
+            Some(name) if !name.trim().is_empty() => (format!("Project: {name}"), None, route),
+            _ => {
+                let shown = "Project";
+                let tooltip = unresolved("time.timesheet_project", "project", Some(pid), shown);
+                (shown.to_string(), Some(tooltip), route)
+            }
+        };
+    }
+    // Neither: the MSP's own time. Not an unresolved reference, so no log.
+    ("Internal".to_string(), None, None)
 }
 
 /// Human label for a time entry's work item: "Ticket {n}: {title}" or
@@ -1223,35 +1278,6 @@ pub fn TimesheetsPage() -> Element {
             .and_then(|p| p.data.into_iter().next())
     });
 
-    // Work-item labels: tickets and projects.
-    let tickets_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<TicketOption>("/tickets")
-            .await
-            .unwrap_or_else(|e| {
-                // Best-effort: rows fall back to the bare "Ticket <id>" label.
-                tracing::warn!("timesheet ticket label load failed: {e}");
-                Vec::new()
-            })
-    });
-    let projects_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_all_authed::<ProjectOption>("/projects")
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!("timesheet project label load failed: {e}");
-                Vec::new()
-            })
-    });
-    let tickets = tickets_resource
-        .read_unchecked()
-        .clone()
-        .unwrap_or_default();
-    let projects = projects_resource
-        .read_unchecked()
-        .clone()
-        .unwrap_or_default();
-
     let snapshot = entries_resource.read_unchecked().clone();
     // `None` while loading; `Some(None)` on fetch failure (or no signed-in
     // user yet); `Some(Some(rows))` once loaded.
@@ -1279,55 +1305,30 @@ pub fn TimesheetsPage() -> Element {
     // (Mon..Sun), summing duration into each (row, weekday) cell. Each row also
     // carries a link to its work item's detail page (MAPPS-206 for projects,
     // and tickets too for parity), or `None` for internal time.
-    let work_item_of = |e: &RemoteTimeEntry| -> (String, Option<Route>) {
-        if let Some(tid) = e.ticket_id {
-            let label = tickets
-                .iter()
-                .find(|t| t.id == tid)
-                .map(|t| format!("{}: {}", t.ticket_number, t.title))
-                .unwrap_or_else(|| format!("Ticket {}", short_id(tid)));
-            return (
-                label,
-                Some(Route::TicketDetail {
-                    id: tid.to_string(),
-                }),
-            );
-        }
-        if let Some(pid) = e.project_id {
-            let label = projects
-                .iter()
-                .find(|p| p.id == pid)
-                .map(|p| format!("Project: {}", p.name))
-                .unwrap_or_else(|| format!("Project {}", short_id(pid)));
-            return (
-                label,
-                Some(Route::ProjectDetail {
-                    id: pid.to_string(),
-                }),
-            );
-        }
-        ("Internal".to_string(), None)
-    };
-
-    let mut rows: Vec<(String, Option<Route>, [i64; 7])> = Vec::new();
+    let mut rows: Vec<TimesheetRow> = Vec::new();
     for e in &entries {
         let day_idx = (e.date - start).num_days();
         if !(0..7).contains(&day_idx) {
             continue;
         }
-        let (label, route) = work_item_of(e);
-        let pos = match rows.iter().position(|(l, _, _)| *l == label) {
+        let (label, tooltip, route) = grid_work_item(e);
+        let pos = match rows.iter().position(|r| r.label == label) {
             Some(p) => p,
             None => {
-                rows.push((label, route, [0; 7]));
+                rows.push(TimesheetRow {
+                    label,
+                    tooltip,
+                    route,
+                    buckets: [0; 7],
+                });
                 rows.len() - 1
             }
         };
-        rows[pos].2[day_idx as usize] += e.duration_minutes;
+        rows[pos].buckets[day_idx as usize] += e.duration_minutes;
     }
     let mut daily_totals = [0i64; 7];
-    for (_, _, buckets) in &rows {
-        for (i, m) in buckets.iter().enumerate() {
+    for row in &rows {
+        for (i, m) in row.buckets.iter().enumerate() {
             daily_totals[i] += m;
         }
     }
@@ -1561,21 +1562,26 @@ pub fn TimesheetsPage() -> Element {
                             }
                         }
                     } else {
-                        for (label , route , buckets) in rows.iter() {
+                        for row in rows.iter() {
                             {
+                                let TimesheetRow { label, tooltip, route, buckets } = row;
                                 let row_total = buckets.iter().sum::<i64>();
                                 rsx! {
                                     TableRow {
                                         TableCell {
                                             // MAPPS-206: link the work item to its detail.
+                                            // MAPPS-1038: `title` carries the
+                                            // unresolved id when the response
+                                            // named no work item.
                                             if let Some(r) = route {
                                                 Link {
                                                     to: r.clone(),
                                                     class: "font-medium text-accent hover:opacity-90",
+                                                    title: tooltip.clone(),
                                                     "{label}"
                                                 }
                                             } else {
-                                                span { class: "text-content", "{label}" }
+                                                span { class: "text-content", title: tooltip.clone(), "{label}" }
                                             }
                                         }
                                         for m in buckets.iter() {
@@ -3898,5 +3904,95 @@ mod week_label_tests {
     fn crossing_year_names_both_years() {
         let l = week_range_label(d(2025, 12, 29), d(2026, 1, 4));
         assert!(l.contains("2025") && l.contains("2026"), "{l}");
+    }
+}
+
+/// MAPPS-1038: the timesheet grid labels a row from the work-item names the
+/// server joins into each entry (PMS-332), not from `GET /tickets` and
+/// `GET /projects`.
+#[cfg(test)]
+mod mapps1038_work_item_tests {
+    use super::{grid_work_item, RemoteTimeEntry};
+
+    fn entry(json: &str) -> RemoteTimeEntry {
+        serde_json::from_str(json).expect("deserialise time entry")
+    }
+
+    const TICKET: &str = "33333333-3333-4333-8333-333333333333";
+    const PROJECT: &str = "44444444-4444-4444-8444-444444444444";
+
+    #[test]
+    fn a_ticket_row_reads_its_number_and_title_from_the_entry() {
+        let e = entry(&format!(
+            r#"{{"id":"11111111-1111-4111-8111-111111111111","date":"2026-10-12","ticket_id":"{TICKET}","ticket_number":"TKT-1042","ticket_title":"Printer offline"}}"#
+        ));
+        let (label, tooltip, route) = grid_work_item(&e);
+        assert_eq!(label, "TKT-1042: Printer offline");
+        assert!(tooltip.is_none());
+        assert!(route.is_some(), "MAPPS-206: the row still links out");
+    }
+
+    /// The masking this removes: the old grid printed "Ticket 4f3a1b2c" built
+    /// from the id when its `/tickets` fetch was late, truncated by pagination
+    /// or failed, which looked like a label rather than a failure.
+    #[test]
+    fn a_ticket_with_no_name_is_a_placeholder_carrying_the_id() {
+        let e = entry(&format!(
+            r#"{{"id":"11111111-1111-4111-8111-111111111111","date":"2026-10-12","ticket_id":"{TICKET}"}}"#
+        ));
+        let (label, tooltip, route) = grid_work_item(&e);
+        assert_eq!(label, "Ticket");
+        assert_eq!(
+            tooltip.as_deref(),
+            Some(&format!("Unresolved ticket {TICKET}")[..])
+        );
+        assert!(route.is_some());
+    }
+
+    #[test]
+    fn a_project_row_reads_its_name_from_the_entry() {
+        let e = entry(&format!(
+            r#"{{"id":"11111111-1111-4111-8111-111111111111","date":"2026-10-12","project_id":"{PROJECT}","project_name":"Office move"}}"#
+        ));
+        let (label, tooltip, _) = grid_work_item(&e);
+        assert_eq!(label, "Project: Office move");
+        assert!(tooltip.is_none());
+    }
+
+    #[test]
+    fn a_project_with_no_name_is_a_placeholder_carrying_the_id() {
+        let e = entry(&format!(
+            r#"{{"id":"11111111-1111-4111-8111-111111111111","date":"2026-10-12","project_id":"{PROJECT}"}}"#
+        ));
+        let (label, tooltip, _) = grid_work_item(&e);
+        assert_eq!(label, "Project");
+        assert_eq!(
+            tooltip.as_deref(),
+            Some(&format!("Unresolved project {PROJECT}")[..])
+        );
+    }
+
+    /// Neither a ticket nor a project is the MSP's own time. Nothing failed to
+    /// resolve, so there is no tooltip and no log line.
+    #[test]
+    fn an_entry_with_no_work_item_is_internal_and_is_not_logged() {
+        let e = entry(r#"{"id":"11111111-1111-4111-8111-111111111111","date":"2026-10-12"}"#);
+        let (label, tooltip, route) = grid_work_item(&e);
+        assert_eq!(label, "Internal");
+        assert!(tooltip.is_none());
+        assert!(route.is_none());
+    }
+
+    /// A number with no title still labels the row with the number, which is
+    /// a real state: the server joins both columns, and a ticket's title can
+    /// be empty while its number cannot.
+    #[test]
+    fn a_number_without_a_title_is_still_a_name() {
+        let e = entry(&format!(
+            r#"{{"id":"11111111-1111-4111-8111-111111111111","date":"2026-10-12","ticket_id":"{TICKET}","ticket_number":"TKT-7"}}"#
+        ));
+        let (label, tooltip, _) = grid_work_item(&e);
+        assert_eq!(label, "TKT-7");
+        assert!(tooltip.is_none());
     }
 }

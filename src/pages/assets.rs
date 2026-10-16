@@ -15,6 +15,24 @@ use crate::components::{ChangeHistoryEntry, ChangeLine};
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
+/// Both asset screens' existing wording for an asset with no company. Kept as
+/// it was: MAPPS-1038 changes where the name comes from, not the copy.
+const NO_COMPANY: &str = "-";
+
+/// The company shown on an asset row or detail panel, from the name the
+/// response carried (PMS-336) rather than a client-side join.
+///
+/// Takes the surface so the two screens log distinctly: the list and the
+/// detail reach the same unresolved id by different routes, and a log line
+/// that cannot say which one it came from sends a reader to the wrong page.
+fn asset_company(surface: &str, a: &RemoteAsset) -> crate::utils::unresolved_person::CompanyRef {
+    crate::utils::unresolved_person::resolve_company(
+        surface,
+        a.company_name.as_deref(),
+        a.company_id,
+    )
+}
+
 /// An asset (`GET /api/v1/assets`).
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteAsset {
@@ -27,6 +45,13 @@ struct RemoteAsset {
     asset_type_id: Option<uuid::Uuid>,
     #[serde(default)]
     company_id: Option<uuid::Uuid>,
+    // The owning company's name, resolved server-side by a LEFT JOIN in the
+    // same query that returns the row (PMS-336). MAPPS-1038: both asset
+    // screens used to join `company_id` against a separately fetched
+    // /contacts/companies list instead, so a late or truncated list printed
+    // "-" for an asset whose company the response had already named.
+    #[serde(default)]
+    company_name: Option<String>,
     #[serde(default)]
     status: String,
     #[serde(default)]
@@ -1104,10 +1129,6 @@ pub fn AssetListPage() -> Element {
         .unwrap_or_default();
     let assets: Vec<RemoteAsset> = page_envelope.map(|p| p.data).unwrap_or_default();
     let types = types_resource.read_unchecked().clone().unwrap_or_default();
-    let companies = companies_resource
-        .read_unchecked()
-        .clone()
-        .unwrap_or_default();
 
     // F3: a `HashMap` rebuilt via `use_memo` only when the underlying
     // resource changes, not an `O(n)` `.iter().find(...)` scan repeated
@@ -1123,15 +1144,16 @@ pub fn AssetListPage() -> Element {
             .map(|t| (t.id, t.name.clone()))
             .collect::<HashMap<_, _>>()
     });
-    let company_names = use_memo(move || {
-        companies_resource
-            .read_unchecked()
-            .clone()
-            .unwrap_or_default()
-            .iter()
-            .map(|c| (c.id, c.name.clone()))
-            .collect::<HashMap<_, _>>()
-    });
+
+    // MAPPS-1038: the fetched company list stays for the OPTION lists below
+    // (the create form, the bulk-edit company field and the catalog UI) and
+    // for the `company:` search-DSL pill, which resolves a typed name to an
+    // id. What went is the display join: the row's company name now comes
+    // from the response (PMS-336).
+    let companies = companies_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
 
     use_page_title("Assets");
 
@@ -1150,10 +1172,6 @@ pub fn AssetListPage() -> Element {
 
     let type_name = |id: &Option<uuid::Uuid>| -> String {
         id.and_then(|tid| type_names.read().get(&tid).cloned())
-            .unwrap_or_else(|| "-".to_string())
-    };
-    let company_name = |id: &Option<uuid::Uuid>| -> String {
-        id.and_then(|cid| company_names.read().get(&cid).cloned())
             .unwrap_or_else(|| "-".to_string())
     };
 
@@ -1578,7 +1596,9 @@ pub fn AssetListPage() -> Element {
                                     {
                                         let (variant, label) = asset_status_badge(&a.status);
                                         let tname = type_name(&a.asset_type_id);
-                                        let cname = company_name(&a.company_id);
+                                        let company = asset_company("assets.list_company", a);
+                                        let cname = company.text(NO_COMPANY).to_string();
+                                        let cname_title = company.tooltip().map(str::to_string);
                                         let serial = a
                                             .serial_number
                                             .clone()
@@ -1610,7 +1630,11 @@ pub fn AssetListPage() -> Element {
                                                     }
                                                 }
                                                 if visible_type { TableCell { "{tname}" } }
-                                                if visible_company { TableCell { "{cname}" } }
+                                                if visible_company {
+                                                    TableCell {
+                                                        span { title: cname_title.clone(), "{cname}" }
+                                                    }
+                                                }
                                                 if visible_serial { TableCell { class: "font-mono text-sm", "{serial}" } }
                                                 if visible_status { TableCell { Badge { variant, "{label}" } } }
                                             }
@@ -2316,15 +2340,6 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     });
     // MAPPS-940: shared asset-types cache, not a per-page fetch.
     let types_resource = crate::hooks::use_asset_types(true);
-    let companies_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::list_or_empty(
-            "asset company option",
-            crate::hooks::fetch::api::get_authed::<Paginated<CompanyOpt>>("/contacts/companies")
-                .await
-                .map(|p| p.data),
-        )
-    });
     // MAPPS-860: shared roster cache, not a per-page fetch.
     let users_resource = crate::hooks::use_user_roster(true);
 
@@ -2482,10 +2497,6 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         .clone()
         .unwrap_or_default();
     let types = types_resource.read_unchecked().clone().unwrap_or_default();
-    let companies = companies_resource
-        .read_unchecked()
-        .clone()
-        .unwrap_or_default();
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
 
     // "Edited" marker: only when the asset has actually changed since
@@ -2629,11 +2640,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     .and_then(|tid| types.iter().find(|t| t.id == tid))
                     .map(|t| t.name.clone())
                     .unwrap_or_else(|| "-".to_string());
-                let cname = a
-                    .company_id
-                    .and_then(|cid| companies.iter().find(|c| c.id == cid))
-                    .map(|c| c.name.clone())
-                    .unwrap_or_else(|| "-".to_string());
+                let company = asset_company("assets.detail_company", &a);
+                let cname = company.text(NO_COMPANY).to_string();
+                let cname_title = company.tooltip().map(str::to_string);
                 let dash = || "-".to_string();
                 let manufacturer = a.manufacturer.clone().unwrap_or_else(dash);
                 let model = a.model.clone().unwrap_or_else(dash);
@@ -2714,7 +2723,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     }
                                     div {
                                         dt { class: "text-sm text-muted", "Company" }
-                                        dd { class: "mt-1", "{cname}" }
+                                        dd { class: "mt-1", title: cname_title.clone(), "{cname}" }
                                     }
                                     div {
                                         dt { class: "text-sm text-muted", "Manufacturer" }
@@ -4338,5 +4347,52 @@ mod mapps1037_audit_actor_tests {
         assert!(who.is_system());
         assert_eq!(who.text(), "System");
         assert!(who.tooltip().is_none());
+    }
+}
+
+/// MAPPS-1038: the Company column and the detail panel read the name the
+/// response carried, not a join against a separately fetched company list.
+#[cfg(test)]
+mod mapps1038_company_tests {
+    use super::{asset_company, RemoteAsset, NO_COMPANY};
+
+    fn asset(json: &str) -> RemoteAsset {
+        serde_json::from_str(json).expect("deserialise asset")
+    }
+
+    #[test]
+    fn the_response_name_is_rendered_with_no_company_list_in_sight() {
+        let a = asset(
+            r#"{"id":"11111111-1111-4111-8111-111111111111","company_id":"22222222-2222-4222-8222-222222222222","company_name":"Main Street Dental"}"#,
+        );
+        let company = asset_company("assets.list_company", &a);
+        assert_eq!(company.text(NO_COMPANY), "Main Street Dental");
+        assert!(company.tooltip().is_none());
+    }
+
+    /// The state the old join could not report: the row has a company, and
+    /// nothing named it. It printed a bare "-", identical to an asset with no
+    /// company at all, and identical to the list simply not having arrived.
+    #[test]
+    fn an_unnamed_company_id_is_unknown_company_with_the_id_in_the_tooltip() {
+        let a = asset(
+            r#"{"id":"11111111-1111-4111-8111-111111111111","company_id":"22222222-2222-4222-8222-222222222222"}"#,
+        );
+        let company = asset_company("assets.detail_company", &a);
+        assert_eq!(company.text(NO_COMPANY), "Unknown company");
+        assert_eq!(
+            company.tooltip(),
+            Some("Unresolved company 22222222-2222-4222-8222-222222222222")
+        );
+    }
+
+    /// No id: the screen's existing "-" , and nothing logged, because nothing
+    /// failed to resolve.
+    #[test]
+    fn no_company_id_keeps_the_screens_existing_dash() {
+        let a = asset(r#"{"id":"11111111-1111-4111-8111-111111111111"}"#);
+        let company = asset_company("assets.list_company", &a);
+        assert_eq!(company.text(NO_COMPANY), "-");
+        assert!(company.tooltip().is_none());
     }
 }
