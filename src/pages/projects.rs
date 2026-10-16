@@ -30,6 +30,13 @@ struct RemoteProject {
     status: String,
     #[serde(default)]
     company_id: Option<uuid::Uuid>,
+    // The owning company's name, resolved server-side in the same query that
+    // returns the row (PMS-335, "without an N+1 lookup per project").
+    // MAPPS-1038: the list used to fetch /contacts/companies and join on
+    // `company_id` instead, which re-derived a name the response already
+    // carried and printed "Unknown company" whenever that list was late.
+    #[serde(default)]
+    company_name: Option<String>,
     #[serde(default)]
     project_manager_id: Option<uuid::Uuid>,
     #[serde(default)]
@@ -46,13 +53,22 @@ struct RemoteProject {
     actual_amount: Option<f64>,
 }
 
-/// A company, used to resolve `company_id` to a name and to populate the
-/// New Project picker.
-#[derive(Clone, Debug, Deserialize)]
-struct CompanyOption {
-    id: uuid::Uuid,
-    #[serde(default)]
-    name: String,
+/// The projects list's existing wording for a project with no company. Kept
+/// as it was: MAPPS-1038 changes where the name comes from, not the copy.
+const NO_COMPANY: &str = "No company";
+
+/// The company shown on a project card, from the name the response carried
+/// (PMS-335) rather than a client-side join against `/contacts/companies`.
+///
+/// Free function rather than a closure over a fetched list, which is what it
+/// replaces, so the three states it has to tell apart are unit-testable: a
+/// name, an id the server could not name, and no company at all.
+fn project_company(p: &RemoteProject) -> crate::utils::unresolved_person::CompanyRef {
+    crate::utils::unresolved_person::resolve_company(
+        "projects.list_company",
+        p.company_name.as_deref(),
+        p.company_id,
+    )
 }
 
 /// A task (`GET /api/v1/projects/:id/tasks`).
@@ -90,6 +106,10 @@ struct HistoryEntry {
     action: String,
     #[serde(default)]
     user_id: Option<uuid::Uuid>,
+    /// PMS-1478: the actor's display name, sent alongside `user_id` so the
+    /// client no longer needs the roster to print it.
+    #[serde(default)]
+    user_name: Option<String>,
     #[serde(default)]
     changed_fields: Vec<String>,
     #[serde(default)]
@@ -129,15 +149,26 @@ fn task_status_badge(
     }
 }
 
-/// Resolve a user id to a display name; "Unassigned" when none.
-fn user_name(users: &[RemoteUser], id: &Option<uuid::Uuid>) -> String {
+/// MAPPS-1063: resolve a user id to a display name plus the tooltip the
+/// UI should hang off the element showing it. `None` tooltip means the id
+/// was absent (`"Unassigned"`) or resolved cleanly; `Some(title)` is the
+/// unresolved-reference hint already keyed through
+/// `crate::utils::unresolved`.
+fn user_name_with_tooltip(
+    users: &[RemoteUser],
+    id: &Option<uuid::Uuid>,
+    surface: &str,
+) -> (String, Option<String>) {
     match id {
-        Some(uid) => users
-            .iter()
-            .find(|u| &u.id == uid)
-            .map(|u| u.full_name.clone())
-            .unwrap_or_else(|| "Unknown".to_string()),
-        None => "Unassigned".to_string(),
+        Some(uid) => match users.iter().find(|u| &u.id == uid) {
+            Some(u) => (u.full_name.clone(), None),
+            None => {
+                let shown = "Unknown".to_string();
+                let title = crate::utils::unresolved(surface, "user", Some(*uid), &shown);
+                (shown, Some(title))
+            }
+        },
+        None => ("Unassigned".to_string(), None),
     }
 }
 
@@ -153,18 +184,19 @@ fn change_lines(changes: &[FieldChange]) -> Vec<ChangeLine> {
         .collect()
 }
 
-/// Resolve a history actor id to a display name; "" when unknown (the caller
-/// then omits the "by ..." suffix rather than printing a UUID). PMS-184.
-fn actor_name(users: &[RemoteUser], id: &Option<uuid::Uuid>) -> String {
-    match id {
-        Some(uid) => users
-            .iter()
-            .find(|u| &u.id == uid)
-            .map(|u| u.full_name.clone())
-            .filter(|n| !n.trim().is_empty())
-            .unwrap_or_default(),
-        None => String::new(),
-    }
+/// Resolve a history entry's actor (MAPPS-1037): the server-sent name, then
+/// the roster. PMS-184.
+fn history_actor(
+    users: &[RemoteUser],
+    e: &HistoryEntry,
+) -> crate::utils::unresolved_person::PersonRef {
+    crate::utils::unresolved_person::resolve_person(
+        "project_history",
+        e.user_name.as_deref(),
+        &e.user_id,
+        None,
+        users,
+    )
 }
 
 /// Validate an optional `yyyy-mm-dd` date field (PMS-317 / PMS-346). Blank is
@@ -447,17 +479,6 @@ pub fn ProjectListPage() -> Element {
             .inspect_err(|e| tracing::error!("project summary load failed: {e}"))
             .ok()
     });
-    // Company names are a SECONDARY lookup: a missing list just renders
-    // "Unknown company", so it keeps degrading to a default rather than
-    // gating the whole page on an outage.
-    let companies_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::list_or_empty(
-            "project company name",
-            crate::hooks::fetch::api::get_all_authed::<CompanyOption>("/contacts/companies").await,
-        )
-    });
-
     // MAPPS-357: primary resource unavailable (failed while the server is
     // flagged down) -> explicit outage body. Placed after every hook.
     if projects_resource.is_unavailable() {
@@ -469,21 +490,6 @@ pub fn ProjectListPage() -> Element {
     let page_envelope = projects_resource.value_or_default();
     let total = page_envelope.meta.total as usize;
     let projects: Vec<RemoteProject> = page_envelope.data;
-    let companies = companies_resource
-        .read_unchecked()
-        .clone()
-        .unwrap_or_default();
-
-    let company_name = |id: &Option<uuid::Uuid>| -> String {
-        match id {
-            Some(cid) => companies
-                .iter()
-                .find(|c| &c.id == cid)
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| "Unknown company".to_string()),
-            None => "No company".to_string(),
-        }
-    };
 
     // MAPPS-546: tenant-wide totals from `/projects/summary`, not from the rows
     // on screen. Counting the fetched page reported one page as the tenant.
@@ -618,7 +624,9 @@ pub fn ProjectListPage() -> Element {
                     for p in filtered.iter() {
                         {
                             let (variant, label) = status_badge(&p.status);
-                            let cname = company_name(&p.company_id);
+                            let company = project_company(p);
+                            let cname = company.text(NO_COMPANY).to_string();
+                            let cname_title = company.tooltip().map(str::to_string);
                             let util = match (p.actual_amount, p.budget_amount) {
                                 (Some(a), Some(b)) if b > 0.0 => {
                                     Some(((a / b) * 100.0).clamp(0.0, 100.0).round() as u32)
@@ -646,6 +654,7 @@ pub fn ProjectListPage() -> Element {
                                         // heading-row control.
                                         title: p.name.clone(),
                                         subtitle: cname.clone(),
+                                        subtitle_title: cname_title.clone(),
                                         actions: rsx! {
                                             Badge { variant, "{label}" }
                                         },
@@ -1189,17 +1198,19 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         .iter()
         .find(|e| e.action == "update")
         .map(|e| {
-            let who = actor_name(&users, &e.user_id);
+            let who = history_actor(&users, e);
             let when = crate::utils::datetime::fmt_user_dt_in(
                 e.timestamp,
                 pref.as_deref(),
                 tz,
                 Some("%b %-d, %Y %H:%M"),
             );
-            if who.is_empty() {
-                format!("Edited {when}")
-            } else {
-                format!("Edited {when} by {who}")
+            let who_class = if who.is_system() { "italic" } else { "" };
+            let who_text = who.text().to_string();
+            let who_tooltip = who.tooltip().unwrap_or_default().to_string();
+            rsx! {
+                "Edited {when} by "
+                span { class: "{who_class}", title: "{who_tooltip}", "{who_text}" }
             }
         });
     let proj_status_options = vec![
@@ -1442,7 +1453,11 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
             {
                 let p = project.clone().unwrap();
                 let (status_variant, status_label) = status_badge(&p.status);
-                let pm = user_name(&users, &p.project_manager_id);
+                let (pm, pm_title) = user_name_with_tooltip(
+                    &users,
+                    &p.project_manager_id,
+                    "projects.project_manager",
+                );
                 let spent = p.actual_amount.unwrap_or(0.0);
                 let budget = p.budget_amount.unwrap_or(0.0);
                 let remaining = budget - spent;
@@ -1519,7 +1534,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     p { class: "text-sm text-subtle italic", "No description provided." }
                                 }
                                 if let Some(m) = project_edited.clone() {
-                                    p { class: "text-xs text-subtle italic mt-3", "{m}" }
+                                    p { class: "text-xs text-subtle italic mt-3", {m} }
                                 }
                             }
                             Card { title: "Tasks",
@@ -1568,7 +1583,11 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     }
                                     div { class: "flex justify-between",
                                         dt { class: "text-sm text-muted", "Project Manager" }
-                                        dd { class: "text-sm", "{pm}" }
+                                        if let Some(ref t) = pm_title {
+                                            dd { class: "text-sm", title: "{t}", "{pm}" }
+                                        } else {
+                                            dd { class: "text-sm", "{pm}" }
+                                        }
                                     }
                                 }
                             }
@@ -1614,10 +1633,15 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 } else {
                                     div { class: "space-y-3 text-sm",
                                         for e in project_history.iter().take(20) {
+                                            {
+                                                let who = history_actor(&users, e);
+                                                rsx! {
                                             ChangeHistoryEntry {
                                                 key: "{e.timestamp}",
                                                 headline: headline(&e.action, &e.changed_fields),
-                                                who: actor_name(&users, &e.user_id),
+                                                who: who.text().to_string(),
+                                                who_tooltip: who.tooltip().unwrap_or_default().to_string(),
+                                                who_muted: who.is_system(),
                                                 when: crate::utils::datetime::fmt_user_dt_in(
                                                     e.timestamp,
                                                     pref.as_deref(),
@@ -1626,6 +1650,8 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                 ),
                                                 when_iso: e.timestamp.to_rfc3339(),
                                                 changes: change_lines(&e.changes),
+                                            }
+                                                }
                                             }
                                         }
                                     }
@@ -2116,7 +2142,11 @@ fn ProjectTaskTable(props: ProjectTaskTableProps) -> Element {
                         for t in tasks.iter() {
                             {
                                 let (tv, tl) = task_status_badge(&statuses, &t.status_id);
-                                let who = user_name(&users, &t.assigned_to_id);
+                                let (who, who_title) = user_name_with_tooltip(
+                                    &users,
+                                    &t.assigned_to_id,
+                                    "projects.task_assignee",
+                                );
                                 let due = fmt_date(&t.due_date);
                                 let due_iso = t.due_date.clone().unwrap_or_default();
                                 // Logged = all non-rejected time (PMS-329),
@@ -2144,6 +2174,8 @@ fn ProjectTaskTable(props: ProjectTaskTableProps) -> Element {
                                         TableCell {
                                             if unassigned {
                                                 span { class: "text-subtle italic", "Unassigned" }
+                                            } else if let Some(ref t) = who_title {
+                                                span { title: "{t}", "{who}" }
                                             } else {
                                                 "{who}"
                                             }
@@ -2374,17 +2406,19 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
         .clone()
         .unwrap_or_default();
     let task_edited = task_history.iter().find(|e| e.action == "update").map(|e| {
-        let who = actor_name(&users, &e.user_id);
+        let who = history_actor(&users, e);
         let when = crate::utils::datetime::fmt_user_dt_in(
             e.timestamp,
             pref.as_deref(),
             tz,
             Some("%b %-d, %Y %H:%M"),
         );
-        if who.is_empty() {
-            format!("Edited {when}")
-        } else {
-            format!("Edited {when} by {who}")
+        let who_class = if who.is_system() { "italic" } else { "" };
+        let who_text = who.text().to_string();
+        let who_tooltip = who.tooltip().unwrap_or_default().to_string();
+        rsx! {
+            "Edited {when} by "
+            span { class: "{who_class}", title: "{who_tooltip}", "{who_text}" }
         }
     });
 
@@ -2554,7 +2588,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                     p { class: "text-sm text-red-600 dark:text-red-400", "{te_error}" }
                 }
                 if let Some(m) = task_edited {
-                    p { class: "text-xs text-subtle italic", "{m}" }
+                    p { class: "text-xs text-subtle italic", {m} }
                 }
                 Input {
                     name: "te-title",
@@ -2625,10 +2659,15 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                     } else {
                         div { class: "space-y-2 text-sm max-h-48 overflow-y-auto",
                             for e in task_history.iter().take(20) {
+                                {
+                                    let who = history_actor(&users, e);
+                                    rsx! {
                                 ChangeHistoryEntry {
                                     key: "{e.timestamp}",
                                     headline: headline(&e.action, &e.changed_fields),
-                                    who: actor_name(&users, &e.user_id),
+                                    who: who.text().to_string(),
+                                    who_tooltip: who.tooltip().unwrap_or_default().to_string(),
+                                    who_muted: who.is_system(),
                                     when: crate::utils::datetime::fmt_user_dt_in(
                                         e.timestamp,
                                         pref.as_deref(),
@@ -2637,6 +2676,8 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                                     ),
                                     when_iso: e.timestamp.to_rfc3339(),
                                     changes: change_lines(&e.changes),
+                                }
+                                    }
                                 }
                             }
                         }
@@ -2714,5 +2755,110 @@ mod validation_tests {
         // Genuinely non-numeric input still reports the format message.
         let bad = validate_budget_hours("abc").unwrap_err();
         assert!(bad.contains("must be a number"), "got: {bad}");
+    }
+}
+
+#[cfg(test)]
+mod mapps1037_history_actor_tests {
+    use super::{history_actor, HistoryEntry, RemoteUser};
+
+    fn entry(json: &str) -> HistoryEntry {
+        serde_json::from_str(json).expect("deserialise history entry")
+    }
+
+    fn roster() -> Vec<RemoteUser> {
+        vec![serde_json::from_str(
+            r#"{"id":"11111111-1111-4111-8111-111111111111","full_name":"Dana Reeve"}"#,
+        )
+        .expect("deserialise user")]
+    }
+
+    #[test]
+    fn server_sent_name_renders_with_an_empty_roster() {
+        let e = entry(
+            r#"{"action":"update","user_id":"11111111-1111-4111-8111-111111111111","user_name":"Server Name","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+        let who = history_actor(&[], &e);
+        assert_eq!(who.text(), "Server Name");
+    }
+
+    #[test]
+    fn no_server_name_falls_back_to_the_roster() {
+        let e = entry(
+            r#"{"action":"update","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+        let who = history_actor(&roster(), &e);
+        assert_eq!(who.text(), "Dana Reeve");
+    }
+
+    #[test]
+    fn nothing_resolves_it_is_someone_with_a_tooltip() {
+        let e = entry(
+            r#"{"action":"update","user_id":"22222222-2222-4222-8222-222222222222","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+        let who = history_actor(&[], &e);
+        assert_eq!(who.text(), "Someone");
+        assert_eq!(
+            who.tooltip(),
+            Some("Unresolved user 22222222-2222-4222-8222-222222222222")
+        );
+    }
+
+    #[test]
+    fn a_none_actor_id_is_system() {
+        let e = entry(
+            r#"{"action":"update","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+        let who = history_actor(&[], &e);
+        assert!(who.is_system());
+        assert_eq!(who.text(), "System");
+        assert!(who.tooltip().is_none());
+    }
+}
+
+/// MAPPS-1038: a project card's company line reads the name the response
+/// carried (PMS-335), not a join against `/contacts/companies`.
+#[cfg(test)]
+mod mapps1038_company_tests {
+    use super::{project_company, RemoteProject, NO_COMPANY};
+
+    fn project(json: &str) -> RemoteProject {
+        serde_json::from_str(json).expect("deserialise project")
+    }
+
+    #[test]
+    fn the_response_name_is_rendered_with_no_company_list_in_sight() {
+        let p = project(
+            r#"{"id":"11111111-1111-4111-8111-111111111111","company_id":"22222222-2222-4222-8222-222222222222","company_name":"Riverside Clinic"}"#,
+        );
+        let company = project_company(&p);
+        assert_eq!(company.text(NO_COMPANY), "Riverside Clinic");
+        assert!(company.tooltip().is_none());
+    }
+
+    /// "Unknown company" was also what an empty or late company list printed,
+    /// so the text stays and the tooltip plus the INFO log are what now tell
+    /// the two apart.
+    #[test]
+    fn an_unnamed_company_id_is_unknown_company_with_the_id_in_the_tooltip() {
+        let p = project(
+            r#"{"id":"11111111-1111-4111-8111-111111111111","company_id":"22222222-2222-4222-8222-222222222222"}"#,
+        );
+        let company = project_company(&p);
+        assert_eq!(company.text(NO_COMPANY), "Unknown company");
+        assert_eq!(
+            company.tooltip(),
+            Some("Unresolved company 22222222-2222-4222-8222-222222222222")
+        );
+    }
+
+    /// An internal project legitimately has no company: the existing explicit
+    /// wording, and no log line.
+    #[test]
+    fn no_company_id_keeps_the_explicit_no_company_wording() {
+        let p = project(r#"{"id":"11111111-1111-4111-8111-111111111111"}"#);
+        let company = project_company(&p);
+        assert_eq!(company.text(NO_COMPANY), "No company");
+        assert!(company.tooltip().is_none());
     }
 }

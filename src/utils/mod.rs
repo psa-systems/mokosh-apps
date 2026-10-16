@@ -21,6 +21,9 @@ pub mod rate_limit;
 pub mod sort_keys;
 // MAPPS-582: invisible-character sanitizing for every text input.
 pub mod text;
+// MAPPS-1036 / MAPPS-1039: shared "placeholder shown for an unresolved
+// reference" logging + tooltip helper.
+pub mod unresolved_person;
 pub mod url;
 pub mod validation;
 pub mod version;
@@ -32,6 +35,7 @@ pub use error::{AppError, AppResult};
 pub use form_guard::FormGuard;
 pub use pagination::{PaginatedResponse, PaginationParams};
 pub use text::{clean_strict, has_invisible, strip_invisible};
+pub use unresolved_person::unresolved;
 pub use validation::{validate, Rule};
 pub use version::{BUILD_DATE, GIT_HASH, VERSION};
 

@@ -505,22 +505,36 @@ fn note_structured_lines(note: &RemoteNote) -> Vec<(&'static str, String)> {
         lines.push(("Parts used", parts.join(", ")));
     }
     if let Some(follow_up) = note.follow_up.as_ref() {
-        let needed = follow_up
-            .get("needed")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let mut value = if needed {
-            "Needed".to_string()
-        } else {
-            "Not needed".to_string()
-        };
-        if let Some(description) = follow_up.get("description").and_then(|v| v.as_str()) {
-            value.push_str(&format!(" - {description}"));
+        // MAPPS-1042: the server's `264_note_structured_fields.sql` CHECKs
+        // that `needed` is a boolean; a missing or non-boolean value is a
+        // contract violation. The old `unwrap_or(false)` rendered it as
+        // "Not needed", indistinguishable from a real `false`. Branch
+        // explicitly on the three cases so an invalid payload reads as
+        // an explicit, logged failure rather than a plausible value.
+        match follow_up.get("needed") {
+            Some(serde_json::Value::Bool(needed)) => {
+                let mut value = if *needed {
+                    "Needed".to_string()
+                } else {
+                    "Not needed".to_string()
+                };
+                if let Some(description) = follow_up.get("description").and_then(|v| v.as_str()) {
+                    value.push_str(&format!(" - {description}"));
+                }
+                if let Some(target_date) = follow_up.get("target_date").and_then(|v| v.as_str()) {
+                    value.push_str(&format!(" (target {target_date})"));
+                }
+                lines.push(("Follow-up", value));
+            }
+            _ => {
+                tracing::warn!(
+                    note_id = %note.id,
+                    raw = ?follow_up,
+                    "note.follow_up carries a non-boolean or absent `needed`; contract-breaking payload"
+                );
+                lines.push(("Follow-up", "Invalid follow-up data".to_string()));
+            }
         }
-        if let Some(target_date) = follow_up.get("target_date").and_then(|v| v.as_str()) {
-            value.push_str(&format!(" (target {target_date})"));
-        }
-        lines.push(("Follow-up", value));
     }
     lines
 }
@@ -609,6 +623,12 @@ struct HistoryEntry {
     action: String,
     #[serde(default)]
     user_id: Option<uuid::Uuid>,
+    /// PMS-1478: the actor's display name, sent alongside `user_id` so the
+    /// client no longer needs the roster to print it. `None` on a server
+    /// that predates PMS-1478, or for a system-issued row (`user_id` is also
+    /// `None` then).
+    #[serde(default)]
+    user_name: Option<String>,
     #[serde(default)]
     changed_fields: Vec<String>,
     #[serde(default)]
@@ -865,20 +885,6 @@ fn fmt_datetime_in(dt: DateTime<Utc>, pref: Option<&str>, tz: chrono_tz::Tz) -> 
     crate::utils::datetime::fmt_user_dt_in(dt, pref, tz, Some("%b %d, %Y %H:%M"))
 }
 
-/// Resolve a history actor id to a display name; "-" when unknown so the
-/// change-history feed never shows a bare UUID (PMS-182).
-fn actor_name(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
-    match id {
-        Some(uid) => users
-            .iter()
-            .find(|u| &u.id == uid)
-            .map(|u| u.full_name.clone())
-            .filter(|n| !n.trim().is_empty())
-            .unwrap_or_else(|| "-".to_string()),
-        None => "-".to_string(),
-    }
-}
-
 /// MAPPS-517: one line of the ticket journal, whatever source it came from.
 ///
 /// The journal replaced an Activity card that rendered notes alone, so a
@@ -887,8 +893,9 @@ fn actor_name(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
 #[derive(Clone, Debug, PartialEq)]
 struct JournalEntry {
     at: DateTime<Utc>,
-    /// Display name of whoever did it, or "Someone" when unresolvable.
-    who: String,
+    /// Whoever did it: a resolved name, "System" for a system-issued row, or
+    /// the unresolved placeholder with its tooltip (MAPPS-1037).
+    who: crate::utils::unresolved_person::PersonRef,
     /// Predicate, rendered after the name: "added an internal note".
     action: String,
     /// Body block under the headline: the note text or a time entry's notes.
@@ -918,33 +925,25 @@ struct JournalEntry {
     structured: Vec<(&'static str, String)>,
 }
 
-/// The name to attribute a journal line to. `actor_name` yields "-" for an
-/// id no `/auth/users` row matches, which reads as a broken row in a sentence.
-///
-/// `viewer` carries the authenticated session's own `(id, name)` so an entry
-/// attributed to the viewer resolves to the viewer's name even when the
-/// roster is empty or returns an empty `full_name`. The roster is
-/// `RequireManager`-gated on the server and can legitimately not reach every
-/// signed-in operator, and a JIT-provisioned bunyip user starts with an
-/// empty profile name, so a viewer could see their own actions as "Someone"
-/// on their own ticket. The authenticated session always knows its own
-/// identity, so a self-attributed line never falls through to the roster.
+/// The actor to attribute a journal line to (MAPPS-1037): the server-sent
+/// name, then the viewer's own name so an entry attributed to the viewer
+/// resolves even when the roster is empty or returns an empty `full_name`
+/// (the roster is `RequireManager`-gated on the server and can legitimately
+/// not reach every signed-in operator, and a JIT-provisioned bunyip user
+/// starts with an empty profile name), then the roster.
 fn journal_actor(
     users: &[UserOpt],
     id: &Option<uuid::Uuid>,
+    server_name: Option<&str>,
     viewer: Option<(uuid::Uuid, &str)>,
-) -> String {
-    if let (Some(h_id), Some((v_id, v_name))) = (id, viewer) {
-        if *h_id == v_id && !v_name.trim().is_empty() {
-            return v_name.to_string();
-        }
-    }
-    let name = actor_name(users, id);
-    if name == "-" {
-        "Someone".to_string()
-    } else {
-        name
-    }
+) -> crate::utils::unresolved_person::PersonRef {
+    crate::utils::unresolved_person::resolve_person(
+        "ticket_journal",
+        server_name,
+        id,
+        viewer,
+        users,
+    )
 }
 
 /// Headline for an audit-log entry. A single-column edit gets the phrasing a
@@ -1042,11 +1041,9 @@ fn build_journal(
         // closes the same gap history + time entries already handle. A
         // note from someone else with an empty server-sent name still
         // falls through to "Someone" since the viewer-id match misses.
-        let who = if n.created_by_name.trim().is_empty() {
-            journal_actor(users, &n.created_by_id, viewer_pair)
-        } else {
-            n.created_by_name.clone()
-        };
+        let server_name =
+            (!n.created_by_name.trim().is_empty()).then_some(n.created_by_name.as_str());
+        let who = journal_actor(users, &n.created_by_id, server_name, viewer_pair);
         entries.push(JournalEntry {
             at: n.created_at,
             who,
@@ -1065,7 +1062,7 @@ fn build_journal(
     for h in history {
         entries.push(JournalEntry {
             at: h.timestamp,
-            who: journal_actor(users, &h.user_id, viewer_pair),
+            who: journal_actor(users, &h.user_id, h.user_name.as_deref(), viewer_pair),
             action: history_action(h),
             body: None,
             changes: history_changes(h),
@@ -1085,7 +1082,7 @@ fn build_journal(
         let billable = if e.is_billable { " (billable)" } else { "" };
         entries.push(JournalEntry {
             at,
-            who: journal_actor(users, &e.user_id, viewer_pair),
+            who: journal_actor(users, &e.user_id, None, viewer_pair),
             action: format!("logged {} min on {}{billable}", e.duration_minutes, e.date),
             body: e.notes.clone().filter(|s| !s.trim().is_empty()),
             changes: Vec::new(),
@@ -3861,20 +3858,27 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
         .iter()
         .find(|e| e.action == "update" && e.changed_fields.iter().any(|f| f == "description"))
         .map(|e| {
-            let who = actor_name(&users, &e.user_id);
+            let who = crate::utils::unresolved_person::resolve_person(
+                "ticket_journal",
+                e.user_name.as_deref(),
+                &e.user_id,
+                None,
+                &users,
+            );
             let when = fmt_datetime_in(e.timestamp, pref.as_deref(), tz);
             let when_iso = e.timestamp.to_rfc3339();
-            if who == "-" {
-                rsx! {
-                    "Edited "
-                    time { datetime: "{when_iso}", "{when}" }
-                }
+            let who_class = if who.is_system() {
+                "text-subtle italic"
             } else {
-                rsx! {
-                    "Edited "
-                    time { datetime: "{when_iso}", "{when}" }
-                    " by {who}"
-                }
+                ""
+            };
+            let who_text = who.text().to_string();
+            let who_tooltip = who.tooltip().unwrap_or_default().to_string();
+            rsx! {
+                "Edited "
+                time { datetime: "{when_iso}", "{when}" }
+                " by "
+                span { class: "{who_class}", title: "{who_tooltip}", "{who_text}" }
             }
         });
     let notes_snap = notes_resource.read_unchecked().clone();
@@ -4787,7 +4791,14 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                 min: "1".to_string(),
                                 value: note_time_minutes.read().clone(),
                                 error: note_time_minutes_error.read().clone(),
-                                rules: vec![Rule::Number { min: Some(1.0), max: None, max_decimals: Some(0) }],
+                                // MAPPS-1042: `max: Some(i32::MAX as f64)` so a
+                                // live-typed over-i32 value shows a field error on
+                                // input, not just at submit.
+                                rules: vec![Rule::Number {
+                                    min: Some(1.0),
+                                    max: Some(i32::MAX as f64),
+                                    max_decimals: Some(0),
+                                }],
                                 oninput: move |e: FormEvent| {
                                     note_time_minutes_error.set(String::new());
                                     note_time_minutes.set(e.value());
@@ -4880,12 +4891,23 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     // MAPPS-1034: optional, but still validated through the
                                     // same guard so a malformed minute count is reported
                                     // alongside a missing Content rather than posted anyway.
+                                    //
+                                    // MAPPS-1042: cap at `i32::MAX` so an operator-pasted
+                                    // "99999999999" is rejected while the operator is still
+                                    // in the form instead of silently saturating to
+                                    // `i32::MAX` on the `as i32` cast below. The server's
+                                    // own CHECK is only `> 0`; the ceiling here is the wire
+                                    // type's.
                                     let time_minutes_v = note_time_minutes.read().clone();
                                     note_time_minutes_error.set(guard.field(
                                         "note_time_minutes",
                                         time_minutes_v.trim(),
                                         "Time (minutes)",
-                                        &[Rule::Number { min: Some(1.0), max: None, max_decimals: Some(0) }],
+                                        &[Rule::Number {
+                                            min: Some(1.0),
+                                            max: Some(i32::MAX as f64),
+                                            max_decimals: Some(0),
+                                        }],
                                     ));
                                     if guard.blocked() {
                                         return;
@@ -4910,9 +4932,29 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     // MAPPS-1034: each sent only when the operator
                                     // filled it; `CreateNoteBody`'s `skip_serializing_if`
                                     // then omits whichever of these stays `None`.
+                                    //
+                                    // MAPPS-1042: parse to `i32` directly (not `f64 as
+                                    // i32` which saturates silently). A parse failure
+                                    // here fires `note_time_minutes_error` naming the
+                                    // offending value and returns without posting. The
+                                    // guard above should have caught anything out of
+                                    // range already; this is the belt-and-braces last
+                                    // check so no over-range value reaches the server.
                                     let time_minutes_v = {
                                         let t = time_minutes_v.trim();
-                                        (!t.is_empty()).then(|| t.parse::<f64>().unwrap_or_default() as i32)
+                                        if t.is_empty() {
+                                            None
+                                        } else {
+                                            match t.parse::<i32>() {
+                                                Ok(n) => Some(n),
+                                                Err(_) => {
+                                                    note_time_minutes_error.set(format!(
+                                                        "{t} is not a valid minute count"
+                                                    ));
+                                                    return;
+                                                }
+                                            }
+                                        }
                                     };
                                     let work_summary_v = {
                                         let t = note_work_summary.read().trim().to_string();
@@ -5017,7 +5059,9 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             rsx! {
                                         TimelineItem {
                                             key: "{entry_key}",
-                                            user: entry.who.clone(),
+                                            user: entry.who.text().to_string(),
+                                            user_tooltip: entry.who.tooltip().unwrap_or_default().to_string(),
+                                            user_muted: entry.who.is_system(),
                                             action: entry.action.clone(),
                                             time: fmt_datetime_in(entry.at, pref.as_deref(), tz),
                                             time_iso: entry.at.to_rfc3339(),
@@ -5703,6 +5747,14 @@ fn DetailItem(props: DetailItemProps) -> Element {
 #[derive(Props, Clone, PartialEq)]
 struct TimelineItemProps {
     user: String,
+    /// MAPPS-1037: hover text naming the unresolved id, empty when `user` is
+    /// resolved or is the "System" placeholder.
+    #[props(default)]
+    user_tooltip: String,
+    /// MAPPS-1037: `user` is the "System" placeholder for a system-issued
+    /// row; rendered in the muted style used for other "not set" values.
+    #[props(default = false)]
+    user_muted: bool,
     action: String,
     time: String,
     /// ISO-8601 form of `time`, for the wrapping `time` element's `datetime`
@@ -5824,7 +5876,11 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                     div { class: "flex min-w-0 flex-1 justify-between space-x-4 pt-1.5",
                         div {
                             p { class: "text-sm text-muted",
-                                span { class: "font-medium text-content", "{props.user}" }
+                                span {
+                                    class: if props.user_muted { "font-medium text-subtle italic" } else { "font-medium text-content" },
+                                    title: "{props.user_tooltip}",
+                                    "{props.user}"
+                                }
                                 " {props.action}"
                                 if props.edited {
                                     // MAPPS-593: an unmarked edit means the
@@ -6502,7 +6558,7 @@ mod mapps517_journal_tests {
     fn actions(entries: &[JournalEntry]) -> Vec<String> {
         entries
             .iter()
-            .map(|e| format!("{} {}", e.who, e.action))
+            .map(|e| format!("{} {}", e.who.text(), e.action))
             .collect()
     }
 
@@ -6711,10 +6767,31 @@ mod mapps517_journal_tests {
         assert!(journal.iter().all(|e| e.body.is_none()));
     }
 
-    /// An actor no `/auth/users` row matches reads as "Someone", never as the
-    /// bare "-" the change-history pane used in a column of its own.
+    /// An actor id present but matched by neither the server name, the
+    /// viewer nor the roster reads as "Someone", never as the bare "-" the
+    /// change-history pane used in a column of its own (MAPPS-1037).
     #[test]
     fn an_unresolvable_actor_reads_as_someone() {
+        let h = history(
+            r#"{"action":"create","user_id":"22222222-2222-4222-8222-222222222222","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[], &[h], &[], &users(), None, false);
+
+        assert_eq!(
+            actions(&journal),
+            vec!["Someone created the ticket".to_string()]
+        );
+        assert_eq!(
+            journal[0].who.tooltip(),
+            Some("Unresolved user 22222222-2222-4222-8222-222222222222")
+        );
+    }
+
+    /// A `None` `user_id` is a system-issued row, not an unresolvable actor:
+    /// it reads as "System", muted, with no tooltip (MAPPS-1037).
+    #[test]
+    fn a_none_actor_id_reads_as_system() {
         let h = history(
             r#"{"action":"create","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
         );
@@ -6723,7 +6800,26 @@ mod mapps517_journal_tests {
 
         assert_eq!(
             actions(&journal),
-            vec!["Someone created the ticket".to_string()]
+            vec!["System created the ticket".to_string()]
+        );
+        assert!(journal[0].who.is_system());
+        assert!(journal[0].who.tooltip().is_none());
+    }
+
+    /// The server-sent `user_name` on a history entry is preferred over the
+    /// roster, so a history line renders correctly even with an empty
+    /// roster (MAPPS-1037 / PMS-1478).
+    #[test]
+    fn server_sent_user_name_wins_with_an_empty_roster() {
+        let h = history(
+            r#"{"action":"create","user_id":"22222222-2222-4222-8222-222222222222","user_name":"Server Name","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[], &[h], &[], &[], None, false);
+
+        assert_eq!(
+            actions(&journal),
+            vec!["Server Name created the ticket".to_string()]
         );
     }
 
@@ -8755,6 +8851,97 @@ mod mapps998_saved_views_tests {
         assert!(
             preamble.contains("selected_view_id.set(None);"),
             "the No view option is not clearing selected_view_id: {preamble}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mapps1042_note_structured_tests {
+    use super::{note_structured_lines, RemoteNote};
+    use chrono::Utc;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    fn note_with_follow_up(follow_up: Option<serde_json::Value>) -> RemoteNote {
+        RemoteNote {
+            id: Uuid::new_v4(),
+            note_type: "internal".to_string(),
+            content: String::new(),
+            created_by_name: String::new(),
+            is_email_sent: false,
+            created_by_id: None,
+            created_by_contact_id: None,
+            created_at: Utc::now(),
+            updated_at: None,
+            can_edit: None,
+            time_minutes: None,
+            work_summary: None,
+            parts_used: None,
+            follow_up,
+        }
+    }
+
+    #[test]
+    fn follow_up_missing_needed_renders_invalid_data() {
+        let note = note_with_follow_up(Some(json!({})));
+        let lines = note_structured_lines(&note);
+        let follow_up_line = lines
+            .iter()
+            .find(|(label, _)| *label == "Follow-up")
+            .expect("Follow-up line");
+        assert_eq!(follow_up_line.1, "Invalid follow-up data");
+    }
+
+    #[test]
+    fn follow_up_non_boolean_needed_renders_invalid_data() {
+        let note = note_with_follow_up(Some(json!({ "needed": "true" })));
+        let lines = note_structured_lines(&note);
+        let follow_up_line = lines
+            .iter()
+            .find(|(label, _)| *label == "Follow-up")
+            .expect("Follow-up line");
+        assert_eq!(
+            follow_up_line.1, "Invalid follow-up data",
+            "a stringy \"true\" is still a contract break; must not render as Needed"
+        );
+    }
+
+    #[test]
+    fn follow_up_needed_false_still_reads_as_not_needed() {
+        let note = note_with_follow_up(Some(json!({ "needed": false })));
+        let lines = note_structured_lines(&note);
+        let follow_up_line = lines
+            .iter()
+            .find(|(label, _)| *label == "Follow-up")
+            .expect("Follow-up line");
+        assert_eq!(follow_up_line.1, "Not needed");
+    }
+
+    #[test]
+    fn follow_up_needed_true_with_description_and_target_renders_together() {
+        let note = note_with_follow_up(Some(json!({
+            "needed": true,
+            "description": "Call back about the printer",
+            "target_date": "2026-10-20",
+        })));
+        let lines = note_structured_lines(&note);
+        let follow_up_line = lines
+            .iter()
+            .find(|(label, _)| *label == "Follow-up")
+            .expect("Follow-up line");
+        assert_eq!(
+            follow_up_line.1,
+            "Needed - Call back about the printer (target 2026-10-20)"
+        );
+    }
+
+    #[test]
+    fn no_follow_up_field_renders_no_follow_up_line() {
+        let note = note_with_follow_up(None);
+        let lines = note_structured_lines(&note);
+        assert!(
+            lines.iter().all(|(label, _)| *label != "Follow-up"),
+            "no follow-up on the note means no Follow-up line"
         );
     }
 }

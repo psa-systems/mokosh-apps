@@ -73,7 +73,7 @@ pub struct AssetDrawerProps {
 pub fn AssetDrawer(props: AssetDrawerProps) -> Element {
     let asset_id = props.asset_id;
     let onclose = props.onclose;
-    let mut resource = use_resource(move || async move {
+    let resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let path = format!("/assets/{asset_id}");
         crate::hooks::fetch::api::get_authed_any::<DrawerAsset>(&path)
@@ -130,7 +130,6 @@ pub fn AssetDrawer(props: AssetDrawerProps) -> Element {
                     DrawerBody {
                         asset: a.clone(),
                         path: path.clone(),
-                        on_patched: move |_| resource.restart(),
                     }
                     div { class: "mt-6 pt-4 border-t border-line text-xs text-subtle",
                         "Destructive actions (delete, retire) are on the full detail page."
@@ -158,18 +157,49 @@ pub fn AssetDrawer(props: AssetDrawerProps) -> Element {
 struct DrawerBodyProps {
     asset: DrawerAsset,
     path: String,
-    on_patched: EventHandler<()>,
+}
+
+/// Applies one `InlineFieldEditor::on_patched` value directly to the
+/// drawer's local snapshot, matching the primitive's documented
+/// contract (module doc on `inline_field_editor.rs`): the new value is
+/// handed back so derived state can refresh without a second fetch.
+fn apply_patch(mut asset_sig: Signal<DrawerAsset>, field: &'static str, value: Option<String>) {
+    let mut a = asset_sig.write();
+    match field {
+        "name" => a.name = value.unwrap_or_default(),
+        "asset_tag" => a.asset_tag = value,
+        "status" => a.status = value.unwrap_or_default(),
+        "manufacturer" => a.manufacturer = value,
+        "model" => a.model = value,
+        "serial_number" => a.serial_number = value,
+        "hostname" => a.hostname = value,
+        "ip_address" => a.ip_address = value,
+        "mac_address" => a.mac_address = value,
+        "department" => a.department = value,
+        "purchase_date" => a.purchase_date = value,
+        "installed_date" => a.installed_date = value,
+        "warranty_expiry" => a.warranty_expiry = value,
+        "end_of_life" => a.end_of_life = value,
+        "itil_lifecycle_stage" => a.itil_lifecycle_stage = value,
+        "notes" => a.notes = value,
+        _ => {}
+    }
 }
 
 /// Field groups the drawer renders. Each row is one `InlineFieldEditor`
-/// bound to the server's PATCH field key (`name`, `status`, ...) and
-/// gets a refetch via `on_patched` so stale values do not stick in the
-/// drawer's own snapshot.
+/// bound to the server's PATCH field key (`name`, `status`, ...); its
+/// `on_patched` applies the saved value straight to `asset_sig`, so a
+/// single-field save never issues a `GET /assets/{id}`.
 #[component]
 fn DrawerBody(props: DrawerBodyProps) -> Element {
-    let a = props.asset;
+    let asset_sig = use_signal(|| props.asset);
+    let a = asset_sig.read().clone();
     let path = props.path;
-    let on_patched = props.on_patched;
+    // One registry per drawer, threaded into every `InlineFieldEditor`
+    // so clicking one field closes the previously open one. See the
+    // comment on `InlineFieldEditorProps::open_field` for why this
+    // belongs at the host rather than inside the primitive.
+    let open_field: Signal<Option<String>> = use_signal(|| None);
 
     let status_opts = vec![
         ("active".to_string(), "Active".to_string()),
@@ -178,7 +208,6 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
         ("retired".to_string(), "Retired".to_string()),
         ("inactive".to_string(), "Inactive".to_string()),
     ];
-    let notify = move |_v: Option<String>| on_patched.call(());
     rsx! {
         // -- Identity ----------------------------------------------
         Card { class: "mb-4", title: "Identity".to_string(),
@@ -193,7 +222,8 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "name".to_string(),
                 optional: false,
-                on_patched: notify,
+                open_field: Some(open_field),
+                on_patched: move |v| apply_patch(asset_sig, "name", v),
             }
             InlineFieldEditor {
                 label: "Asset tag".to_string(),
@@ -206,7 +236,8 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "asset_tag".to_string(),
                 optional: true,
-                on_patched: notify,
+                open_field: Some(open_field),
+                on_patched: move |v| apply_patch(asset_sig, "asset_tag", v),
             }
             InlineFieldEditor {
                 label: "Status".to_string(),
@@ -215,7 +246,8 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "status".to_string(),
                 optional: false,
-                on_patched: notify,
+                open_field: Some(open_field),
+                on_patched: move |v| apply_patch(asset_sig, "status", v),
             }
         }
 
@@ -232,7 +264,8 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "manufacturer".to_string(),
                 optional: true,
-                on_patched: notify,
+                open_field: Some(open_field),
+                on_patched: move |v| apply_patch(asset_sig, "manufacturer", v),
             }
             InlineFieldEditor {
                 label: "Model".to_string(),
@@ -245,7 +278,8 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "model".to_string(),
                 optional: true,
-                on_patched: notify,
+                open_field: Some(open_field),
+                on_patched: move |v| apply_patch(asset_sig, "model", v),
             }
             InlineFieldEditor {
                 label: "Serial number".to_string(),
@@ -258,7 +292,8 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "serial_number".to_string(),
                 optional: true,
-                on_patched: notify,
+                open_field: Some(open_field),
+                on_patched: move |v| apply_patch(asset_sig, "serial_number", v),
             }
             InlineFieldEditor {
                 label: "Hostname".to_string(),
@@ -271,7 +306,8 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "hostname".to_string(),
                 optional: true,
-                on_patched: notify,
+                open_field: Some(open_field),
+                on_patched: move |v| apply_patch(asset_sig, "hostname", v),
             }
             InlineFieldEditor {
                 label: "IP address".to_string(),
@@ -284,7 +320,8 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "ip_address".to_string(),
                 optional: true,
-                on_patched: notify,
+                open_field: Some(open_field),
+                on_patched: move |v| apply_patch(asset_sig, "ip_address", v),
             }
             InlineFieldEditor {
                 label: "MAC address".to_string(),
@@ -297,7 +334,8 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "mac_address".to_string(),
                 optional: true,
-                on_patched: notify,
+                open_field: Some(open_field),
+                on_patched: move |v| apply_patch(asset_sig, "mac_address", v),
             }
             InlineFieldEditor {
                 label: "Department".to_string(),
@@ -310,7 +348,8 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "department".to_string(),
                 optional: true,
-                on_patched: notify,
+                open_field: Some(open_field),
+                on_patched: move |v| apply_patch(asset_sig, "department", v),
             }
         }
 
@@ -323,7 +362,8 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "purchase_date".to_string(),
                 optional: true,
-                on_patched: notify,
+                open_field: Some(open_field),
+                on_patched: move |v| apply_patch(asset_sig, "purchase_date", v),
             }
             InlineFieldEditor {
                 label: "Installed date".to_string(),
@@ -332,7 +372,8 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "installed_date".to_string(),
                 optional: true,
-                on_patched: notify,
+                open_field: Some(open_field),
+                on_patched: move |v| apply_patch(asset_sig, "installed_date", v),
             }
             InlineFieldEditor {
                 label: "Warranty expiry".to_string(),
@@ -341,7 +382,8 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "warranty_expiry".to_string(),
                 optional: true,
-                on_patched: notify,
+                open_field: Some(open_field),
+                on_patched: move |v| apply_patch(asset_sig, "warranty_expiry", v),
             }
             InlineFieldEditor {
                 label: "End of life".to_string(),
@@ -350,7 +392,8 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "end_of_life".to_string(),
                 optional: true,
-                on_patched: notify,
+                open_field: Some(open_field),
+                on_patched: move |v| apply_patch(asset_sig, "end_of_life", v),
             }
         }
 
@@ -367,7 +410,8 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path: path.clone(),
                 patch_field: "itil_lifecycle_stage".to_string(),
                 optional: true,
-                on_patched: notify,
+                open_field: Some(open_field),
+                on_patched: move |v| apply_patch(asset_sig, "itil_lifecycle_stage", v),
             }
             InlineFieldEditor {
                 label: "Notes".to_string(),
@@ -379,8 +423,28 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 path,
                 patch_field: "notes".to_string(),
                 optional: true,
-                on_patched: notify,
+                open_field: Some(open_field),
+                on_patched: move |v| apply_patch(asset_sig, "notes", v),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod drawer_single_editor_tests {
+    #[test]
+    fn drawer_body_declares_one_open_field_registry_and_threads_it_into_every_editor() {
+        let src = include_str!("asset_drawer.rs");
+        assert!(
+            src.contains("let open_field: Signal<Option<String>> = use_signal(|| None);"),
+            "DrawerBody must declare the per-drawer `open_field` registry"
+        );
+        let field_count = src.matches("open_field: Some(open_field),").count();
+        let editor_count = src.matches("InlineFieldEditor {").count();
+        assert_eq!(
+            field_count, editor_count,
+            "every InlineFieldEditor in the drawer must pass the registry \
+             (got {editor_count} editors, {field_count} wire-ups)"
+        );
     }
 }

@@ -14,8 +14,8 @@
 ///
 /// `Ok(None)`: the host told the user where it went. `Ok(Some(path))`:
 /// it did not, and `path` is where the file is.
-pub fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<String>, String> {
-    crate::platform::download::save_bytes_as_file(bytes, filename)
+pub async fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<String>, String> {
+    crate::platform::download::save_bytes_as_file(bytes, filename).await
 }
 
 /// A tab opened before the preview PDF is fetched (MAPPS-1005). Open it
@@ -33,6 +33,6 @@ pub fn open_preview_tab() -> Result<PreviewTab, String> {
 
 /// Show `bytes` as a PDF in `tab`: the browser displays it in place, with
 /// no file saved; the desktop build opens it in the system's PDF viewer.
-pub fn show_bytes_in_tab(tab: PreviewTab, bytes: &[u8]) -> Result<(), String> {
-    crate::platform::download::show_bytes_in_tab(tab, bytes)
+pub async fn show_bytes_in_tab(tab: PreviewTab, bytes: &[u8]) -> Result<(), String> {
+    crate::platform::download::show_bytes_in_tab(tab, bytes).await
 }

@@ -15,6 +15,24 @@ use crate::components::{ChangeHistoryEntry, ChangeLine};
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
+/// Both asset screens' existing wording for an asset with no company. Kept as
+/// it was: MAPPS-1038 changes where the name comes from, not the copy.
+const NO_COMPANY: &str = "-";
+
+/// The company shown on an asset row or detail panel, from the name the
+/// response carried (PMS-336) rather than a client-side join.
+///
+/// Takes the surface so the two screens log distinctly: the list and the
+/// detail reach the same unresolved id by different routes, and a log line
+/// that cannot say which one it came from sends a reader to the wrong page.
+fn asset_company(surface: &str, a: &RemoteAsset) -> crate::utils::unresolved_person::CompanyRef {
+    crate::utils::unresolved_person::resolve_company(
+        surface,
+        a.company_name.as_deref(),
+        a.company_id,
+    )
+}
+
 /// An asset (`GET /api/v1/assets`).
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteAsset {
@@ -27,6 +45,13 @@ struct RemoteAsset {
     asset_type_id: Option<uuid::Uuid>,
     #[serde(default)]
     company_id: Option<uuid::Uuid>,
+    // The owning company's name, resolved server-side by a LEFT JOIN in the
+    // same query that returns the row (PMS-336). MAPPS-1038: both asset
+    // screens used to join `company_id` against a separately fetched
+    // /contacts/companies list instead, so a late or truncated list printed
+    // "-" for an asset whose company the response had already named.
+    #[serde(default)]
+    company_name: Option<String>,
     #[serde(default)]
     status: String,
     #[serde(default)]
@@ -142,6 +167,10 @@ struct AuditEntry {
     performed_at: Option<String>,
     #[serde(default)]
     performed_by_id: Option<uuid::Uuid>,
+    /// PMS-1478: the actor's display name, sent alongside `performed_by_id`
+    /// so the client no longer needs the roster to print it.
+    #[serde(default)]
+    performed_by_name: Option<String>,
     #[serde(default)]
     changes: Option<serde_json::Value>,
 }
@@ -218,8 +247,6 @@ fn fmt_datetime(s: &Option<String>, pref: Option<&str>, tz: chrono_tz::Tz) -> St
     }
 }
 
-/// Resolve an actor id to a display name via the loaded user list; "-" when
-/// unknown so the audit/edited markers never show a bare UUID.
 /// The headline for one asset audit entry (MAPPS-596).
 ///
 /// An asset's `changes` is an object `{event: ...}` for a reveal operation and
@@ -253,16 +280,16 @@ fn change_lines(e: &AuditEntry) -> Vec<ChangeLine> {
         .collect()
 }
 
-fn actor_name(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
-    match id {
-        Some(uid) => users
-            .iter()
-            .find(|u| &u.id == uid)
-            .map(|u| u.full_name.clone())
-            .filter(|n| !n.trim().is_empty())
-            .unwrap_or_else(|| "-".to_string()),
-        None => "-".to_string(),
-    }
+/// Resolve an asset audit entry's actor (MAPPS-1037): the server-sent name,
+/// then the roster.
+fn audit_actor(users: &[UserOpt], e: &AuditEntry) -> crate::utils::unresolved_person::PersonRef {
+    crate::utils::unresolved_person::resolve_person(
+        "asset_audit",
+        e.performed_by_name.as_deref(),
+        &e.performed_by_id,
+        None,
+        users,
+    )
 }
 
 /// `""` to `None`, otherwise `Some(trimmed)`. Lets an edit form send `null`
@@ -943,39 +970,99 @@ pub fn AssetListPage() -> Element {
                 Err(crate::hooks::fetch::api::ApiError::Status { code: 404, .. }) => {
                     // Feature toggle off (or old server). Fall back to the
                     // legacy GET /assets?q= path so the list still works.
-                    // The legacy `AssetFilter` on the server (as of
-                    // mokosh-server AssetFilter in src/modules/assets/models.rs)
-                    // accepts company_id, asset_type_id, status, q only;
-                    // richer pill fields (department, manufacturer, tags, ...)
-                    // need an `assets_search_v2`-on server. Serialise the
-                    // ones the legacy handler honours; drop the rest with a
-                    // debug trace so operators do not silently see unfiltered
-                    // results.
+                    // Server-side `AssetFilter` (per PMS-1489) accepts
+                    // company_id, asset_type_id, site_id, assigned_user_id,
+                    // status, department, manufacturer, model, tag,
+                    // warranty_within_days, end_of_life_before, q. Each
+                    // SPA pill field + op lowers to the matching query
+                    // param here. An unknown field or op still logs at
+                    // debug so a future SPA-only pill the server has
+                    // not caught up to becomes visible.
                     let mut path = format!("/assets?page={current_page}&per_page={PER_PAGE}");
                     if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
                         path.push_str(&format!("&company_id={company_id}"));
                     }
                     for p in &filters {
-                        if p.op != "eq" {
-                            tracing::debug!(
-                                field = %p.field,
-                                op = %p.op,
-                                "legacy /assets fallback drops non-eq pill; enable assets_search_v2 to honour it",
-                            );
-                            continue;
-                        }
-                        let Some(v) = p.values.first().and_then(|v| v.as_str()) else {
-                            continue;
-                        };
-                        let encoded = crate::utils::url::encode_uri_component(v);
-                        match p.field.as_str() {
-                            "status" => path.push_str(&format!("&status={encoded}")),
-                            "asset_type" => path.push_str(&format!("&asset_type_id={encoded}")),
-                            "company" => path.push_str(&format!("&company_id={encoded}")),
-                            other => tracing::debug!(
-                                field = %other,
-                                "legacy /assets fallback drops unknown pill field; enable assets_search_v2 to honour it",
-                            ),
+                        let first_str = p.values.first().and_then(|v| v.as_str());
+                        let encoded_first = first_str.map(crate::utils::url::encode_uri_component);
+                        match (p.field.as_str(), p.op.as_str()) {
+                            ("status", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&status={e}"));
+                                }
+                            }
+                            ("asset_type", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&asset_type_id={e}"));
+                                }
+                            }
+                            ("company", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&company_id={e}"));
+                                }
+                            }
+                            ("site", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&site_id={e}"));
+                                }
+                            }
+                            ("assigned_user", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&assigned_user_id={e}"));
+                                }
+                            }
+                            ("department", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&department={e}"));
+                                }
+                            }
+                            ("manufacturer", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&manufacturer={e}"));
+                                }
+                            }
+                            ("model", "eq") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&model={e}"));
+                                }
+                            }
+                            ("tags", "contains_tag") => {
+                                if let Some(e) = &encoded_first {
+                                    path.push_str(&format!("&tag={e}"));
+                                }
+                            }
+                            ("warranty_expiry", "within") => {
+                                // Shape: values[0] = { "days": N }.
+                                if let Some(days) = p
+                                    .values
+                                    .first()
+                                    .and_then(|v| v.get("days"))
+                                    .and_then(|v| v.as_i64())
+                                {
+                                    path.push_str(&format!("&warranty_within_days={days}"));
+                                }
+                            }
+                            ("end_of_life", "before") => {
+                                // The SPA ships `"NOW"` as a sentinel for "today"
+                                // so the chip label stays stable; the server wants
+                                // a concrete date. Resolve to the operator's local
+                                // date before serialising.
+                                let v = first_str.unwrap_or_default();
+                                let resolved = if v.eq_ignore_ascii_case("NOW") {
+                                    chrono::Local::now().date_naive().to_string()
+                                } else {
+                                    v.to_string()
+                                };
+                                let encoded = crate::utils::url::encode_uri_component(&resolved);
+                                path.push_str(&format!("&end_of_life_before={encoded}"));
+                            }
+                            (field, op) => {
+                                tracing::debug!(
+                                    field,
+                                    op,
+                                    "legacy /assets fallback drops unsupported pill; the server contract has not caught up to this (field, op) pair",
+                                );
+                            }
                         }
                     }
                     if !q.is_empty() {
@@ -1051,6 +1138,27 @@ pub fn AssetListPage() -> Element {
         .unwrap_or_default();
     let assets: Vec<RemoteAsset> = page_envelope.map(|p| p.data).unwrap_or_default();
     let types = types_resource.read_unchecked().clone().unwrap_or_default();
+
+    // F3: a `HashMap` rebuilt via `use_memo` only when the underlying
+    // resource changes, not an `O(n)` `.iter().find(...)` scan repeated
+    // for every asset row on every render. Declared before the early
+    // return below so the hook always runs, matching every other hook
+    // in this component.
+    let type_names = use_memo(move || {
+        types_resource
+            .read_unchecked()
+            .clone()
+            .unwrap_or_default()
+            .iter()
+            .map(|t| (t.id, t.name.clone()))
+            .collect::<HashMap<_, _>>()
+    });
+
+    // MAPPS-1038: the fetched company list stays for the OPTION lists below
+    // (the create form, the bulk-edit company field and the catalog UI) and
+    // for the `company:` search-DSL pill, which resolves a typed name to an
+    // id. What went is the display join: the row's company name now comes
+    // from the response (PMS-336).
     let companies = companies_resource
         .read_unchecked()
         .clone()
@@ -1072,13 +1180,7 @@ pub fn AssetListPage() -> Element {
     }
 
     let type_name = |id: &Option<uuid::Uuid>| -> String {
-        id.and_then(|tid| types.iter().find(|t| t.id == tid))
-            .map(|t| t.name.clone())
-            .unwrap_or_else(|| "-".to_string())
-    };
-    let company_name = |id: &Option<uuid::Uuid>| -> String {
-        id.and_then(|cid| companies.iter().find(|c| c.id == cid))
-            .map(|c| c.name.clone())
+        id.and_then(|tid| type_names.read().get(&tid).cloned())
             .unwrap_or_else(|| "-".to_string())
     };
 
@@ -1212,11 +1314,28 @@ pub fn AssetListPage() -> Element {
                     let mut pills_sig = pills;
                     let types_opts = types.clone();
                     let companies_opts = companies.clone();
+                    // Each Select mirrors the currently-active eq pill for
+                    // that field, so an operator who picked "Active" sees
+                    // "Active" in the dropdown rather than "Any status" with
+                    // only the pill reflecting the state. Clearing the pill
+                    // (via its × or the "Clear all" link) resets the display
+                    // to "Any ...".
+                    let pill_value = |field: &str| -> String {
+                        pills_sig
+                            .read()
+                            .iter()
+                            .find(|p| p.field == field && p.op == "eq")
+                            .and_then(|p| p.values.first().and_then(|v| v.as_str()).map(String::from))
+                            .unwrap_or_default()
+                    };
+                    let current_status = pill_value("status");
+                    let current_type = pill_value("asset_type");
+                    let current_company = pill_value("company");
                     rsx! {
                         Select {
                             name: "filter-status".to_string(),
                             label: "Status".to_string(),
-                            value: String::new(),
+                            value: current_status,
                             placeholder: "Any status".to_string(),
                             options: vec![
                                 SelectOption::new("active", "Active"),
@@ -1246,7 +1365,7 @@ pub fn AssetListPage() -> Element {
                         Select {
                             name: "filter-type".to_string(),
                             label: "Type".to_string(),
-                            value: String::new(),
+                            value: current_type,
                             placeholder: "Any type".to_string(),
                             options: types_opts
                                 .iter()
@@ -1270,7 +1389,7 @@ pub fn AssetListPage() -> Element {
                         Select {
                             name: "filter-company".to_string(),
                             label: "Company".to_string(),
-                            value: String::new(),
+                            value: current_company,
                             placeholder: "Any company".to_string(),
                             options: companies_opts
                                 .iter()
@@ -1473,6 +1592,8 @@ pub fn AssetListPage() -> Element {
             let visible_company = visible.contains(&AssetColumn::Company);
             let visible_serial = visible.contains(&AssetColumn::SerialTag);
             let visible_status = visible.contains(&AssetColumn::Status);
+            let any_filter_active =
+                !search.read().trim().is_empty() || !pills.read().is_empty();
             rsx! {
                 DataTable {
                     total_items: total,
@@ -1499,11 +1620,18 @@ pub fn AssetListPage() -> Element {
                             if is_loading {
                                 TableRow { TableCell { class: "text-subtle", "Loading…" } }
                             } else if filtered.is_empty() {
+                                // `assets.is_empty()` and `filtered.is_empty()` are the same
+                                // today (the server returns a filtered page, and the client
+                                // keeps `filtered = assets.iter()`), so the "no match" branch
+                                // never fired before this change. Branch on "is any filter
+                                // active?" instead so the operator sees "No assets match the
+                                // search" the moment a pill, a free-text search or a DSL
+                                // token is in play.
                                 TableEmptyRow { columns: col_count, class: "text-subtle italic",
-                                    if assets.is_empty() {
-                                        "No assets yet. Create one to get started."
-                                    } else {
+                                    if any_filter_active {
                                         "No assets match the search."
+                                    } else {
+                                        "No assets yet. Create one to get started."
                                     }
                                 }
                             } else {
@@ -1511,7 +1639,9 @@ pub fn AssetListPage() -> Element {
                                     {
                                         let (variant, label) = asset_status_badge(&a.status);
                                         let tname = type_name(&a.asset_type_id);
-                                        let cname = company_name(&a.company_id);
+                                        let company = asset_company("assets.list_company", a);
+                                        let cname = company.text(NO_COMPANY).to_string();
+                                        let cname_title = company.tooltip().map(str::to_string);
                                         let serial = a
                                             .serial_number
                                             .clone()
@@ -1543,7 +1673,11 @@ pub fn AssetListPage() -> Element {
                                                     }
                                                 }
                                                 if visible_type { TableCell { "{tname}" } }
-                                                if visible_company { TableCell { "{cname}" } }
+                                                if visible_company {
+                                                    TableCell {
+                                                        span { title: cname_title.clone(), "{cname}" }
+                                                    }
+                                                }
                                                 if visible_serial { TableCell { class: "font-mono text-sm", "{serial}" } }
                                                 if visible_status { TableCell { Badge { variant, "{label}" } } }
                                             }
@@ -2249,15 +2383,6 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     });
     // MAPPS-940: shared asset-types cache, not a per-page fetch.
     let types_resource = crate::hooks::use_asset_types(true);
-    let companies_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::list_or_empty(
-            "asset company option",
-            crate::hooks::fetch::api::get_authed::<Paginated<CompanyOpt>>("/contacts/companies")
-                .await
-                .map(|p| p.data),
-        )
-    });
     // MAPPS-860: shared roster cache, not a per-page fetch.
     let users_resource = crate::hooks::use_user_roster(true);
 
@@ -2415,10 +2540,6 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         .clone()
         .unwrap_or_default();
     let types = types_resource.read_unchecked().clone().unwrap_or_default();
-    let companies = companies_resource
-        .read_unchecked()
-        .clone()
-        .unwrap_or_default();
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
 
     // "Edited" marker: only when the asset has actually changed since
@@ -2441,13 +2562,21 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             _ => None,
         };
         latest.map(|e| {
-            let who = actor_name(&users, &e.performed_by_id);
+            let who = audit_actor(&users, e);
             let when = fmt_datetime(&e.performed_at, pref.as_deref(), tz);
             let when_iso = e.performed_at.clone().unwrap_or_default();
-            if who == "-" {
-                rsx! { "Edited " time { datetime: "{when_iso}", "{when}" } }
+            let who_class = if who.is_system() {
+                "text-subtle italic"
             } else {
-                rsx! { "Edited " time { datetime: "{when_iso}", "{when}" } " by {who}" }
+                ""
+            };
+            let who_text = who.text().to_string();
+            let who_tooltip = who.tooltip().unwrap_or_default().to_string();
+            rsx! {
+                "Edited "
+                time { datetime: "{when_iso}", "{when}" }
+                " by "
+                span { class: "{who_class}", title: "{who_tooltip}", "{who_text}" }
             }
         })
     } else {
@@ -2554,11 +2683,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     .and_then(|tid| types.iter().find(|t| t.id == tid))
                     .map(|t| t.name.clone())
                     .unwrap_or_else(|| "-".to_string());
-                let cname = a
-                    .company_id
-                    .and_then(|cid| companies.iter().find(|c| c.id == cid))
-                    .map(|c| c.name.clone())
-                    .unwrap_or_else(|| "-".to_string());
+                let company = asset_company("assets.detail_company", &a);
+                let cname = company.text(NO_COMPANY).to_string();
+                let cname_title = company.tooltip().map(str::to_string);
                 let dash = || "-".to_string();
                 let manufacturer = a.manufacturer.clone().unwrap_or_else(dash);
                 let model = a.model.clone().unwrap_or_else(dash);
@@ -2639,7 +2766,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     }
                                     div {
                                         dt { class: "text-sm text-muted", "Company" }
-                                        dd { class: "mt-1", "{cname}" }
+                                        dd { class: "mt-1", title: cname_title.clone(), "{cname}" }
                                     }
                                     div {
                                         dt { class: "text-sm text-muted", "Manufacturer" }
@@ -3054,7 +3181,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     div { class: "space-y-3 text-sm",
                                         for e in audit.iter().take(15) {
                                             {
-                                                let who = actor_name(&users, &e.performed_by_id);
+                                                let who = audit_actor(&users, e);
                                                 // The audit row carries no id of its own, so the
                                                 // key is the timestamp it was written at.
                                                 let key = e.performed_at.clone().unwrap_or_default();
@@ -3062,11 +3189,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                     ChangeHistoryEntry {
                                                         key: "{key}",
                                                         headline: audit_headline(e),
-                                                        // MAPPS-596: "-" is this page's sentinel for an
-                                                        // actor no `/auth/users` row matches. The shared
-                                                        // entry omits the line for an empty name, so the
-                                                        // sentinel is dropped here rather than printed.
-                                                        who: if who == "-" { String::new() } else { who },
+                                                        who: who.text().to_string(),
+                                                        who_tooltip: who.tooltip().unwrap_or_default().to_string(),
+                                                        who_muted: who.is_system(),
                                                         when: fmt_datetime(&e.performed_at, pref.as_deref(), tz),
                                                         when_iso: e.performed_at.clone().unwrap_or_default(),
                                                         changes: change_lines(e),
@@ -4235,5 +4360,108 @@ mod dsl_tests {
         );
         assert_eq!(pills.len(), 1);
         assert_eq!(unresolved, vec!["Nowhere".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod mapps1037_audit_actor_tests {
+    use super::{audit_actor, AuditEntry, UserOpt};
+
+    fn entry(json: &str) -> AuditEntry {
+        serde_json::from_str(json).expect("deserialise audit entry")
+    }
+
+    fn roster() -> Vec<UserOpt> {
+        vec![serde_json::from_str(
+            r#"{"id":"11111111-1111-4111-8111-111111111111","full_name":"Dana Reeve"}"#,
+        )
+        .expect("deserialise user")]
+    }
+
+    #[test]
+    fn server_sent_name_renders_with_an_empty_roster() {
+        let e = entry(
+            r#"{"action":"update","performed_by_id":"11111111-1111-4111-8111-111111111111","performed_by_name":"Server Name"}"#,
+        );
+        let who = audit_actor(&[], &e);
+        assert_eq!(who.text(), "Server Name");
+    }
+
+    #[test]
+    fn no_server_name_falls_back_to_the_roster() {
+        let e = entry(
+            r#"{"action":"update","performed_by_id":"11111111-1111-4111-8111-111111111111"}"#,
+        );
+        let who = audit_actor(&roster(), &e);
+        assert_eq!(who.text(), "Dana Reeve");
+    }
+
+    #[test]
+    fn nothing_resolves_it_is_someone_with_a_tooltip() {
+        let e = entry(
+            r#"{"action":"update","performed_by_id":"22222222-2222-4222-8222-222222222222"}"#,
+        );
+        let who = audit_actor(&[], &e);
+        assert_eq!(who.text(), "Someone");
+        assert_eq!(
+            who.tooltip(),
+            Some("Unresolved user 22222222-2222-4222-8222-222222222222")
+        );
+    }
+
+    #[test]
+    fn a_none_actor_id_is_system() {
+        let e = entry(r#"{"action":"update"}"#);
+        let who = audit_actor(&[], &e);
+        assert!(who.is_system());
+        assert_eq!(who.text(), "System");
+        assert!(who.tooltip().is_none());
+    }
+}
+
+/// MAPPS-1038: the Company column and the detail panel read the name the
+/// response carried, not a join against a separately fetched company list.
+#[cfg(test)]
+mod mapps1038_company_tests {
+    use super::{asset_company, RemoteAsset, NO_COMPANY};
+
+    fn asset(json: &str) -> RemoteAsset {
+        serde_json::from_str(json).expect("deserialise asset")
+    }
+
+    #[test]
+    fn the_response_name_is_rendered_with_no_company_list_in_sight() {
+        let a = asset(
+            r#"{"id":"11111111-1111-4111-8111-111111111111","company_id":"22222222-2222-4222-8222-222222222222","company_name":"Main Street Dental"}"#,
+        );
+        let company = asset_company("assets.list_company", &a);
+        assert_eq!(company.text(NO_COMPANY), "Main Street Dental");
+        assert!(company.tooltip().is_none());
+    }
+
+    /// The state the old join could not report: the row has a company, and
+    /// nothing named it. It printed a bare "-", identical to an asset with no
+    /// company at all, and identical to the list simply not having arrived.
+    #[test]
+    fn an_unnamed_company_id_is_unknown_company_with_the_id_in_the_tooltip() {
+        let a = asset(
+            r#"{"id":"11111111-1111-4111-8111-111111111111","company_id":"22222222-2222-4222-8222-222222222222"}"#,
+        );
+        let company = asset_company("assets.detail_company", &a);
+        assert_eq!(company.text(NO_COMPANY), "Unknown company");
+        assert_eq!(
+            company.tooltip(),
+            Some("Unresolved company 22222222-2222-4222-8222-222222222222")
+        );
+    }
+
+    /// No id: the screen's existing "-" , and nothing logged, because nothing
+    /// failed to resolve.
+    #[test]
+    fn no_company_id_keeps_the_screens_existing_dash() {
+        let a = asset(r#"{"id":"11111111-1111-4111-8111-111111111111"}"#);
+        let company = asset_company("assets.list_company", &a);
+        assert_eq!(company.text(NO_COMPANY), "-");
+        assert!(company.tooltip().is_none());
     }
 }

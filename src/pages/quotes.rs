@@ -783,9 +783,6 @@ fn QuoteDetailBody(id: String) -> Element {
     // `quotes:download_pdf` cap. Staff / platform bypass unconditionally
     // through `use_capability`.
     let can_download_pdf = crate::hooks::capabilities::use_capability("quotes:download_pdf");
-    let mut pdf_downloading = use_signal(|| false);
-    let mut pdf_error = use_signal(String::new);
-    let id_for_pdf = id.clone();
     let mut version = use_signal(|| 0u32);
     // Not `mut` locally: these are handed by value to the action helpers,
     // which take their own mutable binding.
@@ -890,80 +887,12 @@ fn QuoteDetailBody(id: String) -> Element {
                         },
                         actions: rsx! {
                             if can_download_pdf {
-                                Button {
-                                    variant: ButtonVariant::Secondary,
-                                    loading: *pdf_downloading.read(),
-                                    onclick: {
-                                        let id_for_pdf = id_for_pdf.clone();
-                                        move |_| {
-                                            if *pdf_downloading.read() {
-                                                return;
-                                            }
-                                            pdf_error.set(String::new());
-                                            pdf_downloading.set(true);
-                                            let id = id_for_pdf.clone();
-                                            // MAPPS-1005: opened synchronously, before
-                                            // the fetch below, so the pop-up blocker
-                                            // sees it as a direct result of the click.
-                                            let preview_tab = if previewable {
-                                                crate::utils::download::open_preview_tab().ok()
-                                            } else {
-                                                None
-                                            };
-                                            spawn(async move {
-                                                #[cfg(feature = "web")]
-                                                {
-                                                    let path = format!("/quotes/{id}/pdf");
-                                                    match crate::hooks::fetch::api::get_authed_any_bytes(&path).await {
-                                                        Ok((bytes, filename)) => match preview_tab {
-                                                            Some(tab) => {
-                                                                if let Err(e) = crate::utils::download::show_bytes_in_tab(tab, &bytes) {
-                                                                    pdf_error.set(format!(
-                                                                        "Fetched the PDF but could not show it: {e}"
-                                                                    ));
-                                                                }
-                                                            }
-                                                            None => {
-                                                                let name = filename
-                                                                    .unwrap_or_else(|| format!("quote-{id}.pdf"));
-                                                                if let Err(e) =
-                                                                    crate::utils::download::save_bytes_as_file(&bytes, &name)
-                                                                {
-                                                                    pdf_error.set(format!(
-                                                                        "Fetched the PDF but could not save it: {e}"
-                                                                    ));
-                                                                }
-                                                            }
-                                                        },
-                                                        Err(crate::hooks::fetch::api::ApiError::Status {
-                                                            code: 501,
-                                                            ..
-                                                        }) => {
-                                                            if let Some(tab) = preview_tab {
-                                                                tab.close();
-                                                            }
-                                                            pdf_error.set(
-                                                                "PDF generation not available yet".to_string(),
-                                                            );
-                                                        }
-                                                        Err(err) => {
-                                                            if let Some(tab) = preview_tab {
-                                                                tab.close();
-                                                            }
-                                                            pdf_error.set(format!(
-                                                                "Could not download PDF: {}",
-                                                                err.user_message()
-                                                            ));
-                                                        }
-                                                    }
-                                                }
-                                                #[cfg(not(feature = "web"))]
-                                                let _ = (&id, preview_tab);
-                                                pdf_downloading.set(false);
-                                            });
-                                        }
-                                    },
-                                    if previewable { "Preview PDF" } else { "Download PDF" }
+                                crate::components::DownloadButton {
+                                    path: format!("/quotes/{}/pdf", q.id),
+                                    fallback_name: format!("quote-{}.pdf", q.id),
+                                    what: "the quote PDF".to_string(),
+                                    label: if previewable { "Preview PDF".to_string() } else { "Download PDF".to_string() },
+                                    preview: previewable,
                                 }
                             }
                             if can_edit && staff_only {
@@ -977,9 +906,6 @@ fn QuoteDetailBody(id: String) -> Element {
 
                     if !action_error.read().is_empty() {
                         ErrorBanner { class: "mb-3", "{action_error}" }
-                    }
-                    if !pdf_error.read().is_empty() {
-                        ErrorBanner { class: "mb-3", "{pdf_error}" }
                     }
 
                     // Split on main's container width, not the viewport: `lg:` ignores the
@@ -1063,15 +989,23 @@ fn QuoteDetailBody(id: String) -> Element {
                                         }
                                     }
                                     if let Some(sent_at_iso) = q.sent_at.map(|s| s.to_rfc3339()) {
-                                        if let Some(sent) = sent_line(
-                                            q.delivery_method.as_deref(),
-                                            q.delivery_note.as_deref(),
-                                            q.delivered_by_name.as_deref(),
-                                            Some(&sent_at_iso),
-                                        ) {
-                                            div {
-                                                dt { class: "text-subtle", "Sent" }
-                                                dd { time { datetime: "{sent_at_iso}", "{sent}" } }
+                                        {
+                                            let sent_at_display =
+                                                crate::pages::billing::format_sent_date(Some(&sent_at_iso));
+                                            if let Some(sent) = sent_line(
+                                                q.delivery_method.as_deref(),
+                                                q.delivery_note.as_deref(),
+                                                q.delivered_by_name.as_deref(),
+                                                sent_at_display.as_deref(),
+                                            ) {
+                                                rsx! {
+                                                    div {
+                                                        dt { class: "text-subtle", "Sent" }
+                                                        dd { time { datetime: "{sent_at_iso}", "{sent}" } }
+                                                    }
+                                                }
+                                            } else {
+                                                rsx! {}
                                             }
                                         }
                                     }
@@ -1202,6 +1136,21 @@ fn QuoteDetailBody(id: String) -> Element {
                                                 email_option.as_ref().is_some_and(|o| !o.available);
                                             let email_reason =
                                                 email_option.as_ref().and_then(|o| o.reason.clone());
+                                            // MAPPS-1041: name the real recipient when the server
+                                            // sent one. A failed fetch / absent field keeps the
+                                            // existing generic sentence, same fallback MAPPS-1014
+                                            // commits to.
+                                            let email_recipient = email_option
+                                                .as_ref()
+                                                .and_then(|o| o.recipient.clone())
+                                                .map(|s| s.trim().to_string())
+                                                .filter(|s| !s.is_empty());
+                                            let email_help_text = match email_recipient.as_deref() {
+                                                Some(r) => format!(
+                                                    "Mokosh emails the sign-off link to {r}."
+                                                ),
+                                                None => "Mokosh emails the sign-off link to the billing contact.".to_string(),
+                                            };
                                             let other_invalid = method == "other" && note.is_empty();
                                             let pdf_path = format!("/api/v1/quotes/{}/pdf", q.id);
                                             let qid = quote_id.clone();
@@ -1232,7 +1181,7 @@ fn QuoteDetailBody(id: String) -> Element {
                                                                 span {
                                                                     span { class: "font-medium", "Email" }
                                                                     span { class: "block text-xs text-muted",
-                                                                        "Mokosh emails the sign-off link to the billing contact."
+                                                                        "{email_help_text}"
                                                                     }
                                                                 }
                                                             }
@@ -2273,13 +2222,15 @@ mod tests {
         assert_eq!(l.preview_total(), Decimal::from(-25));
     }
 
-    /// MAPPS-1005: the quote PDF button previews (new tab) exactly while
-    /// `status::allows_content_edit` holds and downloads otherwise, mirroring
-    /// the invoice PDF button in billing.rs. The label and the tab-opening
-    /// both read `previewable`, so this cannot regress to one agreeing and
-    /// the other not.
+    /// MAPPS-1049: the quote PDF action goes through the shared
+    /// `DownloadButton` (the same component the invoice detail page uses),
+    /// not a hand-rolled fetch/preview/save flow, and its `preview` prop and
+    /// label both read the same `previewable` flag so they cannot regress to
+    /// disagreeing with each other. The tab-open/close and fetch-gate
+    /// behavior this used to duplicate is covered by `download_button.rs`'s
+    /// own tests now that there is only one copy of it.
     #[test]
-    fn pdf_button_wires_label_and_preview_to_the_same_flag() {
+    fn pdf_action_uses_the_shared_download_button_wired_to_previewable() {
         let page = include_str!("quotes.rs")
             .split("#[cfg(test)]")
             .next()
@@ -2289,29 +2240,18 @@ mod tests {
             "the preview decision must come from the server's own editability rule"
         );
         assert!(
-            page.contains("if previewable { \"Preview PDF\" } else { \"Download PDF\" }"),
+            page.contains("crate::components::DownloadButton {"),
+            "the quote PDF action must call the shared DownloadButton component"
+        );
+        assert!(
+            page.contains(
+                "label: if previewable { \"Preview PDF\".to_string() } else { \"Download PDF\".to_string() },"
+            ),
             "the button's label must follow `previewable`"
         );
         assert!(
-            page.contains("let preview_tab = if previewable {"),
-            "opening the tab must follow the same `previewable` flag as the label"
-        );
-    }
-
-    /// MAPPS-1020: a tab opened for a preview that never arrives (the PDF
-    /// fetch fails) must be closed, not left blank. Both failure arms of
-    /// the fetch match. Asserted on the source rather than by driving a
-    /// real `web_sys::Window`, which this test target cannot create.
-    #[test]
-    fn pdf_fetch_failure_arms_close_an_already_opened_preview_tab() {
-        let page = include_str!("quotes.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .expect("the page has source before its tests");
-        let closes = page.matches("if let Some(tab) = preview_tab").count();
-        assert_eq!(
-            closes, 2,
-            "both the 501 arm and the general Err arm must close preview_tab"
+            page.contains("preview: previewable,"),
+            "the DownloadButton's preview prop must follow the same `previewable` flag as the label"
         );
     }
 }
@@ -2374,26 +2314,24 @@ mod customer_quote_tests {
 mod quote_sent_line_tests {
     use super::sent_line;
 
-    /// MAPPS-1031: the quote page's Sent row covers the same four cases as
-    /// the invoice page's, because it delegates to the same function.
+    /// MAPPS-1031 + MAPPS-1041: the quote page's Sent row covers the same four
+    /// cases as the invoice page's, because it delegates to the same function.
+    /// The date arrives pre-formatted (MAPPS-1041); the shared tests under
+    /// `crate::pages::billing::sent_line_tests` cover the formatter itself,
+    /// including the late-UTC-evening timezone shift.
     #[test]
     fn email_names_the_method() {
         assert_eq!(
-            sent_line(
-                Some("email"),
-                None,
-                Some("Jamie Lee"),
-                Some("2026-09-02T14:03:11Z")
-            ),
-            Some("Emailed on 2026-09-02 by Jamie Lee".to_string())
+            sent_line(Some("email"), None, Some("Jamie Lee"), Some("Sep 02, 2026"),),
+            Some("Emailed on Sep 02, 2026 by Jamie Lee".to_string())
         );
     }
 
     #[test]
     fn postal_names_the_method() {
         assert_eq!(
-            sent_line(Some("postal"), None, None, Some("2026-09-02T14:03:11Z")),
-            Some("Mailed on 2026-09-02".to_string())
+            sent_line(Some("postal"), None, None, Some("Sep 02, 2026")),
+            Some("Mailed on Sep 02, 2026".to_string())
         );
     }
 
@@ -2404,16 +2342,16 @@ mod quote_sent_line_tests {
                 Some("other"),
                 Some("Handed to the client"),
                 None,
-                Some("2026-09-02T14:03:11Z")
+                Some("Sep 02, 2026"),
             ),
-            Some("Delivered: Handed to the client on 2026-09-02".to_string())
+            Some("Delivered: Handed to the client on Sep 02, 2026".to_string())
         );
     }
 
     #[test]
     fn no_recorded_method_says_so() {
         assert_eq!(
-            sent_line(None, None, None, Some("2026-09-02T14:03:11Z")),
+            sent_line(None, None, None, Some("Sep 02, 2026")),
             Some("Delivery not recorded".to_string())
         );
     }

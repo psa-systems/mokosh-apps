@@ -24,6 +24,16 @@ pub struct CardProps {
     /// descriptive copy.
     #[props(default)]
     subtitle: String,
+    /// MAPPS-1038: hover text for the subtitle line.
+    ///
+    /// Exists because a card's subtitle can BE the unresolved reference. The
+    /// projects list's company name is this card's subtitle (MAPPS-967), and
+    /// when the server sends no name for a `company_id` the placeholder has to
+    /// carry the "Unresolved company <id>" tooltip the no-masking rule asks
+    /// for. A `String` prop cannot hold an attribute, so the attribute comes
+    /// in beside it. `None` renders no `title` at all.
+    #[props(default)]
+    subtitle_title: Option<String>,
     /// Optional header actions
     actions: Option<Element>,
     /// Whether to add padding
@@ -67,6 +77,7 @@ pub fn Card(props: CardProps) -> Element {
                 CardHeader {
                     title: props.title,
                     subtitle: props.subtitle,
+                    subtitle_title: props.subtitle_title,
                     actions: props.actions,
                     danger: props.danger,
                 }
@@ -86,6 +97,9 @@ pub struct CardHeaderProps {
     /// without one keeps the header it already had.
     #[props(default)]
     subtitle: String,
+    /// See [`CardProps::subtitle_title`].
+    #[props(default)]
+    subtitle_title: Option<String>,
     actions: Option<Element>,
     #[props(default)]
     class: String,
@@ -124,7 +138,9 @@ pub fn CardHeader(props: CardHeaderProps) -> Element {
                     "{props.title}"
                 }
                 if !props.subtitle.is_empty() {
-                    p { class: "mt-1 text-sm text-muted",
+                    p {
+                        class: "mt-1 text-sm text-muted",
+                        title: props.subtitle_title.clone(),
                         "{props.subtitle}"
                     }
                 }

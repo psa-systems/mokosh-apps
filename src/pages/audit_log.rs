@@ -130,8 +130,11 @@ fn display_field_value(
                     }
                     // Known FK field but the user is not in our cache (deleted,
                     // or beyond this page of /auth/users): short prefix, not the
-                    // full noisy UUID.
-                    return s.chars().take(8).collect();
+                    // full noisy UUID. MAPPS-1063: log the unresolved reference
+                    // via the shared helper so the substitution is findable.
+                    let shown: String = s.chars().take(8).collect();
+                    let _ = crate::utils::unresolved("audit_log.user_fk", "user", Some(id), &shown);
+                    return shown;
                 }
             }
             s.clone()
@@ -140,9 +143,34 @@ fn display_field_value(
     }
 }
 
+/// True when old/new is blank: absent, `null`, or an empty or
+/// whitespace-only string. Mirrors `display_field_value`'s notion of
+/// "(empty)" so a key that renders identically on both sides is never
+/// kept just because the underlying JSON differs (e.g. absent vs `null`).
+fn is_blank_value(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::String(s)) => s.trim().is_empty(),
+        _ => false,
+    }
+}
+
+/// True when at least one of `old`/`new` is a JSON object, i.e. this entry
+/// has a structured payload `field_diff_rows` can diff. False means both
+/// sides are absent or a non-object scalar, so the caller must fall back to
+/// the raw JSON panels.
+fn field_diff_is_object_payload(
+    old: &Option<serde_json::Value>,
+    new: &Option<serde_json::Value>,
+) -> bool {
+    old.as_ref().is_some_and(|v| v.is_object()) || new.as_ref().is_some_and(|v| v.is_object())
+}
+
 /// Build the per-field diff rows `(label, old, new)` from the entry's
-/// `old_values` / `new_values` JSON objects. Returns an empty vec when neither
-/// payload is a JSON object, so the caller can fall back to raw JSON (PMS-365).
+/// `old_values` / `new_values` JSON objects, keeping only keys whose value
+/// actually changed (PSA-1035). Returns an empty vec when neither payload is
+/// a JSON object (fall back to raw JSON, see [`field_diff_is_object_payload`])
+/// or when both are objects but no key differs (a no-op update).
 fn field_diff_rows(
     old: &Option<serde_json::Value>,
     new: &Option<serde_json::Value>,
@@ -153,6 +181,7 @@ fn field_diff_rows(
     if old_obj.is_none() && new_obj.is_none() {
         return Vec::new();
     }
+    let both_objects = old_obj.is_some() && new_obj.is_some();
     // New keys first (the update case lists what changed), then any key present
     // only in the old payload.
     let mut keys: Vec<String> = Vec::new();
@@ -167,14 +196,22 @@ fn field_diff_rows(
         }
     }
     keys.into_iter()
-        .map(|k| {
+        .filter_map(|k| {
             let old_v = old_obj.and_then(|o| o.get(&k));
             let new_v = new_obj.and_then(|o| o.get(&k));
-            (
+            // Both blank (absent/null/empty on each side) never changed,
+            // whichever of create/delete/update produced this key. When both
+            // sides are objects, also drop a key whose raw JSON is equal.
+            let changed = !(is_blank_value(old_v) && is_blank_value(new_v))
+                && (!both_objects || old_v != new_v);
+            if !changed {
+                return None;
+            }
+            Some((
                 humanize_field_key(&k),
                 display_field_value(&k, old_v, users),
                 display_field_value(&k, new_v, users),
-            )
+            ))
         })
         .collect()
 }
@@ -639,9 +676,13 @@ fn AuditRow(props: AuditRowProps) -> Element {
 
     let old_json = pretty_json(&entry.old_values);
     let new_json = pretty_json(&entry.new_values);
-    // PMS-365: field-by-field diff with humanized labels + user-FK resolution.
-    // Empty when the payloads are not JSON objects; then we fall back to the
-    // raw pretty-printed JSON below.
+    // PMS-365 / MAPPS-1035: field-by-field diff of only the fields that
+    // changed, with humanized labels + user-FK resolution. `diff_rows` is
+    // empty either when the payload is not an object (fall back to the raw
+    // pretty-printed JSON below) or when it is an object but no key differs
+    // (a no-op update: render "No field changes recorded" instead); the two
+    // cases are told apart via `is_object_payload`, not the empty vec alone.
+    let is_object_payload = field_diff_is_object_payload(&entry.old_values, &entry.new_values);
     let diff_rows = field_diff_rows(&entry.old_values, &entry.new_values, &users);
     let user_agent = entry.user_agent.clone().unwrap_or_default();
     let entity_id_full = entry
@@ -663,11 +704,20 @@ fn AuditRow(props: AuditRowProps) -> Element {
         .clone()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| short_uuid(entry.entity_id));
-    let user_label = entry
-        .user_name
-        .clone()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "System".to_string());
+    // MAPPS-1063: a `None` name with a `Some` id is an unresolved reference,
+    // not a system-issued row. Log it; the plain "System" fallback stays for
+    // rows that legitimately carry no user id.
+    let user_label = match entry.user_name.clone().filter(|s| !s.trim().is_empty()) {
+        Some(name) => name,
+        None => match entry.user_id {
+            Some(id) => {
+                let shown = "System".to_string();
+                let _ = crate::utils::unresolved("audit_log.actor", "user", Some(id), &shown);
+                shown
+            }
+            None => "System".to_string(),
+        },
+    };
 
     let is_open = *expanded.read();
 
@@ -826,7 +876,7 @@ fn AuditRow(props: AuditRowProps) -> Element {
                                 dd { class: "text-content break-all","{user_agent}" }
                             }
                         }
-                        if diff_rows.is_empty() {
+                        if !is_object_payload {
                             // Non-object payloads: keep the raw JSON view.
                             div {
                                 dt { class: "font-medium text-muted mb-1","Old values" }
@@ -843,6 +893,10 @@ fn AuditRow(props: AuditRowProps) -> Element {
                                         "{new_json}"
                                     }
                                 }
+                            }
+                        } else if diff_rows.is_empty() {
+                            div { class: "sm:col-span-2",
+                                dd { class: "text-muted", "No field changes recorded" }
                             }
                         } else {
                             div { class: "sm:col-span-2",
@@ -954,5 +1008,73 @@ mod tests {
     fn field_diff_rows_empty_for_non_object_payloads() {
         assert!(field_diff_rows(&None, &None, &[]).is_empty());
         assert!(field_diff_rows(&Some(json!("scalar")), &None, &[]).is_empty());
+    }
+
+    #[test]
+    fn field_diff_rows_drops_unchanged_key() {
+        let old = Some(json!({"status": "open"}));
+        let new = Some(json!({"status": "open"}));
+        assert!(field_diff_rows(&old, &new, &[]).is_empty());
+    }
+
+    #[test]
+    fn field_diff_rows_treats_null_absent_and_empty_string_as_unchanged() {
+        // null vs absent.
+        let old = Some(json!({"notes": null}));
+        let new = Some(json!({}));
+        assert!(field_diff_rows(&old, &new, &[]).is_empty());
+        // absent vs empty string.
+        let old = Some(json!({}));
+        let new = Some(json!({"notes": ""}));
+        assert!(field_diff_rows(&old, &new, &[]).is_empty());
+        // null vs empty string (whitespace-only).
+        let old = Some(json!({"notes": null}));
+        let new = Some(json!({"notes": "   "}));
+        assert!(field_diff_rows(&old, &new, &[]).is_empty());
+    }
+
+    #[test]
+    fn field_diff_rows_keeps_changed_key() {
+        let old = Some(json!({"title": "A"}));
+        let new = Some(json!({"title": "B"}));
+        let rows = field_diff_rows(&old, &new, &[]);
+        assert_eq!(
+            rows,
+            vec![("Title".to_string(), "A".to_string(), "B".to_string())]
+        );
+    }
+
+    #[test]
+    fn field_diff_rows_create_keeps_all_non_blank_keys() {
+        let new = Some(json!({"title": "A", "notes": "", "priority": null}));
+        let rows = field_diff_rows(&None, &new, &[]);
+        let labels: Vec<&str> = rows.iter().map(|(l, _, _)| l.as_str()).collect();
+        assert_eq!(labels, vec!["Title"]);
+        assert_eq!(rows[0].2, "A");
+    }
+
+    #[test]
+    fn field_diff_rows_delete_keeps_all_non_blank_keys() {
+        let old = Some(json!({"title": "A", "notes": "", "priority": null}));
+        let rows = field_diff_rows(&old, &None, &[]);
+        let labels: Vec<&str> = rows.iter().map(|(l, _, _)| l.as_str()).collect();
+        assert_eq!(labels, vec!["Title"]);
+        assert_eq!(rows[0].1, "A");
+    }
+
+    #[test]
+    fn field_diff_rows_empty_for_both_object_no_op_update() {
+        let old = Some(json!({"title": "A", "status": "open"}));
+        let new = Some(json!({"title": "A", "status": "open"}));
+        assert!(field_diff_rows(&old, &new, &[]).is_empty());
+    }
+
+    #[test]
+    fn field_diff_is_object_payload_distinguishes_no_op_update_from_non_object() {
+        let old = Some(json!({"title": "A"}));
+        let new = Some(json!({"title": "A"}));
+        assert!(field_diff_is_object_payload(&old, &new));
+        assert!(!field_diff_is_object_payload(&None, &None));
+        assert!(!field_diff_is_object_payload(&Some(json!("scalar")), &None));
     }
 }
