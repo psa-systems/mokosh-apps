@@ -226,20 +226,6 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 on_patched: move |v| apply_patch(asset_sig, "name", v),
             }
             InlineFieldEditor {
-                label: "Asset tag".to_string(),
-                value: a.asset_tag.clone(),
-                kind: InlineFieldKind::Text {
-                    placeholder: "e.g. MK-00123".to_string(),
-                    maxlength: Some(100),
-                    required: false,
-                },
-                path: path.clone(),
-                patch_field: "asset_tag".to_string(),
-                optional: true,
-                open_field: Some(open_field),
-                on_patched: move |v| apply_patch(asset_sig, "asset_tag", v),
-            }
-            InlineFieldEditor {
                 label: "Status".to_string(),
                 value: Some(a.status.clone()),
                 kind: InlineFieldKind::Select { options: status_opts },
