@@ -11,7 +11,12 @@
 //! cases apart:
 //!
 //! - 200 -> render the form
-//! - 410 -> the link was already submitted (their request is already with us)
+//! - 410 -> terminal. Two shapes share this status: the link was already
+//!   submitted (their request is already with us), or the form was retired
+//!   (PMS-838, the MSP stopped collecting this request type). The page
+//!   distinguishes them by the server-provided message so each gets its own
+//!   terminal copy; the already-submitted wording would be a lie for a
+//!   retired form, and vice versa.
 //! - 400 -> expired, unknown or malformed; the server deliberately does not
 //!   distinguish these, so neither does this page
 //! - 422 -> per-field validation errors, routed to their inputs
@@ -69,8 +74,25 @@ enum Terminal {
     Submitted(String, i32),
     /// 410: this link has already been used.
     AlreadySubmitted,
+    /// 410: the form has been retired (PMS-838); the MSP stopped collecting
+    /// this request type between the link going out and the client opening
+    /// it. Distinct from AlreadySubmitted so the copy can say "ask your
+    /// account team for a new link" rather than "your request is with us".
+    Retired,
     /// 400: expired, unknown or malformed.
     Unusable,
+}
+
+/// PMS-838: the two 410 shapes share one status but need different terminal
+/// copy. Pick which one from the server-provided message. The retired message
+/// is spelled by `src/modules/forms/request_links.rs` and starts with "This
+/// form has been retired".
+fn gone_terminal(message: &str) -> Terminal {
+    if message.contains("form has been retired") {
+        Terminal::Retired
+    } else {
+        Terminal::AlreadySubmitted
+    }
 }
 
 /// Fetches `PublicForm` for `tok` and applies the result. Shared by the
@@ -92,8 +114,8 @@ async fn load_form(
         .await
         {
             Ok(f) => form.set(Some(f)),
-            Err(ApiError::Status { code: 410, .. }) => {
-                terminal.set(Some(Terminal::AlreadySubmitted))
+            Err(ApiError::Status { code: 410, message, .. }) => {
+                terminal.set(Some(gone_terminal(&message)))
             }
             Err(ApiError::Status { code: 400, .. }) => terminal.set(Some(Terminal::Unusable)),
             // Anything else (network, 5xx, 429) is not terminal: the link may
@@ -210,8 +232,8 @@ pub fn RequestFormPage(token: String) -> Element {
                             field_errors.set(routed);
                             form_error.set(unrouted.join(" "));
                         }
-                        Err(ApiError::Status { code: 410, .. }) => {
-                            terminal.set(Some(Terminal::AlreadySubmitted))
+                        Err(ApiError::Status { code: 410, message, .. }) => {
+                            terminal.set(Some(gone_terminal(&message)))
                         }
                         Err(ApiError::Status { code: 400, .. }) => {
                             terminal.set(Some(Terminal::Unusable))
@@ -285,6 +307,14 @@ pub fn RequestFormPage(token: String) -> Element {
                         h1 { class: "text-2xl font-semibold text-content", "Already submitted" }
                         p { class: "mt-2 text-sm text-content",
                             "This link has already been used, so your request is with us. Ask your account team if you need to send another."
+                        }
+                    }
+                },
+                Some(Terminal::Retired) => rsx! {
+                    div { class: "text-center", role: "status", aria_live: "polite",
+                        h1 { class: "text-2xl font-semibold text-content", "Form retired" }
+                        p { class: "mt-2 text-sm text-content",
+                            "This form has been retired and is no longer accepting submissions. Ask your account team for a new link."
                         }
                     }
                 },
