@@ -1865,7 +1865,13 @@ fn build_timesheet_history(
             at: d.at,
             kind,
             actor: if d.actor.trim().is_empty() {
-                "Unknown reviewer".to_string()
+                // MAPPS-1063: no reviewer name on the wire and no id to key
+                // on either (the server sends neither); log the substitution
+                // through the shared helper so it is findable even without
+                // an id to pin to.
+                let shown = "Unknown reviewer".to_string();
+                let _ = crate::utils::unresolved("time.decision_reviewer", "user", None, &shown);
+                shown
             } else {
                 d.actor
             },
@@ -3575,6 +3581,8 @@ mod tests {
             ticket_title,
             project_name,
             task_title,
+            user_name,
+            work_type_name,
         } = resp;
         // The one widening: the server types minutes as `i32` and this page
         // sums a day's and a week's worth as `i64`. Annotated so the widening
@@ -3618,6 +3626,8 @@ mod tests {
             hourly_rate,
             total_amount,
             approval_status,
+            user_name,
+            work_type_name,
         );
     }
 

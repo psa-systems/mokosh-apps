@@ -2369,7 +2369,6 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     // populated from the loaded asset when the user opens it.
     let mut editing = use_signal(|| false);
     let mut e_name = use_signal(String::new);
-    let mut e_tag = use_signal(String::new);
     let mut e_type = use_signal(String::new);
     let mut e_status = use_signal(String::new);
     let mut e_manufacturer = use_signal(String::new);
@@ -2682,7 +2681,6 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                 let a_edit = a.clone();
                 let open_edit = move |_| {
                     e_name.set(a_edit.name.clone());
-                    e_tag.set(a_edit.asset_tag.clone().unwrap_or_default());
                     e_type
                         .set(a_edit.asset_type_id.map(|t| t.to_string()).unwrap_or_default());
                     e_status.set(a_edit.status.clone());
@@ -3249,7 +3247,6 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     e_error.set(String::new());
                     let mut body = serde_json::Map::new();
                     body.insert("name".into(), serde_json::json!(asset_name));
-                    body.insert("asset_tag".into(), serde_json::json!(opt_str(&e_tag())));
                     body.insert("asset_type_id".into(), serde_json::json!(opt_str(&e_type())));
                     body.insert("status".into(), serde_json::json!(e_status()));
                     body.insert(
@@ -3401,12 +3398,6 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 value: "{e_status}",
                                 onchange: move |e: FormEvent| e_status.set(e.value()),
                             }
-                        }
-                        Input {
-                            name: "edit-tag",
-                            label: "Asset Tag",
-                            value: "{e_tag}",
-                            oninput: move |e: FormEvent| e_tag.set(e.value()),
                         }
                         div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                             Input {

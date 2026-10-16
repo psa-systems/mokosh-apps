@@ -167,7 +167,6 @@ fn apply_patch(mut asset_sig: Signal<DrawerAsset>, field: &'static str, value: O
     let mut a = asset_sig.write();
     match field {
         "name" => a.name = value.unwrap_or_default(),
-        "asset_tag" => a.asset_tag = value,
         "status" => a.status = value.unwrap_or_default(),
         "manufacturer" => a.manufacturer = value,
         "model" => a.model = value,
@@ -224,20 +223,6 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 optional: false,
                 open_field: Some(open_field),
                 on_patched: move |v| apply_patch(asset_sig, "name", v),
-            }
-            InlineFieldEditor {
-                label: "Asset tag".to_string(),
-                value: a.asset_tag.clone(),
-                kind: InlineFieldKind::Text {
-                    placeholder: "e.g. MK-00123".to_string(),
-                    maxlength: Some(100),
-                    required: false,
-                },
-                path: path.clone(),
-                patch_field: "asset_tag".to_string(),
-                optional: true,
-                open_field: Some(open_field),
-                on_patched: move |v| apply_patch(asset_sig, "asset_tag", v),
             }
             InlineFieldEditor {
                 label: "Status".to_string(),

@@ -118,6 +118,8 @@ struct RemoteTicket {
     #[serde(default)]
     priority: RemoteSummary,
     #[serde(default)]
+    assigned_to_id: Option<uuid::Uuid>,
+    #[serde(default)]
     assigned_to_name: Option<String>,
     updated_at: DateTime<Utc>,
 }
@@ -2363,7 +2365,19 @@ fn TicketListBody() -> Element {
                                 company: ticket.company_name,
                                 status: humanize_ticket_status(&ticket.status.name),
                                 priority: humanize_priority(&ticket.priority.name),
-                                assigned_to: ticket.assigned_to_name.unwrap_or_else(|| "Unassigned".to_string()),
+                                assigned_to: ticket.assigned_to_name.clone().unwrap_or_else(|| "Unassigned".to_string()),
+                                // MAPPS-1063: `assigned_to_id` with no name is
+                                // an unresolved reference, not an unassigned
+                                // ticket; log it and tooltip the cell.
+                                assigned_to_tooltip: match (&ticket.assigned_to_id, &ticket.assigned_to_name) {
+                                    (Some(uid), None) => Some(crate::utils::unresolved(
+                                        "tickets.ticket_row_assignee",
+                                        "user",
+                                        Some(*uid),
+                                        "Unassigned",
+                                    )),
+                                    _ => None,
+                                },
                                 updated: relative_time(ticket.updated_at),
                                 updated_iso: ticket.updated_at.to_rfc3339(),
                                 updated_title: fmt_datetime_in(ticket.updated_at, pref.as_deref(), tz),
@@ -2390,6 +2404,12 @@ struct TicketRowProps {
     status: String,
     priority: String,
     assigned_to: String,
+    /// MAPPS-1063: hover text when the assignee cell carries an unresolved
+    /// reference ("Unassigned" shown for a ticket that does carry an
+    /// `assigned_to_id` whose name the server did not send). `None` for a
+    /// legitimately unassigned row or when the name resolved cleanly.
+    #[props(default)]
+    assigned_to_tooltip: Option<String>,
     updated: String,
     /// MAPPS-409: RFC3339 form of `updated_at` for the `<time datetime>`
     /// wrapper, plus the absolute-time string for its hover title.
@@ -2442,7 +2462,11 @@ fn TicketRow(props: TicketRowProps) -> Element {
             }
             TableCell {
                 if props.assigned_to == "Unassigned" {
-                    span { class: "text-subtle italic", "Unassigned" }
+                    if let Some(ref t) = props.assigned_to_tooltip {
+                        span { class: "text-subtle italic", title: "{t}", "Unassigned" }
+                    } else {
+                        span { class: "text-subtle italic", "Unassigned" }
+                    }
                 } else {
                     span { "{props.assigned_to}" }
                 }
@@ -8371,6 +8395,7 @@ mod mapps686_shared_dto_tests {
             company_name: company_name.clone(),
             status: status_summary.clone(),
             priority: priority_summary.clone(),
+            assigned_to_id: None,
             assigned_to_name,
             updated_at,
         };
@@ -8522,6 +8547,8 @@ mod mapps686_shared_dto_tests {
             ticket_title,
             project_name,
             task_title,
+            user_name,
+            work_type_name,
         } = resp;
         // Both `Some(...)` are fields the server always sends that this page
         // still decodes as optional, the same stated read-path tolerance as
@@ -8565,6 +8592,8 @@ mod mapps686_shared_dto_tests {
             ticket_title,
             project_name,
             task_title,
+            user_name,
+            work_type_name,
         );
     }
 }
