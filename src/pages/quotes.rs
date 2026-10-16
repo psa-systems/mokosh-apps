@@ -989,15 +989,23 @@ fn QuoteDetailBody(id: String) -> Element {
                                         }
                                     }
                                     if let Some(sent_at_iso) = q.sent_at.map(|s| s.to_rfc3339()) {
-                                        if let Some(sent) = sent_line(
-                                            q.delivery_method.as_deref(),
-                                            q.delivery_note.as_deref(),
-                                            q.delivered_by_name.as_deref(),
-                                            Some(&sent_at_iso),
-                                        ) {
-                                            div {
-                                                dt { class: "text-subtle", "Sent" }
-                                                dd { time { datetime: "{sent_at_iso}", "{sent}" } }
+                                        {
+                                            let sent_at_display =
+                                                crate::pages::billing::format_sent_date(Some(&sent_at_iso));
+                                            if let Some(sent) = sent_line(
+                                                q.delivery_method.as_deref(),
+                                                q.delivery_note.as_deref(),
+                                                q.delivered_by_name.as_deref(),
+                                                sent_at_display.as_deref(),
+                                            ) {
+                                                rsx! {
+                                                    div {
+                                                        dt { class: "text-subtle", "Sent" }
+                                                        dd { time { datetime: "{sent_at_iso}", "{sent}" } }
+                                                    }
+                                                }
+                                            } else {
+                                                rsx! {}
                                             }
                                         }
                                     }
@@ -1128,6 +1136,21 @@ fn QuoteDetailBody(id: String) -> Element {
                                                 email_option.as_ref().is_some_and(|o| !o.available);
                                             let email_reason =
                                                 email_option.as_ref().and_then(|o| o.reason.clone());
+                                            // MAPPS-1041: name the real recipient when the server
+                                            // sent one. A failed fetch / absent field keeps the
+                                            // existing generic sentence, same fallback MAPPS-1014
+                                            // commits to.
+                                            let email_recipient = email_option
+                                                .as_ref()
+                                                .and_then(|o| o.recipient.clone())
+                                                .map(|s| s.trim().to_string())
+                                                .filter(|s| !s.is_empty());
+                                            let email_help_text = match email_recipient.as_deref() {
+                                                Some(r) => format!(
+                                                    "Mokosh emails the sign-off link to {r}."
+                                                ),
+                                                None => "Mokosh emails the sign-off link to the billing contact.".to_string(),
+                                            };
                                             let other_invalid = method == "other" && note.is_empty();
                                             let pdf_path = format!("/api/v1/quotes/{}/pdf", q.id);
                                             let qid = quote_id.clone();
@@ -1158,7 +1181,7 @@ fn QuoteDetailBody(id: String) -> Element {
                                                                 span {
                                                                     span { class: "font-medium", "Email" }
                                                                     span { class: "block text-xs text-muted",
-                                                                        "Mokosh emails the sign-off link to the billing contact."
+                                                                        "{email_help_text}"
                                                                     }
                                                                 }
                                                             }
@@ -2291,26 +2314,24 @@ mod customer_quote_tests {
 mod quote_sent_line_tests {
     use super::sent_line;
 
-    /// MAPPS-1031: the quote page's Sent row covers the same four cases as
-    /// the invoice page's, because it delegates to the same function.
+    /// MAPPS-1031 + MAPPS-1041: the quote page's Sent row covers the same four
+    /// cases as the invoice page's, because it delegates to the same function.
+    /// The date arrives pre-formatted (MAPPS-1041); the shared tests under
+    /// `crate::pages::billing::sent_line_tests` cover the formatter itself,
+    /// including the late-UTC-evening timezone shift.
     #[test]
     fn email_names_the_method() {
         assert_eq!(
-            sent_line(
-                Some("email"),
-                None,
-                Some("Jamie Lee"),
-                Some("2026-09-02T14:03:11Z")
-            ),
-            Some("Emailed on 2026-09-02 by Jamie Lee".to_string())
+            sent_line(Some("email"), None, Some("Jamie Lee"), Some("Sep 02, 2026"),),
+            Some("Emailed on Sep 02, 2026 by Jamie Lee".to_string())
         );
     }
 
     #[test]
     fn postal_names_the_method() {
         assert_eq!(
-            sent_line(Some("postal"), None, None, Some("2026-09-02T14:03:11Z")),
-            Some("Mailed on 2026-09-02".to_string())
+            sent_line(Some("postal"), None, None, Some("Sep 02, 2026")),
+            Some("Mailed on Sep 02, 2026".to_string())
         );
     }
 
@@ -2321,16 +2342,16 @@ mod quote_sent_line_tests {
                 Some("other"),
                 Some("Handed to the client"),
                 None,
-                Some("2026-09-02T14:03:11Z")
+                Some("Sep 02, 2026"),
             ),
-            Some("Delivered: Handed to the client on 2026-09-02".to_string())
+            Some("Delivered: Handed to the client on Sep 02, 2026".to_string())
         );
     }
 
     #[test]
     fn no_recorded_method_says_so() {
         assert_eq!(
-            sent_line(None, None, None, Some("2026-09-02T14:03:11Z")),
+            sent_line(None, None, None, Some("Sep 02, 2026")),
             Some("Delivery not recorded".to_string())
         );
     }
