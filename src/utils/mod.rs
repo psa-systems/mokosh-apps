@@ -35,7 +35,7 @@ pub use error::{AppError, AppResult};
 pub use form_guard::FormGuard;
 pub use pagination::{PaginatedResponse, PaginationParams};
 pub use text::{clean_strict, has_invisible, strip_invisible};
-pub use unresolved_person::unresolved;
+pub use unresolved_person::{unresolved, unresolved_by_key};
 pub use validation::{validate, Rule};
 pub use version::{BUILD_DATE, GIT_HASH, VERSION};
 

@@ -11749,6 +11749,7 @@ mod shared_dto_tests {
             companies,
             imported_from,
             created_at,
+            portal_role_names,
         } = resp;
         let _ = RemoteContact {
             id,
@@ -11826,6 +11827,7 @@ mod shared_dto_tests {
             avatar_url,
             status,
             created_at,
+            portal_role_names,
         );
         // The two child lists above are decoded by their own structs; the
         // annotations pin the DTO's element types for the fields.

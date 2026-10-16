@@ -424,7 +424,18 @@ fn render_editor_grid(draft: Signal<DashboardLayout>, dirty: Signal<bool>) -> El
 
 fn render_widget_cell(w: &WidgetSpec, idx: usize) -> Element {
     let entry = catalog_lookup(&w.widget_key);
-    let title = entry.map(|e| e.title).unwrap_or("Unknown widget");
+    let title = entry.map(|e| e.title).unwrap_or_else(|| {
+        // MAPPS-1063: a widget_key the catalog does not know is an
+        // unresolved reference, not a legitimately-blank widget. Log
+        // it via the string-keyed sibling of `unresolved`.
+        let _ = crate::utils::unresolved_by_key(
+            "dashboards.widget_catalog",
+            "widget_key",
+            &w.widget_key,
+            "Unknown widget",
+        );
+        "Unknown widget"
+    });
     let style = grid_style(w);
     let key = format!("w-{idx}-{}", w.widget_key);
     // `time_this_week` renders as a `StatCard`, which already carries its own
@@ -453,7 +464,15 @@ fn render_widget_editor_cell(
     mut dirty: Signal<bool>,
 ) -> Element {
     let entry = catalog_lookup(&w.widget_key);
-    let title = entry.map(|e| e.title).unwrap_or("Unknown widget");
+    let title = entry.map(|e| e.title).unwrap_or_else(|| {
+        let _ = crate::utils::unresolved_by_key(
+            "dashboards.widget_catalog_editor",
+            "widget_key",
+            &w.widget_key,
+            "Unknown widget",
+        );
+        "Unknown widget"
+    });
     let style = grid_style(&w);
     let key = format!("e-{idx}-{}", w.widget_key);
 
