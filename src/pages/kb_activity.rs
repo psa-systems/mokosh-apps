@@ -408,10 +408,22 @@ fn CommentThread(
     let resolved = root.resolved_at.is_some();
     let root_id = root.id;
     let reply_count = root.replies.len();
-    let resolver = root
+    // MAPPS-1063: a resolved comment with no `resolved_by_name` is logged
+    // through the shared helper (no id on the wire) so the "someone"
+    // substitution is findable.
+    let (resolver, resolver_title) = match root
         .resolved_by_name
         .clone()
-        .unwrap_or_else(|| "someone".to_string());
+        .filter(|n| !n.trim().is_empty())
+    {
+        Some(name) => (name, None),
+        None => {
+            let shown = "someone".to_string();
+            let title =
+                crate::utils::unresolved("kb_activity.comment_resolver", "user", None, &shown);
+            (shown, Some(title))
+        }
+    };
     let set_resolved = use_callback(move |resolve: bool| {
         if busy() || !can_mutate {
             return;
@@ -479,7 +491,11 @@ fn CommentThread(
                         span { class: "font-medium text-content", "{root.author_name}" }
                         ": "
                         span { class: "line-through", "{root.body}" }
-                        span { class: "ml-2 text-xs text-subtle", "resolved by {resolver}" }
+                        if let Some(ref t) = resolver_title {
+                            span { class: "ml-2 text-xs text-subtle", title: "{t}", "resolved by {resolver}" }
+                        } else {
+                            span { class: "ml-2 text-xs text-subtle", "resolved by {resolver}" }
+                        }
                         if reply_count > 0 {
                             span { class: "ml-2 text-xs text-subtle", "({reply_count} replies)" }
                         }

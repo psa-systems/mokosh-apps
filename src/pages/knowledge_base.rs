@@ -452,12 +452,17 @@ pub(crate) fn when_label(ts: &Option<DateTime<Utc>>) -> String {
 /// passed in so the page uses the user's preference and a test a fixed one.
 fn attribution_parts(
     author: Option<&str>,
+    author_id: Option<uuid::Uuid>,
     created: &Option<DateTime<Utc>>,
     editor: Option<&str>,
+    editor_id: Option<uuid::Uuid>,
     updated: &Option<DateTime<Utc>>,
     when: impl Fn(&Option<DateTime<Utc>>) -> String,
 ) -> Vec<(String, Option<String>)> {
-    let author = author.filter(|n| !n.trim().is_empty()).unwrap_or("Unknown");
+    // MAPPS-1063: a name the server did not resolve is logged via the shared
+    // helper when an id is attached, so the "Unknown" substitution is
+    // findable. A row with no id at all stays a plain fallback.
+    let author = resolve_person_label("kb.article_author", author, author_id);
     let mut parts = vec![
         (format!("Created by {author} "), None),
         (when(created), created.map(|d| d.to_rfc3339())),
@@ -468,11 +473,26 @@ fn attribution_parts(
         _ => false,
     };
     if touched {
-        let editor = editor.filter(|n| !n.trim().is_empty()).unwrap_or("Unknown");
+        let editor = resolve_person_label("kb.article_editor", editor, editor_id);
         parts.push((format!(" · Updated by {editor} "), None));
         parts.push((when(updated), updated.map(|d| d.to_rfc3339())));
     }
     parts
+}
+
+/// MAPPS-1063: KB attribution helper. Logs an unresolved reference via the
+/// shared helper when the server sent an id but no (non-blank) name; a row
+/// with no id at all is a legitimate absence and is not logged.
+fn resolve_person_label(surface: &str, name: Option<&str>, id: Option<uuid::Uuid>) -> String {
+    match name.filter(|n| !n.trim().is_empty()) {
+        Some(n) => n.to_string(),
+        None => {
+            if let Some(id) = id {
+                let _ = crate::utils::unresolved(surface, "user", Some(id), "Unknown");
+            }
+            "Unknown".to_string()
+        }
+    }
 }
 
 // ============================================================================
@@ -1631,8 +1651,10 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                 } else {
                     let parts = attribution_parts(
                         article.author_name.as_deref(),
+                        article.author_id,
                         &article.created_at,
                         article.updated_by_name.as_deref(),
+                        article.updated_by_id,
                         &article.updated_at,
                         when_label,
                     );
@@ -5172,8 +5194,10 @@ mod mapps739_history_tests {
         let updated = Some(Utc.with_ymd_and_hms(2026, 9, 8, 9, 40, 0).unwrap());
         let parts = attribution_parts(
             Some("Ada Lovelace"),
+            None,
             &created,
             Some("Grace Hopper"),
+            None,
             &updated,
             fixed,
         );
@@ -5192,8 +5216,10 @@ mod mapps739_history_tests {
         let created = Some(Utc.with_ymd_and_hms(2026, 9, 7, 10, 12, 0).unwrap());
         let parts = attribution_parts(
             Some("Ada Lovelace"),
+            None,
             &created,
             Some("Ada Lovelace"),
+            None,
             &created,
             fixed,
         );
@@ -5207,8 +5233,10 @@ mod mapps739_history_tests {
         let updated = Some(Utc.with_ymd_and_hms(2026, 9, 8, 9, 40, 0).unwrap());
         let line = joined(&attribution_parts(
             None,
+            None,
             &created,
             Some("  "),
+            None,
             &updated,
             fixed,
         ));
