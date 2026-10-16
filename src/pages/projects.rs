@@ -39,6 +39,12 @@ struct RemoteProject {
     company_name: Option<String>,
     #[serde(default)]
     project_manager_id: Option<uuid::Uuid>,
+    /// Server-resolved display name for `project_manager_id` (PMS-1068), joined
+    /// via a tenant-scoped LEFT JOIN on `users`. Lets the project header render
+    /// the manager without walking the members roster; `None` on a server that
+    /// predates the field.
+    #[serde(default)]
+    project_manager_name: Option<String>,
     #[serde(default)]
     start_date: Option<String>,
     #[serde(default)]
@@ -1465,11 +1471,14 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
             {
                 let p = project.clone().unwrap();
                 let (status_variant, status_label) = status_badge(&p.status);
-                let (pm, pm_title) = user_name_with_tooltip(
-                    &users,
-                    &p.project_manager_id,
-                    "projects.project_manager",
-                );
+                let (pm, pm_title) = match &p.project_manager_name {
+                    Some(name) if !name.is_empty() => (name.clone(), None),
+                    _ => user_name_with_tooltip(
+                        &users,
+                        &p.project_manager_id,
+                        "projects.project_manager",
+                    ),
+                };
                 let spent = p.actual_amount.unwrap_or(0.0);
                 let budget = p.budget_amount.unwrap_or(0.0);
                 let remaining = budget - spent;
