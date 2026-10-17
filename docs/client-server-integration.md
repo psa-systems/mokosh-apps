@@ -510,10 +510,14 @@ MAPPS-1038). An absent id is not that case and is not logged; it is
 rendered with each screen's own existing not-set wording.
 
 A name the server does NOT send is a different question, and the
-answer is not this rule. The asset type column and the project-manager
-line still join a fetched lookup, because `AssetResponse` and
-`ProjectResponse` carry no name field for them: joining is the only
-option there, and a server-side name is the ticket to file.
+answer is not this rule. Two of the eight compensation sites MAPPS-1044
+tracked, the asset type column and the project-manager line, now
+render the server-sent `asset_type_name` and `project_manager_name`
+fields directly (MAPPS-1044). The remaining six (task assignee/status,
+appointment assignee, time entry work type and user, contact portal
+roles, KB article company name, rate-card work type) still join a
+fetched lookup, pending PMS-1481's remaining fields; each is the same
+join-vs-render-the-response-field question, not a different rule.
 
 ## Not only DTOs
 
