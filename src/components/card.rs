@@ -29,8 +29,9 @@ pub struct CardProps {
     /// Exists because a card's subtitle can BE the unresolved reference. The
     /// projects list's company name is this card's subtitle (MAPPS-967), and
     /// when the server sends no name for a `company_id` the placeholder has to
-    /// carry the "Unresolved company <id>" tooltip the no-masking rule asks
-    /// for. A `String` prop cannot hold an attribute, so the attribute comes
+    /// carry the "Unresolved company <id>" tooltip the no-masking rule in
+    /// `docs/form-conventions.md`'s `subtitle_title` paragraph asks for. A
+    /// `String` prop cannot hold an attribute, so the attribute comes
     /// in beside it. `None` renders no `title` at all.
     #[props(default)]
     subtitle_title: Option<String>,
