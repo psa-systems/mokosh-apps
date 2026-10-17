@@ -1,6 +1,7 @@
 //! MAPPS-1036 / MAPPS-1037 / MAPPS-1039: one shared helper for every
 //! "placeholder shown instead of a resolved reference" substitution. A
-//! placeholder that leaves no trace is masking (`no-masking.md`); this makes
+//! placeholder that leaves no trace is masking (see `docs/form-conventions.md`'s
+//! `subtitle_title` paragraph); this makes
 //! every substitution findable with an INFO log line and a hover tooltip,
 //! both carrying the unresolved id.
 //!
