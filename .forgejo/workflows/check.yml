@@ -316,6 +316,17 @@ jobs:
           bash scripts/check-ci-parity.sh --self-test
           bash scripts/check-ci-parity.sh
 
+      # MAPPS-1027: fails if docs/configuration.md disagrees with
+      # config/variables.toml or with the `${MOKOSH_...}` reads in
+      # oci-build/entrypoint.sh. Self-test first (same shape as
+      # check-link-preview), so a guard that stopped guarding fails
+      # loudly.
+      - name: Configuration docs
+        shell: nu {0}
+        run: |
+          nu scripts/config-docs.nu self-test
+          nu scripts/config-docs.nu check
+
       # MAPPS-650 / PMS-946: David asked the user-facing identifier read
       # "Company ID", not "Portal ID". Grep the contact-plane pages for
       # a regression: if a fresh string lands under
