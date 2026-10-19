@@ -22,6 +22,7 @@ pub mod calendar;
 // role editor. New page `/companies/:company_id/roles/:id`; the list
 // of Company-scoped roles lives on the `CompanyRolesCard` inside
 // `contacts.rs`.
+pub mod company_documentation;
 pub mod company_role_edit;
 pub mod contact_provenance;
 pub mod contact_sync_review;

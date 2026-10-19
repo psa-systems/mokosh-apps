@@ -796,6 +796,14 @@ pub enum Route {
     #[route("/companies/:id/edit")]
     CompanyEdit { id: String },
 
+    // MAPPS-455 / PMS-800: per-client documentation view. One screen
+    // for a client's assets, credentials and runbooks, so a technician
+    // working a ticket can find the client-specific answer without
+    // visiting assets, the vault and the KB separately. The server
+    // endpoint is PMS-800's `GET /api/v1/companies/:id/documentation`.
+    #[route("/companies/:company_id/documentation")]
+    CompanyDocumentation { company_id: String },
+
     // MAPPS-590 (mokosh-contact-login prompt 012): Company-scoped
     // portal role editor. `:id == "new"` creates a Company-scoped
     // role; any UUID edits an existing scoped role. The list of
@@ -1622,6 +1630,17 @@ fn CompanyRoleEdit(company_id: String, id: String) -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             company_role_edit::CompanyRoleEditPage { company_id, id }
+        }
+    }
+}
+
+// MAPPS-455 / PMS-800: wrapper that resolves `Route::CompanyDocumentation`
+// to the per-client documentation page.
+#[component]
+fn CompanyDocumentation(company_id: String) -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            company_documentation::CompanyDocumentationPage { company_id }
         }
     }
 }
