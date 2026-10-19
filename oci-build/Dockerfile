@@ -135,11 +135,17 @@ COPY --chmod=0644 oci-build/Caddyfile /etc/caddy/Caddyfile
 # --chmod=0755 here is safe (no implicit parent dir creation).
 COPY --chmod=0755 oci-build/entrypoint.sh /usr/local/bin/entrypoint.sh
 
-RUN adduser --disabled-password --uid 1001 appuser \
-    && chown --recursive appuser:appuser /usr/share/caddy
+# MAPPS-963: the image no longer owns /usr/share/caddy as a specific
+# uid. entrypoint.sh writes the runtime-config shim and the patched
+# index.html into $MOKOSH_RUNTIME_DIR (default /tmp/mokosh-runtime),
+# which is world-writable, so the container runs cleanly as the
+# default `appuser` (uid 1001) OR as a host-side account like
+# DEV-271's 10000:10000 override.
+RUN adduser --disabled-password --uid 1001 appuser
 USER appuser
 
-ENV PORT=8080
+ENV PORT=8080 \
+    MOKOSH_RUNTIME_DIR=/tmp/mokosh-runtime
 EXPOSE 8080
 
 ARG GIT_SHA=""

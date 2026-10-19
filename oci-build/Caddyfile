@@ -4,6 +4,17 @@
 }
 
 :{$PORT} {
+    # MAPPS-963: `_mokosh_config.js`, `_mokosh_config.json` and the
+    # link-preview-patched `index.html` are rendered by entrypoint.sh
+    # into `$MOKOSH_RUNTIME_DIR` (default /tmp/mokosh-runtime) so the
+    # image works as any non-root uid rather than owning
+    # /usr/share/caddy. A named matcher routes those three paths at
+    # that root; everything else (hashed /assets, /wasm, favicons,
+    # the PWA manifest) stays at the compile-time bundle root. The
+    # SPA fallback rewrites to /index.html before matching, so
+    # client-side routes also pick up the patched copy.
+    @runtime path /_mokosh_config.js /_mokosh_config.json /index.html
+    root @runtime {$MOKOSH_RUNTIME_DIR:/tmp/mokosh-runtime}
     root * /usr/share/caddy
     encode gzip zstd
 

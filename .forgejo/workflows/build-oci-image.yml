@@ -234,6 +234,16 @@ jobs:
           bash scripts/check-link-preview.sh --self-test
           bash scripts/check-link-preview.sh
 
+      # MAPPS-963: the image's serving uids are checked end to end
+      # (default appuser + a --user 10000:10000 override, plus the
+      # read-only-rootfs refusal), with the same self-test-first
+      # pattern as the link-preview check so a check that stopped
+      # checking fails loudly rather than reporting clean.
+      - name: Serving-uid guard
+        run: |
+          bash scripts/check-oci-runtime.sh --self-test
+          bash scripts/check-oci-runtime.sh
+
       - name: Mirror image to public registry
         # MAPPS-421: a branch tag is a staging-only artifact, so it is never
         # mirrored. The public owner carries main and release tags only.
