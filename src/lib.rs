@@ -1154,6 +1154,11 @@ pub enum Route {
     // release without one while the comment claimed otherwise.
     #[route("/admin/audit")]
     AuditLog {},
+    // MAPPS-955: runtime feature-toggle admin. Super-admin gated at the SPA
+    // (same posture as AuditLog); server enforces the real check through
+    // `RequireAdmin` on `/settings/feature-toggles`.
+    #[route("/admin/features")]
+    AdminFeatures {},
     // PMS-731: request-form builder. Admin config, so it lives with the
     // other /admin/* surfaces.
     #[route("/admin/forms")]
@@ -2497,6 +2502,15 @@ fn AuditLog() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             audit_log::AuditLogPage {}
+        }
+    }
+}
+
+#[component]
+fn AdminFeatures() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            admin_features::AdminFeaturesPage {}
         }
     }
 }

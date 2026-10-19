@@ -12,6 +12,7 @@ pub mod approvals;
 pub mod asset_catalog_ui;
 pub mod asset_drawer;
 pub mod assets;
+pub mod admin_features;
 pub mod audit_log;
 pub mod auth_callback;
 pub mod big_view;
