@@ -100,6 +100,14 @@ struct RemoteAsset {
     assigned_user_id: Option<uuid::Uuid>,
     #[serde(default)]
     assigned_user_name: Option<String>,
+    // MAPPS-1071: an asset can alternatively be issued to a contact of
+    // its company. Server (PR #1077) resolves both ids and names via
+    // tenant-scoped LEFT JOINs; a row with neither reads as unassigned.
+    #[serde(default)]
+    #[allow(dead_code)]
+    contact_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    contact_name: Option<String>,
     #[serde(default)]
     ip_address: Option<String>,
     #[serde(default)]
@@ -128,6 +136,32 @@ struct CompanyOpt {
     id: uuid::Uuid,
     #[serde(default)]
     name: String,
+}
+
+/// MAPPS-1071: minimal contact shape for the "Issued to a contact" picker
+/// in the asset edit modal. The server's `/contacts?company_id=<id>` endpoint
+/// returns a richer `ContactResponse`; this reads only the three fields the
+/// picker needs so an older server that drops optional fields still decodes.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct ContactOpt {
+    id: uuid::Uuid,
+    #[serde(default)]
+    first_name: String,
+    #[serde(default)]
+    last_name: String,
+}
+
+impl ContactOpt {
+    fn display(&self) -> String {
+        let full = format!("{} {}", self.first_name, self.last_name)
+            .trim()
+            .to_string();
+        if full.is_empty() {
+            self.id.to_string()
+        } else {
+            full
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2361,6 +2395,34 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     // MAPPS-860: shared roster cache, not a per-page fetch.
     let users_resource = crate::hooks::use_user_roster(true);
 
+    // MAPPS-1071: the edit modal's "Issued to" picker needs a signal
+    // for the asset's company (declared early so the contact resource
+    // can key on it) and the resource itself. Both live outside the
+    // modal body because the resource must survive across renders.
+    let e_company_id = use_signal(String::new);
+    let edit_contacts_resource = use_resource(move || {
+        let company_id = e_company_id.read().clone();
+        async move {
+            if company_id.trim().is_empty() {
+                return Vec::<ContactOpt>::new();
+            }
+            #[cfg(feature = "app")]
+            {
+                let _gen = crate::hooks::fetch::active_tenant_generation();
+                crate::hooks::fetch::api::get_all_authed::<ContactOpt>(&format!(
+                    "/contacts?company_id={company_id}&per_page=200"
+                ))
+                .await
+                .inspect_err(|e| tracing::warn!("asset-edit contact list failed: {e}"))
+                .unwrap_or_default()
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                Vec::new()
+            }
+        }
+    });
+
     // On-demand audited reveals, keyed by item id.
     let revealed_creds = use_signal(HashMap::<uuid::Uuid, RevealedCred>::new);
     let revealed_cfgs = use_signal(HashMap::<uuid::Uuid, String>::new);
@@ -2384,6 +2446,20 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     // serialiser converts the empty string to a JSON null which the
     // server `COALESCE`s on the UPDATE.
     let mut e_assigned_user = use_signal(String::new);
+    // MAPPS-1071: an asset is issued either to a staff user OR to a
+    // contact of its company; the server (PR #1077) carries both
+    // `assigned_user_id` and `contact_id`, mutually exclusive in
+    // practice. `e_assigned_mode` is the radio-driven mode selector;
+    // `e_contact` holds the chosen contact id when mode is "contact".
+    // `e_company_id` carries the asset's company so the contact list is
+    // scoped. Switching the mode clears the id for the other side so a
+    // save sends exactly one of the two.
+    let mut e_assigned_mode = use_signal(|| "staff".to_string());
+    let mut e_contact = use_signal(String::new);
+    // `e_company_id` is declared earlier in the function so the contacts
+    // resource can key on it; re-bind it mutable here so `open_edit` can
+    // seed it from the row's `company_id` when the modal opens.
+    let mut e_company_id = e_company_id;
     let mut e_ip = use_signal(String::new);
     let mut e_hostname = use_signal(String::new);
     let mut e_mac = use_signal(String::new);
@@ -2697,6 +2773,25 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                             .map(|u| u.to_string())
                             .unwrap_or_default(),
                     );
+                    // MAPPS-1071: seed the "Issued to" mode from the row.
+                    // A row with `contact_id` set opens on Contact; everything
+                    // else opens on Staff (including a Staff row and an
+                    // unassigned row, both edited through the staff picker).
+                    e_contact.set(
+                        a_edit
+                            .contact_id
+                            .map(|c| c.to_string())
+                            .unwrap_or_default(),
+                    );
+                    e_assigned_mode.set(
+                        if a_edit.contact_id.is_some() { "contact" } else { "staff" }.to_string(),
+                    );
+                    e_company_id.set(
+                        a_edit
+                            .company_id
+                            .map(|c| c.to_string())
+                            .unwrap_or_default(),
+                    );
                     e_ip.set(a_edit.ip_address.clone().unwrap_or_default());
                     e_hostname.set(a_edit.hostname.clone().unwrap_or_default());
                     e_mac.set(a_edit.mac_address.clone().unwrap_or_default());
@@ -2762,9 +2857,19 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     // older asset that pre-dates the
                                     // migration does not show a row of
                                     // empty "-" placeholders.
-                                    if let Some(name) = a.assigned_user_name.clone().filter(|s| !s.trim().is_empty()) {
+                                    // MAPPS-1071: the row renders either the contact
+                                    // name (an asset issued to a client contact) or
+                                    // the staff name, whichever the server resolved.
+                                    // Nothing when neither is set, matching the "no
+                                    // empty placeholders" rule above.
+                                    if let Some(name) = a
+                                        .contact_name
+                                        .clone()
+                                        .or_else(|| a.assigned_user_name.clone())
+                                        .filter(|s| !s.trim().is_empty())
+                                    {
                                         div {
-                                            dt { class: "text-sm text-muted", "Assigned to" }
+                                            dt { class: "text-sm text-muted", "Issued to" }
                                             dd { class: "mt-1", "{name}" }
                                         }
                                     }
@@ -3277,10 +3382,22 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     // a malformed UUID is sent verbatim so the
                     // server validator surfaces the 422 instead
                     // of the client silently swallowing it.
-                    body.insert(
-                        "assigned_user_id".into(),
-                        serde_json::json!(opt_str(&e_assigned_user())),
-                    );
+                    // MAPPS-1071: send both ids, mutually exclusive by mode.
+                    // Staff mode sends `assigned_user_id` and clears
+                    // `contact_id`; Contact mode is the inverse. An
+                    // unassigned asset is Staff mode with an empty id, which
+                    // sends `null` for both.
+                    let is_contact_mode = e_assigned_mode.read().as_str() == "contact";
+                    if is_contact_mode {
+                        body.insert("contact_id".into(), serde_json::json!(opt_str(&e_contact())));
+                        body.insert("assigned_user_id".into(), serde_json::Value::Null);
+                    } else {
+                        body.insert(
+                            "assigned_user_id".into(),
+                            serde_json::json!(opt_str(&e_assigned_user())),
+                        );
+                        body.insert("contact_id".into(), serde_json::Value::Null);
+                    }
                     body.insert("ip_address".into(), serde_json::json!(opt_str(&e_ip())));
                     body.insert("hostname".into(), serde_json::json!(opt_str(&e_hostname())));
                     body.insert("mac_address".into(), serde_json::json!(opt_str(&e_mac())));
@@ -3466,6 +3583,11 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                         // /auth/users fetch. Other fields are
                         // text / date inputs because the values
                         // are free-form network identifiers.
+                        // MAPPS-1071: "Issued to" is a two-mode picker.
+                        // The radio chooses Staff or Contact; the Select
+                        // beneath lists the chosen plane. Switching the
+                        // mode clears the id for the other side so the
+                        // save body sends exactly one of them.
                         {
                             let mut user_opts = vec![SelectOption::new("", "(unassigned)")];
                             for u in users.iter() {
@@ -3476,13 +3598,65 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 };
                                 user_opts.push(SelectOption::new(u.id.to_string(), label));
                             }
+                            let contacts = edit_contacts_resource
+                                .read_unchecked()
+                                .clone()
+                                .unwrap_or_default();
+                            let mut contact_opts = vec![SelectOption::new("", "(unassigned)")];
+                            for c in contacts.iter() {
+                                contact_opts.push(SelectOption::new(c.id.to_string(), c.display()));
+                            }
+                            let mode = e_assigned_mode.read().clone();
+                            let on_staff = move |_| {
+                                e_assigned_mode.set("staff".to_string());
+                                e_contact.set(String::new());
+                            };
+                            let on_contact = move |_| {
+                                e_assigned_mode.set("contact".to_string());
+                                e_assigned_user.set(String::new());
+                            };
                             rsx! {
-                                Select {
-                                    name: "edit-assigned-user",
-                                    label: "Assigned user",
-                                    options: user_opts,
-                                    value: "{e_assigned_user}",
-                                    onchange: move |e: FormEvent| e_assigned_user.set(e.value()),
+                                fieldset { class: "space-y-2",
+                                    legend { class: "text-sm font-medium text-content", "Issued to" }
+                                    div { class: "flex items-center gap-4 text-sm",
+                                        label { class: "inline-flex items-center gap-1",
+                                            input {
+                                                r#type: "radio",
+                                                name: "edit-assigned-mode",
+                                                value: "staff",
+                                                checked: mode == "staff",
+                                                onchange: on_staff,
+                                            }
+                                            "Staff"
+                                        }
+                                        label { class: "inline-flex items-center gap-1",
+                                            input {
+                                                r#type: "radio",
+                                                name: "edit-assigned-mode",
+                                                value: "contact",
+                                                checked: mode == "contact",
+                                                onchange: on_contact,
+                                            }
+                                            "Contact"
+                                        }
+                                    }
+                                    if mode == "contact" {
+                                        Select {
+                                            name: "edit-contact",
+                                            label: "Contact".to_string(),
+                                            options: contact_opts,
+                                            value: "{e_contact}",
+                                            onchange: move |e: FormEvent| e_contact.set(e.value()),
+                                        }
+                                    } else {
+                                        Select {
+                                            name: "edit-assigned-user",
+                                            label: "Staff user".to_string(),
+                                            options: user_opts,
+                                            value: "{e_assigned_user}",
+                                            onchange: move |e: FormEvent| e_assigned_user.set(e.value()),
+                                        }
+                                    }
                                 }
                             }
                         }
