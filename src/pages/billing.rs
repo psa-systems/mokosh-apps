@@ -925,31 +925,20 @@ pub(crate) fn edit_unavailable(status: &str) -> Option<String> {
 /// refuses it for anything else. `paid` and `credited` are whether either amount
 /// is above zero on the invoice, which is what makes a void wrong.
 pub(crate) fn amend_unavailable(status: &str, paid: bool, credited: bool) -> Option<String> {
+    // PMS-1335: one statement per state. The badge handles the status; this
+    // helper names the next action.
     match status {
-        "draft" | "pending" => Some(
-            "This invoice has not been sent, so edit it directly rather than amending it."
-                .to_string(),
-        ),
-        "void" => Some(
-            "This invoice has already been replaced. Amend the invoice that replaced it."
-                .to_string(),
-        ),
-        "sent" if paid => Some(
-            "A payment is recorded against this invoice, so replacing it would leave that payment \
-             on a voided document. Raise a credit note instead."
-                .to_string(),
-        ),
+        "draft" | "pending" => Some("Not sent yet. Edit it directly.".to_string()),
+        "void" => Some("Already replaced. Amend the invoice that replaced it.".to_string()),
+        "sent" if paid => {
+            Some("A payment is recorded. Raise a credit note instead.".to_string())
+        }
         "sent" if credited => Some(
-            "This invoice already has a credit note against it, so the correction is under way. \
-             Credit the rest of it, or invoice the difference."
+            "A credit note is already against this invoice. Credit the rest or invoice the difference."
                 .to_string(),
         ),
         "sent" => None,
-        _ => Some(
-            "Money or a decision has already moved against this invoice, so it cannot be \
-             replaced. Raise a credit note instead."
-                .to_string(),
-        ),
+        _ => Some("Money or a decision has already moved. Raise a credit note instead.".to_string()),
     }
 }
 
@@ -992,12 +981,12 @@ pub(crate) fn write_off_unavailable(status: &str) -> Option<String> {
 /// way an invoice reaches `void`: sending the amendment that replaces it. So the
 /// control itself stays pre-send only, and says which instrument takes over.
 pub(crate) fn void_unavailable(status: &str) -> Option<String> {
+    // PMS-1335: one statement per state.
     match status {
         "draft" | "pending" => None,
-        "void" => Some("This invoice is already void.".to_string()),
+        "void" => Some("Already void.".to_string()),
         _ => Some(
-            "The customer already holds this invoice, so it cannot simply be cancelled. Amend it \
-             to replace it, or raise a credit note."
+            "The customer already holds this invoice. Amend it to replace it, or raise a credit note."
                 .to_string(),
         ),
     }

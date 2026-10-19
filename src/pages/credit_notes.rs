@@ -431,7 +431,9 @@ fn one_line(text: &str, max: usize) -> String {
         return first.to_string();
     }
     let cut: String = first.chars().take(max).collect();
-    format!("{}…", cut.trim_end())
+    // PMS-1335: ASCII only in customer-facing copy; the ellipsis
+    // character becomes three dots.
+    format!("{}...", cut.trim_end())
 }
 
 // ============================================================================
@@ -587,7 +589,11 @@ fn CreditNoteDetailBody(id: String) -> Element {
         crate::components::ConfirmDialog {
             open: confirming_void(),
             title: "Void credit note".to_string(),
-            message: "Void this credit note? Its amount stops counting against the invoice, so the invoice's balance due goes back up by that amount. The credit note is kept on record and cannot be reinstated.".to_string(),
+            // PMS-1335: one short question. The side-effect ("balance due
+            // goes back up") is the point and stays; the "kept on record
+            // and cannot be reinstated" assertion is the restatement the
+            // style doc removes. See docs/copy-style.md.
+            message: "Void this credit note? The invoice's balance due goes back up by the credited amount.".to_string(),
             confirm_text: "Void".to_string(),
             cancel_text: "Cancel".to_string(),
             destructive: true,
@@ -645,13 +651,17 @@ fn CreditNoteDetailBody(id: String) -> Element {
         if let Some(n) = note.as_ref() {
             div {
                 class: "mb-3 text-xs text-muted bg-surface-2 border border-line rounded-md px-3 py-2",
+                // PMS-1335: one statement per state in the MSP's voice.
+                // "Kept on record" and "cannot be reinstated" are
+                // explanatory assertions the style doc removes; the
+                // badge handles the status itself.
                 if matches!(
                     mokosh_types::billing::CreditNoteStatus::from_str(&n.status),
                     Some(mokosh_types::billing::CreditNoteStatus::Void)
                 ) {
-                    "This credit note has been voided and is kept on record. Its amount no longer counts against the invoice."
+                    "Voided. The credited amount no longer counts against the invoice."
                 } else {
-                    "This credit note was issued the moment it was created, so it is locked: nothing on it can change. If it is wrong, void it and raise another."
+                    "Issued and locked. To correct it, void it and raise another."
                 }
             }
         }
@@ -845,7 +855,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
                                 } else if invoice_id.is_empty() {
                                     p { class: "text-sm text-muted", "This credit note is not linked to an invoice." }
                                 } else {
-                                    p { class: "text-sm text-muted", "Loading the invoice…" }
+                                    p { class: "text-sm text-muted", "Loading the invoice..." }
                                 }
                             }
 
@@ -1101,7 +1111,12 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
                     ErrorBanner { "{error.read()}" }
                 }
                 p { class: "text-sm text-muted",
-                    "This reduces what your customer owes on this invoice. It is issued as soon as you create it and cannot be edited afterwards; crediting the whole balance voids the invoice."
+                    // PMS-1335: three independent statements; the Create
+                    // button already names the issuance step and the amount
+                    // field already says it reduces what the customer owes.
+                    // The whole-balance side-effect stays because it is
+                    // not obvious.
+                    "Crediting the whole balance voids the invoice."
                 }
                 crate::components::Textarea {
                     name: "credit_note_reason",
@@ -1375,7 +1390,8 @@ mod tests {
         assert_eq!(one_line("first line\nsecond", 80), "first line");
         let long = "a".repeat(100);
         let cut = one_line(&long, 80);
-        assert_eq!(cut.chars().count(), 81);
-        assert!(cut.ends_with('…'));
+        // PMS-1335: 80 chars of body + "..." suffix = 83.
+        assert_eq!(cut.chars().count(), 83);
+        assert!(cut.ends_with("..."));
     }
 }
