@@ -1299,7 +1299,7 @@ pub fn AssetListPage() -> Element {
                     } else {
                         format!("No companies named {names}.")
                     };
-                    rsx! { div { class: "mt-1 text-xs text-amber-700", "{label}" } }
+                    rsx! { div { class: "mt-1 text-xs text-amber-700 dark:text-amber-400", "{label}" } }
                 })
             }
             // Phase 1 asset search v2: three facet dropdowns + a pill
