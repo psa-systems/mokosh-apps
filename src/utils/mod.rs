@@ -18,6 +18,7 @@ pub mod money;
 pub mod pagination;
 pub mod prefs;
 pub mod rate_limit;
+pub mod roles;
 pub mod sort_keys;
 // MAPPS-582: invisible-character sanitizing for every text input.
 pub mod text;
