@@ -36,18 +36,23 @@ pub fn display_role_label(role: &str) -> String {
         "read_only" | "readonly" => "Read-only".to_string(),
         "" => "Unknown".to_string(),
         other => {
-            // Title-case the server string so a new role still renders
+            // Sentence-case the server string so a new role still renders
             // readably until the match arm catches up. "service_delivery"
-            // -> "Service delivery".
+            // -> "Service delivery" (only the first word capitalises;
+            // the rest render as-is, lower-cased, like a sentence).
             let mut out = String::new();
             for (i, word) in other.split('_').enumerate() {
                 if i > 0 {
                     out.push(' ');
                 }
-                let mut chars = word.chars();
-                if let Some(first) = chars.next() {
-                    out.extend(first.to_uppercase());
-                    out.push_str(&chars.as_str().to_lowercase());
+                if i == 0 {
+                    let mut chars = word.chars();
+                    if let Some(first) = chars.next() {
+                        out.extend(first.to_uppercase());
+                        out.push_str(&chars.as_str().to_lowercase());
+                    }
+                } else {
+                    out.push_str(&word.to_lowercase());
                 }
             }
             if out.is_empty() {
