@@ -34,7 +34,7 @@ pub fn display_role_label(role: &str) -> String {
         "sales" => "Sales".to_string(),
         "finance" => "Finance".to_string(),
         "read_only" | "readonly" => "Read-only".to_string(),
-        other if other.is_empty() => "Unknown".to_string(),
+        "" => "Unknown".to_string(),
         other => {
             // Title-case the server string so a new role still renders
             // readably until the match arm catches up. "service_delivery"
