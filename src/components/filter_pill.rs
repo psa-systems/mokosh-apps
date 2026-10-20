@@ -108,13 +108,12 @@ pub struct FilterChipProps {
 fn FilterChip(props: FilterChipProps) -> Element {
     rsx! {
         span {
-            class: "inline-flex items-center gap-1 rounded-full bg-indigo-50 border border-indigo-200 \
-                    px-2.5 py-1 text-xs font-medium text-indigo-800 dark:bg-indigo-900/40 \
-                    dark:border-indigo-800 dark:text-indigo-200",
+            class: "inline-flex items-center gap-1 rounded-full bg-accent-50 dark:bg-accent-900/40 \
+                    px-2.5 py-1 text-xs font-medium text-accent-700 dark:text-accent-300",
             "{props.label}"
             button {
                 r#type: "button",
-                class: "ml-0.5 rounded-full p-0.5 hover:bg-indigo-100 dark:hover:bg-indigo-800/60",
+                class: "ml-0.5 rounded-full p-0.5 hover:bg-accent-100 dark:hover:bg-accent-900/70",
                 "aria-label": "Remove filter",
                 onclick: move |_| props.onclose.call(()),
                 crate::components::XMarkIcon { size: IconSize::Small }

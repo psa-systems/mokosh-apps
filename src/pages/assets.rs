@@ -100,6 +100,14 @@ struct RemoteAsset {
     assigned_user_id: Option<uuid::Uuid>,
     #[serde(default)]
     assigned_user_name: Option<String>,
+    // MAPPS-1071: an asset can alternatively be issued to a contact of
+    // its company. Server (PR #1077) resolves both ids and names via
+    // tenant-scoped LEFT JOINs; a row with neither reads as unassigned.
+    #[serde(default)]
+    #[allow(dead_code)]
+    contact_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    contact_name: Option<String>,
     #[serde(default)]
     ip_address: Option<String>,
     #[serde(default)]
@@ -128,6 +136,32 @@ struct CompanyOpt {
     id: uuid::Uuid,
     #[serde(default)]
     name: String,
+}
+
+/// MAPPS-1071: minimal contact shape for the "Issued to a contact" picker
+/// in the asset edit modal. The server's `/contacts?company_id=<id>` endpoint
+/// returns a richer `ContactResponse`; this reads only the three fields the
+/// picker needs so an older server that drops optional fields still decodes.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct ContactOpt {
+    id: uuid::Uuid,
+    #[serde(default)]
+    first_name: String,
+    #[serde(default)]
+    last_name: String,
+}
+
+impl ContactOpt {
+    fn display(&self) -> String {
+        let full = format!("{} {}", self.first_name, self.last_name)
+            .trim()
+            .to_string();
+        if full.is_empty() {
+            self.id.to_string()
+        } else {
+            full
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -407,13 +441,16 @@ fn warranty_refresh_status(s: &Option<String>) -> WarrantyRefreshStatus {
 /// `company` pill the structured search expects (uuid value). A name
 /// that does not resolve falls back to free text, matching the handling
 /// of unknown keys so the fetch still returns something sensible rather
-/// than a silent empty.
+/// than a silent empty; the typed value is also returned in
+/// `unresolved_companies` so the page can surface a quiet "no company
+/// named <x>" hint next to the search box.
 fn parse_asset_dsl_with_companies(
     input: &str,
     companies: &[(String, uuid::Uuid)],
-) -> (String, Vec<FilterPill>) {
+) -> (String, Vec<FilterPill>, Vec<String>) {
     let mut free = Vec::<String>::new();
     let mut pills = Vec::<FilterPill>::new();
+    let mut unresolved_companies = Vec::<String>::new();
     let tokens = tokenise_dsl(input);
     for raw in tokens {
         let (key, value) = match raw.split_once(':') {
@@ -466,8 +503,9 @@ fn parse_asset_dsl_with_companies(
             "company" => {
                 // Strip surrounding quotes so `company:"Main Street Dental"`
                 // and `company:MainStreet` both work. Match case-insensitively.
-                let needle = strip_quotes(&value).to_ascii_lowercase();
-                companies
+                let typed = strip_quotes(&value).to_string();
+                let needle = typed.to_ascii_lowercase();
+                let resolved = companies
                     .iter()
                     .find(|(name, _)| name.to_ascii_lowercase() == needle)
                     .map(|(name, id)| {
@@ -476,7 +514,11 @@ fn parse_asset_dsl_with_companies(
                             format!("Co: {name}"),
                             serde_json::Value::String(id.to_string()),
                         )
-                    })
+                    });
+                if resolved.is_none() && !typed.is_empty() {
+                    unresolved_companies.push(typed);
+                }
+                resolved
             }
             _ => {
                 recognised_key = false;
@@ -494,7 +536,7 @@ fn parse_asset_dsl_with_companies(
             }
         }
     }
-    (free.join(" "), pills)
+    (free.join(" "), pills, unresolved_companies)
 }
 
 /// Split the input on whitespace, but keep quoted substrings together so
@@ -868,6 +910,12 @@ pub fn AssetListPage() -> Element {
     // PMS-745: row-level navigation for the list below.
     let navigator = use_navigator();
     let mut search = use_signal(String::new);
+    // MAPPS-1064: `company:"<name>"` DSL tokens whose names did not match
+    // any fetched company. Written by the asset-list closure (the facets
+    // closure parses the same input but is deliberately read-only here so
+    // the two closures cannot drift); rendered as a one-line hint below
+    // the search box.
+    let mut unresolved_dsl_companies: Signal<Vec<String>> = use_signal(Vec::new);
     // Phase 2 asset inline edit: a row click opens the drawer over the
     // list when `assets:inline_edit` is on; otherwise the pre-phase-2
     // navigation to `AssetDetail` stays in place.
@@ -956,7 +1004,10 @@ pub fn AssetListPage() -> Element {
         // Phase 1 DSL: strip recognised tokens from the text buffer and
         // promote them to pills. The visible input is unchanged; the
         // fetch sees `q = free_remainder` + `filters = manual + dsl`.
-        let (q, dsl_pills) = parse_asset_dsl_with_companies(&typed, &company_lookup);
+        let (q, dsl_pills, unresolved) = parse_asset_dsl_with_companies(&typed, &company_lookup);
+        if *unresolved_dsl_companies.read() != unresolved {
+            unresolved_dsl_companies.set(unresolved);
+        }
         let mut filters = manual_pills;
         for p in dsl_pills {
             if !filters.iter().any(|m| m.field == p.field && m.op == p.op) {
@@ -1113,7 +1164,7 @@ pub fn AssetListPage() -> Element {
             .iter()
             .map(|c| (c.name.clone(), c.id))
             .collect();
-        let (q, dsl_pills) = parse_asset_dsl_with_companies(&typed, &company_lookup);
+        let (q, dsl_pills, _unresolved) = parse_asset_dsl_with_companies(&typed, &company_lookup);
         let mut filters = manual_pills;
         for p in dsl_pills {
             if !filters.iter().any(|m| m.field == p.field && m.op == p.op) {
@@ -1261,14 +1312,6 @@ pub fn AssetListPage() -> Element {
         }
 
         Card { class: "mb-6",
-            SearchInput {
-                value: search.read().clone(),
-                placeholder: "Search by name, serial, hostname, IP, MAC…",
-                oninput: move |e: FormEvent| {
-                    search.set(e.value());
-                    page.set(1);
-                },
-            }
             // Phase 1 asset search v2: three facet dropdowns + a pill
             // bar. Selecting a dropdown adds a pill and refetches; the
             // "x" on a pill removes it. The dropdowns reset to blank
@@ -1276,7 +1319,17 @@ pub fn AssetListPage() -> Element {
             // another `status in [...]`-style pill by picking a second
             // value (future MR teaches the chip itself to carry the
             // `in` op and multi-select).
-            div { class: "mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3",
+            div { class: "flex flex-col sm:flex-row gap-4",
+                div { class: "flex-1",
+                    SearchInput {
+                        value: search.read().clone(),
+                        placeholder: "Search by name, serial, hostname, IP, MAC…",
+                        oninput: move |e: FormEvent| {
+                            search.set(e.value());
+                            page.set(1);
+                        },
+                    }
+                }
                 {
                     let mut pills_sig = pills;
                     let types_opts = types.clone();
@@ -1379,6 +1432,22 @@ pub fn AssetListPage() -> Element {
                         }
                     }
                 }
+            }
+            {
+                let unresolved = unresolved_dsl_companies.read().clone();
+                (!unresolved.is_empty()).then(|| {
+                    let names = unresolved
+                        .iter()
+                        .map(|n| format!("`{n}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let label = if unresolved.len() == 1 {
+                        format!("No company named {names}.")
+                    } else {
+                        format!("No companies named {names}.")
+                    };
+                    rsx! { div { class: "mt-1 text-xs text-amber-700 dark:text-amber-400", "{label}" } }
+                })
             }
             {
                 let mut pills_sig = pills;
@@ -2361,6 +2430,39 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     // MAPPS-860: shared roster cache, not a per-page fetch.
     let users_resource = crate::hooks::use_user_roster(true);
 
+    // MAPPS-1071: the edit modal's "Issued to" picker needs a signal
+    // for the asset's company (declared early so the contact resource
+    // can key on it) and the resource itself. Both live outside the
+    // modal body because the resource must survive across renders.
+    let e_company_id = use_signal(String::new);
+    let edit_contacts_resource = use_resource(move || {
+        let company_id = e_company_id.read().clone();
+        async move {
+            if company_id.trim().is_empty() {
+                return Vec::<ContactOpt>::new();
+            }
+            #[cfg(feature = "app")]
+            {
+                let _gen = crate::hooks::fetch::active_tenant_generation();
+                // MAPPS-1071: use the paging helper that stops on a
+                // short page; a bare `per_page=200` is at or above
+                // the server's hard cap of 100, so a full first page
+                // reads as "complete list" when it may be truncated.
+                // `get_all_authed` reads every page and concatenates.
+                crate::hooks::fetch::api::get_all_authed::<ContactOpt>(&format!(
+                    "/contacts?company_id={company_id}"
+                ))
+                .await
+                .inspect_err(|e| tracing::warn!("asset-edit contact list failed: {e}"))
+                .unwrap_or_default()
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                Vec::new()
+            }
+        }
+    });
+
     // On-demand audited reveals, keyed by item id.
     let revealed_creds = use_signal(HashMap::<uuid::Uuid, RevealedCred>::new);
     let revealed_cfgs = use_signal(HashMap::<uuid::Uuid, String>::new);
@@ -2384,6 +2486,20 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     // serialiser converts the empty string to a JSON null which the
     // server `COALESCE`s on the UPDATE.
     let mut e_assigned_user = use_signal(String::new);
+    // MAPPS-1071: an asset is issued either to a staff user OR to a
+    // contact of its company; the server (PR #1077) carries both
+    // `assigned_user_id` and `contact_id`, mutually exclusive in
+    // practice. `e_assigned_mode` is the radio-driven mode selector;
+    // `e_contact` holds the chosen contact id when mode is "contact".
+    // `e_company_id` carries the asset's company so the contact list is
+    // scoped. Switching the mode clears the id for the other side so a
+    // save sends exactly one of the two.
+    let mut e_assigned_mode = use_signal(|| "staff".to_string());
+    let mut e_contact = use_signal(String::new);
+    // `e_company_id` is declared earlier in the function so the contacts
+    // resource can key on it; re-bind it mutable here so `open_edit` can
+    // seed it from the row's `company_id` when the modal opens.
+    let mut e_company_id = e_company_id;
     let mut e_ip = use_signal(String::new);
     let mut e_hostname = use_signal(String::new);
     let mut e_mac = use_signal(String::new);
@@ -2697,6 +2813,25 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                             .map(|u| u.to_string())
                             .unwrap_or_default(),
                     );
+                    // MAPPS-1071: seed the "Issued to" mode from the row.
+                    // A row with `contact_id` set opens on Contact; everything
+                    // else opens on Staff (including a Staff row and an
+                    // unassigned row, both edited through the staff picker).
+                    e_contact.set(
+                        a_edit
+                            .contact_id
+                            .map(|c| c.to_string())
+                            .unwrap_or_default(),
+                    );
+                    e_assigned_mode.set(
+                        if a_edit.contact_id.is_some() { "contact" } else { "staff" }.to_string(),
+                    );
+                    e_company_id.set(
+                        a_edit
+                            .company_id
+                            .map(|c| c.to_string())
+                            .unwrap_or_default(),
+                    );
                     e_ip.set(a_edit.ip_address.clone().unwrap_or_default());
                     e_hostname.set(a_edit.hostname.clone().unwrap_or_default());
                     e_mac.set(a_edit.mac_address.clone().unwrap_or_default());
@@ -2762,9 +2897,19 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     // older asset that pre-dates the
                                     // migration does not show a row of
                                     // empty "-" placeholders.
-                                    if let Some(name) = a.assigned_user_name.clone().filter(|s| !s.trim().is_empty()) {
+                                    // MAPPS-1071: the row renders either the contact
+                                    // name (an asset issued to a client contact) or
+                                    // the staff name, whichever the server resolved.
+                                    // Nothing when neither is set, matching the "no
+                                    // empty placeholders" rule above.
+                                    if let Some(name) = a
+                                        .contact_name
+                                        .clone()
+                                        .or_else(|| a.assigned_user_name.clone())
+                                        .filter(|s| !s.trim().is_empty())
+                                    {
                                         div {
-                                            dt { class: "text-sm text-muted", "Assigned to" }
+                                            dt { class: "text-sm text-muted", "Issued to" }
                                             dd { class: "mt-1", "{name}" }
                                         }
                                     }
@@ -3277,10 +3422,22 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     // a malformed UUID is sent verbatim so the
                     // server validator surfaces the 422 instead
                     // of the client silently swallowing it.
-                    body.insert(
-                        "assigned_user_id".into(),
-                        serde_json::json!(opt_str(&e_assigned_user())),
-                    );
+                    // MAPPS-1071: send both ids, mutually exclusive by mode.
+                    // Staff mode sends `assigned_user_id` and clears
+                    // `contact_id`; Contact mode is the inverse. An
+                    // unassigned asset is Staff mode with an empty id, which
+                    // sends `null` for both.
+                    let is_contact_mode = e_assigned_mode.read().as_str() == "contact";
+                    if is_contact_mode {
+                        body.insert("contact_id".into(), serde_json::json!(opt_str(&e_contact())));
+                        body.insert("assigned_user_id".into(), serde_json::Value::Null);
+                    } else {
+                        body.insert(
+                            "assigned_user_id".into(),
+                            serde_json::json!(opt_str(&e_assigned_user())),
+                        );
+                        body.insert("contact_id".into(), serde_json::Value::Null);
+                    }
                     body.insert("ip_address".into(), serde_json::json!(opt_str(&e_ip())));
                     body.insert("hostname".into(), serde_json::json!(opt_str(&e_hostname())));
                     body.insert("mac_address".into(), serde_json::json!(opt_str(&e_mac())));
@@ -3466,6 +3623,11 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                         // /auth/users fetch. Other fields are
                         // text / date inputs because the values
                         // are free-form network identifiers.
+                        // MAPPS-1071: "Issued to" is a two-mode picker.
+                        // The radio chooses Staff or Contact; the Select
+                        // beneath lists the chosen plane. Switching the
+                        // mode clears the id for the other side so the
+                        // save body sends exactly one of them.
                         {
                             let mut user_opts = vec![SelectOption::new("", "(unassigned)")];
                             for u in users.iter() {
@@ -3476,13 +3638,65 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 };
                                 user_opts.push(SelectOption::new(u.id.to_string(), label));
                             }
+                            let contacts = edit_contacts_resource
+                                .read_unchecked()
+                                .clone()
+                                .unwrap_or_default();
+                            let mut contact_opts = vec![SelectOption::new("", "(unassigned)")];
+                            for c in contacts.iter() {
+                                contact_opts.push(SelectOption::new(c.id.to_string(), c.display()));
+                            }
+                            let mode = e_assigned_mode.read().clone();
+                            let on_staff = move |_| {
+                                e_assigned_mode.set("staff".to_string());
+                                e_contact.set(String::new());
+                            };
+                            let on_contact = move |_| {
+                                e_assigned_mode.set("contact".to_string());
+                                e_assigned_user.set(String::new());
+                            };
                             rsx! {
-                                Select {
-                                    name: "edit-assigned-user",
-                                    label: "Assigned user",
-                                    options: user_opts,
-                                    value: "{e_assigned_user}",
-                                    onchange: move |e: FormEvent| e_assigned_user.set(e.value()),
+                                fieldset { class: "space-y-2",
+                                    legend { class: "text-sm font-medium text-content", "Issued to" }
+                                    div { class: "flex items-center gap-4 text-sm",
+                                        label { class: "inline-flex items-center gap-1",
+                                            input {
+                                                r#type: "radio",
+                                                name: "edit-assigned-mode",
+                                                value: "staff",
+                                                checked: mode == "staff",
+                                                onchange: on_staff,
+                                            }
+                                            "Staff"
+                                        }
+                                        label { class: "inline-flex items-center gap-1",
+                                            input {
+                                                r#type: "radio",
+                                                name: "edit-assigned-mode",
+                                                value: "contact",
+                                                checked: mode == "contact",
+                                                onchange: on_contact,
+                                            }
+                                            "Contact"
+                                        }
+                                    }
+                                    if mode == "contact" {
+                                        Select {
+                                            name: "edit-contact",
+                                            label: "Contact".to_string(),
+                                            options: contact_opts,
+                                            value: "{e_contact}",
+                                            onchange: move |e: FormEvent| e_contact.set(e.value()),
+                                        }
+                                    } else {
+                                        Select {
+                                            name: "edit-assigned-user",
+                                            label: "Staff user".to_string(),
+                                            options: user_opts,
+                                            value: "{e_assigned_user}",
+                                            onchange: move |e: FormEvent| e_assigned_user.set(e.value()),
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -4185,7 +4399,12 @@ mod dsl_tests {
     use super::{parse_asset_dsl_with_companies, FilterPill};
 
     fn parse_asset_dsl(input: &str) -> (String, Vec<FilterPill>) {
-        parse_asset_dsl_with_companies(input, &[])
+        let (q, pills, unresolved) = parse_asset_dsl_with_companies(input, &[]);
+        assert!(
+            unresolved.is_empty(),
+            "no `company:` tokens in this input, so nothing should be unresolved: {unresolved:?}"
+        );
+        (q, pills)
     }
 
     #[test]
@@ -4266,7 +4485,7 @@ mod dsl_tests {
     #[test]
     fn company_quoted_name_resolves_to_eq_uuid() {
         let id = uuid::Uuid::new_v4();
-        let (q, pills) = parse_asset_dsl_with_companies(
+        let (q, pills, unresolved) = parse_asset_dsl_with_companies(
             "foo company:\"Main Street Dental\" bar",
             &[("Main Street Dental".to_string(), id)],
         );
@@ -4278,28 +4497,57 @@ mod dsl_tests {
             pills[0].values[0],
             serde_json::Value::String(id.to_string())
         );
+        assert!(unresolved.is_empty());
     }
 
     #[test]
     fn company_unquoted_name_also_resolves_case_insensitively() {
         let id = uuid::Uuid::new_v4();
-        let (_, pills) =
+        let (_, pills, unresolved) =
             parse_asset_dsl_with_companies("company:acmecorp", &[("AcmeCorp".to_string(), id)]);
         assert_eq!(pills.len(), 1);
         assert_eq!(
             pills[0].values[0],
             serde_json::Value::String(id.to_string())
         );
+        assert!(unresolved.is_empty());
     }
 
     #[test]
-    fn company_unknown_name_falls_back_to_free_text() {
-        let (q, pills) = parse_asset_dsl_with_companies(
+    fn company_unknown_name_falls_back_to_free_text_and_surfaces_the_typed_name() {
+        let (q, pills, unresolved) = parse_asset_dsl_with_companies(
             "company:\"Nowhere Inc\"",
             &[("AcmeCorp".to_string(), uuid::Uuid::new_v4())],
         );
+        // MAPPS-1064: the token still lands in `q` so the fetch stays
+        // non-empty, AND the typed name comes back in `unresolved` so
+        // the page can surface a quiet hint.
         assert_eq!(q, "company:\"Nowhere Inc\"");
         assert!(pills.is_empty());
+        assert_eq!(unresolved, vec!["Nowhere Inc".to_string()]);
+    }
+
+    /// MAPPS-1064: a resolved token and an unresolved one in the same
+    /// input split cleanly - one pill, one unresolved entry, and the
+    /// free text leaves the unresolved token in `q` so the fetch is
+    /// not empty.
+    #[test]
+    fn mixed_resolved_and_unresolved_companies_split_cleanly() {
+        let id = uuid::Uuid::new_v4();
+        let (q, pills, unresolved) = parse_asset_dsl_with_companies(
+            "company:AcmeCorp company:\"Nowhere Inc\" company:\"Also Missing\"",
+            &[("AcmeCorp".to_string(), id)],
+        );
+        assert_eq!(pills.len(), 1);
+        assert_eq!(
+            pills[0].values[0],
+            serde_json::Value::String(id.to_string())
+        );
+        assert_eq!(
+            unresolved,
+            vec!["Nowhere Inc".to_string(), "Also Missing".to_string()]
+        );
+        assert_eq!(q, "company:\"Nowhere Inc\" company:\"Also Missing\"");
     }
 }
 
