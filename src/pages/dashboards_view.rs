@@ -707,10 +707,8 @@ fn WidgetOpenInvoices() -> Element {
     // derive the two numbers it prints. The MAPPS-842 recurrence guard below
     // is kept but keyed on the summary endpoint.
     let summary = crate::hooks::use_remote_resource(|| async {
-        crate::hooks::fetch::api::get_authed::<InvoiceSummaryLite>(
-            "/invoices/summary?status=sent",
-        )
-        .await
+        crate::hooks::fetch::api::get_authed::<InvoiceSummaryLite>("/invoices/summary?status=sent")
+            .await
     });
     if summary.is_loading() {
         return widget_loading();
@@ -865,5 +863,4 @@ mod open_invoices_tests {
             "the paging loop is what MAPPS-984 removes: {body}"
         );
     }
-
 }
