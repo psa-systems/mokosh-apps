@@ -206,7 +206,7 @@ fn FeatureRow(props: FeatureRowProps) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use crate::hooks::features::{feature_enabled, FEATURE_MAP};
+    use crate::hooks::features::feature_enabled;
     use std::collections::HashMap;
 
     #[test]
@@ -227,11 +227,10 @@ mod tests {
         assert!(!feature_enabled(&map, "unlisted"));
     }
 
-    #[test]
-    fn the_shared_signal_starts_empty() {
-        // The global is `None` at mount, so a page using `use_feature_enabled`
-        // on first paint reads every gate as off until the ticker's first
-        // read lands.
-        assert!(FEATURE_MAP.read().is_none() || FEATURE_MAP.read().is_some());
-    }
+    // The "shared signal starts empty" assertion was a tautology
+    // (`is_none() || is_some()`) that also panicked because reading a
+    // `GlobalSignal` needs a live Dioxus runtime. The semantic it was
+    // reaching for - "an unloaded map hides every gated feature" - is
+    // covered by `an_unloaded_map_hides_every_gated_feature` above, so
+    // the no-op test is removed rather than wrapped.
 }
