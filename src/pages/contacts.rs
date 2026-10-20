@@ -370,6 +370,15 @@ struct RemoteContact {
     /// one entered by hand. `#[serde(default)]` so an older server decodes.
     #[serde(default)]
     imported_from: Option<crate::pages::contact_provenance::ImportedFrom>,
+    /// MAPPS-1044: server-resolved portal role display names joined by
+    /// mokosh-server (`ContactResponse::portal_role_names`). Preferred
+    /// over the per-row `GET /contacts/contacts/{id}/portal-roles`
+    /// fetch so the list stops paying for one HTTP call per contact
+    /// just to label the Roles column. `Vec::new()` on a server that
+    /// predates the field; the per-row fetch still runs as the
+    /// fallback.
+    #[serde(default)]
+    portal_role_names: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -3734,6 +3743,12 @@ fn CompanyPortalAccessCard(
                                                         ContactRoleBadges {
                                                             contact_id: contact_id_str.clone(),
                                                             all_roles: all_roles_snap.clone(),
+                                                            // MAPPS-1044: server-sent names
+                                                            // skip the per-row portal-roles
+                                                            // fetch. Empty vec means an older
+                                                            // server; the component falls back
+                                                            // to the fetch in that case.
+                                                            sent_names: contact.portal_role_names.clone(),
                                                         }
                                                     } else {
                                                         span { class: "text-xs text-muted", "-" }
@@ -4016,11 +4031,24 @@ fn EditPortalRolesButton(
 /// zero assignments keeps the column concise for the "granted but no
 /// roles yet" corner case.
 #[component]
-fn ContactRoleBadges(contact_id: String, all_roles: Vec<PortalRoleSummaryWire>) -> Element {
+fn ContactRoleBadges(
+    contact_id: String,
+    all_roles: Vec<PortalRoleSummaryWire>,
+    #[props(default)] sent_names: Vec<String>,
+) -> Element {
     let contact_id_for_resource = contact_id.clone();
+    // MAPPS-1044: when the parent passes `sent_names` from the
+    // server-sent `portal_role_names`, skip the per-row fetch
+    // entirely. Empty means an older server; fall through to the
+    // fetch so the badge still fills.
+    let use_sent = !sent_names.is_empty();
     let assigned = use_resource(move || {
         let id = contact_id_for_resource.clone();
+        let use_sent = use_sent;
         async move {
+            if use_sent {
+                return Vec::<uuid::Uuid>::new();
+            }
             let _gen = crate::hooks::fetch::active_tenant_generation();
             // MAPPS-635 F: subscribe to the per-role-write generation
             // so a successful "Update roles" / "Grant + send email"
@@ -4036,16 +4064,20 @@ fn ContactRoleBadges(contact_id: String, all_roles: Vec<PortalRoleSummaryWire>) 
             )
         }
     });
-    let assigned_snap: Vec<uuid::Uuid> = assigned.read_unchecked().clone().unwrap_or_default();
-    let names: Vec<String> = assigned_snap
-        .iter()
-        .filter_map(|role_id| {
-            all_roles
-                .iter()
-                .find(|r| r.id == *role_id)
-                .map(|r| r.name.clone())
-        })
-        .collect();
+    let names: Vec<String> = if use_sent {
+        sent_names.clone()
+    } else {
+        let assigned_snap: Vec<uuid::Uuid> = assigned.read_unchecked().clone().unwrap_or_default();
+        assigned_snap
+            .iter()
+            .filter_map(|role_id| {
+                all_roles
+                    .iter()
+                    .find(|r| r.id == *role_id)
+                    .map(|r| r.name.clone())
+            })
+            .collect()
+    };
     rsx! {
         if names.is_empty() {
             span { class: "text-xs text-muted", "-" }
@@ -11783,6 +11815,7 @@ mod shared_dto_tests {
                     deleted_in_source,
                 }
             }),
+            portal_role_names,
         };
         let _ = ContactEditPayload {
             first_name: first_name.clone(),
@@ -11827,7 +11860,6 @@ mod shared_dto_tests {
             avatar_url,
             status,
             created_at,
-            portal_role_names,
         );
         // The two child lists above are decoded by their own structs; the
         // annotations pin the DTO's element types for the fields.

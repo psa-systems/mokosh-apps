@@ -36,6 +36,15 @@ struct RemoteTimeEntry {
     duration_minutes: i64,
     #[serde(default)]
     work_type_id: Option<uuid::Uuid>,
+    /// MAPPS-1044: server-resolved work-type display name joined via a
+    /// tenant-scoped LEFT JOIN on `work_types` (mokosh-types
+    /// `TimeEntryResponse::work_type_name`). Preferred over the shared
+    /// `use_work_types` cache for the per-row label so the list stops
+    /// paying for an unrelated resource roundtrip just to turn a UUID
+    /// into a word. `None` on a server that predates the field or when
+    /// the LEFT JOIN missed; the hash-lookup fallback still runs.
+    #[serde(default)]
+    work_type_name: Option<String>,
     #[serde(default)]
     ticket_id: Option<uuid::Uuid>,
     #[serde(default)]
@@ -497,9 +506,18 @@ pub fn TimeEntryListPage() -> Element {
                                     .unwrap_or_else(|| "-".to_string());
                                 let status = e.billing_status;
                                 let wi_label = work_item_label(e);
+                                // MAPPS-1044: prefer the server-sent
+                                // `work_type_name`; fall back to the
+                                // shared cache lookup for a row from a
+                                // server that predates the field.
                                 let wt_label = e
-                                    .work_type_id
-                                    .and_then(|id| work_type_name_by_id.get(&id).cloned())
+                                    .work_type_name
+                                    .clone()
+                                    .filter(|s| !s.is_empty())
+                                    .or_else(|| {
+                                        e.work_type_id
+                                            .and_then(|id| work_type_name_by_id.get(&id).cloned())
+                                    })
                                     .unwrap_or_else(|| "-".to_string());
                                 let entry = e.clone();
                                 rsx! {
@@ -3116,6 +3134,7 @@ mod tests {
             date: NaiveDate::from_ymd_opt(2026, 6, 18).unwrap(),
             duration_minutes: 60,
             work_type_id: None,
+            work_type_name: None,
             ticket_id: None,
             project_id: None,
             work_category: None,
@@ -3597,6 +3616,7 @@ mod tests {
             date,
             duration_minutes: i64::from(minutes),
             work_type_id: Some(work_type_id),
+            work_type_name,
             ticket_id,
             project_id,
             work_category,
@@ -3627,7 +3647,6 @@ mod tests {
             total_amount,
             approval_status,
             user_name,
-            work_type_name,
         );
     }
 
