@@ -172,6 +172,12 @@ fn App() -> Element {
     // displayed role reflects the server-side (PMS-172) translation rather
     // than the Technician default the id_token falls back to (PMS-158).
     use_current_user_loader();
+    // MAPPS-955: mount the feature-map ticker. First read primes the shared
+    // signal before the first paint; the 60s loop keeps it fresh. A failed
+    // read leaves the previous map in place; a never-successful first read
+    // means every gated feature is off, which is the ticket's negative-case
+    // acceptance.
+    mokosh_apps::hooks::features::use_feature_map_refresh();
     // Force a full reload when the browser restores this page from
     // bfcache. Without this, hitting back after logout would restore
     // the dashboard's prior JS state (including populated auth) from

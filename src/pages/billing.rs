@@ -1391,21 +1391,24 @@ fn invoice_send_path(id: &str) -> String {
 /// written-off invoice's late payment is a recovery (PMS-1036), so that
 /// state says so instead of "cannot be reinstated".
 pub(crate) fn locked_invoice_note(status: &str) -> Option<&'static str> {
+    // PMS-1335: one statement per state, no explanatory assertion. The
+    // locked status reads from the badge; this note says what the actor
+    // can do about it next. See docs/copy-style.md.
     match status {
         "sent" => Some(
-            "This invoice was sent to your customer, so it is locked: nothing on it can change. Record a payment when it is paid, or write it off if it never will be. To correct it, issue a credit note from the Credit Notes card below.",
+            "Sent and locked. Record a payment, write it off, or correct it with a credit note.",
         ),
         "partially_paid" => Some(
-            "This invoice is partly paid and locked: nothing on it can change. Record the rest as it arrives, or write off what will not be paid. To correct it, issue a credit note from the Credit Notes card below.",
+            "Partly paid and locked. Record the rest, write off what will not arrive, or correct with a credit note.",
         ),
         "paid" => Some(
-            "This invoice is paid and locked: nothing on it can change. To refund or correct it, issue a credit note from the Credit Notes card below.",
+            "Paid and locked. Correct it with a credit note from the Credit Notes card below.",
         ),
         "void" => Some(
-            "This invoice was voided. It stays on record as it was and cannot be reinstated; raise a new invoice instead.",
+            "Voided. Raise a new invoice to charge again.",
         ),
         "written_off" => Some(
-            "This invoice was written off as unpaid. It stays on record as it was; a payment that arrives later is recorded as a recovery.",
+            "Written off as unpaid. A later payment is recorded as a recovery.",
         ),
         _ => None,
     }
@@ -2388,7 +2391,11 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         crate::components::ConfirmDialog {
             open: confirming_void(),
             title: "Void invoice".to_string(),
-            message: "Void this invoice? It stays on record as it was and cannot be reinstated; raise a new invoice instead. Only a draft can be voided: once an invoice is sent, the correction is a credit note.".to_string(),
+            // PMS-1335: one short question, no explanatory assertion. The
+            // "only a draft can be voided" rule is enforced server-side
+            // and shown on the status badge; the dialog does not restate
+            // it. See docs/copy-style.md.
+            message: "Void this invoice? Raise a new invoice to charge again.".to_string(),
             confirm_text: "Void".to_string(),
             cancel_text: "Cancel".to_string(),
             destructive: true,
@@ -3108,7 +3115,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 Card {
                     div { class: "py-10 text-center",
                         div { class: "mx-auto mb-3 h-6 w-6 rounded-full border-2 border-accent border-t-transparent animate-spin" }
-                        p { class: "text-sm font-medium text-content mb-1", "Processing your payment…" }
+                        p { class: "text-sm font-medium text-content mb-1", "Processing your payment\u{2026}" }
                         p { class: "text-xs text-muted",
                             "This usually takes a few seconds. You'll see the paid receipt as soon as your provider confirms."
                         }
@@ -5420,7 +5427,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                             value: String::new(),
                             selected_id: None,
                             label: "Add from the price list",
-                            placeholder: "Search the price list to add a line…",
+                            placeholder: "Search the price list to add a line\u{2026}",
                             clear_on_select: true,
                             onselect: move |picked: crate::components::PickedProduct| {
                                 lines.write().push(EditableLine {
@@ -6343,13 +6350,13 @@ pub(crate) fn credential_fields(provider: &str) -> &'static [CredentialField] {
             CredentialField {
                 key: "secret_key",
                 label: "Secret key",
-                placeholder: "sk_test_… or rk_live_…",
+                placeholder: "sk_test_... or rk_live_...",
                 help: "A restricted key is enough. Stripe shows it once, when you create it.",
             },
             CredentialField {
                 key: "webhook_secret",
                 label: "Webhook signing secret",
-                placeholder: "whsec_…",
+                placeholder: "whsec_...",
                 help: "From the Stripe webhook endpoint you point at this tenant. Without it a payment is taken and never recorded.",
             },
         ],
@@ -7261,10 +7268,51 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
     }
 }
 
-/// MAPPS-759: the credential set the form sends has to be the one the server
-/// parses, and the providers it offers have to be the ones the server can
-/// serve. Both drifted, and both drifted silently.
-/// MAPPS-765: the provider-side setup guidance.
+#[cfg(test)]
+mod copy_style_tests {
+    //! PMS-1335: the invoice copy was rewritten in the MSP's voice, one
+    //! statement per line. These pin the shape: no "statement + explanatory
+    //! assertion" pair survives on `locked_invoice_note`, and the void
+    //! confirm message is a short question with no "cannot be reinstated"
+    //! restatement. See `docs/copy-style.md`.
+
+    use super::locked_invoice_note;
+
+    #[test]
+    fn locked_notes_are_short_single_statements() {
+        for status in ["sent", "partially_paid", "paid", "void", "written_off"] {
+            let note = locked_invoice_note(status)
+                .unwrap_or_else(|| panic!("{status} has no locked note"));
+            // A trailing "cannot be reinstated" or "stays on record as it was"
+            // was the restatement pattern PMS-1335 removes.
+            assert!(!note.contains("cannot be reinstated"), "{status}: {note}");
+            assert!(
+                !note.contains("stays on record as it was"),
+                "{status}: {note}"
+            );
+            // 160 chars is a soft ceiling for "one short statement"; the
+            // longest post-rewrite line is well under that. A regression
+            // that pads the message back out hits this guard.
+            assert!(
+                note.len() <= 160,
+                "{status} note is longer than one short sentence ({} chars): {note}",
+                note.len()
+            );
+        }
+    }
+
+    #[test]
+    fn locked_notes_contain_no_non_ascii() {
+        for status in ["sent", "partially_paid", "paid", "void", "written_off"] {
+            let note = locked_invoice_note(status).expect("note");
+            assert!(
+                note.is_ascii(),
+                "{status} note has a non-ASCII character: {note:?}"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod provider_setup_tests {
     use super::{provider_setup, webhook_events, CONFIGURABLE_PROVIDERS};
@@ -7362,12 +7410,20 @@ mod paid_landing_tests {
     }
 
     /// Every action the locked-invoice note names - record a payment, write it
-    /// off, issue a credit note - is staff-only, and it addresses the MSP
-    /// about "your customer". It was rendering on the customer's own invoice.
+    /// off, issue a credit note - is staff-only, so the note itself must be
+    /// gated on the staff plane. PMS-1335 rewrote the copy in the MSP's own
+    /// voice (imperative verbs, no "your customer" address), so what proves
+    /// the staff posture now is the imperative action list, not the earlier
+    /// "your customer" phrase.
     #[test]
     fn the_locked_note_is_written_for_the_msp_not_the_customer() {
         let sent = locked_invoice_note("sent").expect("a sent invoice is locked");
-        assert!(sent.contains("your customer"), "{sent}");
+        assert!(
+            sent.contains("Record a payment")
+                && sent.contains("write it off")
+                && sent.contains("credit note"),
+            "{sent}"
+        );
         let source = include_str!("billing.rs");
         assert!(
             source.contains("let frozen_note = staff_only"),
@@ -7899,12 +7955,13 @@ mod void_tests {
         assert_eq!(serde_json::to_string(&without).expect("serialize"), "{}");
     }
 
-    /// The note a voided invoice shows is unchanged by the move, and still
-    /// tells the reader the invoice cannot be reinstated.
+    /// The note a voided invoice shows is unchanged by the move. PMS-1335
+    /// made the sentence imperative (`Raise a new invoice...`), so match on
+    /// the capitalised form the new copy uses.
     #[test]
     fn the_voided_note_still_explains_the_state() {
         let note = locked_invoice_note("void").expect("void note");
-        assert!(note.contains("raise a new invoice"), "{note}");
+        assert!(note.contains("Raise a new invoice"), "{note}");
     }
 }
 
@@ -8506,29 +8563,32 @@ mod mapps643_locked_note_tests {
 
     /// Every frozen state has a note, a draft has none, and each note leads
     /// with the state, names an action the page offers, and never says
-    /// "finalized record" or doubles up "cancelled, or voided".
+    /// "finalized record" or doubles up "cancelled, or voided". PMS-1335
+    /// rewrote the copy in the MSP's imperative voice, so the leading phrase
+    /// is now "<state> and locked." / "Voided." / "Written off..." rather
+    /// than the earlier "This invoice <was|is> ..." prose.
     #[test]
     fn each_locked_state_says_what_it_is_and_what_can_be_done() {
         for draft in ["draft", "pending", "", "overdue-nonsense"] {
             assert_eq!(locked_invoice_note(draft), None, "{draft}");
         }
         let sent = locked_invoice_note("sent").expect("sent");
-        assert!(sent.starts_with("This invoice was sent"));
+        assert!(sent.starts_with("Sent and locked"), "{sent}");
         assert!(
             sent.contains("Record a payment")
                 && sent.contains("write it off")
                 && sent.contains("credit note")
         );
         let partly = locked_invoice_note("partially_paid").expect("partially_paid");
-        assert!(partly.starts_with("This invoice is partly paid"));
+        assert!(partly.starts_with("Partly paid and locked"), "{partly}");
         assert!(partly.contains("Record the rest") && partly.contains("credit note"));
         let paid = locked_invoice_note("paid").expect("paid");
         assert!(
-            paid.contains("refund or correct") && !paid.contains("write"),
-            "a paid invoice is not written off"
+            paid.contains("Correct it with a credit note") && !paid.contains("write"),
+            "a paid invoice is corrected with a credit note, not written off: {paid}"
         );
         let void = locked_invoice_note("void").expect("void");
-        assert!(void.contains("raise a new invoice"));
+        assert!(void.contains("Raise a new invoice"), "{void}");
         let off = locked_invoice_note("written_off").expect("written_off");
         assert!(
             off.contains("recovery"),
