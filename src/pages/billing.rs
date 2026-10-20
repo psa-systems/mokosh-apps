@@ -984,7 +984,7 @@ pub(crate) fn void_unavailable(status: &str) -> Option<String> {
     // PMS-1335: one statement per state.
     match status {
         "draft" | "pending" => None,
-        "void" => Some("Already void.".to_string()),
+        "void" => Some("This invoice is already void, so there is nothing to back out of.".to_string()),
         _ => Some(
             "The customer already holds this invoice. Amend it to replace it, or raise a credit note."
                 .to_string(),
