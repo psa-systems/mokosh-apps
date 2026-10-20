@@ -51,6 +51,18 @@ const ROLE_PICKER: &[(&str, &str)] = &[
     ("read_only", "Read-only"),
 ];
 
+/// Label a role for display using `ROLE_PICKER`, matching the label the
+/// row's own `Select` already shows for the same role. Falls back to the
+/// raw server string for a role `ROLE_PICKER` does not list, matching
+/// `crate::utils::roles::display_role_label`'s own fallback behavior.
+fn role_picker_label(role: &str) -> &str {
+    ROLE_PICKER
+        .iter()
+        .find(|(value, _)| *value == role)
+        .map(|(_, label)| *label)
+        .unwrap_or(role)
+}
+
 /// `kind` filter options, matching the two non-default literals
 /// `mokosh-server/src/modules/members/service.rs`'s `ALLOWED_KINDS`
 /// accepts. The third literal (`everyone`) is the unset/"All kinds" state
@@ -990,7 +1002,7 @@ fn PeopleBody(props: PeopleBodyProps) -> Element {
                                             }
                                         }
                                         TableCell {
-                                            "{role}"
+                                            "{role_picker_label(&role)}"
                                             if !last_login_label.is_empty() {
                                                 span { class: "ml-2 text-xs text-muted", "{last_login_label}" }
                                             }
@@ -1214,7 +1226,7 @@ fn InvitationsTab(can_mutate: bool) -> Element {
                                 rsx! {
                                     TableRow { key: "{id}",
                                         TableCell { class: "font-medium", "{email}" }
-                                        TableCell { class: "text-muted", "{role}" }
+                                        TableCell { class: "text-muted", "{role_picker_label(&role)}" }
                                         TableCell { class: "text-muted", "{expires}" }
                                         if can_mutate {
                                             TableCell {
@@ -1265,11 +1277,21 @@ mod tests {
     //! catches it before CI runs.
 
     use super::{
-        change_role_path, remove_action_path, row_granted_at_label, row_last_login_label,
-        MemberRow, MembersFilters,
+        change_role_path, remove_action_path, role_picker_label, row_granted_at_label,
+        row_last_login_label, MemberRow, MembersFilters,
     };
     use chrono::{TimeZone, Utc};
     use uuid::Uuid;
+
+    #[test]
+    fn role_picker_label_renders_admin_as_owner_per_pms_588() {
+        assert_eq!(role_picker_label("admin"), "Owner");
+    }
+
+    #[test]
+    fn role_picker_label_falls_back_to_the_raw_string_for_an_unknown_role() {
+        assert_eq!(role_picker_label("super_admin"), "super_admin");
+    }
 
     #[test]
     fn members_filters_query_suffix_omits_unset_fields() {
