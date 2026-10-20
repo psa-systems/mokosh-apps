@@ -2409,8 +2409,13 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             #[cfg(feature = "app")]
             {
                 let _gen = crate::hooks::fetch::active_tenant_generation();
+                // MAPPS-1071: use the paging helper that stops on a
+                // short page; a bare `per_page=200` is at or above
+                // the server's hard cap of 100, so a full first page
+                // reads as "complete list" when it may be truncated.
+                // `get_all_authed` reads every page and concatenates.
                 crate::hooks::fetch::api::get_all_authed::<ContactOpt>(&format!(
-                    "/contacts?company_id={company_id}&per_page=200"
+                    "/contacts?company_id={company_id}"
                 ))
                 .await
                 .inspect_err(|e| tracing::warn!("asset-edit contact list failed: {e}"))
