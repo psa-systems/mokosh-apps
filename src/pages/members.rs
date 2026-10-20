@@ -38,8 +38,11 @@ use crate::Route;
 /// deliberately absent from the picker because it is bootstrap-only and
 /// the server refuses to assign it through either endpoint. Rendered as
 /// `SelectOption`s on every row's role picker.
+/// PMS-588: `admin` reads as "Owner" to users. Keep this table in step
+/// with `crate::utils::roles::display_role_label`; the two are the one
+/// source of truth for role labels in the SPA.
 const ROLE_PICKER: &[(&str, &str)] = &[
-    ("admin", "Admin"),
+    ("admin", "Owner"),
     ("manager", "Manager"),
     ("technician", "Technician"),
     ("dispatcher", "Dispatcher"),
