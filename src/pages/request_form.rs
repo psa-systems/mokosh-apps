@@ -114,9 +114,9 @@ async fn load_form(
         .await
         {
             Ok(f) => form.set(Some(f)),
-            Err(ApiError::Status { code: 410, message, .. }) => {
-                terminal.set(Some(gone_terminal(&message)))
-            }
+            Err(ApiError::Status {
+                code: 410, message, ..
+            }) => terminal.set(Some(gone_terminal(&message))),
             Err(ApiError::Status { code: 400, .. }) => terminal.set(Some(Terminal::Unusable)),
             // Anything else (network, 5xx, 429) is not terminal: the link may
             // well work on a retry, so the visitor is told to try again
@@ -232,9 +232,9 @@ pub fn RequestFormPage(token: String) -> Element {
                             field_errors.set(routed);
                             form_error.set(unrouted.join(" "));
                         }
-                        Err(ApiError::Status { code: 410, message, .. }) => {
-                            terminal.set(Some(gone_terminal(&message)))
-                        }
+                        Err(ApiError::Status {
+                            code: 410, message, ..
+                        }) => terminal.set(Some(gone_terminal(&message))),
                         Err(ApiError::Status { code: 400, .. }) => {
                             terminal.set(Some(Terminal::Unusable))
                         }
