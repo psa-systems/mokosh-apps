@@ -3115,7 +3115,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 Card {
                     div { class: "py-10 text-center",
                         div { class: "mx-auto mb-3 h-6 w-6 rounded-full border-2 border-accent border-t-transparent animate-spin" }
-                        p { class: "text-sm font-medium text-content mb-1", "Processing your payment..." }
+                        p { class: "text-sm font-medium text-content mb-1", "Processing your payment\u{2026}" }
                         p { class: "text-xs text-muted",
                             "This usually takes a few seconds. You'll see the paid receipt as soon as your provider confirms."
                         }
@@ -5427,7 +5427,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                             value: String::new(),
                             selected_id: None,
                             label: "Add from the price list",
-                            placeholder: "Search the price list to add a line...",
+                            placeholder: "Search the price list to add a line\u{2026}",
                             clear_on_select: true,
                             onselect: move |picked: crate::components::PickedProduct| {
                                 lines.write().push(EditableLine {
