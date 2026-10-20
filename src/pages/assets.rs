@@ -441,13 +441,16 @@ fn warranty_refresh_status(s: &Option<String>) -> WarrantyRefreshStatus {
 /// `company` pill the structured search expects (uuid value). A name
 /// that does not resolve falls back to free text, matching the handling
 /// of unknown keys so the fetch still returns something sensible rather
-/// than a silent empty.
+/// than a silent empty; the typed value is also returned in
+/// `unresolved_companies` so the page can surface a quiet "no company
+/// named <x>" hint next to the search box.
 fn parse_asset_dsl_with_companies(
     input: &str,
     companies: &[(String, uuid::Uuid)],
-) -> (String, Vec<FilterPill>) {
+) -> (String, Vec<FilterPill>, Vec<String>) {
     let mut free = Vec::<String>::new();
     let mut pills = Vec::<FilterPill>::new();
+    let mut unresolved_companies = Vec::<String>::new();
     let tokens = tokenise_dsl(input);
     for raw in tokens {
         let (key, value) = match raw.split_once(':') {
@@ -500,8 +503,9 @@ fn parse_asset_dsl_with_companies(
             "company" => {
                 // Strip surrounding quotes so `company:"Main Street Dental"`
                 // and `company:MainStreet` both work. Match case-insensitively.
-                let needle = strip_quotes(&value).to_ascii_lowercase();
-                companies
+                let typed = strip_quotes(&value).to_string();
+                let needle = typed.to_ascii_lowercase();
+                let resolved = companies
                     .iter()
                     .find(|(name, _)| name.to_ascii_lowercase() == needle)
                     .map(|(name, id)| {
@@ -510,7 +514,11 @@ fn parse_asset_dsl_with_companies(
                             format!("Co: {name}"),
                             serde_json::Value::String(id.to_string()),
                         )
-                    })
+                    });
+                if resolved.is_none() && !typed.is_empty() {
+                    unresolved_companies.push(typed);
+                }
+                resolved
             }
             _ => {
                 recognised_key = false;
@@ -528,7 +536,7 @@ fn parse_asset_dsl_with_companies(
             }
         }
     }
-    (free.join(" "), pills)
+    (free.join(" "), pills, unresolved_companies)
 }
 
 /// Split the input on whitespace, but keep quoted substrings together so
@@ -902,6 +910,12 @@ pub fn AssetListPage() -> Element {
     // PMS-745: row-level navigation for the list below.
     let navigator = use_navigator();
     let mut search = use_signal(String::new);
+    // MAPPS-1064: `company:"<name>"` DSL tokens whose names did not match
+    // any fetched company. Written by the asset-list closure (the facets
+    // closure parses the same input but is deliberately read-only here so
+    // the two closures cannot drift); rendered as a one-line hint below
+    // the search box.
+    let mut unresolved_dsl_companies: Signal<Vec<String>> = use_signal(Vec::new);
     // Phase 2 asset inline edit: a row click opens the drawer over the
     // list when `assets:inline_edit` is on; otherwise the pre-phase-2
     // navigation to `AssetDetail` stays in place.
@@ -990,7 +1004,10 @@ pub fn AssetListPage() -> Element {
         // Phase 1 DSL: strip recognised tokens from the text buffer and
         // promote them to pills. The visible input is unchanged; the
         // fetch sees `q = free_remainder` + `filters = manual + dsl`.
-        let (q, dsl_pills) = parse_asset_dsl_with_companies(&typed, &company_lookup);
+        let (q, dsl_pills, unresolved) = parse_asset_dsl_with_companies(&typed, &company_lookup);
+        if *unresolved_dsl_companies.read() != unresolved {
+            unresolved_dsl_companies.set(unresolved);
+        }
         let mut filters = manual_pills;
         for p in dsl_pills {
             if !filters.iter().any(|m| m.field == p.field && m.op == p.op) {
@@ -1147,7 +1164,7 @@ pub fn AssetListPage() -> Element {
             .iter()
             .map(|c| (c.name.clone(), c.id))
             .collect();
-        let (q, dsl_pills) = parse_asset_dsl_with_companies(&typed, &company_lookup);
+        let (q, dsl_pills, _unresolved) = parse_asset_dsl_with_companies(&typed, &company_lookup);
         let mut filters = manual_pills;
         for p in dsl_pills {
             if !filters.iter().any(|m| m.field == p.field && m.op == p.op) {
@@ -1302,6 +1319,22 @@ pub fn AssetListPage() -> Element {
                     search.set(e.value());
                     page.set(1);
                 },
+            }
+            {
+                let unresolved = unresolved_dsl_companies.read().clone();
+                (!unresolved.is_empty()).then(|| {
+                    let names = unresolved
+                        .iter()
+                        .map(|n| format!("`{n}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let label = if unresolved.len() == 1 {
+                        format!("No company named {names}.")
+                    } else {
+                        format!("No companies named {names}.")
+                    };
+                    rsx! { div { class: "mt-1 text-xs text-amber-700 dark:text-amber-400", "{label}" } }
+                })
             }
             // Phase 1 asset search v2: three facet dropdowns + a pill
             // bar. Selecting a dropdown adds a pill and refetches; the
@@ -4364,7 +4397,12 @@ mod dsl_tests {
     use super::{parse_asset_dsl_with_companies, FilterPill};
 
     fn parse_asset_dsl(input: &str) -> (String, Vec<FilterPill>) {
-        parse_asset_dsl_with_companies(input, &[])
+        let (q, pills, unresolved) = parse_asset_dsl_with_companies(input, &[]);
+        assert!(
+            unresolved.is_empty(),
+            "no `company:` tokens in this input, so nothing should be unresolved: {unresolved:?}"
+        );
+        (q, pills)
     }
 
     #[test]
@@ -4445,7 +4483,7 @@ mod dsl_tests {
     #[test]
     fn company_quoted_name_resolves_to_eq_uuid() {
         let id = uuid::Uuid::new_v4();
-        let (q, pills) = parse_asset_dsl_with_companies(
+        let (q, pills, unresolved) = parse_asset_dsl_with_companies(
             "foo company:\"Main Street Dental\" bar",
             &[("Main Street Dental".to_string(), id)],
         );
@@ -4457,28 +4495,57 @@ mod dsl_tests {
             pills[0].values[0],
             serde_json::Value::String(id.to_string())
         );
+        assert!(unresolved.is_empty());
     }
 
     #[test]
     fn company_unquoted_name_also_resolves_case_insensitively() {
         let id = uuid::Uuid::new_v4();
-        let (_, pills) =
+        let (_, pills, unresolved) =
             parse_asset_dsl_with_companies("company:acmecorp", &[("AcmeCorp".to_string(), id)]);
         assert_eq!(pills.len(), 1);
         assert_eq!(
             pills[0].values[0],
             serde_json::Value::String(id.to_string())
         );
+        assert!(unresolved.is_empty());
     }
 
     #[test]
-    fn company_unknown_name_falls_back_to_free_text() {
-        let (q, pills) = parse_asset_dsl_with_companies(
+    fn company_unknown_name_falls_back_to_free_text_and_surfaces_the_typed_name() {
+        let (q, pills, unresolved) = parse_asset_dsl_with_companies(
             "company:\"Nowhere Inc\"",
             &[("AcmeCorp".to_string(), uuid::Uuid::new_v4())],
         );
+        // MAPPS-1064: the token still lands in `q` so the fetch stays
+        // non-empty, AND the typed name comes back in `unresolved` so
+        // the page can surface a quiet hint.
         assert_eq!(q, "company:\"Nowhere Inc\"");
         assert!(pills.is_empty());
+        assert_eq!(unresolved, vec!["Nowhere Inc".to_string()]);
+    }
+
+    /// MAPPS-1064: a resolved token and an unresolved one in the same
+    /// input split cleanly - one pill, one unresolved entry, and the
+    /// free text leaves the unresolved token in `q` so the fetch is
+    /// not empty.
+    #[test]
+    fn mixed_resolved_and_unresolved_companies_split_cleanly() {
+        let id = uuid::Uuid::new_v4();
+        let (q, pills, unresolved) = parse_asset_dsl_with_companies(
+            "company:AcmeCorp company:\"Nowhere Inc\" company:\"Also Missing\"",
+            &[("AcmeCorp".to_string(), id)],
+        );
+        assert_eq!(pills.len(), 1);
+        assert_eq!(
+            pills[0].values[0],
+            serde_json::Value::String(id.to_string())
+        );
+        assert_eq!(
+            unresolved,
+            vec!["Nowhere Inc".to_string(), "Also Missing".to_string()]
+        );
+        assert_eq!(q, "company:\"Nowhere Inc\" company:\"Also Missing\"");
     }
 }
 
