@@ -1312,30 +1312,6 @@ pub fn AssetListPage() -> Element {
         }
 
         Card { class: "mb-6",
-            SearchInput {
-                value: search.read().clone(),
-                placeholder: "Search by name, serial, hostname, IP, MAC…",
-                oninput: move |e: FormEvent| {
-                    search.set(e.value());
-                    page.set(1);
-                },
-            }
-            {
-                let unresolved = unresolved_dsl_companies.read().clone();
-                (!unresolved.is_empty()).then(|| {
-                    let names = unresolved
-                        .iter()
-                        .map(|n| format!("`{n}`"))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let label = if unresolved.len() == 1 {
-                        format!("No company named {names}.")
-                    } else {
-                        format!("No companies named {names}.")
-                    };
-                    rsx! { div { class: "mt-1 text-xs text-amber-700 dark:text-amber-400", "{label}" } }
-                })
-            }
             // Phase 1 asset search v2: three facet dropdowns + a pill
             // bar. Selecting a dropdown adds a pill and refetches; the
             // "x" on a pill removes it. The dropdowns reset to blank
@@ -1343,7 +1319,17 @@ pub fn AssetListPage() -> Element {
             // another `status in [...]`-style pill by picking a second
             // value (future MR teaches the chip itself to carry the
             // `in` op and multi-select).
-            div { class: "mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3",
+            div { class: "flex flex-col sm:flex-row gap-4",
+                div { class: "flex-1",
+                    SearchInput {
+                        value: search.read().clone(),
+                        placeholder: "Search by name, serial, hostname, IP, MAC…",
+                        oninput: move |e: FormEvent| {
+                            search.set(e.value());
+                            page.set(1);
+                        },
+                    }
+                }
                 {
                     let mut pills_sig = pills;
                     let types_opts = types.clone();
@@ -1446,6 +1432,22 @@ pub fn AssetListPage() -> Element {
                         }
                     }
                 }
+            }
+            {
+                let unresolved = unresolved_dsl_companies.read().clone();
+                (!unresolved.is_empty()).then(|| {
+                    let names = unresolved
+                        .iter()
+                        .map(|n| format!("`{n}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let label = if unresolved.len() == 1 {
+                        format!("No company named {names}.")
+                    } else {
+                        format!("No companies named {names}.")
+                    };
+                    rsx! { div { class: "mt-1 text-xs text-amber-700 dark:text-amber-400", "{label}" } }
+                })
             }
             {
                 let mut pills_sig = pills;
