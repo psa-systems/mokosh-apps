@@ -7285,15 +7285,11 @@ mod copy_style_tests {
     #[test]
     fn locked_notes_are_short_single_statements() {
         for status in ["sent", "partially_paid", "paid", "void", "written_off"] {
-            let note = locked_invoice_note(status).unwrap_or_else(|| {
-                panic!("{status} has no locked note")
-            });
+            let note = locked_invoice_note(status)
+                .unwrap_or_else(|| panic!("{status} has no locked note"));
             // A trailing "cannot be reinstated" or "stays on record as it was"
             // was the restatement pattern PMS-1335 removes.
-            assert!(
-                !note.contains("cannot be reinstated"),
-                "{status}: {note}"
-            );
+            assert!(!note.contains("cannot be reinstated"), "{status}: {note}");
             assert!(
                 !note.contains("stays on record as it was"),
                 "{status}: {note}"
