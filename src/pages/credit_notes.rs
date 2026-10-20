@@ -855,7 +855,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
                                 } else if invoice_id.is_empty() {
                                     p { class: "text-sm text-muted", "This credit note is not linked to an invoice." }
                                 } else {
-                                    p { class: "text-sm text-muted", "Loading the invoice..." }
+                                    p { class: "text-sm text-muted", "Loading the invoice\u{2026}" }
                                 }
                             }
 
