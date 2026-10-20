@@ -3167,6 +3167,11 @@ mod admin_route_role_gates {
             "src/pages/platform_account.rs",
             include_str!("pages/platform_account.rs"),
         ),
+        (
+            "/admin/features",
+            "src/pages/admin_features.rs",
+            include_str!("pages/admin_features.rs"),
+        ),
     ];
 
     /// `/admin/*` paths declared in this file's `Route` enum. Read from the
