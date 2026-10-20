@@ -1851,10 +1851,21 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
     let assignee_options: Vec<SelectOption> = {
         let mut opts = vec![SelectOption::new("", "Select technician…")];
         for u in props.users.iter() {
-            opts.push(SelectOption::new(
-                u.id.to_string(),
-                u.display_name().unwrap_or_else(|| "Unknown".to_string()),
-            ));
+            // MAPPS-1063: a roster user whose server-side name is blank
+            // still gets a listable row, but log the substitution through
+            // the shared helper so the "Unknown" option is findable. A
+            // `<select>` option label cannot carry a `title`, so log only.
+            let label = u.display_name().unwrap_or_else(|| {
+                let shown = "Unknown".to_string();
+                let _ = crate::utils::unresolved(
+                    "calendar.assignee_option",
+                    "user",
+                    Some(u.id),
+                    &shown,
+                );
+                shown
+            });
+            opts.push(SelectOption::new(u.id.to_string(), label));
         }
         opts
     };
