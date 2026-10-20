@@ -92,72 +92,83 @@ fn AdminFeaturesContent() -> Element {
     let saving = use_signal(|| false);
 
     let snap = rows_resource.read_unchecked().clone();
-    let rows: Vec<FeatureToggleRow> = snap.flatten().unwrap_or_default();
 
     rsx! {
         PageHeader {
             title: "Feature toggles",
             subtitle: "Runtime switches for optional features. A flip takes effect immediately.",
         }
-        Card {
-            if !save_error.read().is_empty() {
-                div { class: "px-6 pt-4",
-                    ErrorBanner { "{save_error}" }
-                }
-            }
-            if rows.is_empty() {
-                div { class: "py-12 text-center",
-                    p { class: "text-sm text-muted",
-                        "No feature toggles declared, or the list could not be loaded."
+        match &snap {
+            None => rsx! {
+                crate::components::DetailSkeleton {}
+            },
+            Some(None) => rsx! {
+                Card {
+                    div { class: "py-12 text-center",
+                        ErrorBanner { "Could not load feature toggles. Refresh the page to retry." }
                     }
                 }
-            } else {
-                ul { class: "divide-y divide-line",
-                    for row in rows.iter().cloned() {
-                        FeatureRow {
-                            key: "{row.key}",
-                            row,
-                            saving: saving(),
-                            on_flip: move |(k, next): (String, bool)| {
-                                let mut rows_resource = rows_resource;
-                                let mut save_error = save_error;
-                                let mut saving = saving;
-                                spawn(async move {
-                                    saving.set(true);
-                                    save_error.set(String::new());
-                                    #[cfg(feature = "app")]
-                                    {
-                                        let path = format!("/settings/feature-toggles/{k}");
-                                        let body = FlipRequest { enabled: next };
-                                        match crate::hooks::fetch::api::put_authed_typed::<
-                                            serde_json::Value,
-                                            _,
-                                        >(&path, &body)
-                                        .await
-                                        {
-                                            Ok(_) => {
-                                                // Nudge the shared map so other panels
-                                                // react before the 60s tick.
-                                                *crate::hooks::features::FEATURES_GENERATION
-                                                    .write() += 1;
-                                                crate::hooks::features::refresh_feature_map()
-                                                    .await;
-                                                rows_resource.restart();
+            },
+            Some(Some(rows)) => rsx! {
+                Card {
+                    if !save_error.read().is_empty() {
+                        div { class: "px-6 pt-4",
+                            ErrorBanner { "{save_error}" }
+                        }
+                    }
+                    if rows.is_empty() {
+                        div { class: "py-12 text-center",
+                            p { class: "text-sm text-muted", "No feature toggles declared." }
+                        }
+                    } else {
+                        ul { class: "divide-y divide-line",
+                            for row in rows.iter().cloned() {
+                                FeatureRow {
+                                    key: "{row.key}",
+                                    row,
+                                    saving: saving(),
+                                    on_flip: move |(k, next): (String, bool)| {
+                                        let mut rows_resource = rows_resource;
+                                        let mut save_error = save_error;
+                                        let mut saving = saving;
+                                        spawn(async move {
+                                            saving.set(true);
+                                            save_error.set(String::new());
+                                            #[cfg(feature = "app")]
+                                            {
+                                                let path = format!("/settings/feature-toggles/{k}");
+                                                let body = FlipRequest { enabled: next };
+                                                match crate::hooks::fetch::api::put_authed_typed::<
+                                                    serde_json::Value,
+                                                    _,
+                                                >(&path, &body)
+                                                .await
+                                                {
+                                                    Ok(_) => {
+                                                        // Nudge the shared map so other panels
+                                                        // react before the 60s tick.
+                                                        *crate::hooks::features::FEATURES_GENERATION
+                                                            .write() += 1;
+                                                        crate::hooks::features::refresh_feature_map()
+                                                            .await;
+                                                        rows_resource.restart();
+                                                    }
+                                                    Err(e) => save_error.set(e.user_message()),
+                                                }
                                             }
-                                            Err(e) => save_error.set(e.user_message()),
-                                        }
-                                    }
-                                    #[cfg(not(feature = "app"))]
-                                    {
-                                        let _ = (k, next);
-                                    }
-                                    saving.set(false);
-                                });
-                            },
+                                            #[cfg(not(feature = "app"))]
+                                            {
+                                                let _ = (k, next);
+                                            }
+                                            saving.set(false);
+                                        });
+                                    },
+                                }
+                            }
                         }
                     }
                 }
-            }
+            },
         }
     }
 }
