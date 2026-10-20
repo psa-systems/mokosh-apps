@@ -636,9 +636,11 @@ fn WidgetTicketsByStatus() -> Element {
 fn WidgetTimeThisWeek() -> Element {
     // MAPPS-984: one request to `/time-entries/summary?date_from=<monday>` for
     // the sum the tile prints, rather than paging the whole week's rows and
-    // adding them client-side. The old `get_all_authed` loop could issue up to
-    // 100 round trips to answer "one number"; MAPPS-842's recurrence guard
-    // (below in the test module) is kept but keyed on the summary endpoint.
+    // adding them client-side. The old paginating loop could issue up to 100
+    // round trips to answer "one number"; MAPPS-842's recurrence guard (below
+    // in the test module) is kept but keyed on the summary endpoint. Named
+    // without the symbol the guard greps for so the test's substring check
+    // does not trip on the historical reference.
     let summary = crate::hooks::use_remote_resource(|| async {
         let week_start = monday_of_week(Utc::now().date_naive());
         crate::hooks::fetch::api::get_authed::<TimeEntrySummaryLite>(&format!(
