@@ -21,13 +21,51 @@
 # no entrypoint runs) or when no env vars are set, both files are
 # still served but contain an empty object, and the SPA falls through
 # to its existing behaviour.
+#
+# MAPPS-963: the generated config and the patched index.html land in
+# a per-run directory under /tmp so the image works as any non-root
+# uid rather than hard-coding ownership of /usr/share/caddy. The
+# Caddyfile is matched to serve those three paths from here before
+# falling back to the compile-time bundle; a failure to prepare the
+# directory exits non-zero so a half-wired deploy fails loud at start
+# rather than silently serving the compile-time fallback.
 
 set -eu
 
-CONFIG_JS="/usr/share/caddy/_mokosh_config.js"
-CONFIG_JSON="/usr/share/caddy/_mokosh_config.json"
-INDEX="/usr/share/caddy/index.html"
+RUNTIME_DIR="${MOKOSH_RUNTIME_DIR:-/tmp/mokosh-runtime}"
+BUNDLE_INDEX="/usr/share/caddy/index.html"
+CONFIG_JS="${RUNTIME_DIR}/_mokosh_config.js"
+CONFIG_JSON="${RUNTIME_DIR}/_mokosh_config.json"
+INDEX="${RUNTIME_DIR}/index.html"
 INCLUDE_TAG='<script src="/_mokosh_config.js"></script>'
+
+# MAPPS-963: prepare the runtime directory and refresh the index copy
+# every start. The directory lives under /tmp so any uid can write
+# it; a failure here is fatal because the Caddyfile's matched root
+# below is this path and a missing file means the shim is unreachable.
+fail_runtime_dir() {
+    echo "[entrypoint] FATAL: ${1}: ${RUNTIME_DIR}. Mount a writable path at this location or set MOKOSH_RUNTIME_DIR to one." >&2
+    exit 1
+}
+
+mkdir -p "$RUNTIME_DIR" 2>/dev/null || fail_runtime_dir "cannot create runtime directory"
+if [ ! -w "$RUNTIME_DIR" ]; then
+    fail_runtime_dir "runtime directory is not writable"
+fi
+# Start every run from the pristine image copy of index.html so the
+# patches below are idempotent and a prior restart's edits cannot
+# accumulate.
+cp "$BUNDLE_INDEX" "$INDEX" 2>/dev/null \
+    || fail_runtime_dir "cannot copy index.html into runtime directory"
+
+# Caddy's XDG and HOME paths. Caddy 2 writes autosaves to
+# $XDG_CONFIG_HOME/caddy and tries $HOME/.config / $HOME/.local
+# otherwise; those paths are not writable for a non-root uid without
+# this redirect, and the fallback warnings fill the log.
+export HOME="$RUNTIME_DIR"
+export XDG_CONFIG_HOME="${RUNTIME_DIR}/.config"
+export XDG_DATA_HOME="${RUNTIME_DIR}/.local/share"
+mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" 2>/dev/null || true
 
 # MAPPS-831: MOKOSH_DOCS_URL was renamed to MOKOSH_DOCS_BASE_URL to match the
 # desktop build's env var for the same field. Still honoured as a fallback,
@@ -204,41 +242,29 @@ absolute_image_url() {
     esac
 }
 
-if ! {
+{
     echo "// Generated at container start by oci-build/entrypoint.sh."
     echo "// Operators override these via env vars on the mokosh-www container."
     printf 'window.__MOKOSH_CONFIG__ = {'
     render_config_fields
     echo '};'
-} > "$CONFIG_JS" 2>/dev/null; then
-    echo "[entrypoint] WARN: could not write ${CONFIG_JS} (read-only fs?); SPA will fall back to compile-time config" >&2
-fi
+} > "$CONFIG_JS" || fail_runtime_dir "cannot write ${CONFIG_JS#$RUNTIME_DIR/} to"
 
 # MAPPS-812: the JSON sibling of `_mokosh_config.js`, same field set
 # (`render_config_fields`), read by `fetch_live_build_sha` in
 # `src/hooks/update_check.rs` since the served CSP forbids the `eval()`
 # that reading the JS shim's `build_sha` at runtime would require.
-if ! {
+{
     printf '{'
     render_config_fields
     printf '}'
-} > "$CONFIG_JSON" 2>/dev/null; then
-    echo "[entrypoint] WARN: could not write ${CONFIG_JSON} (read-only fs?); update check will find no live build_sha" >&2
-fi
+} > "$CONFIG_JSON" || fail_runtime_dir "cannot write ${CONFIG_JSON#$RUNTIME_DIR/} to"
 
-# Inject the script tag into <head> if not already present. Idempotent
-# across restarts (only injects once, even if the image layer's
-# index.html is the canonical artifact between runs).
-#
-# This is best-effort: if the rootfs is read-only (e.g. operator runs
-# the container with `read_only: true`) the sed -i write fails. We
-# explicitly do not let that abort startup - Caddy can still serve
-# the un-injected index.html, and the SPA falls through to its
-# compile-time defaults. Log a warning so operators see the cause.
-if ! grep -q -F "$INCLUDE_TAG" "$INDEX"; then
-    if ! sed -i "s|</head>|    ${INCLUDE_TAG}\\n</head>|" "$INDEX" 2>/dev/null; then
-        echo "[entrypoint] WARN: could not patch ${INDEX} (read-only fs?); SPA will fall back to compile-time config" >&2
-    fi
+# Inject the script tag into <head>. The runtime copy of index.html is
+# refreshed from the pristine bundle on every start (see cp above), so
+# this always edits the un-patched version; no idempotence check needed.
+if ! sed -i "s|</head>|    ${INCLUDE_TAG}\\n</head>|" "$INDEX"; then
+    fail_runtime_dir "cannot patch index.html in"
 fi
 
 # MAPPS-477: link-preview (OpenGraph / Twitter) metadata. A link-preview
@@ -246,65 +272,45 @@ fi
 # HTML. They are stamped from the branding env here, at container start, the
 # same way _mokosh_config.js is; the SPA never sets them.
 #
-# MAPPS-826: re-stamped on every start, not just the first. A prior block (if
-# any) is deleted first so a restart with changed branding env never leaves
-# stale tags behind, and the served page never carries more than one
-# OG_MARKER. Best-effort throughout (a read-only rootfs is not fatal).
+# MAPPS-963: the runtime index.html is fresh every start (see cp above),
+# so the strip-stale-tags dance the previous in-place patch needed is
+# gone - there are no stale tags to find.
 OG_MARKER='<!-- MAPPS-477 link-preview metadata -->'
-if grep -q -F "$OG_MARKER" "$INDEX"; then
-    og_strip_tmp="$(mktemp 2>/dev/null || echo "${INDEX}.ogstrip")"
-    if awk -v marker="$OG_MARKER" '
-        index($0, marker) { skip=1 }
-        /<\/head>/ { skip=0 }
-        !skip { print }
-    ' "$INDEX" > "$og_strip_tmp" 2>/dev/null && mv "$og_strip_tmp" "$INDEX" 2>/dev/null; then
-        :
-    else
-        echo "[entrypoint] WARN: could not strip stale link-preview metadata from ${INDEX} (read-only fs?); leaving the existing tags in place" >&2
-        rm -f "$og_strip_tmp" 2>/dev/null
-    fi
+og_title="$(escape_html "${MOKOSH_BRAND_NAME:-Mokosh Platform}")"
+og_desc="$(escape_html "${MOKOSH_BRAND_DESCRIPTION:-Mokosh Platform - Professional Services Automation for MSPs}")"
+og_image_raw="$(absolute_image_url "${MOKOSH_BRAND_LOGO_URL:-}")"
+if [ -n "${MOKOSH_BRAND_LOGO_URL:-}" ] && [ -z "$og_image_raw" ]; then
+    echo "[entrypoint] WARN: MOKOSH_BRAND_LOGO_URL='${MOKOSH_BRAND_LOGO_URL}' is not absolute and MOKOSH_PUBLIC_URL is unset; og:image/twitter:image omitted because a link-preview crawler cannot resolve a relative image URL. Set MOKOSH_PUBLIC_URL to the site's public base URL." >&2
 fi
 
-if ! grep -q -F "$OG_MARKER" "$INDEX"; then
-    og_title="$(escape_html "${MOKOSH_BRAND_NAME:-Mokosh Platform}")"
-    og_desc="$(escape_html "${MOKOSH_BRAND_DESCRIPTION:-Mokosh Platform - Professional Services Automation for MSPs}")"
-    og_image_raw="$(absolute_image_url "${MOKOSH_BRAND_LOGO_URL:-}")"
-    if [ -n "${MOKOSH_BRAND_LOGO_URL:-}" ] && [ -z "$og_image_raw" ]; then
-        echo "[entrypoint] WARN: MOKOSH_BRAND_LOGO_URL='${MOKOSH_BRAND_LOGO_URL}' is not absolute and MOKOSH_PUBLIC_URL is unset; og:image/twitter:image omitted because a link-preview crawler cannot resolve a relative image URL. Set MOKOSH_PUBLIC_URL to the site's public base URL." >&2
-    fi
-
-    og_blockfile="$(mktemp 2>/dev/null || echo "${INDEX}.ogblock")"
-    {
-        printf '    %s\n' "$OG_MARKER"
-        printf '    <meta property="og:type" content="website">\n'
-        printf '    <meta property="og:title" content="%s">\n' "$og_title"
-        printf '    <meta property="og:site_name" content="%s">\n' "$og_title"
-        printf '    <meta property="og:description" content="%s">\n' "$og_desc"
-        if [ -n "$og_image_raw" ]; then
-            og_image="$(escape_html "$og_image_raw")"
-            printf '    <meta property="og:image" content="%s">\n' "$og_image"
-            printf '    <meta name="twitter:card" content="summary_large_image">\n'
-        else
-            printf '    <meta name="twitter:card" content="summary">\n'
-        fi
-        printf '    <meta name="twitter:title" content="%s">\n' "$og_title"
-        printf '    <meta name="twitter:description" content="%s">\n' "$og_desc"
-        if [ -n "$og_image_raw" ]; then
-            printf '    <meta name="twitter:image" content="%s">\n' "$og_image"
-        fi
-    } > "$og_blockfile" 2>/dev/null
-
-    og_tmp="$(mktemp 2>/dev/null || echo "${INDEX}.ogtmp")"
-    if [ -s "$og_blockfile" ] \
-        && awk 'FNR==NR{b=b $0 ORS; next} !ins && /<\/head>/{printf "%s",b; ins=1} {print}' "$og_blockfile" "$INDEX" > "$og_tmp" 2>/dev/null \
-        && mv "$og_tmp" "$INDEX" 2>/dev/null; then
-        :
+og_blockfile="${RUNTIME_DIR}/.og-block"
+{
+    printf '    %s\n' "$OG_MARKER"
+    printf '    <meta property="og:type" content="website">\n'
+    printf '    <meta property="og:title" content="%s">\n' "$og_title"
+    printf '    <meta property="og:site_name" content="%s">\n' "$og_title"
+    printf '    <meta property="og:description" content="%s">\n' "$og_desc"
+    if [ -n "$og_image_raw" ]; then
+        og_image="$(escape_html "$og_image_raw")"
+        printf '    <meta property="og:image" content="%s">\n' "$og_image"
+        printf '    <meta name="twitter:card" content="summary_large_image">\n'
     else
-        echo "[entrypoint] WARN: could not inject link-preview metadata into ${INDEX} (read-only fs?); a pasted link shows the built-in defaults or nothing" >&2
-        rm -f "$og_tmp" 2>/dev/null
+        printf '    <meta name="twitter:card" content="summary">\n'
     fi
-    rm -f "$og_blockfile" 2>/dev/null
+    printf '    <meta name="twitter:title" content="%s">\n' "$og_title"
+    printf '    <meta name="twitter:description" content="%s">\n' "$og_desc"
+    if [ -n "$og_image_raw" ]; then
+        printf '    <meta name="twitter:image" content="%s">\n' "$og_image"
+    fi
+} > "$og_blockfile" || fail_runtime_dir "cannot stage link-preview metadata in"
+
+og_tmp="${RUNTIME_DIR}/.index.ogtmp"
+if ! awk 'FNR==NR{b=b $0 ORS; next} !ins && /<\/head>/{printf "%s",b; ins=1} {print}' "$og_blockfile" "$INDEX" > "$og_tmp"; then
+    rm -f "$og_tmp"
+    fail_runtime_dir "cannot inject link-preview metadata into index.html in"
 fi
+mv "$og_tmp" "$INDEX"
+rm -f "$og_blockfile"
 
 # MAPPS-369: derive origin-scoped CSP sources from the operator-facing base
 # URLs and export them so the Caddyfile's connect-src (read by the `caddy run`
@@ -327,6 +333,6 @@ if [ -n "${MOKOSH_OIDC_ISSUER:-}" ]; then
 else
     MOKOSH_OIDC_ORIGIN='{mokosh_oidc_origin_fallback}'
 fi
-export MOKOSH_API_ORIGIN MOKOSH_OIDC_ORIGIN
+export MOKOSH_API_ORIGIN MOKOSH_OIDC_ORIGIN MOKOSH_RUNTIME_DIR="$RUNTIME_DIR"
 
 exec "$@"
