@@ -85,6 +85,14 @@ pub struct KbArticle {
     /// article means no client can see it.
     #[serde(default)]
     pub company_ids: Vec<Uuid>,
+    /// MAPPS-1044: server-resolved company display names, one per id in
+    /// `company_ids` and in the same order, joined server-side so the
+    /// scoped-article reads do not pay for a separate
+    /// `/contacts/companies` fetch to turn a UUID into a word.
+    /// `Vec::new()` on a server that predates the field; the
+    /// `resolve_company_names` fallback still runs.
+    #[serde(default)]
+    pub company_names: Vec<String>,
     #[serde(default)]
     pub created_at: Option<DateTime<Utc>>,
     #[serde(default)]
