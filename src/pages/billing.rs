@@ -7410,12 +7410,20 @@ mod paid_landing_tests {
     }
 
     /// Every action the locked-invoice note names - record a payment, write it
-    /// off, issue a credit note - is staff-only, and it addresses the MSP
-    /// about "your customer". It was rendering on the customer's own invoice.
+    /// off, issue a credit note - is staff-only, so the note itself must be
+    /// gated on the staff plane. PMS-1335 rewrote the copy in the MSP's own
+    /// voice (imperative verbs, no "your customer" address), so what proves
+    /// the staff posture now is the imperative action list, not the earlier
+    /// "your customer" phrase.
     #[test]
     fn the_locked_note_is_written_for_the_msp_not_the_customer() {
         let sent = locked_invoice_note("sent").expect("a sent invoice is locked");
-        assert!(sent.contains("your customer"), "{sent}");
+        assert!(
+            sent.contains("Record a payment")
+                && sent.contains("write it off")
+                && sent.contains("credit note"),
+            "{sent}"
+        );
         let source = include_str!("billing.rs");
         assert!(
             source.contains("let frozen_note = staff_only"),
@@ -7947,12 +7955,13 @@ mod void_tests {
         assert_eq!(serde_json::to_string(&without).expect("serialize"), "{}");
     }
 
-    /// The note a voided invoice shows is unchanged by the move, and still
-    /// tells the reader the invoice cannot be reinstated.
+    /// The note a voided invoice shows is unchanged by the move. PMS-1335
+    /// made the sentence imperative (`Raise a new invoice...`), so match on
+    /// the capitalised form the new copy uses.
     #[test]
     fn the_voided_note_still_explains_the_state() {
         let note = locked_invoice_note("void").expect("void note");
-        assert!(note.contains("raise a new invoice"), "{note}");
+        assert!(note.contains("Raise a new invoice"), "{note}");
     }
 }
 
@@ -8554,29 +8563,32 @@ mod mapps643_locked_note_tests {
 
     /// Every frozen state has a note, a draft has none, and each note leads
     /// with the state, names an action the page offers, and never says
-    /// "finalized record" or doubles up "cancelled, or voided".
+    /// "finalized record" or doubles up "cancelled, or voided". PMS-1335
+    /// rewrote the copy in the MSP's imperative voice, so the leading phrase
+    /// is now "<state> and locked." / "Voided." / "Written off..." rather
+    /// than the earlier "This invoice <was|is> ..." prose.
     #[test]
     fn each_locked_state_says_what_it_is_and_what_can_be_done() {
         for draft in ["draft", "pending", "", "overdue-nonsense"] {
             assert_eq!(locked_invoice_note(draft), None, "{draft}");
         }
         let sent = locked_invoice_note("sent").expect("sent");
-        assert!(sent.starts_with("This invoice was sent"));
+        assert!(sent.starts_with("Sent and locked"), "{sent}");
         assert!(
             sent.contains("Record a payment")
                 && sent.contains("write it off")
                 && sent.contains("credit note")
         );
         let partly = locked_invoice_note("partially_paid").expect("partially_paid");
-        assert!(partly.starts_with("This invoice is partly paid"));
+        assert!(partly.starts_with("Partly paid and locked"), "{partly}");
         assert!(partly.contains("Record the rest") && partly.contains("credit note"));
         let paid = locked_invoice_note("paid").expect("paid");
         assert!(
-            paid.contains("refund or correct") && !paid.contains("write"),
-            "a paid invoice is not written off"
+            paid.contains("Correct it with a credit note") && !paid.contains("write"),
+            "a paid invoice is corrected with a credit note, not written off: {paid}"
         );
         let void = locked_invoice_note("void").expect("void");
-        assert!(void.contains("raise a new invoice"));
+        assert!(void.contains("Raise a new invoice"), "{void}");
         let off = locked_invoice_note("written_off").expect("written_off");
         assert!(
             off.contains("recovery"),
