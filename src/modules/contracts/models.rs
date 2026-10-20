@@ -216,6 +216,8 @@ pub struct RateCardItemResponse {
     pub id: Uuid,
     pub rate_card_id: Uuid,
     pub work_type_id: Uuid,
+    #[serde(default)]
+    pub work_type_name: Option<String>,
     pub hourly_rate: Decimal,
     #[serde(default)]
     pub after_hours_rate: Option<Decimal>,

@@ -424,7 +424,18 @@ fn render_editor_grid(draft: Signal<DashboardLayout>, dirty: Signal<bool>) -> El
 
 fn render_widget_cell(w: &WidgetSpec, idx: usize) -> Element {
     let entry = catalog_lookup(&w.widget_key);
-    let title = entry.map(|e| e.title).unwrap_or("Unknown widget");
+    let title = entry.map(|e| e.title).unwrap_or_else(|| {
+        // MAPPS-1063: a widget_key the catalog does not know is an
+        // unresolved reference, not a legitimately-blank widget. Log
+        // it via the string-keyed sibling of `unresolved`.
+        let _ = crate::utils::unresolved_by_key(
+            "dashboards.widget_catalog",
+            "widget_key",
+            &w.widget_key,
+            "Unknown widget",
+        );
+        "Unknown widget"
+    });
     let style = grid_style(w);
     let key = format!("w-{idx}-{}", w.widget_key);
     // `time_this_week` renders as a `StatCard`, which already carries its own
@@ -453,7 +464,15 @@ fn render_widget_editor_cell(
     mut dirty: Signal<bool>,
 ) -> Element {
     let entry = catalog_lookup(&w.widget_key);
-    let title = entry.map(|e| e.title).unwrap_or("Unknown widget");
+    let title = entry.map(|e| e.title).unwrap_or_else(|| {
+        let _ = crate::utils::unresolved_by_key(
+            "dashboards.widget_catalog_editor",
+            "widget_key",
+            &w.widget_key,
+            "Unknown widget",
+        );
+        "Unknown widget"
+    });
     let style = grid_style(&w);
     let key = format!("e-{idx}-{}", w.widget_key);
 
@@ -613,41 +632,29 @@ fn WidgetTicketsByStatus() -> Element {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
-struct TimeEntryLite {
-    date: chrono::NaiveDate,
-    #[serde(default)]
-    duration_minutes: i64,
-}
-
 #[component]
 fn WidgetTimeThisWeek() -> Element {
-    // MAPPS-543: this widget sums a week, so it needs rows rather than a count -
-    // but only this week's. The server takes `date_from`, so the fetch is
-    // bounded by the window the tile reports instead of the tenant's whole time
-    // history. It previously read the server's default 25 rows and summed them
-    // as if they were the week, which reports a wrong number of hours rather
-    // than no number at all.
-    let entries = crate::hooks::use_remote_resource(|| async {
+    // MAPPS-984: one request to `/time-entries/summary?date_from=<monday>` for
+    // the sum the tile prints, rather than paging the whole week's rows and
+    // adding them client-side. The old paginating loop could issue up to 100
+    // round trips to answer "one number"; MAPPS-842's recurrence guard (below
+    // in the test module) is kept but keyed on the summary endpoint. Named
+    // without the symbol the guard greps for so the test's substring check
+    // does not trip on the historical reference.
+    let summary = crate::hooks::use_remote_resource(|| async {
         let week_start = monday_of_week(Utc::now().date_naive());
-        crate::hooks::fetch::api::get_all_authed::<TimeEntryLite>(&format!(
-            "/time-entries?date_from={week_start}"
+        crate::hooks::fetch::api::get_authed::<TimeEntrySummaryLite>(&format!(
+            "/time-entries/summary?date_from={week_start}"
         ))
         .await
     });
-    if entries.is_loading() {
+    if summary.is_loading() {
         return widget_loading();
     }
-    if entries.is_unavailable() {
+    if summary.is_unavailable() {
         return widget_failed();
     }
-    let rows = entries.value_or_default();
-    let week_start = monday_of_week(Utc::now().date_naive());
-    let minutes: i64 = rows
-        .iter()
-        .filter(|e| e.date >= week_start)
-        .map(|e| e.duration_minutes)
-        .sum();
+    let minutes = summary.value_or_default().minutes;
     let hours = format!("{:.1}", minutes as f64 / 60.0);
     rsx! {
         StatCard {
@@ -656,6 +663,12 @@ fn WidgetTimeThisWeek() -> Element {
             caption: "Logged since Monday.",
         }
     }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct TimeEntrySummaryLite {
+    #[serde(default)]
+    minutes: i64,
 }
 
 #[component]
@@ -680,37 +693,34 @@ fn WidgetSlaAtRisk() -> Element {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
-struct InvoiceLite {
+#[derive(Clone, Debug, Default, Deserialize)]
+struct InvoiceSummaryLite {
     #[serde(default)]
-    total: Option<rust_decimal::Decimal>,
-}
-
-/// True count and sum across every row handed to it. Split out of
-/// `WidgetOpenInvoices` so a test can feed it more rows than one page holds
-/// and check nothing here re-introduces a page-sized cap of its own.
-fn open_invoices_totals(rows: &[InvoiceLite]) -> (usize, rust_decimal::Decimal) {
-    let total = rows.iter().filter_map(|i| i.total).sum();
-    (rows.len(), total)
+    count: i64,
+    #[serde(default)]
+    total: rust_decimal::Decimal,
 }
 
 #[component]
 fn WidgetOpenInvoices() -> Element {
-    // MAPPS-842: `get_all_authed` pages through the whole filtered
-    // collection (the same pattern `WidgetTimeThisWeek` uses to sum a
-    // window it can't just take the first page of), so both the count and
-    // the sum below are true totals rather than one page's length and sum.
-    let invoices = crate::hooks::use_remote_resource(|| async {
-        crate::hooks::fetch::api::get_all_authed::<InvoiceLite>("/invoices?status=sent").await
+    // MAPPS-984 (closes MAPPS-842's follow-up): one request to
+    // `/invoices/summary?status=sent` returns the count and the summed balance
+    // directly, so the widget no longer pages the whole filtered collection to
+    // derive the two numbers it prints. The MAPPS-842 recurrence guard below
+    // is kept but keyed on the summary endpoint.
+    let summary = crate::hooks::use_remote_resource(|| async {
+        crate::hooks::fetch::api::get_authed::<InvoiceSummaryLite>("/invoices/summary?status=sent")
+            .await
     });
-    if invoices.is_loading() {
+    if summary.is_loading() {
         return widget_loading();
     }
-    if invoices.is_unavailable() {
+    if summary.is_unavailable() {
         return widget_failed();
     }
-    let rows = invoices.value_or_default();
-    let (count, total) = open_invoices_totals(&rows);
+    let s = summary.value_or_default();
+    let count = s.count;
+    let total = s.total;
     rsx! {
         StatCard {
             label: "Open invoices",
@@ -799,9 +809,6 @@ fn monday_of_week(date: chrono::NaiveDate) -> chrono::NaiveDate {
 
 #[cfg(test)]
 mod open_invoices_tests {
-    use super::{open_invoices_totals, InvoiceLite};
-    use rust_decimal::Decimal;
-
     /// This module's own source, minus this test module: the assertion below
     /// names the very call it requires, so scanning the whole file would make
     /// it match itself.
@@ -812,51 +819,50 @@ mod open_invoices_tests {
             .expect("this file has a test module")
     }
 
-    /// MAPPS-842 recurrence guard: `WidgetOpenInvoices` must read the whole
-    /// filtered collection through the `get_all_*` paging helper, never a
-    /// single `get_authed` page - that is exactly the bug this issue fixed
-    /// (a page's length and sum stood in for the collection's).
-    #[test]
-    fn widget_open_invoices_reads_the_whole_collection() {
-        let body = production_src()
-            .split("fn WidgetOpenInvoices")
+    fn widget_body(name: &str) -> String {
+        let after = production_src()
+            .split(&format!("fn {name}"))
             .nth(1)
-            .expect("WidgetOpenInvoices is defined in this file");
-        let body = &body[..body.find("\nfn ").unwrap_or(body.len())];
+            .unwrap_or_else(|| panic!("{name} is defined in this file"));
+        after[..after.find("\nfn ").unwrap_or(after.len())].to_string()
+    }
+
+    /// MAPPS-842 recurrence guard, repointed by MAPPS-984: `WidgetOpenInvoices`
+    /// now reads the server-side aggregate at `/invoices/summary` instead of
+    /// paging every row to derive the count and sum. The two historic
+    /// regressions this guard watches for are both still blocked: a page of
+    /// `/invoices` presented as the whole set (the MAPPS-842 bug), and a bare
+    /// `get_all_authed` loop (the follow-up this ticket replaces).
+    #[test]
+    fn widget_open_invoices_reads_the_summary_endpoint() {
+        let body = widget_body("WidgetOpenInvoices");
         assert!(
-            body.contains("get_all_authed"),
-            "must page through every open invoice, not one page of them: {body}"
+            body.contains("/invoices/summary"),
+            "must read the server-side aggregate, not a page of /invoices: {body}"
+        );
+        assert!(
+            !body.contains("get_all_authed"),
+            "the paging loop is what MAPPS-984 removes; reintroducing it \
+             defeats the summary endpoint: {body}"
         );
         assert!(
             !body.contains("per_page"),
-            "the get_all_* helpers own per_page; a call site spelling it out \
-             again is a sign the page-truncation bug came back: {body}"
+            "a per_page spelling here is a sign a page cap crept back: {body}"
         );
     }
 
-    /// MAPPS-842 acceptance criterion: with more open invoices than a single
-    /// page (`MAX_PER_PAGE` is 100), the displayed count and sum must be the
-    /// full collection's, not the first page's.
+    /// Companion to the open-invoices guard: the time-this-week widget must
+    /// also read the server-side aggregate rather than paging the whole week.
     #[test]
-    fn totals_cover_every_row_past_one_page() {
-        let per_page_cap = crate::utils::PaginationParams::MAX_PER_PAGE as usize;
-        let row_count = per_page_cap + 37;
-        let rows: Vec<InvoiceLite> = (0..row_count)
-            .map(|_| InvoiceLite {
-                total: Some(Decimal::new(1000, 2)), // $10.00
-            })
-            .collect();
-
-        let (count, total) = open_invoices_totals(&rows);
-
-        assert_eq!(
-            count, row_count,
-            "the count must be every open invoice, not just one page's worth"
+    fn widget_time_this_week_reads_the_summary_endpoint() {
+        let body = widget_body("WidgetTimeThisWeek");
+        assert!(
+            body.contains("/time-entries/summary"),
+            "must read the server-side aggregate, not a page of /time-entries: {body}"
         );
-        assert_eq!(
-            total,
-            Decimal::new(1000, 2) * Decimal::from(row_count as u64),
-            "the sum must cover every open invoice, not just one page's worth"
+        assert!(
+            !body.contains("get_all_authed"),
+            "the paging loop is what MAPPS-984 removes: {body}"
         );
     }
 }

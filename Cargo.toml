@@ -2,7 +2,7 @@
 
 [package]
 name = "mokosh-apps"
-version = "0.16.0"
+version = "0.17.0"
 edition = "2021"
 authors = ["Mokosh Platform Team"]
 description = "Mokosh Platform - Cross-platform Dioxus client"
@@ -32,6 +32,11 @@ app = []
 web = ["app", "dioxus/web"]
 desktop = ["app", "dioxus/desktop"]
 multi-tenant = []
+# MAPPS-884: the `server` feature gates `src/modules/billing/{routes,service}.rs`
+# and `src/utils/error.rs`'s `server_impl` module, kept here as a byte-identical
+# mirror of mokosh-server. The gate never compiles in this crate (the server
+# deps are not pulled in); the real consolidation lives in MAPPS-141. See the
+# parity-record comment on `src/utils/error.rs`'s `server_impl` module.
 server = []
 # MAPPS-338: opt-in dev shortcut that auto-signs the WASM in as Admin
 # from `ADMIN_EMAIL` + `ADMIN_PASSWORD` compile-time env. Off by default

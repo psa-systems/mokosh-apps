@@ -499,13 +499,15 @@ fn IdentityStrip() -> Element {
     }
 }
 
-/// MAPPS-966: the role badge's text, e.g. "Admin" rather than the wire's
-/// `admin`. Exhaustive, so a new role fails the build instead of rendering blank.
+/// MAPPS-966: the role badge's text, e.g. "Owner" rather than the wire's
+/// `admin`. PMS-588: `admin` is relabelled "Owner" everywhere a user sees it;
+/// the server identifier stays `admin` so RBAC and migrations are unchanged.
+/// Exhaustive, so a new role fails the build instead of rendering blank.
 fn role_display_name(role: crate::modules::auth::UserRole) -> &'static str {
     use crate::modules::auth::UserRole;
     match role {
         UserRole::SuperAdmin => "Super admin",
-        UserRole::Admin => "Admin",
+        UserRole::Admin => "Owner",
         UserRole::Manager => "Manager",
         UserRole::Technician => "Technician",
         UserRole::Dispatcher => "Dispatcher",
@@ -1379,7 +1381,9 @@ mod profile_layout_tests {
 
     #[test]
     fn the_role_badge_reads_as_a_name_not_a_wire_value() {
-        assert_eq!(role_display_name(UserRole::Admin), "Admin");
+        // PMS-588: `admin` renders as "Owner" to users; the server
+        // identifier stays `admin`.
+        assert_eq!(role_display_name(UserRole::Admin), "Owner");
         assert_eq!(role_display_name(UserRole::SuperAdmin), "Super admin");
         assert_eq!(role_display_name(UserRole::Technician), "Technician");
     }

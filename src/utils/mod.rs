@@ -18,6 +18,7 @@ pub mod money;
 pub mod pagination;
 pub mod prefs;
 pub mod rate_limit;
+pub mod roles;
 pub mod sort_keys;
 // MAPPS-582: invisible-character sanitizing for every text input.
 pub mod text;
@@ -35,7 +36,7 @@ pub use error::{AppError, AppResult};
 pub use form_guard::FormGuard;
 pub use pagination::{PaginatedResponse, PaginationParams};
 pub use text::{clean_strict, has_invisible, strip_invisible};
-pub use unresolved_person::unresolved;
+pub use unresolved_person::{unresolved, unresolved_by_key};
 pub use validation::{validate, Rule};
 pub use version::{BUILD_DATE, GIT_HASH, VERSION};
 

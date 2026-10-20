@@ -176,14 +176,37 @@ pub(crate) fn note_session_ended() {
     }
 }
 
+/// PMS-1330: a single flaky request (transient 5xx, dropped connection on
+/// one call out of many) must not flip the "server unresponsive" banner,
+/// because the banner then fires on routine actions where the server is
+/// responding normally and loses signal. Only after this many consecutive
+/// failures do we classify the server as down.
+#[cfg(feature = "app")]
+const CONSECUTIVE_FAILURES_FOR_DOWN: u32 = 2;
+
+/// PMS-1330: how many back-to-back failures we have observed since the
+/// last success. Resets to zero on any response (even a 4xx), because the
+/// server answering at all proves it is reachable; climbs on a 5xx or a
+/// transport failure. The banner flips once this reaches
+/// [`CONSECUTIVE_FAILURES_FOR_DOWN`].
+#[cfg(feature = "app")]
+static CONSECUTIVE_FAILURES: GlobalSignal<u32> = Signal::global(|| 0);
+
 /// Classify a completed HTTP response. Any response at all - even a 4xx -
 /// proves the server is reachable, so it clears the "down" state. A `5xx`
-/// is treated as "down" per MAPPS-333: the server is up but failing, and
-/// we surface that the same way as an outage. A `4xx` (auth, validation)
-/// is NOT "down" and keeps surfacing through the normal per-call paths.
+/// is treated as a signal toward "down" per MAPPS-333 but only trips the
+/// banner once PMS-1330's consecutive-failure threshold is reached: a
+/// one-off 5xx is often a transient restart or race, not an outage, and
+/// flipping the banner on it produced the false-positives the ticket
+/// described. A `4xx` (auth, validation) is NOT "down" and keeps
+/// surfacing through the normal per-call paths.
 #[cfg(feature = "app")]
 pub(crate) fn note_response_status(status: u16) {
-    set_server_reachable(!(500..600).contains(&status));
+    if (500..600).contains(&status) {
+        record_failure();
+    } else {
+        record_success();
+    }
     // MAPPS-428: a status that could mean "this tab is running a bundle
     // older than the deployed one" also kicks an immediate `build_sha`
     // check, so the app-wide update banner appears in the same
@@ -198,14 +221,41 @@ pub(crate) fn note_response_status(status: u16) {
 
 /// Classify a transport-level failure: the opaque browser fetch rejection
 /// (which the console frequently renders as a CORS error even though no
-/// CORS misconfiguration exists), DNS failure, or timeout. This is the
-/// server being unreachable; per MAPPS-333 it is classified here as
-/// server-down and never passed through to the user as a CORS / "Failed
-/// to fetch" message. (Mokosh App sets no CSP of its own, so there is no
-/// CSP-block case to distinguish from a genuine outage here.)
+/// CORS misconfiguration exists), DNS failure, or timeout. Per PMS-1330
+/// this ticks the consecutive-failure counter rather than tripping the
+/// banner outright, so a single flaky call does not raise a false alarm.
+/// (Mokosh App sets no CSP of its own, so there is no CSP-block case to
+/// distinguish from a genuine outage here.)
 #[cfg(feature = "app")]
 pub(crate) fn note_transport_error() {
-    set_server_reachable(false);
+    record_failure();
+}
+
+#[cfg(feature = "app")]
+fn record_failure() {
+    let (next, flip_down) =
+        classify_failure(*CONSECUTIVE_FAILURES.peek(), CONSECUTIVE_FAILURES_FOR_DOWN);
+    *CONSECUTIVE_FAILURES.write() = next;
+    if flip_down {
+        set_server_reachable(false);
+    }
+}
+
+#[cfg(feature = "app")]
+fn record_success() {
+    if *CONSECUTIVE_FAILURES.peek() != 0 {
+        *CONSECUTIVE_FAILURES.write() = 0;
+    }
+    set_server_reachable(true);
+}
+
+/// Pure decision: given the current consecutive-failure count and the
+/// threshold, return the next count and whether the "down" transition
+/// should fire now. Lets the signal-free logic be unit-tested without a
+/// Dioxus runtime (PMS-1330).
+pub(crate) fn classify_failure(current: u32, threshold: u32) -> (u32, bool) {
+    let next = current.saturating_add(1);
+    (next, next >= threshold)
 }
 
 /// Write the reachability flag, but only on an actual transition so a
@@ -3993,5 +4043,39 @@ mod contact_session_tests {
         assert_eq!(current_contact_id(), Some(id));
         set_contact_id(None);
         assert_eq!(current_contact_id(), None);
+    }
+}
+
+/// PMS-1330: a single flaky request must not trip the "server
+/// unresponsive" banner. The pure classifier below is what the live
+/// counter walks against the configured threshold.
+#[cfg(all(test, feature = "app"))]
+mod pms_1330_tests {
+    use super::classify_failure;
+
+    #[test]
+    fn one_failure_at_threshold_two_does_not_flip() {
+        let (next, flip) = classify_failure(0, 2);
+        assert_eq!(next, 1, "the counter advanced to 1");
+        assert!(!flip, "a single failure must NOT fire the down transition");
+    }
+
+    #[test]
+    fn two_consecutive_failures_flip_at_threshold_two() {
+        let (one, flip_one) = classify_failure(0, 2);
+        assert_eq!((one, flip_one), (1, false));
+        let (two, flip_two) = classify_failure(one, 2);
+        assert_eq!(two, 2);
+        assert!(
+            flip_two,
+            "the second consecutive failure fires the down transition"
+        );
+    }
+
+    #[test]
+    fn counter_saturates_rather_than_overflowing() {
+        let (next, flip) = classify_failure(u32::MAX, 2);
+        assert_eq!(next, u32::MAX, "saturating_add stops at u32::MAX");
+        assert!(flip, "past the threshold the banner stays raised");
     }
 }

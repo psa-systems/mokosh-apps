@@ -21,6 +21,7 @@ pub mod modules;
 // when merging from main.
 pub mod dropdown_nav;
 pub mod edit_queue;
+pub mod features;
 pub mod fetch;
 pub mod mentions;
 pub mod payment_terms;

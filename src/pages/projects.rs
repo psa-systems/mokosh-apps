@@ -39,6 +39,12 @@ struct RemoteProject {
     company_name: Option<String>,
     #[serde(default)]
     project_manager_id: Option<uuid::Uuid>,
+    /// MAPPS-1044 / PMS-1481: project-manager display name, resolved by the
+    /// server in the same query that returns the row. Lets the detail
+    /// page render the owner without joining `project_manager_id` against
+    /// the fetched user roster.
+    #[serde(default)]
+    project_manager_name: Option<String>,
     #[serde(default)]
     start_date: Option<String>,
     #[serde(default)]
@@ -81,10 +87,24 @@ struct RemoteTask {
     description: Option<String>,
     #[serde(default)]
     status_id: Option<uuid::Uuid>,
+    /// MAPPS-1044: server-resolved status display name joined via a
+    /// tenant-scoped LEFT JOIN on `task_statuses` (mokosh-server
+    /// `TaskResponse::status_name`). Preferred over the shared
+    /// `use_task_statuses` cache; `None` on a server that predates the
+    /// field or when the LEFT JOIN missed, in which case the cache
+    /// lookup still runs.
+    #[serde(default)]
+    status_name: Option<String>,
     #[serde(default)]
     priority: Option<String>,
     #[serde(default)]
     assigned_to_id: Option<uuid::Uuid>,
+    /// MAPPS-1044: server-resolved assignee display name joined via a
+    /// tenant-scoped LEFT JOIN on `users` (mokosh-server
+    /// `TaskResponse::assigned_to_name`). Preferred over the roster for
+    /// the per-task label.
+    #[serde(default)]
+    assigned_to_name: Option<String>,
     #[serde(default, deserialize_with = "de_flex_f64")]
     estimated_hours: Option<f64>,
     // Approved-only hours (PMS-51). MAPPS-167: `logged_hours` is all
@@ -159,6 +179,43 @@ fn task_status_badge(
         }
         (None, None) => (BadgeVariant::Gray, "Unknown".to_string()),
     }
+}
+
+/// MAPPS-1044: prefer the server-sent `status_name` for a task row and
+/// fall back to the `task_statuses` cache lookup when the server did
+/// not join it (older server, or the LEFT JOIN missed). The badge
+/// variant still depends on `is_completed`, which is only in the cached
+/// row, so a server-sent name with no matching cache row renders as
+/// `BadgeVariant::Blue` (in-flight) rather than guessing.
+fn task_status_badge_prefer(
+    statuses: &[RemoteTaskStatus],
+    id: &Option<uuid::Uuid>,
+    sent_name: Option<&str>,
+) -> (BadgeVariant, String) {
+    let (variant, cached_name) = task_status_badge(statuses, id);
+    match sent_name.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(name) => (variant, name.to_string()),
+        None => (variant, cached_name),
+    }
+}
+
+/// MAPPS-1044: prefer the server-sent `assigned_to_name` for a task row
+/// and fall back to the roster lookup when the server did not join it.
+/// `Unassigned` still comes from `id.is_none()`; the server-sent name
+/// never overrides it.
+fn user_name_with_tooltip_prefer(
+    users: &[RemoteUser],
+    id: &Option<uuid::Uuid>,
+    sent_name: Option<&str>,
+    surface: &str,
+) -> (String, Option<String>) {
+    if id.is_none() {
+        return ("Unassigned".to_string(), None);
+    }
+    if let Some(name) = sent_name.map(str::trim).filter(|s| !s.is_empty()) {
+        return (name.to_string(), None);
+    }
+    user_name_with_tooltip(users, id, surface)
 }
 
 /// MAPPS-1063: resolve a user id to a display name plus the tooltip the
@@ -1465,11 +1522,22 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
             {
                 let p = project.clone().unwrap();
                 let (status_variant, status_label) = status_badge(&p.status);
-                let (pm, pm_title) = user_name_with_tooltip(
-                    &users,
-                    &p.project_manager_id,
-                    "projects.project_manager",
-                );
+                // MAPPS-1044: render the project manager from the server's
+                // own `project_manager_name` (PMS-1481); the client-side
+                // roster join that used to supply it is gone. The
+                // unresolved case still logs via `user_name_with_tooltip`
+                // when the id did not resolve server-side.
+                let (pm, pm_title) = match p.project_manager_name.as_deref() {
+                    Some(name) if !name.trim().is_empty() => (name.to_string(), None),
+                    _ => match p.project_manager_id {
+                        Some(_) => user_name_with_tooltip(
+                            &[],
+                            &p.project_manager_id,
+                            "projects.project_manager",
+                        ),
+                        None => ("Unassigned".to_string(), None),
+                    },
+                };
                 let spent = p.actual_amount.unwrap_or(0.0);
                 let budget = p.budget_amount.unwrap_or(0.0);
                 let remaining = budget - spent;
@@ -2153,10 +2221,20 @@ fn ProjectTaskTable(props: ProjectTaskTableProps) -> Element {
                     } else {
                         for t in tasks.iter() {
                             {
-                                let (tv, tl) = task_status_badge(&statuses, &t.status_id);
-                                let (who, who_title) = user_name_with_tooltip(
+                                // MAPPS-1044: prefer the server-sent
+                                // `status_name` and `assigned_to_name`
+                                // joined by the server. The helpers
+                                // keep the cache-lookup fallback for a
+                                // server that predates the fields.
+                                let (tv, tl) = task_status_badge_prefer(
+                                    &statuses,
+                                    &t.status_id,
+                                    t.status_name.as_deref(),
+                                );
+                                let (who, who_title) = user_name_with_tooltip_prefer(
                                     &users,
                                     &t.assigned_to_id,
+                                    t.assigned_to_name.as_deref(),
                                     "projects.task_assignee",
                                 );
                                 let due = fmt_date(&t.due_date);

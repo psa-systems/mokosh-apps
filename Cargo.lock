@@ -37,9 +37,9 @@ dependencies = [
 
 [[package]]
 name = "ammonia"
-version = "4.2.3"
+version = "4.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "061e83b03c2681c18a6787d956e355c74e0b98ba7ba3d69b0822ade1e6f1d716"
+checksum = "1f45dfa685e1ec33b1bf1a3b93b8047cbdbef41b6040deebbe6bea7720a45574"
 dependencies = [
  "cssparser 0.38.0",
  "html5ever 0.40.1",
@@ -3286,7 +3286,7 @@ dependencies = [
 
 [[package]]
 name = "mokosh-apps"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "ammonia",
  "base64",
@@ -3324,7 +3324,7 @@ dependencies = [
 [[package]]
 name = "mokosh-types"
 version = "0.1.0"
-source = "git+https://dev.a8n.run/psa-systems/mokosh-server.git#39e0dfec7148bbe5a7af579f520909a7085e3dd4"
+source = "git+https://dev.a8n.run/psa-systems/mokosh-server.git#e53bf0fd30ca1b54e93dc8c63f1b9cacb0672cee"
 dependencies = [
  "chrono",
  "chrono-tz 0.9.0",

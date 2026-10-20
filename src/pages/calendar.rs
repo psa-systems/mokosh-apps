@@ -1642,11 +1642,21 @@ fn AgendaCard(props: AgendaCardProps) -> Element {
                             let time = time_label(appt.start_time);
                             let time_iso = appt.start_time.to_rfc3339();
                             let title = appt.title.clone();
-                            let who = props
-                                .users
-                                .iter()
-                                .find(|u| u.id == appt.assigned_to_id)
-                                .and_then(|u| u.display_name())
+                            // MAPPS-1044: prefer the server-sent
+                            // `assigned_to_name`; fall back to the
+                            // roster for an older server or a row
+                            // whose LEFT JOIN missed.
+                            let who = appt
+                                .assigned_to_name
+                                .clone()
+                                .filter(|s| !s.is_empty())
+                                .or_else(|| {
+                                    props
+                                        .users
+                                        .iter()
+                                        .find(|u| u.id == appt.assigned_to_id)
+                                        .and_then(|u| u.display_name())
+                                })
                                 .unwrap_or_default();
                             rsx! {
                                 div { class: "border-l-4 {border} bg-surface-2 p-3 rounded-r {past}",
@@ -1851,10 +1861,21 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
     let assignee_options: Vec<SelectOption> = {
         let mut opts = vec![SelectOption::new("", "Select technician…")];
         for u in props.users.iter() {
-            opts.push(SelectOption::new(
-                u.id.to_string(),
-                u.display_name().unwrap_or_else(|| "Unknown".to_string()),
-            ));
+            // MAPPS-1063: a roster user whose server-side name is blank
+            // still gets a listable row, but log the substitution through
+            // the shared helper so the "Unknown" option is findable. A
+            // `<select>` option label cannot carry a `title`, so log only.
+            let label = u.display_name().unwrap_or_else(|| {
+                let shown = "Unknown".to_string();
+                let _ = crate::utils::unresolved(
+                    "calendar.assignee_option",
+                    "user",
+                    Some(u.id),
+                    &shown,
+                );
+                shown
+            });
+            opts.push(SelectOption::new(u.id.to_string(), label));
         }
         opts
     };
