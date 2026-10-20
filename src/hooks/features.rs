@@ -30,8 +30,7 @@ pub struct PublicConfig {
 /// What the server currently has turned on. `None` while the first read is
 /// in flight or has failed; readers resolve this to "off" per the ticket's
 /// negative-case AC.
-pub static FEATURE_MAP: GlobalSignal<Option<HashMap<String, bool>>> =
-    Signal::global(|| None);
+pub static FEATURE_MAP: GlobalSignal<Option<HashMap<String, bool>>> = Signal::global(|| None);
 
 /// Monotonic counter the admin page bumps on a successful flip so other
 /// panels on the page re-read without waiting for the 60s tick.
@@ -45,8 +44,7 @@ const REFRESH_INTERVAL_SECS: u32 = 60;
 /// which gates read as off, which is the right fail-closed posture.
 #[cfg(feature = "app")]
 pub async fn refresh_feature_map() {
-    let result =
-        crate::hooks::fetch::api::get_authed::<PublicConfig>("/public/config").await;
+    let result = crate::hooks::fetch::api::get_authed::<PublicConfig>("/public/config").await;
     match result {
         Ok(cfg) => {
             *FEATURE_MAP.write() = Some(cfg.features);
