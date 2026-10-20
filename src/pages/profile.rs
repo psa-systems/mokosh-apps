@@ -238,15 +238,6 @@ const COMMON_TIMEZONES: &[(&str, &str)] = &[
     ("Pacific/Auckland", "Pacific/Auckland"),
 ];
 
-/// Browser-detected IANA timezone via
-/// `Intl.DateTimeFormat().resolvedOptions().timeZone` in the browser,
-/// the OS zone on the desktop (MAPPS-504, `crate::platform::tz`).
-/// Returns `None` when the host will not say, and the fallback is the
-/// form's own initial value, which is whatever mokosh-server gave us.
-fn browser_timezone() -> Option<String> {
-    crate::platform::tz::local_iana()
-}
-
 /// Build the option list, prepending the currently-stored value if it
 /// isn't already in `COMMON_TIMEZONES` (so a user with an exotic zone
 /// can keep it without us silently changing it on save).
@@ -508,13 +499,15 @@ fn IdentityStrip() -> Element {
     }
 }
 
-/// MAPPS-966: the role badge's text, e.g. "Admin" rather than the wire's
-/// `admin`. Exhaustive, so a new role fails the build instead of rendering blank.
+/// MAPPS-966: the role badge's text, e.g. "Owner" rather than the wire's
+/// `admin`. PMS-588: `admin` is relabelled "Owner" everywhere a user sees it;
+/// the server identifier stays `admin` so RBAC and migrations are unchanged.
+/// Exhaustive, so a new role fails the build instead of rendering blank.
 fn role_display_name(role: crate::modules::auth::UserRole) -> &'static str {
     use crate::modules::auth::UserRole;
     match role {
         UserRole::SuperAdmin => "Super admin",
-        UserRole::Admin => "Admin",
+        UserRole::Admin => "Owner",
         UserRole::Manager => "Manager",
         UserRole::Technician => "Technician",
         UserRole::Dispatcher => "Dispatcher",
@@ -547,14 +540,14 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
     // browser's detected zone so the form arrives pre-populated with
     // a sensible local choice. The user can change it before saving.
     let initial_tz = props.initial.timezone.clone();
+    // MAPPS-969: the form and the renderer agree via one shared resolver.
+    // `effective_timezone` falls back to the browser zone for a saved
+    // placeholder (empty, "UTC", "Etc/UTC") or an unparseable value;
+    // `.name()` gives the IANA string the Select wants.
     let mut timezone = use_signal(|| {
-        let saved = initial_tz.clone();
-        let looks_placeholder = saved.is_empty() || saved == "UTC" || saved == "Etc/UTC";
-        if looks_placeholder {
-            browser_timezone().unwrap_or(saved)
-        } else {
-            saved
-        }
+        crate::utils::datetime::effective_timezone(&initial_tz)
+            .name()
+            .to_string()
     });
     // PMS-253: per-user date/time format. Empty string = "Browser
     // default" sentinel, sent to the server as None on save.
@@ -1388,7 +1381,9 @@ mod profile_layout_tests {
 
     #[test]
     fn the_role_badge_reads_as_a_name_not_a_wire_value() {
-        assert_eq!(role_display_name(UserRole::Admin), "Admin");
+        // PMS-588: `admin` renders as "Owner" to users; the server
+        // identifier stays `admin`.
+        assert_eq!(role_display_name(UserRole::Admin), "Owner");
         assert_eq!(role_display_name(UserRole::SuperAdmin), "Super admin");
         assert_eq!(role_display_name(UserRole::Technician), "Technician");
     }
@@ -1685,14 +1680,12 @@ fn ContactPersonalInfoForm(props: ContactPersonalInfoFormProps) -> Element {
     let mut last_name = use_signal(|| props.initial.last_name.clone());
     let mut phone = use_signal(|| props.initial.phone.clone().unwrap_or_default());
     let mut mobile = use_signal(|| props.initial.mobile.clone().unwrap_or_default());
+    // MAPPS-969: shared `effective_timezone` resolver, same shape as
+    // `PersonalInfoForm` above.
     let mut timezone = use_signal(|| {
-        let saved = props.initial.timezone.clone();
-        let looks_placeholder = saved.is_empty() || saved == "UTC" || saved == "Etc/UTC";
-        if looks_placeholder {
-            browser_timezone().unwrap_or(saved)
-        } else {
-            saved
-        }
+        crate::utils::datetime::effective_timezone(&props.initial.timezone)
+            .name()
+            .to_string()
     });
 
     let mut saving = use_signal(|| false);

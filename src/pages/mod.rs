@@ -8,6 +8,7 @@
 //! one-line redirect stubs that send bookmarks at the legacy URLs to
 //! the hub.
 
+pub mod admin_features;
 pub mod approvals;
 pub mod asset_catalog_ui;
 pub mod asset_drawer;

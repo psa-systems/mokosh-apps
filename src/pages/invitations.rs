@@ -134,10 +134,12 @@ pub fn InvitationsPage() -> Element {
     // mokosh-server). The picker is live again with its full app-role
     // taxonomy; the server's PMS-503 privilege ceiling still refuses a
     // caller granting a role above their own rank.
+    // PMS-588: `admin` renders as "Owner". The server identifier is unchanged
+    // (`SelectOption::new("admin", ...)` is still the value sent on invite).
     let role_options = vec![
         SelectOption::new("technician", "Technician"),
         SelectOption::new("manager", "Manager"),
-        SelectOption::new("admin", "Admin"),
+        SelectOption::new("admin", "Owner"),
         SelectOption::new("dispatcher", "Dispatcher"),
         SelectOption::new("sales", "Sales"),
         SelectOption::new("finance", "Finance"),
@@ -455,7 +457,13 @@ pub fn InvitationsPage() -> Element {
                                 TableRow { key: "{inv.id}",
                                     TableCell { "{inv.email}" }
                                     TableCell {
-                                        Badge { variant: BadgeVariant::Gray, "{inv.role}" }
+                                        // PMS-588: role string routes through
+                                        // the shared helper so `admin` reads
+                                        // as "Owner".
+                                        Badge {
+                                            variant: BadgeVariant::Gray,
+                                            "{crate::utils::roles::display_role_label(&inv.role)}"
+                                        }
                                     }
                                     TableCell {
                                         time {

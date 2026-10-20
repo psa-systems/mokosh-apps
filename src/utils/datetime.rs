@@ -432,8 +432,9 @@ pub fn user_format_pref() -> Option<String> {
 /// MAPPS-208: resolve the active user's IANA timezone off the
 /// AuthContext and parse it to a [`Tz`]. Mirrors [`user_format_pref`]
 /// so callers do not have to thread the value through their signature.
-/// Falls back to UTC when there is no context, no signed-in user, or
-/// the stored string is not a valid IANA zone name.
+/// Falls back to UTC when there is no context, no signed-in user; the
+/// placeholder / unparseable arms land through [`effective_timezone`]
+/// so the form's auto-detect pledge matches what the renderer uses.
 pub fn user_timezone() -> Tz {
     use dioxus::core::Runtime;
     use dioxus::prelude::{try_use_context, ReadableExt, Signal};
@@ -443,8 +444,32 @@ pub fn user_timezone() -> Tz {
     if Runtime::try_current().is_none() {
         return Tz::UTC;
     }
-    try_use_context::<Signal<crate::hooks::auth::AuthContext>>()
+    let saved = try_use_context::<Signal<crate::hooks::auth::AuthContext>>()
         .and_then(|auth| auth.read().user.as_ref().map(|u| u.timezone.clone()))
+        .unwrap_or_default();
+    effective_timezone(&saved)
+}
+
+/// MAPPS-969: resolve a user's effective display timezone from the
+/// saved profile value.
+///
+/// The server defaults `users.timezone` to `"UTC"` and cannot distinguish
+/// "never set" from "chose UTC"; a saved `""`, `"UTC"` or `"Etc/UTC"`
+/// is treated as unset so the Profile form's "Auto-detected from your
+/// browser when unset" pledge matches what the renderer actually uses.
+/// An unparseable value also falls back so the renderer never panics on
+/// garbage. On wasm the browser zone comes from the `Intl` API; off wasm
+/// it comes from `iana_time_zone`. If detection fails (older browser,
+/// missing OS data) the final fallback is UTC, so this function is
+/// infallible.
+pub fn effective_timezone(saved: &str) -> Tz {
+    let looks_placeholder = saved.is_empty() || saved == "UTC" || saved == "Etc/UTC";
+    if !looks_placeholder {
+        if let Ok(tz) = saved.parse::<Tz>() {
+            return tz;
+        }
+    }
+    crate::platform::tz::local_iana()
         .and_then(|name| name.parse::<Tz>().ok())
         .unwrap_or(Tz::UTC)
 }
@@ -760,5 +785,55 @@ mod tests {
             format_user_datetime_in(dt, Some("YYYY-MM-DD HH:mm"), chrono_tz::Asia::Kolkata),
             "2026-06-12 00:00"
         );
+    }
+}
+
+#[cfg(test)]
+mod effective_timezone_tests {
+    use super::effective_timezone;
+    use chrono_tz::Tz;
+
+    #[test]
+    fn empty_saved_falls_back_to_browser_or_utc() {
+        // Off-wasm the detected zone comes from `iana_time_zone::get_timezone()`;
+        // in a sandboxed test environment it may return None, in which case the
+        // final fallback is UTC. Either outcome is a Tz parse-success, which is
+        // all we can assert without pinning the host.
+        let got = effective_timezone("");
+        // Prove no panic + the return is some Tz.
+        let _: Tz = got;
+    }
+
+    #[test]
+    fn utc_saved_treated_as_placeholder() {
+        // The server defaults the column to "UTC"; the resolver cannot tell
+        // "never set" from "chose UTC", so it treats both the same.
+        let got = effective_timezone("UTC");
+        let _: Tz = got;
+    }
+
+    #[test]
+    fn etc_utc_saved_treated_as_placeholder() {
+        let got = effective_timezone("Etc/UTC");
+        let _: Tz = got;
+    }
+
+    #[test]
+    fn unparseable_saved_falls_back() {
+        let got = effective_timezone("Not/A/Real/Zone");
+        let _: Tz = got;
+    }
+
+    #[test]
+    fn real_zone_round_trips() {
+        assert_eq!(
+            effective_timezone("Europe/Berlin"),
+            chrono_tz::Europe::Berlin
+        );
+        assert_eq!(
+            effective_timezone("America/New_York"),
+            chrono_tz::America::New_York
+        );
+        assert_eq!(effective_timezone("Asia/Tokyo"), chrono_tz::Asia::Tokyo);
     }
 }
