@@ -1494,14 +1494,30 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     // A failed name lookup keeps the id as the chip label rather than
     // dropping the company from the list.
     let mut scope_ids = use_signal(Vec::<uuid::Uuid>::new);
+    // MAPPS-1044: cache the server-sent company_names so we only fall
+    // back to `resolve_company_names` when the server did not populate
+    // them (older server, or an id with no matching company row). Same
+    // shape as `(id_string, name_string)` the resolver returns.
+    let mut scope_sent_names = use_signal(Vec::<String>::new);
     use_effect(move || {
         if let Some(Some(a)) = &*article_resource.read_unchecked() {
             scope_ids.set(a.company_ids.clone());
+            scope_sent_names.set(a.company_names.clone());
         }
     });
     let scoped_companies_resource = use_resource(move || {
         let ids = scope_ids();
-        async move { resolve_company_names(&ids).await }
+        let sent = scope_sent_names();
+        async move {
+            if !ids.is_empty() && sent.len() == ids.len() {
+                ids.iter()
+                    .zip(sent.iter())
+                    .map(|(id, name)| (id.to_string(), name.clone()))
+                    .collect()
+            } else {
+                resolve_company_names(&ids).await
+            }
+        }
     });
     let scoped_companies: Vec<(String, String)> = match &*scoped_companies_resource.read_unchecked()
     {
@@ -4511,6 +4527,7 @@ mod tests {
             published_at: None,
             tags: vec![],
             company_ids: vec![],
+            company_names: vec![],
             created_at: None,
             updated_at: None,
         }
