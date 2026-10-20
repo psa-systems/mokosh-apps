@@ -7268,10 +7268,6 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
     }
 }
 
-/// MAPPS-759: the credential set the form sends has to be the one the server
-/// parses, and the providers it offers have to be the ones the server can
-/// serve. Both drifted, and both drifted silently.
-/// MAPPS-765: the provider-side setup guidance.
 #[cfg(test)]
 mod copy_style_tests {
     //! PMS-1335: the invoice copy was rewritten in the MSP's voice, one
