@@ -47,6 +47,15 @@ pub struct AppointmentResponse {
     #[serde(default)]
     pub site_id: Option<Uuid>,
     pub assigned_to_id: Uuid,
+    /// MAPPS-1044: server-resolved assignee display name joined via a
+    /// tenant-scoped LEFT JOIN on `users` (mokosh-server
+    /// `AppointmentResponse::assigned_to_name`). Preferred over the
+    /// `use_user_roster` cache for the per-row label so the calendar
+    /// does not pay for an unrelated resource roundtrip to turn a
+    /// UUID into a name. `None` on a server that predates the field or
+    /// when the LEFT JOIN missed; the roster lookup still runs.
+    #[serde(default)]
+    pub assigned_to_name: Option<String>,
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
     #[serde(default)]
