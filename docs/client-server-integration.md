@@ -510,14 +510,18 @@ MAPPS-1038). An absent id is not that case and is not logged; it is
 rendered with each screen's own existing not-set wording.
 
 A name the server does NOT send is a different question, and the
-answer is not this rule. Two of the eight compensation sites MAPPS-1044
-tracked, the asset type column and the project-manager line, now
-render the server-sent `asset_type_name` and `project_manager_name`
-fields directly (MAPPS-1044). The remaining six (task assignee/status,
+answer is not this rule. Three of the eight compensation sites
+MAPPS-1044 tracked, the asset type column, the project-manager line,
+and the rate-card work type column, now render the server-sent
+`asset_type_name`, `project_manager_name`, and `work_type_name` fields
+directly (MAPPS-1044). The remaining five (task assignee/status,
 appointment assignee, time entry work type and user, contact portal
-roles, KB article company name, rate-card work type) still join a
-fetched lookup, pending PMS-1481's remaining fields; each is the same
-join-vs-render-the-response-field question, not a different rule.
+roles, KB article company name) still join a fetched lookup. `PMS-1481`
+already shipped the server-sent fields for all eight sites; the
+remaining five need only a client-side change to read the field it
+already sends, the same change `1c7f74f` made for rate-card work type;
+each is the same join-vs-render-the-response-field question, not a
+different rule.
 
 ## Not only DTOs
 
