@@ -1,0 +1,35 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":prHourlyLimitNone"
+  ],
+  "platform": "forgejo",
+  "endpoint": "https://dev.a8n.run/api/v1/",
+  "gitAuthor": "renovate-bot <renovate-bot@users.noreply.dev.a8n.run>",
+  "autodiscover": false,
+  "onboarding": false,
+  "prConcurrentLimit": 10,
+  "rangeStrategy": "bump",
+  "rebaseWhen": "behind-base-branch",
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"]
+  },
+  "osvVulnerabilityAlerts": true,
+  "enabledManagers": [
+    "cargo",
+    "npm",
+    "docker-compose",
+    "dockerfile",
+    "github-actions"
+  ],
+  "packageRules": [
+    { "groupName": "rust toolchain", "matchPackageNames": ["rust", "rustc"] },
+    { "groupName": "dioxus family", "matchPackagePatterns": ["^dioxus"] },
+    { "groupName": "mokosh crates", "matchPackageNames": ["/^mokosh-/"] },
+    { "groupName": "serde family", "matchPackagePatterns": ["^serde"] },
+    { "groupName": "tracing family", "matchPackagePatterns": ["^tracing"] }
+  ]
+}
