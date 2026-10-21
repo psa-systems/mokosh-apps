@@ -2185,6 +2185,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     let company_id_for_assets = company_id_str.clone();
     let company_id_for_edit = company_id_str.clone();
     let company_id_for_delete = company_id_str.clone();
+    let company_id_for_documentation = company_id_str.clone();
 
     // MAPPS-357: the company record is this detail page's primary resource
     // (the child-list resources below are secondary and keep degrading to
@@ -2383,6 +2384,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     let navigator = use_navigator();
     let mut deleting = use_signal(|| false);
     let edit_id = company_id_for_edit.clone();
+    let documentation_company_id = company_id_for_documentation.clone();
     let delete_id = company_id_for_delete.clone();
     let mut confirming_delete = use_signal(|| false);
     // MAPPS-577: what a delete would actually do, from the server (PMS-926).
@@ -2676,6 +2678,17 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 }
             },
             actions: rsx! {
+                // MAPPS-455: per-client documentation view. Reaches
+                // assets, credential references and runbooks on one
+                // screen so a technician working a ticket does not
+                // have to visit three pages for the same question.
+                Link {
+                    to: Route::CompanyDocumentation { company_id: documentation_company_id },
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        "Documentation"
+                    }
+                }
                 Link {
                     to: Route::CompanyEdit { id: edit_id },
                     Button {
