@@ -440,6 +440,91 @@ async fn remove(row: &MemberRow) -> Result<(), String> {
     }
 }
 
+/// MAPPS-1104: after a successful remove, send the operator back to page
+/// one, mirroring the same reset every filter change in this file already
+/// does (see the `oninput`/`onchange` handlers below). Without this, removing
+/// the sole row on a page beyond page one leaves `current_page` pointing past
+/// the end of the now-smaller roster: the next fetch returns zero rows for a
+/// nonempty total, and `DataTable`'s pager hides itself (`total_items >
+/// per_page` is false), stranding the operator on an empty-state message with
+/// no way back to page one. Extracted as a free function, mirroring
+/// `set_ticket_search` in `tickets.rs:1342`, so a `VirtualDom` test can
+/// exercise the reset without driving the real `remove()` network call.
+fn reset_page_after_remove(current_page: &mut Signal<usize>) {
+    current_page.set(1);
+}
+
+/// MAPPS-1104: exercises `reset_page_after_remove` against a real `Signal`
+/// inside a bare `VirtualDom`, mirroring `mapps837_search_resets_page_tests`
+/// in `tickets.rs`. A plain `#[test]` cannot drive a `use_resource` restart,
+/// so this pins both halves of the acceptance criteria: the signal becomes 1,
+/// and the resource that reads it next fetches page 1.
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
+mod mapps1104_remove_resets_page_tests {
+    use super::reset_page_after_remove;
+    use dioxus::dioxus_core::NoOpMutations;
+    use dioxus::prelude::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn removing_the_last_row_on_page_two_resets_to_page_one_and_refetches_it() {
+        let fetched_pages: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let mut dom = VirtualDom::new_with_props(
+            |fetched_pages: Rc<RefCell<Vec<usize>>>| {
+                let mut current_page = use_signal(|| 1usize);
+
+                let _resource = {
+                    let fetched_pages = fetched_pages.clone();
+                    use_resource(move || {
+                        let page = (*current_page.read()).max(1);
+                        fetched_pages.borrow_mut().push(page);
+                        async move {}
+                    })
+                };
+
+                // Stands in for the operator navigating to page two (the
+                // roster's last page, with a single row on it) before
+                // removing that row.
+                use_future(move || async move {
+                    current_page.set(2);
+                });
+
+                // Stands in for `on_confirm_remove`'s success branch, some
+                // time after the remove's own request lands.
+                use_future(move || async move {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    reset_page_after_remove(&mut current_page);
+                });
+
+                rsx! {}
+            },
+            fetched_pages.clone(),
+        );
+
+        dom.rebuild_in_place();
+        tokio::select! {
+            _ = dom.wait_for_work() => {}
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+        };
+        dom.render_immediate(&mut NoOpMutations);
+
+        let pages = fetched_pages.borrow().clone();
+        assert!(
+            pages.contains(&2),
+            "test setup must have navigated to page two before the remove, got {pages:?}"
+        );
+        assert_eq!(
+            pages.last(),
+            Some(&1),
+            "removing the last row on page two must reset to page one and refetch it, got {pages:?}"
+        );
+    }
+}
+
 #[derive(Props, Clone, PartialEq)]
 pub struct MembersPageProps {
     pub tab: String,
@@ -784,6 +869,7 @@ fn PeoplePane(can_mutate: bool) -> Element {
                     Ok(()) => {
                         remove_target.set(None);
                         remove_busy.set(false);
+                        reset_page_after_remove(&mut current_page);
                         members.restart();
                     }
                     Err(e) => {
