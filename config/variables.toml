@@ -148,6 +148,13 @@ removed = "v0.14.0"
 issue = "PMS-1337"
 action = "No action needed: the image ignores it. Delete it from the compose variables; Teams is core and does not need a flag."
 
+[[variable]]
+name = "MOKOSH_RUNTIME_DIR"
+since = "v0.1.0"
+required = false
+summary = "Writable directory the image uses for runtime scratch (rendered `_mokosh_config.js`, temp files). Defaults to `/tmp/mokosh-runtime`; override when the container runs with that path read-only or when a different writable mount is preferred."
+reader = "oci-build/entrypoint.sh"
+
 # Authored changelog wording, attached to the entry the facts imply.
 # `breaking = \"feature-off\"` or `\"wont-start\"` with a named `feature`
 # marks a change an operator must act on; both need `issue` and `action`.
