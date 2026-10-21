@@ -30,9 +30,15 @@ jobs:
       - name: Clone the repository
         # `submodules: true` for the justfile guards below: cargo does not need
         # common/, but `import 'common/common.just'` does.
+        # `fetch-tags: true` + `fetch-depth: 0` so scripts/config-docs.nu
+        # (MAPPS-1027) can read the release tag list. Without them the script
+        # sees zero tags, treats every entry as unreleased, and demands every
+        # historical release reappear in the Recently-added window.
         uses: https://code.forgejo.org/actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           submodules: true
+          fetch-depth: 0
+          fetch-tags: true
 
       # MAPPS-452: a justfile that does not parse takes every recipe and the
       # git hook down with it, and the hook is bypassable with --no-verify, so
