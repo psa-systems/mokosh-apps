@@ -205,6 +205,10 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                         .find(|f| f.field == patch_field)
                         .map(|f| (f.message, true))
                         .unwrap_or((message, false));
+                    editing.set(true);
+                    if let Some(mut sig) = open_field {
+                        sig.set(Some(patch_field.clone()));
+                    }
                     err.set(if chosen.is_empty() {
                         "Save failed".to_string()
                     } else {
@@ -213,6 +217,10 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                     saving.set(false);
                 }
                 Err(e) => {
+                    editing.set(true);
+                    if let Some(mut sig) = open_field {
+                        sig.set(Some(patch_field.clone()));
+                    }
                     err.set(e.user_message());
                     saving.set(false);
                 }
@@ -439,6 +447,46 @@ mod mapps1054_commit_guard_tests {
             guard_block.contains("return;"),
             "commit must return immediately rather than queue behind the in-flight save"
         );
+    }
+
+    /// MAPPS-1105: the registry hand-off to another field (`InlineFieldEditor`'s
+    /// `onclick` setting `open_field` to the clicked field) is unconditional, so a
+    /// field whose PATCH is still in flight when another field is clicked loses
+    /// `is_editing_now` and renders read-only. If that PATCH then errors, the error
+    /// must not be silently dropped: each `Err` arm has to reclaim the registry slot
+    /// (and the local `editing` signal) before setting `err`, so the next render
+    /// takes the editing branch again and shows the error text instead of the
+    /// plain read-only view.
+    #[test]
+    fn commit_error_arms_reclaim_the_registry_slot_before_showing_the_error() {
+        let src = include_str!("inline_field_editor.rs");
+        let commit = block_body(src, "let commit = use_callback(move |raw: String| {");
+        for needle in [
+            "Err(ApiError::Status {\n                    message, fields, ..\n                }) => {",
+            "Err(e) => {",
+        ] {
+            let arm_at = commit
+                .find(needle)
+                .unwrap_or_else(|| panic!("commit must have an arm starting with {needle:?}"));
+            let arm = block_body(&commit[arm_at..], needle);
+            let reopen_at = arm
+                .find("if let Some(mut sig) = open_field {")
+                .unwrap_or_else(|| {
+                    panic!("{needle:?} must reclaim the registry slot on error")
+                });
+            let editing_at = arm
+                .find("editing.set(true);")
+                .unwrap_or_else(|| panic!("{needle:?} must re-enter editing mode on error"));
+            let err_at = arm
+                .find("err.set(")
+                .unwrap_or_else(|| panic!("{needle:?} must still set the error text"));
+            assert!(
+                editing_at < err_at && reopen_at < err_at,
+                "{needle:?} must reclaim the editing state before setting err, or the field \
+                 that lost the registry slot renders read-only on the same frame the error \
+                 text is set and the error is never shown"
+            );
+        }
     }
 
     #[test]
