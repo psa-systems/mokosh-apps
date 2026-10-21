@@ -65,7 +65,7 @@ default:
 # desktop, clippy, fmt, and the rest of the project's linting/consistency
 # checks).
 [group: 'check']
-check: check-justfile check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-scrollbars check-refresh-token-storage check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging check-loading-recipe check-company-id-copy check-card-headings
+check: check-justfile check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-scrollbars check-refresh-token-storage check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging check-loading-recipe check-company-id-copy check-card-headings check-config-docs
 
 # MAPPS-682: clippy, not check, and `-D warnings`, so the browser target fails
 # on a finding instead of printing it. Mirrors check-clippy and check.yml.
@@ -271,6 +271,27 @@ check-doc-links:
 check-ci-parity:
     bash scripts/check-ci-parity.sh --self-test
     bash scripts/check-ci-parity.sh
+
+# MAPPS-1027: fails if docs/configuration.md disagrees with config/variables.toml or with the actual `${MOKOSH_...}` reads in oci-build/entrypoint.sh. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-config-docs:
+    nu scripts/config-docs.nu self-test
+    nu scripts/config-docs.nu check
+
+# MAPPS-1027: regenerate the "Recently added" and Required/Added-in columns in docs/configuration.md from config/variables.toml.
+[group: 'docs']
+config-docs:
+    nu scripts/config-docs.nu generate
+
+# MAPPS-1027: list every configuration change after <version> with its won't-start / feature-off level; --json for tooling.
+[group: 'docs']
+config-since version:
+    nu scripts/config-docs.nu since {{version}}
+
+# MAPPS-1027: emit release-notes-ready prose for one release.
+[group: 'docs']
+config-release-notes version:
+    nu scripts/config-docs.nu release-notes {{version}}
 
 # MAPPS-525: fail when a shared-DTO change on mokosh-server main would otherwise sit unnoticed behind a pin nobody advances. MAPPS-537 narrowed it to moves where crates/mokosh-types actually differs, so another repository merging anything at all no longer turns this red. Needs network. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']

@@ -1,0 +1,168 @@
+# Operator-facing runtime variables the mokosh-www image reads (MAPPS-1027).
+#
+# `just config-docs` renders docs/configuration.md from this file. `just
+# check-config-docs` compares the file against the `${VAR}` reads in
+# `oci-build/entrypoint.sh` and fails if either side names something the
+# other does not.
+#
+# Fields:
+# - [[variable]] carries `name`, `since`, `required`, `summary`, `reader`,
+#   optional `deprecated = { release, replacement, issue }`
+# - [[removed]] documents variables the image no longer reads
+#   (`since`, `removed`, `issue`, `action`, optional `breaking`)
+# - [[change]] is authored changelog wording attached to the entry the
+#   facts imply (`release`, `group`, `variables`, `issue`, `action`,
+#   optional `breaking`, `feature`)
+#
+# PC-89 tracks moving the config-docs script to psa-systems/common; until
+# that lands this file lives alongside the local script copy, same
+# convention mokosh-server uses.
+
+[[variable]]
+name = "MOKOSH_API_BASE"
+since = "v0.1.0"
+required = false
+summary = "mokosh-server API base URL (e.g. https://api.msp.example.com). Unset derives it from the request host on a `msp.<tld>` deployment, falling back to same-origin `/api/v1` in dev."
+reader = "oci-build/entrypoint.sh"
+
+[[variable]]
+name = "MOKOSH_OIDC_ISSUER"
+since = "v0.1.0"
+required = false
+summary = "Bunyip OIDC issuer URL (e.g. https://api.msp.example.com). Unset derives it from the request host on a `msp.<tld>` deployment."
+reader = "oci-build/entrypoint.sh"
+
+[[variable]]
+name = "MOKOSH_OIDC_CLIENT_ID"
+since = "v0.1.0"
+required = false
+summary = "The SPA's registered Bunyip client id. Unset keeps the SPA's compile-time default."
+reader = "oci-build/entrypoint.sh"
+
+[[variable]]
+name = "MOKOSH_OIDC_REDIRECT_URI"
+since = "v0.14.0"
+required = false
+summary = "Fully-qualified redirect URI the OIDC authorize call sends. Needed for a path-prefixed or otherwise non-default deployment; unset keeps the SPA's compile-time default."
+reader = "oci-build/entrypoint.sh"
+
+[[variable]]
+name = "MOKOSH_OIDC_SCOPES"
+since = "v0.14.0"
+required = false
+summary = "Space-separated scope string for `/oauth2/authorize`. Default is `openid email offline_access`; set this to opt in to Bunyip's `profile` or `phone` claim emission without rebuilding the image."
+reader = "oci-build/entrypoint.sh"
+
+[[variable]]
+name = "MOKOSH_HUB_BASE_URL"
+since = "v0.1.0"
+required = false
+summary = "Base URL of the Bunyip hub (account management surfaces). Unset keeps the compile-time default."
+reader = "oci-build/entrypoint.sh"
+
+[[variable]]
+name = "MOKOSH_PORTAL_HOST"
+since = "v0.14.0"
+required = false
+summary = "The single host the client portal is served from (e.g. `portal.psa.systems`). Empty turns the portal-host derivation off; set it alongside a cross-origin API host."
+reader = "oci-build/entrypoint.sh"
+
+[[variable]]
+name = "MOKOSH_PUBLIC_URL"
+since = "v0.14.0"
+required = false
+summary = "The site's public base URL, used to absolutise a root-relative `MOKOSH_BRAND_LOGO_URL` for og:image / twitter:image. Unset means a relative logo URL is dropped from the link-preview tags."
+reader = "oci-build/entrypoint.sh"
+
+[[variable]]
+name = "MOKOSH_DOCS_BASE_URL"
+since = "v0.14.0"
+required = false
+summary = "Documentation subdomain base URL (e.g. https://docs.a8n.systems). Unset hides the Documentation menu and every contextual help link, unless the SPA can derive it from a `msp.<tld>` host (MAPPS-999)."
+reader = "oci-build/entrypoint.sh"
+
+[[variable]]
+name = "MOKOSH_DOCS_URL"
+since = "v0.1.0"
+required = false
+summary = "Deprecated predecessor of MOKOSH_DOCS_BASE_URL. Still honoured as a fallback with a warning in the entrypoint log."
+reader = "oci-build/entrypoint.sh"
+deprecated = { release = "v0.14.0", replacement = "MOKOSH_DOCS_BASE_URL", issue = "MAPPS-831" }
+
+[[variable]]
+name = "MOKOSH_ORGANIZATIONS_ENABLED"
+since = "v0.14.0"
+required = false
+summary = "Set to `1`, `true` or `yes` to show the organization switcher and the create-team action. Off by default: the feature is unbuilt and its charging model is unresolved."
+reader = "oci-build/entrypoint.sh"
+
+[[variable]]
+name = "MOKOSH_KB_ATTACHMENT_MAX_BYTES"
+since = "v0.14.0"
+required = false
+summary = "The SPA's pre-upload cap for KB attachments, set to the SAME value as mokosh-server's `KB_ATTACHMENT_MAX_BYTES` so the client and server limits do not drift. Unset keeps the compile-time 5 MiB default."
+reader = "oci-build/entrypoint.sh"
+
+[[variable]]
+name = "MOKOSH_BRAND_NAME"
+since = "v0.12.0"
+required = false
+summary = "Operator product name shown in the title, OG/Twitter tags and the SPA shell when no tenant branding overrides it (MAPPS-509)."
+reader = "oci-build/entrypoint.sh"
+
+[[variable]]
+name = "MOKOSH_BRAND_DESCRIPTION"
+since = "v0.14.0"
+required = false
+summary = "Operator product description used as the og:description / twitter:description when a link is pasted into a chat client or social platform (MAPPS-477)."
+reader = "oci-build/entrypoint.sh"
+
+[[variable]]
+name = "MOKOSH_BRAND_LOGO_URL"
+since = "v0.12.0"
+required = false
+summary = "Operator logo URL. Serve from the SPA origin (mount into /usr/share/caddy) or from the API origin; the Caddyfile CSP is `img-src 'self' data: {API origin}`. A root-relative value needs MOKOSH_PUBLIC_URL set for og:image to resolve."
+reader = "oci-build/entrypoint.sh"
+
+[[variable]]
+name = "MOKOSH_BRAND_HERO_URL"
+since = "v0.14.0"
+required = false
+summary = "Operator hero image URL for the unauthenticated landing page. Same origin / CSP rules as `MOKOSH_BRAND_LOGO_URL`."
+reader = "oci-build/entrypoint.sh"
+
+# Variables the image no longer reads. Each keeps a doc row for old compose
+# files.
+
+[[removed]]
+name = "MOKOSH_PORTAL_HOST_SUFFIX"
+since = "v0.1.0"
+removed = "v0.14.0"
+issue = "MAPPS-649"
+action = "No action needed: the image ignores it. Delete it from the compose variables; replace with `MOKOSH_PORTAL_HOST` if the portal is served from a single host."
+
+[[removed]]
+name = "MOKOSH_TEAM_ENABLED"
+since = "v0.12.0"
+removed = "v0.14.0"
+issue = "PMS-1337"
+action = "No action needed: the image ignores it. Delete it from the compose variables; Teams is core and does not need a flag."
+
+[[variable]]
+name = "MOKOSH_RUNTIME_DIR"
+since = "v0.1.0"
+required = false
+summary = "Writable directory the image uses for runtime scratch (rendered `_mokosh_config.js`, temp files). Defaults to `/tmp/mokosh-runtime`; override when the container runs with that path read-only or when a different writable mount is preferred."
+reader = "oci-build/entrypoint.sh"
+
+# Authored changelog wording, attached to the entry the facts imply.
+# `breaking = \"feature-off\"` or `\"wont-start\"` with a named `feature`
+# marks a change an operator must act on; both need `issue` and `action`.
+
+[[change]]
+release = "v0.16.0"
+group = "Changed"
+variables = ["MOKOSH_DOCS_BASE_URL"]
+issue = "MAPPS-999"
+action = "Unset on a `msp.<tld>` host now builds `https://docs.<tld>` instead of hiding the Documentation menu. If you want the menu hidden, set this to the empty string explicitly; if you want to override the derivation, set it to your docs URL as before."
+

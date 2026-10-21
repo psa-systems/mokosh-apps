@@ -42,19 +42,12 @@ small `/_mokosh_config.js` from them on each start, and the SPA reads it before
 falling through to its compile-time defaults. Only variables that are set and
 non-empty are emitted. Restart the container to pick up a change.
 
-| Variable | Purpose |
-| --- | --- |
-| `MOKOSH_API_BASE` | API base URL the SPA calls, for example `https://api.example.com/api/v1`. The mokosh-server instance it names must allow this SPA's origin through its `CORS_ORIGIN`. |
-| `MOKOSH_OIDC_ISSUER` | OIDC issuer the SPA authenticates against, usually the same host as the API. |
-| `MOKOSH_OIDC_CLIENT_ID` | The OAuth public-client id registered with mokosh-server. Unset (alongside `MOKOSH_OIDC_ISSUER`) falls back to standalone username/password sign-in instead of an OIDC redirect with a client id the OP has never registered. |
-| `MOKOSH_OIDC_REDIRECT_URI` | Overrides the OIDC redirect URI. Optional: unset, the SPA derives `<origin>/auth/callback` itself. Set this for a deployment served from a non-default origin (for example behind a path prefix) that the derived value would not match. |
-| `MOKOSH_OIDC_SCOPES` | Requested scope string for `/oauth2/authorize`. Defaults to the compile-time `openid email offline_access`; set it to add a scope without rebuilding the image. |
-| `MOKOSH_HUB_BASE_URL` | Origin of the Bunyip hub, for legacy login bookmarks. Optional. |
-| `MOKOSH_PORTAL_HOST` | The single host the client portal is served from, typically `portal.<apex>`. The SPA uses it to decide whether the current host is the portal host and to derive the API base when it is. Unset turns both off. |
-| `MOKOSH_DOCS_BASE_URL` | Base URL of the documentation site. Optional: on a `msp.<tld>` host the SPA derives `https://docs.<tld>` itself; set this to override that or to configure a deployment with no host to derive from. When neither resolves, the Documentation menu entry and every contextual help link are hidden. `MOKOSH_DOCS_URL` is a deprecated fallback for the same field. |
-| `MOKOSH_ORGANIZATIONS_ENABLED` | Set to `1`, `true` or `yes` to offer the organizations surface: the team switcher in the top bar and the "Create new team" action beside it. Unset, which is the default, hides both. Organizations are not built out and their charging model is unresolved, so the control is deliberately absent rather than greyed out (PMS-1337). |
-| `MOKOSH_PUBLIC_URL` | Public base URL of this site. Only the link preview needs it, to resolve a root-relative brand logo into an absolute `og:image`. |
-| `MOKOSH_KB_ATTACHMENT_MAX_BYTES` | Knowledge base attachment size cap, in bytes. Set this to the SAME value as the mokosh-server `KB_ATTACHMENT_MAX_BYTES` env var, so the client's pre-upload check matches what the server will actually accept. Unset falls back to the compile-time 5 MiB default. |
+Every operator-facing variable, with its Required / Added-in facts and the
+Breaking changes in the last five releases, is in
+[`configuration.md`](configuration.md). The table is generated from
+`config/variables.toml` by `just config-docs` and CI fails on drift (MAPPS-1027).
+`just config-since <running version>` lists the changes to review before an
+upgrade.
 
 The visitor addresses their Company from the URL path
 (`/portal/{portal_id}/...`), so `MOKOSH_PORTAL_HOST` needs one A or AAAA record
