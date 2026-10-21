@@ -143,43 +143,40 @@ pub fn CompanyDocumentationPage(props: CompanyDocumentationPageProps) -> Element
 #[component]
 fn DocAssetsSection(assets: Vec<DocAsset>) -> Element {
     rsx! {
-        Card {
-            div { class: "p-6",
-                h2 { class: "text-base font-semibold text-content", "Assets" }
-                if assets.is_empty() {
-                    p { class: "mt-2 text-sm text-muted", "No assets recorded for this client." }
-                } else {
-                    ul { class: "mt-3 divide-y divide-line",
-                        for a in assets.iter().cloned() {
-                            {
-                                let kind = a.asset_type_name.clone().unwrap_or_else(|| "Unknown type".to_string());
-                                let status = a.status.clone().unwrap_or_default();
-                                let subtitle_parts: Vec<String> = [
-                                    a.asset_tag.clone().filter(|s| !s.is_empty()),
-                                    a.hostname.clone().filter(|s| !s.is_empty()),
-                                    a.manufacturer.clone().filter(|s| !s.is_empty()).map(|m| {
-                                        a.model.clone().filter(|s| !s.is_empty()).map(|md| format!("{m} {md}")).unwrap_or(m)
-                                    }),
-                                ]
-                                .into_iter()
-                                .flatten()
-                                .collect();
-                                let subtitle = subtitle_parts.join(" \u{00b7} ");
-                                let id = a.id;
-                                rsx! {
-                                    li { key: "{id}", class: "flex items-start justify-between gap-6 py-3",
-                                        div { class: "min-w-0",
-                                            p { class: "text-sm font-medium text-content", "{a.name}" }
-                                            p { class: "mt-0.5 text-xs text-muted", "{kind}"
-                                                if !subtitle.is_empty() {
-                                                    span { " \u{00b7} " }
-                                                    span { "{subtitle}" }
-                                                }
+        Card { title: "Assets",
+            if assets.is_empty() {
+                p { class: "text-sm text-muted", "No assets recorded for this client." }
+            } else {
+                ul { class: "divide-y divide-line",
+                    for a in assets.iter().cloned() {
+                        {
+                            let kind = a.asset_type_name.clone().unwrap_or_else(|| "Unknown type".to_string());
+                            let status = a.status.clone().unwrap_or_default();
+                            let subtitle_parts: Vec<String> = [
+                                a.asset_tag.clone().filter(|s| !s.is_empty()),
+                                a.hostname.clone().filter(|s| !s.is_empty()),
+                                a.manufacturer.clone().filter(|s| !s.is_empty()).map(|m| {
+                                    a.model.clone().filter(|s| !s.is_empty()).map(|md| format!("{m} {md}")).unwrap_or(m)
+                                }),
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .collect();
+                            let subtitle = subtitle_parts.join(" \u{00b7} ");
+                            let id = a.id;
+                            rsx! {
+                                li { key: "{id}", class: "flex items-start justify-between gap-6 py-3",
+                                    div { class: "min-w-0",
+                                        p { class: "text-sm font-medium text-content", "{a.name}" }
+                                        p { class: "mt-0.5 text-xs text-muted", "{kind}"
+                                            if !subtitle.is_empty() {
+                                                span { " \u{00b7} " }
+                                                span { "{subtitle}" }
                                             }
                                         }
-                                        if !status.is_empty() {
-                                            span { class: "shrink-0 text-xs font-medium text-muted", "{status}" }
-                                        }
+                                    }
+                                    if !status.is_empty() {
+                                        span { class: "shrink-0 text-xs font-medium text-muted", "{status}" }
                                     }
                                 }
                             }
@@ -195,31 +192,27 @@ fn DocAssetsSection(assets: Vec<DocAsset>) -> Element {
 fn DocCredentialsSection(credentials: Vec<DocCredential>) -> Element {
     rsx! {
         Card {
-            div { class: "p-6",
-                h2 { class: "text-base font-semibold text-content", "Credentials" }
-                p { class: "mt-1 text-xs text-muted",
-                    "References only. The password / secret stays encrypted; reveal through the audited endpoint on the credential's own row in the vault."
-                }
-                if credentials.is_empty() {
-                    p { class: "mt-2 text-sm text-muted", "No credentials recorded for this client." }
-                } else {
-                    ul { class: "mt-3 divide-y divide-line",
-                        for c in credentials.iter().cloned() {
-                            {
-                                let id = c.id;
-                                let kind = c.credential_type.clone().unwrap_or_else(|| "credential".to_string());
-                                let scope = if c.asset_id.is_some() { "asset-scoped".to_string() } else { "company-scoped".to_string() };
-                                let url = c.url.clone().filter(|s| !s.is_empty());
-                                rsx! {
-                                    li { key: "{id}", class: "flex items-start justify-between gap-6 py-3",
-                                        div { class: "min-w-0",
-                                            p { class: "text-sm font-medium text-content", "{c.name}" }
-                                            p { class: "mt-0.5 text-xs text-muted",
-                                                "{kind} \u{00b7} {scope}"
-                                                if let Some(u) = url {
-                                                    span { " \u{00b7} " }
-                                                    span { class: "break-all", "{u}" }
-                                                }
+            title: "Credentials",
+            subtitle: "References only. The password / secret stays encrypted; reveal through the audited endpoint on the credential's own row in the vault.",
+            if credentials.is_empty() {
+                p { class: "text-sm text-muted", "No credentials recorded for this client." }
+            } else {
+                ul { class: "divide-y divide-line",
+                    for c in credentials.iter().cloned() {
+                        {
+                            let id = c.id;
+                            let kind = c.credential_type.clone().unwrap_or_else(|| "credential".to_string());
+                            let scope = if c.asset_id.is_some() { "asset-scoped".to_string() } else { "company-scoped".to_string() };
+                            let url = c.url.clone().filter(|s| !s.is_empty());
+                            rsx! {
+                                li { key: "{id}", class: "flex items-start justify-between gap-6 py-3",
+                                    div { class: "min-w-0",
+                                        p { class: "text-sm font-medium text-content", "{c.name}" }
+                                        p { class: "mt-0.5 text-xs text-muted",
+                                            "{kind} \u{00b7} {scope}"
+                                            if let Some(u) = url {
+                                                span { " \u{00b7} " }
+                                                span { class: "break-all", "{u}" }
                                             }
                                         }
                                     }
@@ -236,32 +229,29 @@ fn DocCredentialsSection(credentials: Vec<DocCredential>) -> Element {
 #[component]
 fn DocArticlesSection(articles: Vec<DocArticle>) -> Element {
     rsx! {
-        Card {
-            div { class: "p-6",
-                h2 { class: "text-base font-semibold text-content", "Runbooks" }
-                if articles.is_empty() {
-                    p { class: "mt-2 text-sm text-muted", "No client-scoped KB articles recorded for this client." }
-                } else {
-                    ul { class: "mt-3 divide-y divide-line",
-                        for article in articles.iter().cloned() {
-                            {
-                                let id = article.id;
-                                let visibility = article.visibility.clone().unwrap_or_default();
-                                let status = article.status.clone().unwrap_or_default();
-                                let summary = article.summary.clone().filter(|s| !s.is_empty());
-                                rsx! {
-                                    li { key: "{id}", class: "flex items-start justify-between gap-6 py-3",
-                                        div { class: "min-w-0",
-                                            p { class: "text-sm font-medium text-content", "{article.title}" }
-                                            if let Some(s) = summary {
-                                                p { class: "mt-0.5 text-xs text-muted", "{s}" }
-                                            }
-                                            p { class: "mt-0.5 font-mono text-xs text-muted",
-                                                "{visibility}"
-                                                if !status.is_empty() {
-                                                    span { " \u{00b7} " }
-                                                    span { "{status}" }
-                                                }
+        Card { title: "Runbooks",
+            if articles.is_empty() {
+                p { class: "text-sm text-muted", "No client-scoped KB articles recorded for this client." }
+            } else {
+                ul { class: "divide-y divide-line",
+                    for article in articles.iter().cloned() {
+                        {
+                            let id = article.id;
+                            let visibility = article.visibility.clone().unwrap_or_default();
+                            let status = article.status.clone().unwrap_or_default();
+                            let summary = article.summary.clone().filter(|s| !s.is_empty());
+                            rsx! {
+                                li { key: "{id}", class: "flex items-start justify-between gap-6 py-3",
+                                    div { class: "min-w-0",
+                                        p { class: "text-sm font-medium text-content", "{article.title}" }
+                                        if let Some(s) = summary {
+                                            p { class: "mt-0.5 text-xs text-muted", "{s}" }
+                                        }
+                                        p { class: "mt-0.5 font-mono text-xs text-muted",
+                                            "{visibility}"
+                                            if !status.is_empty() {
+                                                span { " \u{00b7} " }
+                                                span { "{status}" }
                                             }
                                         }
                                     }
