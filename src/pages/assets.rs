@@ -573,6 +573,126 @@ fn strip_quotes(s: &str) -> &str {
         .unwrap_or(trimmed)
 }
 
+/// Builds the legacy GET `/assets` fallback path from the page's current
+/// paging state, the URL-derived `company_id` (set when the operator
+/// arrived via a company's "View All assets" link), the active filter
+/// pills, and the free-text search remainder. Server-side `AssetFilter`
+/// (per PMS-1489) accepts company_id, asset_type_id, site_id,
+/// assigned_user_id, status, department, manufacturer, model, tag,
+/// warranty_within_days, end_of_life_before, q. Each SPA pill field + op
+/// lowers to the matching query param here. An unknown field or op still
+/// logs at debug so a future SPA-only pill the server has not caught up
+/// to becomes visible.
+///
+/// An explicit `("company", "eq")` pill takes precedence over the
+/// URL-derived `company_id`: if both are present, only the pill's value
+/// is appended, so the request never carries two `company_id` params
+/// (MAPPS-1106).
+fn build_legacy_assets_path(
+    current_page: usize,
+    url_company_id: Option<String>,
+    filters: &[FilterPill],
+    q: &str,
+) -> String {
+    let mut path = format!("/assets?page={current_page}&per_page={PER_PAGE}");
+    let has_company_pill = filters.iter().any(|p| p.field == "company" && p.op == "eq");
+    if !has_company_pill {
+        if let Some(company_id) = url_company_id {
+            path.push_str(&format!("&company_id={company_id}"));
+        }
+    }
+    for p in filters {
+        let first_str = p.values.first().and_then(|v| v.as_str());
+        let encoded_first = first_str.map(crate::utils::url::encode_uri_component);
+        match (p.field.as_str(), p.op.as_str()) {
+            ("status", "eq") => {
+                if let Some(e) = &encoded_first {
+                    path.push_str(&format!("&status={e}"));
+                }
+            }
+            ("asset_type", "eq") => {
+                if let Some(e) = &encoded_first {
+                    path.push_str(&format!("&asset_type_id={e}"));
+                }
+            }
+            ("company", "eq") => {
+                if let Some(e) = &encoded_first {
+                    path.push_str(&format!("&company_id={e}"));
+                }
+            }
+            ("site", "eq") => {
+                if let Some(e) = &encoded_first {
+                    path.push_str(&format!("&site_id={e}"));
+                }
+            }
+            ("assigned_user", "eq") => {
+                if let Some(e) = &encoded_first {
+                    path.push_str(&format!("&assigned_user_id={e}"));
+                }
+            }
+            ("department", "eq") => {
+                if let Some(e) = &encoded_first {
+                    path.push_str(&format!("&department={e}"));
+                }
+            }
+            ("manufacturer", "eq") => {
+                if let Some(e) = &encoded_first {
+                    path.push_str(&format!("&manufacturer={e}"));
+                }
+            }
+            ("model", "eq") => {
+                if let Some(e) = &encoded_first {
+                    path.push_str(&format!("&model={e}"));
+                }
+            }
+            ("tags", "contains_tag") => {
+                if let Some(e) = &encoded_first {
+                    path.push_str(&format!("&tag={e}"));
+                }
+            }
+            ("warranty_expiry", "within") => {
+                // Shape: values[0] = { "days": N }.
+                if let Some(days) = p
+                    .values
+                    .first()
+                    .and_then(|v| v.get("days"))
+                    .and_then(|v| v.as_i64())
+                {
+                    path.push_str(&format!("&warranty_within_days={days}"));
+                }
+            }
+            ("end_of_life", "before") => {
+                // The SPA ships `"NOW"` as a sentinel for "today"
+                // so the chip label stays stable; the server wants
+                // a concrete date. Resolve to the operator's local
+                // date before serialising.
+                let v = first_str.unwrap_or_default();
+                let resolved = if v.eq_ignore_ascii_case("NOW") {
+                    chrono::Local::now().date_naive().to_string()
+                } else {
+                    v.to_string()
+                };
+                let encoded = crate::utils::url::encode_uri_component(&resolved);
+                path.push_str(&format!("&end_of_life_before={encoded}"));
+            }
+            (field, op) => {
+                tracing::debug!(
+                    field,
+                    op,
+                    "legacy /assets fallback drops unsupported pill; the server contract has not caught up to this (field, op) pair",
+                );
+            }
+        }
+    }
+    if !q.is_empty() {
+        path.push_str(&format!(
+            "&q={}",
+            crate::utils::url::encode_uri_component(q)
+        ));
+    }
+    path
+}
+
 fn humanise(v: &str) -> String {
     v.replace('_', " ")
         .split_whitespace()
@@ -1045,99 +1165,12 @@ pub fn AssetListPage() -> Element {
                     // param here. An unknown field or op still logs at
                     // debug so a future SPA-only pill the server has
                     // not caught up to becomes visible.
-                    let mut path = format!("/assets?page={current_page}&per_page={PER_PAGE}");
-                    if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
-                        path.push_str(&format!("&company_id={company_id}"));
-                    }
-                    for p in &filters {
-                        let first_str = p.values.first().and_then(|v| v.as_str());
-                        let encoded_first = first_str.map(crate::utils::url::encode_uri_component);
-                        match (p.field.as_str(), p.op.as_str()) {
-                            ("status", "eq") => {
-                                if let Some(e) = &encoded_first {
-                                    path.push_str(&format!("&status={e}"));
-                                }
-                            }
-                            ("asset_type", "eq") => {
-                                if let Some(e) = &encoded_first {
-                                    path.push_str(&format!("&asset_type_id={e}"));
-                                }
-                            }
-                            ("company", "eq") => {
-                                if let Some(e) = &encoded_first {
-                                    path.push_str(&format!("&company_id={e}"));
-                                }
-                            }
-                            ("site", "eq") => {
-                                if let Some(e) = &encoded_first {
-                                    path.push_str(&format!("&site_id={e}"));
-                                }
-                            }
-                            ("assigned_user", "eq") => {
-                                if let Some(e) = &encoded_first {
-                                    path.push_str(&format!("&assigned_user_id={e}"));
-                                }
-                            }
-                            ("department", "eq") => {
-                                if let Some(e) = &encoded_first {
-                                    path.push_str(&format!("&department={e}"));
-                                }
-                            }
-                            ("manufacturer", "eq") => {
-                                if let Some(e) = &encoded_first {
-                                    path.push_str(&format!("&manufacturer={e}"));
-                                }
-                            }
-                            ("model", "eq") => {
-                                if let Some(e) = &encoded_first {
-                                    path.push_str(&format!("&model={e}"));
-                                }
-                            }
-                            ("tags", "contains_tag") => {
-                                if let Some(e) = &encoded_first {
-                                    path.push_str(&format!("&tag={e}"));
-                                }
-                            }
-                            ("warranty_expiry", "within") => {
-                                // Shape: values[0] = { "days": N }.
-                                if let Some(days) = p
-                                    .values
-                                    .first()
-                                    .and_then(|v| v.get("days"))
-                                    .and_then(|v| v.as_i64())
-                                {
-                                    path.push_str(&format!("&warranty_within_days={days}"));
-                                }
-                            }
-                            ("end_of_life", "before") => {
-                                // The SPA ships `"NOW"` as a sentinel for "today"
-                                // so the chip label stays stable; the server wants
-                                // a concrete date. Resolve to the operator's local
-                                // date before serialising.
-                                let v = first_str.unwrap_or_default();
-                                let resolved = if v.eq_ignore_ascii_case("NOW") {
-                                    chrono::Local::now().date_naive().to_string()
-                                } else {
-                                    v.to_string()
-                                };
-                                let encoded = crate::utils::url::encode_uri_component(&resolved);
-                                path.push_str(&format!("&end_of_life_before={encoded}"));
-                            }
-                            (field, op) => {
-                                tracing::debug!(
-                                    field,
-                                    op,
-                                    "legacy /assets fallback drops unsupported pill; the server contract has not caught up to this (field, op) pair",
-                                );
-                            }
-                        }
-                    }
-                    if !q.is_empty() {
-                        path.push_str(&format!(
-                            "&q={}",
-                            crate::utils::url::encode_uri_component(&q)
-                        ));
-                    }
+                    let path = build_legacy_assets_path(
+                        current_page,
+                        crate::utils::url::current_query_param("company_id"),
+                        &filters,
+                        &q,
+                    );
                     crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteAsset>>(&path)
                         .await
                         .inspect_err(|e| tracing::error!("asset list load failed: {e}"))
@@ -4548,6 +4581,40 @@ mod dsl_tests {
             vec!["Nowhere Inc".to_string(), "Also Missing".to_string()]
         );
         assert_eq!(q, "company:\"Nowhere Inc\" company:\"Also Missing\"");
+    }
+}
+
+#[cfg(test)]
+mod mapps1106_legacy_company_id_tests {
+    use super::{build_legacy_assets_path, FilterPill};
+
+    fn company_id_params(path: &str) -> Vec<&str> {
+        path.split('&')
+            .filter_map(|kv| kv.strip_prefix("company_id="))
+            .collect()
+    }
+
+    #[test]
+    fn explicit_company_pill_overrides_the_url_derived_company_id() {
+        let filters = vec![FilterPill::eq(
+            "company",
+            "Company B",
+            serde_json::Value::String("COMPANY_B".into()),
+        )];
+        let path = build_legacy_assets_path(1, Some("COMPANY_A".to_string()), &filters, "");
+        assert_eq!(company_id_params(&path), vec!["COMPANY_B"]);
+    }
+
+    #[test]
+    fn url_derived_company_id_is_kept_when_no_company_pill_is_present() {
+        let path = build_legacy_assets_path(1, Some("COMPANY_A".to_string()), &[], "");
+        assert_eq!(company_id_params(&path), vec!["COMPANY_A"]);
+    }
+
+    #[test]
+    fn no_company_id_param_when_neither_source_has_one() {
+        let path = build_legacy_assets_path(1, None, &[], "");
+        assert!(company_id_params(&path).is_empty());
     }
 }
 
