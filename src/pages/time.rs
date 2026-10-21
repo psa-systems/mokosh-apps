@@ -246,10 +246,36 @@ fn monday_of_week(date: NaiveDate) -> NaiveDate {
 /// one of the other two at a call site: `tooltip` is the unresolved id, set
 /// only when the response named no work item.
 struct TimesheetRow {
+    key: WorkItemKey,
     label: String,
     tooltip: Option<String>,
     route: Option<Route>,
     buckets: [i64; 7],
+}
+
+/// The pivot's dedup key for a time entry's work item, distinct from its
+/// display `label`.
+///
+/// MAPPS-1103: two unresolved tickets (no `ticket_number`/`ticket_title`)
+/// both render the placeholder label "Ticket", so grouping pivot rows by
+/// `label` merged their minutes into one row and hid the second ticket
+/// entirely. The id is always distinct per ticket/project even when its
+/// name is not, so the pivot groups on this instead.
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum WorkItemKey {
+    Ticket(uuid::Uuid),
+    Project(uuid::Uuid),
+    Internal,
+}
+
+fn work_item_key(e: &RemoteTimeEntry) -> WorkItemKey {
+    if let Some(tid) = e.ticket_id {
+        WorkItemKey::Ticket(tid)
+    } else if let Some(pid) = e.project_id {
+        WorkItemKey::Project(pid)
+    } else {
+        WorkItemKey::Internal
+    }
 }
 
 /// The timesheet grid's label for one entry, with the tooltip that explains a
@@ -306,6 +332,41 @@ fn grid_work_item(e: &RemoteTimeEntry) -> (String, Option<String>, Option<Route>
 /// "{project} · {task}" using the names joined server-side (PMS-332).
 /// MAPPS-243: a ticketless general/overhead entry shows "General". Falls
 /// back to the bare kind when a name is missing, or "-" when unlinked.
+/// Pivots a week's entries into per-work-item rows with seven day buckets
+/// (Mon..Sun), summing duration into each (row, weekday) cell. Each row also
+/// carries a link to its work item's detail page (MAPPS-206 for projects,
+/// and tickets too for parity), or `None` for internal time.
+///
+/// MAPPS-1103: grouped by `work_item_key`, not by the `grid_work_item` label,
+/// so two distinct unresolved tickets (both rendering the placeholder label
+/// "Ticket") land in separate rows instead of merging into one.
+fn pivot_timesheet_rows(entries: &[RemoteTimeEntry], start: NaiveDate) -> Vec<TimesheetRow> {
+    let mut rows: Vec<TimesheetRow> = Vec::new();
+    for e in entries {
+        let day_idx = (e.date - start).num_days();
+        if !(0..7).contains(&day_idx) {
+            continue;
+        }
+        let key = work_item_key(e);
+        let (label, tooltip, route) = grid_work_item(e);
+        let pos = match rows.iter().position(|r| r.key == key) {
+            Some(p) => p,
+            None => {
+                rows.push(TimesheetRow {
+                    key,
+                    label,
+                    tooltip,
+                    route,
+                    buckets: [0; 7],
+                });
+                rows.len() - 1
+            }
+        };
+        rows[pos].buckets[day_idx as usize] += e.duration_minutes;
+    }
+    rows
+}
+
 fn work_item_label(e: &RemoteTimeEntry) -> String {
     if e.ticket_id.is_some() {
         match (e.ticket_number.as_deref(), e.ticket_title.as_deref()) {
@@ -1319,31 +1380,7 @@ pub fn TimesheetsPage() -> Element {
     let start = week_start();
     let end = start + Duration::days(6);
 
-    // Pivot the week's entries into per-work-item rows with seven day buckets
-    // (Mon..Sun), summing duration into each (row, weekday) cell. Each row also
-    // carries a link to its work item's detail page (MAPPS-206 for projects,
-    // and tickets too for parity), or `None` for internal time.
-    let mut rows: Vec<TimesheetRow> = Vec::new();
-    for e in &entries {
-        let day_idx = (e.date - start).num_days();
-        if !(0..7).contains(&day_idx) {
-            continue;
-        }
-        let (label, tooltip, route) = grid_work_item(e);
-        let pos = match rows.iter().position(|r| r.label == label) {
-            Some(p) => p,
-            None => {
-                rows.push(TimesheetRow {
-                    label,
-                    tooltip,
-                    route,
-                    buckets: [0; 7],
-                });
-                rows.len() - 1
-            }
-        };
-        rows[pos].buckets[day_idx as usize] += e.duration_minutes;
-    }
+    let rows = pivot_timesheet_rows(&entries, start);
     let mut daily_totals = [0i64; 7];
     for row in &rows {
         for (i, m) in row.buckets.iter().enumerate() {
@@ -1582,7 +1619,7 @@ pub fn TimesheetsPage() -> Element {
                     } else {
                         for row in rows.iter() {
                             {
-                                let TimesheetRow { label, tooltip, route, buckets } = row;
+                                let TimesheetRow { key: _, label, tooltip, route, buckets } = row;
                                 let row_total = buckets.iter().sum::<i64>();
                                 rsx! {
                                     TableRow {
@@ -4023,5 +4060,44 @@ mod mapps1038_work_item_tests {
         let (label, tooltip, _) = grid_work_item(&e);
         assert_eq!(label, "TKT-7");
         assert!(tooltip.is_none());
+    }
+}
+
+#[cfg(test)]
+mod mapps1103_pivot_tests {
+    use super::{pivot_timesheet_rows, RemoteTimeEntry};
+    use chrono::NaiveDate;
+
+    fn entry(json: &str) -> RemoteTimeEntry {
+        serde_json::from_str(json).expect("deserialise time entry")
+    }
+
+    const TICKET_A: &str = "33333333-3333-4333-8333-333333333333";
+    const TICKET_B: &str = "55555555-5555-4555-8555-555555555555";
+
+    /// MAPPS-1103: two distinct unresolved tickets (both missing
+    /// `ticket_number`/`ticket_title`, so both render the same placeholder
+    /// label "Ticket") must not merge into one pivot row.
+    #[test]
+    fn two_unresolved_tickets_get_separate_rows_with_their_own_minutes_and_route() {
+        let a = entry(&format!(
+            r#"{{"id":"11111111-1111-4111-8111-111111111111","date":"2026-10-12","ticket_id":"{TICKET_A}","duration_minutes":60}}"#
+        ));
+        let b = entry(&format!(
+            r#"{{"id":"22222222-2222-4222-8222-222222222222","date":"2026-10-13","ticket_id":"{TICKET_B}","duration_minutes":45}}"#
+        ));
+        let start = NaiveDate::parse_from_str("2026-10-12", "%Y-%m-%d").unwrap();
+
+        let rows = pivot_timesheet_rows(&[a, b], start);
+
+        assert_eq!(rows.len(), 2, "each distinct ticket id gets its own row");
+        assert_eq!(rows[0].label, "Ticket");
+        assert_eq!(rows[0].buckets, [60, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(rows[1].label, "Ticket");
+        assert_eq!(rows[1].buckets, [0, 45, 0, 0, 0, 0, 0]);
+        assert_ne!(
+            rows[0].route, rows[1].route,
+            "each row still links to its own ticket's detail page"
+        );
     }
 }
