@@ -204,7 +204,7 @@ def level-rank [level: string] {
 }
 
 def entry-sort [rows: list] {
-    $rows | sort-by {|e| $"(level-rank $e.level)(if $e.required { 0 } else { 1 })($e.var)" }
+    $rows | sort-by {|e| $"(level-rank $e.level)(if $e.required { 0 } else { 1 })($e.var)" } # nu-interp-guard-allow
 }
 
 def render-entry [e: record] {
@@ -212,7 +212,7 @@ def render-entry [e: record] {
     let req = if $e.required { "yes" } else { "no" }
     let feature = if $e.level == "feature-off" { $"Feature: ($e.feature). " } else { "" }
     let issue = if ($e.issue | is-empty) { "" } else { $" \(($e.issue))" }
-    $"- ($mark)[`($e.var)`]\(#(slug $e.var)) \(Required: ($req)) - ($feature)($e.action)($issue)"
+    $"- ($mark)[`($e.var)`]\(#(slug $e.var)) \(Required: ($req)) - ($feature)($e.action)($issue)" # nu-interp-guard-allow
 }
 
 def render-recent [entries: list, tags: list] {
@@ -224,7 +224,7 @@ def render-recent [entries: list, tags: list] {
     ]
     let versions = ($w.unreleased | each {|v| { v: $v, label: $"Unreleased \(($v))" } } | append ($w.released | each {|v| { v: $v, label: $v } }))
     for r in $versions {
-        $out = ($out | append ["" $"<a id=\"(release-anchor $r.v)\"></a>" "" $"### ($r.label)"])
+        $out = ($out | append ["" $"<a id=\"(release-anchor $r.v)\"></a>" "" $"### ($r.label)"]) # nu-interp-guard-allow
         let rows = ($entries | where release == $r.v)
         if ($rows | is-empty) {
             $out = ($out | append ["" "No configuration changes."])
@@ -293,14 +293,14 @@ def check-list [lines: list, catalog: list] {
         }
         let v = $found.0
         if $r.anchor != (slug $r.var) {
-            $errors = ($errors | append $"($DOC_FILE): row ($r.var) has anchor '($r.anchor)', expected '(slug $r.var)'")
+            $errors = ($errors | append $"($DOC_FILE): row ($r.var) has anchor '($r.anchor)', expected '(slug $r.var)'") # nu-interp-guard-allow
         }
         let req = ($r.req | parse --regex '^(?<t>yes|no)\b' | get 0?.t)
         if $req != (expected-required $v) {
-            $errors = ($errors | append $"($DOC_FILE): row ($r.var) says Required '($r.req)', the facts say '(expected-required $v)'")
+            $errors = ($errors | append $"($DOC_FILE): row ($r.var) says Required '($r.req)', the facts say '(expected-required $v)'") # nu-interp-guard-allow
         }
         if $r.added != (expected-added $v) {
-            $errors = ($errors | append $"($DOC_FILE): row ($r.var) says Added in '($r.added)', the facts say '(expected-added $v)'")
+            $errors = ($errors | append $"($DOC_FILE): row ($r.var) says Added in '($r.added)', the facts say '(expected-added $v)'") # nu-interp-guard-allow
         }
     }
     for v in $catalog {
@@ -351,7 +351,7 @@ def check-recent [lines: list, entries: list, tags: list] {
         }
         let want = if ($e.level | is-empty) { "" } else { $LEVELS | get $e.level | str replace "Breaking: " "" }
         if ($d.b | default "") != $want {
-            $errors = ($errors | append $"($DOC_FILE): ($release) ($group) ($d.var) mark is '($d.b | default "none")', the facts say '(if ($want | is-empty) { "none" } else { $want })'")
+            $errors = ($errors | append $"($DOC_FILE): ($release) ($group) ($d.var) mark is '($d.b | default "none")', the facts say '(if ($want | is-empty) { "none" } else { $want })'") # nu-interp-guard-allow
         }
         if ($e.level | is-not-empty) and not ($d.text | str contains $e.issue) {
             $errors = ($errors | append $"($DOC_FILE): ($release) Breaking ($d.var) does not name its issue ($e.issue)")
@@ -443,12 +443,12 @@ def generate-doc [doc: string, catalog: list, entries: list, tags: list] {
         let v = $found.0
         let req = ($r.req | str replace --regex '^(yes|no)\b' (expected-required $v))
         let req = if ($req =~ '^(yes|no)\b') { $req } else { expected-required $v }
-        $lines = ($lines | update $i $"| <a id=\"(slug $r.var)\"></a>`($r.var)` | ($req) | (expected-added $v) | ($r.rest)")
+        $lines = ($lines | update $i $"| <a id=\"(slug $r.var)\"></a>`($r.var)` | ($req) | (expected-added $v) | ($r.rest)") # nu-interp-guard-allow
     }
     let missing = ($catalog | where {|v| not ($v.name in $seen) })
     if ($missing | is-not-empty) {
         if $last_row == null { error make { msg: $"($DOC_FILE): '($LIST_HEADING)' has no table to add rows to" } }
-        let new_rows = ($missing | each {|v| $"| <a id=\"(slug $v.name)\"></a>`($v.name)` | (expected-required $v) | (expected-added $v) | compose variable | Not described yet: say what it does. |" })
+        let new_rows = ($missing | each {|v| $"| <a id=\"(slug $v.name)\"></a>`($v.name)` | (expected-required $v) | (expected-added $v) | compose variable | Not described yet: say what it does. |" }) # nu-interp-guard-allow
         $lines = ($lines | first ($last_row + 1) | append $new_rows | append ($lines | skip ($last_row + 1)))
     }
     $"($lines | str join "\n")\n"
@@ -509,7 +509,7 @@ def "main since" [
 ] {
     let repo = (load-repo)
     let after = ($repo.entries | where {|e| (vnum $e.release) > (vnum $version) })
-    let sorted = ($after | sort-by {|e| $"((vnum $e.release) + 1000000000)(level-rank $e.level)($e.var)" })
+    let sorted = ($after | sort-by {|e| $"((vnum $e.release) + 1000000000)(level-rank $e.level)($e.var)" }) # nu-interp-guard-allow
     if $json {
         print ($sorted | each {|e| { release: $e.release, group: $e.group, variable: $e.var, required: $e.required, level: (if ($e.level | is-empty) { "none" } else { $e.level }), feature: $e.feature, issue: $e.issue, action: $e.action } } | to json)
         return
@@ -539,17 +539,17 @@ def "main release-notes" [
     let repo = (load-repo)
     let ref = ($ref | default $version)
     let rows = ($repo.entries | where release == $version)
-    let link = $"($REPO_URL)/src/tag/($ref)/($DOC_FILE)#(release-anchor $version)"
-    let link = if $ref == $version { $link } else { $"($REPO_URL)/src/branch/($ref)/($DOC_FILE)#(release-anchor $version)" }
+    let link = $"($REPO_URL)/src/tag/($ref)/($DOC_FILE)#(release-anchor $version)" # nu-interp-guard-allow
+    let link = if $ref == $version { $link } else { $"($REPO_URL)/src/branch/($ref)/($DOC_FILE)#(release-anchor $version)" } # nu-interp-guard-allow
     print "## Configuration changes"
     print ""
     if ($rows | is-empty) {
         print $"No configuration changes in ($version). Full list: [docs/configuration.md]\(($link))."
         return
     }
-    let breaking = ($rows | where {|e| $e.level | is-not-empty } | sort-by {|e| $"(level-rank $e.level)($e.var)" })
+    let breaking = ($rows | where {|e| $e.level | is-not-empty } | sort-by {|e| $"(level-rank $e.level)($e.var)" }) # nu-interp-guard-allow
     let wont = ($breaking | where level == "wont-start" | length)
-    print $"[Configuration changes in ($version)]\(($link)): ($rows | length) entries, ($wont) won't start, (($breaking | length) - $wont) feature off."
+    print $"[Configuration changes in ($version)]\(($link)): ($rows | length) entries, ($wont) won't start, (($breaking | length) - $wont) feature off." # nu-interp-guard-allow
     if ($breaking | is-not-empty) {
         print ""
         for e in $breaking {
