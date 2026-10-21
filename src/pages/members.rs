@@ -52,15 +52,16 @@ const ROLE_PICKER: &[(&str, &str)] = &[
 ];
 
 /// Label a role for display using `ROLE_PICKER`, matching the label the
-/// row's own `Select` already shows for the same role. Falls back to the
-/// raw server string for a role `ROLE_PICKER` does not list, matching
-/// `crate::utils::roles::display_role_label`'s own fallback behavior.
-fn role_picker_label(role: &str) -> &str {
+/// row's own `Select` already shows for the same role. Falls back to
+/// `crate::utils::roles::display_role_label` for a role `ROLE_PICKER`
+/// does not list, so an excluded role such as `super_admin` reads the
+/// same here as it does on every other surface.
+fn role_picker_label(role: &str) -> String {
     ROLE_PICKER
         .iter()
         .find(|(value, _)| *value == role)
-        .map(|(_, label)| *label)
-        .unwrap_or(role)
+        .map(|(_, label)| label.to_string())
+        .unwrap_or_else(|| crate::utils::roles::display_role_label(role))
 }
 
 /// `kind` filter options, matching the two non-default literals
@@ -1278,7 +1279,7 @@ mod tests {
 
     use super::{
         change_role_path, remove_action_path, role_picker_label, row_granted_at_label,
-        row_last_login_label, MemberRow, MembersFilters,
+        row_last_login_label, MemberRow, MembersFilters, ROLE_PICKER,
     };
     use chrono::{TimeZone, Utc};
     use uuid::Uuid;
@@ -1289,8 +1290,22 @@ mod tests {
     }
 
     #[test]
-    fn role_picker_label_falls_back_to_the_raw_string_for_an_unknown_role() {
-        assert_eq!(role_picker_label("super_admin"), "super_admin");
+    fn role_picker_label_falls_back_to_display_role_label_for_an_unlisted_role() {
+        assert_eq!(role_picker_label("super_admin"), "Super admin");
+    }
+
+    #[test]
+    fn role_picker_label_matches_display_role_label_for_every_role_outside_the_picker() {
+        for role in ["super_admin", "ops", "service_delivery", "", "unknown_role"] {
+            assert!(
+                !ROLE_PICKER.iter().any(|(value, _)| *value == role),
+                "test role {role:?} must not be in ROLE_PICKER"
+            );
+            assert_eq!(
+                role_picker_label(role),
+                crate::utils::roles::display_role_label(role)
+            );
+        }
     }
 
     #[test]
