@@ -545,6 +545,12 @@ check-link-preview:
 check-csp-host-derived-origin:
     bash scripts/check-csp-host-derived-origin.sh
 
+# MAPPS-963: prove the image boots and serves the runtime-config shim as `appuser` and as a `--user 10000:10000` override, and that an unwritable runtime dir exits non-zero at start. Runs the real entrypoint + Caddyfile in a container, so it needs docker and is not part of `just check`, like check-link-preview above.
+[group: 'check']
+check-oci-runtime:
+    bash scripts/check-oci-runtime.sh --self-test
+    bash scripts/check-oci-runtime.sh
+
 # Build OCI image for validation
 [group: 'check']
 check-docker:
