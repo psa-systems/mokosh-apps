@@ -712,7 +712,6 @@ fn InviteUserModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Elem
                 crate::components::EmailPreview {
                     event_type: "invitations.created".to_string(),
                     context: preview_context,
-                    empty_note: "The invitation email is built into the server rather than by a notification rule, so there is nothing to render yet. An invitation email is still sent.".to_string(),
                 }
                 Button {
                     variant: ButtonVariant::Primary,

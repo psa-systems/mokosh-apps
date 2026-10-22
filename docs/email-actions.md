@@ -72,15 +72,16 @@ trigger, so that stops being true.
 | Send an invoice to the client | `src/pages/billing.rs` (`InvoiceDetailPage`, `EmailPreview` in the "Send invoice" `ConfirmDialog`'s body) | `billing.invoice_pay_now` |
 | Email a ticket note to the client | `src/pages/tickets.rs` (the journal composer on `TicketDetailPage`) | `ticket.note` |
 
-Only `forms.request_link` is a notification rule today. mokosh-server builds the
-invite mail in `invitations/service.rs`, the quote mail in `quotes/service.rs`,
-the invoice mail in `billing/service.rs` and the ticket-note mail in
-`tickets/service.rs` (`send_note_email`), each with a built-in template and none
-through `dispatch`, so their previews come back empty. Those four call sites
-pass `empty_note` so the modal says the message is built into the server
-and an email is still sent, rather than leaving the operator to read "nothing
-will be sent" and believe it. MAPPS-489 moves the sends onto the dispatcher and
-removes the note.
+`forms.request_link`, `invitations.created` and `quote.sent` are notification
+rules; their previews render the exact message the recipient reads. The
+invoice mail (`billing.invoice_pay_now`) is still built in `billing/service.rs`
+with a built-in template rather than through `dispatch`, so its preview comes
+back empty. The ticket-note mail is dispatched server-side as
+`ticket.note_added` but the SPA still asks the preview endpoint for
+`ticket.note`, which no rule matches, so that preview comes back empty too;
+that call site passes `empty_note` so the modal says the message is built into
+the server and an email is still sent, rather than leaving the operator to
+read "nothing will be sent" and believe it.
 
 The invoice send and the ticket note are **conditional server-side**, which the
 other two are not. `notify_invoice_pay_now` fires only on the first transition

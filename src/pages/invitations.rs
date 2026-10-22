@@ -54,14 +54,6 @@ struct PaginationMeta {
 /// page size and the `DataTable`'s pager math agree.
 const PER_PAGE: usize = 25;
 
-/// MAPPS-482: `POST /notifications/preview` renders whatever the tenant's
-/// notification rules say, and the invite is not one of them: mokosh-server
-/// builds its subject and body in `invitations/service.rs` and inserts the
-/// queue row directly. So the preview honestly returns nothing to render, and
-/// the operator must not read that as "no email goes out", because one does.
-/// MAPPS-489 moves the invite onto the dispatcher and deletes this note.
-const INVITE_PREVIEW_NOTE: &str = "The invitation email is built into the server rather than by a notification rule, so there is nothing to render yet. An invitation email is still sent.";
-
 #[component]
 pub fn InvitationsPage() -> Element {
     // MAPPS-939: resolve once for the whole row list, not once per row's
@@ -349,7 +341,6 @@ pub fn InvitationsPage() -> Element {
                         crate::components::EmailPreview {
                             event_type: "invitations.created".to_string(),
                             context: preview_context,
-                            empty_note: INVITE_PREVIEW_NOTE.to_string(),
                         }
                     }
                 }
