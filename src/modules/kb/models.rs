@@ -85,6 +85,13 @@ pub struct KbArticle {
     /// article means no client can see it.
     #[serde(default)]
     pub company_ids: Vec<Uuid>,
+    /// The generic article this one is a company-specific version of, or
+    /// `None` for the generic article itself. One level only: a child's
+    /// parent is always a top-level article, enforced server-side so the
+    /// SPA can trust the invariant and render a flat "Company versions"
+    /// list under the parent rather than a tree.
+    #[serde(default)]
+    pub parent_article_id: Option<Uuid>,
     /// MAPPS-1044: server-resolved company display names, one per id in
     /// `company_ids` and in the same order, joined server-side so the
     /// scoped-article reads do not pay for a separate
@@ -262,6 +269,13 @@ pub struct CreateKbArticleRequest {
     /// `None` for any other visibility, which the server stores as an empty
     /// scope.
     pub company_ids: Option<Vec<Uuid>>,
+    /// Sets the generic article this one is a company-specific version of.
+    /// `None` leaves the article as a top-level article; server rejects a
+    /// grandchild (the parent itself having a parent). The "Create a
+    /// company version" affordance on a generic article's detail page
+    /// prefills this field via a query string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_article_id: Option<Uuid>,
 }
 
 /// One uploaded image, as `POST /kb/articles/{id}/attachments` returns it
@@ -297,6 +311,13 @@ pub struct UpdateKbArticleRequest {
     /// visibility is `client_specific`; `None` otherwise, since the server
     /// clears the stored scope for any other visibility anyway.
     pub company_ids: Option<Vec<Uuid>>,
+    /// Mirror of `KbArticle::parent_article_id`. The edit form sends this
+    /// only when the author changed it; `None` on an unchanged edit leaves
+    /// the current value in place. Clearing a parent (promoting a child to
+    /// a top-level article) is a human move not currently exposed in the
+    /// form, so the edit path never sends an explicit clear.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_article_id: Option<Uuid>,
     /// MAPPS-739: why this edit was made; the server stores it on the
     /// version the save creates and drops it when the save creates none.
     #[serde(skip_serializing_if = "Option::is_none")]
