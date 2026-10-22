@@ -23,9 +23,13 @@ dev_image := "ghcr.io/niceguyit/rust-builder-glibc:v1.2.0-rust1.98.1-trixie"
 # so it is where this repo's 30+ check-* guard scripts run too, not just
 # css-build (src/main.rs embeds assets/styles.css via asset!(), and that
 # file is gitignored, so Tailwind still has to run on the host before any
-# cargo step in the container). Without this the git hook passed on a change
-# CI then rejected on any of the guards. See pre-commit-guards below.
+# cargo step in the container). Without this the pre-push hook passed on a
+# change CI then rejected on any of the guards. See pre-commit-guards below.
 pre_commit_prepare := "pre-commit-guards"
+
+# MAPPS-1119: the guards above run on `just pre-push`, not on a fmt-only
+# commit; see docs/recipes.md.
+pre_commit_prepare_fmt := ""
 
 # Mirrors check-clippy and check.yml. The shared default is --all-features,
 # which would turn on `desktop` (linking the system webview) alongside
@@ -357,8 +361,9 @@ check-fmt:
 # Read off the `check:` line itself (the same technique check-ci-parity.sh uses) rather
 # than a copy of the list, so a guard added to `check` and forgotten here
 # cannot happen: this recipe can only drift stale, never incomplete. Wired in
-# as `pre_commit_prepare`, the only host-side hook common.just's shared
-# `pre-commit`/`pre-push` dispatch exposes before its cargo legs.
+# as `pre_commit_prepare`, which `pre_commit_prepare_fmt := ""` (MAPPS-1119)
+# keeps off the fmt-only commit hook; it still runs on `just pre-push` and in
+# the full `pre-commit` path.
 [private]
 [group: 'hooks']
 pre-commit-guards:
