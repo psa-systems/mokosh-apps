@@ -43,13 +43,6 @@ use crate::Route;
 
 const PER_PAGE: usize = 25;
 
-/// MAPPS-482: the sign-off mail does not come from a notification rule.
-/// mokosh-server's `mail_quote_to_client` calls the mailer directly with a
-/// built-in template, so `POST /notifications/preview` has nothing to render
-/// and its empty answer must not be read as "no email goes out". MAPPS-489
-/// moves the send onto the dispatcher and deletes this note.
-const QUOTE_PREVIEW_NOTE: &str = "The quote email is built into the server rather than by a notification rule, so there is nothing to render yet. The billing contact is still emailed a sign-off link.";
-
 /// True when the signed-in user holds a finance role, matching the
 /// server's `RequireFinance` guard on every quote route. Mirrors the
 /// identical helper in `contracts.rs`.
@@ -1113,7 +1106,6 @@ fn QuoteDetailBody(id: String) -> Element {
                                                     "company_name": company_name.clone(),
                                                 })
                                             },
-                                            empty_note: QUOTE_PREVIEW_NOTE.to_string(),
                                         }
                                         p { class: "text-xs text-subtle",
                                             "Sending gives your customer the quote to accept or decline."

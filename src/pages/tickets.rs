@@ -27,15 +27,9 @@ const PER_PAGE: usize = 25;
 /// hundreds of list items; the count of the rest is stated under the stream.
 const JOURNAL_LIMIT: usize = 50;
 
-/// What the email preview says for a public note. mokosh-server builds the
-/// note mail in `tickets/service.rs` with a built-in template rather than
-/// through the notification dispatcher, so the preview comes back empty and
-/// would otherwise read as "nothing will be sent". Same shape as
-/// `QUOTE_PREVIEW_NOTE` in `quotes.rs` (docs/email-actions.md).
-/// MAPPS-613: shown under the email checkbox, which is now only rendered on a
-/// public note. It no longer has to explain why the control is greyed out,
-/// because there is no greyed-out control; it states the one thing that can
-/// still surprise the author.
+/// Shown under the email checkbox on a public note. States the one thing that
+/// can still surprise the author: the mail is skipped when the ticket has no
+/// contact with an email address.
 const NOTE_EMAIL_HELP: &str = "Sent to the ticket's contact. Nothing is sent when the ticket has no contact with an email address.";
 
 const NOTE_PREVIEW_NOTE: &str = "The ticket-note email is built into the server rather than by a notification rule, so there is nothing to render yet. The ticket's contact is still emailed the note.";
