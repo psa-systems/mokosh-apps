@@ -325,6 +325,20 @@ fn client_specific_badge_label(visibility: &str, count: usize) -> String {
     }
 }
 
+/// The header line a company version of a generic article carries, so a
+/// technician reading one knows which generic procedure it is a variant of.
+/// `parent_title` is `Some(name)` once the parent fetch resolved, `None`
+/// while it is still loading or when the lookup failed; the fallback label
+/// states that the parent could not be loaded rather than silently dropping
+/// the relationship, since a company version with no header back-reference
+/// looks like an unrelated duplicate of a procedure. Pure, unit-tested.
+fn parent_header_label(parent_title: Option<&str>) -> String {
+    match parent_title.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(title) => format!("Company version of {title}"),
+        None => "Company version (parent unavailable)".to_string(),
+    }
+}
+
 /// MAPPS-515: label on the control that opens the company picker on the
 /// article form, by count. Same rule as the contact form's
 /// `add_company_label`: "add" here means add another company to the scope, and
@@ -620,7 +634,7 @@ pub fn KBHomePage() -> Element {
                     "New Category"
                 }
                 Link {
-                    to: Route::KBArticleNew {},
+                    to: Route::KBArticleNew { parent_article_id: String::new(), visibility: String::new() },
                     Button {
                         variant: ButtonVariant::Primary,
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
@@ -1129,7 +1143,7 @@ pub fn KBArticleListPage(
             title: "{heading}",
             actions: rsx! {
                 Link {
-                    to: Route::KBArticleNew {},
+                    to: Route::KBArticleNew { parent_article_id: String::new(), visibility: String::new() },
                     Button {
                         variant: ButtonVariant::Primary,
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
@@ -1235,7 +1249,7 @@ pub fn KBArticleListPage(
                                     description: "Write your first knowledge base article.".to_string(),
                                     actions: rsx! {
                                         Link {
-                                            to: Route::KBArticleNew {},
+                                            to: Route::KBArticleNew { parent_article_id: String::new(), visibility: String::new() },
                                             Button {
                                                 variant: ButtonVariant::Primary,
                                                 PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
@@ -1436,6 +1450,38 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
+
+    // The company versions of a generic article, resolved from the loaded
+    // article's `parent_article_id`. For a generic article (`parent_article_id
+    // = None`), ask for its children; for a company version, fetch the parent
+    // title the header back-reference needs. Both come from the already-loaded
+    // list in `tree_articles_resource` so there is no new request per article
+    // detail view, and both tolerate the tree still loading by rendering the
+    // card's loading / parent-unavailable fallback until the list resolves.
+    let article_snap_for_relations: Option<KbArticle> = match &*article_resource.read_unchecked() {
+        Some(Some(a)) => Some(a.clone()),
+        _ => None,
+    };
+    let (parent_title, children): (Option<String>, Vec<KbArticle>) =
+        match article_snap_for_relations.as_ref() {
+            Some(current) => {
+                let parent_title = current
+                    .parent_article_id
+                    .and_then(|pid| tree_articles.iter().find(|a| a.id == pid))
+                    .map(|a| a.title.clone());
+                let children: Vec<KbArticle> = if current.parent_article_id.is_none() {
+                    tree_articles
+                        .iter()
+                        .filter(|a| a.parent_article_id == Some(current.id))
+                        .cloned()
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                (parent_title, children)
+            }
+            None => (None, Vec::new()),
+        };
 
     // MAPPS-309: delete-article state. `confirming_delete` drives the
     // ConfirmDialog; `delete_busy` mirrors the in-flight DELETE so the
@@ -1743,6 +1789,25 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                     },
                                 ],
                             }
+                            // The way back up from a company version to its
+                            // generic parent. Rendered above the title so a
+                            // reader lands on this article and immediately
+                            // sees it is a variant of a more general one; a
+                            // failed lookup names the fallback rather than
+                            // hiding the relationship.
+                            if let Some(parent_id) = article.parent_article_id {
+                                p { class: "mt-2 text-sm text-muted",
+                                    if parent_title.is_some() {
+                                        Link {
+                                            to: Route::KBArticleDetail { id: parent_id.to_string() },
+                                            class: "text-accent hover:underline",
+                                            {parent_header_label(parent_title.as_deref())}
+                                        }
+                                    } else {
+                                        {parent_header_label(parent_title.as_deref())}
+                                    }
+                                }
+                            }
                             div { class: "mt-2 flex items-center justify-between gap-3 flex-wrap",
                                 h1 { class: "text-2xl sm:text-3xl font-bold text-content truncate", "{article.title}" }
                                 div { class: "flex items-center gap-2 flex-wrap",
@@ -1906,6 +1971,21 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                             // Staff only: the route refuses a contact bearer.
                             if !is_contact {
                                 LinkedTicketsCard { article_id: props.id.clone() }
+                            }
+                            // On a generic article, the per-company versions
+                            // that hang off it, with a "Create a company
+                            // version" affordance that opens the new-article
+                            // form with parent + visibility pre-filled. The
+                            // card renders its own empty state so the author
+                            // can create the first one without first guessing
+                            // that company versions exist. Hidden on a company
+                            // version itself: the server one-level invariant
+                            // means a child cannot have children.
+                            if !is_contact && article.parent_article_id.is_none() {
+                                CompanyVersionsCard {
+                                    parent_id: article.id,
+                                    children: children.clone(),
+                                }
                             }
                             // MAPPS-741: the article's own headings, following
                             // the reader; above the history because it is about
@@ -2167,6 +2247,68 @@ fn LinkedTicketsCard(article_id: String) -> Element {
                         }
                     }
                 },
+            }
+        }
+    }
+}
+
+/// Right-rail card listing the per-company versions of a generic article.
+///
+/// Each row names the companies the child is scoped to (reusing
+/// `KbArticle::company_names` from MAPPS-1044) and links to the variant's
+/// detail. An article with no children renders an explicit empty state plus
+/// the "Create a company version" action, so the affordance to make the
+/// first one is discoverable from the generic article itself rather than
+/// hiding behind a non-existent list.
+///
+/// Child rows come from the shared `tree_articles_resource` on the detail
+/// page, so this card itself issues no network request.
+#[component]
+fn CompanyVersionsCard(parent_id: uuid::Uuid, children: Vec<KbArticle>) -> Element {
+    rsx! {
+        Card { title: "Company versions",
+            if children.is_empty() {
+                p { class: "text-xs text-subtle",
+                    "No company versions yet."
+                }
+            } else {
+                ul { class: "divide-y divide-line -my-2",
+                    for child in children.iter() {
+                        {
+                            let key = child.id.to_string();
+                            let href = child.id.to_string();
+                            let scope_label = if child.company_names.is_empty() {
+                                if child.company_ids.is_empty() {
+                                    "No companies scoped".to_string()
+                                } else {
+                                    format!("{} scoped company ids", child.company_ids.len())
+                                }
+                            } else {
+                                child.company_names.join(", ")
+                            };
+                            rsx! {
+                                li { key: "{key}", class: "py-2 text-xs",
+                                    Link {
+                                        to: Route::KBArticleDetail { id: href },
+                                        class: "font-medium text-accent hover:opacity-90",
+                                        "{child.title}"
+                                    }
+                                    p { class: "mt-0.5 text-subtle", "{scope_label}" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            div { class: "mt-3",
+                Link {
+                    to: Route::KBArticleNew {
+                        parent_article_id: parent_id.to_string(),
+                        visibility: "client_specific".to_string(),
+                    },
+                    class: "text-xs text-accent hover:underline",
+                    "Create a company version"
+                }
             }
         }
     }
@@ -2530,6 +2672,13 @@ struct ArticleFormValues {
     /// `(id, name)` pairs in selection order. A pair with an empty name is an
     /// id whose lookup failed; the id is kept so saving cannot drop it.
     companies: Vec<(String, String)>,
+    /// The parent article this one is a company-specific version of, or empty
+    /// for a top-level article. On a Create flow, pre-filled from the query
+    /// string the "Create a company version" link appends; the form submits
+    /// it on save and otherwise does not expose it as an editable field
+    /// (promoting a child to a top-level article is a human move handled
+    /// server-side).
+    parent_article_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2539,9 +2688,20 @@ enum ArticleFormMode {
 }
 
 /// New article page.
+///
+/// Query params let a caller (today only the "Create a company version"
+/// affordance on a generic article's detail page) prefill the parent article
+/// and the visibility; both are optional strings and empty means "no
+/// prefill". A pre-filled visibility stays editable in the form, so an
+/// author can override.
 #[component]
-pub fn KBArticleNewPage() -> Element {
+pub fn KBArticleNewPage(parent_article_id: String, visibility: String) -> Element {
     use_page_title("New Article");
+    let seeded_visibility = if visibility.trim().is_empty() {
+        "internal".to_string()
+    } else {
+        visibility
+    };
     // MAPPS-357: N/A for a ContentUnavailable swap - this page fetches no
     // primary resource of its own (it is a static wrapper around the create
     // form). ArticleForm owns the only mutation (Publish) and disables it via
@@ -2551,8 +2711,9 @@ pub fn KBArticleNewPage() -> Element {
         PageHeader { title: "New Article", subtitle: "Create a new knowledge base article" }
         ArticleForm {
             initial: ArticleFormValues {
-                visibility: "internal".to_string(),
+                visibility: seeded_visibility,
                 status: "draft".to_string(),
+                parent_article_id,
                 ..Default::default()
             },
             mode: ArticleFormMode::Create,
@@ -2742,6 +2903,13 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     let mut adding_company = use_signal(|| false);
     let mut company_add_note = use_signal(String::new);
     let mut company_error = use_signal(String::new);
+    // The parent article the new article is a company-specific version of,
+    // seeded from the "Create a company version" affordance's query string.
+    // The form itself does not expose it as an editable field: changing the
+    // parent of an existing article is a human move. On an Edit flow this
+    // stays empty, which maps to `parent_article_id: None` on the update
+    // request, which leaves the stored value unchanged.
+    let parent_article_id_seed = use_signal(|| initial.parent_article_id.clone());
 
     // Category dropdown options, fetched live.
     // MAPPS-940: shared kb-categories cache, not a per-page fetch.
@@ -2996,6 +3164,10 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                                 .collect();
                             (!ids.is_empty()).then_some(ids)
                         },
+                        parent_article_id: picked_uuid(
+                            &parent_article_id_seed.read(),
+                            "parent article",
+                        ),
                     };
                     match crate::hooks::fetch::api::post_authed::<KbArticle, _>(
                         "/kb/articles",
@@ -3200,6 +3372,10 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             status: Some(status_val.clone()),
                             tags: Some(tags_vec.clone()),
                             company_ids: company_ids_opt.clone(),
+                            // The edit form does not expose the parent as an
+                            // editable field; `None` leaves the stored value
+                            // alone on the server side.
+                            parent_article_id: None,
                             change_note: change_note_opt.clone(),
                         };
                         let path = format!("/kb/articles/{id}");
@@ -3218,6 +3394,10 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             status: status_val.clone(),
                             tags: tags_vec.clone(),
                             company_ids: company_ids_opt.clone(),
+                            parent_article_id: picked_uuid(
+                                &parent_article_id_seed.read(),
+                                "parent article",
+                            ),
                         };
                         crate::hooks::fetch::api::post_authed::<KbArticle, _>("/kb/articles", &body)
                             .await
@@ -4477,6 +4657,31 @@ mod tests {
     fn empty_when_dangling() {
         let cats = vec![cat(Uuid::new_v4(), None, "X")];
         assert!(resolve_category_path(Some(Uuid::new_v4()), &cats).is_empty());
+    }
+
+    /// Resolved parent title reads as "Company version of <title>"; a
+    /// missing one carries the explicit fallback, never a silent gap.
+    #[test]
+    fn parent_header_label_resolves_or_falls_back() {
+        assert_eq!(
+            parent_header_label(Some("Onboarding")),
+            "Company version of Onboarding"
+        );
+        assert_eq!(
+            parent_header_label(None),
+            "Company version (parent unavailable)"
+        );
+        // An empty / whitespace-only parent title reads the same as a
+        // missing one: a header saying "Company version of " with no name
+        // would read as a broken template.
+        assert_eq!(
+            parent_header_label(Some("")),
+            "Company version (parent unavailable)"
+        );
+        assert_eq!(
+            parent_header_label(Some("   ")),
+            "Company version (parent unavailable)"
+        );
     }
 
     /// MAPPS-703: a blank sort order still saves as 0, a good one parses, and a

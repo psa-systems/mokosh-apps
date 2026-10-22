@@ -929,8 +929,11 @@ pub enum Route {
     #[route("/kb/articles?:q&:tag&:category")]
     KBArticleList { q: String, tag: String, category: String },
 
-    #[route("/kb/articles/new")]
-    KBArticleNew {},
+    #[route("/kb/articles/new?:parent_article_id&:visibility")]
+    KBArticleNew {
+        parent_article_id: String,
+        visibility: String,
+    },
 
     #[route("/kb/articles/:id")]
     KBArticleDetail { id: String },
@@ -1960,8 +1963,13 @@ fn KBArticleList(q: String, tag: String, category: String) -> Element {
 // MAPPS-652: no `max-w-7xl mx-auto` wrapper, deliberately, and the same
 // reasoning as `KBArticleEdit` below. See the comment there.
 #[component]
-fn KBArticleNew() -> Element {
-    rsx! { knowledge_base::KBArticleNewPage {} }
+fn KBArticleNew(parent_article_id: String, visibility: String) -> Element {
+    rsx! {
+        knowledge_base::KBArticleNewPage {
+            parent_article_id,
+            visibility,
+        }
+    }
 }
 
 // MAPPS-624: no `max-w-7xl mx-auto` wrapper, deliberately. The reading view
