@@ -6173,19 +6173,20 @@ fn PaymentGatewayConfigBody() -> Element {
             crate::components::ContentUnavailable { title: "Payment Gateways".to_string() }
         };
     }
+    let header_breadcrumbs: Element = if in_settings {
+        rsx! {
+            crate::pages::settings::SettingsBreadcrumb {
+                current: Route::SettingsGateways {},
+            }
+        }
+    } else {
+        rsx! { }
+    };
     rsx! {
         PageHeader {
             title: "Payment Gateways",
             subtitle: "Configure payment gateway integrations",
-            breadcrumbs: if in_settings {
-                rsx! {
-                    crate::pages::settings::SettingsBreadcrumb {
-                        current: Route::SettingsGateways {},
-                    }
-                }
-            } else {
-                rsx! { }
-            },
+            breadcrumbs: header_breadcrumbs,
             actions: rsx! {
                 if !in_settings {
                     Link {
