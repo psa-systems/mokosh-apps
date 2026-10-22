@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use crate::components::{
     use_page_title, AlertType, Badge, BadgeVariant, Button, ButtonVariant, Card, ErrorBanner,
-    PageHeader,
+    PageHeader, SearchInput, Select, SelectOption,
 };
 use crate::Route;
 
@@ -182,6 +182,12 @@ pub fn ApprovalsPage() -> Element {
     use_page_title("My Approvals");
     let mut version = use_signal(|| 0u32);
     let mut decision_error = use_signal(String::new);
+    // MAPPS-1113: client-side narrowing of the pending queue. The queue is
+    // unpaginated and bounded (per-caller, pending-only), so filtering lives on
+    // the client. `target_filter` drives the kind chip, `search` filters by
+    // requester or the parent's reference / title.
+    let mut target_filter = use_signal(String::new);
+    let mut search = use_signal(String::new);
     // MAPPS-737: the server's contact arm (PMS-1084) requires
     // `approvals:decide`; staff bypass the cap check as everywhere. Read
     // before any early return, because it is a hook.
@@ -206,12 +212,41 @@ pub fn ApprovalsPage() -> Element {
     });
 
     let snap = pending_resource.read_unchecked();
-    let rows: Vec<PendingApproval> = match &*snap {
+    let all_rows: Vec<PendingApproval> = match &*snap {
         Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
     let loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
+
+    // MAPPS-1113: narrow in-memory. Target chip is exact; search matches
+    // requester name, parent reference, parent title.
+    let target_q = target_filter.read().clone();
+    let search_q = search.read().trim().to_lowercase();
+    let total_before_filter = all_rows.len();
+    let rows: Vec<PendingApproval> = all_rows
+        .into_iter()
+        .filter(|r| {
+            if !target_q.is_empty() && r.target != target_q {
+                return false;
+            }
+            if search_q.is_empty() {
+                return true;
+            }
+            let requester = requester_label(
+                r.requested_by_name.as_deref(),
+                r.requested_by_contact_name.as_deref(),
+            )
+            .to_lowercase();
+            let reference = r.reference().to_lowercase();
+            let label = r.label().to_lowercase();
+            requester.contains(&search_q)
+                || reference.contains(&search_q)
+                || label.contains(&search_q)
+        })
+        .collect();
+    let has_filters = !target_q.is_empty() || !search_q.is_empty();
+    let filtered_out_all = has_filters && rows.is_empty() && total_before_filter > 0;
 
     // MAPPS-351: a failed load while the server is flagged down is an
     // outage, not an empty queue - show the honest unavailable state (which
@@ -283,11 +318,59 @@ pub fn ApprovalsPage() -> Element {
             }
         }
 
+        // MAPPS-1113: filter chips above the queue. Rendered even on the empty
+        // state so an operator can see the filters are what hid their rows.
+        if !loading && !fetch_failed && total_before_filter > 0 {
+            Card { class: "mb-6",
+                div { class: "flex flex-col sm:flex-row gap-4",
+                    div { class: "flex-1",
+                        SearchInput {
+                            value: search.read().clone(),
+                            placeholder: "Search requester or subject…",
+                            oninput: move |e: dioxus::prelude::FormEvent| {
+                                search.set(e.value());
+                            },
+                        }
+                    }
+                    Select {
+                        name: "target",
+                        options: vec![
+                            SelectOption::new("", "All kinds"),
+                            SelectOption::new("ticket", "Ticket"),
+                            SelectOption::new("time_entry", "Time entry"),
+                            SelectOption::new("change_request", "Change request"),
+                            SelectOption::new("quote", "Quote"),
+                        ],
+                        value: target_filter.read().clone(),
+                        onchange: move |e: dioxus::prelude::FormEvent| {
+                            target_filter.set(e.value());
+                        },
+                    }
+                    if has_filters {
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            onclick: move |_| {
+                                target_filter.set(String::new());
+                                search.set(String::new());
+                            },
+                            "Clear filters"
+                        }
+                    }
+                }
+            }
+        }
+
         if loading {
             Card { p { class: "text-sm text-muted py-6 text-center", "Loading…" } }
         } else if fetch_failed {
             Card {
                 div { class: "py-6 text-center", ErrorBanner { "Could not load pending approvals." } }
+            }
+        } else if filtered_out_all {
+            Card {
+                div { class: "py-10 text-center",
+                    p { class: "text-sm text-muted", "No matches." }
+                }
             }
         } else if rows.is_empty() {
             Card {
