@@ -5556,7 +5556,7 @@ fn CompanyKbCard(company_id: String) -> Element {
     }));
     let snap = articles.read_unchecked();
     let count: Option<u64> = match &*snap {
-        Some(Some(page)) => Some(page.meta.total as u64),
+        Some(Some(page)) => Some(page.meta.total),
         _ => None,
     };
     let view_all_href = format!("/kb/companies/{company_id}");
