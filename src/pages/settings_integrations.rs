@@ -22,6 +22,15 @@
 //! PMS-1447 had to add `credential_elsewhere` precisely because a page cannot
 //! derive that from a provider name.
 //!
+//! ## MAPPS-1122: a panel, not a second place to configure things
+//!
+//! The page answers one question: what is this organization connected to, and
+//! where is each one set up. Every provider the registry names is listed, with
+//! its status and one "Set up" link to the surface that owns it, and nothing
+//! is configured here that another surface already owns. The status for a
+//! provider whose connection lives elsewhere comes from that subsystem, so a
+//! connected Google Contacts reads as connected rather than as never set up.
+//!
 //! ## Two kinds of "somewhere else", which are not the same thing
 //!
 //! `managed_elsewhere` means the CONNECTION is owned by another subsystem, so
@@ -79,6 +88,21 @@ struct ManagedElsewhere {
     issue: String,
 }
 
+/// The settings surface that owns a provider's setup, and the panel's one
+/// action (MAPPS-1122).
+///
+/// `kind` is routed on and `label` is rendered. Two fields because the prose
+/// has already changed once: "Settings > Contact sync" named one page for
+/// three providers, and a client routing on prose would have broken when it
+/// was split.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct SetupSurface {
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    label: String,
+}
+
 /// Where a provider's CREDENTIAL is entered, when it is not in the connect
 /// request (PMS-1447).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -111,6 +135,9 @@ struct Integration {
     #[serde(default)]
     enabled_capabilities: Vec<String>,
     status: IntegrationStatus,
+    /// Where this provider is set up, served per provider (MAPPS-1122).
+    #[serde(default)]
+    setup: Option<SetupSurface>,
     /// Whether this build has anything behind the provider (MAPPS-1121).
     ///
     /// Defaults to TRUE for a server that predates the field, which keeps an
@@ -232,6 +259,17 @@ fn status_copy(status: IntegrationStatus) -> (&'static str, BadgeVariant, &'stat
 fn surface_route(kind: &str) -> Option<Route> {
     match kind {
         "payment_gateway" => Some(Route::PaymentGatewayConfig {}),
+        // MAPPS-1122: one kind per contact-sync provider, because they are
+        // three different pages. The old `contact_sync` kind sent every one of
+        // them to Google's.
+        "contact_sync_google" => Some(Route::SettingsGoogleContacts {}),
+        "contact_sync_icloud" => Some(Route::SettingsICloudContacts {}),
+        // MAPPS-1124: Microsoft 365's contact-sync page does not exist in this
+        // app yet, though the server's flow does. `None` renders the label
+        // with no link, which is the honest state: naming the page is useful,
+        // linking to one that 404s is not.
+        "contact_sync_microsoft" => None,
+        // The pre-MAPPS-1122 kind, still served by an older server.
         "contact_sync" => Some(Route::SettingsGoogleContacts {}),
         _ => None,
     }
@@ -273,7 +311,7 @@ fn IntegrationsList() -> Element {
     rsx! {
         PageHeader {
             title: "Connected Services",
-            subtitle: "What this organization delegates to other systems, and what each one is allowed to do.",
+            subtitle: "What this organization is connected to, what each one does, and where it is set up.",
             breadcrumbs: rsx! {
                 SettingsBreadcrumb { current: Route::SettingsIntegrations {} }
             },
@@ -532,28 +570,35 @@ fn IntegrationCard(
                     ErrorBanner { "{last_error}" }
                 }
 
-                // The connection is owned by another subsystem: say where, and
-                // offer nothing, because connecting here is a 409.
-                if let Some(elsewhere) = integration.managed_elsewhere.as_ref() {
-                    div { class: "space-y-2",
+                // MAPPS-1122: the panel's one action. Where a provider is set
+                // up is served per provider, so this is the same line for a
+                // payment gateway, a contact-sync source and anything added
+                // later; the three used to be a managed-elsewhere sentence, a
+                // credential-elsewhere sentence, and nothing at all.
+                if let Some(setup) = integration.setup.as_ref() {
+                    div { class: "space-y-1",
                         p { class: "text-sm text-muted",
-                            "This connection is set up under {elsewhere.configured_at}, not here."
+                            "Set up under {setup.label}, not here."
                         }
-                        if let Some(route) = surface_route("contact_sync") {
+                        if let Some(route) = surface_route(&setup.kind) {
                             Link { to: route, class: "text-sm text-accent hover:underline",
-                                "Go to {elsewhere.configured_at}"
+                                "Go to {setup.label}"
                             }
                         }
                     }
                 }
 
-                // Not connectable because nothing is behind it: the capability
-                // vocabulary is still the point of the entry, so it is shown as
-                // text. Hiding the provider entirely was the alternative, and a
-                // provider nobody can see is a provider nobody can ask for.
-                if !integration.available && !integration.supported_capabilities.is_empty() {
+                // Nothing to tick here: either the provider has nothing behind
+                // it (MAPPS-1121) or it is set up on its own surface
+                // (MAPPS-1122). The capability vocabulary is still the point of
+                // the entry, so it is shown as text. Hiding the provider
+                // entirely was the alternative, and a provider nobody can see
+                // is a provider nobody can ask for.
+                if !integration.connectable() && !integration.supported_capabilities.is_empty() {
                     div { class: "space-y-1",
-                        p { class: "text-sm font-medium text-content", "What it would do" }
+                        p { class: "text-sm font-medium text-content",
+                            if integration.available { "What it does" } else { "What it would do" }
+                        }
                         ul { class: "list-disc space-y-1 pl-5",
                             for capability in integration.supported_capabilities.iter() {
                                 li { class: "text-sm text-muted",
@@ -628,18 +673,6 @@ fn IntegrationCard(
                                 disabled: !can_mutate || busy(),
                                 help: "Write-only: never shown once saved.".to_string(),
                                 oninput: move |e: FormEvent| credential.set(e.value()),
-                            }
-                        }
-                        if let Some(elsewhere) = integration.credential_elsewhere.as_ref() {
-                            div { class: "space-y-1",
-                                p { class: "text-sm text-muted",
-                                    "The keys for this provider are entered under {elsewhere.entered_at}. Connecting here says what it may do; it does not ask for them again."
-                                }
-                                if let Some(route) = surface_route(&elsewhere.kind) {
-                                    Link { to: route, class: "text-sm text-accent hover:underline",
-                                        "Go to {elsewhere.entered_at}"
-                                    }
-                                }
                             }
                         }
 
@@ -981,5 +1014,99 @@ mod mapps1121_availability_tests {
         let xero_today = integration(serde_json::json!({ "available": true }));
         assert!(xero_today.connectable());
         assert!(xero_today.takes_credential());
+    }
+}
+
+/// MAPPS-1122: the panel says where each provider is set up, and sends an
+/// operator to the right page.
+#[cfg(test)]
+mod mapps1122_panel_tests {
+    use super::*;
+
+    fn integration(json: serde_json::Value) -> Integration {
+        let mut base = serde_json::json!({
+            "provider": "google",
+            "display_name": "Google",
+            "description": "d",
+            "supported_capabilities": [],
+            "enabled_capabilities": [],
+            "status": "not_connected",
+            "config": {},
+        });
+        if let (Some(b), Some(o)) = (base.as_object_mut(), json.as_object()) {
+            for (k, v) in o {
+                b.insert(k.clone(), v.clone());
+            }
+        }
+        serde_json::from_value(base).expect("the fixture deserialises")
+    }
+
+    /// Each contact-sync provider routes to its OWN page.
+    ///
+    /// The single `contact_sync` kind sent all three to Google's, which is
+    /// exactly the failure the per-provider kind exists to stop: an iCloud
+    /// admin following "Go to Settings > iCloud Contacts" and landing on the
+    /// Google page would have no way to tell it was the wrong one.
+    #[test]
+    fn each_setup_kind_routes_to_its_own_page() {
+        assert_eq!(
+            surface_route("payment_gateway"),
+            Some(Route::PaymentGatewayConfig {})
+        );
+        assert_eq!(
+            surface_route("contact_sync_google"),
+            Some(Route::SettingsGoogleContacts {})
+        );
+        assert_eq!(
+            surface_route("contact_sync_icloud"),
+            Some(Route::SettingsICloudContacts {})
+        );
+    }
+
+    /// Microsoft 365 names its page and does not link to it.
+    ///
+    /// The server's flow exists (MAPPS-1101); the SPA surface does not
+    /// (MAPPS-1124). Naming where it will be set up is useful, and linking to
+    /// a route this app cannot resolve is not: the card would offer a dead
+    /// end, which is the class of thing this page is being cured of.
+    #[test]
+    fn microsoft_names_its_page_without_linking_to_one_that_does_not_exist() {
+        assert_eq!(surface_route("contact_sync_microsoft"), None);
+        let microsoft = integration(serde_json::json!({
+            "provider": "microsoft",
+            "display_name": "Microsoft 365",
+            "setup": { "kind": "contact_sync_microsoft", "label": "Settings > Microsoft 365 Contacts" },
+        }));
+        let setup = microsoft.setup.expect("the label is still served");
+        assert_eq!(setup.label, "Settings > Microsoft 365 Contacts");
+        assert!(surface_route(&setup.kind).is_none());
+    }
+
+    /// An older server sends no `setup`, and the page renders without one.
+    ///
+    /// The field is new; a client that unwrapped it would break every
+    /// deployment that had not upgraded yet, which is the asymmetry a SPA
+    /// shipped separately from its server lives with.
+    #[test]
+    fn a_server_that_sends_no_setup_surface_still_renders() {
+        let old = integration(serde_json::json!({}));
+        assert!(old.setup.is_none());
+    }
+
+    /// A provider set up elsewhere offers no controls here, whatever the
+    /// reason.
+    ///
+    /// Two reasons reach this state and the card reads the same for both: the
+    /// connection belongs to another subsystem (Google), or there is nothing
+    /// behind the provider yet (MAPPS-1121). What matters to an operator is
+    /// that this is not where it is done.
+    #[test]
+    fn a_provider_set_up_elsewhere_offers_no_controls_here() {
+        let google = integration(serde_json::json!({
+            "managed_elsewhere": { "configured_at": "Settings > Google Contacts", "issue": "PMS-1315" },
+            "setup": { "kind": "contact_sync_google", "label": "Settings > Google Contacts" },
+        }));
+        assert!(!google.connectable());
+        assert!(!google.takes_credential());
     }
 }
