@@ -393,6 +393,11 @@ fn InvoiceListBody() -> Element {
     // MAPPS-1111: free-text search; the server already accepts `q` on
     // `InvoiceFilter`, matching invoice number and company name.
     let mut search = use_signal(|| crate::utils::url::current_query_param("q").unwrap_or_default());
+    // MAPPS-855: debounce the search dependency so a burst of keystrokes
+    // fires one full-page refetch per pause in typing rather than one per
+    // keystroke, matching the pattern on every other list page (e.g.
+    // `tickets.rs`).
+    let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let mut page = use_signal(|| 1usize);
 
     let companies_resource = use_resource(|| async {
@@ -432,7 +437,7 @@ fn InvoiceListBody() -> Element {
     let company_for_resource = company_text.clone();
     let status_for_resource = status_text.clone();
     let overdue_for_resource = overdue_text.clone();
-    let search_for_resource = search_text.clone();
+    let search_for_resource = search_debounced.read().trim().to_string();
     let invoices_resource = use_resource(move || {
         let company = company_for_resource.clone();
         let status = status_for_resource.clone();
