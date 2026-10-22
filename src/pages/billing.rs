@@ -23,8 +23,8 @@ use std::str::FromStr;
 use crate::components::{
     clear_on_edit, invoice_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonSize,
     ButtonVariant, Card, DataTable, ErrorBanner, IconSize, InformationIcon, Input, MailIcon, Modal,
-    ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty,
-    TableHead, TableHeader, TableLoading, TableRow,
+    ModalSize, PageHeader, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody,
+    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
@@ -390,6 +390,9 @@ fn InvoiceListBody() -> Element {
     let mut status_filter = use_signal(String::new);
     // MAPPS-728: the overdue filter, sent as `overdue=true|false` (PMS-1037).
     let mut overdue_filter = use_signal(String::new);
+    // MAPPS-1111: free-text search; the server already accepts `q` on
+    // `InvoiceFilter`, matching invoice number and company name.
+    let mut search = use_signal(|| crate::utils::url::current_query_param("q").unwrap_or_default());
     let mut page = use_signal(|| 1usize);
 
     let companies_resource = use_resource(|| async {
@@ -423,15 +426,18 @@ fn InvoiceListBody() -> Element {
     let company_text = company_filter.read().trim().to_string();
     let status_text = status_filter.read().clone();
     let overdue_text = overdue_filter.read().clone();
+    let search_text = search.read().trim().to_string();
     let current_page = (*page.read()).max(1);
 
     let company_for_resource = company_text.clone();
     let status_for_resource = status_text.clone();
     let overdue_for_resource = overdue_text.clone();
+    let search_for_resource = search_text.clone();
     let invoices_resource = use_resource(move || {
         let company = company_for_resource.clone();
         let status = status_for_resource.clone();
         let overdue = overdue_for_resource.clone();
+        let q = search_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             // MAPPS-357: subscribe to reachability so the list auto-refetches
@@ -459,6 +465,12 @@ fn InvoiceListBody() -> Element {
             if let Some(q) = overdue_query(&overdue) {
                 path.push_str(q);
             }
+            if !q.is_empty() {
+                path.push_str(&format!(
+                    "&q={}",
+                    crate::utils::url::encode_uri_component(&q)
+                ));
+            }
             crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteInvoice>>(&path)
                 .await
                 .inspect_err(|e| tracing::error!("invoice list load failed: {e}"))
@@ -485,8 +497,10 @@ fn InvoiceListBody() -> Element {
             crate::components::ContentUnavailable { title: "Invoices".to_string() }
         };
     }
-    let has_filters =
-        !company_text.is_empty() || !status_text.is_empty() || !overdue_text.is_empty();
+    let has_filters = !company_text.is_empty()
+        || !status_text.is_empty()
+        || !overdue_text.is_empty()
+        || !search_text.is_empty();
 
     rsx! {
         PageHeader {
@@ -522,6 +536,16 @@ fn InvoiceListBody() -> Element {
         // Filters
         Card { class: "mb-6",
             div { class: "flex flex-col sm:flex-row gap-4",
+                div { class: "flex-1",
+                    SearchInput {
+                        value: search.read().clone(),
+                        placeholder: "Search invoices…",
+                        oninput: move |e: FormEvent| {
+                            search.set(e.value());
+                            page.set(1);
+                        },
+                    }
+                }
                 div { class: "flex-1",
                     Select {
                         name: "company_id",
