@@ -62,6 +62,19 @@ pass() {
 
 prepare_workdir() {
     WORKDIR="$(mktemp -d)" || return 1
+    # MAPPS-1126: stage the two image files with modes a container user can
+    # read. `docker cp` preserves the source mode, and a developer whose umask
+    # leaves the checkout 0600 ships files the mapped uid cannot open, which
+    # reads as "server failed to start" rather than as a permissions problem.
+    # CI checks out 0644 and never saw it.
+    cp oci-build/entrypoint.sh "$WORKDIR/entrypoint.sh" || return 1
+    cp oci-build/Caddyfile "$WORKDIR/Caddyfile" || return 1
+    chmod 0755 "$WORKDIR/entrypoint.sh" || return 1
+    chmod 0644 "$WORKDIR/Caddyfile" || return 1
+    # The index.html below is staged the same way, and for the same reason: the
+    # entrypoint copies it from the bundle into the runtime directory as the
+    # mapped uid, so a 0600 source fails that copy and the scenario reports
+    # "server failed to start" for a file-mode problem.
     # A minimal index.html the entrypoint can patch; the serving
     # contract is "the operator's env lands in the config shim and
     # the include tag is in <head>", which does not need the dx
@@ -78,6 +91,7 @@ prepare_workdir() {
 <body></body>
 </html>
 HTML
+    chmod 0644 "$WORKDIR/index.html" || return 1
 }
 
 # Start a plain caddy:2-alpine with our entrypoint and Caddyfile.
@@ -102,8 +116,8 @@ start_server() {
         "$CADDY_IMAGE" \
         caddy run --config /etc/caddy/Caddyfile \
         >/dev/null || return 1
-    docker cp oci-build/entrypoint.sh "$name:/usr/local/bin/entrypoint.sh" >/dev/null || return 1
-    docker cp oci-build/Caddyfile "$name:/etc/caddy/Caddyfile" >/dev/null || return 1
+    docker cp "$WORKDIR/entrypoint.sh" "$name:/usr/local/bin/entrypoint.sh" >/dev/null || return 1
+    docker cp "$WORKDIR/Caddyfile" "$name:/etc/caddy/Caddyfile" >/dev/null || return 1
     docker cp "$WORKDIR/index.html" "$name:/usr/share/caddy/index.html" >/dev/null || return 1
     docker start "$name" >/dev/null || return 1
     # Wait for Caddy to answer. 30 seconds beats a slow runner start.
@@ -175,20 +189,35 @@ check_unwritable() {
     # path hits. The old entrypoint logged a warning and served the
     # compile-time fallback; the new one must exit non-zero and name
     # the path.
-    docker run --rm \
+    # MAPPS-1126: `docker create` + `docker cp` + `docker start --attach`, the
+    # way every other scenario in this file gets its files in. This one used
+    # `-v "$(pwd)/oci-build/..."`, which works on a laptop and cannot work in
+    # CI: the job runs in a container driving the HOST's docker daemon, so a
+    # bind-mount source is resolved on the host, where the job's checkout does
+    # not exist. The container then failed to start with a mount error, exit
+    # 125 satisfied "exited non-zero", and the two assertions below failed
+    # against docker's error text instead of the entrypoint's. MAPPS-911 fixed
+    # the identical thing in check-link-preview.sh; this file's own header
+    # already says "no bind mounts".
+    docker create \
         --name "$name" \
         --entrypoint /usr/local/bin/entrypoint.sh \
         -e PORT=8080 \
         -e MOKOSH_RUNTIME_DIR=/ro/runtime \
         --tmpfs /ro:ro,mode=0555 \
-        -v "$(pwd)/oci-build/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro" \
-        -v "$(pwd)/oci-build/Caddyfile:/etc/caddy/Caddyfile:ro" \
         "$CADDY_IMAGE" \
         caddy run --config /etc/caddy/Caddyfile \
+        >/dev/null || return 1
+    docker cp "$WORKDIR/entrypoint.sh" "$name:/usr/local/bin/entrypoint.sh" >/dev/null || return 1
+    docker cp "$WORKDIR/Caddyfile" "$name:/etc/caddy/Caddyfile" >/dev/null || return 1
+    # `start --attach` reports the container's own exit code and streams its
+    # output, so the assertions read the entrypoint rather than the daemon.
+    docker start --attach "$name" \
         >/tmp/mapps963-stdout.log 2>/tmp/mapps963-stderr.log
     code=$?
     stderr="$(cat /tmp/mapps963-stderr.log 2>/dev/null || true)"
     rm -f /tmp/mapps963-stdout.log /tmp/mapps963-stderr.log
+    docker rm "$name" >/dev/null 2>&1 || true
 
     if [ "$code" -eq 0 ]; then
         fail "${scenario}: entrypoint exited 0 on a read-only runtime dir; it must refuse to boot"
@@ -240,7 +269,7 @@ main() {
             caddy run --config /etc/caddy/Caddyfile \
             >/dev/null
         docker cp "$broken_dir/entrypoint.sh" "$name:/usr/local/bin/entrypoint.sh"
-        docker cp oci-build/Caddyfile "$name:/etc/caddy/Caddyfile"
+        docker cp "$WORKDIR/Caddyfile" "$name:/etc/caddy/Caddyfile"
         docker cp "$WORKDIR/index.html" "$name:/usr/share/caddy/index.html"
         if docker start "$name" >/dev/null && \
            sleep 2 && \
