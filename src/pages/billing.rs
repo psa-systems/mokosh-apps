@@ -6187,20 +6187,36 @@ fn PaymentGatewayConfigBody() -> Element {
     // inline banner below. Writes are blocked while down via `can_mutate`.
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
+    // Every hook runs BEFORE the first early return: a `use_*` call that
+    // follows a conditional `return` runs on some renders and not others,
+    // which poisons the dioxus hook index on the next render.
+    let current_route: Route = use_route();
+    let in_settings = matches!(current_route, Route::SettingsGateways {});
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Payment Gateways".to_string() }
         };
     }
-
+    let header_breadcrumbs: Element = if in_settings {
+        rsx! {
+            crate::pages::settings::SettingsBreadcrumb {
+                current: Route::SettingsGateways {},
+            }
+        }
+    } else {
+        rsx! {}
+    };
     rsx! {
         PageHeader {
             title: "Payment Gateways",
             subtitle: "Configure payment gateway integrations",
+            breadcrumbs: header_breadcrumbs,
             actions: rsx! {
-                Link {
-                    to: Route::InvoiceList {},
-                    Button { variant: ButtonVariant::Secondary, "Back to Invoices" }
+                if !in_settings {
+                    Link {
+                        to: Route::InvoiceList {},
+                        Button { variant: ButtonVariant::Secondary, "Back to Invoices" }
+                    }
                 }
                 Button {
                     variant: ButtonVariant::Primary,
