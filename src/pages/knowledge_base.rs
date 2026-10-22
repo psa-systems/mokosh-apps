@@ -643,6 +643,13 @@ pub fn KBHomePage() -> Element {
             }
         }
 
+        // Browse by company: jump directly to a company's KB from here. The
+        // picker uses the same CompanyPicker control the article form and
+        // the contact form do; picking one navigates to `/kb/companies/:id`.
+        // No inline company creation here: an operator browsing documentation
+        // is not where a CRM company record should be born.
+        BrowseByCompanyCard {}
+
         // Categories
         if categories_loading {
             div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8",
@@ -1260,6 +1267,198 @@ pub fn KBArticleListPage(
                                         tags: article.tags,
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// "Browse by company" entry point on `KBHomePage`. One `CompanyPicker`
+/// control, no inline creation (the KB home is not where a CRM company
+/// record should be born); selecting a company navigates to that company's
+/// KB view.
+#[component]
+fn BrowseByCompanyCard() -> Element {
+    let navigator = use_navigator();
+    rsx! {
+        Card { class: "mb-6",
+            div { class: "space-y-2",
+                p { class: "text-sm font-medium text-content", "Browse by company" }
+                p { class: "text-xs text-muted",
+                    "Pick a client to open the articles scoped to that company."
+                }
+                crate::components::CompanyPicker {
+                    value: String::new(),
+                    selected_id: None,
+                    label: String::new(),
+                    required: false,
+                    allow_inline_create: false,
+                    error: String::new(),
+                    onselect: move |(id, _name): (String, String)| {
+                        navigator.push(Route::KBCompany { id });
+                    },
+                    onclear: move |_| {},
+                }
+            }
+        }
+    }
+}
+
+/// Per-company KB view: every article scoped to one company. Reached from
+/// the Knowledge Base card on `CompanyDetailPage` and from the "Browse by
+/// company" picker on `KBHomePage`.
+///
+/// Two reads: the article list filtered server-side via the `?company_id=`
+/// filter PMS-816 added, and the company's name for the header. A failed
+/// name lookup renders an inline error banner naming the shortfall; the
+/// article list still renders.
+#[component]
+pub fn KBCompanyPage(id: String) -> Element {
+    use_page_title("Company Knowledge Base");
+    let tz = crate::utils::datetime::user_timezone();
+    let pref = crate::utils::datetime::user_format_pref();
+    let mut page = use_signal(|| 1usize);
+
+    // The company's name, read once per id, for the page header. An ad-hoc
+    // one-field struct keeps this independent of `contacts::CompanyEditPayload`
+    // (which is private to its module).
+    #[derive(Clone, Debug, serde::Deserialize)]
+    struct CompanyNameOnly {
+        #[serde(default)]
+        name: String,
+    }
+    let id_for_name = id.clone();
+    let name_resource = use_resource(use_reactive!(|id_for_name| async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _reachable = crate::hooks::use_server_reachable();
+        crate::hooks::fetch::api::get_authed::<CompanyNameOnly>(&format!(
+            "/contacts/companies/{id_for_name}"
+        ))
+        .await
+        .inspect_err(|e| {
+            tracing::warn!("per-company KB page: company name load failed for {id_for_name}: {e}")
+        })
+        .ok()
+    }));
+
+    let id_for_articles = id.clone();
+    let articles_resource = use_resource(use_reactive!(|id_for_articles, page| async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _reachable = crate::hooks::use_server_reachable();
+        let token = crate::hooks::fetch::api::current_access_token()?;
+        let current_page = (*page.read()).max(1);
+        let path = format!(
+            "/kb/articles?company_id={id_for_articles}&page={current_page}&per_page={PER_PAGE}"
+        );
+        crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(&path, &token)
+            .await
+            .inspect_err(|e| {
+                tracing::error!(
+                    "per-company KB page: article load failed for {id_for_articles}: {e}"
+                )
+            })
+            .ok()
+            .map(|resp| (resp.data, resp.meta.total))
+    }));
+
+    let reachable = crate::hooks::use_server_reachable();
+    let articles_snap = articles_resource.read_unchecked();
+    let is_loading = articles_snap.is_none();
+    let fetch_failed = matches!(*articles_snap, Some(None));
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Company Knowledge Base".to_string() }
+        };
+    }
+    let (rows, total): (Vec<KbArticle>, i64) = match &*articles_snap {
+        Some(Some((rs, total))) => (rs.clone(), *total),
+        _ => (Vec::new(), 0),
+    };
+
+    let name_snap = name_resource.read_unchecked();
+    let (header_title, name_error) = match &*name_snap {
+        Some(Some(c)) if !c.name.trim().is_empty() => (c.name.clone(), None::<&'static str>),
+        Some(Some(_)) => ("Company".to_string(), Some("The company has no name set.")),
+        Some(None) => (
+            "Company".to_string(),
+            Some("Could not load the company name."),
+        ),
+        None => ("Company".to_string(), None),
+    };
+
+    let current_page = (*page.read()).max(1);
+
+    rsx! {
+        PageHeader {
+            title: header_title,
+            subtitle: "Articles scoped to this company".to_string(),
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs {
+                    items: vec![
+                        crate::components::BreadcrumbItem {
+                            label: "Knowledge Base".to_string(),
+                            route: Some(Route::KBHome {}),
+                        },
+                        crate::components::BreadcrumbItem {
+                            label: "Companies".to_string(),
+                            route: None,
+                        },
+                    ],
+                }
+            },
+        }
+
+        if let Some(msg) = name_error {
+            ErrorBanner { class: "mb-3", "{msg}" }
+        }
+
+        if fetch_failed {
+            ErrorBanner { class: "mb-3",
+                "Could not load articles. Refresh the page to retry."
+            }
+        }
+
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 4,
+            onpagechange: move |p| page.set(p),
+            Table {
+                striped: true,
+                TableHead {
+                    TableRow {
+                        TableHeader { "Title" }
+                        TableHeader { "Status" }
+                        TableHeader { "Visibility" }
+                        TableHeader { "Updated" }
+                    }
+                }
+                if is_loading {
+                    TableLoading { columns: 4, rows: 5 }
+                } else if rows.is_empty() {
+                    TableEmpty {
+                        columns: 4,
+                        title: "No articles scoped to this company yet".to_string(),
+                        description: "Create a client-specific article scoped to this company to see it here.".to_string(),
+                    }
+                } else {
+                    TableBody {
+                        for article in rows.iter().cloned() {
+                            ArticleRow {
+                                key: "{article.id}",
+                                id: article.id.to_string(),
+                                title: article.title,
+                                status: article.status,
+                                visibility: article.visibility,
+                                company_count: article.company_ids.len(),
+                                updated: date_only(&article.updated_at, pref.as_deref(), tz),
+                                updated_iso: article.updated_at.map(|d| d.to_rfc3339()).unwrap_or_default(),
+                                tags: article.tags,
                             }
                         }
                     }
