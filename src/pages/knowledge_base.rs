@@ -1984,7 +1984,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                             if !is_contact && article.parent_article_id.is_none() {
                                 CompanyVersionsCard {
                                     parent_id: article.id,
-                                    children: children.clone(),
+                                    versions: children.clone(),
                                 }
                             }
                             // MAPPS-741: the article's own headings, following
@@ -2264,16 +2264,16 @@ fn LinkedTicketsCard(article_id: String) -> Element {
 /// Child rows come from the shared `tree_articles_resource` on the detail
 /// page, so this card itself issues no network request.
 #[component]
-fn CompanyVersionsCard(parent_id: uuid::Uuid, children: Vec<KbArticle>) -> Element {
+fn CompanyVersionsCard(parent_id: uuid::Uuid, versions: Vec<KbArticle>) -> Element {
     rsx! {
         Card { title: "Company versions",
-            if children.is_empty() {
+            if versions.is_empty() {
                 p { class: "text-xs text-subtle",
                     "No company versions yet."
                 }
             } else {
                 ul { class: "divide-y divide-line -my-2",
-                    for child in children.iter() {
+                    for child in versions.iter() {
                         {
                             let key = child.id.to_string();
                             let href = child.id.to_string();
@@ -2841,6 +2841,10 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
                     content: article.content.clone(),
                     tags: article.tags.join(", "),
                     companies: companies.clone(),
+                    // The edit form does not expose the parent as an
+                    // editable field; empty here maps to `None` on the
+                    // update request, which leaves the stored value alone.
+                    parent_article_id: String::new(),
                 };
                 let id = id_for_form.clone();
                 rsx! {
@@ -4733,6 +4737,7 @@ mod tests {
             tags: vec![],
             company_ids: vec![],
             company_names: vec![],
+            parent_article_id: None,
             created_at: None,
             updated_at: None,
         }
