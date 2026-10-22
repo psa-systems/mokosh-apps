@@ -13,15 +13,43 @@
     # the PWA manifest) stays at the compile-time bundle root. The
     # SPA fallback rewrites to /index.html before matching, so
     # client-side routes also pick up the patched copy.
-    @runtime path /_mokosh_config.js /_mokosh_config.json /index.html
-    root @runtime {$MOKOSH_RUNTIME_DIR:/tmp/mokosh-runtime}
+    # The site root, which the `file` matchers in the header rules below
+    # resolve against. The handlers that serve a request pick their own.
     root * /usr/share/caddy
     encode gzip zstd
 
-    # SPA fallback: serve index.html for missing files (client-side routing)
-    try_files {path} /index.html
+    # The three runtime-rendered files, by exact path.
+    @runtime path /_mokosh_config.js /_mokosh_config.json /index.html
+    handle @runtime {
+        root * {$MOKOSH_RUNTIME_DIR:/tmp/mokosh-runtime}
+        file_server
+    }
 
-    file_server
+    handle {
+        # Anything with a file on disk is a compile-time bundle asset:
+        # hashed /assets and /wasm, the favicons, the PWA manifest.
+        @bundled file {path}
+        handle @bundled {
+            file_server
+        }
+
+        # MAPPS-1125: the SPA fallback, which has to resolve against the
+        # RUNTIME directory and not the bundle. `root` is evaluated long
+        # before `try_files` rewrites the path, so the previous
+        # `try_files {path} /index.html` sitting under `root * /usr/share/caddy`
+        # served the PRISTINE index.html for `/` and for every client-side
+        # route: no link-preview metadata and, worse, no `_mokosh_config.js`
+        # script tag, because the entrypoint injects both into the runtime
+        # copy only. `/index.html` was the one URL that got the patched page,
+        # and nobody types that. Rewriting inside a handle whose own root is
+        # the runtime directory is what makes the fallback serve the file the
+        # entrypoint actually wrote.
+        handle {
+            root * {$MOKOSH_RUNTIME_DIR:/tmp/mokosh-runtime}
+            rewrite * /index.html
+            file_server
+        }
+    }
 
     # MAPPS-814: parity fallback for the `msp.<tld>` host-prefix derivation
     # `src/hooks/fetch.rs::api_base()` and `src/modules/oidc/config.rs::resolve()`
