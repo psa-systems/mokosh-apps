@@ -833,85 +833,22 @@ pub mod api {
         PORTAL_ACCESS_TOKEN.with(|t| t.borrow().is_some())
     }
 
-    /// MAPPS-563 / MAPPS-917: `sessionStorage` key under which the portal
-    /// refresh token is persisted so it survives a hard refresh of the
-    /// same tab. Distinct from the platform-admin `mokosh:platform_token`
-    /// and the standalone-agent session keys so a stale value from
-    /// another plane cannot cross-populate this one.
-    ///
-    /// XSS trade-off (MAPPS-917; cookie flow: MAPPS-920): the refresh token is readable
-    /// by scripts running on the portal origin. `sessionStorage` bounds
-    /// the exposure to the tab lifetime, so a new tab needs a fresh
-    /// sign-in and a hard reload of `/portal/*` either recovers the
-    /// session from this key or lands on the sign-in page. The full fix
-    /// is an HttpOnly cookie, which needs server-side CORS and cookie
-    /// scoping work across the tenant and API subdomains.
-    #[cfg(target_arch = "wasm32")]
-    const PORTAL_REFRESH_STORAGE_KEY: &str = "mokosh:portal_refresh_token";
-
-    /// PMS-729 phase 2 H2 / MAPPS-563: set the portal refresh token.
-    /// Called from the login page on `POST /portal/auth/login` and from
-    /// the auto-refresh hook after `POST /portal/auth/refresh`. `None`
-    /// clears both the in-memory slot and the localStorage mirror so a
-    /// hard refresh after logout lands the visitor at /portal/login
-    /// rather than silently re-authenticating.
+    /// Set the portal refresh token. In-memory only; the sessionStorage
+    /// mirror MAPPS-917 added as an interim XSS bound is gone (MAPPS-920
+    /// moved the refresh-token lifecycle to the HttpOnly cookie minted
+    /// server-side, which the browser sends automatically). A hard reload
+    /// now either resumes through the cookie or lands at the sign-in
+    /// page; the latter was already MAPPS-917's accepted trade-off.
     #[cfg(feature = "app")]
     pub fn set_portal_refresh_token(token: Option<String>) {
-        PORTAL_REFRESH_TOKEN.with(|t| *t.borrow_mut() = token.clone());
-        // Persist to localStorage so a cold-load can re-mint the access
-        // token via /portal/auth/refresh before PortalGuard bounces.
-        // Any storage access can throw (private-mode browsers, disabled
-        // site data), so degrade to in-memory-only on failure.
-        #[cfg(target_arch = "wasm32")]
-        if let Some(win) = web_sys::window() {
-            if let Ok(Some(storage)) = win.session_storage() {
-                match token.as_deref() {
-                    Some(value) => {
-                        let _ = storage.set_item(PORTAL_REFRESH_STORAGE_KEY, value);
-                    }
-                    None => {
-                        let _ = storage.remove_item(PORTAL_REFRESH_STORAGE_KEY);
-                    }
-                }
-            }
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        let _ = token;
+        PORTAL_REFRESH_TOKEN.with(|t| *t.borrow_mut() = token);
     }
 
-    /// PMS-729 phase 2 H2 / MAPPS-563: read the portal refresh token.
-    /// Only the refresh flow and the logout flow call this.
-    ///
-    /// MAPPS-563: when the in-memory slot is empty (cold-load after a
-    /// hard refresh / deep-link), fall back to the localStorage mirror.
-    /// The first successful `POST /portal/auth/refresh` rotates the
-    /// token and calls `set_portal_refresh_token(Some(new))`, which
-    /// updates both places. If the localStorage read succeeds we also
-    /// prime the in-memory slot so subsequent reads in the same
-    /// browser session skip the storage round-trip.
+    /// Read the portal refresh token. In-memory only; see
+    /// `set_portal_refresh_token` for the sessionStorage removal rationale.
     #[cfg(feature = "app")]
     pub fn current_portal_refresh_token() -> Option<String> {
-        let in_memory = PORTAL_REFRESH_TOKEN.with(|t| t.borrow().clone());
-        if in_memory.is_some() {
-            return in_memory;
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let win = web_sys::window()?;
-            let storage = win.session_storage().ok().flatten()?;
-            let stored = storage
-                .get_item(PORTAL_REFRESH_STORAGE_KEY)
-                .ok()
-                .flatten()?;
-            if stored.is_empty() {
-                return None;
-            }
-            // Prime the in-memory slot so the next caller skips storage.
-            PORTAL_REFRESH_TOKEN.with(|t| *t.borrow_mut() = Some(stored.clone()));
-            Some(stored)
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        None
+        PORTAL_REFRESH_TOKEN.with(|t| t.borrow().clone())
     }
 
     // --- Contact-plane session holders (mokosh-contact-login, prompt 005) ---
@@ -922,10 +859,11 @@ pub mod api {
     // contact bearer (rare, but the mokosh workspace routes render for
     // either identity) does not accidentally cross the two: the
     // `_contact_authed` helpers read ONLY this slot, and the staff
-    // helpers read ONLY `ACCESS_TOKEN`. Refresh mirror lives in
-    // sessionStorage under `CONTACT_REFRESH_STORAGE_KEY` (MAPPS-917) so a hard
-    // refresh / deep-link cold-load can re-mint via
-    // `POST /contact/auth/refresh` before AuthGuard bounces.
+    // helpers read ONLY `ACCESS_TOKEN`. Refresh lives in the HttpOnly
+    // `mokosh:contact_token` cookie mokosh-server mints (MAPPS-920); the
+    // sessionStorage mirror MAPPS-917 added as an interim bound is gone,
+    // since the browser now sends the cookie to
+    // `POST /contact/auth/refresh` on a hard refresh or deep-link.
     #[cfg(feature = "app")]
     thread_local! {
         static CONTACT_ACCESS_TOKEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
@@ -950,9 +888,6 @@ pub mod api {
         /// gate that requires the id falls closed.
         static CONTACT_ID: std::cell::RefCell<Option<uuid::Uuid>> = const { std::cell::RefCell::new(None) };
     }
-
-    #[cfg(target_arch = "wasm32")]
-    const CONTACT_REFRESH_STORAGE_KEY: &str = "mokosh:contact_refresh_token";
 
     /// `localStorage` key that remembers "this browser last signed in
     /// as a contact on slug X" so the AuthGuard bounce for an expired
@@ -1001,54 +936,20 @@ pub mod api {
         CONTACT_ACCESS_TOKEN.with(|t| t.borrow().is_some())
     }
 
-    /// Set the contact refresh token. Also mirrors to localStorage so
-    /// a cold-load can bootstrap via `/contact/auth/refresh`. Passing
-    /// `None` clears both the in-memory slot and the storage mirror.
+    /// Set the contact refresh token. In-memory only; the HttpOnly
+    /// `mokosh:contact_token` cookie mokosh-server mints is the durable
+    /// mirror now (MAPPS-920). `None` clears the in-memory slot; the
+    /// cookie is cleared by the logout path's response.
     #[cfg(feature = "app")]
     pub fn set_contact_refresh_token(token: Option<String>) {
-        CONTACT_REFRESH_TOKEN.with(|t| *t.borrow_mut() = token.clone());
-        #[cfg(target_arch = "wasm32")]
-        if let Some(win) = web_sys::window() {
-            if let Ok(Some(storage)) = win.session_storage() {
-                match token.as_deref() {
-                    Some(value) => {
-                        let _ = storage.set_item(CONTACT_REFRESH_STORAGE_KEY, value);
-                    }
-                    None => {
-                        let _ = storage.remove_item(CONTACT_REFRESH_STORAGE_KEY);
-                    }
-                }
-            }
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        let _ = token;
+        CONTACT_REFRESH_TOKEN.with(|t| *t.borrow_mut() = token);
     }
 
-    /// Read the contact refresh token. Falls back to the localStorage
-    /// mirror on a cold-load; primes the in-memory slot so subsequent
-    /// reads skip the storage round-trip.
+    /// Read the contact refresh token. In-memory only; see
+    /// `set_contact_refresh_token` for the sessionStorage removal rationale.
     #[cfg(feature = "app")]
     pub fn current_contact_refresh_token() -> Option<String> {
-        let in_memory = CONTACT_REFRESH_TOKEN.with(|t| t.borrow().clone());
-        if in_memory.is_some() {
-            return in_memory;
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let win = web_sys::window()?;
-            let storage = win.session_storage().ok().flatten()?;
-            let stored = storage
-                .get_item(CONTACT_REFRESH_STORAGE_KEY)
-                .ok()
-                .flatten()?;
-            if stored.is_empty() {
-                return None;
-            }
-            CONTACT_REFRESH_TOKEN.with(|t| *t.borrow_mut() = Some(stored.clone()));
-            Some(stored)
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        None
+        CONTACT_REFRESH_TOKEN.with(|t| t.borrow().clone())
     }
 
     /// Remember the last slug this browser signed in on. Used by the
