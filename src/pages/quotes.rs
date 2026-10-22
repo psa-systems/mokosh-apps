@@ -25,9 +25,9 @@ use uuid::Uuid;
 
 use crate::components::{
     use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, ConfirmDialog, DataTable,
-    ErrorBanner, IconSize, Input, MailIcon, Modal, ModalSize, PageHeader, PlusIcon, Select,
-    SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
-    TableRow, Textarea,
+    ErrorBanner, IconSize, Input, MailIcon, Modal, ModalSize, PageHeader, PlusIcon, SearchInput,
+    Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
+    TableLoading, TableRow, Textarea,
 };
 use crate::hooks::use_can_mutate;
 use crate::modules::quotes::{
@@ -163,6 +163,10 @@ fn QuoteListBody() -> Element {
     let mut company_filter =
         use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     let mut status_filter = use_signal(String::new);
+    // MAPPS-1112: free-text search; the server accepts `q` on `QuoteFilter`,
+    // matching quote number and company name. Same shape as MAPPS-1111 for
+    // invoices.
+    let mut search = use_signal(|| crate::utils::url::current_query_param("q").unwrap_or_default());
     let mut page = use_signal(|| 1usize);
 
     let status_options = vec![
@@ -219,13 +223,16 @@ fn QuoteListBody() -> Element {
 
     let company_text = company_filter.read().clone();
     let status_text = status_filter.read().clone();
+    let search_text = search.read().trim().to_string();
     let current_page = (*page.read()).max(1);
 
     let company_for_resource = company_text.clone();
     let status_for_resource = status_text.clone();
+    let search_for_resource = search_text.clone();
     let quotes_resource = use_resource(move || {
         let company = company_for_resource.clone();
         let status = status_for_resource.clone();
+        let q = search_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let _reachable = crate::hooks::use_server_reachable();
@@ -243,6 +250,9 @@ fn QuoteListBody() -> Element {
             if !status.is_empty() {
                 path.push_str(&format!("&status={}", urlencoding_minimal(&status)));
             }
+            if !q.is_empty() {
+                path.push_str(&format!("&q={}", urlencoding_minimal(&q)));
+            }
             crate::hooks::fetch::api::get_authed_any::<Paginated<QuoteResponse>>(&path)
                 .await
                 .inspect_err(|e| tracing::error!("quote list load failed: {e}"))
@@ -257,7 +267,8 @@ fn QuoteListBody() -> Element {
         Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
         _ => (Vec::new(), 0),
     };
-    let has_filters = !company_text.is_empty() || !status_text.is_empty();
+    let has_filters =
+        !company_text.is_empty() || !status_text.is_empty() || !search_text.is_empty();
 
     let reachable = crate::hooks::use_server_reachable();
     if fetch_failed && !reachable {
@@ -286,6 +297,16 @@ fn QuoteListBody() -> Element {
 
         Card { class: "mb-6",
             div { class: "flex flex-col sm:flex-row gap-4",
+                div { class: "flex-1",
+                    SearchInput {
+                        value: search.read().clone(),
+                        placeholder: "Search quotes…",
+                        oninput: move |e: FormEvent| {
+                            search.set(e.value());
+                            page.set(1);
+                        },
+                    }
+                }
                 div { class: "flex-1",
                     Select {
                         name: "company",
