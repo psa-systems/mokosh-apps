@@ -88,7 +88,7 @@ FROM caddy:2-alpine@sha256:de23def33b17fb5d1290b0f6c2add1d70780e52341896c00a4c8a
 
 # Runtime stage - serve static assets via Caddy. Each output image
 # in a multi-arch build picks up the matching alpine variant.
-FROM alpine:3.21@sha256:ce64758a109eb420d874a118f87920e625e12d3634e03b4a5573fd9f6e5d3507
+FROM alpine:3.23@sha256:132c5416901054a60a6c1f9f5073fd16dc91c8f3de1693f6be93b5912cf3ee71
 
 # Copy Caddy from the target-arch stage above
 COPY --from=caddy-bin /usr/bin/caddy /usr/bin/caddy
@@ -135,17 +135,30 @@ COPY --chmod=0644 oci-build/Caddyfile /etc/caddy/Caddyfile
 # --chmod=0755 here is safe (no implicit parent dir creation).
 COPY --chmod=0755 oci-build/entrypoint.sh /usr/local/bin/entrypoint.sh
 
+# Shared gosu entrypoint (MAPPS-1110), byte-identical across every
+# first-party image. Never edit this file here; it is copied verbatim.
+COPY --chmod=0755 oci-build/gosu-entrypoint.sh /usr/local/bin/gosu-entrypoint.sh
+
 # MAPPS-963: the image no longer owns /usr/share/caddy as a specific
 # uid. entrypoint.sh writes the runtime-config shim and the patched
 # index.html into $MOKOSH_RUNTIME_DIR (default /tmp/mokosh-runtime),
 # which is world-writable, so the container runs cleanly as the
 # default `appuser` (uid 1001) OR as a host-side account like
 # DEV-271's 10000:10000 override.
-RUN adduser --disabled-password --uid 1001 appuser
-USER appuser
+#
+# gosu, shadow (usermod/groupmod) and the appuser account support the
+# shared gosu-entrypoint.sh below (MAPPS-1110). appuser is created
+# with a fixed 1001:1001 so the image has a stable default; the
+# entrypoint remaps both at start when PUID/PGID or a data dir's
+# ownership says otherwise.
+RUN apk add --no-cache gosu shadow \
+    && addgroup -g 1001 appuser \
+    && adduser -D -H -u 1001 -G appuser appuser
 
 ENV PORT=8080 \
-    MOKOSH_RUNTIME_DIR=/tmp/mokosh-runtime
+    MOKOSH_RUNTIME_DIR=/tmp/mokosh-runtime \
+    APP_USER=appuser \
+    DATA_DIRS=""
 EXPOSE 8080
 
 ARG GIT_SHA=""
@@ -159,5 +172,9 @@ LABEL org.opencontainers.image.revision="${GIT_SHA}"
 # without users having to Ctrl+Shift+R.
 ENV GIT_SHA=${GIT_SHA}
 
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+# The container starts as root; gosu-entrypoint.sh remaps appuser to
+# PUID/PGID (or the owner of the first DATA_DIRS entry) and drops to it
+# with gosu before exec'ing entrypoint.sh. A compose `user:` pin skips
+# the remap and chown and runs directly as the pinned uid/gid.
+ENTRYPOINT ["/usr/local/bin/gosu-entrypoint.sh", "/usr/local/bin/entrypoint.sh"]
 CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile"]
