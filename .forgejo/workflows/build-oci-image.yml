@@ -31,6 +31,9 @@ on:
       # to it must rebuild or the fix is never exercised (#851 merged and no
       # build ran).
       - "scripts/check-link-preview.sh"
+      # MAPPS-1126: same for the Serving-uid guard. #1120 changed only this
+      # script, so its merge built nothing and `:latest` was never published.
+      - "scripts/check-oci-runtime.sh"
       - ".forgejo/workflows/build-oci-image.yml"
   workflow_dispatch:
     inputs:
