@@ -5547,7 +5547,7 @@ fn CompanyKbCard(company_id: String) -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         let token = crate::hooks::fetch::api::current_access_token()?;
         let path = format!("/kb/articles?company_id={id_for_fetch}&page=1&per_page=5");
-        crate::hooks::fetch::api::get_with_auth::<Paginated<crate::modules::kb::models::KbArticle>>(
+        crate::hooks::fetch::api::get_with_auth::<Paginated<crate::modules::kb::KbArticle>>(
             &path, &token,
         )
         .await

@@ -1387,7 +1387,7 @@ pub fn KBCompanyPage(id: String) -> Element {
             crate::components::ContentUnavailable { title: "Company Knowledge Base".to_string() }
         };
     }
-    let (rows, total): (Vec<KbArticle>, i64) = match &*articles_snap {
+    let (rows, total): (Vec<KbArticle>, u64) = match &*articles_snap {
         Some(Some((rs, total))) => (rs.clone(), *total),
         _ => (Vec::new(), 0),
     };
