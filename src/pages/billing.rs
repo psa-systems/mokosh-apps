@@ -6241,23 +6241,6 @@ fn PaymentGatewayConfigBody() -> Element {
             }
         }
 
-        // MAPPS-1120: the other half of a payment provider. This page holds the
-        // keys, the test/live mode and the active flag; what the provider is
-        // allowed to DO (take payments, issue the invoice, own a counter
-        // terminal) is a capability set on Connected Services, and PMS-1312
-        // deliberately put the two in different places. Connected Services has
-        // always said so about this page. Standing here, nothing said it back,
-        // which is how the pair reads as two surfaces for the same thing.
-        p { class: "mb-3 text-sm text-muted",
-            "These are the keys and the mode. What each provider is allowed to do is set under "
-            Link {
-                to: Route::SettingsIntegrations {},
-                class: "text-accent hover:opacity-90",
-                "Settings, Connected Services"
-            }
-            "."
-        }
-
         Card { padding: false,
             Table {
                 TableHead {
