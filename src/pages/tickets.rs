@@ -7,10 +7,10 @@ use serde::{Deserialize, Serialize};
 use crate::components::{
     clear_selection, ticket_status_badge, use_bulk_selection, use_page_title, AlertType, Badge,
     BadgeVariant, BulkActionsBar, BulkSelection, Button, ButtonVariant, Card, Checkbox, ClockIcon,
-    DataTable, ErrorBanner, IconSize, Input, MailIcon, Modal, ModalSize, PageHeader, PencilIcon,
-    PlusIcon, SearchInput, Select, SelectAllHeader, SelectOption, SelectRowCell, SortDirection,
-    Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
-    Textarea,
+    DataTable, ErrorBanner, FilterPill, FilterPillBar, IconSize, Input, MailIcon, Modal, ModalSize,
+    PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectAllHeader, SelectOption,
+    SelectRowCell, SortDirection, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
+    TableLoading, TableRow, Textarea,
 };
 use crate::components::{ChangeDetails, ChangeLine};
 // MAPPS-596: shared with the project, task and asset change-history panes.
@@ -1835,6 +1835,52 @@ fn TicketListBody() -> Element {
         queue_options.push(SelectOption::new(q.id.to_string(), q.name.clone()));
     }
 
+    // MAPPS-1115: active-filter chip row above the ticket table. One pill per
+    // non-empty filter signal; the chip's remove click clears that signal and
+    // resets pagination. The dropdowns stay the primary edit surface; the row
+    // is a passive summary with quick-clear so an operator who dialled in
+    // several filters sees them at a glance.
+    let status_id_snap = status_filter.read().clone();
+    let priority_id_snap = priority_filter.read().clone();
+    let queue_id_snap = queue_filter.read().clone();
+    let mut filter_pills: Vec<FilterPill> = Vec::new();
+    if !status_id_snap.is_empty() {
+        let name = tenant_statuses
+            .iter()
+            .find(|s| s.id.to_string() == status_id_snap)
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| status_id_snap.clone());
+        filter_pills.push(FilterPill::eq(
+            "Status",
+            name,
+            serde_json::Value::String(status_id_snap.clone()),
+        ));
+    }
+    if !queue_id_snap.is_empty() {
+        let name = tenant_queues
+            .iter()
+            .find(|q| q.id.to_string() == queue_id_snap)
+            .map(|q| q.name.clone())
+            .unwrap_or_else(|| queue_id_snap.clone());
+        filter_pills.push(FilterPill::eq(
+            "Queue",
+            name,
+            serde_json::Value::String(queue_id_snap.clone()),
+        ));
+    }
+    if !priority_id_snap.is_empty() {
+        let name = tenant_priorities
+            .iter()
+            .find(|p| p.id.to_string() == priority_id_snap)
+            .map(|p| humanize_priority(&p.name))
+            .unwrap_or_else(|| priority_id_snap.clone());
+        filter_pills.push(FilterPill::eq(
+            "Priority",
+            name,
+            serde_json::Value::String(priority_id_snap.clone()),
+        ));
+    }
+
     rsx! {
         PageHeader {
             title: "Tickets",
@@ -2016,6 +2062,30 @@ fn TicketListBody() -> Element {
                     }
                 }
             }
+        }
+
+        // MAPPS-1115: active-filter chips. `onremove` clears the matching
+        // signal and resets to page 1; `onclear` wipes every filter at once.
+        FilterPillBar {
+            pills: filter_pills.clone(),
+            class: Some("mb-4".to_string()),
+            onremove: move |i: usize| {
+                if let Some(pill) = filter_pills.get(i) {
+                    match pill.field.as_str() {
+                        "Status" => status_filter.set(String::new()),
+                        "Queue" => queue_filter.set(String::new()),
+                        "Priority" => priority_filter.set(String::new()),
+                        _ => {}
+                    }
+                    page.set(1);
+                }
+            },
+            onclear: Some(EventHandler::new(move |_| {
+                status_filter.set(String::new());
+                queue_filter.set(String::new());
+                priority_filter.set(String::new());
+                page.set(1);
+            })),
         }
 
         // MAPPS-998: save the current filter+sort+search as a named view.

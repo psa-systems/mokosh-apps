@@ -41,6 +41,7 @@ pub fn push_toast(alert_type: AlertType, message: impl Into<String>) {
         message: message.into(),
         title: None,
         auto_dismiss_ms: default_auto_dismiss_ms(alert_type),
+        retry: None,
     });
 }
 
@@ -57,6 +58,7 @@ pub fn push_toast_with_title(
         message: message.into(),
         title: Some(title.into()),
         auto_dismiss_ms: default_auto_dismiss_ms(alert_type),
+        retry: None,
     });
 }
 
@@ -66,6 +68,29 @@ pub fn push_toast_with_title(
 #[cfg(feature = "app")]
 pub fn push_api_error(err: &crate::hooks::fetch::api::ApiError) {
     push_toast(AlertType::Error, err.user_message());
+}
+
+/// MAPPS-1114: same as [`push_api_error`] but attaches a Retry link to
+/// the toast. The handler is invoked after the toast is dismissed, so a
+/// repeat failure can push a fresh toast cleanly.
+///
+/// The caller passes a `Callback<()>` so the handler can be built with
+/// `use_callback(...)` and keep its captured signals valid across
+/// re-renders.
+#[cfg(feature = "app")]
+pub fn push_api_error_with_retry(
+    err: &crate::hooks::fetch::api::ApiError,
+    retry: EventHandler<()>,
+) {
+    let id = format!("t-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed));
+    TOASTS.write().push(Toast {
+        id,
+        toast_type: AlertType::Error,
+        message: err.user_message(),
+        title: None,
+        auto_dismiss_ms: None,
+        retry: Some(retry),
+    });
 }
 
 /// Mounts the toast container. Place once inside the persistent
