@@ -111,6 +111,13 @@ struct Integration {
     #[serde(default)]
     enabled_capabilities: Vec<String>,
     status: IntegrationStatus,
+    /// Whether this build has anything behind the provider (MAPPS-1121).
+    ///
+    /// Defaults to TRUE for a server that predates the field, which keeps an
+    /// older deployment rendering exactly as it does today rather than
+    /// greying out every provider it serves.
+    #[serde(default = "default_available")]
+    available: bool,
     #[serde(default)]
     managed_elsewhere: Option<ManagedElsewhere>,
     #[serde(default)]
@@ -123,14 +130,24 @@ struct Integration {
     last_error: Option<String>,
 }
 
+/// A server that does not send `available` is one that predates MAPPS-1121,
+/// and every provider it serves is one it would have let you connect.
+fn default_available() -> bool {
+    true
+}
+
 impl Integration {
     /// Whether this card offers Connect at all.
     ///
-    /// `managed_elsewhere` is the only thing that removes it. A credential
-    /// entered elsewhere does NOT: the connection is still ours, which is the
-    /// distinction PMS-1312 created and PMS-1447 made visible.
+    /// `managed_elsewhere` removes it because the connection belongs to
+    /// another subsystem. `available == false` removes it for a different
+    /// reason (MAPPS-1121): there is no subsystem. QuickBooks and Xero are
+    /// listed so the capabilities they would take can be named, and this build
+    /// has no client to hand a credential to, so the card used to offer a
+    /// password field whose contents nothing would ever read and a Connect
+    /// button that reported success.
     fn connectable(&self) -> bool {
-        self.managed_elsewhere.is_none()
+        self.available && self.managed_elsewhere.is_none()
     }
 
     /// Whether Connect should collect a credential.
@@ -309,7 +326,19 @@ fn IntegrationCard(
     });
     let can_mutate = crate::hooks::use_can_mutate();
 
-    let (badge, tone, line) = status_copy(integration.status);
+    // MAPPS-1121: an unbuilt provider is not "Not connected", which reads as an
+    // invitation. The status is true and useless here; what an admin needs to
+    // know is that there is nothing to connect it to yet.
+    let (badge, tone, line) = if integration.available {
+        status_copy(integration.status)
+    } else {
+        (
+            "Not available yet",
+            BadgeVariant::Gray,
+            "Listed so the work it would take on can be named. This build has nothing behind \
+             it yet, so there is nothing to connect.",
+        )
+    };
     let provider = integration.provider.clone();
     let connected = matches!(
         integration.status,
@@ -513,6 +542,24 @@ fn IntegrationCard(
                         if let Some(route) = surface_route("contact_sync") {
                             Link { to: route, class: "text-sm text-accent hover:underline",
                                 "Go to {elsewhere.configured_at}"
+                            }
+                        }
+                    }
+                }
+
+                // Not connectable because nothing is behind it: the capability
+                // vocabulary is still the point of the entry, so it is shown as
+                // text. Hiding the provider entirely was the alternative, and a
+                // provider nobody can see is a provider nobody can ask for.
+                if !integration.available && !integration.supported_capabilities.is_empty() {
+                    div { class: "space-y-1",
+                        p { class: "text-sm font-medium text-content", "What it would do" }
+                        ul { class: "list-disc space-y-1 pl-5",
+                            for capability in integration.supported_capabilities.iter() {
+                                li { class: "text-sm text-muted",
+                                    span { class: "text-content", "{capability.label}" }
+                                    ". {capability.description}"
+                                }
                             }
                         }
                     }
@@ -839,5 +886,100 @@ mod tests {
             !head.contains("json!("),
             "request bodies are typed (MAPPS-685)"
         );
+    }
+}
+
+/// MAPPS-1121: a provider this build has nothing behind offers nothing.
+#[cfg(test)]
+mod mapps1121_availability_tests {
+    use super::*;
+
+    fn integration(json: serde_json::Value) -> Integration {
+        let mut base = serde_json::json!({
+            "provider": "quickbooks",
+            "display_name": "QuickBooks",
+            "description": "d",
+            "supported_capabilities": [],
+            "enabled_capabilities": [],
+            "status": "not_connected",
+            "config": {},
+        });
+        if let (Some(b), Some(o)) = (base.as_object_mut(), json.as_object()) {
+            for (k, v) in o {
+                b.insert(k.clone(), v.clone());
+            }
+        }
+        serde_json::from_value(base).expect("the fixture deserialises")
+    }
+
+    /// The defect: a password field for a credential nothing reads, and a
+    /// Connect button that reported success.
+    ///
+    /// Both hang off `connectable`, so gating that one predicate is what
+    /// removes both. Asserted through the predicates rather than by rendering,
+    /// because they are what the card branches on.
+    #[test]
+    fn an_unavailable_provider_offers_neither_connect_nor_a_credential_field() {
+        let planned = integration(serde_json::json!({ "available": false }));
+        assert!(
+            !planned.connectable(),
+            "no Connect button for a provider with nothing behind it"
+        );
+        assert!(
+            !planned.takes_credential(),
+            "and no field for a credential that would be stored and never read"
+        );
+    }
+
+    /// Availability and "managed elsewhere" are different refusals and the card
+    /// says different things for them.
+    ///
+    /// Microsoft 365 is the case that made this worth separating: its Graph
+    /// client shipped (MAPPS-1101), so it is built, and its connection is the
+    /// Entra consent round trip in contact sync, so this is the wrong surface.
+    /// Telling an admin it is "not available yet" would send them to wait for
+    /// work that is already done.
+    #[test]
+    fn built_but_managed_elsewhere_is_not_the_same_as_unavailable() {
+        let microsoft = integration(serde_json::json!({
+            "provider": "microsoft",
+            "display_name": "Microsoft 365",
+            "available": true,
+            "managed_elsewhere": {
+                "configured_at": "Settings > Microsoft 365 Contacts",
+                "issue": "MAPPS-1124",
+            },
+        }));
+        assert!(microsoft.available, "its client exists");
+        assert!(
+            !microsoft.connectable(),
+            "the connection belongs to contact sync, so this surface offers none"
+        );
+        assert!(
+            microsoft.managed_elsewhere.is_some(),
+            "and the card names where it IS configured"
+        );
+    }
+
+    /// A server that predates the field is read as able to connect everything
+    /// it serves.
+    ///
+    /// The opposite default would grey out every provider on an older
+    /// deployment the moment this client shipped, which is a worse failure than
+    /// the one being fixed: it would take working integrations off the screen.
+    #[test]
+    fn a_server_that_does_not_send_the_field_is_read_as_available() {
+        let old = integration(serde_json::json!({}));
+        assert!(old.available);
+        assert!(old.connectable());
+        assert!(old.takes_credential());
+    }
+
+    /// An available provider is untouched by any of this.
+    #[test]
+    fn an_available_provider_still_connects_as_before() {
+        let xero_today = integration(serde_json::json!({ "available": true }));
+        assert!(xero_today.connectable());
+        assert!(xero_today.takes_credential());
     }
 }
