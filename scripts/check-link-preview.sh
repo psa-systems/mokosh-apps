@@ -40,6 +40,9 @@ set -u
 cd "$(dirname "$0")/.." || exit 2
 
 CADDY_IMAGE="caddy:2-alpine"
+# Where entrypoint.sh renders the patched page (MAPPS-963). The default of
+# MOKOSH_RUNTIME_DIR, which neither this script nor the Caddyfile overrides.
+RUNTIME_INDEX="/tmp/mokosh-runtime/index.html"
 CURL_IMAGE="curlimages/curl:8.16.0"
 CRAWLER_UA="facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
 CONTAINER="mokosh-link-preview-$$"
@@ -57,11 +60,22 @@ remove_container() {
   return 0
 }
 
-# Copy the served index.html back out to $WORKDIR/caddy/index.html, which is
-# what the next copy_fresh=no start reuses and what the marker count reads.
-# Silent when there is no container yet, as in remove_container.
+# Copy the page the server actually rendered out to $WORKDIR/served-index.html,
+# which is what the marker count reads. Silent when there is no container yet,
+# as in remove_container.
+#
+# MAPPS-1125: this read /usr/share/caddy/index.html, where the patched page
+# lived until MAPPS-963 moved it into $MOKOSH_RUNTIME_DIR so the image could
+# run as any uid. It is the runtime copy now.
+#
+# It is NOT written back over $WORKDIR/caddy/index.html any more. That path is
+# the image's bundle copy, and since MAPPS-963 the entrypoint re-copies it into
+# the runtime directory on every start, so it stays pristine in production;
+# feeding a patched file back as the bundle tests a corrupted image rather than
+# a restart. The double-injection regression MAPPS-826 guards is still what the
+# marker count catches, now against the file the entrypoint actually rewrites.
 snapshot_index() {
-  docker cp "$CONTAINER:/usr/share/caddy/index.html" "$WORKDIR/caddy/index.html" >/dev/null 2>&1
+  docker cp "$CONTAINER:$RUNTIME_INDEX" "$WORKDIR/served-index.html" >/dev/null 2>&1
   return 0
 }
 
@@ -121,7 +135,12 @@ serve() {
 
   local i
   for i in $(seq 1 60); do
-    if ns_curl --silent --fail --output /dev/null "http://127.0.0.1:8080/"; then
+    # Any HTTP response means the server is up. Not `--fail`: the self-test
+    # runs this stack with no entrypoint, so nothing has rendered the runtime
+    # index.html and `/` is a 404 by construction (MAPPS-1125). Requiring a 2xx
+    # here reported "could not start" for a server that had started, and hid
+    # the assertions the self-test exists to watch fail.
+    if ns_curl --silent --output /dev/null "http://127.0.0.1:8080/"; then
       printf '8080'
       return 0
     fi
@@ -234,7 +253,7 @@ body="$(crawl "$port" "/")"
 expect_tag "$body" '<meta property="og:title" content="Renamed Inc">' "restart"
 reject_tag "$body" 'content="Acme &quot;PSA&quot; &amp; Co"' "restart"
 snapshot_index
-marker_count="$(grep -c -F '<!-- MAPPS-477 link-preview metadata -->' "$WORKDIR/caddy/index.html")"
+marker_count="$(grep -c -F '<!-- MAPPS-477 link-preview metadata -->' "$WORKDIR/served-index.html")"
 [ "$marker_count" = "1" ] || fail "restart: expected exactly one OG_MARKER in index.html after a restart, found $marker_count"
 remove_container
 
