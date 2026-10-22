@@ -214,7 +214,15 @@ fn EmailSettingsForm() -> Element {
         });
     };
 
-    let handle_test_send = move |_| {
+    // MAPPS-1114 worked example: the Retry link on the failure toast
+    // re-fires the test send. The retry handler bumps a counter signal,
+    // and a `use_effect` keyed on that counter calls the send body
+    // again. The one-level indirection avoids a `Callback`-captures-itself
+    // cycle and reads the current address signal (not a stale snapshot),
+    // so a user who edits the address between failure and retry sends
+    // the new one.
+    let mut retry_tick = use_signal(|| 0u32);
+    let send_test_cb = use_callback(move |_: ()| {
         if test_sending() {
             return;
         }
@@ -241,14 +249,26 @@ fn EmailSettingsForm() -> Element {
                         );
                     }
                     Err(err) => {
-                        crate::hooks::push_api_error(&err);
+                        crate::hooks::push_api_error_with_retry(
+                            &err,
+                            EventHandler::new(move |_| {
+                                retry_tick += 1;
+                            }),
+                        );
                         test_error.set(err.user_message());
                     }
                 }
             }
             test_sending.set(false);
         });
-    };
+    });
+    use_effect(move || {
+        let t = *retry_tick.read();
+        if t > 0 {
+            send_test_cb.call(());
+        }
+    });
+    let handle_test_send = move |_| send_test_cb.call(());
 
     let handle_verify = move |_| {
         if verifying() {

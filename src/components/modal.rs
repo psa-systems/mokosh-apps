@@ -2,7 +2,7 @@
 
 use dioxus::prelude::*;
 
-use super::button::{Button, ButtonVariant};
+use super::button::{Button, ButtonSize, ButtonVariant};
 use super::error_banner::ErrorBanner;
 use super::icon_button::IconButton;
 use super::icons::XMarkIcon;
@@ -592,6 +592,12 @@ pub struct Toast {
     /// toasts default to ~5s so the stack does not pile up across a
     /// normal session.
     pub auto_dismiss_ms: Option<u32>,
+    /// MAPPS-1114: optional "Retry" affordance for Error toasts. When
+    /// `Some`, the toast renders a small Retry link; clicking it
+    /// dismisses this toast and invokes the handler. The caller is
+    /// responsible for re-pushing a toast on a second failure, so a
+    /// retry loop surfaces each attempt rather than a stale toast.
+    pub retry: Option<EventHandler<()>>,
 }
 
 /// Toast container props
@@ -657,6 +663,8 @@ fn ToastRow(props: ToastRowProps) -> Element {
         }
     });
     let dismiss_id = props.toast.id.clone();
+    let retry_id = props.toast.id.clone();
+    let retry_handler = props.toast.retry;
     rsx! {
         div {
             class: "transform transition-all duration-300 ease-in-out",
@@ -666,6 +674,22 @@ fn ToastRow(props: ToastRowProps) -> Element {
                 message: props.toast.message.clone(),
                 dismissible: true,
                 ondismiss: move |_| dismiss.call(dismiss_id.clone()),
+            }
+            if let Some(retry) = retry_handler {
+                // MAPPS-1114: retry chip rendered under the Alert so a
+                // failed save or load is actionable from the toast itself.
+                // Dismiss first so a repeat failure can push a fresh toast.
+                div { class: "mt-1 flex justify-end",
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        size: ButtonSize::Small,
+                        onclick: move |_| {
+                            dismiss.call(retry_id.clone());
+                            retry.call(());
+                        },
+                        "Retry"
+                    }
+                }
             }
         }
     }
