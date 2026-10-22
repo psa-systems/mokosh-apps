@@ -297,7 +297,8 @@ impl SettingsGroupKey {
             }
             SettingsGroupKey::Tickets => "Statuses, priorities, types, queues, and categories.",
             SettingsGroupKey::Integrations => {
-                "Google Contacts import, and RMM connections, device mappings and alert rules."
+                "Services this organization has connected, remote monitoring, and the \
+                 deployment's own mail and sign-in settings."
             }
             SettingsGroupKey::Data => {
                 "Your organization's name, and exporting or importing this tenant's data."
@@ -373,7 +374,65 @@ enum SurfaceVisibility {
     RequiresCap(&'static str),
 }
 
+/// A labelled cluster of surfaces inside one group's landing (MAPPS-1120).
+///
+/// The Integrations group was nine tiles in one unlabelled grid covering three
+/// different things: the delegation registry and the contact-import surfaces it
+/// points at, the RMM subsystem (which has no entry in that registry at all),
+/// and two settings that are not tenant integrations in the first place but
+/// deployment-operator settings effective for every organization here. Nothing
+/// on screen said which was which.
+///
+/// Optional per surface, so a group with nothing to separate renders exactly as
+/// it did: one grid, no headings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsSection {
+    /// Outside systems this organization has handed work to.
+    ConnectedServices,
+    /// The RMM subsystem: its own connections, mappings and rules.
+    RemoteMonitoring,
+    /// Settings whose effect is the whole deployment, not this tenant.
+    Deployment,
+}
+
+impl SettingsSection {
+    /// Heading over the section's cards.
+    fn label(self) -> &'static str {
+        match self {
+            SettingsSection::ConnectedServices => "Connected services",
+            SettingsSection::RemoteMonitoring => "Remote monitoring",
+            SettingsSection::Deployment => "Deployment",
+        }
+    }
+
+    /// A line under the heading, for a section whose scope is not obvious from
+    /// its tiles. Deployment is the case it exists for: an admin reading
+    /// "Email" has no way to know that saving it changes what every other
+    /// organization on this deployment sends mail through.
+    fn note(self) -> Option<&'static str> {
+        match self {
+            SettingsSection::Deployment => {
+                Some("These apply to every organization on this deployment, not only yours.")
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Section render order on a group landing. A surface with no section renders
+/// above all of them, ungrouped, which is every surface outside the
+/// Integrations group today.
+const SETTINGS_SECTION_ORDER: &[SettingsSection] = &[
+    SettingsSection::ConnectedServices,
+    SettingsSection::RemoteMonitoring,
+    SettingsSection::Deployment,
+];
+
 /// One configuration surface (a leaf settings page).
+///
+/// `PartialEq` because `SettingsSurfaceGrid` takes a list of these as a prop
+/// and dioxus compares props to decide whether to re-render.
+#[derive(PartialEq)]
 struct SettingsSurface {
     route: Route,
     title: &'static str,
@@ -381,6 +440,9 @@ struct SettingsSurface {
     group: SettingsGroupKey,
     /// Hidden in basic mode; shown only when "Show advanced settings" is on.
     advanced: bool,
+    /// Labelled cluster within the group's landing, or `None` to render
+    /// ungrouped above the sections (MAPPS-1120).
+    section: Option<SettingsSection>,
     /// Who sees this surface in the hub. Defaults to `Always` for
     /// every legacy tile that predates MAPPS-620.
     visibility: SurfaceVisibility,
@@ -412,6 +474,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Theme (light, dark, or system) and accent color for your account.",
         group: SettingsGroupKey::Personalization,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -421,6 +484,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
             "Full-screen wall-monitor dashboard, scoped to your team. Toggle it on and pick a team.",
         group: SettingsGroupKey::Personalization,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -429,6 +493,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Billable work categories used when logging time entries.",
         group: SettingsGroupKey::ServiceTypes,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -437,6 +502,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Workflow states a project task can move through.",
         group: SettingsGroupKey::ServiceTypes,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -445,6 +511,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Categories for the assets you track per company.",
         group: SettingsGroupKey::ServiceTypes,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -453,6 +520,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Suggested industries when categorizing a company.",
         group: SettingsGroupKey::ServiceTypes,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -461,6 +529,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Classify projects (e.g. client vs internal).",
         group: SettingsGroupKey::ServiceTypes,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     // mokosh-contact-login prompt 007: MSP-admin portal-role editor.
@@ -474,6 +543,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
             "Portal roles you assign to contacts. Each role bundles a set of capabilities.",
         group: SettingsGroupKey::ServiceTypes,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -482,6 +552,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Service-level policies, business hours, and holiday calendars.",
         group: SettingsGroupKey::Billing,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -490,6 +561,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Standard due date applied to new tasks and tickets when none is set.",
         group: SettingsGroupKey::Billing,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     // MAPPS-728: the PMS-1037 reminder schedule.
@@ -499,6 +571,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Whether and when overdue invoices are re-sent to the customer.",
         group: SettingsGroupKey::Billing,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -507,6 +580,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Maximum hours a user may log against a single day.",
         group: SettingsGroupKey::Billing,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -515,6 +589,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Hourly rates billed per work type.",
         group: SettingsGroupKey::Billing,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -523,6 +598,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Tax rates applied to invoice line items.",
         group: SettingsGroupKey::Billing,
         advanced: true,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -535,6 +611,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         // made David unable to find it on staging: he was on the Billing page,
         // where it belongs, and it was not there.
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -543,6 +620,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Options for the invoice payment-terms dropdown.",
         group: SettingsGroupKey::Billing,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     // MAPPS-640: the price list. Finance-gated on its page like Tax Rates.
@@ -552,6 +630,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "The price list picked onto invoice lines and contract items.",
         group: SettingsGroupKey::Billing,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -560,6 +639,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Workflow states a ticket can move through.",
         group: SettingsGroupKey::Tickets,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -568,6 +648,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Priority levels and their SLA multipliers.",
         group: SettingsGroupKey::Tickets,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -576,6 +657,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Categories for the kind of work a ticket represents.",
         group: SettingsGroupKey::Tickets,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -584,6 +666,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Queues tickets are routed into.",
         group: SettingsGroupKey::Tickets,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -592,6 +675,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Hierarchical categories for classifying tickets.",
         group: SettingsGroupKey::Tickets,
         advanced: true,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     // MAPPS-887: the deployment-wide SMTP settings (PMS-638/788/1013),
@@ -602,17 +686,24 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "The SMTP server this deployment sends mail through. Test-send and verify without leaving the page.",
         group: SettingsGroupKey::Integrations,
         advanced: false,
+        section: Some(SettingsSection::Deployment),
         visibility: SurfaceVisibility::StaffAdmin,
     },
-    // MAPPS-971: the integrations page (server PMS-1310). Listed first in the
+    // MAPPS-971: the delegation registry (server PMS-1310). Listed first in the
     // group and not advanced: it is the overview the per-provider pages below
     // are reached from.
+    //
+    // MAPPS-1120 renamed it from "Integrations", which was also this group's
+    // name, so `SettingsBreadcrumb` rendered `Settings > Integrations >
+    // Integrations`. The route is deliberately unchanged: it is the server path
+    // and every existing deep link.
     SettingsSurface {
         route: Route::SettingsIntegrations {},
-        title: "Integrations",
+        title: "Connected Services",
         description: "What this organization delegates to other systems, and what each one is allowed to do.",
         group: SettingsGroupKey::Integrations,
         advanced: false,
+        section: Some(SettingsSection::ConnectedServices),
         visibility: SurfaceVisibility::StaffAdmin,
     },
     // MAPPS-980: the deployment's Google OAuth client (server PMS-1444).
@@ -624,6 +715,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "The Google application this deployment authenticates as. One client for every organization here; set once by whoever runs the deployment.",
         group: SettingsGroupKey::Integrations,
         advanced: true,
+        section: Some(SettingsSection::Deployment),
         visibility: SurfaceVisibility::StaffAdmin,
     },
     // MAPPS-808: listed first in the group and not advanced: it is the one an
@@ -634,6 +726,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Import contacts from your organization's Google account. Read-only: nothing is written back.",
         group: SettingsGroupKey::Integrations,
         advanced: false,
+        section: Some(SettingsSection::ConnectedServices),
         visibility: SurfaceVisibility::StaffAdmin,
     },
     // PMS-1409: beside Google Contacts and not advanced, for the same reason.
@@ -643,6 +736,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Import contacts from an iCloud account over CardDAV, with an Apple ID and an app-specific password. Read-only: nothing is written back.",
         group: SettingsGroupKey::Integrations,
         advanced: false,
+        section: Some(SettingsSection::ConnectedServices),
         visibility: SurfaceVisibility::StaffAdmin,
     },
     // MAPPS-915: a .vcf file through the same import (server PMS-1290).
@@ -653,6 +747,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Import contacts from a .vcf file exported from a phone, Outlook or any address book.",
         group: SettingsGroupKey::Integrations,
         advanced: false,
+        section: Some(SettingsSection::ConnectedServices),
         visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
@@ -661,6 +756,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Connect remote monitoring providers and test reachability.",
         group: SettingsGroupKey::Integrations,
         advanced: true,
+        section: Some(SettingsSection::RemoteMonitoring),
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -669,6 +765,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Map monitored RMM devices to assets and companies.",
         group: SettingsGroupKey::Integrations,
         advanced: true,
+        section: Some(SettingsSection::RemoteMonitoring),
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -677,6 +774,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Turn RMM alerts into tickets automatically.",
         group: SettingsGroupKey::Integrations,
         advanced: true,
+        section: Some(SettingsSection::RemoteMonitoring),
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -686,6 +784,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
             "Download a snapshot of this tenant's data, or restore it from a previous export.",
         group: SettingsGroupKey::Data,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     // MAPPS-622: staff-side tenant branding editor. Sets the MSP
@@ -703,6 +802,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "MSP-wide defaults every client portal inherits: logo, favicon, background, colors, display name. The support contact comes from Organization.",
         group: SettingsGroupKey::Data,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::StaffAdmin,
     },
     // MAPPS-620: contact-plane portal branding editor. Rendered to
@@ -716,6 +816,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Customize your own company's portal without pinging your MSP: logo, favicon, background, colors, display name, support contact block.",
         group: SettingsGroupKey::Personalization,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::RequiresCap("settings:manage_company_branding"),
     },
     // MAPPS-426. Filed under the tenant-wide group rather than given a group
@@ -731,6 +832,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Your organization's name and contact details, as clients see them in your portal, your invoices and the email you send them.",
         group: SettingsGroupKey::Data,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::Always,
     },
     // MAPPS-938: what a new invoice's number looks like
@@ -742,6 +844,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "What a new invoice's number looks like, and whether each customer has a sequence of their own.",
         group: SettingsGroupKey::Billing,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::StaffAdmin,
     },
     // MAPPS-749: who may correct a ticket note after it was posted
@@ -753,6 +856,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Who may correct a ticket note after it was posted.",
         group: SettingsGroupKey::Tickets,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::StaffAdmin,
     },
     // MAPPS-754: who may correct a clock-in or clock-out after it was
@@ -767,6 +871,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Who may correct a clock-in or clock-out after it was recorded.",
         group: SettingsGroupKey::Billing,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::StaffAdmin,
     },
     // MAPPS-747: the per-tenant module flags, which until then were
@@ -777,6 +882,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         description: "Turn the platform's gated modules on or off for this organization.",
         group: SettingsGroupKey::Data,
         advanced: false,
+        section: None,
         visibility: SurfaceVisibility::StaffAdmin,
     },
 ];
@@ -857,6 +963,40 @@ fn surfaces_in_group(
     SETTINGS_SURFACES.iter().filter(move |s| {
         s.group == group && (show_advanced || !s.advanced) && ctx.allows(s.visibility)
     })
+}
+
+/// The surfaces of one group, split into the ungrouped ones and the labelled
+/// sections, in render order (MAPPS-1120).
+///
+/// Takes an already-filtered list rather than filtering again, because the
+/// caller has two of them (basic, and advanced when the disclosure is open) and
+/// both are laid out the same way. A section with nothing in it is dropped
+/// here, so the landing never renders a heading over an empty grid: that is the
+/// case for Remote monitoring with the group collapsed, where all three tiles
+/// are advanced.
+fn split_into_sections<'a>(
+    surfaces: &[&'a SettingsSurface],
+) -> (
+    Vec<&'a SettingsSurface>,
+    Vec<(SettingsSection, Vec<&'a SettingsSurface>)>,
+) {
+    let ungrouped: Vec<&SettingsSurface> = surfaces
+        .iter()
+        .copied()
+        .filter(|s| s.section.is_none())
+        .collect();
+    let sections = SETTINGS_SECTION_ORDER
+        .iter()
+        .filter_map(|section| {
+            let members: Vec<&SettingsSurface> = surfaces
+                .iter()
+                .copied()
+                .filter(|s| s.section == Some(*section))
+                .collect();
+            (!members.is_empty()).then_some((*section, members))
+        })
+        .collect();
+    (ungrouped, sections)
 }
 
 /// `/settings` - the hub index. With no search query it shows the
@@ -1082,15 +1222,7 @@ fn SettingsGroupLanding(group: SettingsGroupKey) -> Element {
         // MAPPS-979: no "go back and turn on the toggle" notice any more. A group
         // with only advanced surfaces shows an empty basic grid and its chevron,
         // which is a page that works rather than a page that sends you away.
-        div { class: "{group_grid_class(group.prominent())}",
-            for surface in basic {
-                SettingsCard {
-                    to: surface.route.clone(),
-                    title: surface.title.to_string(),
-                    description: surface.description.to_string(),
-                }
-            }
-        }
+        SettingsSurfaceGrid { surfaces: basic, prominent: group.prominent() }
 
         // The disclosure. Absent entirely when the group has no advanced
         // surfaces, which is the difference between "there is more here" and "
@@ -1124,13 +1256,51 @@ fn SettingsGroupLanding(group: SettingsGroupKey) -> Element {
                 }
 
                 if is_expanded {
-                    div { class: "mt-4 {group_grid_class(group.prominent())}",
-                        for surface in advanced {
-                            SettingsCard {
-                                to: surface.route.clone(),
-                                title: surface.title.to_string(),
-                                description: surface.description.to_string(),
-                            }
+                    div { class: "mt-4",
+                        SettingsSurfaceGrid { surfaces: advanced, prominent: group.prominent() }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One pass of a group landing's cards: the ungrouped ones, then each
+/// non-empty section under its heading (MAPPS-1120).
+///
+/// Rendered twice per landing, once for the basic surfaces and once for the
+/// advanced ones the disclosure reveals, so a section can appear in either or
+/// both. Remote monitoring is all-advanced and therefore appears only inside
+/// the disclosure; Connected services has tiles on both sides of it.
+#[component]
+fn SettingsSurfaceGrid(surfaces: Vec<&'static SettingsSurface>, prominent: bool) -> Element {
+    let (ungrouped, sections) = split_into_sections(&surfaces);
+    rsx! {
+        if !ungrouped.is_empty() {
+            div { class: "{group_grid_class(prominent)}",
+                for surface in ungrouped {
+                    SettingsCard {
+                        to: surface.route.clone(),
+                        title: surface.title.to_string(),
+                        description: surface.description.to_string(),
+                    }
+                }
+            }
+        }
+        for (section , members) in sections {
+            div { class: "mt-6 first:mt-0",
+                h2 { class: "text-sm font-semibold uppercase tracking-wide text-muted",
+                    "{section.label()}"
+                }
+                if let Some(note) = section.note() {
+                    p { class: "mt-1 text-sm text-muted", "{note}" }
+                }
+                div { class: "mt-3 {group_grid_class(prominent)}",
+                    for surface in members {
+                        SettingsCard {
+                            to: surface.route.clone(),
+                            title: surface.title.to_string(),
+                            description: surface.description.to_string(),
                         }
                     }
                 }
@@ -10046,5 +10216,152 @@ mod mapps979_per_group_advanced_tests {
                 "{banned:?} is still in this page; the global mode is what MAPPS-979 removed"
             );
         }
+    }
+}
+
+/// MAPPS-1120: the Integrations group reads as labelled sections, and no tile
+/// carries its own group's name.
+#[cfg(test)]
+mod mapps1120_settings_section_tests {
+    use super::{
+        split_into_sections, surfaces_in_group, SettingsGroupKey, SettingsSection, SettingsSurface,
+        SurfaceContext, SETTINGS_GROUP_ORDER, SETTINGS_SURFACES,
+    };
+
+    fn everything() -> SurfaceContext {
+        SurfaceContext {
+            is_staff_admin: true,
+            has_manage_branding_cap: true,
+        }
+    }
+
+    fn sections_of(group: SettingsGroupKey, advanced: bool) -> Vec<SettingsSection> {
+        let surfaces: Vec<&SettingsSurface> = surfaces_in_group(group, true, everything())
+            .filter(|s| s.advanced == advanced)
+            .collect();
+        split_into_sections(&surfaces)
+            .1
+            .into_iter()
+            .map(|(section, _)| section)
+            .collect()
+    }
+
+    /// The breadcrumb defect, stated as a rule rather than as one fixed string.
+    ///
+    /// `SettingsBreadcrumb` renders `Settings > <group> > <surface>`, so a
+    /// surface sharing its group's title renders that title twice. It was
+    /// "Integrations" under "Integrations"; a guard on the one name would not
+    /// stop the next group from acquiring a tile named after it.
+    #[test]
+    fn no_surface_is_named_after_its_own_group() {
+        for surface in SETTINGS_SURFACES {
+            assert_ne!(
+                surface.title,
+                surface.group.title(),
+                "`Settings > {} > {}` reads the same name twice",
+                surface.group.title(),
+                surface.title
+            );
+        }
+    }
+
+    /// The delegation registry kept its route while losing the colliding name.
+    ///
+    /// The route is the server path and every deep link already in the wild, so
+    /// the rename is copy only. Asserted together because changing one without
+    /// the other is the mistake available here.
+    #[test]
+    fn the_delegation_registry_is_connected_services_on_its_original_route() {
+        let surface = SETTINGS_SURFACES
+            .iter()
+            .find(|s| s.route == crate::Route::SettingsIntegrations {})
+            .expect("the delegation registry is a settings surface");
+        assert_eq!(surface.title, "Connected Services");
+        assert_eq!(surface.group, SettingsGroupKey::Integrations);
+        assert_eq!(surface.section, Some(SettingsSection::ConnectedServices));
+    }
+
+    /// Every tile in the group belongs to exactly one section.
+    ///
+    /// Without this, a tile added later renders above the headings with no
+    /// label, which is the unlabelled grid this ticket is about, one tile at a
+    /// time.
+    #[test]
+    fn every_integrations_surface_is_filed_under_a_section() {
+        let unfiled: Vec<&str> = SETTINGS_SURFACES
+            .iter()
+            .filter(|s| s.group == SettingsGroupKey::Integrations && s.section.is_none())
+            .map(|s| s.title)
+            .collect();
+        assert!(
+            unfiled.is_empty(),
+            "these would render unlabelled above the sections: {unfiled:?}"
+        );
+    }
+
+    /// Sections come out in registry order, and one with nothing in it is gone
+    /// rather than rendered as a bare heading.
+    ///
+    /// Remote monitoring is the case: all three of its tiles are advanced, so
+    /// with the group collapsed it must not appear at all. Deployment is the
+    /// opposite case, with a tile on each side of the disclosure.
+    #[test]
+    fn sections_are_ordered_and_empty_ones_are_dropped() {
+        assert_eq!(
+            sections_of(SettingsGroupKey::Integrations, false),
+            vec![
+                SettingsSection::ConnectedServices,
+                SettingsSection::Deployment
+            ],
+            "collapsed: no Remote monitoring heading over no cards"
+        );
+        assert_eq!(
+            sections_of(SettingsGroupKey::Integrations, true),
+            vec![
+                SettingsSection::RemoteMonitoring,
+                SettingsSection::Deployment
+            ],
+            "expanded: the RMM tiles and the deployment's sign-in client"
+        );
+    }
+
+    /// Every other group renders exactly as it did: one ungrouped grid.
+    ///
+    /// The sectioning is opt-in per surface, and this is what says so. A
+    /// section accidentally assigned outside Integrations would re-lay-out a
+    /// group nobody asked about.
+    #[test]
+    fn groups_without_sections_render_one_ungrouped_grid() {
+        for group in SETTINGS_GROUP_ORDER
+            .iter()
+            .filter(|g| **g != SettingsGroupKey::Integrations)
+        {
+            let surfaces: Vec<&SettingsSurface> =
+                surfaces_in_group(*group, true, everything()).collect();
+            let (ungrouped, sections) = split_into_sections(&surfaces);
+            assert_eq!(
+                ungrouped.len(),
+                surfaces.len(),
+                "{} grew a section",
+                group.title()
+            );
+            assert!(sections.is_empty(), "{} grew a section", group.title());
+        }
+    }
+
+    /// The deployment section says what it is, because its tiles do not.
+    ///
+    /// "Email" and "Google sign-in client" read as this organization's
+    /// settings; both are the deployment operator's and effective for every
+    /// tenant (PMS-1280, PMS-1430). That is the one thing a heading alone
+    /// cannot carry.
+    #[test]
+    fn the_deployment_section_carries_its_scope_note() {
+        let note = SettingsSection::Deployment
+            .note()
+            .expect("the deployment section explains its scope");
+        assert!(note.contains("every organization"), "{note}");
+        assert!(SettingsSection::ConnectedServices.note().is_none());
+        assert!(SettingsSection::RemoteMonitoring.note().is_none());
     }
 }
