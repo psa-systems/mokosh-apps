@@ -941,6 +941,12 @@ pub enum Route {
     #[route("/kb/articles/:id/edit")]
     KBArticleEdit { id: String },
 
+    /// Per-company KB view: every article scoped to that company. Reached
+    /// from the Knowledge Base card on `CompanyDetailPage` and from the
+    /// "Browse by company" picker on `KBHomePage`.
+    #[route("/kb/companies/:id")]
+    KBCompany { id: String },
+
     // Reports
     #[route("/reports")]
     Reports {},
@@ -1992,6 +1998,15 @@ fn KBArticleDetail(id: String) -> Element {
 #[component]
 fn KBArticleEdit(id: String) -> Element {
     rsx! { knowledge_base::KBArticleEditPage { id } }
+}
+
+#[component]
+fn KBCompany(id: String) -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            knowledge_base::KBCompanyPage { id }
+        }
+    }
 }
 
 #[component]

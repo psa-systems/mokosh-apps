@@ -2844,6 +2844,13 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                             }
                             CompanyBackupStatusCard { resource: backup_status_resource }
                             CompanyOpportunitiesCard { resource: opportunities_resource }
+                            // Articles scoped to this company; self-fetching so
+                            // the detail page needs no new resource threaded
+                            // through. The card lists the first few; a "View
+                            // all" link opens the per-company KB view.
+                            CompanyKbCard {
+                                company_id: company_id_str.clone(),
+                            }
                             // MAPPS-619: per-Company branding overrides.
                             // Reads current values off the Company detail
                             // response + tenant defaults for the "Inherits
@@ -5515,6 +5522,94 @@ fn CompanyOpportunitiesCard(resource: Resource<Option<Vec<OpportunityWire>>>) ->
                                                 TableCell { Badge { variant, "{stage_label}" } }
                                                 TableCell { class: "text-muted", "{value}" }
                                                 TableCell { class: "text-muted", "{close}" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// Articles scoped to this company. Self-fetching with the `?company_id=`
+/// filter PMS-816 added, so the detail page does not have to thread a
+/// resource through for it. Shows the first few; a "View all" link opens
+/// the per-company KB view (`/kb/companies/:id`).
+#[component]
+fn CompanyKbCard(company_id: String) -> Element {
+    let id_for_fetch = company_id.clone();
+    let articles = use_resource(use_reactive!(|id_for_fetch| async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _reachable = crate::hooks::use_server_reachable();
+        let token = crate::hooks::fetch::api::current_access_token()?;
+        let path = format!("/kb/articles?company_id={id_for_fetch}&page=1&per_page=5");
+        crate::hooks::fetch::api::get_with_auth::<Paginated<crate::modules::kb::KbArticle>>(
+            &path, &token,
+        )
+        .await
+        .inspect_err(|e| tracing::warn!("company KB card load failed for {id_for_fetch}: {e}"))
+        .ok()
+    }));
+    let snap = articles.read_unchecked();
+    let count: Option<u64> = match &*snap {
+        Some(Some(page)) => Some(page.meta.total),
+        _ => None,
+    };
+    let view_all_href = format!("/kb/companies/{company_id}");
+    rsx! {
+        CollapsibleCard {
+            title: "Knowledge Base",
+            count,
+            actions: rsx! {
+                Link {
+                    to: view_all_href,
+                    class: "text-sm text-accent hover:opacity-90",
+                    "View All"
+                }
+            },
+            padding: false,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Title" }
+                        TableHeader { "Updated" }
+                    }
+                }
+                match &*snap {
+                    None => rsx! { TableLoading { columns: 2, rows: 3 } },
+                    Some(None) => rsx! {
+                        TableEmpty { columns: 2, message: "Could not load articles.".to_string() }
+                    },
+                    Some(Some(page)) if page.data.is_empty() => rsx! {
+                        TableEmpty { columns: 2, message: "No KB articles scoped to this company yet.".to_string() }
+                    },
+                    Some(Some(page)) => {
+                        let rows: Vec<_> = page.data.iter().take(5).cloned().collect();
+                        rsx! {
+                            TableBody {
+                                for article in rows.into_iter() {
+                                    {
+                                        let id = article.id.to_string();
+                                        let key = id.clone();
+                                        let title = article.title.clone();
+                                        let updated = article
+                                            .updated_at
+                                            .map(|d| d.format("%Y-%m-%d").to_string())
+                                            .unwrap_or_default();
+                                        rsx! {
+                                            TableRow { key: "{key}",
+                                                TableCell {
+                                                    Link {
+                                                        to: Route::KBArticleDetail { id: id.clone() },
+                                                        class: "font-medium text-accent hover:opacity-90",
+                                                        "{title}"
+                                                    }
+                                                }
+                                                TableCell { class: "text-muted", "{updated}" }
                                             }
                                         }
                                     }
