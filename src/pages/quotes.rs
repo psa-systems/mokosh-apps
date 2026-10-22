@@ -167,6 +167,11 @@ fn QuoteListBody() -> Element {
     // matching quote number and company name. Same shape as MAPPS-1111 for
     // invoices.
     let mut search = use_signal(|| crate::utils::url::current_query_param("q").unwrap_or_default());
+    // MAPPS-855: debounce the search dependency so a burst of keystrokes
+    // fires one full-page refetch per pause in typing rather than one per
+    // keystroke, matching the pattern on every other list page (e.g.
+    // `tickets.rs`).
+    let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let mut page = use_signal(|| 1usize);
 
     let status_options = vec![
@@ -228,7 +233,7 @@ fn QuoteListBody() -> Element {
 
     let company_for_resource = company_text.clone();
     let status_for_resource = status_text.clone();
-    let search_for_resource = search_text.clone();
+    let search_for_resource = search_debounced.read().trim().to_string();
     let quotes_resource = use_resource(move || {
         let company = company_for_resource.clone();
         let status = status_for_resource.clone();
