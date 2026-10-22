@@ -1,4 +1,8 @@
-//! Settings > Integrations (MAPPS-971).
+//! Settings > Integrations > Connected Services (MAPPS-971).
+//!
+//! MAPPS-1120 renamed the surface from "Integrations", which was also the name
+//! of the group holding it, so its breadcrumb read `Settings > Integrations >
+//! Integrations`. The route and the server path are unchanged.
 //!
 //! The page PMS-1310's last acceptance criterion asked for and that shipped
 //! without: list every provider, show what each one can be handed, and let an
@@ -218,9 +222,9 @@ fn surface_route(kind: &str) -> Option<Route> {
 
 #[component]
 pub fn IntegrationsPage() -> Element {
-    use_page_title("Integrations");
+    use_page_title("Connected Services");
     if !crate::pages::settings::use_is_admin() {
-        return rsx! { AdminOnlyNotice { title: "Integrations" } };
+        return rsx! { AdminOnlyNotice { title: "Connected Services" } };
     }
     rsx! { IntegrationsList {} }
 }
@@ -251,7 +255,7 @@ fn IntegrationsList() -> Element {
 
     rsx! {
         PageHeader {
-            title: "Integrations",
+            title: "Connected Services",
             subtitle: "What this organization delegates to other systems, and what each one is allowed to do.",
             breadcrumbs: rsx! {
                 SettingsBreadcrumb { current: Route::SettingsIntegrations {} }
