@@ -6180,7 +6180,7 @@ fn PaymentGatewayConfigBody() -> Element {
             }
         }
     } else {
-        rsx! { }
+        rsx! {}
     };
     rsx! {
         PageHeader {
