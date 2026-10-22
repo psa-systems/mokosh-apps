@@ -6169,14 +6169,27 @@ fn PaymentGatewayConfigBody() -> Element {
         };
     }
 
+    let current_route: Route = use_route();
+    let in_settings = matches!(current_route, Route::SettingsGateways {});
     rsx! {
         PageHeader {
             title: "Payment Gateways",
             subtitle: "Configure payment gateway integrations",
+            breadcrumbs: if in_settings {
+                rsx! {
+                    crate::pages::settings::SettingsBreadcrumb {
+                        current: Route::SettingsGateways {},
+                    }
+                }
+            } else {
+                rsx! { }
+            },
             actions: rsx! {
-                Link {
-                    to: Route::InvoiceList {},
-                    Button { variant: ButtonVariant::Secondary, "Back to Invoices" }
+                if !in_settings {
+                    Link {
+                        to: Route::InvoiceList {},
+                        Button { variant: ButtonVariant::Secondary, "Back to Invoices" }
+                    }
                 }
                 Button {
                     variant: ButtonVariant::Primary,
