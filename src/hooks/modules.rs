@@ -117,6 +117,27 @@ pub fn refresh_module_flags() {
     }
 }
 
+/// The cached flags for the active tenant, or `None` while they are unknown.
+///
+/// MAPPS-1127: the read half of [`use_module_flags`] without its effect, so a
+/// `use_resource` / `use_effect` closure can depend on the flags. Calling the
+/// hook in there registered its effect from outside render, into whatever
+/// slot came next in the component's hook list, and the next render that
+/// reached that slot with a different hook panicked the app. Reading
+/// [`MODULE_FLAGS`] here still subscribes the closure.
+pub fn module_flags() -> Option<ModuleFlags> {
+    #[cfg(feature = "app")]
+    {
+        let generation = crate::hooks::fetch::active_tenant_generation();
+        let flags = MODULE_FLAGS.read().clone();
+        flags.filter(|f| f.generation == generation)
+    }
+    #[cfg(not(feature = "app"))]
+    {
+        None
+    }
+}
+
 /// The flags, loading them when they are missing or stale.
 pub fn use_module_flags() -> Option<ModuleFlags> {
     #[cfg(feature = "app")]
@@ -136,8 +157,7 @@ pub fn use_module_flags() -> Option<ModuleFlags> {
                 refresh_module_flags();
             }
         }));
-        let flags = MODULE_FLAGS.read().clone();
-        flags.filter(|f| f.generation == generation)
+        module_flags()
     }
     #[cfg(not(feature = "app"))]
     {
