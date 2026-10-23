@@ -706,7 +706,7 @@ mod tests {
 
     #[test]
     fn sanitize_drops_auth_plumbing_and_root() {
-        // MAPPS-518: three login screens now — /login (platform),
+        // MAPPS-518: three login screens now: /login (platform),
         // /client/login (tenant), /platform/login (stage-A legacy).
         // All three must be excluded from return_to targets.
         for p in [

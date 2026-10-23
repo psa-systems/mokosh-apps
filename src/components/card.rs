@@ -240,7 +240,7 @@ pub fn StatCard(props: StatCardProps) -> Element {
                         }
                         if !props.change.is_empty() {
                             // P2-17: was `text-sm` (~11px) next to a 32px
-                            // stat number — easy to miss. Bump to text-base
+                            // stat number: easy to miss. Bump to text-base
                             // and a heavier weight so the delta reads at
                             // a glance.
                             span { class: "ml-2 text-base font-semibold {change_class}",

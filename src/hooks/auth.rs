@@ -154,7 +154,7 @@ impl AuthContext {
         matches!(kind, "org" | "")
     }
 
-    /// PMS-791 / MAPPS-462: strict "personal tenant" check — only true
+    /// PMS-791 / MAPPS-462: strict "personal tenant" check; only true
     /// when tenant_kind is explicitly "personal".
     pub fn is_personal_tenant(&self) -> bool {
         self.user
