@@ -1094,6 +1094,15 @@ pub enum Route {
     // PMS-1409: choose iCloud groups, preview, review, import.
     #[route("/settings/integrations/icloud-contacts/import")]
     SettingsICloudContactsImport {},
+    // MAPPS-1124: the Microsoft 365 half. MAPPS-1101 shipped the Graph client
+    // and the Entra consent round trip with no surface in this app, so the
+    // flow had no entry point and the URL the server builds for a Microsoft
+    // run resolved to nothing.
+    #[route("/settings/integrations/microsoft-contacts")]
+    SettingsMicrosoftContacts {},
+    // The same group picker as iCloud's, told it is talking to Microsoft 365.
+    #[route("/settings/integrations/microsoft-contacts/import")]
+    SettingsMicrosoftContactsImport {},
     // MAPPS-915: upload a .vcf file into the same import (server PMS-1290).
     #[route("/settings/integrations/vcard-import")]
     SettingsVcardImport {},
@@ -2385,7 +2394,25 @@ fn SettingsICloudContacts() -> Element {
 fn SettingsICloudContactsImport() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
-            pages::settings_contact_sync_icloud_import::ICloudContactsImportPage {}
+            pages::settings_contact_sync_group_import::ICloudContactsImportPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsMicrosoftContacts() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_contact_sync_microsoft::MicrosoftContactsSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsMicrosoftContactsImport() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_contact_sync_group_import::MicrosoftContactsImportPage {}
         }
     }
 }

@@ -1,25 +1,21 @@
-//! Settings > Integrations > iCloud Contacts > Import (PMS-1409, server PMS-1341).
+//! Settings > Integrations > (iCloud | Microsoft 365) Contacts > Import
+//! (PMS-1409, server PMS-1341; MAPPS-1124).
 //!
-//! The Google picker's sibling. It reuses that page's DTOs and its pure
-//! arithmetic ([`Preview`], [`estimate`], [`summary`], [`label_help`]) because
-//! the preview response and the counting are the same; what is its own is the
-//! copy and one row that behaves differently.
+//! The group picker for the two providers whose groups are flat lists: iCloud
+//! groups and Microsoft 365 contact FOLDERS. Google's picker is its own page
+//! because its labels carry "My Contacts", the whole-address-book pseudo-label
+//! that neither of these has, and because an address book here routinely holds
+//! contacts in no group at all, which that page has no row for.
 //!
-//! # Ungrouped is offered, "everything" is not
+//! MAPPS-1124 made this one component serve both rather than copying it a
+//! second time. What differs between them is a [`Vendor`]: the provider the
+//! shared routes are told, the name an admin reads, the word for a group, and
+//! two sentences about where groups come from. Everything else - the preview,
+//! the counting, the two steps, the review - was already identical.
 //!
-//! Google's picker sets "My Contacts" apart as the whole address book. iCloud has
-//! no such group: an Apple address book routinely holds contacts in no group at
-//! all, so the server offers `mokosh:ungrouped` beside the real groups
-//! (PMS-1290's `UNGROUPED_ID`), and it is listed last and set apart for the same
-//! reason Google's is - it is the row that brings in whatever was not filed, so
-//! choosing it should be a decision rather than a default.
-//!
-//! # Every request names the provider
-//!
-//! The preview, the selection and the run are the SHARED routes, which default to
-//! Google (server PMS-1409). Every call from this page carries
-//! `?provider=icloud`, or it would read, save and import through the tenant's
-//! Google connection instead.
+//! Every shared call names its provider. Without it the server defaults to
+//! `google` (PMS-1409), and the page would read, save and import through the
+//! tenant's Google connection while saying iCloud or Microsoft 365.
 
 use std::collections::BTreeSet;
 
@@ -37,9 +33,62 @@ use crate::Route;
 /// The server's group for records in no group at all (`UNGROUPED_ID`).
 pub const UNGROUPED: &str = "mokosh:ungrouped";
 
-const PREVIEW_PATH: &str = "/integrations/contact-sync/preview?provider=icloud";
-const SELECTION_PATH: &str = "/integrations/contact-sync/selection?provider=icloud";
-const RUNS_PATH: &str = "/integrations/contact-sync/runs?provider=icloud";
+/// What differs between the two providers this page serves (MAPPS-1124).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Vendor {
+    /// The `?provider=` every shared call carries.
+    pub provider: &'static str,
+    /// How the provider names itself, which is what an admin looks for.
+    pub display: &'static str,
+    /// What this provider calls a group, plural, in lower case.
+    pub groups: &'static str,
+    /// Where to go and make one, for an account that has none.
+    pub no_groups_hint: &'static str,
+    /// What the ungrouped row means here.
+    pub ungrouped_hint: &'static str,
+    /// Prefix for this page's `data-testid`s, so a test can address one
+    /// provider's picker.
+    pub testid: &'static str,
+}
+
+pub const ICLOUD: Vendor = Vendor {
+    provider: "icloud",
+    display: "iCloud",
+    groups: "groups",
+    no_groups_hint: "This account has no groups. Put your business contacts in a group in Contacts on a Mac, iPhone or iCloud.com, then come back.",
+    ungrouped_hint: "Or bring in the contacts that are in no group at all. An iCloud address book usually holds plenty, personal ones included.",
+    testid: "icloud",
+};
+
+pub const MICROSOFT: Vendor = Vendor {
+    provider: "microsoft",
+    display: "Microsoft 365",
+    groups: "folders",
+    no_groups_hint: "This account has only its default contacts folder. Create a folder in Outlook and move your business contacts into it, then come back.",
+    ungrouped_hint: "Or bring in the contacts that are in the default folder and no other. A Microsoft 365 mailbox usually holds plenty, personal ones included.",
+    testid: "microsoft",
+};
+
+fn preview_path(vendor: Vendor) -> String {
+    format!(
+        "/integrations/contact-sync/preview?provider={}",
+        vendor.provider
+    )
+}
+
+fn selection_path(vendor: Vendor) -> String {
+    format!(
+        "/integrations/contact-sync/selection?provider={}",
+        vendor.provider
+    )
+}
+
+fn runs_path(vendor: Vendor) -> String {
+    format!(
+        "/integrations/contact-sync/runs?provider={}",
+        vendor.provider
+    )
+}
 const STATUS_PATH: &str = "/integrations/contact-sync";
 
 /// One iCloud group as the picker lists it.
@@ -106,11 +155,21 @@ pub fn ICloudContactsImportPage() -> Element {
     if !crate::pages::settings::use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Import iCloud Contacts" } };
     }
-    rsx! { ICloudContactsImportBody {} }
+    rsx! { GroupImportBody { vendor: ICLOUD } }
+}
+
+/// MAPPS-1124: the same picker, told it is talking to Microsoft 365.
+#[component]
+pub fn MicrosoftContactsImportPage() -> Element {
+    use_page_title("Import Microsoft 365 Contacts");
+    if !crate::pages::settings::use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: "Import Microsoft 365 Contacts" } };
+    }
+    rsx! { GroupImportBody { vendor: MICROSOFT } }
 }
 
 #[component]
-fn ICloudContactsImportBody() -> Element {
+fn GroupImportBody(vendor: Vendor) -> Element {
     // The saved selection, so changing groups later starts from it.
     let overview = use_resource(|| async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -121,17 +180,17 @@ fn ICloudContactsImportBody() -> Element {
         .inspect_err(|e| tracing::error!("contact sync status load failed: {e}"))
         .ok()
     });
-    let preview = use_resource(|| async move {
+    // `move` so the Copy vendor goes INTO the resource's closure: it has to
+    // live as long as the future, which `use_resource` requires to be 'static.
+    let preview = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::post_authed::<Preview, _>(
-            PREVIEW_PATH,
-            &PreviewBody { group_ids: None },
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!("icloud contact sync preview failed: {e}");
-            e
-        })
+        let path = preview_path(vendor);
+        crate::hooks::fetch::api::post_authed::<Preview, _>(&path, &PreviewBody { group_ids: None })
+            .await
+            .map_err(|e| {
+                tracing::error!("icloud contact sync preview failed: {e}");
+                e
+            })
     });
     let mut selected: Signal<Option<BTreeSet<String>>> = use_signal(|| None);
     let mut step = use_signal(|| Step::Choose);
@@ -147,8 +206,7 @@ fn ICloudContactsImportBody() -> Element {
         if let Some(Some(o)) = overview.read().as_ref() {
             if selected.peek().is_none() {
                 let seeded: BTreeSet<String> = o
-                    .icloud_connection
-                    .as_ref()
+                    .connection_for(vendor.provider)
                     .map(|c| c.selected_groups.iter().cloned().collect())
                     .unwrap_or_default();
                 selected.set(Some(seeded));
@@ -166,10 +224,12 @@ fn ICloudContactsImportBody() -> Element {
                 let body = PreviewBody {
                     group_ids: Some(ids.into_iter().collect()),
                 };
-                let result =
-                    crate::hooks::fetch::api::post_authed::<Preview, _>(PREVIEW_PATH, &body)
-                        .await
-                        .map(|p| p.totals);
+                let result = crate::hooks::fetch::api::post_authed::<Preview, _>(
+                    &preview_path(vendor).clone(),
+                    &body,
+                )
+                .await
+                .map(|p| p.totals);
                 exact.set(Some(result.map_err(|e| e.to_string())));
             }
             #[cfg(not(feature = "app"))]
@@ -187,7 +247,7 @@ fn ICloudContactsImportBody() -> Element {
                     group_ids: ids.into_iter().collect(),
                 };
                 if let Err(e) = crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
-                    SELECTION_PATH,
+                    &selection_path(vendor),
                     &body,
                 )
                 .await
@@ -197,7 +257,7 @@ fn ICloudContactsImportBody() -> Element {
                     return;
                 }
                 match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
-                    RUNS_PATH,
+                    &runs_path(vendor),
                     &NoBody {},
                 )
                 .await
@@ -225,10 +285,17 @@ fn ICloudContactsImportBody() -> Element {
 
     rsx! {
         PageHeader {
-            title: "Import iCloud Contacts",
-            subtitle: "Choose which iCloud groups to bring into Mokosh. Nothing is written until you start the import, and nothing is ever written back to iCloud.",
+            title: format!("Import {} Contacts", vendor.display),
+            subtitle: format!(
+                "Choose which {} {} to bring into Mokosh. Nothing is written until you start the import, and nothing is ever written back to {}.",
+                vendor.display, vendor.groups, vendor.display
+            ),
             breadcrumbs: rsx! {
-                SettingsBreadcrumb { current: Route::SettingsICloudContactsImport {} }
+                if vendor.provider == MICROSOFT.provider {
+                    SettingsBreadcrumb { current: Route::SettingsMicrosoftContactsImport {} }
+                } else {
+                    SettingsBreadcrumb { current: Route::SettingsICloudContactsImport {} }
+                }
             },
         }
         if !error().is_empty() {
@@ -238,7 +305,7 @@ fn ICloudContactsImportBody() -> Element {
             li {
                 class: if step() == Step::Choose { "font-medium text-content" } else { "text-muted" },
                 "aria-current": (step() == Step::Choose).then_some("step"),
-                "1. Choose groups"
+                {format!("1. Choose {}", vendor.groups)}
             }
             li {
                 class: if step() == Step::Review { "font-medium text-content" } else { "text-muted" },
@@ -252,7 +319,7 @@ fn ICloudContactsImportBody() -> Element {
                 p { class: "sr-only", role: "status", "Reading the account's groups" }
             },
             (Some(Err(e)), _) => rsx! {
-                Card { ErrorBanner { "Could not read the iCloud account: {e}" } }
+                Card { ErrorBanner { {format!("Could not read the {} account: {e}", vendor.display)} } }
             },
             (Some(Ok(data)), Step::Choose) => {
                 let rows = group_rows(&data);
@@ -265,11 +332,11 @@ fn ICloudContactsImportBody() -> Element {
                                 "Which contacts belong in the CRM?"
                             }
                             p { class: "text-sm text-muted",
-                                "Pick the groups your business contacts are in. Figures are what importing each group on its own would do."
+                                {format!("Pick the {} your business contacts are in. Figures are what importing each one on its own would do.", vendor.groups)}
                             }
                             if rows.is_empty() {
                                 StatusBanner { tone: BannerTone::Info,
-                                    "This account has no groups. Put your business contacts in a group in Contacts on a Mac, iPhone or iCloud.com, then come back."
+                                    "{vendor.no_groups_hint}"
                                 }
                             }
                             for row in rows.clone() {
@@ -278,7 +345,7 @@ fn ICloudContactsImportBody() -> Element {
                                     class: if row.ungrouped { "mt-6 border-t border-line pt-4" } else { "" },
                                     if row.ungrouped {
                                         p { class: "mb-2 text-sm text-muted",
-                                            "Or bring in the contacts that are in no group at all. An iCloud address book usually holds plenty, personal ones included."
+                                            "{vendor.ungrouped_hint}"
                                         }
                                     }
                                     Checkbox {
@@ -305,7 +372,7 @@ fn ICloudContactsImportBody() -> Element {
                             }
                         }
                         p { class: "mt-4 text-sm text-muted", "aria-live": "polite",
-                            "data-testid": "icloud-import-running-total",
+                            "data-testid": "{vendor.testid}-import-running-total",
                             if nothing_chosen {
                                 "Nothing chosen yet, so nothing would be imported."
                             } else {
@@ -316,7 +383,7 @@ fn ICloudContactsImportBody() -> Element {
                             Button {
                                 disabled: nothing_chosen || starting() || !can_mutate,
                                 onclick: move |_| review(chosen.clone()),
-                                data_testid: "icloud-import-review",
+                                data_testid: "{vendor.testid}-import-review",
                                 "Review import"
                             }
                         }
@@ -338,7 +405,7 @@ fn ICloudContactsImportBody() -> Element {
                                 ErrorBanner { "Could not check the selection: {e}" }
                             },
                             Some(Ok(totals)) => rsx! {
-                                p { class: "text-sm text-content", "data-testid": "icloud-import-summary",
+                                p { class: "text-sm text-content", "data-testid": "{vendor.testid}-import-summary",
                                     "{summary(&totals)}"
                                 }
                                 p { class: "mt-2 text-sm text-muted",
@@ -350,7 +417,7 @@ fn ICloudContactsImportBody() -> Element {
                             Button {
                                 disabled: starting() || !can_mutate || !matches!(exact(), Some(Ok(_))),
                                 onclick: move |_| start(chosen_now.clone()),
-                                data_testid: "icloud-import-start",
+                                data_testid: "{vendor.testid}-import-start",
                                 if starting() { "Starting…" } else { "Start the import" }
                             }
                             Button {
@@ -441,10 +508,22 @@ mod tests {
     /// the tenant's Google connection while saying iCloud.
     #[test]
     fn every_shared_route_names_the_provider() {
-        for path in [PREVIEW_PATH, SELECTION_PATH, RUNS_PATH] {
-            assert!(path.ends_with("?provider=icloud"), "{path}");
+        // MAPPS-1124: both vendors, because the page serves two now and a
+        // provider that fell back to the default would act on the tenant's
+        // GOOGLE connection while the heading said something else.
+        for vendor in [ICLOUD, MICROSOFT] {
+            for path in [
+                preview_path(vendor),
+                selection_path(vendor),
+                runs_path(vendor),
+            ] {
+                assert!(
+                    path.ends_with(&format!("?provider={}", vendor.provider)),
+                    "{path}"
+                );
+            }
         }
-        let src = include_str!("settings_contact_sync_icloud_import.rs");
+        let src = include_str!("settings_contact_sync_group_import.rs");
         let head = &src[..src.find("mod tests").expect("this module")];
         assert!(head.contains("use_is_admin"), "admin gate");
         assert!(
@@ -462,7 +541,7 @@ mod tests {
         let data = preview();
         let none: BTreeSet<String> = BTreeSet::new();
         assert_eq!(estimate(&data.records, &none), Totals::default());
-        let src = include_str!("settings_contact_sync_icloud_import.rs");
+        let src = include_str!("settings_contact_sync_group_import.rs");
         assert!(src.contains("Nothing chosen yet, so nothing would be imported."));
     }
 }

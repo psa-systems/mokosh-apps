@@ -264,11 +264,10 @@ fn surface_route(kind: &str) -> Option<Route> {
         // them to Google's.
         "contact_sync_google" => Some(Route::SettingsGoogleContacts {}),
         "contact_sync_icloud" => Some(Route::SettingsICloudContacts {}),
-        // MAPPS-1124: Microsoft 365's contact-sync page does not exist in this
-        // app yet, though the server's flow does. `None` renders the label
-        // with no link, which is the honest state: naming the page is useful,
-        // linking to one that 404s is not.
-        "contact_sync_microsoft" => None,
+        // MAPPS-1124 built the page the server's flow had been missing, so this
+        // links like its siblings. It answered `None` until then: naming the
+        // page was useful, linking to one that 404s was not.
+        "contact_sync_microsoft" => Some(Route::SettingsMicrosoftContacts {}),
         // The pre-MAPPS-1122 kind, still served by an older server.
         "contact_sync" => Some(Route::SettingsGoogleContacts {}),
         _ => None,
@@ -1063,23 +1062,27 @@ mod mapps1122_panel_tests {
         );
     }
 
-    /// Microsoft 365 names its page and does not link to it.
+    /// Microsoft 365 names its page and now links to it.
     ///
-    /// The server's flow exists (MAPPS-1101); the SPA surface does not
-    /// (MAPPS-1124). Naming where it will be set up is useful, and linking to
-    /// a route this app cannot resolve is not: the card would offer a dead
-    /// end, which is the class of thing this page is being cured of.
+    /// The server's flow shipped with MAPPS-1101 and the SPA surface with
+    /// MAPPS-1124; until then this kind deliberately resolved to `None`,
+    /// because naming where a provider will be set up is useful and linking to
+    /// a route the app cannot resolve is a dead end. The pair is asserted
+    /// together so the label and the route cannot drift apart.
     #[test]
-    fn microsoft_names_its_page_without_linking_to_one_that_does_not_exist() {
-        assert_eq!(surface_route("contact_sync_microsoft"), None);
+    fn microsoft_names_its_page_and_links_to_it() {
         let microsoft = integration(serde_json::json!({
             "provider": "microsoft",
             "display_name": "Microsoft 365",
             "setup": { "kind": "contact_sync_microsoft", "label": "Settings > Microsoft 365 Contacts" },
         }));
-        let setup = microsoft.setup.expect("the label is still served");
+        let setup = microsoft.setup.expect("the label is served");
         assert_eq!(setup.label, "Settings > Microsoft 365 Contacts");
-        assert!(surface_route(&setup.kind).is_none());
+        assert_eq!(
+            surface_route(&setup.kind),
+            Some(Route::SettingsMicrosoftContacts {}),
+            "the label and the link have to name the same page"
+        );
     }
 
     /// An older server sends no `setup`, and the page renders without one.
