@@ -205,6 +205,37 @@ impl Integration {
         self.available && self.managed_elsewhere.is_none() && self.configurable_here
     }
 
+    /// The capabilities this tenant has actually handed over, in the order the
+    /// server lists them.
+    fn delegated(&self) -> Vec<&CapabilityDescriptor> {
+        self.supported_capabilities
+            .iter()
+            .filter(|capability| self.enabled_capabilities.contains(&capability.key))
+            .collect()
+    }
+
+    /// What a card with no controls lists, and what to head it with.
+    ///
+    /// On a card with no checkboxes this list is the page's whole statement
+    /// about the provider, so it has to be the true one. Listing the SUPPORTED
+    /// set under a heading like "what it does" claims capabilities nobody
+    /// delegated: Stripe supports `invoicing` and a tenant who wanted card
+    /// payments has `payments` alone, and `invoicing` is the one whose
+    /// description says Mokosh stops being the system of record for the
+    /// document.
+    fn capability_summary(&self) -> (&'static str, Vec<CapabilityDescriptor>) {
+        let delegated = self.delegated();
+        if !delegated.is_empty() {
+            return ("What it is doing", delegated.into_iter().cloned().collect());
+        }
+        let heading = if self.available {
+            "What it can do"
+        } else {
+            "What it would do"
+        };
+        (heading, self.supported_capabilities.clone())
+    }
+
     /// Whether Connect should collect a credential.
     ///
     /// Exactly when the server did not say the credential lives somewhere else.
@@ -246,12 +277,32 @@ struct ConnectBody {
 #[derive(Debug, Serialize)]
 struct NoBody {}
 
+/// How a card presents the capability set, which the `connected` sentence has
+/// to agree with.
+///
+/// The sentence used to say "ticked below" unconditionally, and MAPPS-1129
+/// takes the ticks away from every provider in this build: a card that says
+/// what is ticked below while nothing below is tickable sends a reader looking
+/// for a control that is not there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CapabilityForm {
+    /// Checkboxes an admin can change, on a provider the routes will take.
+    Ticked,
+    /// A list of what is delegated, on a card with no controls.
+    Listed,
+    /// Nothing is delegated, so there is no list of it to point at.
+    Nothing,
+}
+
 /// The badge and the sentence beside it, per status.
 ///
 /// A function rather than four branches at the call site, so the four stay
 /// visibly four. `disconnected` says the capability set was kept, since that is
 /// the whole reason the server distinguishes it from `not_connected`.
-fn status_copy(status: IntegrationStatus) -> (&'static str, BadgeVariant, &'static str) {
+fn status_copy(
+    status: IntegrationStatus,
+    form: CapabilityForm,
+) -> (&'static str, BadgeVariant, &'static str) {
     match status {
         IntegrationStatus::NotConnected => (
             "Not connected",
@@ -261,7 +312,11 @@ fn status_copy(status: IntegrationStatus) -> (&'static str, BadgeVariant, &'stat
         IntegrationStatus::Connected => (
             "Connected",
             BadgeVariant::Green,
-            "Delegating the capabilities ticked below.",
+            match form {
+                CapabilityForm::Ticked => "Delegating the capabilities ticked below.",
+                CapabilityForm::Listed => "Delegating the capabilities listed below.",
+                CapabilityForm::Nothing => "Connected, with nothing delegated to it.",
+            },
         ),
         IntegrationStatus::Disconnected => (
             "Disconnected",
@@ -394,8 +449,16 @@ fn IntegrationCard(
     // MAPPS-1121: an unbuilt provider is not "Not connected", which reads as an
     // invitation. The status is true and useless here; what an admin needs to
     // know is that there is nothing to connect it to yet.
+    let (summary_heading, summary_items) = integration.capability_summary();
+    let form = if integration.connectable() {
+        CapabilityForm::Ticked
+    } else if integration.delegated().is_empty() {
+        CapabilityForm::Nothing
+    } else {
+        CapabilityForm::Listed
+    };
     let (badge, tone, line) = if integration.available {
-        status_copy(integration.status)
+        status_copy(integration.status, form)
     } else {
         (
             "Not available yet",
@@ -615,19 +678,24 @@ fn IntegrationCard(
                     }
                 }
 
-                // Nothing to tick here: either the provider has nothing behind
-                // it (MAPPS-1121) or it is set up on its own surface
-                // (MAPPS-1122). The capability vocabulary is still the point of
-                // the entry, so it is shown as text. Hiding the provider
-                // entirely was the alternative, and a provider nobody can see
-                // is a provider nobody can ask for.
+                // Nothing to tick here: the provider has nothing behind it
+                // (MAPPS-1121), its connection belongs to another subsystem
+                // (MAPPS-1122), or the routes refuse a change for it because
+                // another settings page owns the lifecycle (MAPPS-1129). The
+                // capability vocabulary is still the point of the entry, so it
+                // is shown as text. Hiding the provider entirely was the
+                // alternative, and a provider nobody can see is a provider
+                // nobody can ask for.
+                //
+                // What is listed is what is DELEGATED whenever anything is,
+                // because with no checkboxes this list is the only thing the
+                // page says about the provider and the supported set is not
+                // the same claim.
                 if !integration.connectable() && !integration.supported_capabilities.is_empty() {
                     div { class: "space-y-1",
-                        p { class: "text-sm font-medium text-content",
-                            if integration.available { "What it does" } else { "What it would do" }
-                        }
+                        p { class: "text-sm font-medium text-content", "{summary_heading}" }
                         ul { class: "list-disc space-y-1 pl-5",
-                            for capability in integration.supported_capabilities.iter() {
+                            for capability in summary_items.iter() {
                                 li { class: "text-sm text-muted",
                                     span { class: "text-content", "{capability.label}" }
                                     ". {capability.description}"
@@ -865,6 +933,66 @@ mod tests {
         assert!(old.connectable());
     }
 
+    /// A card with no checkboxes lists what is DELEGATED, not what is
+    /// supported, and the status line agrees with the list beside it.
+    ///
+    /// Stripe is the case: it supports `invoicing`, whose description says
+    /// Mokosh stops being the system of record for the document, and a tenant
+    /// who wanted card payments has `payments` alone. Listing the supported set
+    /// on a card with no controls states a delegation nobody made.
+    #[test]
+    fn a_read_only_card_states_what_is_delegated_and_says_so_consistently() {
+        let stripe = integration(serde_json::json!({
+            "provider": "stripe",
+            "configurable_here": false,
+            "status": "connected",
+            "supported_capabilities": [
+                { "key": "payments", "label": "Payments", "description": "p" },
+                { "key": "invoicing", "label": "Invoicing", "description": "i" },
+            ],
+            "enabled_capabilities": ["payments"],
+        }));
+        let (heading, items) = stripe.capability_summary();
+        let keys: Vec<&str> = items.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec!["payments"],
+            "{heading}: a card with no controls must not claim a capability nobody delegated"
+        );
+        assert_eq!(heading, "What it is doing");
+        assert!(
+            !status_copy(stripe.status, CapabilityForm::Listed)
+                .2
+                .contains("ticked"),
+            "there is nothing to tick on this card"
+        );
+
+        // Connected and delegating nothing is a real row: `set_payment_connection`
+        // leaves an existing capability set alone, so a tenant who emptied it
+        // before MAPPS-1098 closed the route still has one.
+        let empty = integration(serde_json::json!({
+            "provider": "paypal",
+            "configurable_here": false,
+            "status": "connected",
+            "supported_capabilities": [{ "key": "payments", "label": "Payments", "description": "p" }],
+        }));
+        assert_eq!(empty.capability_summary().0, "What it can do");
+        let line = status_copy(empty.status, CapabilityForm::Nothing).2;
+        assert!(
+            line.contains("nothing delegated"),
+            "a connected provider with an empty set cannot point at a list of what it delegates: {line}"
+        );
+
+        // MAPPS-1121's wording survives: an unbuilt provider is still
+        // conditional, not a statement about what it is doing.
+        let planned = integration(serde_json::json!({
+            "provider": "xero",
+            "available": false,
+            "supported_capabilities": [{ "key": "invoicing", "label": "Invoicing", "description": "i" }],
+        }));
+        assert_eq!(planned.capability_summary().0, "What it would do");
+    }
+
     /// Every credential home the server can report either resolves to a route
     /// or renders without one, and never to the wrong page.
     ///
@@ -903,8 +1031,14 @@ mod tests {
             IntegrationStatus::Disconnected,
             IntegrationStatus::Error,
         ];
-        let badges: Vec<&str> = all.iter().map(|s| status_copy(*s).0).collect();
-        let lines: Vec<&str> = all.iter().map(|s| status_copy(*s).2).collect();
+        let badges: Vec<&str> = all
+            .iter()
+            .map(|s| status_copy(*s, CapabilityForm::Ticked).0)
+            .collect();
+        let lines: Vec<&str> = all
+            .iter()
+            .map(|s| status_copy(*s, CapabilityForm::Ticked).2)
+            .collect();
         for set in [&badges, &lines] {
             let mut seen = set.clone();
             seen.sort_unstable();
@@ -912,13 +1046,16 @@ mod tests {
             assert_eq!(seen.len(), all.len(), "two statuses read the same: {set:?}");
         }
         assert!(
-            status_copy(IntegrationStatus::Disconnected)
+            status_copy(IntegrationStatus::Disconnected, CapabilityForm::Ticked)
                 .2
                 .contains("kept"),
             "disconnected has to say the capability set survives"
         );
         assert!(
-            matches!(status_copy(IntegrationStatus::Error).1, BadgeVariant::Red),
+            matches!(
+                status_copy(IntegrationStatus::Error, CapabilityForm::Ticked).1,
+                BadgeVariant::Red
+            ),
             "an integration that is failing cannot look the same as one that is off"
         );
     }
