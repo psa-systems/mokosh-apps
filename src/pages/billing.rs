@@ -935,18 +935,12 @@ pub(crate) fn invoice_pdf_previews(status: &str) -> bool {
 }
 
 pub(crate) fn edit_unavailable(status: &str) -> Option<String> {
+    // One statement per state: the status badge handles the "what", this
+    // helper names the next action in one line and nothing more.
     match status {
         "draft" | "pending" => None,
-        "void" => Some(
-            "This invoice was voided, so there is nothing to edit. Amend the invoice that \
-             replaced it."
-                .to_string(),
-        ),
-        _ => Some(
-            "This invoice has already been sent, so the customer holds it. Amend it instead: that \
-             creates a replacement you can edit and send."
-                .to_string(),
-        ),
+        "void" => Some("Already replaced. Amend the invoice that replaced it.".to_string()),
+        _ => Some("Already sent. Amend it to edit the replacement draft.".to_string()),
     }
 }
 
@@ -977,15 +971,9 @@ pub(crate) fn amend_unavailable(status: &str, paid: bool, credited: bool) -> Opt
 /// be credited in full, which is the case where the customer is owed money back.
 pub(crate) fn credit_note_unavailable(status: &str, left_to_credit: bool) -> Option<String> {
     match status {
-        "draft" | "pending" => Some(
-            "A credit note corrects an invoice the customer already holds. Edit this one instead, \
-             or void it."
-                .to_string(),
-        ),
-        "void" => Some("This invoice was voided, so there is no charge to correct.".to_string()),
-        _ if !left_to_credit => {
-            Some("This invoice is fully credited, so there is nothing left to credit.".to_string())
-        }
+        "draft" | "pending" => Some("Not sent yet. Edit it directly, or void it.".to_string()),
+        "void" => Some("Already voided. Nothing left to correct.".to_string()),
+        _ if !left_to_credit => Some("Fully credited. Nothing left to credit.".to_string()),
         _ => None,
     }
 }
@@ -993,16 +981,13 @@ pub(crate) fn credit_note_unavailable(status: &str, left_to_credit: bool) -> Opt
 /// PMS-1036: a write-off says the customer owes this and will not pay, which is
 /// only a question for an invoice that is owed.
 pub(crate) fn write_off_unavailable(status: &str) -> Option<String> {
+    // One statement per state. Status badge handles the "what".
     match status {
         _ if can_write_off(status) => None,
-        "draft" | "pending" => {
-            Some("Nobody owes a draft. Void it instead if it should not go out.".to_string())
-        }
-        "paid" => Some("This invoice is paid, so there is no debt to write off.".to_string()),
-        "written_off" => Some("This invoice is already written off.".to_string()),
-        _ => {
-            Some("A write-off applies to an invoice that is owed and will not be paid.".to_string())
-        }
+        "draft" | "pending" => Some("Not sent yet. Void it instead.".to_string()),
+        "paid" => Some("Already paid. Nothing to write off.".to_string()),
+        "written_off" => Some("Already written off.".to_string()),
+        _ => Some("Only an unpaid, sent invoice can be written off.".to_string()),
     }
 }
 
@@ -1010,14 +995,11 @@ pub(crate) fn write_off_unavailable(status: &str) -> Option<String> {
 /// way an invoice reaches `void`: sending the amendment that replaces it. So the
 /// control itself stays pre-send only, and says which instrument takes over.
 pub(crate) fn void_unavailable(status: &str) -> Option<String> {
-    // PMS-1335: one statement per state.
+    // One statement per state. Status badge handles the "what".
     match status {
         "draft" | "pending" => None,
-        "void" => Some("This invoice is already void, so there is nothing to back out of.".to_string()),
-        _ => Some(
-            "The customer already holds this invoice. Amend it to replace it, or raise a credit note."
-                .to_string(),
-        ),
+        "void" => Some("Already void. Nothing to back out of.".to_string()),
+        _ => Some("Already sent. Amend it to replace, or raise a credit note.".to_string()),
     }
 }
 
@@ -7304,13 +7286,15 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
 
 #[cfg(test)]
 mod copy_style_tests {
-    //! PMS-1335: the invoice copy was rewritten in the MSP's voice, one
-    //! statement per line. These pin the shape: no "statement + explanatory
-    //! assertion" pair survives on `locked_invoice_note`, and the void
-    //! confirm message is a short question with no "cannot be reinstated"
-    //! restatement. See `docs/copy-style.md`.
+    //! The invoice copy was rewritten in the MSP's voice, one statement per
+    //! line. These pin the shape: no "statement + explanatory assertion" pair
+    //! survives, and the void confirm message is a short question with no
+    //! "cannot be reinstated" restatement. See `docs/copy-style.md`.
 
-    use super::locked_invoice_note;
+    use super::{
+        credit_note_unavailable, edit_unavailable, locked_invoice_note, void_unavailable,
+        write_off_unavailable,
+    };
 
     #[test]
     fn locked_notes_are_short_single_statements() {
@@ -7318,7 +7302,7 @@ mod copy_style_tests {
             let note = locked_invoice_note(status)
                 .unwrap_or_else(|| panic!("{status} has no locked note"));
             // A trailing "cannot be reinstated" or "stays on record as it was"
-            // was the restatement pattern PMS-1335 removes.
+            // was the restatement pattern this ticket removes.
             assert!(!note.contains("cannot be reinstated"), "{status}: {note}");
             assert!(
                 !note.contains("stays on record as it was"),
@@ -7342,6 +7326,45 @@ mod copy_style_tests {
             assert!(
                 note.is_ascii(),
                 "{status} note has a non-ASCII character: {note:?}"
+            );
+        }
+    }
+
+    /// Guard the four "why is this control disabled" helpers against the same
+    /// pattern: single statement, ASCII, under the soft length ceiling, and
+    /// free of the specific restatement fragments the first rewrite deleted.
+    #[test]
+    fn disabled_control_reasons_are_short_single_statements() {
+        let samples: Vec<Option<String>> = vec![
+            edit_unavailable("sent"),
+            edit_unavailable("void"),
+            void_unavailable("sent"),
+            void_unavailable("void"),
+            write_off_unavailable("draft"),
+            write_off_unavailable("paid"),
+            write_off_unavailable("written_off"),
+            write_off_unavailable("sent"),
+            credit_note_unavailable("draft", false),
+            credit_note_unavailable("void", false),
+            credit_note_unavailable("sent", false),
+        ];
+        for reason in samples.into_iter().flatten() {
+            // Nothing is longer than one short sentence; the void-and-replace
+            // phrasing was the worst offender at ~130 chars pre-rewrite.
+            assert!(
+                reason.len() <= 80,
+                "disabled-control reason is longer than one short sentence ({} chars): {reason}",
+                reason.len()
+            );
+            assert!(
+                reason.is_ascii(),
+                "disabled-control reason has a non-ASCII character: {reason:?}"
+            );
+            // "so there is" / "so there are" was the connector in the
+            // statement+assertion pattern we removed.
+            assert!(
+                !reason.contains("so there is") && !reason.contains("so there are"),
+                "statement+assertion pattern survived: {reason}"
             );
         }
     }
