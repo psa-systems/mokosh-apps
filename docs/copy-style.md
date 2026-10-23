@@ -68,7 +68,7 @@ horizontal ellipsis (U+2026, "Loading..."), per the MAPPS-410
 convention and the `check-ellipsis-glyph` guard.
 
 A grep over the SPA should return no em-dash or en-dash. The
-`check-no-em-dash` guard runs this automatically on every `just check`
+`check-em-dash` guard runs this automatically on every `just check`
 and in CI; the two definitional lines above carry an opt-out marker so
 they can spell the characters they describe. This rule also exists in
 the global user instructions; this file is the SPA-local statement.
