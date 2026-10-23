@@ -163,9 +163,10 @@ jobs:
       # guard keeps them from regressing into customer-facing copy or source
       # comments. --self-test proves the guard still rejects an em-dash.
       - name: No-em-dash guard
+        shell: nu {0}
         run: |
-          bash scripts/check-no-em-dash.sh --self-test
-          bash scripts/check-no-em-dash.sh
+          nu scripts/check-no-em-dash.nu --self-test
+          nu scripts/check-no-em-dash.nu
 
       # MAPPS-442: every settings list page renders the rich three-part
       # EmptyState with its "New <thing>" button as the CTA. The bare-message

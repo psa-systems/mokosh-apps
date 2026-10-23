@@ -210,8 +210,8 @@ check-ellipsis-glyph:
 # PMS-1335: no em-dash or en-dash in src/, tests/ or docs/. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']
 check-no-em-dash:
-    bash scripts/check-no-em-dash.sh --self-test
-    bash scripts/check-no-em-dash.sh
+    nu scripts/check-no-em-dash.nu --self-test
+    nu scripts/check-no-em-dash.nu
 
 # MAPPS-442: keep every settings list page on the rich three-part EmptyState (title, description, "New <thing>" button), never the bare-message mode. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']
