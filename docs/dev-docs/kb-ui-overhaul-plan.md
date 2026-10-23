@@ -677,7 +677,7 @@ git commit -m "feat(components): add CollapsibleRail with persist + overlay"
 - Create: `src/components/overflow_actions.rs`
 - Modify: `src/components/mod.rs`
 
-The header's secondary items must collapse into a `⋯` dropdown when too narrow. A pixel-perfect measure-and-reflow is overkill; use a CSS-driven approach: show the inline row at `sm:` and up; below `sm:` show a `⋯` button that toggles a dropdown containing the same items. The parent passes the items twice (inline + menu) via two render closures, or—simpler—passes one `children` shown inline on wide and inside the dropdown on narrow.
+The header's secondary items must collapse into a `⋯` dropdown when too narrow. A pixel-perfect measure-and-reflow is overkill; use a CSS-driven approach: show the inline row at `sm:` and up; below `sm:` show a `⋯` button that toggles a dropdown containing the same items. The parent passes the items twice (inline + menu) via two render closures, or (simpler) passes one `children` shown inline on wide and inside the dropdown on narrow.
 
 - [ ] **Step 1: Implement**
 

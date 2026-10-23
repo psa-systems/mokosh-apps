@@ -574,7 +574,7 @@ pub enum Route {
     // credential on 401. The MAPPS-518 credential isolation stays
     // intact underneath (`platform_admins` and `users` are still
     // separate tables; the MAPPS-498 mirror still cannot touch
-    // `platform_admins`) — the unification is UI only.
+    // `platform_admins`): the unification is UI only.
     //
     // `/client/login` and `/platform/login` are retained as `#[route]`
     // entries but render "moved" redirect stubs (see

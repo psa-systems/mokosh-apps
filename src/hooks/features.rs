@@ -10,8 +10,8 @@
 //! `GlobalSignal` once at startup and then every 60 seconds, plus an explicit
 //! bump after an admin flip so the switcher is instant from the actor's
 //! point of view. A missing key, an unreachable server, or an unloaded cache
-//! all read as **off** — the ticket's AC is "unreachable server leaves every
-//! gated feature hidden". The 60s cadence matches the ticket; the ticker uses
+//! all read as **off** (the ticket's AC is "unreachable server leaves every
+//! gated feature hidden"). The 60s cadence matches the ticket; the ticker uses
 //! the same `spawn + sleep_ms` loop pattern as `use_periodic_tick` in
 //! `src/pages/big_view.rs`.
 
@@ -76,7 +76,7 @@ pub fn use_feature_map_refresh() {
 }
 
 /// Is `key` on? A missing key, an unloaded map, or a failed read all
-/// resolve to false — the ticket's "negative case" AC.
+/// resolve to false, the ticket's "negative case" AC.
 pub fn feature_enabled(map: &Option<HashMap<String, bool>>, key: &str) -> bool {
     map.as_ref()
         .and_then(|m| m.get(key).copied())

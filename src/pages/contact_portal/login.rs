@@ -301,7 +301,7 @@ pub fn ContactLoginPage(slug: String) -> Element {
     // MAPPS-635 D5: `/portal/<bad-slug>/login` resolved as an
     // unbranded generic sign-in form + a submit that would always
     // 401. Detect the "host fetch resolved, no such portal" case
-    // (Some(None) — distinct from None which is still-loading) and
+    // (Some(None), distinct from None which is still-loading) and
     // render a proper "Portal not found" card that steers the visitor
     // to `/portal/login` (step 1 by Company ID). tenant_inactive still
     // wins if the host DID resolve but the tenant is suspended.
