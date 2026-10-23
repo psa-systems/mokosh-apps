@@ -87,6 +87,36 @@ pub struct Overview {
     /// cards, two credentials, two selections, one read.
     #[serde(default)]
     pub icloud_connection: Option<Connection>,
+    /// `integrations/microsoft_contacts_enabled` (server PMS-1512), the
+    /// Microsoft 365 half of `enabled`. Absent reads as enabled, the server's
+    /// own default.
+    #[serde(default = "enabled_by_default")]
+    pub microsoft_enabled: bool,
+    /// Whether this deployment's host holds an Entra ID client (MAPPS-1101),
+    /// the Microsoft half of `configured`. Absent reads as NOT configured: a
+    /// server too old to send it is a server with no Microsoft flow at all, and
+    /// offering Connect there produces an error an admin cannot act on.
+    #[serde(default)]
+    pub microsoft_configured: bool,
+    /// The tenant's Microsoft 365 connection (MAPPS-1124).
+    #[serde(default)]
+    pub microsoft_connection: Option<Connection>,
+}
+
+impl Overview {
+    /// This provider's connection, by the discriminator the shared routes use
+    /// (MAPPS-1124).
+    ///
+    /// One match rather than three call sites reaching for three fields: the
+    /// group picker serves two providers now, and a page that reached for the
+    /// wrong field would seed one provider's selection from another's.
+    pub fn connection_for(&self, provider: &str) -> Option<&Connection> {
+        match provider {
+            "icloud" => self.icloud_connection.as_ref(),
+            "microsoft" => self.microsoft_connection.as_ref(),
+            _ => self.connection.as_ref(),
+        }
+    }
 }
 
 /// The connection half of the status read (PMS-1212, PMS-1215).

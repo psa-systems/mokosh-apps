@@ -750,6 +750,18 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         section: Some(SettingsSection::ConnectedServices),
         visibility: SurfaceVisibility::StaffAdmin,
     },
+    // MAPPS-1124: the Microsoft 365 half. Beside the other two sources and not
+    // advanced, for the same reason they are: an MSP whose customers are on
+    // Microsoft 365 is the common case, not the expert one.
+    SettingsSurface {
+        route: Route::SettingsMicrosoftContacts {},
+        title: "Microsoft 365 Contacts",
+        description: "Import contacts from a Microsoft 365 account through Microsoft Graph. Read-only: nothing is written back.",
+        group: SettingsGroupKey::Integrations,
+        advanced: false,
+        section: Some(SettingsSection::ConnectedServices),
+        visibility: SurfaceVisibility::StaffAdmin,
+    },
     // MAPPS-915: a .vcf file through the same import (server PMS-1290).
     // Beside Google Contacts and not advanced, for the same reason.
     SettingsSurface {
