@@ -432,6 +432,10 @@ pub fn WorkDayStrip() -> Element {
     let tz = crate::utils::datetime::user_timezone();
     let pref = crate::utils::datetime::user_format_pref();
 
+    // Loads the flags when they are missing or stale. Called here, at the top
+    // level, because it is a hook; the resource below reads the cache.
+    crate::hooks::modules::use_module_flags();
+
     let date_for_resource = picked_date();
     let user_for_resource = picked_user();
     let mut day_resource = use_resource(move || async move {
@@ -441,8 +445,10 @@ pub fn WorkDayStrip() -> Element {
         // MAPPS-1022: read inside this closure, not captured from the
         // component body, so a flags change restarts this resource on its
         // own account instead of waiting for the tenant, connectivity or
-        // tick dependency to happen to fire too.
-        let module_flags = crate::hooks::modules::use_module_flags();
+        // tick dependency to happen to fire too. MAPPS-1127: the plain read,
+        // not the hook: a hook called from this future lands in the strip's
+        // hook list outside render and panics the next render.
+        let module_flags = crate::hooks::modules::module_flags();
         let skip_workday_request = should_skip_workday(module_flags.as_ref());
         let path = day_query(date_for_resource, user_for_resource);
         if skip_workday_request {
@@ -1686,6 +1692,30 @@ mod mapps1022_reactive_dependency_tests {
             final_counts.resource, 2,
             "resolving module_flags alone, with nothing else re-rendering, must \
              restart the resource on its own account"
+        );
+    }
+}
+
+/// MAPPS-1127: a hook called from the day resource's future registered itself
+/// outside render, and the next render that reached that slot froze the app
+/// on the Time page. A source scan, because the panic only shows once a real
+/// load resolves.
+#[cfg(test)]
+mod hook_placement_tests {
+    const SRC: &str = include_str!("work_day.rs");
+
+    #[test]
+    fn the_day_resource_reads_the_module_flags_without_calling_the_hook() {
+        let body = SRC
+            .split_once("let mut day_resource = use_resource(move || async move {")
+            .map(|(_, after)| after)
+            .and_then(|after| after.split_once("use_future(move || async move {"))
+            .map(|(closure, _)| closure)
+            .expect("WorkDayStrip builds its day resource");
+        assert!(body.contains("crate::hooks::modules::module_flags()"));
+        assert!(
+            !body.contains("use_module_flags("),
+            "a hook inside the resource future corrupts the hook order"
         );
     }
 }
