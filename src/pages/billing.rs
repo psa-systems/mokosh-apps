@@ -973,7 +973,9 @@ pub(crate) fn credit_note_unavailable(status: &str, left_to_credit: bool) -> Opt
     match status {
         "draft" | "pending" => Some("Not sent yet. Edit it directly, or void it.".to_string()),
         "void" => Some("Already voided. Nothing left to correct.".to_string()),
-        _ if !left_to_credit => Some("Fully credited. Nothing left to credit.".to_string()),
+        _ if !left_to_credit => {
+            Some("Already fully credited. Nothing left to credit.".to_string())
+        }
         _ => None,
     }
 }
@@ -986,7 +988,7 @@ pub(crate) fn write_off_unavailable(status: &str) -> Option<String> {
         _ if can_write_off(status) => None,
         "draft" | "pending" => Some("Not sent yet. Void it instead.".to_string()),
         "paid" => Some("Already paid. Nothing to write off.".to_string()),
-        "written_off" => Some("Already written off.".to_string()),
+        "written_off" => Some("Already written off. Nothing left to collect.".to_string()),
         _ => Some("Only an unpaid, sent invoice can be written off.".to_string()),
     }
 }
