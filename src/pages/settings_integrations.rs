@@ -351,6 +351,12 @@ fn surface_route(kind: &str) -> Option<Route> {
         // links like its siblings. It answered `None` until then: naming the
         // page was useful, linking to one that 404s was not.
         "contact_sync_microsoft" => Some(Route::SettingsMicrosoftContacts {}),
+        // MAPPS-1144: the two invoice issuers. The server serves these kinds
+        // when its registry flips both providers to `Built`; until then the
+        // panel lists them with no setup surface at all, and this is here so
+        // the link appears the moment it does rather than one release later.
+        "invoice_issuer_xero" => Some(Route::SettingsXero {}),
+        "invoice_issuer_quickbooks" => Some(Route::SettingsQuickBooks {}),
         // The pre-MAPPS-1122 kind, still served by an older server.
         "contact_sync" => Some(Route::SettingsGoogleContacts {}),
         _ => None,
