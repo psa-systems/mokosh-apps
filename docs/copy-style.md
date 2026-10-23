@@ -57,16 +57,21 @@ article exists at the target.
 
 ## ASCII only
 
-No em-dashes, en-dashes, decorative quotes, or ellipsis characters.
+No em-dashes, en-dashes, or decorative quotes.
 
-- em-dash — becomes a hyphen or a colon.
-- en-dash – becomes a hyphen.
+- em-dash (U+2014) becomes a hyphen or a colon.  <!-- em-dash-guard-allow -->
+- en-dash (U+2013) becomes a hyphen.  <!-- em-dash-guard-allow -->
 - Curly quotes become straight quotes.
-- An ellipsis character becomes three dots: `...`.
 
-A grep over customer-facing files should return no non-ASCII characters.
-This rule exists in the global user instructions too, and this file
-restates it so a reader hitting the SPA from here has one source.
+The one Unicode punctuation character this rule DOES allow is the
+horizontal ellipsis (U+2026, "Loading..."), per the MAPPS-410
+convention and the `check-ellipsis-glyph` guard.
+
+A grep over the SPA should return no em-dash or en-dash. The
+`check-no-em-dash` guard runs this automatically on every `just check`
+and in CI; the two definitional lines above carry an opt-out marker so
+they can spell the characters they describe. This rule also exists in
+the global user instructions; this file is the SPA-local statement.
 
 ## Where this applies
 

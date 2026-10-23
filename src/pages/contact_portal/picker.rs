@@ -574,8 +574,8 @@ pub fn ContactPickerPage(token: String) -> Element {
                     // The product intent is one account per portal
                     // (per-Company passwords), so a picker that lets
                     // one email pick a Company to sign in as reads
-                    // as "same account, many portals" — the opposite
-                    // of the desired isolation. When the magic-link
+                    // as "same account, many portals" (the opposite
+                    // of the desired isolation). When the magic-link
                     // redeem returns candidates, we now refuse the
                     // aggregate flow and steer the visitor at their
                     // Portal-ID login instead: the primary flow is
