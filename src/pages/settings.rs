@@ -293,7 +293,7 @@ impl SettingsGroupKey {
                 "Work types, task statuses, asset types, and project types."
             }
             SettingsGroupKey::Billing => {
-                "SLA, scheduling, time tracking, rate cards, taxes, gateways, and payment terms."
+                "SLA, scheduling, time tracking, rate cards and taxes. The product catalogue and invoice-document rules (numbering, payment terms, overdue reminders) sit under their own Products & invoicing section."
             }
             SettingsGroupKey::Tickets => "Statuses, priorities, types, queues, and categories.",
             SettingsGroupKey::Integrations => {
@@ -393,6 +393,12 @@ enum SettingsSection {
     RemoteMonitoring,
     /// Settings whose effect is the whole deployment, not this tenant.
     Deployment,
+    /// The product catalogue and the invoice-document settings
+    /// (numbering, payment terms, overdue reminders). Carved out of
+    /// Billing & SLA so a reader can tell catalogue + document rules
+    /// apart from the SLA / scheduling / rate-card rules the rest of
+    /// Billing holds.
+    ProductsAndInvoicing,
 }
 
 impl SettingsSection {
@@ -402,6 +408,7 @@ impl SettingsSection {
             SettingsSection::ConnectedServices => "Connected services",
             SettingsSection::RemoteMonitoring => "Remote monitoring",
             SettingsSection::Deployment => "Deployment",
+            SettingsSection::ProductsAndInvoicing => "Products & invoicing",
         }
     }
 
@@ -420,12 +427,13 @@ impl SettingsSection {
 }
 
 /// Section render order on a group landing. A surface with no section renders
-/// above all of them, ungrouped, which is every surface outside the
-/// Integrations group today.
+/// above all of them, ungrouped. The Integrations group drives the first three
+/// entries; `ProductsAndInvoicing` is the first section inside Billing & SLA.
 const SETTINGS_SECTION_ORDER: &[SettingsSection] = &[
     SettingsSection::ConnectedServices,
     SettingsSection::RemoteMonitoring,
     SettingsSection::Deployment,
+    SettingsSection::ProductsAndInvoicing,
 ];
 
 /// One configuration surface (a leaf settings page).
@@ -570,8 +578,8 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         title: "Payment Reminders",
         description: "Whether and when overdue invoices are re-sent to the customer.",
         group: SettingsGroupKey::Billing,
-        advanced: false,
-        section: None,
+        advanced: true,
+        section: Some(SettingsSection::ProductsAndInvoicing),
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -619,8 +627,8 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         title: "Payment Terms",
         description: "Options for the invoice payment-terms dropdown.",
         group: SettingsGroupKey::Billing,
-        advanced: false,
-        section: None,
+        advanced: true,
+        section: Some(SettingsSection::ProductsAndInvoicing),
         visibility: SurfaceVisibility::Always,
     },
     // MAPPS-640: the price list. Finance-gated on its page like Tax Rates.
@@ -629,8 +637,8 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         title: "Products",
         description: "The price list picked onto invoice lines and contract items.",
         group: SettingsGroupKey::Billing,
-        advanced: false,
-        section: None,
+        advanced: true,
+        section: Some(SettingsSection::ProductsAndInvoicing),
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -843,8 +851,8 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         title: "Invoice Numbering",
         description: "What a new invoice's number looks like, and whether each customer has a sequence of their own.",
         group: SettingsGroupKey::Billing,
-        advanced: false,
-        section: None,
+        advanced: true,
+        section: Some(SettingsSection::ProductsAndInvoicing),
         visibility: SurfaceVisibility::StaffAdmin,
     },
     // MAPPS-749: who may correct a ticket note after it was posted
@@ -10325,16 +10333,24 @@ mod mapps1120_settings_section_tests {
         );
     }
 
-    /// Every other group renders exactly as it did: one ungrouped grid.
+    /// Every group not listed here renders exactly as it did: one ungrouped
+    /// grid.
     ///
     /// The sectioning is opt-in per surface, and this is what says so. A
-    /// section accidentally assigned outside Integrations would re-lay-out a
-    /// group nobody asked about.
+    /// section accidentally assigned to a group that is not supposed to carve
+    /// one out would re-lay-out a surface nobody asked about. The two groups
+    /// that DO carry sections are:
+    ///
+    /// - Integrations: Connected services / Remote monitoring / Deployment
+    /// - Billing & SLA: the ungrouped SLA / rate-card / tax-rate / gateway
+    ///   surfaces plus a Products & invoicing section for the catalogue
+    ///   and the invoice-document rules (numbering, payment terms, overdue
+    ///   reminders)
     #[test]
     fn groups_without_sections_render_one_ungrouped_grid() {
         for group in SETTINGS_GROUP_ORDER
             .iter()
-            .filter(|g| **g != SettingsGroupKey::Integrations)
+            .filter(|g| **g != SettingsGroupKey::Integrations && **g != SettingsGroupKey::Billing)
         {
             let surfaces: Vec<&SettingsSurface> =
                 surfaces_in_group(*group, true, everything()).collect();
@@ -10347,6 +10363,31 @@ mod mapps1120_settings_section_tests {
             );
             assert!(sections.is_empty(), "{} grew a section", group.title());
         }
+    }
+
+    /// Billing & SLA keeps the SLA / scheduling / rate-card / tax-rate /
+    /// gateway surfaces ungrouped and files the catalogue + invoice-document
+    /// rules under their own Products & invoicing section, so a reader can
+    /// tell the two apart without reading each tile's description.
+    #[test]
+    fn billing_sla_carves_out_products_and_invoicing() {
+        assert_eq!(
+            sections_of(SettingsGroupKey::Billing, true),
+            vec![SettingsSection::ProductsAndInvoicing],
+            "Billing & SLA holds exactly the Products & invoicing section"
+        );
+        let section_members: Vec<&str> = SETTINGS_SURFACES
+            .iter()
+            .filter(|s| {
+                s.group == SettingsGroupKey::Billing
+                    && s.section == Some(SettingsSection::ProductsAndInvoicing)
+            })
+            .map(|s| s.title)
+            .collect();
+        assert!(section_members.contains(&"Products"));
+        assert!(section_members.contains(&"Invoice Numbering"));
+        assert!(section_members.contains(&"Payment Terms"));
+        assert!(section_members.contains(&"Payment Reminders"));
     }
 
     /// The deployment section says what it is, because its tiles do not.
