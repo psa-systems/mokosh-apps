@@ -973,9 +973,7 @@ pub(crate) fn credit_note_unavailable(status: &str, left_to_credit: bool) -> Opt
     match status {
         "draft" | "pending" => Some("Not sent yet. Edit it directly, or void it.".to_string()),
         "void" => Some("Already voided. Nothing left to correct.".to_string()),
-        _ if !left_to_credit => {
-            Some("Already fully credited. Nothing left to credit.".to_string())
-        }
+        _ if !left_to_credit => Some("Already fully credited. Nothing left to credit.".to_string()),
         _ => None,
     }
 }
