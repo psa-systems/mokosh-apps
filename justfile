@@ -57,6 +57,14 @@ release_version_files := "package.json"
 # `dev-{{app}}-cargo-*` set dev-clean removes on its own.
 dev_extra_volumes := "dev-mokosh-apps-target"
 
+# MAPPS-1138: keeps the coverage the local guard had before it was replaced
+# by the shared `check-em-dash` recipe. `tests` is left out: this repo has no
+# tracked `tests/` root (tests live inline in `src/`), and the shared guard
+# fails a configured path that matches no tracked file, unlike the old
+# script. See MAPPS-1138's linked subtask for adding it back if that changes.
+em_dash_paths := "src docs"
+em_dash_en_dash := "true"
+
 import 'common/common.just'
 
 # List available recipes. Keep FIRST: just picks the default recipe by source order.
@@ -69,7 +77,7 @@ default:
 # desktop, clippy, fmt, and the rest of the project's linting/consistency
 # checks).
 [group: 'check']
-check: check-justfile check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-scrollbars check-refresh-token-storage check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-no-em-dash check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging check-loading-recipe check-company-id-copy check-card-headings check-config-docs
+check: check-justfile check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-scrollbars check-refresh-token-storage check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-em-dash check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging check-loading-recipe check-company-id-copy check-card-headings check-config-docs
 
 # MAPPS-682: clippy, not check, and `-D warnings`, so the browser target fails
 # on a finding instead of printing it. Mirrors check-clippy and check.yml.
@@ -206,12 +214,6 @@ check-kit-adoption:
 check-ellipsis-glyph:
     bash scripts/check-ellipsis-glyph.sh --self-test
     bash scripts/check-ellipsis-glyph.sh
-
-# PMS-1335: no em-dash or en-dash in src/, tests/ or docs/. --self-test first, so a guard that stopped guarding fails loudly.
-[group: 'check']
-check-no-em-dash:
-    nu scripts/check-no-em-dash.nu --self-test
-    nu scripts/check-no-em-dash.nu
 
 # MAPPS-442: keep every settings list page on the rich three-part EmptyState (title, description, "New <thing>" button), never the bare-message mode. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']

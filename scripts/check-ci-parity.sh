@@ -56,8 +56,12 @@ check_recipes() {
 # sequence of shell commands, so its lines cannot be matched against
 # `workflow`'s `run:` blocks one for one; what CI must run instead is the
 # recipe itself, so this reports a single synthetic `just <recipe>` command.
+# A body with no shebang can still be unmatchable: a line using `{{ }}`
+# interpolation (e.g. a recipe imported from `common.just` like
+# `check-em-dash`) only renders to a real command when `just` runs it, so it
+# gets the same `just <recipe>` treatment.
 recipe_commands_in() {
-  local file="$1" recipe="$2" first
+  local file="$1" recipe="$2" first out
   first=$(awk -v recipe="$recipe" '
     $0 == recipe ":" { found = 1; next }
     found && /^[ \t]*$/ { next }
@@ -67,7 +71,7 @@ recipe_commands_in() {
     printf 'just %s\n' "$recipe"
     return
   fi
-  awk -v recipe="$recipe" '
+  out=$(awk -v recipe="$recipe" '
     $0 == recipe ":" { found = 1; next }
     found && /^[^ \t]/ { exit }
     found && /^[ \t]*#/ { next }
@@ -76,7 +80,11 @@ recipe_commands_in() {
       sub(/^[ \t]+/, "")
       print
     }
-  ' "$file"
+  ' "$file")
+  case "$out" in
+    *'{{'*) printf 'just %s\n' "$recipe"; return ;;
+  esac
+  printf '%s\n' "$out"
 }
 
 # Same, but falls back to the files the justfile imports (one level:
@@ -229,6 +237,30 @@ EOF
         run: echo hi
 EOF
 
+    # check-em-dash's real shape: a single-line, non-shebang recipe that
+    # uses `{{ }}` interpolation, so it also needs the `just <recipe>` match.
+    cat > "$fixtures/interp.just" <<'EOF'
+check-delta:
+    nu "{{ source_directory() / "scripts" / "check-delta.nu" }}" "{{ delta_arg }}"
+EOF
+
+    cat > "$fixtures/interp.justfile" <<'EOF'
+import 'interp.just'
+
+[group: 'check']
+check: check-delta
+EOF
+
+    cat > "$fixtures/interp-complete.yml" <<'EOF'
+      - name: Delta guard
+        run: just check-delta
+EOF
+
+    cat > "$fixtures/interp-missing.yml" <<'EOF'
+      - name: Nothing relevant
+        run: echo hi
+EOF
+
     out=$("$0" --compare "$fixtures/justfile" "$fixtures/complete.yml" 2>&1) && rc=0 || rc=$?
     if [ "$rc" -ne 0 ]; then
       echo "self-test: FAIL (a complete workflow was rejected, exit $rc)"
@@ -293,6 +325,28 @@ EOF
       status=1
     else
       echo "self-test: a dropped 'just check-gamma' step fails the guard and names it"
+    fi
+
+    out=$("$0" --compare "$fixtures/interp.justfile" "$fixtures/interp-complete.yml" 2>&1) && rc=0 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo "self-test: FAIL (a non-shebang recipe using {{ }} interpolation was rejected, exit $rc)"
+      printf '%s\n' "$out"
+      status=1
+    else
+      echo "self-test: a non-shebang recipe using {{ }} interpolation matches 'just <recipe>'"
+    fi
+
+    out=$("$0" --compare "$fixtures/interp.justfile" "$fixtures/interp-missing.yml" 2>&1) && rc=0 || rc=$?
+    if [ "$rc" -ne 1 ]; then
+      echo "self-test: FAIL (a missing 'just check-delta' step did not fail the guard, exit $rc)"
+      printf '%s\n' "$out"
+      status=1
+    elif ! printf '%s' "$out" | grep -q 'just check-delta'; then
+      echo "self-test: FAIL (the failure did not name the missing 'just check-delta')"
+      printf '%s\n' "$out"
+      status=1
+    else
+      echo "self-test: a dropped 'just check-delta' step fails the guard and names it"
     fi
 
     [ "$status" -eq 0 ] && echo "CI-parity guard self-test: clean"

@@ -159,14 +159,11 @@ jobs:
           bash scripts/check-ellipsis-glyph.sh
 
       # PMS-1335: no em-dash (U+2014) or en-dash (U+2013) in src/, tests/ or
-      # docs/. The global style rule bans them in every artifact, and this
-      # guard keeps them from regressing into customer-facing copy or source
-      # comments. --self-test proves the guard still rejects an em-dash.
+      # docs/, via the shared `common` guard (MAPPS-1138).
       - name: No-em-dash guard
         shell: nu {0}
         run: |
-          nu scripts/check-no-em-dash.nu --self-test
-          nu scripts/check-no-em-dash.nu
+          just check-em-dash
 
       # MAPPS-442: every settings list page renders the rich three-part
       # EmptyState with its "New <thing>" button as the CTA. The bare-message
