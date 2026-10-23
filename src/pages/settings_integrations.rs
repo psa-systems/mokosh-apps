@@ -145,6 +145,15 @@ struct Integration {
     /// greying out every provider it serves.
     #[serde(default = "default_available")]
     available: bool,
+    /// Whether the per-provider routes will take a change for this provider
+    /// (MAPPS-1129).
+    ///
+    /// Defaults to TRUE for a server that predates the field, which is the
+    /// state this page was written against: before MAPPS-1122 a provider the
+    /// routes refuse was not in the list at all, so an older deployment has
+    /// nothing to get wrong here.
+    #[serde(default = "default_configurable_here")]
+    configurable_here: bool,
     #[serde(default)]
     managed_elsewhere: Option<ManagedElsewhere>,
     #[serde(default)]
@@ -163,8 +172,18 @@ fn default_available() -> bool {
     true
 }
 
+/// A server that does not send `configurable_here` predates MAPPS-1129, and
+/// therefore predates MAPPS-1122 listing the providers its routes refuse. Every
+/// provider such a server lists is one it will take a change for.
+fn default_configurable_here() -> bool {
+    true
+}
+
 impl Integration {
     /// Whether this card offers Connect at all.
+    ///
+    /// Three different reasons to offer nothing, and they are not the same
+    /// reason.
     ///
     /// `managed_elsewhere` removes it because the connection belongs to
     /// another subsystem. `available == false` removes it for a different
@@ -173,8 +192,17 @@ impl Integration {
     /// has no client to hand a credential to, so the card used to offer a
     /// password field whose contents nothing would ever read and a Connect
     /// button that reported success.
+    ///
+    /// `configurable_here == false` removes it for a third (MAPPS-1129): the
+    /// subsystem exists, the connection IS ours, and the HTTP surface still
+    /// refuses the change because another settings page owns the lifecycle.
+    /// This page used to decide that from `managed_elsewhere` alone, which
+    /// Stripe and PayPal do not carry: their connection home has been this
+    /// subsystem since PMS-1312 and only their CREDENTIAL lives elsewhere. So
+    /// every control on their cards came back 404, and the capability
+    /// checkboxes came back 404 once per tick.
     fn connectable(&self) -> bool {
-        self.available && self.managed_elsewhere.is_none()
+        self.available && self.managed_elsewhere.is_none() && self.configurable_here
     }
 
     /// Whether Connect should collect a credential.
@@ -741,13 +769,23 @@ mod tests {
             "QuickBooks' credential arrives here"
         );
 
+        // MAPPS-1129: the payment providers' CONNECTION is ours since PMS-1312,
+        // which is why they carry no `managed_elsewhere` - and the routes still
+        // refuse them, because Settings > Payment Gateways owns the lifecycle.
+        // This page read the first fact and concluded the second, and the
+        // checkboxes it drew on Stripe answered 404 once per tick.
         let payments = integration(serde_json::json!({
             "provider": "stripe",
+            "configurable_here": false,
             "credential_elsewhere": { "kind": "payment_gateway", "entered_at": "Settings > Payment Gateways" },
         }));
         assert!(
-            payments.connectable(),
-            "the payment providers' connection is ours since PMS-1312"
+            payments.managed_elsewhere.is_none(),
+            "the fixture has to be the shape that fooled this page: connection ours, routes refusing"
+        );
+        assert!(
+            !payments.connectable(),
+            "a provider the routes refuse offers no control, whoever owns its connection"
         );
         assert!(
             !payments.takes_credential(),
@@ -764,6 +802,67 @@ mod tests {
             "connecting Google here is a 409 until PMS-1315"
         );
         assert!(!google.takes_credential());
+    }
+
+    /// MAPPS-1129: no provider in this build renders a capability checkbox, and
+    /// the one that used to was the one whose routes refuse it.
+    ///
+    /// Walked as the whole registry rather than as the Stripe case, because the
+    /// answer to the ticket's question - what is the purpose of the checkbox -
+    /// is only visible across all seven: the two that drew checkboxes are
+    /// exactly the two that 404, and the two whose delegation the server
+    /// actually READS (Xero and QuickBooks, in `invoice_issuer_dispatch`) draw
+    /// none because no client is built. The checkbox branch stays in the page
+    /// for the day one of them flips to built with its credential home here.
+    #[test]
+    fn nothing_in_this_build_offers_a_tick_the_server_would_take() {
+        let registry = [
+            // Payment gateways: connection ours, routes refusing (MAPPS-1098).
+            ("stripe", serde_json::json!({ "configurable_here": false })),
+            ("paypal", serde_json::json!({ "configurable_here": false })),
+            // Planned: no client behind them (MAPPS-1121).
+            ("quickbooks", serde_json::json!({ "available": false })),
+            ("xero", serde_json::json!({ "available": false })),
+            // Connection owned by contact sync (PMS-1315).
+            (
+                "google",
+                serde_json::json!({ "managed_elsewhere": { "configured_at": "Settings > Contact sync", "issue": "PMS-1315" } }),
+            ),
+            (
+                "microsoft",
+                serde_json::json!({ "managed_elsewhere": { "configured_at": "Settings > Contact sync", "issue": "PMS-1315" } }),
+            ),
+            (
+                "icloud",
+                serde_json::json!({ "managed_elsewhere": { "configured_at": "Settings > Contact sync", "issue": "PMS-1315" } }),
+            ),
+        ];
+        for (provider, shape) in registry {
+            let mut json = shape;
+            json["provider"] = serde_json::Value::String(provider.to_string());
+            assert!(
+                !integration(json).connectable(),
+                "{provider} offers a control this build cannot carry through"
+            );
+        }
+
+        // And the branch is not dead code: a built provider whose credential
+        // and connection are both here is what it is waiting for.
+        let built_here = integration(serde_json::json!({ "provider": "xero" }));
+        assert!(built_here.connectable());
+    }
+
+    /// A server that predates the field behaves as it does today.
+    ///
+    /// The default is TRUE and that is deliberate: a server without
+    /// `configurable_here` also predates MAPPS-1122, so it never listed a
+    /// provider its routes refuse, and defaulting to false would grey out every
+    /// provider such a deployment serves.
+    #[test]
+    fn an_older_server_still_offers_what_it_always_did() {
+        let old = integration(serde_json::json!({ "provider": "xero" }));
+        assert!(old.configurable_here);
+        assert!(old.connectable());
     }
 
     /// Every credential home the server can report either resolves to a route
