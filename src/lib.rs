@@ -1103,6 +1103,14 @@ pub enum Route {
     // The same group picker as iCloud's, told it is talking to Microsoft 365.
     #[route("/settings/integrations/microsoft-contacts/import")]
     SettingsMicrosoftContactsImport {},
+    // MAPPS-1144: the two invoice issuers. MAPPS-1099 shipped the clients,
+    // the dispatch, the webhook receivers and the OAuth round trip over a
+    // dozen PRs with no surface in this app, so no admin could connect
+    // either one and the feature could not be switched on by anyone.
+    #[route("/settings/integrations/xero")]
+    SettingsXero {},
+    #[route("/settings/integrations/quickbooks")]
+    SettingsQuickBooks {},
     // MAPPS-915: upload a .vcf file into the same import (server PMS-1290).
     #[route("/settings/integrations/vcard-import")]
     SettingsVcardImport {},
@@ -2404,6 +2412,24 @@ fn SettingsMicrosoftContacts() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             pages::settings_contact_sync_microsoft::MicrosoftContactsSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsXero() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_invoice_issuer::XeroSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsQuickBooks() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_invoice_issuer::QuickBooksSettingsPage {}
         }
     }
 }

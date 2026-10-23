@@ -750,6 +750,28 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         section: Some(SettingsSection::ConnectedServices),
         visibility: SurfaceVisibility::StaffAdmin,
     },
+    // MAPPS-1144: the two invoice issuers, beside the contact sources under
+    // Connected Services. Delegating invoicing is a bigger decision than
+    // importing contacts, which is why each card spells out that the
+    // provider becomes the system of record for the document.
+    SettingsSurface {
+        route: Route::SettingsXero {},
+        title: "Xero",
+        description: "Let Xero issue, number and deliver the invoices your customers receive. Mokosh keeps a copy for history and reconciliation.",
+        group: SettingsGroupKey::Integrations,
+        advanced: false,
+        section: Some(SettingsSection::ConnectedServices),
+        visibility: SurfaceVisibility::StaffAdmin,
+    },
+    SettingsSurface {
+        route: Route::SettingsQuickBooks {},
+        title: "QuickBooks",
+        description: "Let QuickBooks issue, number and deliver the invoices your customers receive. Mokosh keeps a copy for history and reconciliation.",
+        group: SettingsGroupKey::Integrations,
+        advanced: false,
+        section: Some(SettingsSection::ConnectedServices),
+        visibility: SurfaceVisibility::StaffAdmin,
+    },
     // MAPPS-1124: the Microsoft 365 half. Beside the other two sources and not
     // advanced, for the same reason they are: an MSP whose customers are on
     // Microsoft 365 is the common case, not the expert one.
