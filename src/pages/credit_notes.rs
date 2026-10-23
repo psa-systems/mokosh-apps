@@ -1145,7 +1145,7 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
                         }
                     }
                     p { class: "mb-3 text-xs text-subtle",
-                        "Each line is money you are giving back, so amounts are positive."
+                        "Enter the amount to credit as a positive number."
                     }
                     if lines.read().is_empty() {
                         p { class: "text-sm text-muted",
