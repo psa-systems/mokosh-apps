@@ -475,6 +475,8 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Personalization,
         advanced: false,
         section: None,
+        // PMS-1350: a per-user setting. Visible to every signed-in staff user,
+        // regardless of role.
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -485,6 +487,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Personalization,
         advanced: false,
         section: None,
+        // PMS-1350: a per-user view mode saved to the browser; not tenant-wide.
         visibility: SurfaceVisibility::Always,
     },
     SettingsSurface {
@@ -494,7 +497,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::ServiceTypes,
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsTaskStatuses {},
@@ -503,7 +506,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::ServiceTypes,
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsAssetTypes {},
@@ -512,7 +515,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::ServiceTypes,
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsCompanyIndustries {},
@@ -521,7 +524,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::ServiceTypes,
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsProjectTypes {},
@@ -530,7 +533,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::ServiceTypes,
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     // mokosh-contact-login prompt 007: MSP-admin portal-role editor.
     // Bundles capabilities into named roles that admins assign to
@@ -544,7 +547,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::ServiceTypes,
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsSla {},
@@ -553,7 +556,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Billing,
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsScheduling {},
@@ -562,7 +565,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Billing,
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     // MAPPS-728: the PMS-1037 reminder schedule.
     SettingsSurface {
@@ -572,7 +575,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Billing,
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsTimeTracking {},
@@ -581,7 +584,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Billing,
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsRateCards {},
@@ -590,7 +593,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Billing,
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsTaxRates {},
@@ -599,7 +602,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Billing,
         advanced: true,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsGateways {},
@@ -612,7 +615,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         // where it belongs, and it was not there.
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsPaymentTerms {},
@@ -621,7 +624,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Billing,
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     // MAPPS-640: the price list. Finance-gated on its page like Tax Rates.
     SettingsSurface {
@@ -631,7 +634,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Billing,
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsTicketStatuses {},
@@ -640,7 +643,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Tickets,
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsTicketPriorities {},
@@ -649,7 +652,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Tickets,
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsTicketTypes {},
@@ -658,7 +661,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Tickets,
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsTicketQueues {},
@@ -667,7 +670,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Tickets,
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsTicketCategories {},
@@ -676,7 +679,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Tickets,
         advanced: true,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     // MAPPS-887: the deployment-wide SMTP settings (PMS-638/788/1013),
     // previously reachable only through the API with an admin bearer.
@@ -757,7 +760,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Integrations,
         advanced: true,
         section: Some(SettingsSection::RemoteMonitoring),
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsRmmDeviceMappings {},
@@ -766,7 +769,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Integrations,
         advanced: true,
         section: Some(SettingsSection::RemoteMonitoring),
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsRmmAlertRules {},
@@ -775,7 +778,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Integrations,
         advanced: true,
         section: Some(SettingsSection::RemoteMonitoring),
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
         route: Route::SettingsImportExport {},
@@ -785,7 +788,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Data,
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     // MAPPS-622: staff-side tenant branding editor. Sets the MSP
     // defaults every Company portal inherits; per-Company overrides
@@ -833,7 +836,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::Data,
         advanced: false,
         section: None,
-        visibility: SurfaceVisibility::Always,
+        visibility: SurfaceVisibility::StaffAdmin,
     },
     // MAPPS-938: what a new invoice's number looks like
     // (`billing_prefs/invoice_numbering`, PMS-979). In Billing & SLA because
@@ -10363,5 +10366,120 @@ mod mapps1120_settings_section_tests {
         assert!(note.contains("every organization"), "{note}");
         assert!(SettingsSection::ConnectedServices.note().is_none());
         assert!(SettingsSection::RemoteMonitoring.note().is_none());
+    }
+}
+
+/// PMS-1350: a non-admin reaches settings, sees their personal settings, and
+/// does not see tenant-wide administrative ones. Visibility is declared
+/// per-surface, so a new personal setting ships by marking its own tile and
+/// nothing in routing changes.
+#[cfg(test)]
+mod pms1350_personal_vs_administrative_tests {
+    use super::{
+        surfaces_in_group, SettingsGroupKey, SurfaceContext, SurfaceVisibility,
+        SETTINGS_GROUP_ORDER, SETTINGS_SURFACES,
+    };
+
+    fn admin() -> SurfaceContext {
+        SurfaceContext {
+            is_staff_admin: true,
+            has_manage_branding_cap: false,
+        }
+    }
+
+    fn non_admin() -> SurfaceContext {
+        SurfaceContext {
+            is_staff_admin: false,
+            has_manage_branding_cap: false,
+        }
+    }
+
+    /// A non-admin reaches settings and sees the per-user tiles.
+    #[test]
+    fn appearance_and_tv_view_are_visible_to_a_non_admin() {
+        let ctx = non_admin();
+        let visible: Vec<&str> = surfaces_in_group(SettingsGroupKey::Personalization, true, ctx)
+            .map(|s| s.title)
+            .collect();
+        assert!(
+            visible.contains(&"Appearance"),
+            "Appearance is per-user: {visible:?}"
+        );
+        assert!(
+            visible.contains(&"TV View"),
+            "TV View is per-user: {visible:?}"
+        );
+    }
+
+    /// A non-admin does not see tenant-wide administrative tiles. Spot-check
+    /// one well-known setting per administrative group; a new administrative
+    /// setting that forgets its visibility reaches a non-admin's hub,
+    /// which is exactly what this guards against.
+    #[test]
+    fn administrative_surfaces_are_hidden_from_a_non_admin() {
+        let ctx = non_admin();
+        for group in [
+            SettingsGroupKey::ServiceTypes,
+            SettingsGroupKey::Billing,
+            SettingsGroupKey::Tickets,
+            SettingsGroupKey::Data,
+        ] {
+            let visible: Vec<&str> = surfaces_in_group(group, true, ctx)
+                .map(|s| s.title)
+                .collect();
+            assert!(
+                visible.is_empty(),
+                "{group:?} must be empty for a non-admin: {visible:?}"
+            );
+        }
+    }
+
+    /// An admin sees every tile that is not `RequiresCap` (that one is a
+    /// contact-only surface rather than an administrative one). This pins the
+    /// "admin sees both personal and administrative" acceptance criterion.
+    #[test]
+    fn admin_sees_personal_and_administrative_surfaces() {
+        let ctx = admin();
+        let mut groups_with_tiles = 0usize;
+        for group in SETTINGS_GROUP_ORDER {
+            let visible = surfaces_in_group(*group, true, ctx).count();
+            if visible > 0 {
+                groups_with_tiles += 1;
+            }
+        }
+        assert!(
+            groups_with_tiles >= SETTINGS_GROUP_ORDER.len() - 1,
+            "an admin sees surfaces in nearly every group: {groups_with_tiles} / \
+             {}",
+            SETTINGS_GROUP_ORDER.len()
+        );
+
+        let visible_personalization: Vec<&str> =
+            surfaces_in_group(SettingsGroupKey::Personalization, true, ctx)
+                .map(|s| s.title)
+                .collect();
+        assert!(visible_personalization.contains(&"Appearance"));
+    }
+
+    /// The policy itself: a surface outside Personalization is admin-gated
+    /// unless it is explicitly a contact-cap surface. A new administrative
+    /// setting that forgets its visibility fails this.
+    #[test]
+    fn every_non_personalization_surface_declares_an_admin_gate() {
+        for surface in SETTINGS_SURFACES {
+            if surface.group == SettingsGroupKey::Personalization {
+                continue;
+            }
+            let is_admin_gated = matches!(
+                surface.visibility,
+                SurfaceVisibility::StaffAdmin | SurfaceVisibility::RequiresCap(_)
+            );
+            assert!(
+                is_admin_gated,
+                "{:?} / {:?} is outside Personalization and lacks an admin or \
+                 capability gate; a non-admin would reach it from the hub",
+                surface.group, surface.title
+            );
+        }
     }
 }
