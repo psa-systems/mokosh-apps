@@ -418,9 +418,18 @@ pub fn fmt_relative(dt: DateTime<Utc>) -> String {
 /// without forcing every caller to thread the value through their
 /// signature. Use this from any handler component that already
 /// touches the AuthContext.
+///
+/// MAPPS-1127: a plain context lookup, not a hook. `try_use_context` stores
+/// its answer in the caller's hook list, so every call from a loop, a
+/// resource future or a line after an early return shifted the hook order
+/// and panicked the app. `try_consume_context` reads the context each call
+/// and allocates nothing, so this is safe to call from anywhere.
 pub fn user_format_pref() -> Option<String> {
-    use dioxus::prelude::{try_use_context, ReadableExt, Signal};
-    let auth = try_use_context::<Signal<crate::hooks::auth::AuthContext>>()?;
+    use dioxus::core::Runtime;
+    use dioxus::prelude::{try_consume_context, ReadableExt, Signal};
+    // Same guard as `user_timezone`: no runtime, no context to read.
+    Runtime::try_current()?;
+    let auth = try_consume_context::<Signal<crate::hooks::auth::AuthContext>>()?;
     let pref = auth
         .read()
         .user
@@ -435,16 +444,18 @@ pub fn user_format_pref() -> Option<String> {
 /// Falls back to UTC when there is no context, no signed-in user; the
 /// placeholder / unparseable arms land through [`effective_timezone`]
 /// so the form's auto-detect pledge matches what the renderer uses.
+///
+/// Not a hook, for the reason given on [`user_format_pref`] (MAPPS-1127).
 pub fn user_timezone() -> Tz {
     use dioxus::core::Runtime;
-    use dioxus::prelude::{try_use_context, ReadableExt, Signal};
+    use dioxus::prelude::{try_consume_context, ReadableExt, Signal};
     // Context access requires a live Dioxus runtime/scope. Guard so the
     // pure host-side render paths (unit tests, preset label previews
     // invoked outside a component) fall back to UTC instead of panicking.
     if Runtime::try_current().is_none() {
         return Tz::UTC;
     }
-    let saved = try_use_context::<Signal<crate::hooks::auth::AuthContext>>()
+    let saved = try_consume_context::<Signal<crate::hooks::auth::AuthContext>>()
         .and_then(|auth| auth.read().user.as_ref().map(|u| u.timezone.clone()))
         .unwrap_or_default();
     effective_timezone(&saved)
@@ -835,5 +846,47 @@ mod effective_timezone_tests {
             chrono_tz::America::New_York
         );
         assert_eq!(effective_timezone("Asia/Tokyo"), chrono_tz::Asia::Tokyo);
+    }
+}
+
+/// MAPPS-1127: the user-zone helpers are called from loops, resource futures
+/// and lines after an early return, so they must not occupy a hook slot.
+#[cfg(test)]
+mod hook_free_tests {
+    use dioxus::dioxus_core::NoOpMutations;
+    use dioxus::prelude::*;
+
+    static CALL_HELPERS: GlobalSignal<bool> = Signal::global(|| false);
+
+    #[component]
+    fn Strip() -> Element {
+        let auth = use_signal(crate::hooks::auth::AuthContext::default);
+        use_context_provider(|| auth);
+        // The shape that froze the Timesheets tab: the helpers run on some
+        // renders and not others, with a real hook after them.
+        if CALL_HELPERS() {
+            let _ = super::user_today();
+            let _ = super::user_format_pref();
+        }
+        let after = use_signal(|| 0u8);
+        rsx! { "{after}" }
+    }
+
+    #[test]
+    fn helpers_called_on_some_renders_only_do_not_shift_the_hook_order() {
+        let mut dom = VirtualDom::new(Strip);
+        dom.rebuild_in_place();
+        for on in [true, false, true] {
+            dom.in_runtime(|| *CALL_HELPERS.write() = on);
+            dom.mark_dirty(ScopeId::APP);
+            dom.render_immediate(&mut NoOpMutations);
+            // A hook-order panic is caught by the renderer off-wasm and the
+            // scope renders nothing, so the body is the observable.
+            assert_eq!(
+                dioxus_ssr::render(&dom),
+                "0",
+                "render with helpers={on} lost the component"
+            );
+        }
     }
 }
