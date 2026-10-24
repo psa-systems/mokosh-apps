@@ -126,6 +126,20 @@ lets one image serve staging, production and every self-host deployment, and it
 is also how the SPA notices it has been redeployed: the shim carries the build
 revision, described in [`versioning.md`](versioning.md).
 
+## Admin and technician surfaces
+
+`src/pages/` is one module per route, but a handful of top-level routes do not
+say what they are for from the path alone. This list exists so a reader
+searching for a route path or a feature name finds the module and the issue
+that shipped it, instead of nothing:
+
+| Route | Module | What it is |
+| --- | --- | --- |
+| `/companies/:company_id/documentation` | [`company_documentation.rs`](../src/pages/company_documentation.rs) | Per-client aggregate of assets, credentials and KB for an on-call technician. [PSA-13](https://niceguyit.myjetbrains.com/youtrack/issue/PSA-13), [PMS-800](https://niceguyit.myjetbrains.com/youtrack/issue/PMS-800) |
+| `/admin/features` | [`admin_features.rs`](../src/pages/admin_features.rs) | Admin-only feature-toggle list, backed by `src/hooks/features.rs`'s `FEATURE_MAP`. [PMS-1414](https://niceguyit.myjetbrains.com/youtrack/issue/PMS-1414), [MAPPS-955](https://niceguyit.myjetbrains.com/youtrack/issue/MAPPS-955) |
+| `/settings/integrations/xero`, `/settings/integrations/quickbooks` | [`settings_invoice_issuer.rs`](../src/pages/settings_invoice_issuer.rs) | Connect, or disconnect, one of the two invoice issuers. [MAPPS-1144](https://niceguyit.myjetbrains.com/youtrack/issue/MAPPS-1144), [MAPPS-1099](https://niceguyit.myjetbrains.com/youtrack/issue/MAPPS-1099), [MAPPS-1145](https://niceguyit.myjetbrains.com/youtrack/issue/MAPPS-1145) |
+| `/settings/integrations/xero/mappings`, `/settings/integrations/quickbooks/mappings` | [`settings_invoice_issuer_mappings.rs`](../src/pages/settings_invoice_issuer_mappings.rs) | Which client is which customer at the connected issuer, required before it can invoice anyone. [MAPPS-1146](https://niceguyit.myjetbrains.com/youtrack/issue/MAPPS-1146) |
+
 ## Where the rest is documented
 
 The conventions a change has to keep are their own pages, each backed by a guard
