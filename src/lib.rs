@@ -1111,6 +1111,13 @@ pub enum Route {
     SettingsXero {},
     #[route("/settings/integrations/quickbooks")]
     SettingsQuickBooks {},
+    // MAPPS-1146: which client is which customer over there. Without these
+    // a connected tenant cannot issue one invoice: the dispatcher refuses a
+    // company it cannot resolve, naming a route no admin could call.
+    #[route("/settings/integrations/xero/mappings")]
+    SettingsXeroMappings {},
+    #[route("/settings/integrations/quickbooks/mappings")]
+    SettingsQuickBooksMappings {},
     // MAPPS-915: upload a .vcf file into the same import (server PMS-1290).
     #[route("/settings/integrations/vcard-import")]
     SettingsVcardImport {},
@@ -2430,6 +2437,24 @@ fn SettingsQuickBooks() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             pages::settings_invoice_issuer::QuickBooksSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsXeroMappings() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_invoice_issuer_mappings::XeroMappingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsQuickBooksMappings() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            pages::settings_invoice_issuer_mappings::QuickBooksMappingsPage {}
         }
     }
 }

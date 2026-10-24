@@ -61,6 +61,7 @@ pub mod settings_email;
 pub mod settings_google_client;
 pub mod settings_integrations;
 pub mod settings_invoice_issuer;
+pub mod settings_invoice_issuer_mappings;
 pub mod settings_modules;
 // MAPPS-938: which shape a new invoice's number takes
 // (`billing_prefs/invoice_numbering`, PMS-979).

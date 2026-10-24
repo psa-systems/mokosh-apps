@@ -160,6 +160,15 @@ pub fn badge_for(state: &CardState) -> (&'static str, BadgeVariant) {
     }
 }
 
+/// Where this provider's mapping page lives.
+pub fn mappings_route(issuer: Issuer) -> Route {
+    if issuer.provider == XERO.provider {
+        Route::SettingsXeroMappings {}
+    } else {
+        Route::SettingsQuickBooksMappings {}
+    }
+}
+
 #[component]
 pub fn XeroSettingsPage() -> Element {
     rsx! { IssuerSettingsPage { issuer: XERO } }
@@ -328,6 +337,15 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
                                         StatusBanner { tone: crate::components::BannerTone::Warning,
                                             "The connection is live and nothing is delegated to it, so Mokosh is still issuing every invoice."
                                         }
+                                    }
+                                    // The mappings are the other half of being
+                                    // able to invoice: connected and unmapped
+                                    // refuses every create, which is a state
+                                    // this card would otherwise call working.
+                                    Link {
+                                        to: mappings_route(issuer),
+                                        class: "text-sm text-accent hover:underline",
+                                        "Set up which client is which {issuer.organisation} in {issuer.display}"
                                     }
                                     div { class: "pt-2",
                                         Button {
