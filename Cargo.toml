@@ -93,7 +93,7 @@ features = [
 ]
 
 [dependencies.chrono]
-version = "0.4"
+version = "0.4.45"
 features = [
     "serde",
     "wasmbind",
