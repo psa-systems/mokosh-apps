@@ -802,11 +802,49 @@ struct RemoteInvoiceLedger {
     total_refunded: String,
 }
 
+/// The line under an invoice's number saying who issued it, or empty for
+/// one Mokosh issued (MAPPS-1147).
+///
+/// Empty rather than "Issued by Mokosh", because that is every invoice on
+/// every deployment that has not delegated and a line saying so on all of
+/// them is noise.
+fn issued_elsewhere_line(provider: Option<&str>, external_number: Option<&str>) -> String {
+    let Some(provider) = provider.map(str::trim).filter(|p| !p.is_empty()) else {
+        return String::new();
+    };
+    let display = match provider {
+        "xero" => "Xero",
+        "quickbooks" => "QuickBooks",
+        // A provider this build does not know by name is still named, in
+        // the server's own word for it, rather than hidden.
+        other => other,
+    };
+    match external_number.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(number) => {
+            format!("Issued by {display} as {number}. That is the number your customer has.")
+        }
+        // Connected and issued, and the provider gave back no number. Say
+        // who holds it rather than implying Mokosh does.
+        None => format!("Issued by {display}."),
+    }
+}
+
 /// Full `InvoiceResponse` for the detail page, including line items.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct InvoiceDetail {
     #[serde(default)]
     invoice_number: String,
+    /// MAPPS-1147: the provider that issued this invoice, when the tenant
+    /// delegated invoicing (MAPPS-1099). `None` is "Mokosh issued it",
+    /// which is every invoice on a deployment that has not turned the
+    /// feature on.
+    #[serde(default)]
+    external_provider: Option<String>,
+    /// The number the CUSTOMER has. Mokosh keeps its own because every
+    /// internal reference already uses it, so a delegated invoice has two
+    /// and only this one appears on the document they were sent.
+    #[serde(default)]
+    external_number: Option<String>,
     #[serde(default)]
     company_id: Option<uuid::Uuid>,
     #[serde(default)]
@@ -1918,6 +1956,17 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     // caller is not editable, collectible or frozen; the gating buttons
     // stay off rather than guessing.
     let parsed_status = mokosh_types::billing::InvoiceStatus::from_str(status.as_str());
+    // MAPPS-1147: issued by a provider rather than by Mokosh. The number
+    // the customer holds is theirs, and there is no Mokosh document for it.
+    let delegated_by = invoice
+        .as_ref()
+        .and_then(|i| i.external_provider.clone())
+        .filter(|p| !p.trim().is_empty());
+    let delegated = delegated_by.is_some();
+    let external_number = invoice
+        .as_ref()
+        .and_then(|i| i.external_number.clone())
+        .filter(|n| !n.trim().is_empty());
     let editable = matches!(
         parsed_status,
         Some(
@@ -2592,6 +2641,11 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         }
         PageHeader {
             title: "{header_title}",
+            // MAPPS-1147: a delegated invoice has two numbers, and the one
+            // in the title is not the one the customer was sent. Beside it
+            // rather than instead of it: every internal reference, every
+            // payment and every note still uses Mokosh's.
+            subtitle: issued_elsewhere_line(delegated_by.as_deref(), external_number.as_deref()),
             // PMS-746: a route back to the list, matching ContractDetailPage.
             breadcrumbs: rsx! {
                 crate::components::Breadcrumbs {
@@ -2796,7 +2850,11 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 // record in somebody's mind. `can_download_pdf` gates the
                 // contact plane; staff+platform pass through `use_capability`
                 // unconditionally.
-                if can_download_pdf {
+                // MAPPS-1147: not for an invoice the provider issued. There
+                // is no Mokosh document for one, the server refuses the
+                // route, and offering the button would promise a copy of
+                // something that was never rendered here.
+                if can_download_pdf && !delegated {
                     if let Some(inv) = invoice.as_ref() {
                         crate::components::DownloadButton {
                             path: if editable && !preview_template.read().is_empty() {
@@ -7281,6 +7339,65 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                 }
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod delegated_invoice_tests {
+    use super::*;
+
+    /// MAPPS-1147: the line names the provider and the number the customer
+    /// actually has, and says nothing at all for a Mokosh invoice.
+    ///
+    /// Silence is the point of the first case: every invoice on every
+    /// deployment that has not delegated would otherwise carry a line
+    /// saying who issued it, which is noise on all of them.
+    #[test]
+    fn the_issued_elsewhere_line_names_the_customers_number() {
+        assert_eq!(
+            issued_elsewhere_line(None, Some("INV-0042")),
+            "",
+            "a Mokosh invoice says nothing"
+        );
+        assert_eq!(issued_elsewhere_line(Some("   "), None), "");
+
+        let line = issued_elsewhere_line(Some("xero"), Some("INV-0042"));
+        assert!(
+            line.contains("Xero"),
+            "the provider is named properly: {line}"
+        );
+        assert!(line.contains("INV-0042"), "{line}");
+        assert!(
+            line.contains("your customer has"),
+            "the point of the line is which number the customer holds: {line}"
+        );
+
+        assert!(
+            issued_elsewhere_line(Some("quickbooks"), Some("1042")).contains("QuickBooks"),
+            "not the wire spelling"
+        );
+        // Issued, and the provider returned no number of its own.
+        assert_eq!(
+            issued_elsewhere_line(Some("xero"), Some("  ")),
+            "Issued by Xero."
+        );
+        // A provider this build does not know is still named, rather than
+        // falling into the Mokosh-issued case and claiming the invoice.
+        assert!(issued_elsewhere_line(Some("sage"), None).contains("sage"));
+    }
+
+    /// The PDF button is not offered for an invoice the provider issued.
+    ///
+    /// There is no Mokosh document for one and the server refuses the
+    /// route (MAPPS-1147), so the button would promise a copy of something
+    /// that was never rendered here.
+    #[test]
+    fn no_pdf_button_for_an_invoice_the_provider_issued() {
+        let src = include_str!("billing.rs");
+        assert!(
+            src.contains("if can_download_pdf && !delegated {"),
+            "the download button is gated on the invoice being Mokosh's"
+        );
     }
 }
 
