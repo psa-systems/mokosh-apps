@@ -29,8 +29,8 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, ErrorBanner, PageHeader,
-    StatusBanner,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, ConfirmDialog, ErrorBanner,
+    PageHeader, StatusBanner,
 };
 use crate::pages::settings::{AdminOnlyNotice, SettingsBreadcrumb};
 use crate::Route;
@@ -194,6 +194,7 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
     });
     let mut error = use_signal(String::new);
     let mut busy = use_signal(|| false);
+    let mut confirm_disconnect = use_signal(|| false);
     let can_mutate = crate::hooks::use_can_mutate();
 
     let snap = overview.read_unchecked().clone();
@@ -238,6 +239,28 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
             }
             #[cfg(not(feature = "app"))]
             busy.set(false);
+        });
+    };
+
+    let mut overview_handle = overview;
+    let disconnect = move |_| {
+        busy.set(true);
+        error.set(String::new());
+        confirm_disconnect.set(false);
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                if let Err(e) = crate::hooks::fetch::api::post_authed_no_content(&format!(
+                    "/integrations/invoice-issuer/{}/disconnect",
+                    issuer.provider
+                ))
+                .await
+                {
+                    error.set(format!("Could not disconnect: {e}"));
+                }
+            }
+            busy.set(false);
+            overview_handle.restart();
         });
     };
 
@@ -305,6 +328,29 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
                                         StatusBanner { tone: crate::components::BannerTone::Warning,
                                             "The connection is live and nothing is delegated to it, so Mokosh is still issuing every invoice."
                                         }
+                                    }
+                                    div { class: "pt-2",
+                                        Button {
+                                            variant: ButtonVariant::Danger,
+                                            loading: busy(),
+                                            disabled: !can_mutate,
+                                            onclick: move |_| confirm_disconnect.set(true),
+                                            data_testid: "disconnect-{issuer.testid}",
+                                            "Disconnect"
+                                        }
+                                    }
+                                    ConfirmDialog {
+                                        open: confirm_disconnect(),
+                                        title: "Disconnect {issuer.display}?",
+                                        message: format!(
+                                            "New invoices go back to being issued by Mokosh, with Mokosh's own numbers. Invoices {} has already issued stay where they are, and what you delegated is remembered if you connect again.",
+                                            issuer.display,
+                                        ),
+                                        confirm_text: "Disconnect",
+                                        destructive: true,
+                                        loading: busy(),
+                                        onconfirm: disconnect,
+                                        oncancel: move |_| confirm_disconnect.set(false),
                                     }
                                 },
                                 CardState::Failing { message } => {
@@ -410,6 +456,59 @@ mod tests {
             CardState::Failing {
                 message: Some("the grant was revoked".to_string())
             }
+        );
+    }
+
+    /// MAPPS-1145: Disconnect is offered on a connected card and nowhere
+    /// else.
+    ///
+    /// Read off the rendered body rather than asserted on a state machine,
+    /// because the mistake worth catching is a button that escaped its
+    /// branch: a Disconnect on an unconfigured card would post to a
+    /// provider this deployment cannot reach, and one on a never-connected
+    /// card would offer to undo something that has not happened.
+    #[test]
+    fn disconnect_belongs_to_the_connected_card() {
+        let src = include_str!("settings_invoice_issuer.rs");
+        // The rendered card only; the enum and `card_state_of` above it name
+        // the same variants and are not what this is about.
+        let card = &src[src
+            .find(r#""data-testid": "invoice-issuer-"#)
+            .expect("the card body")..];
+        let connected_at = card
+            .find("CardState::Connected { organisation_id, delegated } => rsx!")
+            .expect("the connected arm");
+        let failing_at = card
+            .find("CardState::Failing { message } =>")
+            .expect("the failing arm");
+        assert!(
+            card[connected_at..failing_at].contains("disconnect-{issuer.testid}"),
+            "a connected card offers Disconnect"
+        );
+        assert!(
+            !card[..connected_at].contains("disconnect-"),
+            "and the cards before it do not: there is nothing to disconnect from"
+        );
+    }
+
+    /// The confirmation says what disconnecting costs and what it keeps.
+    ///
+    /// Both halves matter to the decision. New invoices go back to Mokosh's
+    /// own numbers, which is the visible change; what was already issued
+    /// stays where it is, which is the fear.
+    #[test]
+    fn the_confirmation_says_what_it_does_and_what_it_leaves() {
+        let src = include_str!("settings_invoice_issuer.rs");
+        let message = &src[src.find("New invoices go back").expect("the copy")..];
+        let message = &message[..message.find("\",").unwrap_or(message.len())];
+        assert!(message.contains("issued by Mokosh"), "{message}");
+        assert!(
+            message.contains("stay where they are"),
+            "an admin needs to know the provider's invoices are not withdrawn: {message}"
+        );
+        assert!(
+            message.contains("remembered"),
+            "and that reconnecting does not start from an empty page: {message}"
         );
     }
 
