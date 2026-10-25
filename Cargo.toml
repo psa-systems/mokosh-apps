@@ -124,7 +124,7 @@ js-sys = "0.3"
 # the user has no way to act on. The hook is install-once at startup. The
 # desktop build has no console to forward to and keeps the default Rust
 # panic handler, which already writes a backtrace to stderr.
-console_error_panic_hook = "0.1"
+console_error_panic_hook = "0.1.7"
 # MAPPS-588: awaiting a JS promise from the platform layer. A pasted image
 # arrives as a `File`, and turning one into bytes is `Blob::array_buffer()`,
 # which returns a promise. The alternative is `FileReader` plus a second
