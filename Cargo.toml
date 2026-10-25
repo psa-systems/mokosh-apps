@@ -53,12 +53,12 @@ path = "src/lib.rs"
 serde_json = "1.0"
 thiserror = "2"
 tracing = "0.1"
-futures-util = "0.3"
+futures-util = "0.3.34"
 sha2 = "0.10"
 base64 = "0.22"
 rand = "0.9"
 pulldown-cmark = "0.12"
-ammonia = "4"
+ammonia = "4.2.4"
 # MAPPS-383: shared wire-format DTOs, the single source of truth for types
 # crossing the mokosh-server / mokosh-apps boundary. The URL is HTTPS, not
 # ssh://, because the pre-commit container and the Forgejo check runner have
@@ -74,7 +74,7 @@ git = "https://dev.a8n.run/psa-systems/mokosh-server.git"
 # (PMS-1025), so the pin follows `main` again as the comment above says.
 
 [dependencies.dioxus]
-version = "0.8.0-alpha.1"
+version = "0.8.0-alpha.3"
 features = [
     "router",
 ]
@@ -93,14 +93,14 @@ features = [
 ]
 
 [dependencies.chrono]
-version = "0.4"
+version = "0.4.45"
 features = [
     "serde",
     "wasmbind",
 ]
 
 [dependencies.chrono-tz]
-version = "0.10"
+version = "0.10.4"
 
 [dependencies.rust_decimal]
 version = "1"
@@ -124,7 +124,7 @@ js-sys = "0.3"
 # the user has no way to act on. The hook is install-once at startup. The
 # desktop build has no console to forward to and keeps the default Rust
 # panic handler, which already writes a backtrace to stderr.
-console_error_panic_hook = "0.1"
+console_error_panic_hook = "0.1.7"
 # MAPPS-588: awaiting a JS promise from the platform layer. A pasted image
 # arrives as a `File`, and turning one into bytes is `Blob::array_buffer()`,
 # which returns a promise. The alternative is `FileReader` plus a second
@@ -259,7 +259,7 @@ features = [
 # regressions (e.g. an empty-state row losing its colspan / center) are caught
 # on the host `cargo test`. MAPPS-682: `just check-web` passes `--all-targets`,
 # so this is built for `wasm32-unknown-unknown` too and has to compile there.
-dioxus-ssr = "0.8.0-alpha.1"
+dioxus-ssr = "0.8.0-alpha.3"
 
 # MAPPS-505: the loopback listener tests drive `serve_one` to completion, so
 # they need a runtime to drive it ON. The app never builds one - dioxus-desktop

@@ -190,8 +190,8 @@ pub fn ArticleActivity(
                         class: "inline-flex gap-1 rounded-lg bg-surface-2 p-1",
                         onkeydown: move |e: KeyboardEvent| {
                             let next = match e.key() {
-                                Key::ArrowRight => Some(tab().step(true)),
-                                Key::ArrowLeft => Some(tab().step(false)),
+                                Key::Named(NamedKey::ArrowRight) => Some(tab().step(true)),
+                                Key::Named(NamedKey::ArrowLeft) => Some(tab().step(false)),
                                 _ => None,
                             };
                             if let Some(next) = next {
@@ -808,7 +808,7 @@ pub(crate) fn CommentComposer(
                 // Ctrl/Cmd+Enter sends; the keydown bubbles up from the
                 // editor's textarea.
                 onkeydown: move |e: KeyboardEvent| {
-                    if e.key() == Key::Enter && (e.modifiers().ctrl() || e.modifiers().meta()) {
+                    if e.key() == Key::Named(NamedKey::Enter) && (e.modifiers().ctrl() || e.modifiers().meta()) {
                         e.prevent_default();
                         submit.call(());
                     }
@@ -959,9 +959,9 @@ mod tests {
             "no second render path"
         );
         assert!(head.contains("role: \"tablist\","));
-        assert!(head.contains("Key::ArrowRight => Some(tab().step(true)),"));
+        assert!(head.contains("Key::Named(NamedKey::ArrowRight) => Some(tab().step(true)),"));
         assert!(head
-            .contains("e.key() == Key::Enter && (e.modifiers().ctrl() || e.modifiers().meta())"));
+            .contains("e.key() == Key::Named(NamedKey::Enter) && (e.modifiers().ctrl() || e.modifiers().meta())"));
         let page = include_str!("knowledge_base.rs");
         assert!(
             page.contains("if !is_contact {\n                                crate::pages::kb_activity::ArticleActivity {"),
