@@ -88,7 +88,7 @@ FROM caddy:2-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19
 
 # Runtime stage - serve static assets via Caddy. Each output image
 # in a multi-arch build picks up the matching alpine variant.
-FROM alpine:3.23@sha256:ff7f0c727dd796aa36787bfcd9a64bf35a6ce72a73451b3359fde849b6703d63
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
 # Copy Caddy from the target-arch stage above
 COPY --from=caddy-bin /usr/bin/caddy /usr/bin/caddy
