@@ -226,7 +226,7 @@ iana-time-zone = "0.1.65"
 # not a document to navigate away from, so the destinations that were
 # `location.replace` on the web (the OP logout endpoint, the Bunyip hub)
 # belong in the user's real browser.
-open = "5"
+open = "5.4.5"
 
 # rustls, not the platform TLS stack: one behaviour on every desktop OS, and
 # no OpenSSL headers needed to build.
