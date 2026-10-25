@@ -115,7 +115,7 @@ features = ["derive"]
 # fails to resolve on the native build instead of compiling to a binding that
 # panics at run time.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-gloo-net = "0.6"
+gloo-net = "0.7.0"
 wasm-bindgen = "0.2.129"
 js-sys = "0.3.106"
 # MAPPS-299: forward Rust panics in the wasm runtime to console.error with
