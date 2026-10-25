@@ -177,7 +177,7 @@ fn ModalChrome(
                         });
                     },
                     onkeydown: move |e: KeyboardEvent| {
-                        if e.key() == Key::Escape {
+                        if e.key() == Key::Named(NamedKey::Escape) {
                             // MAPPS-1006: a nested modal's own `ModalChrome`
                             // sits inside this one's DOM subtree, so this
                             // keydown would otherwise bubble up from it and
