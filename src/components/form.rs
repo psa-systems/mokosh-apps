@@ -98,7 +98,7 @@ pub fn clear_on_edit(
 /// wants.
 pub fn submit_on_enter(mut action: impl FnMut() + 'static) -> impl FnMut(KeyboardEvent) + 'static {
     move |e: KeyboardEvent| {
-        if e.key() == Key::Enter {
+        if e.key() == Key::Named(NamedKey::Enter) {
             e.prevent_default();
             action();
         }
@@ -1090,7 +1090,7 @@ mod tests {
     #[test]
     fn enter_runs_the_action_and_never_reaches_the_form_behind() {
         let (runs, mut handler) = counting_handler();
-        let e = keydown(Key::Enter);
+        let e = keydown(Key::Named(NamedKey::Enter));
         handler(e.clone());
 
         assert_eq!(runs.get(), 1, "Enter runs the create action");
@@ -1106,9 +1106,9 @@ mod tests {
     #[test]
     fn every_other_key_is_left_alone() {
         for key in [
-            Key::Escape,
-            Key::Tab,
-            Key::ArrowDown,
+            Key::Named(NamedKey::Escape),
+            Key::Named(NamedKey::Tab),
+            Key::Named(NamedKey::ArrowDown),
             Key::Character(" ".to_string()),
             Key::Character("a".to_string()),
         ] {
