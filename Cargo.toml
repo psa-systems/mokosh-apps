@@ -221,7 +221,7 @@ features = [
 # per-user config and download directories.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 dirs = "6"
-iana-time-zone = "0.1"
+iana-time-zone = "0.1.65"
 # Hands a URL to the OS default browser. The desktop window is the app,
 # not a document to navigate away from, so the destinations that were
 # `location.replace` on the web (the OP logout endpoint, the Bunyip hub)
