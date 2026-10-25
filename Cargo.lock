@@ -3335,7 +3335,7 @@ name = "mokosh-apps"
 version = "0.17.0"
 dependencies = [
  "ammonia",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "chrono-tz 0.10.4",
  "console_error_panic_hook",
