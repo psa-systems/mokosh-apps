@@ -99,7 +99,7 @@ pub fn AssetDrawer(props: AssetDrawerProps) -> Element {
             class: "fixed inset-y-0 right-0 z-50 w-full sm:w-[32rem] bg-surface border-l \
                     border-line shadow-xl overflow-y-auto",
             onkeydown: move |e: KeyboardEvent| {
-                if matches!(e.key(), Key::Escape) {
+                if matches!(e.key(), Key::Named(NamedKey::Escape)) {
                     onclose.call(());
                 }
             },
