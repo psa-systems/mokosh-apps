@@ -930,7 +930,7 @@ pub fn CalendarPage() -> Element {
 /// Both keys, because a screen reader has already announced the element as a
 /// button and Space is what a button user presses.
 fn is_activation_key(e: &KeyboardEvent) -> bool {
-    e.key() == Key::Enter || e.key() == Key::Character(" ".to_string())
+    e.key() == Key::Named(NamedKey::Enter) || e.key() == Key::Character(" ".to_string())
 }
 
 #[derive(Props, Clone, PartialEq)]

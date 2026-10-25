@@ -388,8 +388,8 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                                             // Selection follows focus, so a step
                                             // both moves and chooses.
                                             let delta = match e.key() {
-                                                Key::ArrowRight | Key::ArrowDown => 1,
-                                                Key::ArrowLeft | Key::ArrowUp => -1,
+                                                Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::ArrowDown) => 1,
+                                                Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowUp) => -1,
                                                 _ => 0,
                                             };
                                             if delta == 0 {
