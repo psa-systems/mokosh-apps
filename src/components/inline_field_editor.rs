@@ -270,9 +270,9 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                                     oninput: move |e: FormEvent| draft.set(e.value()),
                                     onkeydown: move |e: KeyboardEvent| {
                                         let key = e.key();
-                                        if matches!(key, Key::Enter) {
+                                        if matches!(key, Key::Named(NamedKey::Enter)) {
                                             commit.call(draft.read().clone());
-                                        } else if matches!(key, Key::Escape) {
+                                        } else if matches!(key, Key::Named(NamedKey::Escape)) {
                                             close_editor.call(());
                                             draft.set(current.clone());
                                             err.set(String::new());
@@ -292,7 +292,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                                     disabled: saving(),
                                     oninput: move |e: FormEvent| draft.set(e.value()),
                                     onkeydown: move |e: KeyboardEvent| {
-                                        if matches!(e.key(), Key::Escape) {
+                                        if matches!(e.key(), Key::Named(NamedKey::Escape)) {
                                             close_editor.call(());
                                             draft.set(current.clone());
                                             err.set(String::new());
@@ -311,9 +311,9 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                                     disabled: saving(),
                                     oninput: move |e: FormEvent| draft.set(e.value()),
                                     onkeydown: move |e: KeyboardEvent| {
-                                        if matches!(e.key(), Key::Enter) {
+                                        if matches!(e.key(), Key::Named(NamedKey::Enter)) {
                                             commit.call(draft.read().clone());
-                                        } else if matches!(e.key(), Key::Escape) {
+                                        } else if matches!(e.key(), Key::Named(NamedKey::Escape)) {
                                             close_editor.call(());
                                             draft.set(current.clone());
                                             err.set(String::new());
@@ -334,7 +334,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                                         commit.call(e.value());
                                     },
                                     onkeydown: move |e: KeyboardEvent| {
-                                        if matches!(e.key(), Key::Escape) {
+                                        if matches!(e.key(), Key::Named(NamedKey::Escape)) {
                                             close_editor.call(());
                                             draft.set(current.clone());
                                             err.set(String::new());
