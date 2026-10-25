@@ -100,7 +100,7 @@ features = [
 ]
 
 [dependencies.chrono-tz]
-version = "0.10"
+version = "0.10.4"
 
 [dependencies.rust_decimal]
 version = "1"
