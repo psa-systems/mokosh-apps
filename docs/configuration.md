@@ -81,4 +81,4 @@ No configuration changes.
 | <a id="var-mokosh-brand-hero-url"></a>`MOKOSH_BRAND_HERO_URL` | no | v0.14.0 | compose variable | Operator hero image URL for the unauthenticated landing page. Same origin / CSP rules as `MOKOSH_BRAND_LOGO_URL`. |
 | <a id="var-mokosh-portal-host-suffix"></a>`MOKOSH_PORTAL_HOST_SUFFIX` | no | v0.1.0; removed in v0.14.0 | compose variable | Retired per-MSP portal-host suffix (replaced by `MOKOSH_PORTAL_HOST`). |
 | <a id="var-mokosh-team-enabled"></a>`MOKOSH_TEAM_ENABLED` | no | v0.12.0; removed in v0.14.0 | compose variable | Retired Teams feature flag; Teams is core and no longer needs a flag. |
-| <a id="var-mokosh-runtime-dir"></a>`MOKOSH_RUNTIME_DIR` | no | v0.1.0 | compose variable | Not described yet: say what it does. |
+| <a id="var-mokosh-runtime-dir"></a>`MOKOSH_RUNTIME_DIR` | no | v0.1.0 | compose variable | Writable directory the image uses for runtime scratch (rendered `_mokosh_config.js`, temp files). Defaults to `/tmp/mokosh-runtime`; override when the container runs with that path read-only or when a different writable mount is preferred. |
