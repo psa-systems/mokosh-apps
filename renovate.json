@@ -30,6 +30,11 @@
     { "groupName": "dioxus family", "matchPackagePatterns": ["^dioxus"] },
     { "groupName": "mokosh crates", "matchPackageNames": ["/^mokosh-/"] },
     { "groupName": "serde family", "matchPackagePatterns": ["^serde"] },
-    { "groupName": "tracing family", "matchPackagePatterns": ["^tracing"] }
+    { "groupName": "tracing family", "matchPackagePatterns": ["^tracing"] },
+    {
+      "description": "getrandom is declared only to enable the wasm backend for the version the tree compiles (0.3, via rand_core 0.9). A major bump moves the feature off that copy and breaks the wasm32 build. Lift this when rand_core 0.9 leaves the tree.",
+      "matchPackageNames": ["getrandom"],
+      "allowedVersions": "<0.4"
+    }
   ]
 }
