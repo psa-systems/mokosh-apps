@@ -132,8 +132,8 @@ pub fn decide(
     mode: NavMode,
 ) -> NavAction {
     match key {
-        Key::ArrowDown => NavAction::Open(step_index(active, len, true)),
-        Key::ArrowUp => NavAction::Open(step_index(active, len, false)),
+        Key::Named(NamedKey::ArrowDown) => NavAction::Open(step_index(active, len, true)),
+        Key::Named(NamedKey::ArrowUp) => NavAction::Open(step_index(active, len, false)),
         // MAPPS-653: in a record picker Enter takes the first row when nothing
         // is highlighted, so a typed name is accepted without arrowing to it
         // first. Everywhere else it only ever takes a row the user actually
@@ -141,7 +141,7 @@ pub fn decide(
         //
         // MAPPS-508: in a menu Enter stays the browser's key so a focused
         // menu button fires its own onclick; the hook owns highlight only.
-        Key::Enter if open && mode == NavMode::Combobox => {
+        Key::Named(NamedKey::Enter) if open && mode == NavMode::Combobox => {
             let index = if enter_takes_first {
                 commit_index(active, len)
             } else {
@@ -159,7 +159,7 @@ pub fn decide(
         // would be a surprise. MAPPS-508: a menu has no field to move on
         // to, so Tab is always Ignore in menu mode - the browser walks the
         // rows on its own.
-        Key::Tab if open && !shift && mode == NavMode::Combobox => {
+        Key::Named(NamedKey::Tab) if open && !shift && mode == NavMode::Combobox => {
             match commit_index(active, len) {
                 Some(index) => NavAction::Commit {
                     index,
@@ -170,7 +170,7 @@ pub fn decide(
         }
         // Closed already is fine: Escape stays available for the call site's
         // own teardown (GlobalSearch collapses its entry, MAPPS-347).
-        Key::Escape => NavAction::Close,
+        Key::Named(NamedKey::Escape) => NavAction::Close,
         _ => NavAction::Ignore,
     }
 }
@@ -358,7 +358,7 @@ impl DropdownNav {
                 self.open.set(true);
                 self.active.set(index);
                 if let Some(i) = index {
-                    self.scroll_row_into_view(i, key == Key::ArrowUp);
+                    self.scroll_row_into_view(i, key == Key::Named(NamedKey::ArrowUp));
                 }
             }
             NavAction::Commit {
@@ -456,11 +456,27 @@ mod tests {
     #[test]
     fn arrows_open_a_closed_list() {
         assert_eq!(
-            decide(&Key::ArrowDown, false, false, None, 3, RECORD, PICKER),
+            decide(
+                &Key::Named(NamedKey::ArrowDown),
+                false,
+                false,
+                None,
+                3,
+                RECORD,
+                PICKER
+            ),
             NavAction::Open(Some(0))
         );
         assert_eq!(
-            decide(&Key::ArrowUp, false, false, None, 3, RECORD, PICKER),
+            decide(
+                &Key::Named(NamedKey::ArrowUp),
+                false,
+                false,
+                None,
+                3,
+                RECORD,
+                PICKER
+            ),
             NavAction::Open(Some(0))
         );
     }
@@ -470,7 +486,7 @@ mod tests {
         for enter_takes_first in [RECORD, FREE_TEXT] {
             assert_eq!(
                 decide(
-                    &Key::Enter,
+                    &Key::Named(NamedKey::Enter),
                     false,
                     true,
                     Some(1),
@@ -486,7 +502,7 @@ mod tests {
             // A closed list, or an empty one: Enter belongs to the form.
             assert_eq!(
                 decide(
-                    &Key::Enter,
+                    &Key::Named(NamedKey::Enter),
                     false,
                     false,
                     Some(1),
@@ -497,7 +513,15 @@ mod tests {
                 NavAction::Ignore
             );
             assert_eq!(
-                decide(&Key::Enter, false, true, None, 0, enter_takes_first, PICKER),
+                decide(
+                    &Key::Named(NamedKey::Enter),
+                    false,
+                    true,
+                    None,
+                    0,
+                    enter_takes_first,
+                    PICKER
+                ),
                 NavAction::Ignore
             );
         }
@@ -509,7 +533,15 @@ mod tests {
     #[test]
     fn enter_takes_the_first_row_in_a_record_picker_with_no_highlight() {
         assert_eq!(
-            decide(&Key::Enter, false, true, None, 3, RECORD, PICKER),
+            decide(
+                &Key::Named(NamedKey::Enter),
+                false,
+                true,
+                None,
+                3,
+                RECORD,
+                PICKER
+            ),
             NavAction::Commit {
                 index: 0,
                 prevent_default: true,
@@ -518,7 +550,15 @@ mod tests {
         // A stale index past the end of a shrunken list falls back to the
         // first row rather than committing nothing.
         assert_eq!(
-            decide(&Key::Enter, false, true, Some(9), 3, RECORD, PICKER),
+            decide(
+                &Key::Named(NamedKey::Enter),
+                false,
+                true,
+                Some(9),
+                3,
+                RECORD,
+                PICKER
+            ),
             NavAction::Commit {
                 index: 0,
                 prevent_default: true,
@@ -531,7 +571,15 @@ mod tests {
     #[test]
     fn enter_takes_nothing_unhighlighted_in_a_free_text_field() {
         assert_eq!(
-            decide(&Key::Enter, false, true, None, 3, FREE_TEXT, PICKER),
+            decide(
+                &Key::Named(NamedKey::Enter),
+                false,
+                true,
+                None,
+                3,
+                FREE_TEXT,
+                PICKER
+            ),
             NavAction::Ignore
         );
     }
@@ -544,7 +592,15 @@ mod tests {
         assert_eq!(list.len, 1);
         assert_eq!(list.create_index, Some(0));
         assert_eq!(
-            decide(&Key::Enter, false, true, None, list.len, RECORD, PICKER),
+            decide(
+                &Key::Named(NamedKey::Enter),
+                false,
+                true,
+                None,
+                list.len,
+                RECORD,
+                PICKER
+            ),
             NavAction::Commit {
                 index: list.create_index.expect("the create action is navigable"),
                 prevent_default: true,
@@ -560,7 +616,15 @@ mod tests {
         assert_eq!(list.len, 3);
         assert_eq!(list.create_index, Some(2));
         assert_eq!(
-            decide(&Key::Enter, false, true, None, list.len, RECORD, PICKER),
+            decide(
+                &Key::Named(NamedKey::Enter),
+                false,
+                true,
+                None,
+                list.len,
+                RECORD,
+                PICKER
+            ),
             NavAction::Commit {
                 index: 0,
                 prevent_default: true,
@@ -581,7 +645,15 @@ mod tests {
         let empty = NavRows::new(0, false);
         assert_eq!(empty.len, 0);
         assert_eq!(
-            decide(&Key::Enter, false, true, None, empty.len, RECORD, PICKER),
+            decide(
+                &Key::Named(NamedKey::Enter),
+                false,
+                true,
+                None,
+                empty.len,
+                RECORD,
+                PICKER
+            ),
             NavAction::Ignore
         );
     }
@@ -589,7 +661,15 @@ mod tests {
     #[test]
     fn tab_commits_without_preventing_the_move_to_the_next_field() {
         assert_eq!(
-            decide(&Key::Tab, false, true, None, 3, RECORD, PICKER),
+            decide(
+                &Key::Named(NamedKey::Tab),
+                false,
+                true,
+                None,
+                3,
+                RECORD,
+                PICKER
+            ),
             NavAction::Commit {
                 index: 0,
                 prevent_default: false,
@@ -598,15 +678,39 @@ mod tests {
         // Nothing to take, backing out, or already closed (Escape first):
         // Tab just leaves, with the typed text intact.
         assert_eq!(
-            decide(&Key::Tab, false, true, None, 0, RECORD, PICKER),
+            decide(
+                &Key::Named(NamedKey::Tab),
+                false,
+                true,
+                None,
+                0,
+                RECORD,
+                PICKER
+            ),
             NavAction::Ignore
         );
         assert_eq!(
-            decide(&Key::Tab, true, true, Some(1), 3, RECORD, PICKER),
+            decide(
+                &Key::Named(NamedKey::Tab),
+                true,
+                true,
+                Some(1),
+                3,
+                RECORD,
+                PICKER
+            ),
             NavAction::Ignore
         );
         assert_eq!(
-            decide(&Key::Tab, false, false, Some(1), 3, RECORD, PICKER),
+            decide(
+                &Key::Named(NamedKey::Tab),
+                false,
+                false,
+                Some(1),
+                3,
+                RECORD,
+                PICKER
+            ),
             NavAction::Ignore
         );
     }
@@ -614,7 +718,15 @@ mod tests {
     #[test]
     fn escape_closes_and_other_keys_are_left_alone() {
         assert_eq!(
-            decide(&Key::Escape, false, true, Some(1), 3, RECORD, PICKER),
+            decide(
+                &Key::Named(NamedKey::Escape),
+                false,
+                true,
+                Some(1),
+                3,
+                RECORD,
+                PICKER
+            ),
             NavAction::Close
         );
         assert_eq!(
@@ -638,15 +750,39 @@ mod tests {
     #[test]
     fn menu_mode_still_arrows_and_escapes() {
         assert_eq!(
-            decide(&Key::ArrowDown, false, true, None, 3, FREE_TEXT, MENU),
+            decide(
+                &Key::Named(NamedKey::ArrowDown),
+                false,
+                true,
+                None,
+                3,
+                FREE_TEXT,
+                MENU
+            ),
             NavAction::Open(Some(0))
         );
         assert_eq!(
-            decide(&Key::ArrowUp, false, true, Some(2), 3, FREE_TEXT, MENU),
+            decide(
+                &Key::Named(NamedKey::ArrowUp),
+                false,
+                true,
+                Some(2),
+                3,
+                FREE_TEXT,
+                MENU
+            ),
             NavAction::Open(Some(1))
         );
         assert_eq!(
-            decide(&Key::Escape, false, true, Some(1), 3, FREE_TEXT, MENU),
+            decide(
+                &Key::Named(NamedKey::Escape),
+                false,
+                true,
+                Some(1),
+                3,
+                FREE_TEXT,
+                MENU
+            ),
             NavAction::Close
         );
     }
@@ -656,11 +792,27 @@ mod tests {
     #[test]
     fn menu_mode_leaves_enter_to_the_focused_row() {
         assert_eq!(
-            decide(&Key::Enter, false, true, Some(1), 3, RECORD, MENU),
+            decide(
+                &Key::Named(NamedKey::Enter),
+                false,
+                true,
+                Some(1),
+                3,
+                RECORD,
+                MENU
+            ),
             NavAction::Ignore
         );
         assert_eq!(
-            decide(&Key::Enter, false, true, None, 3, RECORD, MENU),
+            decide(
+                &Key::Named(NamedKey::Enter),
+                false,
+                true,
+                None,
+                3,
+                RECORD,
+                MENU
+            ),
             NavAction::Ignore
         );
     }
@@ -671,11 +823,27 @@ mod tests {
     #[test]
     fn menu_mode_does_not_commit_on_tab() {
         assert_eq!(
-            decide(&Key::Tab, false, true, Some(1), 3, RECORD, MENU),
+            decide(
+                &Key::Named(NamedKey::Tab),
+                false,
+                true,
+                Some(1),
+                3,
+                RECORD,
+                MENU
+            ),
             NavAction::Ignore
         );
         assert_eq!(
-            decide(&Key::Tab, false, true, None, 3, RECORD, MENU),
+            decide(
+                &Key::Named(NamedKey::Tab),
+                false,
+                true,
+                None,
+                3,
+                RECORD,
+                MENU
+            ),
             NavAction::Ignore
         );
     }
