@@ -103,7 +103,7 @@ features = [
 version = "0.10.4"
 
 [dependencies.rust_decimal]
-version = "1"
+version = "1.43.0"
 features = ["serde"]
 
 [dependencies.validator]
