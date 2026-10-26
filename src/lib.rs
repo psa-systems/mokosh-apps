@@ -901,6 +901,14 @@ pub enum Route {
     #[route("/bills/:id")]
     BillDetail { id: String },
 
+    // MAPPS-1163: employee expense claims, the other half of the Bills and
+    // Expenses subsystem (server MAPPS-1100 Phase B).
+    #[route("/expenses")]
+    ExpenseList {},
+
+    #[route("/expenses/:id")]
+    ExpenseDetail { id: String },
+
     #[route("/payments")]
     PaymentList {},
 
@@ -1902,6 +1910,24 @@ fn BillDetail(id: String) -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             bills::BillDetailPage { id }
+        }
+    }
+}
+
+#[component]
+fn ExpenseList() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            expenses::ExpenseListPage {}
+        }
+    }
+}
+
+#[component]
+fn ExpenseDetail(id: String) -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            expenses::ExpenseDetailPage { id }
         }
     }
 }

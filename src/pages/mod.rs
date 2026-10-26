@@ -36,6 +36,7 @@ pub mod dashboard;
 pub mod dashboards;
 pub mod dashboards_view;
 pub mod expense_categories;
+pub mod expenses;
 pub mod forgot_password;
 pub mod forms;
 pub mod home;

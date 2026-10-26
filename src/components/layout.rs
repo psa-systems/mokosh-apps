@@ -667,6 +667,10 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                         // the same finance gate the server enforces on
                         // `/bills`.
                         NavItem { to: Route::BillList {}, icon: rsx!(BanknotesIcon {}), label: "Bills", collapsed }
+                        // MAPPS-1163: claims sit beside bills because both are
+                        // money going out, and behind the same finance gate the
+                        // server enforces on `/expenses`.
+                        NavItem { to: Route::ExpenseList {}, icon: rsx!(ReceiptPercentIcon {}), label: "Expense Claims", collapsed }
                         NavItem { to: Route::CreditNoteList {}, icon: rsx!(ReceiptRefundIcon {}), label: "Credit Notes", collapsed }
                         NavItem { to: Route::Statement {}, icon: rsx!(DocumentTextIcon {}), label: "Statements", collapsed }
                     }
