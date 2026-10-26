@@ -31,6 +31,16 @@ pub fn format_money(amount: Decimal) -> String {
     format!("{sign}${grouped}.{frac_part}")
 }
 
+/// Format minor units (cents) as `$1,234.56` (MAPPS-1157).
+///
+/// Bills and expenses store money as `i64` minor units, matching the
+/// schema's `*_minor` columns, where invoices serialise a decimal string.
+/// Rendering goes through the same formatter either way, so a bill total
+/// and an invoice total are grouped and signed identically.
+pub fn format_money_minor(minor: i64) -> String {
+    format_money(Decimal::new(minor, 2))
+}
+
 /// Format an optional `Decimal`; `None` renders as `-`.
 pub fn format_money_opt(amount: Option<Decimal>) -> String {
     match amount {

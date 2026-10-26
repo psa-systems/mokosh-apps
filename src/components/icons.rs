@@ -486,6 +486,31 @@ pub fn DocumentTextIcon(
 /// Primary path of [`ReceiptRefundIcon`] (Heroicons `receipt-refund`).
 pub const RECEIPT_REFUND_PATH: &str = "M8.25 9.75h4.875a2.625 2.625 0 0 1 0 5.25H12M8.25 9.75 10.5 7.5M8.25 9.75 10.5 12m9-7.243V21.75l-3.75-1.5-3.75 1.5-3.75-1.5-3.75 1.5V4.757c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0c1.1.128 1.907 1.077 1.907 2.185Z";
 
+/// Banknotes. Used for the Bills nav item (MAPPS-1157): every sidebar row
+/// carries its own glyph and a test says so, and Credit Notes already holds
+/// the receipt.
+#[component]
+pub fn BanknotesIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: BANKNOTES_PATH,
+            }
+        }
+    }
+}
+
 /// A receipt with a return arrow. Used for the Credit Notes nav item
 /// (MAPPS-638) so it is distinct from Invoices (`CurrencyIcon`), Payments
 /// (`CreditCardIcon`) and the Audit Log (`ClipboardDocumentListIcon`): every
@@ -516,6 +541,9 @@ pub fn ReceiptRefundIcon(
 }
 
 /// Primary path of [`WalletIcon`] (Heroicons `wallet`).
+/// Primary path of [`BanknotesIcon`] (Heroicons `banknotes`).
+pub const BANKNOTES_PATH: &str = "M2.25 18.75a60.07 60.07 0 0 1 15.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 0 1 3 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 0 0-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 0 1-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 0 0 3 15h-.75M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm3 0h.008v.008H18V10.5Zm-12 0h.008v.008H6V10.5Z";
+
 pub const WALLET_PATH: &str = "M21 12a2.25 2.25 0 0 0-2.25-2.25H15a3 3 0 1 1-6 0H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 9m18 0V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v3";
 
 /// A wallet. MAPPS-782: the portal's Payment Methods entry, distinct from the

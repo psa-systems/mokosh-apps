@@ -17,6 +17,7 @@ pub mod audit_log;
 pub mod auth_callback;
 pub mod big_view;
 pub mod billing;
+pub mod bills;
 pub mod button_showcase;
 pub mod calendar;
 // MAPPS-590 (mokosh-contact-login prompt 012): Company-scoped portal
@@ -34,6 +35,7 @@ pub mod credit_notes;
 pub mod dashboard;
 pub mod dashboards;
 pub mod dashboards_view;
+pub mod expense_categories;
 pub mod forgot_password;
 pub mod forms;
 pub mod home;
@@ -86,6 +88,7 @@ pub mod reset_password;
 pub mod set_password;
 pub mod settings;
 pub mod settings_branding;
+pub mod vendors;
 // mokosh-contact-login prompt 007: sibling module for the Settings >
 // Contact Roles pages. Kept out of `settings.rs` so the existing 6.6k
 // LOC file stays intact.

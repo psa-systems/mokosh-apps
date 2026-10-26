@@ -892,6 +892,15 @@ pub enum Route {
     #[route("/invoices/:id")]
     InvoiceDetail { id: String },
 
+    // MAPPS-1157: the payables ledger. Beside Invoices because it is the
+    // same kind of document in the other direction (server MAPPS-1100
+    // Phase B).
+    #[route("/bills")]
+    BillList {},
+
+    #[route("/bills/:id")]
+    BillDetail { id: String },
+
     #[route("/payments")]
     PaymentList {},
 
@@ -1046,6 +1055,12 @@ pub enum Route {
     // MAPPS-640: the product catalog (server CRUD from PMS-955).
     #[route("/settings/products")]
     SettingsProducts {},
+    // MAPPS-1157: who the MSP buys from (server CRUD from MAPPS-1100 Phase A).
+    #[route("/settings/vendors")]
+    SettingsVendors {},
+    // MAPPS-1157: the tenant's own taxonomy of what a cost was for.
+    #[route("/settings/expense-categories")]
+    SettingsExpenseCategories {},
     // MAPPS-172: ticket lookup editors (server CRUD from PMS-321).
     #[route("/settings/ticket-statuses")]
     SettingsTicketStatuses {},
@@ -1874,6 +1889,24 @@ fn InvoiceList() -> Element {
 }
 
 #[component]
+fn BillList() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            bills::BillListPage {}
+        }
+    }
+}
+
+#[component]
+fn BillDetail(id: String) -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            bills::BillDetailPage { id }
+        }
+    }
+}
+
+#[component]
 fn InvoiceNew() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
@@ -2230,6 +2263,24 @@ fn SettingsProducts() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             products::ProductsSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsVendors() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            vendors::VendorsSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsExpenseCategories() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            expense_categories::ExpenseCategoriesSettingsPage {}
         }
     }
 }
