@@ -50,15 +50,15 @@ name = "mokosh_apps"
 path = "src/lib.rs"
 
 [dependencies]
-serde_json = "1.0"
-thiserror = "2"
-tracing = "0.1"
-futures-util = "0.3"
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+tracing = "0.1.44"
+futures-util = "0.3.34"
 sha2 = "0.10"
-base64 = "0.22"
+base64 = "0.23.1"
 rand = "0.9"
 pulldown-cmark = "0.12"
-ammonia = "4"
+ammonia = "4.2.4"
 # MAPPS-383: shared wire-format DTOs, the single source of truth for types
 # crossing the mokosh-server / mokosh-apps boundary. The URL is HTTPS, not
 # ssh://, because the pre-commit container and the Forgejo check runner have
@@ -74,13 +74,13 @@ git = "https://dev.a8n.run/psa-systems/mokosh-server.git"
 # (PMS-1025), so the pin follows `main` again as the comment above says.
 
 [dependencies.dioxus]
-version = "0.8.0-alpha.1"
+version = "0.8.0-alpha.3"
 features = [
     "router",
 ]
 
 [dependencies.serde]
-version = "1.0"
+version = "1.0.229"
 features = ["derive"]
 
 [dependencies.uuid]
@@ -93,17 +93,17 @@ features = [
 ]
 
 [dependencies.chrono]
-version = "0.4"
+version = "0.4.45"
 features = [
     "serde",
     "wasmbind",
 ]
 
 [dependencies.chrono-tz]
-version = "0.10"
+version = "0.10.4"
 
 [dependencies.rust_decimal]
-version = "1"
+version = "1.43.0"
 features = ["serde"]
 
 [dependencies.validator]
@@ -115,23 +115,35 @@ features = ["derive"]
 # fails to resolve on the native build instead of compiling to a binding that
 # panics at run time.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-gloo-net = "0.6"
-wasm-bindgen = "0.2"
-js-sys = "0.3"
+gloo-net = "0.7.0"
+wasm-bindgen = "0.2.129"
+js-sys = "0.3.106"
 # MAPPS-299: forward Rust panics in the wasm runtime to console.error with
 # a readable message + stack trace. Without this a panic surfaces as an
 # opaque `RuntimeError: unreachable` at a hex offset (e.g. wasm:0x352c4f)
 # the user has no way to act on. The hook is install-once at startup. The
 # desktop build has no console to forward to and keeps the default Rust
 # panic handler, which already writes a backtrace to stderr.
-console_error_panic_hook = "0.1"
+console_error_panic_hook = "0.1.7"
 # MAPPS-588: awaiting a JS promise from the platform layer. A pasted image
 # arrives as a `File`, and turning one into bytes is `Blob::array_buffer()`,
 # which returns a promise. The alternative is `FileReader` plus a second
 # forgotten `Closure` for its `load` event, and forgotten closures around
 # dioxus state are what MAPPS-586 was.
-wasm-bindgen-futures = "0.4"
+wasm-bindgen-futures = "0.4.79"
 
+# Not called anywhere in `src/`: this entry exists to turn the wasm backend
+# ON for the getrandom the tree actually compiles, which is 0.3, pulled by
+# `rand_core 0.9`. On `wasm32-unknown-unknown` getrandom refuses to build
+# without it ("the wasm32-unknown-unknown targets are not supported by
+# default"), and a feature is enabled per MAJOR version, so the version here
+# has to be the version the tree uses rather than the newest one published.
+#
+# Bumping it to 0.4 takes the feature off 0.3 and puts it on a copy nothing
+# needs: the tree also carries getrandom 0.2 and 0.4, and both already have
+# their backend enabled by other dependents. That bump was proposed and
+# failed the wasm build this way; `renovate.json` holds this below 0.4 so it
+# is not proposed again. It moves when `rand_core 0.9` leaves the tree.
 [target.'cfg(target_arch = "wasm32")'.dependencies.getrandom]
 version = "0.3"
 features = ["wasm_js"]
@@ -141,7 +153,7 @@ version = "0.3"
 features = ["futures"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
-version = "0.3"
+version = "0.3.106"
 features = [
     "Window",
     "Document",
@@ -221,12 +233,12 @@ features = [
 # per-user config and download directories.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 dirs = "6"
-iana-time-zone = "0.1"
+iana-time-zone = "0.1.65"
 # Hands a URL to the OS default browser. The desktop window is the app,
 # not a document to navigate away from, so the destinations that were
 # `location.replace` on the web (the OP logout endpoint, the Bunyip hub)
 # belong in the user's real browser.
-open = "5"
+open = "5.4.5"
 
 # rustls, not the platform TLS stack: one behaviour on every desktop OS, and
 # no OpenSSL headers needed to build.
@@ -259,7 +271,7 @@ features = [
 # regressions (e.g. an empty-state row losing its colspan / center) are caught
 # on the host `cargo test`. MAPPS-682: `just check-web` passes `--all-targets`,
 # so this is built for `wasm32-unknown-unknown` too and has to compile there.
-dioxus-ssr = "0.8.0-alpha.1"
+dioxus-ssr = "0.8.0-alpha.3"
 
 # MAPPS-505: the loopback listener tests drive `serve_one` to completion, so
 # they need a runtime to drive it ON. The app never builds one - dioxus-desktop
