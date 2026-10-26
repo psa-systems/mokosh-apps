@@ -892,6 +892,15 @@ pub enum Route {
     #[route("/invoices/:id")]
     InvoiceDetail { id: String },
 
+    // MAPPS-1157: the payables ledger. Beside Invoices because it is the
+    // same kind of document in the other direction (server MAPPS-1100
+    // Phase B).
+    #[route("/bills")]
+    BillList {},
+
+    #[route("/bills/:id")]
+    BillDetail { id: String },
+
     #[route("/payments")]
     PaymentList {},
 
@@ -1875,6 +1884,24 @@ fn InvoiceList() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             billing::InvoiceListPage {}
+        }
+    }
+}
+
+#[component]
+fn BillList() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            bills::BillListPage {}
+        }
+    }
+}
+
+#[component]
+fn BillDetail(id: String) -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            bills::BillDetailPage { id }
         }
     }
 }

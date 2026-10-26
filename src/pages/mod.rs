@@ -17,6 +17,7 @@ pub mod audit_log;
 pub mod auth_callback;
 pub mod big_view;
 pub mod billing;
+pub mod bills;
 pub mod button_showcase;
 pub mod calendar;
 // MAPPS-590 (mokosh-contact-login prompt 012): Company-scoped portal

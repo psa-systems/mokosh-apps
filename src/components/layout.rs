@@ -663,6 +663,10 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     // surrounding cap-driven `show_*` structure is the
                     // contact-login-side layout.
                     if has_finance {
+                        // MAPPS-1157: payables, beside receivables and behind
+                        // the same finance gate the server enforces on
+                        // `/bills`.
+                        NavItem { to: Route::BillList {}, icon: rsx!(BanknotesIcon {}), label: "Bills", collapsed }
                         NavItem { to: Route::CreditNoteList {}, icon: rsx!(ReceiptRefundIcon {}), label: "Credit Notes", collapsed }
                         NavItem { to: Route::Statement {}, icon: rsx!(DocumentTextIcon {}), label: "Statements", collapsed }
                     }
