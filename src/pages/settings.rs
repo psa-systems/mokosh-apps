@@ -657,6 +657,15 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         visibility: SurfaceVisibility::StaffAdmin,
     },
     SettingsSurface {
+        route: Route::SettingsExpenseCategories {},
+        title: "Expense Categories",
+        description: "What a cost was for, on a bill line or an expense claim.",
+        group: SettingsGroupKey::Billing,
+        advanced: true,
+        section: Some(SettingsSection::ProductsAndInvoicing),
+        visibility: SurfaceVisibility::StaffAdmin,
+    },
+    SettingsSurface {
         route: Route::SettingsTicketStatuses {},
         title: "Ticket Statuses",
         description: "Workflow states a ticket can move through.",

@@ -1049,6 +1049,9 @@ pub enum Route {
     // MAPPS-1157: who the MSP buys from (server CRUD from MAPPS-1100 Phase A).
     #[route("/settings/vendors")]
     SettingsVendors {},
+    // MAPPS-1157: the tenant's own taxonomy of what a cost was for.
+    #[route("/settings/expense-categories")]
+    SettingsExpenseCategories {},
     // MAPPS-172: ticket lookup editors (server CRUD from PMS-321).
     #[route("/settings/ticket-statuses")]
     SettingsTicketStatuses {},
@@ -2242,6 +2245,15 @@ fn SettingsVendors() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             vendors::VendorsSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsExpenseCategories() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            expense_categories::ExpenseCategoriesSettingsPage {}
         }
     }
 }
