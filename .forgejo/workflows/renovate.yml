@@ -21,7 +21,7 @@ on:
 jobs:
   renovate:
     name: Renovate (caller)
-    uses: psa-systems/common/.forgejo/workflows/renovate-reusable.yml@main  # secret-scope-ok: same-org shared workflow repo, tracked separately for SHA pinning
+    uses: psa-systems/common/.forgejo/workflows/renovate-reusable.yml@1f4d449a32d694f229b112a3f6a651534660cf55 # main
     with:
       target_repository: ${{ github.repository }}
     secrets:
