@@ -80,8 +80,23 @@ pub struct Overview {
     pub organisation_id: Option<String>,
     #[serde(default)]
     pub delegated: bool,
+    /// Whether delegated issuing is switched on for the DEPLOYMENT
+    /// (MAPPS-1154).
+    ///
+    /// Defaults to TRUE for a server that predates the field, which keeps
+    /// an older deployment rendering as it does today rather than telling
+    /// every connected tenant their invoices are going nowhere.
+    #[serde(default = "default_delegation_enabled")]
+    pub delegation_enabled: bool,
     #[serde(default)]
     pub last_error: Option<String>,
+}
+
+/// A server that does not send `delegation_enabled` predates MAPPS-1154,
+/// and so predates the card being able to tell. The honest default is the
+/// one that says nothing rather than the one that contradicts.
+fn default_delegation_enabled() -> bool {
+    true
 }
 
 /// `POST /integrations/invoice-issuer/{provider}/authorize` answers where
@@ -109,6 +124,10 @@ pub enum CardState {
     Connected {
         organisation_id: Option<String>,
         delegated: bool,
+        /// The deployment's own switch. A tenant who delegated everything
+        /// on a deployment that has not switched it on still has every
+        /// invoice issued by Mokosh (MAPPS-1154).
+        delegation_enabled: bool,
     },
     /// Connected, and the last thing the provider said was a failure.
     Failing {
@@ -130,6 +149,7 @@ pub fn card_state_of(overview: &Overview) -> CardState {
         "connected" => CardState::Connected {
             organisation_id: overview.organisation_id.clone(),
             delegated: overview.delegated,
+            delegation_enabled: overview.delegation_enabled,
         },
         "error" => CardState::Failing {
             message: overview.last_error.clone(),
@@ -147,15 +167,20 @@ pub fn badge_for(state: &CardState) -> (&'static str, BadgeVariant) {
     match state {
         CardState::NotAvailable => ("Not available here", BadgeVariant::Gray),
         CardState::NeverConnected => ("Not connected", BadgeVariant::Gray),
+        // Connected, delegated, and the deployment has switched it on: the
+        // only combination in which an invoice actually goes to the
+        // provider.
         CardState::Connected {
-            delegated: true, ..
+            delegated: true,
+            delegation_enabled: true,
+            ..
         } => ("Connected", BadgeVariant::Green),
         // Connected to the provider and handing it nothing is a real state
         // and not a good one: the connection is live and every invoice is
-        // still issued locally.
-        CardState::Connected {
-            delegated: false, ..
-        } => ("Connected, not issuing", BadgeVariant::Gray),
+        // still issued locally. Two ways to be in it - the tenant delegated
+        // nothing, or the deployment has not switched delegating on - and
+        // they read the same here, because the consequence is the same.
+        CardState::Connected { .. } => ("Connected, not issuing", BadgeVariant::Gray),
         CardState::Failing { .. } => ("Error", BadgeVariant::Red),
     }
 }
@@ -321,7 +346,7 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
                                         }
                                     }
                                 },
-                                CardState::Connected { organisation_id, delegated } => rsx! {
+                                CardState::Connected { organisation_id, delegated, delegation_enabled } => rsx! {
                                     if let Some(id) = organisation_id.clone() {
                                         p { class: "text-sm text-content",
                                             "Connected to the {issuer.display} {issuer.organisation} "
@@ -329,9 +354,18 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
                                             "."
                                         }
                                     }
-                                    if delegated {
+                                    if delegated && delegation_enabled {
                                         p { class: "text-sm text-muted",
                                             "New invoices are issued by {issuer.display}. The number your customer sees is theirs; Mokosh keeps its own for reference."
+                                        }
+                                    } else if !delegation_enabled {
+                                        // MAPPS-1154: the deployment's switch, which
+                                        // is off until an operator flips it. Said
+                                        // separately from the tenant's own, because
+                                        // the person reading this cannot fix it and
+                                        // needs to know who can.
+                                        StatusBanner { tone: crate::components::BannerTone::Warning,
+                                            "Invoicing through {issuer.display} is switched off for this deployment, so Mokosh is still issuing every invoice. An operator turns it on; the connection is kept and starts being used when they do."
                                         }
                                     } else {
                                         StatusBanner { tone: crate::components::BannerTone::Warning,
@@ -446,6 +480,86 @@ mod tests {
         assert_ne!(badge_for(&issuing).0, badge_for(&idle).0);
     }
 
+    /// MAPPS-1154: a tenant who delegated everything on a deployment that
+    /// has not switched delegating on is not issuing through the provider,
+    /// and the card does not say they are.
+    ///
+    /// This is the state every deployment is in to begin with, because the
+    /// toggle defaults off. Before this the card read "Connected" in green
+    /// with "New invoices are issued by Xero" while Mokosh issued every one
+    /// of them locally.
+    #[test]
+    fn the_deployment_switch_being_off_does_not_read_as_issuing() {
+        let tenant_ready_deployment_not = card_state_of(&overview(serde_json::json!({
+            "configured": true,
+            "status": "connected",
+            "delegated": true,
+            "delegation_enabled": false,
+        })));
+        assert!(
+            !matches!(
+                badge_for(&tenant_ready_deployment_not).1,
+                BadgeVariant::Green
+            ),
+            "nothing is being issued by the provider, so this is not a working integration"
+        );
+        assert_eq!(
+            badge_for(&tenant_ready_deployment_not).0,
+            "Connected, not issuing",
+            "the same badge as a tenant who delegated nothing: the consequence is the same"
+        );
+
+        let both = card_state_of(&overview(serde_json::json!({
+            "configured": true,
+            "status": "connected",
+            "delegated": true,
+            "delegation_enabled": true,
+        })));
+        assert!(matches!(badge_for(&both).1, BadgeVariant::Green));
+    }
+
+    /// An older server that does not send the field is read as switched on.
+    ///
+    /// It predates the card being able to tell, so the default that says
+    /// nothing is better than the one that tells every connected tenant
+    /// their invoices are going nowhere.
+    #[test]
+    fn an_older_server_is_not_assumed_to_have_it_switched_off() {
+        let state = card_state_of(&overview(serde_json::json!({
+            "configured": true, "status": "connected", "delegated": true,
+        })));
+        assert!(matches!(badge_for(&state).1, BadgeVariant::Green));
+    }
+
+    /// The deployment's switch and the tenant's are explained separately.
+    ///
+    /// A tenant admin cannot flip the deployment's, so the copy has to say
+    /// that somebody else does and that the connection survives until they
+    /// do; "nothing is delegated to it" would send them looking for a
+    /// checkbox they do not have.
+    #[test]
+    fn the_two_switches_are_explained_as_two_different_things() {
+        let src = include_str!("settings_invoice_issuer.rs");
+        let card = &src[src
+            .find(r#""data-testid": "invoice-issuer-"#)
+            .expect("the card body")
+            ..src.find("mod tests").expect("this module")];
+        let deployment_copy = card
+            .find("switched off for this deployment")
+            .expect("the deployment switch has its own sentence");
+        let tenant_copy = card
+            .find("nothing is delegated to it")
+            .expect("the tenant switch keeps its own");
+        assert!(
+            deployment_copy < tenant_copy,
+            "both are rendered, in their own arms"
+        );
+        assert!(
+            card[deployment_copy..tenant_copy].contains("An operator turns it on"),
+            "the deployment sentence says who can fix it"
+        );
+    }
+
     /// A disconnected row offers the same thing as never having connected.
     ///
     /// The server keeps the two apart because a disconnect preserves the
@@ -494,7 +608,7 @@ mod tests {
             .find(r#""data-testid": "invoice-issuer-"#)
             .expect("the card body")..];
         let connected_at = card
-            .find("CardState::Connected { organisation_id, delegated } => rsx!")
+            .find("CardState::Connected { organisation_id, delegated, delegation_enabled } => rsx!")
             .expect("the connected arm");
         let failing_at = card
             .find("CardState::Failing { message } =>")
