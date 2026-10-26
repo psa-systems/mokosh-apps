@@ -95,8 +95,13 @@ struct RemoteBillLine {
     total_minor: i64,
 }
 
+/// `BillWithLines`, which the server FLATTENS: the bill's own fields sit
+/// at the top level with `lines` beside them, not under a `bill` key
+/// (MAPPS-1164). Without the flatten here the whole response fails to
+/// deserialise and the detail page renders its skeleton forever.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RemoteBillWithLines {
+    #[serde(flatten)]
     bill: RemoteBill,
     #[serde(default)]
     lines: Vec<RemoteBillLine>,
@@ -1104,6 +1109,74 @@ mod tests {
     #[test]
     fn the_list_path_asks_only_for_a_page() {
         assert_eq!(list_path(1), "/bills?page=1&per_page=25");
+    }
+
+    /// The detail response is flattened, and this type has to read it
+    /// (MAPPS-1164).
+    ///
+    /// A fixture in the server's actual shape rather than a round trip
+    /// through our own `Serialize`: the bug was a client struct that
+    /// compiled against nothing, and a test that serialises what it then
+    /// deserialises would have passed just as happily.
+    #[test]
+    fn the_detail_response_is_read_flattened() {
+        let body = serde_json::json!({
+            "id": "11111111-1111-1111-1111-111111111111",
+            "tenant_id": "22222222-2222-2222-2222-222222222222",
+            "vendor_id": "33333333-3333-3333-3333-333333333333",
+            "bill_number": "VEN-7781",
+            "issue_date": "2026-10-23",
+            "due_date": "2026-11-23",
+            "currency": "USD",
+            "subtotal_minor": 7000,
+            "tax_minor": 0,
+            "total_minor": 7000,
+            "paid_minor": 0,
+            "status": "draft",
+            "notes": null,
+            "external_provider": "xero",
+            "external_bill_id": "0b9b3e1a-5c7d-4a2f-8e6b-1d3f5a7c9e11",
+            "created_at": "2026-10-23T00:00:00Z",
+            "updated_at": "2026-10-23T00:00:00Z",
+            "lines": [{
+                "id": "44444444-4444-4444-4444-444444444444",
+                "tenant_id": "22222222-2222-2222-2222-222222222222",
+                "bill_id": "11111111-1111-1111-1111-111111111111",
+                "category_id": null,
+                "description": "Rack space",
+                "quantity_hundredths": 100,
+                "unit_price_minor": 5000,
+                "tax_minor": 0,
+                "total_minor": 5000,
+                "position": 0,
+                "created_at": "2026-10-23T00:00:00Z",
+            }],
+        });
+        let loaded: RemoteBillWithLines =
+            serde_json::from_value(body).expect("the server's own shape deserialises");
+        assert_eq!(loaded.bill.total_minor, 7000);
+        assert_eq!(loaded.bill.status, "draft");
+        assert_eq!(
+            loaded.bill.external_provider.as_deref(),
+            Some("xero"),
+            "and the delegated pair survives the flatten"
+        );
+        assert_eq!(loaded.lines.len(), 1);
+        assert_eq!(loaded.lines[0].description, "Rack space");
+    }
+
+    /// A nested body is NOT what the server sends, so reading one would
+    /// mean the flatten had been undone.
+    #[test]
+    fn a_nested_body_is_not_what_this_type_reads() {
+        let nested = serde_json::json!({
+            "bill": { "id": "11111111-1111-1111-1111-111111111111" },
+            "lines": [],
+        });
+        assert!(
+            serde_json::from_value::<RemoteBillWithLines>(nested).is_err(),
+            "a `bill` key is the shape MAPPS-1164 removed"
+        );
     }
 
     /// Money a person typed becomes the minor units the server stores.
