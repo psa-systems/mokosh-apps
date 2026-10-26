@@ -1719,6 +1719,39 @@ pub mod api {
         patch_with_auth(path, body, &t).await
     }
 
+    /// Auto-authed PUT with a JSON body against an endpoint that answers
+    /// 204 (MAPPS-1156).
+    ///
+    /// `put_authed` parses the response, so a 204 fails there on an empty
+    /// body rather than on anything that went wrong. The staff-plane
+    /// sibling of `put_portal_authed_json_no_content`, which exists for
+    /// the same reason on the contact plane.
+    #[cfg(feature = "app")]
+    pub async fn put_authed_json_no_content<B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<(), String> {
+        ensure_fresh_access_token().await;
+        let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
+        let url = format!("{}{}", api_base(), path);
+        let (agent_lane, token) = agent_lane_bearer(&t).await;
+        let response = Request::put(&url)
+            .header("Authorization", &format!("Bearer {}", token))
+            .json(body)
+            .map_err(|e| e.to_string())?
+            .send()
+            .await
+            .map_err(transport_err)?;
+        if agent_lane && response.status() == 401 {
+            note_agent_unauthorized().await;
+        }
+        if response.ok() {
+            Ok(())
+        } else {
+            Err(status_error(response).await)
+        }
+    }
+
     /// Auto-authed POST for empty-body endpoints (see
     /// `post_no_content_with_auth`).
     #[cfg(feature = "app")]

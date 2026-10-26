@@ -16,6 +16,15 @@
 //! company files) and in nothing else this page renders. A copied page
 //! would be a second place to fix every future change to the flow.
 //!
+//! # Two directions, two decisions (MAPPS-1156, server MAPPS-1155)
+//!
+//! Delegating invoicing hands over what customers owe the MSP.
+//! Delegating bills hands over what the MSP owes its vendors, and it is a
+//! separate decision: connecting IS the invoice delegation, and the
+//! server writes `{invoicing}` and nothing else. The card carries the
+//! bills toggle because nothing else can set that capability, so without
+//! it no tenant on any deployment could delegate one bill.
+//!
 //! # The switch a tenant cannot touch
 //!
 //! `configured` says whether the DEPLOYMENT holds an application for the
@@ -88,6 +97,18 @@ pub struct Overview {
     /// every connected tenant their invoices are going nowhere.
     #[serde(default = "default_delegation_enabled")]
     pub delegation_enabled: bool,
+    /// Whether this tenant delegated BILLS, which connecting does not do
+    /// and only the bills toggle sets (MAPPS-1156).
+    #[serde(default)]
+    pub bills_delegated: bool,
+    /// Whether the DEPLOYMENT has `delegated_bills` switched on. Its own
+    /// switch, so the invoice one answers a different question.
+    ///
+    /// No `true` default, unlike the invoice one: a server that predates
+    /// the field cannot have delegated a bill either, so `bills_delegated`
+    /// is false there and the pair this is read with never renders.
+    #[serde(default)]
+    pub bills_delegation_enabled: bool,
     #[serde(default)]
     pub last_error: Option<String>,
 }
@@ -115,6 +136,12 @@ struct AuthorizeResponse {
 #[derive(Serialize)]
 struct NoBody {}
 
+/// `PUT /integrations/invoice-issuer/{provider}/bills` (MAPPS-1155).
+#[derive(Serialize)]
+struct SetBillsRequest {
+    enabled: bool,
+}
+
 /// The four states this card renders.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CardState {
@@ -128,6 +155,12 @@ pub enum CardState {
         /// on a deployment that has not switched it on still has every
         /// invoice issued by Mokosh (MAPPS-1154).
         delegation_enabled: bool,
+        /// MAPPS-1156: the tenant's bill decision, and the deployment's.
+        /// Both on the state rather than read again in the body, so the
+        /// branch that renders the toggle is the only place either is
+        /// consulted.
+        bills_delegated: bool,
+        bills_delegation_enabled: bool,
     },
     /// Connected, and the last thing the provider said was a failure.
     Failing {
@@ -150,6 +183,8 @@ pub fn card_state_of(overview: &Overview) -> CardState {
             organisation_id: overview.organisation_id.clone(),
             delegated: overview.delegated,
             delegation_enabled: overview.delegation_enabled,
+            bills_delegated: overview.bills_delegated,
+            bills_delegation_enabled: overview.bills_delegation_enabled,
         },
         "error" => CardState::Failing {
             message: overview.last_error.clone(),
@@ -167,19 +202,29 @@ pub fn badge_for(state: &CardState) -> (&'static str, BadgeVariant) {
     match state {
         CardState::NotAvailable => ("Not available here", BadgeVariant::Gray),
         CardState::NeverConnected => ("Not connected", BadgeVariant::Gray),
-        // Connected, delegated, and the deployment has switched it on: the
-        // only combination in which an invoice actually goes to the
-        // provider.
+        // Something actually reaches the provider: a direction the tenant
+        // delegated AND whose deployment switch is on. Either direction
+        // counts (MAPPS-1156), because a tenant whose payables go to the
+        // provider has a working integration whether or not their invoices
+        // do, and one guard says that once instead of enumerating the four
+        // combinations of two pairs.
         CardState::Connected {
-            delegated: true,
-            delegation_enabled: true,
+            delegated,
+            delegation_enabled,
+            bills_delegated,
+            bills_delegation_enabled,
             ..
-        } => ("Connected", BadgeVariant::Green),
+        } if (*delegated && *delegation_enabled)
+            || (*bills_delegated && *bills_delegation_enabled) =>
+        {
+            ("Connected", BadgeVariant::Green)
+        }
         // Connected to the provider and handing it nothing is a real state
         // and not a good one: the connection is live and every invoice is
-        // still issued locally. Two ways to be in it - the tenant delegated
-        // nothing, or the deployment has not switched delegating on - and
-        // they read the same here, because the consequence is the same.
+        // still issued locally. Three ways to be in it - the tenant
+        // delegated nothing, the deployment has not switched the direction
+        // they delegated on, or both - and they read the same here, because
+        // the consequence is the same.
         CardState::Connected { .. } => ("Connected, not issuing", BadgeVariant::Gray),
         CardState::Failing { .. } => ("Error", BadgeVariant::Red),
     }
@@ -298,6 +343,31 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
         });
     };
 
+    // MAPPS-1156: the only caller of the one route that can set the
+    // `bills_and_expenses` capability. `enabled` is sent rather than
+    // toggled server-side, so a stale card cannot flip it the wrong way.
+    let mut set_bills = move |next: bool| {
+        busy.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                if let Err(e) = crate::hooks::fetch::api::put_authed_json_no_content(
+                    &format!("/integrations/invoice-issuer/{}/bills", issuer.provider),
+                    &SetBillsRequest { enabled: next },
+                )
+                .await
+                {
+                    error.set(format!("Could not change what is delegated: {e}"));
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            let _ = next;
+            busy.set(false);
+            overview_handle.restart();
+        });
+    };
+
     let route = if issuer.provider == XERO.provider {
         Route::SettingsXero {}
     } else {
@@ -346,7 +416,7 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
                                         }
                                     }
                                 },
-                                CardState::Connected { organisation_id, delegated, delegation_enabled } => rsx! {
+                                CardState::Connected { organisation_id, delegated, delegation_enabled, bills_delegated, bills_delegation_enabled } => rsx! {
                                     if let Some(id) = organisation_id.clone() {
                                         p { class: "text-sm text-content",
                                             "Connected to the {issuer.display} {issuer.organisation} "
@@ -380,6 +450,36 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
                                         to: mappings_route(issuer),
                                         class: "text-sm text-accent hover:underline",
                                         "Set up which client is which {issuer.organisation} in {issuer.display}"
+                                    }
+                                    // MAPPS-1156: the other direction. Its own
+                                    // section rather than a line in the one
+                                    // above, because it is a decision and not a
+                                    // consequence of having connected.
+                                    div { class: "border-t border-line pt-4 space-y-2",
+                                        p { class: "text-sm font-medium text-content", "Bills and expenses" }
+                                        p { class: "text-sm text-muted",
+                                            "The other direction: what you are billed for. With this on, a new bill is raised in {issuer.display} as well as here, and your accountant reconciles it there."
+                                        }
+                                        if bills_delegated && !bills_delegation_enabled {
+                                            StatusBanner { tone: crate::components::BannerTone::Warning,
+                                                "This deployment has not switched delegated bills on, so bills are still recorded only in Mokosh. An operator turns it on for everyone on this deployment."
+                                            }
+                                        } else if bills_delegated {
+                                            p { class: "text-sm text-muted",
+                                                "New bills are raised in {issuer.display}. A bill for a vendor with no mapping is refused, so map them first."
+                                            }
+                                        }
+                                        div { class: "pt-1",
+                                            Button {
+                                                variant: if bills_delegated { ButtonVariant::Secondary } else { ButtonVariant::Primary },
+                                                size: crate::components::ButtonSize::Small,
+                                                loading: busy(),
+                                                disabled: !can_mutate,
+                                                onclick: move |_| set_bills(!bills_delegated),
+                                                data_testid: "bills-delegation-{issuer.testid}",
+                                                if bills_delegated { "Stop sending bills" } else { "Send bills to {issuer.display} too" }
+                                            }
+                                        }
                                     }
                                     div { class: "pt-2",
                                         Button {
@@ -464,6 +564,124 @@ mod tests {
     /// The connection is live, so "Not connected" would be wrong; every
     /// invoice is still issued locally, so a green "Connected" would be
     /// worse.
+    /// MAPPS-1156: the bills toggle belongs to the connected card.
+    ///
+    /// Read off the rendered body, the shape MAPPS-1145 used for
+    /// Disconnect: the server refuses the call unless the row is
+    /// connected, so a button on an earlier card would be an offer that
+    /// cannot be taken.
+    #[test]
+    fn the_bills_toggle_belongs_to_the_connected_card() {
+        let src = include_str!("settings_invoice_issuer.rs");
+        let card = &src[src
+            .find(r#""data-testid": "invoice-issuer-"#)
+            .expect("the card body")..];
+        let connected_at = card
+            .find("CardState::Connected {")
+            .expect("the connected arm");
+        let failing_at = card
+            .find("CardState::Failing { message } =>")
+            .expect("the failing arm");
+        assert!(
+            card[connected_at..failing_at].contains("bills-delegation-{issuer.testid}"),
+            "a connected card offers it"
+        );
+        assert!(
+            !card[..connected_at].contains("bills-delegation-"),
+            "and the cards before it do not: there is nothing connected to delegate to"
+        );
+    }
+
+    /// Delegated bills with the deployment switch off says so.
+    ///
+    /// The MAPPS-1154 case in the other direction: a tenant who pressed
+    /// the button would otherwise read "new bills are raised in Xero"
+    /// while the deployment raises none.
+    #[test]
+    fn bills_delegated_with_the_switch_off_is_said_out_loud() {
+        let state = card_state_of(&overview(serde_json::json!({
+            "configured": true,
+            "status": "connected",
+            "delegated": true,
+            "bills_delegated": true,
+            "bills_delegation_enabled": false,
+        })));
+        assert!(matches!(
+            state,
+            CardState::Connected {
+                bills_delegated: true,
+                bills_delegation_enabled: false,
+                ..
+            }
+        ));
+        let src = include_str!("settings_invoice_issuer.rs");
+        let body = &src[src.find("Bills and expenses").expect("the section")..];
+        let guard = body
+            .find("if bills_delegated && !bills_delegation_enabled")
+            .expect("the switched-off branch");
+        let banner = body
+            .find("has not switched delegated bills on")
+            .expect("the copy");
+        assert!(guard < banner, "the copy is behind the switched-off branch");
+    }
+
+    /// A tenant that delegated only BILLS has a working integration.
+    ///
+    /// `delegated` alone decided the badge, so handing over payables and
+    /// nothing else read as "Connected, not issuing", which is true of
+    /// invoices and wrong about the provider doing nothing.
+    #[test]
+    fn bills_alone_is_not_an_idle_connection() {
+        let bills_only = card_state_of(&overview(serde_json::json!({
+            "configured": true,
+            "status": "connected",
+            "delegated": false,
+            "bills_delegated": true,
+            "bills_delegation_enabled": true,
+        })));
+        assert!(
+            matches!(badge_for(&bills_only).1, BadgeVariant::Green),
+            "the provider is doing something for this tenant, in the other direction"
+        );
+        // And the MAPPS-1154 rule holds for this direction too: delegated
+        // by the tenant with the deployment switch off sends nothing, so it
+        // does not read as working.
+        let switched_off = card_state_of(&overview(serde_json::json!({
+            "configured": true,
+            "status": "connected",
+            "delegated": false,
+            "bills_delegated": true,
+            "bills_delegation_enabled": false,
+        })));
+        assert!(!matches!(badge_for(&switched_off).1, BadgeVariant::Green));
+        let nothing = card_state_of(&overview(serde_json::json!({
+            "configured": true, "status": "connected", "delegated": false,
+        })));
+        assert!(
+            !matches!(badge_for(&nothing).1, BadgeVariant::Green),
+            "and a connection handing over neither direction still is not"
+        );
+    }
+
+    /// Invoicing switched off at the deployment while BILLS flow is still
+    /// a working connection.
+    ///
+    /// The pair-per-direction is why: a badge that read only the invoice
+    /// pair called this idle while every bill the MSP entered was being
+    /// raised in the provider.
+    #[test]
+    fn bills_flowing_outweighs_invoicing_switched_off() {
+        let state = card_state_of(&overview(serde_json::json!({
+            "configured": true,
+            "status": "connected",
+            "delegated": true,
+            "delegation_enabled": false,
+            "bills_delegated": true,
+            "bills_delegation_enabled": true,
+        })));
+        assert!(matches!(badge_for(&state).1, BadgeVariant::Green));
+    }
+
     #[test]
     fn connected_without_delegation_does_not_read_as_issuing() {
         let issuing = card_state_of(&overview(serde_json::json!({
@@ -607,8 +825,11 @@ mod tests {
         let card = &src[src
             .find(r#""data-testid": "invoice-issuer-"#)
             .expect("the card body")..];
+        // The arm's own prefix, not its full pattern: MAPPS-1156 added two
+        // fields to it, and a test that spells the whole pattern out finds
+        // its own literal further down this file once the pattern moves on.
         let connected_at = card
-            .find("CardState::Connected { organisation_id, delegated, delegation_enabled } => rsx!")
+            .find("CardState::Connected {")
             .expect("the connected arm");
         let failing_at = card
             .find("CardState::Failing { message } =>")
