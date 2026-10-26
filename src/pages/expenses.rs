@@ -22,13 +22,19 @@
 //! bill line, and it is why this page has its own line editor rather than
 //! sharing the bills one.
 //!
-//! # Everything here is finance-gated, which is the server's doing
+//! # Who reaches this page (MAPPS-1165, server PMS-1535)
 //!
-//! All six routes take `RequireBilling` + `RequireFinance`, so a member
-//! without a finance role cannot read or submit even their own claim. The
-//! page carries the same gate rather than showing a member a surface that
-//! 403s on every call. A per-submitter read is a server decision
-//! (`list_expenses` takes no `user_id` filter), not something to fake here.
+//! Anybody signed in. The server opened the claim surface to every member
+//! of the tenant: they can file a claim, read their own and submit it,
+//! while approve, reject and reimburse stay finance's, and the LIST is
+//! scoped server-side to the caller's own claims.
+//!
+//! So the page renders for everyone and shows a non-finance member less:
+//! no Who column (every row is them), and no decision buttons, because
+//! the server answers 403 and a button that always fails is worse than no
+//! button. `transitions_for` takes the role as its second input for that
+//! reason, and stays pure so both sides of the check are testable without
+//! a server.
 
 use std::collections::HashMap;
 
@@ -151,18 +157,24 @@ pub(crate) fn status_badge(status: &str) -> (String, BadgeVariant) {
     }
 }
 
-/// The transitions the server accepts from one status, in the order a
+/// The transitions this caller may make from one status, in the order a
 /// claim moves through them.
 ///
 /// One function rather than four predicates, because the rule they encode
 /// is one table and a reader checking it against `transition_expense`
 /// should not have to assemble it from four places. `(label, action)`, so
 /// the button copy and the path segment cannot drift apart.
-pub(crate) fn transitions_for(status: &str) -> Vec<(&'static str, &'static str)> {
+///
+/// `can_decide` is the caller's half of the rule (PMS-1535): submitting is
+/// the submitter's own act and open to anybody, while approve, reject and
+/// reimburse are finance's. A claim waiting on finance offers a
+/// non-finance member nothing, which is the honest answer and not an
+/// omission.
+pub(crate) fn transitions_for(status: &str, can_decide: bool) -> Vec<(&'static str, &'static str)> {
     match status {
         "draft" => vec![("Submit", "submit")],
-        "submitted" => vec![("Approve", "approve"), ("Reject", "reject")],
-        "approved" => vec![("Mark reimbursed", "reimburse")],
+        "submitted" if can_decide => vec![("Approve", "approve"), ("Reject", "reject")],
+        "approved" if can_decide => vec![("Mark reimbursed", "reimburse")],
         // `reimbursed` and `rejected` are terminal, and so is anything
         // this build does not recognise: offering a transition on a status
         // we cannot reason about is how a 409 reaches a user.
@@ -290,20 +302,27 @@ async fn member_names() -> HashMap<Uuid, String> {
     names
 }
 
-#[component]
-pub fn ExpenseListPage() -> Element {
+/// Whether this caller may decide claims, which is finance's job and the
+/// second input to [`transitions_for`].
+fn use_can_decide() -> bool {
     let auth = crate::hooks::use_auth();
-    let has_finance = auth
+    // Copied out of the guard before it drops, the shape the sibling pages
+    // use: the signal's read guard cannot outlive this function.
+    let decides = auth
         .read()
         .user
         .as_ref()
         .map(|u| u.role.can_manage_billing())
         .unwrap_or(false);
+    decides
+}
 
+#[component]
+pub fn ExpenseListPage() -> Element {
     use_page_title("Expense Claims");
-    if !has_finance {
-        return rsx! { crate::pages::billing::NoFinancePermission { title: "Expense Claims" } };
-    }
+    // No role gate (MAPPS-1165): the server lets any member file a claim
+    // and scopes the list to their own, so there is nothing here to
+    // withhold.
     rsx! { ExpenseListBody {} }
 }
 
@@ -342,6 +361,7 @@ fn ExpenseListBody() -> Element {
 
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
+    let can_decide = use_can_decide();
     let navigator = use_navigator();
     if fetch_failed && !reachable {
         return rsx! {
@@ -349,10 +369,15 @@ fn ExpenseListBody() -> Element {
         };
     }
 
+    // MAPPS-1165: the server scopes a non-finance caller's list to their
+    // own claims, so the Who column would be the same name on every row
+    // and the copy would be about people they cannot see.
+    let columns = if can_decide { 5 } else { 4 };
+
     rsx! {
         PageHeader {
             title: "Expense Claims",
-            subtitle: "What your people spent, and what has been paid back",
+            subtitle: if can_decide { "What your people spent, and what has been paid back" } else { "What you spent, and what has been paid back" },
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Primary,
@@ -366,7 +391,11 @@ fn ExpenseListBody() -> Element {
         }
 
         p { class: "mb-4 text-sm text-muted",
-            "A claim is submitted by the person who spent the money, approved or rejected by somebody else, and marked reimbursed once it has been paid back. A claim you create here is yours."
+            if can_decide {
+                "A claim is submitted by the person who spent the money, approved or rejected by somebody else, and marked reimbursed once it has been paid back. A claim you create here is yours."
+            } else {
+                "These are your own claims. Enter what you spent and submit it; somebody in finance approves it and marks it reimbursed once you have been paid back."
+            }
         }
 
         if fetch_failed {
@@ -378,12 +407,14 @@ fn ExpenseListBody() -> Element {
             total_items: total as usize,
             current_page,
             per_page: PER_PAGE,
-            columns: 5,
+            columns,
             onpagechange: move |p| page.set(p),
             Table {
                 TableHead {
                     TableRow {
-                        TableHeader { "Who" }
+                        if can_decide {
+                            TableHeader { "Who" }
+                        }
                         TableHeader { "Incurred" }
                         TableHeader { class: "text-right", "Total" }
                         TableHeader { "Decided by" }
@@ -391,10 +422,10 @@ fn ExpenseListBody() -> Element {
                     }
                 }
                 if is_loading {
-                    TableLoading { columns: 5, rows: 4 }
+                    TableLoading { columns, rows: 4 }
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
-                        columns: 5,
+                        columns,
                         title: "No claims yet".to_string(),
                         description: "Enter what was spent, with a line per receipt, and submit it for approval.".to_string(),
                         actions: rsx! {
@@ -432,15 +463,26 @@ fn ExpenseListBody() -> Element {
                                         onclick: move |_| {
                                             navigator.push(Route::ExpenseDetail { id: id.to_string() });
                                         },
-                                        TableCell {
-                                            // MAPPS-569: the row navigates, so this cell is the
-                                            // keyboard path.
-                                            onactivate: move |_| {
-                                                navigator.push(Route::ExpenseDetail { id: id.to_string() });
-                                            },
-                                            span { class: "font-medium text-accent", "{who}" }
+                                        if can_decide {
+                                            TableCell {
+                                                // MAPPS-569: the row navigates, so this cell is
+                                                // the keyboard path.
+                                                onactivate: move |_| {
+                                                    navigator.push(Route::ExpenseDetail { id: id.to_string() });
+                                                },
+                                                span { class: "font-medium text-accent", "{who}" }
+                                            }
+                                            TableCell { "{incurred}" }
+                                        } else {
+                                            // The first cell carries the keyboard path, so
+                                            // without the Who column the date takes it.
+                                            TableCell {
+                                                onactivate: move |_| {
+                                                    navigator.push(Route::ExpenseDetail { id: id.to_string() });
+                                                },
+                                                span { class: "font-medium text-accent", "{incurred}" }
+                                            }
                                         }
-                                        TableCell { "{incurred}" }
                                         TableCell { class: "text-right font-medium", "{total}" }
                                         TableCell {
                                             if decided.is_empty() {
@@ -757,18 +799,12 @@ fn fire_transition(
 
 #[component]
 pub fn ExpenseDetailPage(id: String) -> Element {
-    let auth = crate::hooks::use_auth();
-    let has_finance = auth
-        .read()
-        .user
-        .as_ref()
-        .map(|u| u.role.can_manage_billing())
-        .unwrap_or(false);
-
     use_page_title("Expense Claim");
-    if !has_finance {
-        return rsx! { crate::pages::billing::NoFinancePermission { title: "Expense Claim" } };
-    }
+    // No role gate, for the reason the list has none. The server refuses
+    // somebody else's claim with a 403, and the detail read below surfaces
+    // that as the page's own error rather than being pre-empted by a gate
+    // this app cannot evaluate: whose claim it is, is not known until it
+    // has been read.
     rsx! { ExpenseDetailBody { id } }
 }
 
@@ -816,6 +852,7 @@ fn ExpenseDetailBody(id: String) -> Element {
         .map(|c| (c.id, c.name))
         .collect();
     let can_mutate = crate::hooks::use_can_mutate();
+    let can_decide = use_can_decide();
 
     rsx! {
         PageHeader {
@@ -847,7 +884,7 @@ fn ExpenseDetailBody(id: String) -> Element {
                     .unwrap_or_default();
                 let notes = claim.notes.clone().unwrap_or_default();
                 let offered = if can_mutate {
-                    transitions_for(&claim.status)
+                    transitions_for(&claim.status, can_decide)
                 } else {
                     Vec::new()
                 };
@@ -912,7 +949,15 @@ fn ExpenseDetailBody(id: String) -> Element {
                             }
                             if offered.is_empty() {
                                 p { class: "text-sm text-muted",
-                                    "This claim is finished: a reimbursed or rejected claim cannot be moved again. A correction is a new claim, the way an invoice amendment is a new invoice."
+                                    if claim.status == "submitted" || claim.status == "approved" {
+                                        // Not finished, waiting on somebody
+                                        // else (MAPPS-1165): saying "finished"
+                                        // here would be wrong, and offering
+                                        // the buttons would be a 403.
+                                        "This claim is with finance now. They approve it and mark it reimbursed once you have been paid back."
+                                    } else {
+                                        "This claim is finished: a reimbursed or rejected claim cannot be moved again. A correction is a new claim, the way an invoice amendment is a new invoice."
+                                    }
                                 }
                             }
                             ConfirmDialog {
@@ -1024,23 +1069,72 @@ mod tests {
     /// status, and nothing is offered on a terminal one.
     #[test]
     fn the_offered_transitions_match_the_server() {
-        assert_eq!(transitions_for("draft"), vec![("Submit", "submit")]);
+        assert_eq!(transitions_for("draft", true), vec![("Submit", "submit")]);
         assert_eq!(
-            transitions_for("submitted"),
+            transitions_for("submitted", true),
             vec![("Approve", "approve"), ("Reject", "reject")]
         );
         assert_eq!(
-            transitions_for("approved"),
+            transitions_for("approved", true),
             vec![("Mark reimbursed", "reimburse")]
         );
         assert!(
-            transitions_for("reimbursed").is_empty(),
+            transitions_for("reimbursed", true).is_empty(),
             "reimbursed is terminal and immutable"
         );
-        assert!(transitions_for("rejected").is_empty());
+        assert!(transitions_for("rejected", true).is_empty());
         assert!(
-            transitions_for("something_new").is_empty(),
+            transitions_for("something_new", true).is_empty(),
             "a status this build cannot reason about gets no buttons rather than a 409"
+        );
+    }
+
+    /// PMS-1535: submitting is open to anybody, deciding is finance's.
+    ///
+    /// The three transitions a non-finance caller must not see are the
+    /// three the server answers 403 for, so a button offering one would
+    /// fail every time it was pressed.
+    #[test]
+    fn a_member_who_cannot_decide_is_offered_only_submit() {
+        assert_eq!(
+            transitions_for("draft", false),
+            vec![("Submit", "submit")],
+            "their own draft is theirs to send"
+        );
+        assert!(
+            transitions_for("submitted", false).is_empty(),
+            "approving and rejecting are finance's"
+        );
+        assert!(
+            transitions_for("approved", false).is_empty(),
+            "and so is marking it reimbursed"
+        );
+        for status in ["reimbursed", "rejected"] {
+            assert!(transitions_for(status, false).is_empty(), "{status}");
+        }
+    }
+
+    /// The page renders for everybody, which is the point of MAPPS-1165.
+    ///
+    /// Read off the source because the gate was a `return` before the
+    /// body: a reinstated `NoFinancePermission` would leave every test
+    /// above passing while no member could reach the page at all.
+    #[test]
+    fn neither_page_withholds_itself_from_a_member() {
+        let src = include_str!("expenses.rs");
+        let pages = &src[src.find("pub fn ExpenseListPage").expect("the list page")
+            ..src.find("fn ExpenseListBody").expect("the list body")];
+        assert!(
+            !pages.contains("NoFinancePermission"),
+            "the list page renders for any member"
+        );
+        let detail = &src[src
+            .find("pub fn ExpenseDetailPage")
+            .expect("the detail page")
+            ..src.find("fn ExpenseDetailBody").expect("the detail body")];
+        assert!(
+            !detail.contains("NoFinancePermission"),
+            "and so does the detail page"
         );
     }
 
