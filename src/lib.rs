@@ -1046,6 +1046,9 @@ pub enum Route {
     // MAPPS-640: the product catalog (server CRUD from PMS-955).
     #[route("/settings/products")]
     SettingsProducts {},
+    // MAPPS-1157: who the MSP buys from (server CRUD from MAPPS-1100 Phase A).
+    #[route("/settings/vendors")]
+    SettingsVendors {},
     // MAPPS-172: ticket lookup editors (server CRUD from PMS-321).
     #[route("/settings/ticket-statuses")]
     SettingsTicketStatuses {},
@@ -2230,6 +2233,15 @@ fn SettingsProducts() -> Element {
     rsx! {
         div { class: "max-w-7xl mx-auto",
             products::ProductsSettingsPage {}
+        }
+    }
+}
+
+#[component]
+fn SettingsVendors() -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            vendors::VendorsSettingsPage {}
         }
     }
 }

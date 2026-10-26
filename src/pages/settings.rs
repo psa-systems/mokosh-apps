@@ -644,6 +644,18 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         section: Some(SettingsSection::ProductsAndInvoicing),
         visibility: SurfaceVisibility::StaffAdmin,
     },
+    // MAPPS-1157: who the MSP buys from. Finance-gated on its page like
+    // Products, and in the Billing group because a vendor is what a bill
+    // names.
+    SettingsSurface {
+        route: Route::SettingsVendors {},
+        title: "Vendors",
+        description: "Who you buy from, named by the bills you owe.",
+        group: SettingsGroupKey::Billing,
+        advanced: true,
+        section: Some(SettingsSection::ProductsAndInvoicing),
+        visibility: SurfaceVisibility::StaffAdmin,
+    },
     SettingsSurface {
         route: Route::SettingsTicketStatuses {},
         title: "Ticket Statuses",
