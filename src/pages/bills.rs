@@ -41,6 +41,7 @@ use crate::components::{
     TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::utils::money::format_money_minor;
+use crate::utils::url::urlencoding_minimal;
 use crate::utils::Paginated;
 use crate::Route;
 
@@ -133,10 +134,24 @@ pub(crate) struct RemoteBillPayment {
     pub notes: Option<String>,
 }
 
-/// The list path for a page. `GET /bills` takes pagination and nothing
-/// else, so there is no filter row offering one.
-pub(crate) fn list_path(page: usize) -> String {
-    format!("/bills?page={page}&per_page={PER_PAGE}")
+/// The list path for a page, a status and a search (MAPPS-1167, server
+/// PMS-1539).
+///
+/// Each filter is sent only when it is set: the server reads `status` and
+/// `q` and ignores neither, so a `status=` or `q=` left on every URL would
+/// be a cache key per keystroke for no gain. Blank collapses to absent on
+/// this side too, which is what the server does with whitespace.
+pub(crate) fn list_path(page: usize, status: &str, q: &str) -> String {
+    let mut path = format!("/bills?page={page}&per_page={PER_PAGE}");
+    let status = status.trim();
+    if !status.is_empty() {
+        path.push_str(&format!("&status={status}"));
+    }
+    let q = q.trim();
+    if !q.is_empty() {
+        path.push_str(&format!("&q={}", urlencoding_minimal(q)));
+    }
+    path
 }
 
 /// What a person typed as money, in minor units.
@@ -201,6 +216,19 @@ fn scaled_from_str(raw: &str, places: u32) -> Option<i64> {
         .and_then(|w| w.checked_add(frac_v))
         .map(|v| v * sign)
 }
+
+/// The four statuses the server's CHECK allows, with the label the picker
+/// shows (MAPPS-1167).
+///
+/// One list rather than a second copy inside the `Select`: a test asserts
+/// `status_badge` gives each of these its own label, so the filter and the
+/// column cannot drift apart.
+pub(crate) const BILL_STATUSES: &[(&str, &str)] = &[
+    ("draft", "Draft"),
+    ("approved", "Approved"),
+    ("paid", "Paid"),
+    ("void", "Void"),
+];
 
 /// The badge for one of the four statuses the server's CHECK allows.
 ///
@@ -273,12 +301,23 @@ pub fn BillListPage() -> Element {
 fn BillListBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut creating = use_signal(|| false);
+    let mut status = use_signal(String::new);
+    let mut search = use_signal(String::new);
 
     let current_page = (*page.read()).max(1);
+    let status_text = status.read().clone();
+    let search_text = search.read().clone();
+    // MAPPS-931: debounce the search so a burst of keystrokes fires one
+    // refetch per pause rather than one per keystroke.
+    let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let mut resource = use_resource(move || {
         // Read inside the closure so the resource subscribes to the page
-        // signal itself (MAPPS-847).
-        let path = list_path((*page.read()).max(1));
+        // and the filters itself (MAPPS-847).
+        let path = list_path(
+            (*page.read()).max(1),
+            &status.read(),
+            &search_debounced.read(),
+        );
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let _reachable = crate::hooks::use_server_reachable();
@@ -323,6 +362,17 @@ fn BillListBody() -> Element {
         };
     }
 
+    // An empty list under a filter is "nothing matches", not "nothing
+    // here": the second offers a New Bill button to somebody whose bills
+    // are one filter away (the products page makes the same distinction).
+    let filtered = !status_text.trim().is_empty() || !search_text.trim().is_empty();
+    let mut status_options = vec![SelectOption::new("", "All bills")];
+    status_options.extend(
+        BILL_STATUSES
+            .iter()
+            .map(|(value, label)| SelectOption::new(value.to_string(), label.to_string())),
+    );
+
     rsx! {
         PageHeader {
             title: "Bills",
@@ -337,6 +387,32 @@ fn BillListBody() -> Element {
                     "New Bill"
                 }
             },
+        }
+
+        Card { class: "mb-4",
+            div { class: "grid grid-cols-1 gap-4 sm:grid-cols-3",
+                crate::components::Input {
+                    name: "bill_search",
+                    label: "Search",
+                    r#type: "search",
+                    placeholder: "Vendor or their bill number",
+                    value: search_text.clone(),
+                    oninput: move |e: FormEvent| {
+                        search.set(e.value());
+                        page.set(1);
+                    },
+                }
+                Select {
+                    name: "bill_status",
+                    label: "Status",
+                    options: status_options,
+                    value: status_text.clone(),
+                    onchange: move |e: FormEvent| {
+                        status.set(e.value());
+                        page.set(1);
+                    },
+                }
+            }
         }
 
         if fetch_failed {
@@ -363,6 +439,11 @@ fn BillListBody() -> Element {
                 }
                 if is_loading {
                     TableLoading { columns: 6, rows: 4 }
+                } else if rows.is_empty() && !fetch_failed && filtered {
+                    TableEmpty {
+                        columns: 6,
+                        message: "No bills match this filter.".to_string(),
+                    }
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 6,
@@ -1431,9 +1512,69 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
 mod tests {
     use super::*;
 
+    /// Each filter reaches the server, and only when it is set.
     #[test]
-    fn the_list_path_asks_only_for_a_page() {
-        assert_eq!(list_path(1), "/bills?page=1&per_page=25");
+    fn the_list_path_carries_only_the_filters_that_are_set() {
+        assert_eq!(list_path(1, "", ""), "/bills?page=1&per_page=25");
+        assert_eq!(
+            list_path(2, "paid", ""),
+            "/bills?page=2&per_page=25&status=paid"
+        );
+        assert_eq!(
+            list_path(1, "", " rack co "),
+            "/bills?page=1&per_page=25&q=rack%20co",
+            "trimmed and encoded"
+        );
+        assert_eq!(
+            list_path(3, "approved", "rack"),
+            "/bills?page=3&per_page=25&status=approved&q=rack",
+            "both apply together, as the server ANDs them"
+        );
+        assert_eq!(
+            list_path(1, "   ", "   "),
+            "/bills?page=1&per_page=25",
+            "whitespace is not a filter, which is what the server does with it"
+        );
+    }
+
+    /// The picker offers exactly the statuses the column can render.
+    ///
+    /// A value in the picker that `status_badge` does not know would show
+    /// the raw string in the column it filtered to, and one missing from
+    /// the picker is a status an operator cannot select.
+    #[test]
+    fn every_filterable_status_has_its_own_badge() {
+        for (value, label) in BILL_STATUSES {
+            let (rendered, _) = status_badge(value);
+            assert_eq!(
+                &rendered, label,
+                "{value} renders as its own label, not as itself"
+            );
+        }
+        assert_eq!(BILL_STATUSES.len(), 4, "the four the CHECK allows");
+    }
+
+    /// Changing a filter goes back to page one.
+    ///
+    /// Read off the source because the mistake is invisible otherwise: a
+    /// filter applied on page three answers an empty page, and the reader
+    /// concludes nothing matches.
+    #[test]
+    fn changing_a_filter_resets_the_page() {
+        let src = include_str!("bills.rs");
+        let body = &src[src.find("fn BillListBody").expect("the body")
+            ..src.find("fn NewBillModal").expect("the modal")];
+        for name in ["bill_search", "bill_status"] {
+            let at = body
+                .find(name)
+                .unwrap_or_else(|| panic!("{name} is rendered"));
+            let handler = &body[at..];
+            let end = handler.find("\n                }").unwrap_or(handler.len());
+            assert!(
+                handler[..end].contains("page.set(1)"),
+                "{name} resets the page"
+            );
+        }
     }
 
     /// The detail response is flattened, and this type has to read it
