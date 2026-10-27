@@ -23,6 +23,13 @@
 //! mapping at all. Rendering an empty products table for Xero would be an
 //! invitation to fill in something that is never read.
 //!
+//! # The people half (MAPPS-1168, server PMS-1541)
+//!
+//! Delegating a reimbursement names the person who was paid back. Xero
+//! REFUSES a bank transaction with no contact, so a Xero tenant has to map
+//! everybody who claims; QuickBooks takes it or leaves it, which the copy
+//! says rather than implying both are required.
+//!
 //! # The bill half (MAPPS-1156, server MAPPS-1155)
 //!
 //! Delegating BILLS needs the same thing in the other direction: a bill
@@ -102,6 +109,20 @@ struct VendorMappings {
 struct ExpenseAccountMappings {
     #[serde(default)]
     mappings: Vec<ExpenseAccountMapping>,
+}
+
+/// One row of `GET /invoice-issuer-mappings/people` (PMS-1541).
+#[derive(Clone, PartialEq, Deserialize)]
+struct UserMapping {
+    user_id: Uuid,
+    #[serde(default)]
+    external_contact_id: String,
+}
+
+#[derive(Deserialize)]
+struct UserMappings {
+    #[serde(default)]
+    mappings: Vec<UserMapping>,
 }
 
 #[derive(Clone, PartialEq, Deserialize)]
@@ -319,15 +340,48 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
         ))
     });
 
+    // MAPPS-1168: the people a reimbursement can name. Listed by MEMBER
+    // and not by mapping, like every other table here: the rows that
+    // matter are the ones with nothing beside them, because on Xero those
+    // are the people whose claims cannot be paid back through it.
+    let people = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let names = crate::pages::expenses::member_names().await;
+        let mapped =
+            crate::hooks::fetch::api::get_authed::<UserMappings>("/invoice-issuer-mappings/people")
+                .await
+                .inspect_err(|e| tracing::error!("people mapping load failed: {e}"))
+                .ok()?;
+        let mapped: HashMap<Uuid, String> = mapped
+            .mappings
+            .into_iter()
+            .map(|m| (m.user_id, m.external_contact_id))
+            .collect();
+        let mut named: Vec<(Uuid, String)> = names
+            .into_iter()
+            .map(|(id, name)| {
+                let name = if name.trim().is_empty() {
+                    "A member with no name set".to_string()
+                } else {
+                    name
+                };
+                (id, name)
+            })
+            .collect();
+        named.sort_by_key(|a| a.1.to_lowercase());
+        Some(rows_from(&named, &mapped))
+    });
+
     let company_rows = companies.read_unchecked().clone().flatten();
     let product_rows = products.read_unchecked().clone().flatten();
     let vendor_rows = vendors.read_unchecked().clone().flatten();
+    let people_rows = people.read_unchecked().clone().flatten();
     let expense_account_rows = expense_accounts.read_unchecked().clone().flatten();
 
     rsx! {
         PageHeader {
             title: "{issuer.display} mappings",
-            subtitle: "Every client you invoice through {issuer.display}, and every vendor you bill through it, has to name what it is called in {issuer.display}. A document for an unmapped record is refused.",
+            subtitle: "Every client, vendor and person this flows through has to name what they are called in {issuer.display}. A document for an unmapped record is refused.",
         }
         if !error().is_empty() {
             ErrorBanner { class: "mb-4", "{error}" }
@@ -367,6 +421,30 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
                         help: format!("The vendor's id in {}. A bill for an unmapped vendor is refused.", issuer.display),
                         path_prefix: "vendors".to_string(),
                         body_field: "external_vendor_id".to_string(),
+                        rows,
+                        can_mutate,
+                        on_error: move |e: String| error.set(e),
+                        on_saved: move |name: String| {
+                            notice.set(format!("{name} is mapped."));
+                        },
+                    }
+                },
+            }
+            match people_rows {
+                None => rsx! { crate::components::DetailSkeleton {} },
+                Some(rows) => rsx! {
+                    MappingTable {
+                        issuer,
+                        heading: "People".to_string(),
+                        empty: "This organization has no members yet.".to_string(),
+                        label: format!("{} contact", issuer.display),
+                        help: if issuer.provider == XERO.provider {
+                            format!("{} needs a contact on every reimbursement, so a claim from an unmapped person is refused.", issuer.display)
+                        } else {
+                            format!("Optional: {} records the reimbursement either way, and a mapped person is named on it.", issuer.display)
+                        },
+                        path_prefix: "people".to_string(),
+                        body_field: "external_contact_id".to_string(),
                         rows,
                         can_mutate,
                         on_error: move |e: String| error.set(e),
@@ -605,6 +683,36 @@ mod tests {
             },
         ];
         assert_eq!(mapped_count(&rows), 1);
+    }
+
+    /// MAPPS-1168: people are mapped on both providers, and the help says
+    /// which one refuses a reimbursement without it.
+    ///
+    /// Xero requires a contact on every bank transaction and QuickBooks
+    /// does not, so one copy for both would either overstate the
+    /// requirement or hide it.
+    #[test]
+    fn both_providers_map_people_and_say_who_needs_it() {
+        let src = include_str!("settings_invoice_issuer_mappings.rs");
+        let body = &src[src.find("fn IssuerMappingsBody").expect("the body")
+            ..src.find("fn MappingTable").expect("the table")];
+        let people_at = body.find(r#""People""#).expect("the people section");
+        let first_guard = body
+            .find("if issuer.provider == QUICKBOOKS.provider")
+            .expect("the guard");
+        assert!(
+            people_at < first_guard,
+            "people render before any provider guard, so both pages show them"
+        );
+        let help = &body[people_at..];
+        assert!(
+            help.contains("needs a contact on every reimbursement"),
+            "the Xero copy states the requirement"
+        );
+        assert!(
+            help.contains("Optional:"),
+            "and the QuickBooks copy does not"
+        );
     }
 
     /// MAPPS-1156: the vendors table is not behind the QuickBooks guard.
