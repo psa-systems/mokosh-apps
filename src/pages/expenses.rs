@@ -49,6 +49,7 @@ use crate::components::{
 };
 use crate::pages::bills::minor_from_str;
 use crate::utils::money::format_money_minor;
+use crate::utils::url::urlencoding_minimal;
 use crate::utils::Paginated;
 use crate::Route;
 
@@ -142,11 +143,38 @@ pub(crate) struct MembersEnvelope {
     rows: Vec<MemberName>,
 }
 
-/// The list path for a page. `GET /expenses` takes pagination and nothing
-/// else, so there is no filter row offering one.
-pub(crate) fn list_path(page: usize) -> String {
-    format!("/expenses?page={page}&per_page={PER_PAGE}")
+/// The list path for a page, a status and a search (MAPPS-1167, server
+/// PMS-1539).
+///
+/// The server scopes a non-finance caller to their own claims before any
+/// filter applies (PMS-1535), so these narrow what that caller can see
+/// and never widen it.
+pub(crate) fn list_path(page: usize, status: &str, q: &str) -> String {
+    let mut path = format!("/expenses?page={page}&per_page={PER_PAGE}");
+    let status = status.trim();
+    if !status.is_empty() {
+        path.push_str(&format!("&status={status}"));
+    }
+    let q = q.trim();
+    if !q.is_empty() {
+        path.push_str(&format!("&q={}", urlencoding_minimal(q)));
+    }
+    path
 }
+
+/// The five statuses a claim moves through, with the label the picker
+/// shows (MAPPS-1167).
+///
+/// One list rather than a second copy inside the `Select`: a test asserts
+/// `status_badge` gives each of these its own label, so the filter and the
+/// column cannot drift apart.
+pub(crate) const EXPENSE_STATUSES: &[(&str, &str)] = &[
+    ("draft", "Draft"),
+    ("submitted", "Submitted"),
+    ("approved", "Approved"),
+    ("reimbursed", "Reimbursed"),
+    ("rejected", "Rejected"),
+];
 
 /// The badge for one of the five statuses the server's CHECK allows.
 ///
@@ -341,12 +369,22 @@ pub fn ExpenseListPage() -> Element {
 fn ExpenseListBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut creating = use_signal(|| false);
+    let mut status = use_signal(String::new);
+    let mut search = use_signal(String::new);
 
     let current_page = (*page.read()).max(1);
+    let status_text = status.read().clone();
+    let search_text = search.read().clone();
+    // MAPPS-931: one refetch per pause in typing, not one per keystroke.
+    let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let mut resource = use_resource(move || {
         // Read inside the closure so the resource subscribes to the page
-        // signal itself (MAPPS-847).
-        let path = list_path((*page.read()).max(1));
+        // and the filters itself (MAPPS-847).
+        let path = list_path(
+            (*page.read()).max(1),
+            &status.read(),
+            &search_debounced.read(),
+        );
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let _reachable = crate::hooks::use_server_reachable();
@@ -385,6 +423,17 @@ fn ExpenseListBody() -> Element {
     // and the copy would be about people they cannot see.
     let columns = if can_decide { 5 } else { 4 };
 
+    // An empty list under a filter is "nothing matches", not "nothing
+    // here": the second offers a New Claim button to somebody whose claims
+    // are one filter away.
+    let filtered = !status_text.trim().is_empty() || !search_text.trim().is_empty();
+    let mut status_options = vec![SelectOption::new("", "All claims")];
+    status_options.extend(
+        EXPENSE_STATUSES
+            .iter()
+            .map(|(value, label)| SelectOption::new(value.to_string(), label.to_string())),
+    );
+
     rsx! {
         PageHeader {
             title: "Expense Claims",
@@ -406,6 +455,32 @@ fn ExpenseListBody() -> Element {
                 "A claim is submitted by the person who spent the money, approved or rejected by somebody else, and marked reimbursed once it has been paid back. A claim you create here is yours."
             } else {
                 "These are your own claims. Enter what you spent and submit it; somebody in finance approves it and marks it reimbursed once you have been paid back."
+            }
+        }
+
+        Card { class: "mb-4",
+            div { class: "grid grid-cols-1 gap-4 sm:grid-cols-3",
+                crate::components::Input {
+                    name: "expense_search",
+                    label: "Search",
+                    r#type: "search",
+                    placeholder: "What it was for",
+                    value: search_text.clone(),
+                    oninput: move |e: FormEvent| {
+                        search.set(e.value());
+                        page.set(1);
+                    },
+                }
+                Select {
+                    name: "expense_status",
+                    label: "Status",
+                    options: status_options,
+                    value: status_text.clone(),
+                    onchange: move |e: FormEvent| {
+                        status.set(e.value());
+                        page.set(1);
+                    },
+                }
             }
         }
 
@@ -434,6 +509,11 @@ fn ExpenseListBody() -> Element {
                 }
                 if is_loading {
                     TableLoading { columns, rows: 4 }
+                } else if rows.is_empty() && !fetch_failed && filtered {
+                    TableEmpty {
+                        columns,
+                        message: "No claims match this filter.".to_string(),
+                    }
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns,
@@ -1073,8 +1153,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_list_path_asks_only_for_a_page() {
-        assert_eq!(list_path(1), "/expenses?page=1&per_page=25");
+    fn the_list_path_carries_only_the_filters_that_are_set() {
+        assert_eq!(list_path(1, "", ""), "/expenses?page=1&per_page=25");
+        assert_eq!(
+            list_path(2, "submitted", ""),
+            "/expenses?page=2&per_page=25&status=submitted"
+        );
+        assert_eq!(
+            list_path(1, "", " taxi "),
+            "/expenses?page=1&per_page=25&q=taxi"
+        );
+        assert_eq!(
+            list_path(1, "reimbursed", "taxi"),
+            "/expenses?page=1&per_page=25&status=reimbursed&q=taxi"
+        );
+        assert_eq!(list_path(1, "  ", "  "), "/expenses?page=1&per_page=25");
+    }
+
+    /// The picker offers exactly the statuses the column can render.
+    #[test]
+    fn every_filterable_status_has_its_own_badge() {
+        for (value, label) in EXPENSE_STATUSES {
+            let (rendered, _) = status_badge(value);
+            assert_eq!(&rendered, label, "{value} renders as its own label");
+        }
+        assert_eq!(EXPENSE_STATUSES.len(), 5, "the five a claim moves through");
+    }
+
+    /// Changing a filter goes back to page one.
+    #[test]
+    fn changing_a_filter_resets_the_page() {
+        let src = include_str!("expenses.rs");
+        let body = &src[src.find("fn ExpenseListBody").expect("the body")
+            ..src.find("fn NewExpenseModal").expect("the modal")];
+        for name in ["expense_search", "expense_status"] {
+            let at = body
+                .find(name)
+                .unwrap_or_else(|| panic!("{name} is rendered"));
+            let handler = &body[at..];
+            let end = handler.find("\n                }").unwrap_or(handler.len());
+            assert!(
+                handler[..end].contains("page.set(1)"),
+                "{name} resets the page"
+            );
+        }
     }
 
     /// The five statuses the server's CHECK allows each get a badge, and
