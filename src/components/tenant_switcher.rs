@@ -354,6 +354,7 @@ pub fn TenantSwitcher() -> Element {
             {
                 crate::hooks::fetch::api::get_authed::<Vec<PendingInvite>>("/my-grants/invitations")
                     .await
+                    .inspect_err(|e| tracing::warn!("pending-invites load failed: {e}"))
                     .unwrap_or_default()
             }
             #[cfg(not(feature = "app"))]
