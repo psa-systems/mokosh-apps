@@ -1532,7 +1532,7 @@ fn DashboardTv() -> Element {
 #[component]
 fn AcceptGrant(token: String) -> Element {
     rsx! {
-        div { class: "max-w-3xl mx-auto",
+        div { class: "max-w-7xl mx-auto",
             accept_grant::AcceptGrantPage { token }
         }
     }
