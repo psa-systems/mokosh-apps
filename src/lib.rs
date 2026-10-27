@@ -739,6 +739,12 @@ pub enum Route {
       #[route("/dashboards/:id/view")]
       SavedDashboardView { id: String },
 
+      // MAPPS-1084: by-token grant-invitation landing page. The owner mints
+      // an invite, bunyip emails this link to the grantee; after sign-in
+      // they land here and see Accept / Decline.
+      #[route("/accept-grant?:token")]
+      AcceptGrant { token: String },
+
     // Tickets
     #[route("/tickets")]
     TicketList {},
@@ -1521,6 +1527,15 @@ fn SavedDashboardView(id: String) -> Element {
 #[component]
 fn DashboardTv() -> Element {
     rsx! { dashboard::DashboardTvPage {} }
+}
+
+#[component]
+fn AcceptGrant(token: String) -> Element {
+    rsx! {
+        div { class: "max-w-7xl mx-auto",
+            accept_grant::AcceptGrantPage { token }
+        }
+    }
 }
 
 #[component]
