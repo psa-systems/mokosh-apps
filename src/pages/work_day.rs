@@ -837,9 +837,11 @@ pub fn WorkDayStrip() -> Element {
                                             }
                                         }
                                     }
+                                    // Match the Medium cadence of the adjacent Start/End-break buttons
+                                    // instead of carrying the solo `Large` the clock-in state uses when no
+                                    // break controls sit beside it (PMS-1349).
                                     Button {
                                         variant: ButtonVariant::Danger,
-                                        size: ButtonSize::Large,
                                         loading: *busy.read(),
                                         disabled: !can_mutate,
                                         title: disabled_title.clone(),
