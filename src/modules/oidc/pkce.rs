@@ -6,7 +6,11 @@
 //! allowed range.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use rand::RngCore;
+// rand 0.10 moved `fill_bytes` from `RngCore` onto `Rng`, and dropped
+// `RngCore` from the crate root re-exports. Importing `Rng` here keeps
+// the two `rand::rng().fill_bytes(...)` call sites below working with
+// no change to their shape.
+use rand::Rng;
 use sha2::{Digest, Sha256};
 
 /// 32 random bytes, base64url-encoded with no padding.
