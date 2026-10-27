@@ -133,19 +133,18 @@ console_error_panic_hook = "0.1.7"
 wasm-bindgen-futures = "0.4.79"
 
 # Not called anywhere in `src/`: this entry exists to turn the wasm backend
-# ON for the getrandom the tree actually compiles, which is 0.3, pulled by
-# `rand_core 0.9`. On `wasm32-unknown-unknown` getrandom refuses to build
-# without it ("the wasm32-unknown-unknown targets are not supported by
-# default"), and a feature is enabled per MAJOR version, so the version here
-# has to be the version the tree uses rather than the newest one published.
+# ON for the getrandom version the tree actually compiles. The version pin
+# has to match what the tree uses because a feature only applies to its own
+# major: an unused 0.3 entry here would leave the 0.4 copy that `rand_core
+# 0.10` pulls without a backend, and `wasm32-unknown-unknown` builds fail
+# with "the wasm32-unknown-unknown targets are not supported by default".
 #
-# Bumping it to 0.4 takes the feature off 0.3 and puts it on a copy nothing
-# needs: the tree also carries getrandom 0.2 and 0.4, and both already have
-# their backend enabled by other dependents. That bump was proposed and
-# failed the wasm build this way; `renovate.json` holds this below 0.4 so it
-# is not proposed again. It moves when `rand_core 0.9` leaves the tree.
+# MAPPS-1162 bumped `rand` from 0.9 to 0.10, which replaces `rand_core 0.9`
+# (getrandom 0.3) with `rand_core 0.10` (getrandom 0.4) and drops 0.3 from
+# the tree. The version here moves to 0.4 to follow it; `renovate.json`'s
+# upper bound follows.
 [target.'cfg(target_arch = "wasm32")'.dependencies.getrandom]
-version = "0.3"
+version = "0.4"
 features = ["wasm_js"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies.gloo-timers]
