@@ -56,7 +56,7 @@ tracing = "0.1.44"
 futures-util = "0.3.34"
 sha2 = "0.10"
 base64 = "0.23.1"
-rand = "0.9"
+rand = "0.10.3"
 pulldown-cmark = "0.12"
 ammonia = "4.2.4"
 # MAPPS-383: shared wire-format DTOs, the single source of truth for types
