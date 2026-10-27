@@ -39,6 +39,17 @@ fn main() {
     #[cfg(target_arch = "wasm32")]
     console_error_panic_hook::set_once();
 
+    // reqwest 0.13 ships without a default rustls crypto provider when
+    // the `rustls-no-provider` feature is in use (see Cargo.toml). Pick
+    // the pure-Rust `ring` provider explicitly so the first TLS handshake
+    // does not panic with "no process-level CryptoProvider available".
+    // Ignores a duplicate install so a reload or a native/webview that
+    // already installed one is tolerated.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
     // Snapshot ?code=...&state=... BEFORE the Dioxus Router mounts.
     // Dioxus 0.7's router can `history.replaceState` the URL to match
     // its declared route shape (no query params in our `/auth/callback`
