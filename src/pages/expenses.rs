@@ -75,6 +75,13 @@ pub struct RemoteExpense {
     /// Who decided it, once somebody has.
     #[serde(default)]
     pub approver_id: Option<Uuid>,
+    /// Where the reimbursement was recorded, when the tenant delegated it
+    /// (MAPPS-1168, server PMS-1541). Both NULL until a claim is paid back
+    /// through a provider, and on every claim where it was not.
+    #[serde(default)]
+    pub external_provider: Option<String>,
+    #[serde(default)]
+    pub external_expense_id: Option<String>,
     #[serde(default)]
     pub notes: Option<String>,
 }
@@ -117,7 +124,7 @@ struct NamedRow {
 /// submitter, which is what the catch-all is for.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum MemberName {
+pub(crate) enum MemberName {
     User {
         user_id: Uuid,
         #[serde(default)]
@@ -130,7 +137,7 @@ enum MemberName {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct MembersEnvelope {
+pub(crate) struct MembersEnvelope {
     #[serde(default)]
     rows: Vec<MemberName>,
 }
@@ -267,11 +274,15 @@ const MEMBERS_MAX_PAGES: usize = 20;
 
 /// Read `/members` and keep an id-to-name map.
 ///
+/// `pub(crate)` because the Mappings page needs the same map to list
+/// people beside the contact they are in the provider (MAPPS-1168), and
+/// the paging below is the part worth not writing twice.
+///
 /// A column of uuids answers nothing, and both `user_id` and `approver_id`
 /// are uuids. `get_all_authed` cannot do this one: `/members` answers
 /// `{rows, total, ...}` where that helper reads `{data, meta}`, so the
 /// paging is here in the same shape, stopping on a short page.
-async fn member_names() -> HashMap<Uuid, String> {
+pub(crate) async fn member_names() -> HashMap<Uuid, String> {
     let mut names = HashMap::new();
     for page in 1..=MEMBERS_MAX_PAGES {
         let path = format!("/members?page={page}&per_page={MEMBERS_PER_PAGE}");
@@ -914,6 +925,19 @@ fn ExpenseDetailBody(id: String) -> Element {
                                     dd { class: "font-medium text-content", "{format_money_minor(claim.total_minor)}" }
                                 }
                             }
+                            if let (Some(provider), Some(external)) = (
+                                claim.external_provider.clone(),
+                                claim.external_expense_id.clone(),
+                            ) {
+                                // MAPPS-1168: what a reconciliation reads. The
+                                // pair is written when the claim is paid back
+                                // through the provider and never before, so its
+                                // presence is also how somebody can tell this
+                                // claim went through one.
+                                crate::components::StatusBanner { tone: crate::components::BannerTone::Info,
+                                    "This reimbursement is recorded in {provider} as {external}. It was written there when the claim was marked reimbursed."
+                                }
+                            }
                             if !notes.is_empty() {
                                 p { class: "text-sm text-muted", "{notes}" }
                             }
@@ -1240,8 +1264,8 @@ mod tests {
             "approved_at": null,
             "reimbursed_at": null,
             "notes": null,
-            "external_provider": null,
-            "external_expense_id": null,
+            "external_provider": "xero",
+            "external_expense_id": "7c1f4e2a-9b3d-4f5e-8a6b-2d4f6a8c0e22",
             "created_at": "2026-10-23T00:00:00Z",
             "updated_at": "2026-10-23T00:00:00Z",
             "lines": [{
@@ -1262,6 +1286,15 @@ mod tests {
         assert_eq!(loaded.expense.total_minor, 3250);
         assert_eq!(loaded.lines.len(), 1);
         assert_eq!(loaded.lines[0].amount_minor, 3250);
+        assert_eq!(
+            loaded.expense.external_provider.as_deref(),
+            Some("xero"),
+            "and the delegated pair survives the flatten (MAPPS-1168)"
+        );
+        assert_eq!(
+            loaded.expense.external_expense_id.as_deref(),
+            Some("7c1f4e2a-9b3d-4f5e-8a6b-2d4f6a8c0e22")
+        );
     }
 
     /// A member row is read by its `kind` discriminant, and a row that is

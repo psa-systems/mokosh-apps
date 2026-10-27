@@ -59,6 +59,11 @@ pub struct Issuer {
     pub organisation: &'static str,
     /// What delegating invoicing to this provider means, in its own terms.
     pub description: &'static str,
+    /// What this provider calls the id of the account a reimbursement is
+    /// paid from (MAPPS-1168). In the table because it names the provider,
+    /// and a literal in the shared body is what `neither_issuer_names_the
+    /// _other` exists to catch.
+    pub payment_account_hint: &'static str,
     pub testid: &'static str,
 }
 
@@ -67,6 +72,7 @@ pub const XERO: Issuer = Issuer {
     display: "Xero",
     organisation: "organisation",
     description: "Xero issues the invoice your customer receives: it numbers it, it sends it, and it records the payment. Mokosh keeps a copy for history and reconciliation and stops being the system of record for the document.",
+    payment_account_hint: "Xero bank account id",
     testid: "xero",
 };
 
@@ -75,6 +81,7 @@ pub const QUICKBOOKS: Issuer = Issuer {
     display: "QuickBooks",
     organisation: "company",
     description: "QuickBooks issues the invoice your customer receives: it numbers it, it sends it, and it records the payment. Mokosh keeps a copy for history and reconciliation and stops being the system of record for the document.",
+    payment_account_hint: "QuickBooks bank or credit-card account id",
     testid: "quickbooks",
 };
 
@@ -101,6 +108,11 @@ pub struct Overview {
     /// and only the bills toggle sets (MAPPS-1156).
     #[serde(default)]
     pub bills_delegated: bool,
+    /// The provider account a reimbursement is paid from (MAPPS-1168,
+    /// server PMS-1541). Absent until an admin sets it, and a delegated
+    /// claim cannot be reimbursed through the provider until they do.
+    #[serde(default)]
+    pub payment_account_id: Option<String>,
     /// Whether the DEPLOYMENT has `delegated_bills` switched on. Its own
     /// switch, so the invoice one answers a different question.
     ///
@@ -136,6 +148,13 @@ struct AuthorizeResponse {
 #[derive(Serialize)]
 struct NoBody {}
 
+/// `PUT /integrations/invoice-issuer/{provider}/payment-account`
+/// (MAPPS-1168, server PMS-1541). `null` clears it.
+#[derive(Serialize)]
+struct SetPaymentAccountRequest {
+    account_id: Option<String>,
+}
+
 /// `PUT /integrations/invoice-issuer/{provider}/bills` (MAPPS-1155).
 #[derive(Serialize)]
 struct SetBillsRequest {
@@ -155,6 +174,9 @@ pub enum CardState {
         /// on a deployment that has not switched it on still has every
         /// invoice issued by Mokosh (MAPPS-1154).
         delegation_enabled: bool,
+        /// MAPPS-1168: the account a reimbursement is paid from, so the
+        /// field can show what is set rather than only write to it.
+        payment_account_id: Option<String>,
         /// MAPPS-1156: the tenant's bill decision, and the deployment's.
         /// Both on the state rather than read again in the body, so the
         /// branch that renders the toggle is the only place either is
@@ -183,6 +205,7 @@ pub fn card_state_of(overview: &Overview) -> CardState {
             organisation_id: overview.organisation_id.clone(),
             delegated: overview.delegated,
             delegation_enabled: overview.delegation_enabled,
+            payment_account_id: overview.payment_account_id.clone(),
             bills_delegated: overview.bills_delegated,
             bills_delegation_enabled: overview.bills_delegation_enabled,
         },
@@ -368,6 +391,42 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
         });
     };
 
+    // MAPPS-1168: the account a reimbursement is paid from. An empty field
+    // is sent as `null` rather than skipped, because clearing it is how an
+    // admin stops reimbursing through the provider without disconnecting.
+    let mut save_payment_account = move |typed: String| {
+        busy.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let trimmed = typed.trim().to_string();
+                let body = SetPaymentAccountRequest {
+                    account_id: if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed)
+                    },
+                };
+                if let Err(e) = crate::hooks::fetch::api::put_authed_json_no_content(
+                    &format!(
+                        "/integrations/invoice-issuer/{}/payment-account",
+                        issuer.provider
+                    ),
+                    &body,
+                )
+                .await
+                {
+                    error.set(format!("Could not save the account: {e}"));
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            let _ = typed;
+            busy.set(false);
+            overview_handle.restart();
+        });
+    };
+
     let route = if issuer.provider == XERO.provider {
         Route::SettingsXero {}
     } else {
@@ -416,7 +475,7 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
                                         }
                                     }
                                 },
-                                CardState::Connected { organisation_id, delegated, delegation_enabled, bills_delegated, bills_delegation_enabled } => rsx! {
+                                CardState::Connected { organisation_id, delegated, delegation_enabled, payment_account_id, bills_delegated, bills_delegation_enabled } => rsx! {
                                     if let Some(id) = organisation_id.clone() {
                                         p { class: "text-sm text-content",
                                             "Connected to the {issuer.display} {issuer.organisation} "
@@ -480,6 +539,21 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
                                                 if bills_delegated { "Stop sending bills" } else { "Send bills to {issuer.display} too" }
                                             }
                                         }
+                                        // MAPPS-1168: a reimbursement is money
+                                        // leaving an account and the provider
+                                        // refuses one without being told which.
+                                        // Only once bills are delegated, because
+                                        // that is the only arrangement that reads
+                                        // it.
+                                        if bills_delegated {
+                                            PaymentAccountField {
+                                                issuer,
+                                                current: payment_account_id.clone(),
+                                                can_mutate,
+                                                busy: busy(),
+                                                onsave: move |typed: String| save_payment_account(typed),
+                                            }
+                                        }
                                     }
                                     div { class: "pt-2",
                                         Button {
@@ -530,6 +604,51 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// The reimburse-from account, as one field with its own save
+/// (MAPPS-1168).
+///
+/// Its own component because it holds a draft: the card re-reads the
+/// overview after every save, and a field bound straight to that would
+/// throw away what somebody was typing when an unrelated refresh landed.
+#[component]
+fn PaymentAccountField(
+    issuer: Issuer,
+    current: Option<String>,
+    can_mutate: bool,
+    busy: bool,
+    onsave: EventHandler<String>,
+) -> Element {
+    let mut draft = use_signal(|| current.clone().unwrap_or_default());
+    let unset = current.as_deref().unwrap_or("").trim().is_empty();
+    rsx! {
+        div { class: "pt-3 space-y-2",
+            crate::components::Input {
+                name: "payment-account-{issuer.testid}",
+                label: "Reimburse from",
+                placeholder: issuer.payment_account_hint,
+                help: "The account an expense reimbursement leaves. Clear it to stop reimbursing through {issuer.display}.",
+                disabled: !can_mutate || busy,
+                value: draft(),
+                oninput: move |e: FormEvent| draft.set(e.value()),
+            }
+            if unset {
+                p { class: "text-sm text-muted",
+                    "Not set, so reimbursing a claim through {issuer.display} is refused until it is."
+                }
+            }
+            Button {
+                variant: ButtonVariant::Secondary,
+                size: crate::components::ButtonSize::Small,
+                loading: busy,
+                disabled: !can_mutate,
+                onclick: move |_| onsave.call(draft()),
+                data_testid: "save-payment-account-{issuer.testid}",
+                "Save account"
             }
         }
     }
@@ -589,6 +708,102 @@ mod tests {
         assert!(
             !card[..connected_at].contains("bills-delegation-"),
             "and the cards before it do not: there is nothing connected to delegate to"
+        );
+    }
+
+    /// MAPPS-1168: the reimburse-from field belongs to a card that has
+    /// bills delegated, and nowhere else.
+    ///
+    /// The server reads the account only on the delegated-bills path, so
+    /// offering it on a card that delegates nothing would ask for a value
+    /// nothing consults; offering it before connecting would be a write
+    /// the server refuses.
+    #[test]
+    fn the_reimburse_from_field_follows_the_bills_decision() {
+        let src = include_str!("settings_invoice_issuer.rs");
+        let card = &src[src
+            .find(r#""data-testid": "invoice-issuer-"#)
+            .expect("the card body")..];
+        let connected_at = card
+            .find("CardState::Connected {")
+            .expect("the connected arm");
+        let failing_at = card
+            .find("CardState::Failing { message } =>")
+            .expect("the failing arm");
+        let connected = &card[connected_at..failing_at];
+        let toggle_at = connected
+            .find("bills-delegation-{issuer.testid}")
+            .expect("the bills toggle");
+        let field_at = connected
+            .find("PaymentAccountField")
+            .expect("the account field");
+        assert!(
+            toggle_at < field_at,
+            "the field renders after the toggle, inside the bills section"
+        );
+        assert!(
+            connected[..field_at].contains("if bills_delegated {"),
+            "and behind the delegated guard"
+        );
+        assert!(
+            !card[..connected_at].contains("PaymentAccountField"),
+            "the cards before Connected do not offer it: the server refuses the write"
+        );
+    }
+
+    /// An account that is not set says what that costs, rather than
+    /// rendering an empty box that looks finished.
+    #[test]
+    fn an_unset_account_says_what_it_blocks() {
+        let state = card_state_of(&overview(serde_json::json!({
+            "configured": true,
+            "status": "connected",
+            "delegated": true,
+            "bills_delegated": true,
+            "bills_delegation_enabled": true,
+        })));
+        assert!(matches!(
+            state,
+            CardState::Connected {
+                payment_account_id: None,
+                ..
+            }
+        ));
+        let src = include_str!("settings_invoice_issuer.rs");
+        let field = &src[src
+            .find("fn PaymentAccountField")
+            .expect("the field component")..];
+        let guard = field.find("if unset {").expect("the unset branch");
+        let copy = field
+            .find("is refused until it is")
+            .expect("the copy naming what it blocks");
+        assert!(guard < copy, "the copy is behind the unset branch");
+    }
+
+    /// The account read back is the one the field shows.
+    ///
+    /// The server answers `payment_account_id` on the overview for this
+    /// reason: a field that can only be written is one an admin cannot
+    /// tell "not set" from "set to something I cannot see".
+    #[test]
+    fn the_account_is_read_back_onto_the_card() {
+        let state = card_state_of(&overview(serde_json::json!({
+            "configured": true,
+            "status": "connected",
+            "delegated": true,
+            "bills_delegated": true,
+            "bills_delegation_enabled": true,
+            "payment_account_id": "13918178-849a-247f-8ed7-c7b1f5e7e71c",
+        })));
+        let CardState::Connected {
+            payment_account_id, ..
+        } = state
+        else {
+            panic!("connected");
+        };
+        assert_eq!(
+            payment_account_id.as_deref(),
+            Some("13918178-849a-247f-8ed7-c7b1f5e7e71c")
         );
     }
 
