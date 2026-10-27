@@ -114,6 +114,25 @@ struct NamedRow {
     name: String,
 }
 
+/// One row of `GET /bills/{id}/payments` (PMS-1536, MAPPS-1166). The
+/// method is validated server-side against the CHECK set
+/// (`check`, `credit_card`, `ach`, `wire`, `cash`, `other`), so the SPA
+/// renders whatever came rather than branching on the string.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct RemoteBillPayment {
+    pub id: Uuid,
+    #[serde(default)]
+    pub paid_on: String,
+    #[serde(default)]
+    pub amount_minor: i64,
+    #[serde(default)]
+    pub payment_method: String,
+    #[serde(default)]
+    pub reference: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
 /// The list path for a page. `GET /bills` takes pagination and nothing
 /// else, so there is no filter row offering one.
 pub(crate) fn list_path(page: usize) -> String {
@@ -211,6 +230,27 @@ pub(crate) fn can_approve(status: &str) -> bool {
 pub(crate) fn can_void(status: &str) -> bool {
     status == "draft" || status == "approved"
 }
+
+/// A payment can be recorded only on an `approved` bill (MAPPS-1166, server
+/// PMS-1536). A part-paid bill stays `approved` so this covers both the
+/// first-time and the top-up cases; the server returns the remaining
+/// balance in the refusal message when an amount is over, so the UI shows
+/// the server's message rather than hiding the button.
+pub(crate) fn can_record_payment(status: &str) -> bool {
+    status == "approved"
+}
+
+/// The payment methods `bill_payments.payment_method` CHECK accepts. In
+/// one place so the modal's picker and `check-ui-copy` guards read the
+/// same list the server validates against (PMS-1536).
+pub(crate) const BILL_PAYMENT_METHODS: &[(&str, &str)] = &[
+    ("check", "Check"),
+    ("credit_card", "Credit card"),
+    ("ach", "ACH"),
+    ("wire", "Wire"),
+    ("cash", "Cash"),
+    ("other", "Other"),
+];
 
 #[component]
 pub fn BillListPage() -> Element {
@@ -884,14 +924,33 @@ fn BillDetailBody(id: String) -> Element {
     let error = use_signal(String::new);
     let busy = use_signal(|| false);
     let mut confirm_void = use_signal(|| false);
+    // MAPPS-1166: Record-a-payment modal state; mutated from the button
+    // and the modal's own on-saved callback, which refetches both the
+    // bill (its `status` and `paid_minor` may have moved) and the
+    // payments list.
+    let mut recording_payment = use_signal(|| false);
 
-    let resource = use_resource(use_reactive(&bill_id, |bill_id| async move {
+    let mut resource = use_resource(use_reactive(&bill_id, |bill_id| async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_authed::<RemoteBillWithLines>(&format!("/bills/{bill_id}"))
             .await
             .inspect_err(|e| tracing::error!("bill load failed: {e}"))
             .ok()
+    }));
+
+    // MAPPS-1166: payment rows beside the lines. A refetch happens when
+    // the Record-a-payment modal saves; otherwise this is a one-shot read
+    // per visit, like the lines are.
+    let mut payments = use_resource(use_reactive(&bill_id, |bill_id| async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _reachable = crate::hooks::use_server_reachable();
+        crate::hooks::fetch::api::get_authed::<Vec<RemoteBillPayment>>(&format!(
+            "/bills/{bill_id}/payments"
+        ))
+        .await
+        .inspect_err(|e| tracing::error!("bill payments load failed: {e}"))
+        .ok()
     }));
 
     let vendors = use_resource(move || async move {
@@ -961,6 +1020,8 @@ fn BillDetailBody(id: String) -> Element {
                 let external_id = bill.external_bill_id.clone();
                 let approvable = can_approve(&bill.status) && can_mutate;
                 let voidable = can_void(&bill.status) && can_mutate;
+                let payable = can_record_payment(&bill.status) && can_mutate;
+                let remaining_minor = (bill.total_minor - bill.paid_minor).max(0);
                 rsx! {
                     Card {
                         title: vendor.clone(),
@@ -1015,8 +1076,17 @@ fn BillDetailBody(id: String) -> Element {
                                         "Void"
                                     }
                                 }
+                                if payable {
+                                    Button {
+                                        variant: ButtonVariant::Primary,
+                                        loading: busy(),
+                                        onclick: move |_| recording_payment.set(true),
+                                        data_testid: "record-bill-payment",
+                                        "Record a payment"
+                                    }
+                                }
                             }
-                            if !approvable && !voidable {
+                            if !approvable && !voidable && !payable {
                                 p { class: "text-sm text-muted",
                                     "A paid or voided bill is final here. A correction is a new bill, the way an invoice amendment is a new invoice."
                                 }
@@ -1093,8 +1163,263 @@ fn BillDetailBody(id: String) -> Element {
                                     dt { class: "text-muted", "Paid" }
                                     dd { "{format_money_minor(bill.paid_minor)}" }
                                 }
+                                div { class: "flex justify-between font-medium",
+                                    dt { "Remaining" }
+                                    dd { "{format_money_minor(remaining_minor)}" }
+                                }
                             }
                         }
+                    }
+
+                    // MAPPS-1166: what has been paid, mirroring the invoice-
+                    // side's payments table. Rendered whenever payments
+                    // exist; a bill the MSP has not paid yet shows nothing
+                    // here, which is the common case.
+                    PaymentsCard {
+                        payments_handle: payments,
+                    }
+
+                    if recording_payment() {
+                        RecordPaymentModal {
+                            bill_id: bill.id.to_string(),
+                            currency: bill.currency.clone(),
+                            remaining_minor,
+                            onclose: move |_| recording_payment.set(false),
+                            onsaved: move |_| {
+                                recording_payment.set(false);
+                                resource.restart();
+                                payments.restart();
+                            },
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn PaymentsCard(payments_handle: Resource<Option<Vec<RemoteBillPayment>>>) -> Element {
+    let snap = payments_handle.read_unchecked().clone();
+    let data = snap.as_ref().and_then(|o| o.as_ref()).cloned();
+    let rows = data.unwrap_or_default();
+    if rows.is_empty() {
+        return rsx! {};
+    }
+    let method_label = |m: &str| -> String {
+        BILL_PAYMENT_METHODS
+            .iter()
+            .find(|(k, _)| *k == m)
+            .map(|(_, label)| (*label).to_string())
+            .unwrap_or_else(|| m.to_string())
+    };
+    rsx! {
+        Card { title: "Payments".to_string(), class: "mt-4",
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Paid on" }
+                        TableHeader { "Method" }
+                        TableHeader { "Reference" }
+                        TableHeader { class: "text-right", "Amount" }
+                    }
+                }
+                TableBody {
+                    for p in rows.iter().cloned() {
+                        {
+                            let key = p.id.to_string();
+                            let reference = p.reference.clone().unwrap_or_default();
+                            let method = method_label(&p.payment_method);
+                            rsx! {
+                                TableRow { key: "{key}",
+                                    TableCell { "{p.paid_on}" }
+                                    TableCell { "{method}" }
+                                    TableCell {
+                                        if reference.is_empty() {
+                                            span { class: "text-subtle", "-" }
+                                        } else {
+                                            span { "{reference}" }
+                                        }
+                                    }
+                                    TableCell { class: "text-right font-medium",
+                                        "{format_money_minor(p.amount_minor)}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, PartialEq, Clone)]
+struct RecordPaymentModalProps {
+    bill_id: String,
+    currency: String,
+    remaining_minor: i64,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
+    let mut paid_on = use_signal(|| {
+        chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string()
+    });
+    let mut amount = use_signal(String::new);
+    let mut method = use_signal(|| "check".to_string());
+    let mut reference = use_signal(String::new);
+    let mut notes = use_signal(String::new);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+    let bill_id = props.bill_id.clone();
+    let currency = props.currency.clone();
+    let remaining_minor = props.remaining_minor;
+
+    let mut method_options = Vec::with_capacity(BILL_PAYMENT_METHODS.len());
+    for (value, label) in BILL_PAYMENT_METHODS {
+        method_options.push(SelectOption::new(value.to_string(), label.to_string()));
+    }
+
+    let handle_save = move |_| {
+        if *saving.read() {
+            return;
+        }
+        error.set(String::new());
+        let amount_text = amount.read().clone();
+        let Some(amount_minor) = minor_from_str(&amount_text) else {
+            error.set(format!(
+                "Enter an amount in {currency} with up to two decimals (for example 50.00)."
+            ));
+            return;
+        };
+        if amount_minor <= 0 {
+            error.set("Enter a positive amount.".to_string());
+            return;
+        }
+        let date_text = paid_on.read().clone();
+        if date_text.trim().is_empty() {
+            error.set("Enter the date you paid.".to_string());
+            return;
+        }
+        let body = serde_json::json!({
+            "paid_on": date_text,
+            "amount_minor": amount_minor,
+            "payment_method": method.read().clone(),
+            "reference": if reference.read().is_empty() { None::<String> } else { Some(reference.read().clone()) },
+            "notes": if notes.read().is_empty() { None::<String> } else { Some(notes.read().clone()) },
+        });
+        let bill_id = bill_id.clone();
+        saving.set(true);
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let path = format!("/bills/{bill_id}/payments");
+                match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(&path, &body)
+                    .await
+                {
+                    // The server's refusal reads naming what remains on
+                    // an over-payment and naming the voided state on a
+                    // void bill; show it as it came rather than reducing
+                    // it to "could not save".
+                    Err(err) => error.set(format!("Could not record the payment: {err}")),
+                    Ok(_) => onsaved.call(()),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = &body;
+                let _ = bill_id;
+                onsaved.call(());
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        Modal {
+            open: true,
+            title: "Record a payment".to_string(),
+            onclose: move |_| onclose.call(()),
+            div { class: "space-y-4",
+                if !error().is_empty() {
+                    ErrorBanner { "{error}" }
+                }
+                p { class: "text-sm text-muted",
+                    "Remaining to pay: "
+                    span { class: "font-medium text-content",
+                        "{format_money_minor(remaining_minor)} {props.currency}"
+                    }
+                }
+                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                    label { class: "block",
+                        span { class: "text-sm font-medium", "Paid on" }
+                        input {
+                            r#type: "date",
+                            class: "mt-1 block w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-content",
+                            value: "{paid_on}",
+                            oninput: move |e| paid_on.set(e.value()),
+                        }
+                    }
+                    label { class: "block",
+                        span { class: "text-sm font-medium", "Amount" }
+                        input {
+                            r#type: "text",
+                            inputmode: "decimal",
+                            placeholder: "0.00",
+                            class: "mt-1 block w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-content",
+                            value: "{amount}",
+                            oninput: move |e| amount.set(e.value()),
+                        }
+                    }
+                }
+                Select {
+                    name: "bill_payment_method",
+                    label: "Method",
+                    required: true,
+                    options: method_options,
+                    value: method.read().clone(),
+                    onchange: move |e: FormEvent| method.set(e.value()),
+                }
+                label { class: "block",
+                    span { class: "text-sm font-medium", "Reference" }
+                    input {
+                        r#type: "text",
+                        placeholder: "Check number, confirmation code, etc.",
+                        class: "mt-1 block w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-content",
+                        value: "{reference}",
+                        oninput: move |e| reference.set(e.value()),
+                    }
+                }
+                label { class: "block",
+                    span { class: "text-sm font-medium", "Notes" }
+                    textarea {
+                        rows: "2",
+                        class: "mt-1 block w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-content",
+                        value: "{notes}",
+                        oninput: move |e| notes.set(e.value()),
+                    }
+                }
+                div { class: "flex justify-end gap-2 pt-2",
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| onclose.call(()),
+                        "Cancel"
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        loading: saving(),
+                        onclick: handle_save,
+                        data_testid: "submit-bill-payment",
+                        "Record"
                     }
                 }
             }
@@ -1233,6 +1558,37 @@ mod tests {
         assert!(can_void("approved"));
         assert!(!can_void("paid"), "a paid bill is terminal");
         assert!(!can_void("void"));
+    }
+
+    /// MAPPS-1166 / PMS-1536: Record-a-payment is offered only on
+    /// `approved`. The server refuses `draft`, `void`, and `paid` for
+    /// their own reasons; a part-paid bill stays `approved` so this one
+    /// rule covers both the first payment and the top-up.
+    #[test]
+    fn record_a_payment_only_offered_on_approved() {
+        assert!(!can_record_payment("draft"));
+        assert!(can_record_payment("approved"));
+        assert!(!can_record_payment("paid"), "paid is terminal");
+        assert!(!can_record_payment("void"));
+        assert!(!can_record_payment("unknown"));
+    }
+
+    /// MAPPS-1166 / PMS-1536: the method list the modal picker exposes is
+    /// exactly the server's `bill_payments.payment_method` CHECK set. A
+    /// value outside it is a 400 the service names a bad method; keep the
+    /// two lists aligned here rather than discovering it at submit time.
+    #[test]
+    fn bill_payment_methods_match_the_server_check_set() {
+        let keys: Vec<&str> = BILL_PAYMENT_METHODS.iter().map(|(k, _)| *k).collect();
+        assert_eq!(
+            keys,
+            vec!["check", "credit_card", "ach", "wire", "cash", "other"]
+        );
+        // Each method pairs with a human label; a future addition that
+        // forgets the display string would break the picker.
+        for (_, label) in BILL_PAYMENT_METHODS {
+            assert!(!label.is_empty());
+        }
     }
 
     fn one_line() -> Vec<(String, String, String, String, String)> {

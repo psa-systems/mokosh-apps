@@ -241,14 +241,26 @@ open = "5.4.5"
 
 # rustls, not the platform TLS stack: one behaviour on every desktop OS, and
 # no OpenSSL headers needed to build.
+#
+# reqwest 0.13 renamed `rustls-tls` to `rustls`. The new `rustls` feature
+# bundles the `aws-lc-rs` crypto provider, which drags in a CMake + C
+# compile step this builder image is not fitted for (0.12's `rustls-tls`
+# used the pure-Rust `ring` provider). `rustls-no-provider` keeps the TLS
+# stack and lets the application install `ring` once at startup, matching
+# the 0.12 behaviour byte-for-byte without the C toolchain.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.reqwest]
-version = "0.12"
+version = "0.13.5"
 default-features = false
 features = [
     "json",
-    "rustls-tls",
+    "rustls-no-provider",
     "multipart",
 ]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.rustls]
+version = "0.23"
+default-features = false
+features = ["ring", "logging", "std", "tls12"]
 
 # MAPPS-505 adds `net` + `io-util` on top of `time`: the RFC 8252 loopback
 # redirect listener accepts one connection on 127.0.0.1 and reads the

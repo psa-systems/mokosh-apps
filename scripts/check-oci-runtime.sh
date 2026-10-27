@@ -40,8 +40,16 @@ CONTAINER_BASE="mokosh-oci-runtime-$$"
 WORKDIR=""
 failures=0
 
+# The suffixes must match the ones actually passed to check_uid /
+# check_unwritable / the self-test block below. The pre-MAPPS-1148
+# list ("default override unwritable") did not, so the trap only
+# cleaned up names nothing had created, leaving the real
+# -default-uid / -uid-override containers behind on exit. A later
+# invocation that happened to reuse the shell's PID (CONTAINER_BASE
+# embeds `$$`) then hit "container name already in use" and failed
+# `docker create` outright.
 cleanup() {
-    for suffix in default override unwritable; do
+    for suffix in default-uid uid-override unwritable selftest; do
         name="${CONTAINER_BASE}-${suffix}"
         docker stop "$name" >/dev/null 2>&1 || true
         docker rm "$name" >/dev/null 2>&1 || true
@@ -51,6 +59,15 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+
+# Defence against PID reuse across the two bash invocations the CI job
+# runs back-to-back (--self-test then real): if a previous run on the
+# same host left a container behind under this name, remove it before
+# `docker create`. Takes only a container suffix.
+force_remove() {
+    name="${CONTAINER_BASE}-$1"
+    docker rm -f "$name" >/dev/null 2>&1 || true
+}
 
 fail() {
     failures=$((failures + 1))
@@ -103,6 +120,7 @@ start_server() {
     suffix="$1"
     shift
     name="${CONTAINER_BASE}-${suffix}"
+    force_remove "$suffix"
     # The target paths all live under directories that already exist
     # in caddy:2-alpine (/usr/local/bin, /etc/caddy, /usr/share/caddy),
     # so a plain `docker cp` lands without a `mkdir` dance.
@@ -184,6 +202,7 @@ check_uid() {
 check_unwritable() {
     scenario="unwritable"
     name="${CONTAINER_BASE}-${scenario}"
+    force_remove "$scenario"
     # tmpfs mode=0555 is unwritable to every uid, which is the
     # read-only-rootfs posture an operator who bind-mounts a stale
     # path hits. The old entrypoint logged a warning and served the
@@ -260,6 +279,7 @@ main() {
         # scenario 2 to fail.
         suffix="selftest"
         name="${CONTAINER_BASE}-${suffix}"
+        force_remove "$suffix"
         docker create \
             --name "$name" \
             --user 10000:10000 \
