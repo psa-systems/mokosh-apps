@@ -344,6 +344,13 @@ mod imp {
         /// `gloo_net::Request::json()` already does implicitly.
         #[test]
         fn json_request_sets_content_type_without_explicit_header() {
+            // MAPPS-1158: reqwest 0.13 + `rustls-no-provider` leaves the
+            // crypto provider install to the caller. `main.rs` installs
+            // `ring` on process start; a `#[test]` binary never runs
+            // `main`, so `reqwest::Client::new()` here would panic with
+            // "No rustls crypto provider is configured". Install the same
+            // provider up-front; the duplicate-install path is tolerated.
+            let _ = rustls::crypto::ring::default_provider().install_default();
             let client = reqwest::Client::new();
             let builder = RequestBuilder::new(reqwest::Method::POST, "https://example.invalid/x");
             let body = Body::Json(serde_json::to_vec(&serde_json::json!({"a": 1})).unwrap());
