@@ -209,7 +209,7 @@ pub fn AcceptGrantPage(token: String) -> Element {
                 None => rsx! {
                     Card { title: "Loading".to_string(), class: "mt-4",
                         p { class: "text-sm text-muted",
-                            "Looking up the invitation..."
+                            "Looking up the invitation…"
                         }
                     }
                 },
