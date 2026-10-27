@@ -43,6 +43,23 @@ use crate::hooks::auth::MembershipView;
 use crate::modules::oidc::storage::{save_standalone, StandaloneSession};
 use crate::{CurrentUser, Route};
 
+/// MAPPS-1084: inbox row from `GET /api/v1/my-grants/invitations`
+/// (`InvitationResponse` on the server, grant_invitations_routes.rs:98).
+/// Only the fields the switcher's row renders or acts on. Serde `default`
+/// on every one so a server that predates PMS-1499 (no `tenant_slug`)
+/// still decodes.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct PendingInvite {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub tenant_slug: Option<String>,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub expires_at: String,
+}
+
 /// MAPPS-497 item 1: global signal so the create-org modal can be
 /// opened from anywhere in the top-of-page chrome (TenantSwitcher
 /// dropdown when memberships >= 2, UserMenu when memberships <= 1 and
@@ -323,6 +340,96 @@ pub fn TenantSwitcher() -> Element {
         });
     };
 
+    // MAPPS-1084 AC (b): pending grant invitations the signed-in user
+    // can accept or decline. Reads `GET /api/v1/my-grants/invitations`,
+    // which is a cross-tenant endpoint (an invitation lives on the
+    // owner's tenant, not the grantee's), so it refetches on tenant
+    // generation and on open-state changes so an invitation that
+    // just arrived appears without a reload.
+    let open_now = *open.read();
+    let gen_now = *crate::hooks::fetch::TENANT_GENERATION.read();
+    let mut pending_invites: Resource<Vec<PendingInvite>> =
+        use_resource(use_reactive(&(open_now, gen_now), |(_, _)| async move {
+            #[cfg(feature = "app")]
+            {
+                crate::hooks::fetch::api::get_authed::<Vec<PendingInvite>>("/my-grants/invitations")
+                    .await
+                    .unwrap_or_default()
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                Vec::<PendingInvite>::new()
+            }
+        }));
+    let invites: Vec<PendingInvite> = pending_invites.read_unchecked().clone().unwrap_or_default();
+    let mut invite_submitting: Signal<Option<String>> = use_signal(|| None);
+    let mut invite_error = use_signal(String::new);
+
+    let mut accept_invite = move |invite_id: String| {
+        if invite_submitting.read().is_some() {
+            return;
+        }
+        invite_error.set(String::new());
+        invite_submitting.set(Some(invite_id.clone()));
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let path = format!("/my-grants/invitations/{invite_id}/accept");
+                match crate::hooks::fetch::api::post_authed_typed::<serde_json::Value, ()>(
+                    &path,
+                    &(),
+                )
+                .await
+                {
+                    Ok(_) => {
+                        // Bump the tenant generation so every active
+                        // use_resource under the current tenant
+                        // refetches; the memberships loader picks the
+                        // new grant up on its next read.
+                        *crate::hooks::fetch::TENANT_GENERATION.write() += 1;
+                        pending_invites.restart();
+                    }
+                    Err(err) => invite_error.set(err.user_message()),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = invite_id;
+            }
+            invite_submitting.set(None);
+        });
+    };
+
+    let mut decline_invite = move |invite_id: String| {
+        if invite_submitting.read().is_some() {
+            return;
+        }
+        invite_error.set(String::new());
+        invite_submitting.set(Some(invite_id.clone()));
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let path = format!("/my-grants/invitations/{invite_id}/decline");
+                match crate::hooks::fetch::api::post_authed_typed::<serde_json::Value, ()>(
+                    &path,
+                    &(),
+                )
+                .await
+                {
+                    Ok(_) => {
+                        pending_invites.restart();
+                    }
+                    Err(err) => invite_error.set(err.user_message()),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            {
+                let _ = invite_id;
+            }
+            invite_submitting.set(None);
+        });
+    };
+
     // Read the memberships + active for render. Hide the trigger when
     // there is nothing to show (unauthenticated / no memberships).
     let (memberships, active_name, active_id_str, loading_memberships) = {
@@ -356,7 +463,11 @@ pub fn TenantSwitcher() -> Element {
     // has 0 or 1 memberships (nothing to switch to). The create-org
     // Modal is rendered unconditionally below because UserMenu can also
     // open it via the SHOW_CREATE_ORG global signal.
-    let show_trigger = memberships.len() >= 2;
+    //
+    // MAPPS-1084 AC (c): a pending grant invitation is also a reason
+    // to open the switcher (the grantee has to Accept it from
+    // somewhere), so pending invitations count into the gate.
+    let show_trigger = memberships.len() + invites.len() >= 2 || !invites.is_empty();
     // PMS-1339: the trigger's width arrives late. Memberships load after the
     // first paint, so the switcher was zero-wide and then suddenly a team name
     // wide, and because the action cluster is right-aligned everything to its
@@ -401,6 +512,58 @@ pub fn TenantSwitcher() -> Element {
                         if next { error.set(String::new()); }
                     },
                     onclose: move |_| open.set(false),
+                    // MAPPS-1084 AC (b): pending grant invitations. Rendered
+                    // above the memberships list so a grantee who opens the
+                    // switcher to accept a team sees the Accept control
+                    // first, not a scroll-past of their existing teams.
+                    if !invites.is_empty() {
+                        div { class: "px-3 py-2 text-xs uppercase tracking-wide text-subtle",
+                            "Pending invitations"
+                        }
+                        {invites.iter().map(|inv| {
+                            let id = inv.id.clone();
+                            let id_accept = id.clone();
+                            let id_decline = id.clone();
+                            let label = inv.tenant_slug.clone().unwrap_or_else(|| "a team".to_string());
+                            let role = inv.role.clone();
+                            let busy = invite_submitting.read().as_deref() == Some(id.as_str());
+                            rsx! {
+                                div { key: "{id}",
+                                    class: "px-3 py-2 rounded-md",
+                                    div { class: "text-sm text-content font-medium truncate",
+                                        "{label}"
+                                    }
+                                    div { class: "text-xs text-subtle",
+                                        "Role: {role}"
+                                    }
+                                    div { class: "flex gap-2 pt-1",
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            disabled: busy,
+                                            loading: busy,
+                                            data_testid: "switcher-accept-invite",
+                                            onclick: move |_| accept_invite(id_accept.clone()),
+                                            "Accept"
+                                        }
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            disabled: busy,
+                                            loading: busy,
+                                            data_testid: "switcher-decline-invite",
+                                            onclick: move |_| decline_invite(id_decline.clone()),
+                                            "Decline"
+                                        }
+                                    }
+                                }
+                            }
+                        })}
+                        if !invite_error().is_empty() {
+                            p { role: "alert", class: "px-3 py-2 text-xs text-red-600 dark:text-red-400",
+                                "{invite_error}"
+                            }
+                        }
+                        div { class: "border-t border-line my-1" }
+                    }
                     div { class: "px-3 py-2 text-xs uppercase tracking-wide text-subtle",
                         "Your teams"
                     }
@@ -628,6 +791,59 @@ mod tests {
         assert!(
             head.contains("code: 404"),
             "a 404 must be handled as success rather than surfaced as an error"
+        );
+    }
+
+    /// MAPPS-1084 AC (b)/(c): the inbox row type decodes the server's shape
+    /// and the switcher wires the id-scoped accept/decline endpoints
+    /// (PMS-1500) rather than the by-token ones (which the inbox has no
+    /// token to call with).
+    #[test]
+    fn pending_invite_decodes_the_server_shape() {
+        let body = serde_json::json!({
+            "id": "2f1c2f1e-0000-4000-8000-00000000beef",
+            "tenant_id": "aaaa0000-0000-4000-8000-000000000001",
+            "tenant_slug": "acme",
+            "inviter_bunyip_user_id": "bbbb0000-0000-4000-8000-000000000002",
+            "invitee_bunyip_user_id": null,
+            "invitee_email": "me@example.com",
+            "role": "manager",
+            "status": "pending",
+            "invited_at": "2026-10-20T00:00:00Z",
+            "expires_at": "2026-11-20T00:00:00Z",
+            "accepted_at": null,
+            "declined_at": null,
+            "canceled_at": null,
+        });
+        let inv: PendingInvite = serde_json::from_value(body).expect("decode");
+        assert_eq!(inv.id, "2f1c2f1e-0000-4000-8000-00000000beef");
+        assert_eq!(inv.role, "manager");
+        assert_eq!(inv.tenant_slug.as_deref(), Some("acme"));
+    }
+
+    /// AC (b)/(c): the switcher calls PMS-1500's id-scoped routes
+    /// (`/my-grants/invitations/{id}/accept` and `.../decline`), reads
+    /// the inbox at `/my-grants/invitations`, and the `show_trigger`
+    /// gate folds pending invites in alongside memberships.
+    #[test]
+    fn tenant_switcher_wires_the_id_scoped_accept_decline() {
+        let src = include_str!("tenant_switcher.rs");
+        let head = &src[..src.find("mod tests").expect("this module")];
+        assert!(
+            head.contains("/my-grants/invitations/{invite_id}/accept"),
+            "AC (b): Accept must call the id-scoped PMS-1500 endpoint, not the by-token one"
+        );
+        assert!(
+            head.contains("/my-grants/invitations/{invite_id}/decline"),
+            "AC (b): Decline must call the id-scoped PMS-1500 endpoint"
+        );
+        assert!(
+            head.contains("\"/my-grants/invitations\""),
+            "AC (b): the inbox list GET uses the grantee-inbox endpoint"
+        );
+        assert!(
+            head.contains("memberships.len() + invites.len() >= 2"),
+            "AC (c): the switcher arrow-gate must count pending invites alongside memberships"
         );
     }
 

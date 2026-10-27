@@ -1166,21 +1166,17 @@ fn PeopleBody(props: PeopleBodyProps) -> Element {
 // ---------------------------------------------------------------------------
 // Invitations tab (MAPPS-877 phase 5)
 //
-// The design calls for a cross-account grant-invitation list from
-// `/grants?role=owner`, but that server surface does not exist in this
-// branch: the grants mirror in `mokosh_bunyip_grants` carries only
-// granted / revoked state, no pending-invitation lifecycle (PMS-1208
-// filed as the follow-up for that). The pragmatic Invitations tab here
-// shows the EXISTING pending team-invitations (`GET /invitations`), the
-// same source `/admin/invitations` reads, so the operator has a working
-// "who have I invited" view in one place inside the members page.
-// Cancel per row stays optimistic (no confirm; the invitee has never
-// had access, so cancelling costs nothing) matching the design's
-// Cancel-is-one-click posture.
-//
-// When PMS-1208 ships the grant-invitation surface, this tab's fetch
-// swaps to the richer `/grants?role=owner` shape and the two sources
-// become one list; nothing on the SPA shell changes.
+// PMS-1208's grant-invitation surface shipped as `/api/v1/grants/invitations`
+// (owner outbox + CRUD) and `/api/v1/my-grants/invitations` (grantee inbox,
+// PMS-1500 added the id-scoped accept/decline there). This tab renders the
+// pending team-invitations from `GET /invitations`, the same source the
+// admin page reads, so the operator has a working "who have I invited" view
+// in one place inside the members page. Cross-account grants an owner sent
+// to another Bunyip user live on `/api/v1/grants/invitations` and surface
+// elsewhere; folding the two inboxes together is a future design pass that
+// does not change the shell here. Cancel per row stays optimistic (no
+// confirm; the invitee has never had access, so cancelling costs nothing)
+// matching the design's Cancel-is-one-click posture.
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct TeamInvitation {
