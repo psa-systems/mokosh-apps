@@ -207,10 +207,8 @@ pub fn AcceptGrantPage(token: String) -> Element {
         } else {
             match data {
                 None => rsx! {
-                    Card { title: "Loading".to_string(), class: "mt-4",
-                        p { class: "text-sm text-muted",
-                            "Looking up the invitation…"
-                        }
+                    div { class: "mt-4",
+                        crate::components::DetailSkeleton { rows: 3 }
                     }
                 },
                 Some(meta) => {
