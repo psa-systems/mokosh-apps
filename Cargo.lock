@@ -3305,7 +3305,7 @@ dependencies = [
 [[package]]
 name = "mokosh-types"
 version = "0.1.0"
-source = "git+https://dev.a8n.run/psa-systems/mokosh-server.git#988cf1f25b4e8a0a885ccb8be5d649315ed132dd"
+source = "git+https://dev.a8n.run/psa-systems/mokosh-server.git#8253fda54c03ff4b1963b12b7b3a7dae0b8ab598"
 dependencies = [
  "chrono",
  "chrono-tz 0.9.0",
@@ -3549,7 +3549,7 @@ version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
 dependencies = [
- "proc-macro-crate 3.5.0",
+ "proc-macro-crate 1.3.1",
  "proc-macro2",
  "quote",
  "syn 2.0.119",

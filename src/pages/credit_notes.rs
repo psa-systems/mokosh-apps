@@ -423,6 +423,20 @@ fn format_voided_at(raw: &str) -> String {
     }
 }
 
+/// Customer-facing copy constants for the credit-note surface (PMS-1335).
+/// Lifted out of their rsx! sites so `copy_style_tests` can pin the single-
+/// statement MSP-voice shape without a Dioxus render. Each is one statement;
+/// no "stays on record and cannot be reinstated" assertion restates the
+/// badge's own meaning. See `docs/copy-style.md`.
+pub(crate) const VOID_CONFIRM_MESSAGE: &str =
+    "Void this credit note? The invoice's balance due goes back up by the credited amount.";
+pub(crate) const VOID_BUTTON_TOOLTIP: &str =
+    "Voids this credit note and keeps it on record. The invoice's balance due goes back up.";
+pub(crate) const VOIDED_NOTE: &str =
+    "Voided. The credited amount no longer counts against the invoice.";
+pub(crate) const ISSUED_LOCKED_NOTE: &str =
+    "Issued and locked. To correct it, void it and raise another.";
+
 /// The first line of a reason, cut to `max` characters for a table cell. The
 /// full text is on the cell's `title` and on the detail page.
 fn one_line(text: &str, max: usize) -> String {
@@ -593,7 +607,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
             // goes back up") is the point and stays; the "kept on record
             // and cannot be reinstated" assertion is the restatement the
             // style doc removes. See docs/copy-style.md.
-            message: "Void this credit note? The invoice's balance due goes back up by the credited amount.".to_string(),
+            message: VOID_CONFIRM_MESSAGE.to_string(),
             confirm_text: "Void".to_string(),
             cancel_text: "Cancel".to_string(),
             destructive: true,
@@ -631,7 +645,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
                         // MAPPS-357: block voiding while the server is down.
                         disabled: !can_mutate,
                         title: if can_mutate {
-                            "Voids this credit note and keeps it on record. The invoice's balance due goes back up.".to_string()
+                            VOID_BUTTON_TOOLTIP.to_string()
                         } else {
                             "Can't void while the server is unreachable".to_string()
                         },
@@ -659,9 +673,9 @@ fn CreditNoteDetailBody(id: String) -> Element {
                     mokosh_types::billing::CreditNoteStatus::from_str(&n.status),
                     Some(mokosh_types::billing::CreditNoteStatus::Void)
                 ) {
-                    "Voided. The credited amount no longer counts against the invoice."
+                    "{VOIDED_NOTE}"
                 } else {
-                    "Issued and locked. To correct it, void it and raise another."
+                    "{ISSUED_LOCKED_NOTE}"
                 }
             }
         }
@@ -1393,5 +1407,82 @@ mod tests {
         // PMS-1335: 80 chars of body + "..." suffix = 83.
         assert_eq!(cut.chars().count(), 83);
         assert!(cut.ends_with("..."));
+    }
+}
+
+#[cfg(test)]
+mod copy_style_tests {
+    //! The credit-note copy was rewritten in the MSP's voice, one statement
+    //! per line (PMS-1335). These pin the shape against the four strings
+    //! lifted out of their rsx! sites as module constants, so a future edit
+    //! that reintroduces a "cannot be reinstated" assertion or an em-dash
+    //! fails fast rather than regressing the admin screen. See
+    //! `docs/copy-style.md`.
+
+    use super::{ISSUED_LOCKED_NOTE, VOIDED_NOTE, VOID_BUTTON_TOOLTIP, VOID_CONFIRM_MESSAGE};
+
+    const COPY_STRINGS: &[(&str, &str)] = &[
+        ("VOID_CONFIRM_MESSAGE", VOID_CONFIRM_MESSAGE),
+        ("VOID_BUTTON_TOOLTIP", VOID_BUTTON_TOOLTIP),
+        ("VOIDED_NOTE", VOIDED_NOTE),
+        ("ISSUED_LOCKED_NOTE", ISSUED_LOCKED_NOTE),
+    ];
+
+    /// Each customer-facing string is ASCII only; the em-dash guard CI step
+    /// enforces this at commit time, but a future `format!` that assembled
+    /// non-ASCII at runtime would slip past that guard.
+    #[test]
+    fn credit_note_copy_is_ascii_only() {
+        for (name, s) in COPY_STRINGS {
+            assert!(s.is_ascii(), "{name}: non-ASCII character: {s:?}");
+        }
+    }
+
+    /// Each string is one short statement under the 160-char soft ceiling.
+    /// The pre-rewrite copy pushed 180+ with the "stays on record and
+    /// cannot be reinstated" restatement; a regression hits this guard.
+    #[test]
+    fn credit_note_copy_is_one_short_statement() {
+        for (name, s) in COPY_STRINGS {
+            assert!(
+                s.len() <= 160,
+                "{name} is longer than one short statement ({} chars): {s}",
+                s.len()
+            );
+        }
+    }
+
+    /// The specific restatement fragments the first rewrite deleted; a
+    /// future edit cannot bring them back without this test failing.
+    #[test]
+    fn credit_note_copy_carries_no_removed_assertions() {
+        const REMOVED: &[&str] = &[
+            "cannot be reinstated",
+            "stays on record as it was",
+            "kept on record and",
+        ];
+        for (name, s) in COPY_STRINGS {
+            for fragment in REMOVED {
+                assert!(
+                    !s.contains(fragment),
+                    "{name} brings back the removed assertion {fragment:?}: {s}"
+                );
+            }
+        }
+    }
+
+    /// The void messages speak as the MSP ("we did X") rather than as the
+    /// system ("the system did X"); the voided-badge note names the
+    /// consequence directly.
+    #[test]
+    fn credit_note_copy_speaks_as_the_msp() {
+        for (name, s) in COPY_STRINGS {
+            for third_person in ["the system", "was voided by", "was issued by"] {
+                assert!(
+                    !s.to_ascii_lowercase().contains(third_person),
+                    "{name} reads as the system speaking, not the MSP: {s}"
+                );
+            }
+        }
     }
 }
