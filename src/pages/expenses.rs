@@ -300,7 +300,9 @@ pub(crate) fn expense_body(
 const MEMBERS_PER_PAGE: usize = 50;
 const MEMBERS_MAX_PAGES: usize = 20;
 
-/// Read `/members` and keep an id-to-name map.
+/// Read `/members` and keep an id-to-name map, plus whether the loop
+/// exhausted [`MEMBERS_MAX_PAGES`] without ever seeing a short page
+/// (MAPPS-1172).
 ///
 /// `pub(crate)` because the Mappings page needs the same map to list
 /// people beside the contact they are in the provider (MAPPS-1168), and
@@ -310,15 +312,34 @@ const MEMBERS_MAX_PAGES: usize = 20;
 /// are uuids. `get_all_authed` cannot do this one: `/members` answers
 /// `{rows, total, ...}` where that helper reads `{data, meta}`, so the
 /// paging is here in the same shape, stopping on a short page.
-pub(crate) async fn member_names() -> HashMap<Uuid, String> {
+///
+/// The `bool` is `true` only when the cap was hit before a short page: a
+/// network failure mid-page returns whatever was accumulated with `false`,
+/// because that is a partial read, not a tenant too big for the cap, and
+/// the caller already has a `fetch_failed` signal for the former.
+pub(crate) async fn member_names() -> (HashMap<Uuid, String>, bool) {
+    member_names_paged(|page| async move {
+        let path = format!("/members?page={page}&per_page={MEMBERS_PER_PAGE}");
+        crate::hooks::fetch::api::get_authed::<MembersEnvelope>(&path).await
+    })
+    .await
+}
+
+/// The paging loop behind [`member_names`], with the page fetch taken as
+/// a closure so a test can hand it canned pages instead of a live
+/// `/members` endpoint `cargo test` cannot reach.
+async fn member_names_paged<F, Fut>(mut fetch_page: F) -> (HashMap<Uuid, String>, bool)
+where
+    F: FnMut(usize) -> Fut,
+    Fut: std::future::Future<Output = Result<MembersEnvelope, String>>,
+{
     let mut names = HashMap::new();
     for page in 1..=MEMBERS_MAX_PAGES {
-        let path = format!("/members?page={page}&per_page={MEMBERS_PER_PAGE}");
-        let Ok(envelope) = crate::hooks::fetch::api::get_authed::<MembersEnvelope>(&path)
+        let Ok(envelope) = fetch_page(page)
             .await
             .inspect_err(|e| tracing::error!("member list load failed: {e}"))
         else {
-            return names;
+            return (names, false);
         };
         let full = envelope.rows.len() >= MEMBERS_PER_PAGE;
         for row in envelope.rows {
@@ -335,10 +356,23 @@ pub(crate) async fn member_names() -> HashMap<Uuid, String> {
             }
         }
         if !full {
-            break;
+            return (names, false);
         }
     }
-    names
+    (names, true)
+}
+
+/// The label for a claim/approval row's member id: the real name when the
+/// lookup hits, otherwise "A former member" UNLESS the map is known to be
+/// truncated by the page cap, in which case the id simply never made it
+/// into the first `MEMBERS_MAX_PAGES * MEMBERS_PER_PAGE` rows and a current
+/// member must not be told they left (MAPPS-1172).
+fn member_label(names: &HashMap<Uuid, String>, truncated: bool, id: Uuid) -> String {
+    match names.get(&id).cloned().filter(|n| !n.is_empty()) {
+        Some(name) => name,
+        None if truncated => format!("Member {}", &id.to_string()[..8]),
+        None => "A former member".to_string(),
+    }
 }
 
 /// Whether this caller may decide claims, which is finance's job and the
@@ -406,7 +440,7 @@ fn ExpenseListBody() -> Element {
         Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
         _ => (Vec::new(), 0),
     };
-    let names = members.read_unchecked().clone().unwrap_or_default();
+    let (names, members_truncated) = members.read_unchecked().clone().unwrap_or_default();
 
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
@@ -536,11 +570,7 @@ fn ExpenseListBody() -> Element {
                             {
                                 let key = row.id.to_string();
                                 let id = row.id;
-                                let who = names
-                                    .get(&row.user_id)
-                                    .cloned()
-                                    .filter(|n| !n.is_empty())
-                                    .unwrap_or_else(|| "A former member".to_string());
+                                let who = member_label(&names, members_truncated, row.user_id);
                                 let decided = row
                                     .approver_id
                                     .and_then(|a| names.get(&a).cloned())
@@ -933,7 +963,7 @@ fn ExpenseDetailBody(id: String) -> Element {
 
     let snap = resource.read_unchecked().clone();
     let data = snap.as_ref().and_then(|o| o.as_ref()).cloned();
-    let names = members.read_unchecked().clone().unwrap_or_default();
+    let (names, members_truncated) = members.read_unchecked().clone().unwrap_or_default();
     let category_names: HashMap<Uuid, String> = categories
         .read_unchecked()
         .clone()
@@ -963,11 +993,7 @@ fn ExpenseDetailBody(id: String) -> Element {
             Some(loaded) => {
                 let claim = loaded.expense.clone();
                 let (label, tone) = status_badge(&claim.status);
-                let who = names
-                    .get(&claim.user_id)
-                    .cloned()
-                    .filter(|n| !n.is_empty())
-                    .unwrap_or_else(|| "A former member".to_string());
+                let who = member_label(&names, members_truncated, claim.user_id);
                 let decided = claim
                     .approver_id
                     .and_then(|a| names.get(&a).cloned())
@@ -1462,5 +1488,102 @@ mod tests {
             1,
             "an unplaced guest has no users row, so it can never be a submitter"
         );
+    }
+
+    fn member_row(id: Uuid) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "user",
+            "user_id": id.to_string(),
+            "first_name": "Member",
+            "last_name": id.to_string(),
+        })
+    }
+
+    /// MAPPS-1172: a tenant with more than `MEMBERS_MAX_PAGES *
+    /// MEMBERS_PER_PAGE` members hits the cap before a short page, so the
+    /// loop must say so rather than returning a map indistinguishable from
+    /// a tenant that genuinely has fewer than 1000 members.
+    #[cfg(all(feature = "app", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn paging_past_the_cap_reports_truncation() {
+        let total_rows = MEMBERS_MAX_PAGES * MEMBERS_PER_PAGE + 1;
+        let ids: Vec<Uuid> = (0..total_rows).map(|_| Uuid::new_v4()).collect();
+        let (names, truncated) = member_names_paged(|page| {
+            let ids = ids.clone();
+            async move {
+                let start = (page - 1) * MEMBERS_PER_PAGE;
+                let rows: Vec<serde_json::Value> = ids
+                    [start..(start + MEMBERS_PER_PAGE).min(ids.len())]
+                    .iter()
+                    .map(|id| member_row(*id))
+                    .collect();
+                Ok(serde_json::from_value(serde_json::json!({ "rows": rows }))
+                    .expect("the envelope deserialises"))
+            }
+        })
+        .await;
+        assert!(
+            truncated,
+            "every one of the {MEMBERS_MAX_PAGES} pages fetched was full, so the loop hit the cap"
+        );
+        assert_eq!(
+            names.len(),
+            MEMBERS_MAX_PAGES * MEMBERS_PER_PAGE,
+            "only the rows actually fetched before the cap are in the map"
+        );
+        let past_the_cap = ids[MEMBERS_MAX_PAGES * MEMBERS_PER_PAGE];
+        assert!(
+            !names.contains_key(&past_the_cap),
+            "the 1001st member never made it into the result"
+        );
+    }
+
+    /// A short page (the ordinary case) is not truncation.
+    #[cfg(all(feature = "app", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn a_short_page_is_not_truncation() {
+        let id = Uuid::new_v4();
+        let (names, truncated) = member_names_paged(|page| {
+            let id = id;
+            async move {
+                let rows = if page == 1 {
+                    vec![member_row(id)]
+                } else {
+                    vec![]
+                };
+                Ok(serde_json::from_value(serde_json::json!({ "rows": rows }))
+                    .expect("the envelope deserialises"))
+            }
+        })
+        .await;
+        assert!(!truncated, "a short first page ends the loop normally");
+        assert!(names.contains_key(&id));
+    }
+
+    /// MAPPS-1172: the claims list's fallback label. A lookup miss on a
+    /// truncated map is a member who simply never made it into the first
+    /// `MEMBERS_MAX_PAGES * MEMBERS_PER_PAGE` rows, not someone who left,
+    /// so it must not render "A former member".
+    #[test]
+    fn a_lookup_miss_is_a_former_member_only_when_the_map_is_not_truncated() {
+        let names = HashMap::new();
+        let id = Uuid::new_v4();
+        assert_eq!(member_label(&names, false, id), "A former member");
+        let neutral = member_label(&names, true, id);
+        assert_ne!(neutral, "A former member");
+        assert!(
+            neutral.contains(&id.to_string()[..8]),
+            "the neutral label still names who this is: {neutral}"
+        );
+    }
+
+    /// A hit in the map always wins, truncated or not.
+    #[test]
+    fn a_lookup_hit_is_always_the_real_name_regardless_of_truncation() {
+        let id = Uuid::new_v4();
+        let mut names = HashMap::new();
+        names.insert(id, "Ada Lovelace".to_string());
+        assert_eq!(member_label(&names, false, id), "Ada Lovelace");
+        assert_eq!(member_label(&names, true, id), "Ada Lovelace");
     }
 }
