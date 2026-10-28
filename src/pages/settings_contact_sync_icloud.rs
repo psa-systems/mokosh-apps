@@ -36,7 +36,7 @@ use crate::components::{
 use crate::pages::settings::{AdminOnlyNotice, SettingsBreadcrumb};
 use crate::pages::settings_contact_sync::{
     actions_for, card_state_of, disconnect_message_from, CardState, Connection, Overview,
-    RunProgress, StateCopy, StateIcon,
+    RunProgress, StateCopy, StateIcon, SyncCadence,
 };
 use crate::Route;
 
@@ -409,6 +409,14 @@ fn ICloudContactsSettingsBody() -> Element {
                                             }
                                         }
                                     }
+                                }
+                            }
+                            if let Some(connection) = connection.as_ref() {
+                                SyncCadence {
+                                    provider: "icloud".to_string(),
+                                    minutes: connection.sync_interval_minutes,
+                                    disabled,
+                                    on_saved: move |_| overview.restart(),
                                 }
                             }
                             div { class: "flex flex-wrap gap-3 pt-2",
