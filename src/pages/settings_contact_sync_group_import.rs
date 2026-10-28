@@ -168,6 +168,26 @@ pub fn MicrosoftContactsImportPage() -> Element {
     rsx! { GroupImportBody { vendor: MICROSOFT } }
 }
 
+/// Spawn `fetch` and write its result into `exact` only if `generation` still
+/// reads `expected` when it resolves (MAPPS-1173). `review` bumps `generation`
+/// before spawning, so a response for a group selection superseded by a
+/// later `review` call arrives to find `generation` has moved on and is
+/// dropped instead of overwriting a newer selection's totals.
+#[cfg(feature = "app")]
+fn spawn_guarded_review(
+    expected: u64,
+    generation: Signal<u64>,
+    mut exact: Signal<Option<Result<Totals, String>>>,
+    fetch: impl std::future::Future<Output = Result<Totals, String>> + 'static,
+) {
+    spawn(async move {
+        let result = fetch.await;
+        if *generation.peek() == expected {
+            exact.set(Some(result));
+        }
+    });
+}
+
 #[component]
 fn GroupImportBody(vendor: Vendor) -> Element {
     // The saved selection, so changing groups later starts from it.
@@ -195,6 +215,10 @@ fn GroupImportBody(vendor: Vendor) -> Element {
     let mut selected: Signal<Option<BTreeSet<String>>> = use_signal(|| None);
     let mut step = use_signal(|| Step::Choose);
     let mut exact: Signal<Option<Result<Totals, String>>> = use_signal(|| None);
+    // MAPPS-1173: bumped every time `review` is called, so a response that
+    // resolves after a later call has already bumped it is a response for a
+    // superseded selection and gets dropped instead of overwriting `exact`.
+    let mut review_generation = use_signal(|| 0u64);
     let mut error = use_signal(String::new);
     let mut starting = use_signal(|| false);
     let can_mutate = crate::hooks::use_can_mutate();
@@ -218,23 +242,26 @@ fn GroupImportBody(vendor: Vendor) -> Element {
     let mut review = move |ids: BTreeSet<String>| {
         step.set(Step::Review);
         exact.set(None);
-        spawn(async move {
-            #[cfg(feature = "app")]
-            {
+        let this_generation = {
+            let mut g = review_generation.write();
+            *g += 1;
+            *g
+        };
+        #[cfg(feature = "app")]
+        {
+            let fetch = async move {
                 let body = PreviewBody {
                     group_ids: Some(ids.into_iter().collect()),
                 };
-                let result = crate::hooks::fetch::api::post_authed::<Preview, _>(
-                    &preview_path(vendor).clone(),
-                    &body,
-                )
-                .await
-                .map(|p| p.totals);
-                exact.set(Some(result.map_err(|e| e.to_string())));
-            }
-            #[cfg(not(feature = "app"))]
-            let _ = ids;
-        });
+                crate::hooks::fetch::api::post_authed::<Preview, _>(&preview_path(vendor), &body)
+                    .await
+                    .map(|p| p.totals)
+                    .map_err(|e| e.to_string())
+            };
+            spawn_guarded_review(this_generation, review_generation, exact, fetch);
+        }
+        #[cfg(not(feature = "app"))]
+        let _ = ids;
     };
 
     let mut start = move |ids: BTreeSet<String>| {
@@ -543,5 +570,99 @@ mod tests {
         assert_eq!(estimate(&data.records, &none), Totals::default());
         let src = include_str!("settings_contact_sync_group_import.rs");
         assert!(src.contains("Nothing chosen yet, so nothing would be imported."));
+    }
+}
+
+/// MAPPS-1173: exercises [`spawn_guarded_review`] against real `Signal`s
+/// inside a bare `VirtualDom`, mirroring `mapps855_debounce_tests` in
+/// `hooks/debounce.rs`.
+#[cfg(feature = "app")]
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
+mod mapps1173_review_race_tests {
+    use super::*;
+    use dioxus::dioxus_core::NoOpMutations;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    /// Two `review` calls for different group selections, the first (A)
+    /// slow and the second (B) fast, so B's response arrives first and A's
+    /// arrives after: `exact` must still end up holding B's totals, because
+    /// B is the selection active when the Review step was most recently
+    /// entered.
+    #[tokio::test]
+    async fn a_response_for_a_superseded_selection_is_discarded() {
+        let recorded: Rc<RefCell<Option<Result<Totals, String>>>> = Rc::new(RefCell::new(None));
+
+        let mut dom = VirtualDom::new_with_props(
+            |recorded: Rc<RefCell<Option<Result<Totals, String>>>>| {
+                let mut generation = use_signal(|| 0u64);
+                let exact: Signal<Option<Result<Totals, String>>> = use_signal(|| None);
+
+                let recorded = recorded.clone();
+                use_future(move || {
+                    let recorded = recorded.clone();
+                    async move {
+                        // First `review` call: selection A, a slow response.
+                        let gen_a = {
+                            let mut g = generation.write();
+                            *g += 1;
+                            *g
+                        };
+                        spawn_guarded_review(gen_a, generation, exact, async {
+                            tokio::time::sleep(Duration::from_millis(60)).await;
+                            Ok(Totals {
+                                contacts: 1,
+                                ..Default::default()
+                            })
+                        });
+
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+
+                        // Second `review` call: selection B, whose fast
+                        // response resolves before A's.
+                        let gen_b = {
+                            let mut g = generation.write();
+                            *g += 1;
+                            *g
+                        };
+                        spawn_guarded_review(gen_b, generation, exact, async {
+                            tokio::time::sleep(Duration::from_millis(5)).await;
+                            Ok(Totals {
+                                contacts: 2,
+                                ..Default::default()
+                            })
+                        });
+
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        *recorded.borrow_mut() = exact.peek().clone();
+                    }
+                });
+
+                rsx! {}
+            },
+            recorded.clone(),
+        );
+
+        dom.rebuild_in_place();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+        while tokio::time::Instant::now() < deadline {
+            tokio::select! {
+                _ = dom.wait_for_work() => {}
+                _ = tokio::time::sleep_until(deadline) => break,
+            }
+            dom.render_immediate(&mut NoOpMutations);
+        }
+
+        let got = recorded.borrow().clone();
+        assert_eq!(
+            got,
+            Some(Ok(Totals {
+                contacts: 2,
+                ..Default::default()
+            })),
+            "a stale response for a superseded selection must not overwrite the later selection's totals, got {got:?}"
+        );
     }
 }
