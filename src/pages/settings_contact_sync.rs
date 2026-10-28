@@ -39,7 +39,7 @@ use uuid::Uuid;
 
 use crate::components::{
     use_page_title, Badge, BadgeVariant, BannerTone, Button, ButtonVariant, Card, Checkbox,
-    ConfirmDialog, ContextualHelpLink, ErrorBanner, PageHeader, StatusBanner,
+    ConfirmDialog, ContextualHelpLink, ErrorBanner, PageHeader, Select, SelectOption, StatusBanner,
 };
 use crate::pages::settings::{AdminOnlyNotice, SettingsBreadcrumb};
 use crate::Route;
@@ -131,6 +131,11 @@ pub struct Connection {
     pub last_error: Option<String>,
     #[serde(default)]
     pub selected_groups: Vec<String>,
+    /// How often the worker polls this connection, in minutes (server
+    /// PMS-1315). A server that predates the field polls at its own default
+    /// of an hour, which is what this one shows.
+    #[serde(default = "default_interval_minutes")]
+    pub sync_interval_minutes: i32,
     #[serde(default)]
     pub consecutive_failures: i32,
     #[serde(default)]
@@ -139,6 +144,113 @@ pub struct Connection {
     pub deleted_in_source: i64,
     #[serde(default)]
     pub latest_run: Option<Run>,
+}
+
+/// An hour, which is the column's own default on the server.
+fn default_interval_minutes() -> i32 {
+    60
+}
+
+/// The cadences the card offers, in minutes (MAPPS-1174).
+///
+/// A fixed list rather than a number field: the server takes 5 to 1440 and
+/// refuses the rest, and a list cannot produce a refusal. These are the
+/// intervals an MSP would actually pick, from a service desk that lives in
+/// the address book to a directory that barely moves.
+pub fn cadence_minutes() -> &'static [i32] {
+    &[10, 15, 30, 60, 120, 240, 480, 1440]
+}
+
+/// How one cadence reads to an admin (MAPPS-1174).
+pub fn cadence_label(minutes: i32) -> String {
+    match minutes {
+        1440 => "Once a day".to_string(),
+        m if m % 60 == 0 && m > 60 => format!("Every {} hours", m / 60),
+        60 => "Every hour".to_string(),
+        m => format!("Every {m} minutes"),
+    }
+}
+
+/// How often this connection is polled, as a control (MAPPS-1174).
+///
+/// One component for all three providers, because the route takes the
+/// provider as a query parameter and three copies of this would be three
+/// places for the option list to drift. A server value the list does not
+/// offer is still shown: somebody set it by hand or an older list had it,
+/// and replacing it silently with the nearest option would change a
+/// setting nobody asked to change.
+#[component]
+pub fn SyncCadence(
+    provider: String,
+    minutes: i32,
+    disabled: bool,
+    on_saved: EventHandler<()>,
+) -> Element {
+    let mut error = use_signal(String::new);
+    let mut saving = use_signal(|| false);
+
+    let mut options: Vec<SelectOption> = cadence_minutes()
+        .iter()
+        .map(|m| SelectOption::new(m.to_string(), cadence_label(*m)))
+        .collect();
+    if !cadence_minutes().contains(&minutes) {
+        options.insert(
+            0,
+            SelectOption::new(minutes.to_string(), cadence_label(minutes)),
+        );
+    }
+
+    let save = move |event: FormEvent| {
+        let Ok(chosen) = event.value().parse::<i32>() else {
+            return;
+        };
+        if chosen == minutes {
+            return;
+        }
+        let provider = provider.clone();
+        saving.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let body = ScheduleWrite {
+                    sync_interval_minutes: chosen,
+                };
+                let path = format!("/integrations/contact-sync/schedule?provider={provider}");
+                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                    .await
+                {
+                    Ok(_) => on_saved.call(()),
+                    Err(e) => error.set(format!("Could not change how often this syncs: {e}")),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            let _ = (chosen, provider);
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        div { class: "max-w-xs", "data-testid": "contact-sync-cadence",
+            Select {
+                name: "sync_interval_minutes",
+                label: "Sync every",
+                help: "How often Mokosh checks for changes. Turn the integration off to stop syncing altogether.",
+                options,
+                value: "{minutes}",
+                disabled: disabled || saving(),
+                onchange: save,
+            }
+            if !error().is_empty() {
+                p { class: "mt-1 text-sm text-red-600 dark:text-red-400", "{error}" }
+            }
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ScheduleWrite {
+    sync_interval_minutes: i32,
 }
 
 /// One import run (`contact_sync_runs`, PMS-1215).
@@ -761,6 +873,16 @@ fn GoogleContactsSettingsBody() -> Element {
                             }
                             if let Some(connection) = connection.as_ref() {
                                 ConnectionFacts { connection: connection.clone() }
+                                // MAPPS-1174: the cadence sits with the facts
+                                // rather than among the buttons, because it is
+                                // a setting the card shows and not an action
+                                // the admin takes once.
+                                SyncCadence {
+                                    provider: "google".to_string(),
+                                    minutes: connection.sync_interval_minutes,
+                                    disabled,
+                                    on_saved: move |_| overview.restart(),
+                                }
                             }
                             div { class: "flex flex-wrap gap-3 pt-2",
                                 if actions.choose_labels && matches!(state, CardState::NoLabelsChosen { .. }) {
@@ -1431,6 +1553,94 @@ mod tests {
             None,
             "no total yet is no percent, not zero"
         );
+    }
+
+    /// MAPPS-1174: every cadence the card offers is one the server takes.
+    ///
+    /// The server refuses anything outside 5 to 1440 minutes (PMS-1315), and
+    /// a list that could produce a refusal would be a control that reports an
+    /// error for a value it put in front of the admin itself.
+    #[test]
+    fn every_cadence_offered_is_one_the_server_accepts() {
+        let minutes = cadence_minutes();
+        assert!(
+            minutes.iter().all(|m| (5..=1440).contains(m)),
+            "{minutes:?} has a value outside the server's range"
+        );
+        assert!(
+            minutes.windows(2).all(|w| w[0] < w[1]),
+            "the list reads shortest first: {minutes:?}"
+        );
+        assert!(
+            minutes.contains(&60),
+            "the server's own default has to be selectable, or an admin cannot \
+             go back to it: {minutes:?}"
+        );
+    }
+
+    /// The cadence reads as a sentence, not as a number of minutes.
+    #[test]
+    fn a_cadence_reads_the_way_somebody_would_say_it() {
+        assert_eq!(cadence_label(10), "Every 10 minutes");
+        assert_eq!(cadence_label(60), "Every hour");
+        assert_eq!(cadence_label(120), "Every 2 hours");
+        assert_eq!(cadence_label(480), "Every 8 hours");
+        assert_eq!(cadence_label(1440), "Once a day");
+        assert_eq!(
+            cadence_label(45),
+            "Every 45 minutes",
+            "a value the list does not offer still reads properly, because a \
+             server set by hand will send one"
+        );
+    }
+
+    /// A connection from a server that predates the field polls at the hour
+    /// that server polls at, which is what the card then shows.
+    #[test]
+    fn a_missing_cadence_reads_as_the_servers_own_default() {
+        let overview = connection(serde_json::json!({}));
+        assert_eq!(
+            overview.connection.as_ref().unwrap().sync_interval_minutes,
+            60
+        );
+    }
+
+    /// Every provider's card offers the cadence, and each one names its own
+    /// provider on the write.
+    ///
+    /// Three pages, one component, and the provider is a query parameter: a
+    /// page that passed the wrong one would change another connection's
+    /// cadence, which no screen would show.
+    #[test]
+    fn each_contact_source_offers_its_own_cadence() {
+        for (src, provider) in [
+            (
+                include_str!("settings_contact_sync.rs"),
+                "provider: \"google\".to_string()",
+            ),
+            (
+                include_str!("settings_contact_sync_microsoft.rs"),
+                "provider: \"microsoft\".to_string()",
+            ),
+            (
+                include_str!("settings_contact_sync_icloud.rs"),
+                "provider: \"icloud\".to_string()",
+            ),
+        ] {
+            let head = &src[..src.find("mod tests").expect("a test module")];
+            let cadence = head
+                .find("SyncCadence {")
+                .map(|at| &head[at..(at + 220).min(head.len())])
+                .unwrap_or_else(|| panic!("this card offers no cadence control"));
+            assert!(
+                cadence.contains(provider),
+                "the card names its own provider: {cadence}"
+            );
+            assert!(
+                cadence.contains("minutes: connection.sync_interval_minutes"),
+                "and shows what the server says it is: {cadence}"
+            );
+        }
     }
 
     /// The page is admin only, and the one animation respects reduced motion.
