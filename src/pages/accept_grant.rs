@@ -15,14 +15,18 @@
 //! `TenantSwitcher` installs a session), and navigates to `/dashboard`.
 //! Decline shows a brief confirmation and routes to `/dashboard` too.
 //!
-//! Error shapes:
-//! - A 404 or 410 on the metadata GET renders "This invitation is not valid"
-//!   with no accept/decline affordance (an unauthenticated token that has
-//!   expired or been revoked).
-//! - A 403 on accept/decline (the signed-in user does not match the
-//!   invitation's `invitee_email`) renders a short "This invitation is
-//!   addressed to <email>" banner.
-//! - Any other transport failure shows an inline retry affordance.
+//! Error shapes on the metadata GET:
+//! - A 404 or 410 renders "This invitation is not valid" with no
+//!   accept/decline affordance (an unauthenticated token that has expired
+//!   or been revoked).
+//! - A 403 (the signed-in user does not match the invitation's
+//!   `invitee_email`) renders a short "This invitation is addressed to
+//!   <email>" banner.
+//! - Any other transport failure (a 500, a network error) shows an inline
+//!   retry affordance that restarts the fetch.
+//!
+//! None of the three is mistaken for the initial loading skeleton: the
+//! resource keeps the `Result` instead of collapsing every `Err` to `None`.
 
 use dioxus::prelude::*;
 use serde::Deserialize;
@@ -65,6 +69,54 @@ pub(crate) struct AcceptResponse {
     pub(crate) tenant_slug: Option<String>,
 }
 
+/// What the metadata GET resolved to. Replaces the old collapse-to-`None`
+/// that treated every `Err` the same as "still loading" (MAPPS-1170); each
+/// variant here gets its own render arm, distinct from the loading skeleton.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum MetadataLoad {
+    Loaded(InvitationMetadata),
+    /// 404 or 410: the token is dead. No accept/decline affordance.
+    Invalid,
+    /// 403: the signed-in user does not match the invitation's
+    /// `invitee_email`. Carries the address when the server's error
+    /// envelope includes it, so the banner can name it.
+    EmailMismatch(Option<String>),
+    /// Any other transport failure: offer a retry instead of the skeleton.
+    Failed,
+}
+
+/// Pulls `error.invitee_email` out of a 403's raw envelope body, when the
+/// server includes it, so the mismatch banner can name the address next to
+/// this account's own sign-in rather than only saying "wrong account".
+#[cfg(feature = "app")]
+pub(crate) fn invitee_email_from_body(body: &Option<serde_json::Value>) -> Option<String> {
+    body.as_ref()?
+        .get("error")?
+        .get("invitee_email")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// Classifies the metadata GET's `Err` into one of the three documented
+/// shapes (module doc comment, lines 18-26). Split out from the
+/// `use_resource` closure so the mapping is reachable from a plain unit
+/// test without a Dioxus runtime or a live HTTP call.
+#[cfg(feature = "app")]
+pub(crate) fn classify_metadata_error(e: &crate::hooks::fetch::api::ApiError) -> MetadataLoad {
+    use crate::hooks::fetch::api::ApiError;
+    match e {
+        ApiError::Status { code: 404, .. } | ApiError::Status { code: 410, .. } => {
+            MetadataLoad::Invalid
+        }
+        ApiError::Status {
+            code: 403,
+            envelope_body,
+            ..
+        } => MetadataLoad::EmailMismatch(invitee_email_from_body(envelope_body)),
+        _ => MetadataLoad::Failed,
+    }
+}
+
 /// Humanize the role string from the API ("admin", "manager", "finance").
 ///
 /// Pure so the renderer tests can read the same mapping without a Dioxus
@@ -94,24 +146,27 @@ pub fn AcceptGrantPage(token: String) -> Element {
     let mut done_message: Signal<Option<String>> = use_signal(|| None);
 
     let token_for_resource = token.clone();
-    let metadata = use_resource(use_reactive(&token_for_resource, |token| async move {
+    let mut metadata = use_resource(use_reactive(&token_for_resource, |token| async move {
         #[cfg(feature = "app")]
         {
             let path = format!("/grants/invitations/by-token/{token}");
-            crate::hooks::fetch::api::get_authed::<InvitationMetadata>(&path)
-                .await
-                .inspect_err(|e| tracing::error!("invitation metadata load failed: {e}"))
-                .ok()
+            match crate::hooks::fetch::api::get_authed_typed::<InvitationMetadata>(&path).await {
+                Ok(meta) => Some(MetadataLoad::Loaded(meta)),
+                Err(e) => {
+                    tracing::error!("invitation metadata load failed: {e}");
+                    Some(classify_metadata_error(&e))
+                }
+            }
         }
         #[cfg(not(feature = "app"))]
         {
             let _ = token;
-            None::<InvitationMetadata>
+            None::<MetadataLoad>
         }
     }));
 
     let snap = metadata.read_unchecked().clone();
-    let data: Option<InvitationMetadata> = snap.as_ref().and_then(|o| o.as_ref()).cloned();
+    let data: Option<MetadataLoad> = snap.and_then(|o| o);
 
     let on_accept = {
         let token = token.clone();
@@ -211,7 +266,32 @@ pub fn AcceptGrantPage(token: String) -> Element {
                         crate::components::DetailSkeleton { rows: 3 }
                     }
                 },
-                Some(meta) => {
+                Some(MetadataLoad::Invalid) => rsx! {
+                    Card { title: "Invitation".to_string(), class: "mt-4",
+                        p { class: "text-sm text-content", "This invitation is not valid." }
+                    }
+                },
+                Some(MetadataLoad::EmailMismatch(email)) => rsx! {
+                    Card { title: "Invitation".to_string(), class: "mt-4",
+                        ErrorBanner {
+                            match email {
+                                Some(email) => rsx! { "This invitation is addressed to {email}." },
+                                None => rsx! { "This invitation is addressed to a different email than the one you're signed in with." },
+                            }
+                        }
+                    }
+                },
+                Some(MetadataLoad::Failed) => rsx! {
+                    div { class: "mt-4 flex items-center justify-between gap-3 rounded-lg border border-line bg-surface px-4 py-3",
+                        ErrorBanner { class: "flex-1", "Could not load this invitation." }
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            onclick: move |_| metadata.restart(),
+                            "Retry"
+                        }
+                    }
+                },
+                Some(MetadataLoad::Loaded(meta)) => {
                     let status = meta.status.clone();
                     let is_pending = status == "pending";
                     let role = humanize_role(&meta.role);
@@ -342,5 +422,132 @@ mod tests {
         let without: AcceptResponse =
             serde_json::from_value(serde_json::json!({})).expect("decode");
         assert_eq!(without.tenant_slug, None);
+    }
+
+    /// MAPPS-1170 AC: the metadata resource's three documented error
+    /// shapes. A 404 or 410 must classify as `Invalid` (no accept/decline),
+    /// never anything that falls through to the loading skeleton.
+    #[cfg(feature = "app")]
+    #[test]
+    fn a_404_or_410_classifies_as_invalid() {
+        use crate::hooks::fetch::api::ApiError;
+        let status = |code| ApiError::Status {
+            code,
+            message: String::new(),
+            fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
+        };
+        assert_eq!(classify_metadata_error(&status(404)), MetadataLoad::Invalid);
+        assert_eq!(classify_metadata_error(&status(410)), MetadataLoad::Invalid);
+    }
+
+    /// AC: a 403 classifies as `EmailMismatch`, carrying the address when
+    /// the server's envelope names it, and `None` when it does not (a
+    /// server that predates the field still renders a mismatch banner,
+    /// just without the specific address).
+    #[cfg(feature = "app")]
+    #[test]
+    fn a_403_classifies_as_email_mismatch_with_or_without_the_address() {
+        use crate::hooks::fetch::api::ApiError;
+        let with_email = ApiError::Status {
+            code: 403,
+            message: String::new(),
+            fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: Some(serde_json::json!({
+                "error": { "invitee_email": "grantee@example.com" }
+            })),
+        };
+        assert_eq!(
+            classify_metadata_error(&with_email),
+            MetadataLoad::EmailMismatch(Some("grantee@example.com".to_string()))
+        );
+
+        let without_email = ApiError::Status {
+            code: 403,
+            message: String::new(),
+            fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
+        };
+        assert_eq!(
+            classify_metadata_error(&without_email),
+            MetadataLoad::EmailMismatch(None)
+        );
+    }
+
+    /// AC: any other transport failure (a 500, a network error) classifies
+    /// as `Failed` so the page offers a retry, distinct from `Invalid` and
+    /// `EmailMismatch`.
+    #[cfg(feature = "app")]
+    #[test]
+    fn any_other_failure_classifies_as_failed() {
+        use crate::hooks::fetch::api::ApiError;
+        let five_hundred = ApiError::Status {
+            code: 500,
+            message: String::new(),
+            fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
+        };
+        assert_eq!(classify_metadata_error(&five_hundred), MetadataLoad::Failed);
+        assert_eq!(
+            classify_metadata_error(&ApiError::Network("offline".to_string())),
+            MetadataLoad::Failed
+        );
+    }
+
+    /// AC: the loading state (resource not yet resolved, `data: None`) is
+    /// a fourth, distinct case from all three error shapes - none of them
+    /// is `None`, so none can be mistaken for "still loading".
+    #[test]
+    fn none_of_the_three_error_shapes_is_the_loading_state() {
+        let shapes = [
+            MetadataLoad::Invalid,
+            MetadataLoad::EmailMismatch(Some("a@example.com".to_string())),
+            MetadataLoad::EmailMismatch(None),
+            MetadataLoad::Failed,
+        ];
+        for shape in shapes {
+            assert_ne!(Some(shape), None::<MetadataLoad>);
+        }
+    }
+
+    /// AC: each error shape renders its own distinct text, not the
+    /// `DetailSkeleton` loading indicator, and the 404/410 arm offers no
+    /// Accept/Decline affordance.
+    #[test]
+    fn each_error_shape_renders_distinct_text_and_the_invalid_arm_has_no_actions() {
+        let src = include_str!("accept_grant.rs");
+        let head = &src[..src.find("mod tests").expect("this module")];
+        assert!(
+            head.contains("Some(MetadataLoad::Invalid) => rsx! {")
+                && head.contains("\"This invitation is not valid.\""),
+            "the 404/410 arm must render the documented invalid-link message"
+        );
+        let invalid_start = head.find("Some(MetadataLoad::Invalid) => rsx! {").unwrap();
+        let invalid_end = head[invalid_start..]
+            .find("Some(MetadataLoad::EmailMismatch")
+            .map(|i| invalid_start + i)
+            .expect("the next arm");
+        let invalid_arm = &head[invalid_start..invalid_end];
+        assert!(
+            !invalid_arm.contains("data_testid: \"accept-grant\"")
+                && !invalid_arm.contains("data_testid: \"decline-grant\""),
+            "an invalid token must offer no Accept/Decline affordance"
+        );
+        assert!(
+            head.contains("\"This invitation is addressed to {email}.\""),
+            "the 403 arm must render the email-mismatch banner"
+        );
+        assert!(
+            head.contains("Some(MetadataLoad::Failed) => rsx! {") && head.contains("\"Retry\""),
+            "any other failure must render an inline retry affordance"
+        );
+        assert!(
+            head.contains("crate::components::DetailSkeleton"),
+            "the loading state keeps its own skeleton, untouched by the error arms"
+        );
     }
 }
