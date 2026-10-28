@@ -1490,6 +1490,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(feature = "app", not(target_arch = "wasm32")))]
     fn member_row(id: Uuid) -> serde_json::Value {
         serde_json::json!({
             "kind": "user",
@@ -1543,17 +1544,14 @@ mod tests {
     #[tokio::test]
     async fn a_short_page_is_not_truncation() {
         let id = Uuid::new_v4();
-        let (names, truncated) = member_names_paged(|page| {
-            let id = id;
-            async move {
-                let rows = if page == 1 {
-                    vec![member_row(id)]
-                } else {
-                    vec![]
-                };
-                Ok(serde_json::from_value(serde_json::json!({ "rows": rows }))
-                    .expect("the envelope deserialises"))
-            }
+        let (names, truncated) = member_names_paged(|page| async move {
+            let rows = if page == 1 {
+                vec![member_row(id)]
+            } else {
+                vec![]
+            };
+            Ok(serde_json::from_value(serde_json::json!({ "rows": rows }))
+                .expect("the envelope deserialises"))
         })
         .await;
         assert!(!truncated, "a short first page ends the loop normally");
