@@ -263,7 +263,11 @@ fn GroupImportBody(vendor: Vendor) -> Element {
                 .await
                 {
                     Ok(_) => {
-                        navigator.push(Route::SettingsICloudContacts {});
+                        if vendor.provider == MICROSOFT.provider {
+                            navigator.push(Route::SettingsMicrosoftContacts {});
+                        } else {
+                            navigator.push(Route::SettingsICloudContacts {});
+                        }
                     }
                     Err(e) => {
                         error.set(format!(
@@ -543,5 +547,29 @@ mod tests {
         assert_eq!(estimate(&data.records, &none), Totals::default());
         let src = include_str!("settings_contact_sync_group_import.rs");
         assert!(src.contains("Nothing chosen yet, so nothing would be imported."));
+    }
+
+    /// MAPPS-1171: a successful import lands the admin on the vendor's OWN
+    /// settings page, not always iCloud's, which is what happened when `start`
+    /// was written once against the iCloud route and never parameterized.
+    #[test]
+    fn starting_an_import_names_both_vendors_own_route() {
+        let src = include_str!("settings_contact_sync_group_import.rs");
+        let start = &src[src.find("let mut start = move").expect("the start closure")
+            ..src
+                .find("let preview_snap")
+                .expect("after the start closure")];
+        assert!(
+            start.contains("vendor.provider == MICROSOFT.provider"),
+            "start must branch on the vendor before pushing a route"
+        );
+        assert!(
+            start.contains("navigator.push(Route::SettingsMicrosoftContacts {})"),
+            "a Microsoft 365 import must land on the Microsoft contacts page"
+        );
+        assert!(
+            start.contains("navigator.push(Route::SettingsICloudContacts {})"),
+            "an iCloud import must land on the iCloud contacts page"
+        );
     }
 }
