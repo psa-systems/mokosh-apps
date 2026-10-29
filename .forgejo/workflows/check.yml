@@ -409,11 +409,29 @@ jobs:
         uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/job-metrics-report@e728773130496a6e84e0d87de9390f3d98939019 # main
 
   secrets:
-    uses: psa-systems/common/.forgejo/workflows/check-secrets.yml@7987236da3d1a4aee8897ecd9e2be16e6d5b65ac # main
-    secrets: inherit
-    with:
-      # Nosey Parker's Generic Secret rule flags the 40-character commit SHA
-      # this job is pinned to above (MAPPS-954): a SHA pin isn't a
-      # credential, so suppress this one finding by id rather than reverting
-      # the pin.
-      noseyparker_findings_exclude: 5ea6a266e38a359ff88be14c9235d517260ad043
+    # Base image, medium size: the scanners read the tree and compile nothing.
+    # Explicit runs-on here because a cross-repo reusable `uses:` on this
+    # Forgejo instance does not resolve the caller's `vars.*`, so the runner
+    # wait message comes back with empty labels. Shaped like bunyip's secrets
+    # job (BUNYIP-786): the composite action runs as named steps of this job,
+    # a failing scanner is named in the UI, and the URL-form stops Renovate's
+    # github-actions manager from treating `psa-systems/common` as github.com.
+    runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_MEDIUM }}
+    defaults:
+      run:
+        shell: nu {0}
+    steps:
+      - name: Clone the repository
+        uses: https://code.forgejo.org/actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Secrets scan
+        uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/check-secrets@7987236da3d1a4aee8897ecd9e2be16e6d5b65ac # main
+        with:
+          # Nosey Parker's Generic Secret rule flags the 40-character commit
+          # SHA the composite action is pinned to above (MAPPS-954): a SHA
+          # pin isn't a credential, so suppress this one finding by id
+          # rather than reverting the pin.
+          noseyparker_findings_exclude: 5ea6a266e38a359ff88be14c9235d517260ad043

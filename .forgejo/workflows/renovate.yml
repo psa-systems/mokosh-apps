@@ -21,9 +21,25 @@ on:
 jobs:
   renovate:
     name: Renovate (caller)
-    uses: psa-systems/common/.forgejo/workflows/renovate-reusable.yml@1f4d449a32d694f229b112a3f6a651534660cf55 # main
+    # MAPPS-1175: the bare `psa-systems/common/...@<sha>` form was parsed
+    # by Renovate's github-actions manager as a github.com reference and
+    # the lookup 404s. The explicit `https://dev.a8n.run/...@<sha>` form
+    # names the Forgejo host, so Renovate treats it as `forgejo-tags`
+    # and the dashboard's "Failed to look up github-digest" warning goes
+    # away. Matches the sibling `.forgejo/actions/*` references already
+    # on `https://dev.a8n.run/...` in this repo.
+    uses: https://dev.a8n.run/psa-systems/common/.forgejo/workflows/renovate-reusable.yml@1f4d449a32d694f229b112a3f6a651534660cf55 # main
     with:
       target_repository: ${{ github.repository }}
     secrets:
       # secret-scope-ok: reusable workflow reads RENOVATE_CI_TOKEN (write:repository + write:issue) to open dependency-update PRs; this caller job runs no step and reads no secret itself. Explicit pass-through, not `secrets: inherit`, so the callee gets only this secret.
       RENOVATE_CI_TOKEN: ${{ secrets.RENOVATE_CI_TOKEN }}
+      # Silences the "No github.com token has been configured" / "Rate
+      # limit exceeded for api.github.com" dashboard warnings: Renovate
+      # still has to reach github.com for the real github-hosted actions
+      # (Swatinem/rust-cache, crazy-max/*) and the crates.io release-
+      # notes source. `PUBLIC_GITHUB_REPO_TOKEN` is an org-level read-
+      # only PAT (public_repo scope only) added 2026-10-24. The reusable
+      # workflow maps it onto `GITHUB_COM_TOKEN` once PC-104 lands; a
+      # no-op in the meantime.
+      PUBLIC_GITHUB_REPO_TOKEN: ${{ secrets.PUBLIC_GITHUB_REPO_TOKEN }}
