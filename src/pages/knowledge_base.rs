@@ -36,7 +36,8 @@ use crate::components::{
 use crate::modules::kb::{
     ArticleMeasuredDuration, CreateKbArticleRequest, CreateKbCategoryRequest, KbArticle,
     KbArticleFeedback, KbArticleTicket, KbArticleVersion, KbAttachmentResponse, KbCategory,
-    TopTicketDrivingArticle, UpdateKbArticleRequest, UpdateKbCategoryRequest,
+    KbTemplateVariable, RenderKbArticleRequest, RenderKbArticleResponse, TopTicketDrivingArticle,
+    UpdateKbArticleRequest, UpdateKbCategoryRequest,
 };
 use crate::utils::url::urlencoding_minimal;
 use crate::utils::{FormGuard, Paginated, Rule};
@@ -497,6 +498,27 @@ fn attribution_parts(
 /// MAPPS-1063: KB attribution helper. Logs an unresolved reference via the
 /// shared helper when the server sent an id but no (non-blank) name; a row
 /// with no id at all is a legitimate absence and is not logged.
+/// Parse the row index from a server-returned `FieldError::field` such
+/// as `template_variables[2].name` or `template_variables.0.name`. The
+/// server's exact format depends on the validator layer; both shapes
+/// are accepted, and anything that does not start with
+/// `template_variables` returns `None` so the message routes to the
+/// shared banner instead.
+fn parse_tplvar_index(field: &str) -> Option<usize> {
+    let rest = field.strip_prefix("template_variables")?;
+    // `[N]…` -> brackets form.
+    if let Some(after) = rest.strip_prefix('[') {
+        let end = after.find(']')?;
+        return after[..end].parse().ok();
+    }
+    // `.N…` -> dotted form.
+    if let Some(after) = rest.strip_prefix('.') {
+        let end = after.find(['.', '[']).unwrap_or(after.len());
+        return after[..end].parse().ok();
+    }
+    None
+}
+
 fn resolve_person_label(surface: &str, name: Option<&str>, id: Option<uuid::Uuid>) -> String {
     match name.filter(|n| !n.trim().is_empty()) {
         Some(n) => n.to_string(),
@@ -1770,6 +1792,84 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         None => Vec::new(),
     };
 
+    // Templated article: the reader picks values the server substitutes
+    // into `{{var}}` placeholders. Seeds from the article's declared
+    // `template_variables` (empty for a non-templated article), and the
+    // right-rail panel below mounts only when there is at least one
+    // variable. The debounced watcher coalesces a burst of keystrokes
+    // into one render call, cancelling any still in flight.
+    let mut tpl_picks = use_signal(std::collections::BTreeMap::<String, String>::new);
+    let mut tpl_rendered = use_signal(|| None::<String>);
+    let mut tpl_error = use_signal(String::new);
+    let mut tpl_busy = use_signal(|| false);
+    let mut tpl_variables = use_signal(Vec::<KbTemplateVariable>::new);
+    use_effect(move || {
+        if let Some(Some(a)) = &*article_resource.read_unchecked() {
+            tpl_variables.set(a.template_variables.clone());
+            tpl_picks.set(crate::components::seed_values(&a.template_variables));
+            // The raw content is the starting render; a successful
+            // POST /render replaces it below.
+            tpl_rendered.set(None);
+            tpl_error.set(String::new());
+        }
+    });
+    // The signal the render effect watches: changes when a pick lands,
+    // debounced so a stream of keystrokes fans out to one call.
+    let picks_source = use_signal(String::new);
+    let mut picks_source_setter = picks_source;
+    use_effect(move || {
+        // Reading `tpl_picks` subscribes this effect; the serialized
+        // form becomes the debounce key the resource below reacts to.
+        let picks = tpl_picks.read().clone();
+        let serialized = serde_json::to_string(&picks).unwrap_or_default();
+        picks_source_setter.set(serialized);
+    });
+    let picks_debounced = crate::hooks::use_debounced_signal(picks_source, 300);
+    let id_for_render = props.id.clone();
+    let nav_for_render = use_navigator();
+    use_resource(use_reactive!(|id_for_render, picks_debounced| async move {
+        #[cfg(feature = "app")]
+        {
+            let declared = tpl_variables.read().clone();
+            if declared.is_empty() {
+                return;
+            }
+            let picks: std::collections::BTreeMap<String, String> =
+                serde_json::from_str(&picks_debounced.read()).unwrap_or_default();
+            let body = RenderKbArticleRequest {
+                values: crate::components::render_values(&declared, &picks),
+            };
+            tpl_busy.set(true);
+            let path = format!("/kb/articles/{id_for_render}/render");
+            match crate::hooks::fetch::api::post_authed_typed::<RenderKbArticleResponse, _>(
+                &path, &body,
+            )
+            .await
+            {
+                Ok(resp) => {
+                    tpl_error.set(String::new());
+                    tpl_rendered.set(Some(resp.content));
+                }
+                Err(crate::hooks::fetch::api::ApiError::Status { code: 404, .. }) => {
+                    // The article was deleted while this reader held it
+                    // open; the detail page is about to 404 on its own
+                    // resource too. Say so and leave.
+                    crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Warning,
+                        "This article was deleted.",
+                    );
+                    nav_for_render.push(Route::KBHome {});
+                }
+                Err(err) => {
+                    tpl_error.set(err.user_message());
+                }
+            }
+            tpl_busy.set(false);
+        }
+        #[cfg(not(feature = "app"))]
+        let _ = (&id_for_render, &picks_debounced);
+    }));
+
     // Seed my_vote (and refine counts) from GET /kb/articles/{id}/vote once
     // the article id is available. Declared unconditionally for rules-of-hooks.
     let id_for_vote = props.id.clone();
@@ -1929,7 +2029,14 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                         }
                     }
                 };
-                let content = article.content.clone();
+                // Rendered content: the server's `/render` reply when the
+                // reader has picked values, otherwise the raw body (which
+                // the server treats as `{{var}}` placeholders left intact
+                // for a non-templated article).
+                let content = tpl_rendered
+                    .read()
+                    .clone()
+                    .unwrap_or_else(|| article.content.clone());
                 let path = resolve_category_path(article.category_id, &categories);
                 // Density drives BOTH the line spacing (leading-*) and the
                 // gap between paragraphs ([&_p]:my-*): comfortable reads
@@ -2150,6 +2257,22 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                             }
                         }
                         CollapsibleRail { side: RailSide::Right, collapsed: right_collapsed, open_overlay,
+                            // Templated article picker: lets the reader
+                            // fill the article's declared variables and
+                            // asks the server for a fresh rendering on
+                            // every change. Omitted entirely for an
+                            // article that declares none, so a plain KB
+                            // page is unchanged.
+                            if !article.template_variables.is_empty() {
+                                Card { title: "Fill in",
+                                    crate::components::TemplateVariablesPanel {
+                                        variables: article.template_variables.clone(),
+                                        picks: tpl_picks,
+                                        error: tpl_error.read().clone(),
+                                        busy: tpl_busy(),
+                                    }
+                                }
+                            }
                             // MAPPS-423: one column of actions that act on this
                             // article, above the read-only cards below.
                             Card { title: "Actions",
@@ -2878,6 +3001,9 @@ struct ArticleFormValues {
     /// (promoting a child to a top-level article is a human move handled
     /// server-side).
     parent_article_id: String,
+    /// Declared template variables, round-tripped on edit so the admin
+    /// sees the stored set and can add / change / delete rows.
+    template_variables: Vec<KbTemplateVariable>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3044,6 +3170,7 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
                     // editable field; empty here maps to `None` on the
                     // update request, which leaves the stored value alone.
                     parent_article_id: String::new(),
+                    template_variables: article.template_variables.clone(),
                 };
                 let id = id_for_form.clone();
                 rsx! {
@@ -3106,6 +3233,26 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     let mut adding_company = use_signal(|| false);
     let mut company_add_note = use_signal(String::new);
     let mut company_error = use_signal(String::new);
+    // Template variables, as rows the admin can add / edit / delete.
+    // `allowed_values` is held as a comma-separated string on the row so
+    // the chip-list input matches how tags are already entered on this
+    // form; it is split on save. `*_errors` is a parallel vec of
+    // per-row server messages (422 field errors land here), reset on
+    // the next submit so a corrected row no longer carries its old
+    // complaint. The empty default on create flows means the editor
+    // starts with no rows and the author presses "Add variable" to
+    // declare the first one.
+    let mut template_vars = use_signal(|| initial.template_variables.clone());
+    let mut template_var_allowed_raw: Signal<Vec<String>> = use_signal(|| {
+        initial
+            .template_variables
+            .iter()
+            .map(|v| v.allowed_values.join(", "))
+            .collect()
+    });
+    let mut template_var_errors: Signal<Vec<String>> =
+        use_signal(|| vec![String::new(); initial.template_variables.len()]);
+    let mut template_vars_banner = use_signal(String::new);
     // The parent article the new article is a company-specific version of,
     // seeded from the "Create a company version" affordance's query string.
     // The form itself does not expose it as an editable field: changing the
@@ -3277,6 +3424,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
             || *content.read() != initial_for_dirty.content
             || *tags.read() != initial_for_dirty.tags
             || *companies.read() != initial_for_dirty.companies
+            || *template_vars.read() != initial_for_dirty.template_variables
     });
     // The browser-level half: a tab close or reload still prompts. It does NOT
     // cover Cancel, because `beforeunload` never fires on an in-app route
@@ -3371,6 +3519,10 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             &parent_article_id_seed.read(),
                             "parent article",
                         ),
+                        // The upload-triggered draft carries no declared
+                        // variables; the save path below sends the real
+                        // set once the author presses Publish.
+                        template_variables: None,
                     };
                     match crate::hooks::fetch::api::post_authed::<KbArticle, _>(
                         "/kb/articles",
@@ -3556,6 +3708,51 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         let change_note_val = change_note.read().trim().to_string();
         let change_note_opt = (!change_note_val.is_empty()).then_some(change_note_val);
 
+        // Template variables: zip the row vector with the allowed_values
+        // raw strings, split commas into chips (trimmed, empties
+        // dropped), drop entirely-empty rows (no name AND no label AND
+        // no values AND no default). Validation is server-side, so this
+        // only shapes the request body.
+        let tplvar_rows = template_vars.read().clone();
+        let tplvar_allowed = template_var_allowed_raw.read().clone();
+        let template_vars_body: Vec<KbTemplateVariable> = tplvar_rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let allowed: Vec<String> = tplvar_allowed
+                    .get(index)
+                    .map(|raw| {
+                        raw.split(',')
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                KbTemplateVariable {
+                    name: row.name.trim().to_string(),
+                    label: row.label.trim().to_string(),
+                    allowed_values: allowed,
+                    default: row
+                        .default
+                        .as_ref()
+                        .map(|d| d.trim().to_string())
+                        .filter(|d| !d.is_empty()),
+                }
+            })
+            .filter(|v| {
+                !(v.name.is_empty()
+                    && v.label.is_empty()
+                    && v.allowed_values.is_empty()
+                    && v.default.is_none())
+            })
+            .collect();
+        // Clear the per-row slots so a corrected row no longer carries
+        // its old 422 message; a fresh set lands below on a new failure.
+        let row_count = tplvar_rows.len();
+        template_var_errors.set(vec![String::new(); row_count]);
+        template_vars_banner.set(String::new());
+
         spawn(async move {
             #[cfg(feature = "app")]
             {
@@ -3563,6 +3760,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                 // article whose first image upload created it already has a row,
                 // and POSTing again would leave a second, image-less copy behind.
                 let existing = article_id.read().clone();
+                let template_vars_payload = Some(template_vars_body.clone());
                 let result = match existing {
                     Some(id) => {
                         let body = UpdateKbArticleRequest {
@@ -3580,9 +3778,10 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             // alone on the server side.
                             parent_article_id: None,
                             change_note: change_note_opt.clone(),
+                            template_variables: template_vars_payload.clone(),
                         };
                         let path = format!("/kb/articles/{id}");
-                        crate::hooks::fetch::api::put_authed::<KbArticle, _>(&path, &body)
+                        crate::hooks::fetch::api::put_authed_typed::<KbArticle, _>(&path, &body)
                             .await
                             .map(|_| id.clone())
                     }
@@ -3601,10 +3800,14 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                                 &parent_article_id_seed.read(),
                                 "parent article",
                             ),
+                            template_variables: template_vars_payload.clone(),
                         };
-                        crate::hooks::fetch::api::post_authed::<KbArticle, _>("/kb/articles", &body)
-                            .await
-                            .map(|a| a.id.to_string())
+                        crate::hooks::fetch::api::post_authed_typed::<KbArticle, _>(
+                            "/kb/articles",
+                            &body,
+                        )
+                        .await
+                        .map(|a| a.id.to_string())
                     }
                 };
                 match result {
@@ -3612,7 +3815,41 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                         navigator.push(Route::KBArticleDetail { id });
                     }
                     Err(err) => {
-                        error.set(format!("Could not save article: {err}"));
+                        // Surface server field errors next to the
+                        // offending row when the 422 names a
+                        // `template_variables[N]` field; the rest fall
+                        // back to the shared banner above.
+                        if let crate::hooks::fetch::api::ApiError::Status {
+                            code: 422,
+                            ref fields,
+                            ..
+                        } = err
+                        {
+                            let mut row_errors = template_var_errors.read().clone();
+                            if row_errors.len() < row_count {
+                                row_errors.resize(row_count, String::new());
+                            }
+                            let mut leftover: Vec<String> = Vec::new();
+                            for fe in fields {
+                                if let Some(index) = parse_tplvar_index(&fe.field) {
+                                    if let Some(slot) = row_errors.get_mut(index) {
+                                        if slot.is_empty() {
+                                            *slot = fe.message.clone();
+                                        } else {
+                                            slot.push_str("; ");
+                                            slot.push_str(&fe.message);
+                                        }
+                                        continue;
+                                    }
+                                }
+                                leftover.push(fe.message.clone());
+                            }
+                            template_var_errors.set(row_errors);
+                            if !leftover.is_empty() {
+                                template_vars_banner.set(leftover.join("; "));
+                            }
+                        }
+                        error.set(format!("Could not save article: {}", err.user_message()));
                     }
                 }
             }
@@ -3904,6 +4141,130 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                         placeholder: "Comma-separated, e.g. vpn, network",
                         value: tags.read().clone(),
                         oninput: move |e: FormEvent| tags.set(e.value()),
+                    }
+
+                    // Template variables: one row per declared variable,
+                    // with name / label / allowed values (comma-separated
+                    // chip list) / default.
+                    // Validation is server-side (unknown name, dup,
+                    // `default` not in `allowed_values`); the per-row
+                    // slot below surfaces the matching 422 message.
+                    fieldset { class: "space-y-2",
+                        legend { class: "block text-sm font-medium text-content",
+                            "Template variables"
+                        }
+                        p { class: "text-xs text-muted",
+                            "Declare {{var}} placeholders a reader fills in before the article is rendered."
+                        }
+                        if !template_vars_banner.read().is_empty() {
+                            p { class: "text-xs text-red-600 dark:text-red-400", role: "alert",
+                                "{template_vars_banner}"
+                            }
+                        }
+                        for (index , row) in template_vars.read().clone().iter().cloned().enumerate() {
+                            {
+                                let allowed_raw = template_var_allowed_raw
+                                    .read()
+                                    .get(index)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                let row_error = template_var_errors
+                                    .read()
+                                    .get(index)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                rsx! {
+                                    div {
+                                        key: "tplvar-{index}",
+                                        class: "rounded-md border border-line p-3 space-y-2",
+                                        div { class: "flex items-start justify-between gap-3",
+                                            p { class: "text-xs text-subtle",
+                                                "Variable {index + 1}"
+                                            }
+                                            crate::components::IconButton {
+                                                label: "Remove variable".to_string(),
+                                                class: "p-1 text-subtle hover:text-red-600 dark:hover:text-red-400".to_string(),
+                                                onclick: move |_| {
+                                                    template_vars.write().remove(index);
+                                                    template_var_allowed_raw.write().remove(index);
+                                                    template_var_errors.write().remove(index);
+                                                },
+                                                TrashIcon { size: IconSize::Small }
+                                            }
+                                        }
+                                        div { class: "grid grid-cols-1 gap-3 sm:grid-cols-2",
+                                            crate::components::Input {
+                                                name: format!("tplvar-name-{index}"),
+                                                label: "Name".to_string(),
+                                                placeholder: "environment".to_string(),
+                                                value: row.name.clone(),
+                                                oninput: move |e: FormEvent| {
+                                                    if let Some(v) = template_vars.write().get_mut(index) {
+                                                        v.name = e.value();
+                                                    }
+                                                },
+                                            }
+                                            crate::components::Input {
+                                                name: format!("tplvar-label-{index}"),
+                                                label: "Label".to_string(),
+                                                placeholder: "Environment".to_string(),
+                                                value: row.label.clone(),
+                                                oninput: move |e: FormEvent| {
+                                                    if let Some(v) = template_vars.write().get_mut(index) {
+                                                        v.label = e.value();
+                                                    }
+                                                },
+                                            }
+                                        }
+                                        div { class: "grid grid-cols-1 gap-3 sm:grid-cols-2",
+                                            crate::components::Input {
+                                                name: format!("tplvar-allowed-{index}"),
+                                                label: "Allowed values".to_string(),
+                                                placeholder: "Comma-separated, blank for free text".to_string(),
+                                                help: "A list makes this a dropdown; blank renders as a free-text input.".to_string(),
+                                                value: allowed_raw.clone(),
+                                                oninput: move |e: FormEvent| {
+                                                    if let Some(slot) = template_var_allowed_raw.write().get_mut(index) {
+                                                        *slot = e.value();
+                                                    }
+                                                },
+                                            }
+                                            crate::components::Input {
+                                                name: format!("tplvar-default-{index}"),
+                                                label: "Default".to_string(),
+                                                placeholder: "Optional".to_string(),
+                                                value: row.default.clone().unwrap_or_default(),
+                                                oninput: move |e: FormEvent| {
+                                                    if let Some(v) = template_vars.write().get_mut(index) {
+                                                        let next = e.value();
+                                                        v.default = if next.is_empty() { None } else { Some(next) };
+                                                    }
+                                                },
+                                            }
+                                        }
+                                        if !row_error.is_empty() {
+                                            p { class: "text-xs text-red-600 dark:text-red-400", role: "alert",
+                                                "{row_error}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        div {
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                size: ButtonSize::Small,
+                                onclick: move |_| {
+                                    template_vars.write().push(KbTemplateVariable::default());
+                                    template_var_allowed_raw.write().push(String::new());
+                                    template_var_errors.write().push(String::new());
+                                    template_vars_banner.set(String::new());
+                                },
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "Add variable"
+                            }
+                        }
                     }
                             }
                         }
@@ -4939,6 +5300,7 @@ mod tests {
             parent_article_id: None,
             created_at: None,
             updated_at: None,
+            template_variables: vec![],
         }
     }
 
@@ -5155,6 +5517,28 @@ mod tests {
     fn add_scope_company_label_reads_by_count() {
         assert_eq!(add_scope_company_label(0), "Add a company");
         assert_eq!(add_scope_company_label(1), "Add another company");
+    }
+
+    /// A 422 field path for a templated article's row routes to the
+    /// matching per-row slot, in either the bracket or the dotted
+    /// shape (the validator layer's exact format is not something the
+    /// SPA pins).
+    #[test]
+    fn tplvar_index_handles_both_server_shapes() {
+        assert_eq!(parse_tplvar_index("template_variables[0].name"), Some(0));
+        assert_eq!(
+            parse_tplvar_index("template_variables[12].default"),
+            Some(12)
+        );
+        assert_eq!(parse_tplvar_index("template_variables.3.name"), Some(3));
+        assert_eq!(parse_tplvar_index("template_variables.0"), Some(0));
+    }
+
+    #[test]
+    fn tplvar_index_rejects_unrelated_fields() {
+        assert_eq!(parse_tplvar_index("title"), None);
+        assert_eq!(parse_tplvar_index("company_ids[0]"), None);
+        assert_eq!(parse_tplvar_index("template_variables"), None);
     }
 }
 
