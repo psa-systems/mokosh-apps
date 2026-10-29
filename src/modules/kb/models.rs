@@ -12,6 +12,39 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// One declared template variable on a KB article. Mirrors the server's
+/// `KbTemplateVariable`: a variable with a non-empty `allowed_values`
+/// renders as a dropdown picker, otherwise as a free-text input;
+/// `default` seeds the value when the reader has not picked one. Round-
+/// tripped through create/update so a `/render` call knows what names it
+/// accepts.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KbTemplateVariable {
+    pub name: String,
+    pub label: String,
+    #[serde(default)]
+    pub allowed_values: Vec<String>,
+    #[serde(default)]
+    pub default: Option<String>,
+}
+
+/// `POST /kb/articles/{id}/render` request body. An absent or empty
+/// `values` is `{}`, so the server renders every variable from its
+/// `default` (or the `[missing: NAME]` placeholder when none).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct RenderKbArticleRequest {
+    pub values: std::collections::BTreeMap<String, String>,
+}
+
+/// `POST /kb/articles/{id}/render` response body: the article id and the
+/// rendered Markdown with every `{{var}}` substitution applied.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct RenderKbArticleResponse {
+    pub id: Uuid,
+    #[serde(default)]
+    pub content: String,
+}
+
 /// `KbCategoryResponse` subset. The category grid keys badges/links on
 /// `id`, `name`, `slug`, `description`, and `visibility`.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -104,6 +137,11 @@ pub struct KbArticle {
     pub created_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub updated_at: Option<DateTime<Utc>>,
+    /// Declared template variables, carried through write + restore so a
+    /// `/render` call knows what names it accepts. Empty for an article
+    /// that has none, which is how every pre-templating row reads.
+    #[serde(default)]
+    pub template_variables: Vec<KbTemplateVariable>,
 }
 
 /// `KbCommentResponse` (PMS-1128): one comment, with its replies nested when
@@ -276,6 +314,11 @@ pub struct CreateKbArticleRequest {
     /// prefills this field via a query string.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_article_id: Option<Uuid>,
+    /// Declared template variables (optional on create). Service-side
+    /// validation refuses duplicate names and a default that is not in
+    /// a non-empty `allowed_values`; a 422 surfaces inline per row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_variables: Option<Vec<KbTemplateVariable>>,
 }
 
 /// One uploaded image, as `POST /kb/articles/{id}/attachments` returns it
@@ -322,6 +365,11 @@ pub struct UpdateKbArticleRequest {
     /// version the save creates and drops it when the save creates none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub change_note: Option<String>,
+    /// Declared template variables; `Some(vec)` replaces the whole set,
+    /// `None` leaves it alone. Service-side validation refuses
+    /// duplicates and a default outside a non-empty `allowed_values`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_variables: Option<Vec<KbTemplateVariable>>,
 }
 
 /// PMS-485: one row of the `/kb/top-ticket-driving-articles` feed used
