@@ -1198,7 +1198,9 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         }
     });
     // MAPPS-940: shared task-statuses cache, not a per-page fetch.
-    let statuses_resource = crate::hooks::use_task_statuses(true);
+    // Mut so the Add Task button can restart the cache on open and
+    // pick up a row created out-of-band.
+    let mut statuses_resource = crate::hooks::use_task_statuses(true);
     // MAPPS-860: shared roster cache, not a per-page fetch.
     let users_resource = crate::hooks::use_user_roster(true);
 
@@ -1461,6 +1463,12 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                             return;
                         }
                         t_error.set(String::new());
+                        // Refresh the shared task-statuses cache so a
+                        // row created in another session or by a
+                        // sibling (admin page, API client, test harness)
+                        // appears in the Status select without a page
+                        // reload.
+                        statuses_resource.restart();
                         show_task_modal.set(true);
                     },
                     PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
