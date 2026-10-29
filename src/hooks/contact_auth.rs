@@ -1,14 +1,17 @@
 //! Contact-plane cold-load bootstrap + background refresh (prompt 005).
 //!
-//! The contact access token lives in memory only; the refresh token is
-//! mirrored to localStorage so a hard refresh / deep-link can re-mint
-//! the access token before AuthGuard bounces the visitor away. This
-//! module owns the two flows that surround that mirror:
+//! The contact access AND refresh tokens live in memory only; the
+//! durable mirror is the server-minted HttpOnly `mokosh:contact_token`
+//! cookie (MAPPS-920 / MAPPS-1117), which the browser attaches
+//! automatically and which survives a hard reload / deep link even
+//! though the in-memory tokens do not. This module owns the two flows
+//! that surround that cookie:
 //!
-//! - `refresh_contact_session` posts to `/contact/auth/refresh` with the
-//!   stored refresh token and, on success, writes both fresh tokens
-//!   through the fetch helpers. On any failure it clears both so the
-//!   visitor lands on `/portal/{slug}/login` rather than looping.
+//! - `refresh_contact_session` posts to `/contact/auth/refresh`, which
+//!   succeeds or fails on the server's reading of that cookie
+//!   (MAPPS-1169), and on success writes both fresh tokens through the
+//!   fetch helpers. On any failure it clears both so the visitor lands
+//!   on `/portal/{slug}/login` rather than looping.
 //! - `use_contact_auto_refresh` runs a periodic loop that calls
 //!   `refresh_contact_session` while a session is held, so a long-lived
 //!   tab keeps its access token fresh without a user round-trip. It
@@ -74,23 +77,22 @@ struct RefreshContactSnippet {
     effective_branding: crate::hooks::branding::EffectiveBranding,
 }
 
-/// Rotate the contact session using the stored refresh token.
+/// Rotate the contact session via `POST /contact/auth/refresh`.
 ///
-/// Reads `current_contact_refresh_token()` (memory first, localStorage
-/// fallback). On a 2xx writes both the new access + refresh tokens
-/// through the setters and returns `Ok`. On ANY failure clears both
-/// tokens so a stale refresh cannot loop the visitor through repeated
-/// bootstrap attempts.
+/// The in-memory refresh token, when present, is sent as a request-body
+/// hint; the request also carries the HttpOnly `mokosh:contact_token`
+/// cookie the browser attaches automatically, which is what makes a
+/// cold load (empty in-memory token) work (MAPPS-1169). Whether the
+/// refresh can succeed is therefore a server decision, not something
+/// this function can rule out in advance. On a 2xx it writes both the
+/// new access + refresh tokens through the setters and returns `Ok`. On
+/// ANY failure it clears both tokens so a stale refresh cannot loop the
+/// visitor through repeated bootstrap attempts.
 #[cfg(feature = "web")]
 pub async fn refresh_contact_session() -> Result<(), String> {
-    let Some(refresh) = crate::hooks::fetch::api::current_contact_refresh_token() else {
-        crate::hooks::fetch::api::clear_contact_session();
-        crate::hooks::capabilities::clear_contact_capabilities();
-        crate::hooks::branding::clear_effective_branding();
-        return Err("no contact refresh token".to_string());
-    };
     let body = RefreshBody {
-        refresh_token: refresh,
+        refresh_token: crate::hooks::fetch::api::current_contact_refresh_token()
+            .unwrap_or_default(),
     };
     match crate::hooks::fetch::api::post_typed::<RefreshResp, _>("/contact/auth/refresh", &body)
         .await
