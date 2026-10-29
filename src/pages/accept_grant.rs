@@ -65,6 +65,47 @@ pub(crate) struct AcceptResponse {
     pub(crate) tenant_slug: Option<String>,
 }
 
+/// MAPPS-1170: classification of a failed `by-token` metadata fetch. Three
+/// branches so the renderer can distinguish "the invitation is gone" from
+/// "the signed-in grantee does not match the invitation's email" from "the
+/// network/server blew up".
+///
+/// Pure (no Dioxus runtime, no fetch) so the test module can match on each
+/// branch without a browser.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MetadataError {
+    /// 404 or 410 from `GET /api/v1/grants/invitations/by-token/{token}`.
+    /// The invitation does not exist (never did, or was revoked), so the
+    /// renderer shows a "This invitation is not valid" card with no
+    /// Accept/Decline affordance.
+    Invalid,
+    /// 403 from the metadata endpoint. The signed-in grantee's email does
+    /// not match the invitation's `invitee_email`, so the renderer shows a
+    /// short email-mismatch banner.
+    EmailMismatch,
+    /// Any other transport failure (network, 5xx, decode). The renderer
+    /// shows an inline retry affordance (restart the resource) rather than
+    /// a dead-end "invalid" message, because this one is recoverable.
+    Transient,
+}
+
+/// Map an API fetch result into the three documented UI branches. Pure
+/// over `code`: a `Status { code: 404|410, .. }` reads as `Invalid`, a
+/// `Status { code: 403, .. }` as `EmailMismatch`, anything else as
+/// `Transient`. `Network` and `Decode` always read as `Transient`.
+#[cfg(feature = "app")]
+pub(crate) fn classify_metadata_error(err: &crate::hooks::fetch::api::ApiError) -> MetadataError {
+    match err {
+        crate::hooks::fetch::api::ApiError::Status { code, .. } => match *code {
+            404 | 410 => MetadataError::Invalid,
+            403 => MetadataError::EmailMismatch,
+            _ => MetadataError::Transient,
+        },
+        crate::hooks::fetch::api::ApiError::Network(_)
+        | crate::hooks::fetch::api::ApiError::Decode(_) => MetadataError::Transient,
+    }
+}
+
 /// Humanize the role string from the API ("admin", "manager", "finance").
 ///
 /// Pure so the renderer tests can read the same mapping without a Dioxus
@@ -94,24 +135,32 @@ pub fn AcceptGrantPage(token: String) -> Element {
     let mut done_message: Signal<Option<String>> = use_signal(|| None);
 
     let token_for_resource = token.clone();
-    let metadata = use_resource(use_reactive(&token_for_resource, |token| async move {
+    // MAPPS-1170: keep the Err arm so the renderer can tell "invitation
+    // gone" (404/410) from "wrong signed-in email" (403) from "please
+    // retry" (anything else). The previous `.inspect_err(...).ok()`
+    // collapsed every failure into the same `None` the resource shows
+    // while a request is still in flight, so a dead link rendered as an
+    // infinite skeleton with no feedback.
+    let mut metadata = use_resource(use_reactive(&token_for_resource, |token| async move {
         #[cfg(feature = "app")]
         {
             let path = format!("/grants/invitations/by-token/{token}");
-            crate::hooks::fetch::api::get_authed::<InvitationMetadata>(&path)
+            crate::hooks::fetch::api::get_authed_typed::<InvitationMetadata>(&path)
                 .await
-                .inspect_err(|e| tracing::error!("invitation metadata load failed: {e}"))
-                .ok()
+                .map_err(|e| {
+                    let kind = classify_metadata_error(&e);
+                    tracing::error!("invitation metadata load failed: {e}");
+                    kind
+                })
         }
         #[cfg(not(feature = "app"))]
         {
             let _ = token;
-            None::<InvitationMetadata>
+            Err::<InvitationMetadata, MetadataError>(MetadataError::Transient)
         }
     }));
 
     let snap = metadata.read_unchecked().clone();
-    let data: Option<InvitationMetadata> = snap.as_ref().and_then(|o| o.as_ref()).cloned();
 
     let on_accept = {
         let token = token.clone();
@@ -205,13 +254,48 @@ pub fn AcceptGrantPage(token: String) -> Element {
                 p { class: "text-sm text-content", "{msg}" }
             }
         } else {
-            match data {
+            match snap {
+                // Still in flight: skeleton (unchanged from MAPPS-1084).
                 None => rsx! {
                     div { class: "mt-4",
                         crate::components::DetailSkeleton { rows: 3 }
                     }
                 },
-                Some(meta) => {
+                // MAPPS-1170: the three documented error branches get
+                // distinct UI so a dead link stops being mistaken for a
+                // still-loading one.
+                Some(Err(MetadataError::Invalid)) => rsx! {
+                    Card { title: "This invitation is not valid".to_string(), class: "mt-4",
+                        p { class: "text-sm text-content",
+                            "The invitation link has expired or was revoked. Ask whoever sent it for a fresh one."
+                        }
+                    }
+                },
+                Some(Err(MetadataError::EmailMismatch)) => rsx! {
+                    Card { title: "This invitation is addressed to someone else".to_string(), class: "mt-4",
+                        p { class: "text-sm text-content",
+                            "The invitation was sent to a different email than the one you are signed in with. Sign out and sign in with the invited address, or ask the team to resend the invitation."
+                        }
+                    }
+                },
+                Some(Err(MetadataError::Transient)) => rsx! {
+                    Card { title: "Could not reach the server".to_string(), class: "mt-4",
+                        div { class: "space-y-4",
+                            p { class: "text-sm text-content",
+                                "The invitation could not be loaded. Check your connection and try again."
+                            }
+                            div { class: "flex gap-2 pt-2",
+                                Button {
+                                    variant: ButtonVariant::Primary,
+                                    data_testid: "retry-accept-grant",
+                                    onclick: move |_| metadata.restart(),
+                                    "Retry"
+                                }
+                            }
+                        }
+                    }
+                },
+                Some(Ok(meta)) => {
                     let status = meta.status.clone();
                     let is_pending = status == "pending";
                     let role = humanize_role(&meta.role);
@@ -342,5 +426,105 @@ mod tests {
         let without: AcceptResponse =
             serde_json::from_value(serde_json::json!({})).expect("decode");
         assert_eq!(without.tenant_slug, None);
+    }
+
+    /// MAPPS-1170: the three error branches the page renders distinctly.
+    /// `classify_metadata_error` is the pure function the renderer uses to
+    /// decide which card goes up; pin every HTTP status + the two non-HTTP
+    /// error shapes so a regression that bucketed, say, 500 as `Invalid`
+    /// (dead-end) or 404 as `Transient` (retry) fails loud.
+    #[cfg(feature = "app")]
+    #[test]
+    fn classify_metadata_error_maps_each_status_to_the_right_branch() {
+        use crate::hooks::fetch::api::ApiError;
+
+        let status = |code: u16| ApiError::Status {
+            code,
+            message: String::new(),
+            fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
+        };
+
+        // 404 / 410 render the "This invitation is not valid" dead-end
+        // card: the token is gone and no amount of retrying brings it
+        // back, so the renderer offers no Accept/Decline/Retry button.
+        assert_eq!(
+            classify_metadata_error(&status(404)),
+            MetadataError::Invalid,
+            "a 404 means the token is unknown; renders the Invalid card"
+        );
+        assert_eq!(
+            classify_metadata_error(&status(410)),
+            MetadataError::Invalid,
+            "a 410 means the token was revoked; renders the Invalid card"
+        );
+
+        // 403: the signed-in grantee's email does not match the invite's.
+        // The renderer tells them to sign in with the invited address.
+        assert_eq!(
+            classify_metadata_error(&status(403)),
+            MetadataError::EmailMismatch,
+            "a 403 is the email-mismatch banner, not a dead-end",
+        );
+
+        // Everything else routes to the Transient card with a Retry
+        // button: network blips, 5xx, decode mismatches, and the handful
+        // of other 4xx that are not "gone" or "wrong email".
+        assert_eq!(
+            classify_metadata_error(&status(500)),
+            MetadataError::Transient,
+            "a 500 is retryable; renders the Retry card"
+        );
+        assert_eq!(
+            classify_metadata_error(&status(502)),
+            MetadataError::Transient,
+        );
+        assert_eq!(
+            classify_metadata_error(&status(400)),
+            MetadataError::Transient,
+            "an unexpected 4xx (not 403/404/410) falls to Transient so a \
+             fresh network attempt is at least offered"
+        );
+        assert_eq!(
+            classify_metadata_error(&ApiError::Network("timeout".to_string())),
+            MetadataError::Transient,
+        );
+        assert_eq!(
+            classify_metadata_error(&ApiError::Decode("missing field `role`".to_string())),
+            MetadataError::Transient,
+        );
+    }
+
+    /// MAPPS-1170 regression guard: the renderer must branch on the three
+    /// error shapes AND still carry the loading-skeleton branch, so a
+    /// future rewrite that forgets one of them is caught at build.
+    /// A source-grep is cheaper than wiring the Dioxus renderer into a
+    /// unit test; both the `starts_with_SELECT` test on PMS-1517 and the
+    /// tenant_switcher wiring tests follow the same shape.
+    #[test]
+    fn the_page_renders_all_three_error_branches_plus_the_skeleton() {
+        let src = include_str!("accept_grant.rs");
+        let body = &src[..src.find("mod tests").expect("this module")];
+        assert!(
+            body.contains("Some(Err(MetadataError::Invalid))"),
+            "the renderer must branch on the Invalid error (404/410)"
+        );
+        assert!(
+            body.contains("Some(Err(MetadataError::EmailMismatch))"),
+            "the renderer must branch on the EmailMismatch error (403)"
+        );
+        assert!(
+            body.contains("Some(Err(MetadataError::Transient))"),
+            "the renderer must branch on the Transient error (5xx, network, decode)"
+        );
+        assert!(
+            body.contains("crate::components::DetailSkeleton"),
+            "the loading-skeleton branch must still render on None (not-yet-resolved)"
+        );
+        assert!(
+            body.contains("metadata.restart()"),
+            "the Transient branch must wire a Retry button to the resource's restart"
+        );
     }
 }
