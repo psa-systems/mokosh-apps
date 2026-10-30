@@ -434,7 +434,7 @@ binds to a private LAN address or loopback. `compose.dev-sso.yml` is an overlay 
 ### 9.4 CI and checks
 
 Forgejo workflows: `check.yml` (push and pull request), `build-oci-image.yml` (branch and tag pushes, manual),
-`create-release.yml`, `types-pin-drift.yml` (weekly), `renovate.yml` (every 4 hours), `claude-fix.yml` (manual). The
+`create-release.yml`, `types-pin-drift.yml` (weekly), `renovate.yml` (Saturday 02:00 UTC), `claude-fix.yml` (manual). The
 `just check` umbrella runs clippy on host and wasm targets with `-D warnings`, formatting, the desktop check, and the
 repository guard scripts under `scripts/`.
 
