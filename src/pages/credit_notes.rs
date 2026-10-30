@@ -50,6 +50,15 @@ pub(crate) struct RemoteCreditNote {
     pub(crate) id: uuid::Uuid,
     #[serde(default)]
     pub(crate) credit_note_number: String,
+    /// MAPPS-1180: the provider that issued this credit note, when the
+    /// tenant delegated invoicing (MAPPS-1099), mirroring
+    /// `InvoiceDetail::external_provider`. `None` is "Mokosh issued it".
+    #[serde(default)]
+    pub(crate) external_provider: Option<String>,
+    /// The number the CUSTOMER has, same convention as
+    /// `InvoiceDetail::external_number`.
+    #[serde(default)]
+    pub(crate) external_number: Option<String>,
     #[serde(default)]
     pub(crate) company_id: Option<uuid::Uuid>,
     #[serde(default)]
@@ -554,6 +563,16 @@ fn CreditNoteDetailBody(id: String) -> Element {
         None => "Credit Note".to_string(),
     };
     use_page_title(&header_title);
+    // MAPPS-1180: issued by a provider rather than by Mokosh, same
+    // convention as the invoice detail page.
+    let delegated_by = note
+        .as_ref()
+        .and_then(|n| n.external_provider.clone())
+        .filter(|p| !p.trim().is_empty());
+    let external_number = note
+        .as_ref()
+        .and_then(|n| n.external_number.clone())
+        .filter(|n| !n.trim().is_empty());
 
     let status = note.as_ref().map(|n| n.status.clone()).unwrap_or_default();
     // MAPPS-936: parse against the shared `CreditNoteStatus` vocabulary; an
@@ -633,6 +652,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
         }
         PageHeader {
             title: "{header_title}",
+            subtitle: crate::pages::billing::issued_elsewhere_line(delegated_by.as_deref(), external_number.as_deref()),
             breadcrumbs: rsx! {
                 crate::components::Breadcrumbs {
                     items: crate::components::detail_breadcrumbs("Credit Notes", Route::CreditNoteList {}, &header_title),
