@@ -3631,6 +3631,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                     invoice_number: inv.invoice_number.clone(),
                     invoice_total: inv.total.clone(),
                     amount_credited: inv.amount_credited.clone(),
+                    invoice_provider: inv.external_provider.clone().unwrap_or_default(),
                     onclose: move |_| show_credit_note.set(false),
                     oncreated: move |_id: String| {
                         show_credit_note.set(false);

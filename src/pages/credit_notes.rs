@@ -26,8 +26,9 @@ use std::str::FromStr;
 
 use crate::components::{
     credit_note_status_badge, use_page_title, Badge, Button, ButtonSize, ButtonVariant, Card,
-    DataTable, ErrorBanner, Modal, ModalSize, PageHeader, Select, SelectOption, Table, TableBody,
-    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    DataTable, ErrorBanner, Modal, ModalSize, PageHeader, PickedProduct, ProductPicker, Select,
+    SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
+    TableRow,
 };
 use crate::utils::money::format_money_str;
 use crate::utils::{FormGuard, Paginated, Rule};
@@ -84,6 +85,11 @@ pub(crate) struct RemoteCreditNoteLine {
     pub(crate) unit_price: String,
     #[serde(default)]
     pub(crate) total: String,
+    /// MAPPS-1179: the catalog product this line credits, when one named
+    /// it. Required by the server only on the QuickBooks-delegated path
+    /// (PMS-1546); `None` on every other credit note.
+    #[serde(default)]
+    pub(crate) product_id: Option<uuid::Uuid>,
 }
 
 /// The slice of `InvoiceResponse` the credit-note detail needs: enough to say
@@ -907,14 +913,52 @@ fn CreditNoteDetailBody(id: String) -> Element {
 // Create
 // ============================================================================
 
+/// Whether every line of the credit note being created must name a
+/// product: true only when the invoice is delegated to QuickBooks, which
+/// resolves each credited line to an `ItemRef` it refuses the call
+/// without (PMS-1546, `invoice_issuer_dispatch.rs`'s
+/// `issue_credit_note_in_provider`). A Mokosh-local or Xero-delegated
+/// invoice needs none, so its form stays exactly as it was.
+fn requires_product_id(invoice_provider: &str) -> bool {
+    invoice_provider.trim() == "quickbooks"
+}
+
+/// One line's JSON for the `POST /credit-notes` body. Pulled out of the
+/// save handler so the QuickBooks-delegated path is exercised without a
+/// browser, the way `bills.rs`'s `category_id` tests exercise its line
+/// body.
+fn credit_line_json(
+    description: &str,
+    quantity: &str,
+    unit_price: &str,
+    product_id: Option<&str>,
+    sort_order: i32,
+) -> serde_json::Value {
+    serde_json::json!({
+        "line_type": "service",
+        "product_id": product_id,
+        "description": description,
+        "quantity": quantity,
+        "unit_price": unit_price,
+        "sort_order": sort_order,
+    })
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 struct CreditLine {
     description: String,
     quantity: String,
     unit_price: String,
+    /// MAPPS-1179: the catalog product this line credits, and its name
+    /// for the picker's chip. Collected only when `requires_product_id`
+    /// says the invoice is QuickBooks-delegated (PMS-1546); `None`
+    /// otherwise, same as every other credit note's lines.
+    product_id: Option<String>,
+    product_name: String,
     description_err: String,
     quantity_err: String,
     unit_price_err: String,
+    product_err: String,
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -925,6 +969,12 @@ pub struct CreditNoteFormModalProps {
     /// The invoice's decimal strings, as the server sent them.
     pub invoice_total: String,
     pub amount_credited: String,
+    /// MAPPS-1179: the invoice's `external_provider` ("quickbooks",
+    /// "xero", or empty for Mokosh-issued). Gates the product picker: a
+    /// QuickBooks-delegated invoice's lines must each name a product
+    /// (PMS-1546); every other invoice's form is unchanged.
+    #[props(default)]
+    pub invoice_provider: String,
     pub onclose: EventHandler<()>,
     /// Fires with the new credit note's id.
     pub oncreated: EventHandler<String>,
@@ -965,6 +1015,10 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
         .map(crate::utils::money::format_money)
         .unwrap_or_else(|| "unknown".to_string());
     let over_cap = remaining.map(|r| live_total > r).unwrap_or(false);
+    // MAPPS-1179: gates the product picker and its required-ness. Mirrors
+    // the server's own conditional requirement (PMS-1546) so a
+    // Mokosh-local or Xero-delegated invoice's form is unchanged.
+    let requires_product = requires_product_id(&props.invoice_provider);
 
     let invoice_id = props.invoice_id.clone();
     let handle_save = move |_| {
@@ -1023,22 +1077,43 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
                 &unit_price,
                 "Unit price",
             );
+            let product_id = line.product_id.clone();
+            // MAPPS-1179: only a QuickBooks-delegated invoice refuses a
+            // line with no product (PMS-1546); every other line is
+            // unchanged. `note_invalid(None)` because the picker has no
+            // per-index DOM id to focus, same as the empty-lines check
+            // below.
+            let product_err = if requires_product
+                && product_id
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or("")
+                    .is_empty()
+            {
+                guard.note_invalid(None);
+                "Choose the product this line credits: QuickBooks requires one on every \
+                 credit-note line."
+                    .to_string()
+            } else {
+                String::new()
+            };
             {
                 let mut w = lines.write();
                 w[idx].description_err = description_err;
                 w[idx].quantity_err = quantity_err;
                 w[idx].unit_price_err = unit_price_err;
+                w[idx].product_err = product_err;
             }
             if let Some(amount) = credit_note_math::line_amount(&quantity, &unit_price) {
                 subtotal += amount;
             }
-            lines_json.push(serde_json::json!({
-                "line_type": "service",
-                "description": description,
-                "quantity": quantity,
-                "unit_price": unit_price,
-                "sort_order": idx as i32,
-            }));
+            lines_json.push(credit_line_json(
+                &description,
+                &quantity,
+                &unit_price,
+                product_id.as_deref(),
+                idx as i32,
+            ));
         }
         if snapshot.is_empty() {
             error.set("Add at least one line: a credit note must credit something.".to_string());
@@ -1161,6 +1236,14 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
                     p { class: "mb-3 text-xs text-subtle",
                         "Enter the amount to credit as a positive number."
                     }
+                    // MAPPS-1179: QuickBooks resolves each credited line to
+                    // the item it sold, so this is the only path that needs
+                    // a product on every line (PMS-1546).
+                    if requires_product {
+                        p { class: "mb-3 text-xs text-subtle",
+                            "This invoice is issued through QuickBooks, so every line must name the product it credits."
+                        }
+                    }
                     if lines.read().is_empty() {
                         p { class: "text-sm text-muted",
                             "No lines. Add at least one before issuing."
@@ -1170,6 +1253,35 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
                         for (idx , line) in lines.read().clone().into_iter().enumerate() {
                             div {
                                 key: "{idx}",
+                                class: "space-y-2 rounded-md border border-line p-3",
+                                if requires_product {
+                                    div {
+                                        ProductPicker {
+                                            value: line.product_name.clone(),
+                                            selected_id: line.product_id.clone(),
+                                            label: "Product",
+                                            required: true,
+                                            placeholder: "Search the price list\u{2026}",
+                                            onselect: move |picked: PickedProduct| {
+                                                let mut w = lines.write();
+                                                w[idx].product_id = Some(picked.id.clone());
+                                                w[idx].product_name = picked.name.clone();
+                                                w[idx].product_err = String::new();
+                                            },
+                                            onclear: move |_| {
+                                                let mut w = lines.write();
+                                                w[idx].product_id = None;
+                                                w[idx].product_name = String::new();
+                                            },
+                                        }
+                                        if !line.product_err.is_empty() {
+                                            p { class: "mt-1 text-xs text-red-600 dark:text-red-400",
+                                                "{line.product_err}"
+                                            }
+                                        }
+                                    }
+                                }
+                                div {
                                 class: "grid grid-cols-1 gap-3 sm:grid-cols-[1fr_90px_120px_auto] sm:items-end",
                                 crate::components::Input {
                                     name: "credit_line_description_{idx}",
@@ -1224,6 +1336,7 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
                                         lines.write().remove(idx);
                                     },
                                     "Remove"
+                                }
                                 }
                             }
                         }
@@ -1331,6 +1444,7 @@ fn positive_field(guard: &mut FormGuard, id: &str, value: &str, label: &str) -> 
 mod tests {
     use super::credit_note_math::*;
     use super::one_line;
+    use super::{credit_line_json, requires_product_id};
     use rust_decimal::Decimal;
     use std::str::FromStr;
 
@@ -1407,6 +1521,40 @@ mod tests {
         // PMS-1335: 80 chars of body + "..." suffix = 83.
         assert_eq!(cut.chars().count(), 83);
         assert!(cut.ends_with("..."));
+    }
+
+    /// MAPPS-1179: only the QuickBooks-delegated path needs a product per
+    /// line (PMS-1546); a Mokosh-local or Xero-delegated invoice does not.
+    #[test]
+    fn only_quickbooks_requires_a_product_per_line() {
+        assert!(requires_product_id("quickbooks"));
+        assert!(!requires_product_id("xero"));
+        assert!(!requires_product_id(""));
+    }
+
+    /// MAPPS-1179: the line-building path the QuickBooks dispatch depends
+    /// on. A picked product's id reaches the request body under
+    /// `product_id`, the way `bills.rs`'s `category_id` tests assert its
+    /// field.
+    #[test]
+    fn a_picked_product_id_reaches_the_line_body() {
+        let body = credit_line_json(
+            "Widget",
+            "1",
+            "10.00",
+            Some("11111111-1111-1111-1111-111111111111"),
+            0,
+        );
+        assert_eq!(body["product_id"], "11111111-1111-1111-1111-111111111111");
+        assert_eq!(body["description"], "Widget");
+    }
+
+    /// A line built with no product sends `null`, which is the shape a
+    /// Mokosh-local or Xero-delegated credit note keeps sending.
+    #[test]
+    fn a_line_with_no_product_sends_null() {
+        let body = credit_line_json("Widget", "1", "10.00", None, 0);
+        assert!(body["product_id"].is_null());
     }
 }
 
