@@ -18,6 +18,12 @@
 //! mirrored in the form so it reads as a field error rather than a 400.
 //! [`credit_note_math`] holds the arithmetic as pure functions, because the
 //! host-side `cargo test --lib` has no browser to drive the form with.
+//!
+//! MAPPS-1179: the create form also collects a `product_id` per line, but
+//! only when the invoice is delegated to QuickBooks (`requires_product_id`),
+//! because that provider's dispatch resolves each credited line to an
+//! `ItemRef` it refuses the call without (PMS-1546). Every other credit
+//! note's form is unchanged.
 
 use dioxus::prelude::*;
 use rust_decimal::Decimal;
