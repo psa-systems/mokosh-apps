@@ -808,7 +808,10 @@ struct RemoteInvoiceLedger {
 /// Empty rather than "Issued by Mokosh", because that is every invoice on
 /// every deployment that has not delegated and a line saying so on all of
 /// them is noise.
-fn issued_elsewhere_line(provider: Option<&str>, external_number: Option<&str>) -> String {
+pub(crate) fn issued_elsewhere_line(
+    provider: Option<&str>,
+    external_number: Option<&str>,
+) -> String {
     let Some(provider) = provider.map(str::trim).filter(|p| !p.is_empty()) else {
         return String::new();
     };
@@ -3445,16 +3448,29 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                         } else {
                                             ul { class: "space-y-2 text-sm",
                                                 for note in notes.iter() {
-                                                    li { key: "{note.id}", class: "flex justify-between items-center gap-2",
-                                                        Link {
-                                                            to: Route::CreditNoteDetail { id: note.id.to_string() },
-                                                            class: "font-medium text-accent hover:opacity-90",
-                                                            "{note.credit_note_number}"
+                                                    li { key: "{note.id}",
+                                                        div { class: "flex justify-between items-center gap-2",
+                                                            Link {
+                                                                to: Route::CreditNoteDetail { id: note.id.to_string() },
+                                                                class: "font-medium text-accent hover:opacity-90",
+                                                                "{note.credit_note_number}"
+                                                            }
+                                                            span { class: "text-muted", "{format_money_str(&note.total)}" }
+                                                            {
+                                                                let (variant, label) = crate::components::credit_note_status_badge(&note.status);
+                                                                rsx! { Badge { variant, "{label}" } }
+                                                            }
                                                         }
-                                                        span { class: "text-muted", "{format_money_str(&note.total)}" }
+                                                        // MAPPS-1180: who issued it, when delegated to Xero/QuickBooks.
+                                                        // Empty for a Mokosh-issued note, same convention as the
+                                                        // invoice subtitle.
                                                         {
-                                                            let (variant, label) = crate::components::credit_note_status_badge(&note.status);
-                                                            rsx! { Badge { variant, "{label}" } }
+                                                            let line = issued_elsewhere_line(note.external_provider.as_deref(), note.external_number.as_deref());
+                                                            rsx! {
+                                                                if !line.is_empty() {
+                                                                    p { class: "text-xs text-muted", "{line}" }
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                 }
