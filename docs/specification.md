@@ -120,6 +120,10 @@ workflows under `.forgejo/workflows/`, and the dev container definition under
 - **SPEC-1.1.5**: During local development (`dx serve`), requests under
   `/api/` must be proxied to the API container rather than served by the
   dev server itself.
+- **SPEC-1.1.6**: The HTML entry point must load its theme-applier and
+  scrollbar scripts as same-origin, non-inline `<script>` tags, consistent
+  with the container's Content-Security-Policy, which refuses inline script
+  execution.
 
 ### 1.2 Data model
 

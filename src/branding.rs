@@ -40,6 +40,7 @@ const DEFAULT_HERO_WIDTH: u32 = 642;
 const DEFAULT_HERO_HEIGHT: u32 = 760;
 
 /// Pick the operator's value, falling back when it is absent or blank.
+// SPEC-1.3.14: trim and fall back to the built-in default; blank counts as absent.
 fn or_default(configured: Option<String>, fallback: &str) -> String {
     configured
         .map(|v| v.trim().to_string())
@@ -112,6 +113,7 @@ fn hero_alt_for(configured_hero: Option<String>, brand: &str) -> String {
 }
 
 /// Name shown in the tab title, the wordmarks and user-facing copy.
+// SPEC-1.3.14: the only reader of brand_name; every render site calls this helper.
 pub fn product_name() -> String {
     or_default(runtime_config::get("brand_name"), DEFAULT_PRODUCT_NAME)
 }
