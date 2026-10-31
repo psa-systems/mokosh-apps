@@ -34,7 +34,7 @@ jobs:
         # (MAPPS-1027) can read the release tag list. Without them the script
         # sees zero tags, treats every entry as unreleased, and demands every
         # historical release reappear in the Recently-added window.
-        uses: https://code.forgejo.org/actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: https://code.forgejo.org/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
           fetch-depth: 0
@@ -422,7 +422,7 @@ jobs:
         shell: nu {0}
     steps:
       - name: Clone the repository
-        uses: https://code.forgejo.org/actions/checkout@v5
+        uses: https://code.forgejo.org/actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false

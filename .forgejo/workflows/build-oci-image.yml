@@ -79,7 +79,7 @@ jobs:
 
     steps:
       - name: Clone the repository
-        uses: https://code.forgejo.org/actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: https://code.forgejo.org/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -178,7 +178,7 @@ jobs:
         # re-exports ACTIONS_CACHE_URL / ACTIONS_RUNTIME_TOKEN into
         # GITHUB_ENV so the build step's `type=gha` cache can reach
         # act_runner's cache server (needs runner cache.enabled: true).
-        uses: https://github.com/crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3.1.0
+        uses: https://github.com/crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4.0.0
 
       - name: Build and push mokosh-www image
         shell: nu {0}
