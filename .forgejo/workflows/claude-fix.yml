@@ -154,7 +154,7 @@ jobs:
         if: steps.logs.outputs.skip != 'true'
         uses: https://code.forgejo.org/actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
-          node-version: "20"
+          node-version: "20.20.2"
 
       - name: Install Claude Code
         if: steps.logs.outputs.skip != 'true'

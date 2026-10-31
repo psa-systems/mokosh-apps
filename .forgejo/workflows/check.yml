@@ -58,7 +58,7 @@ jobs:
         uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/build-parallelism@e728773130496a6e84e0d87de9390f3d98939019 # main
 
       - name: Cache Rust build
-        uses: https://github.com/Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: https://github.com/Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-on-failure: true
 

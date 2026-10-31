@@ -54,10 +54,10 @@ serde_json = "1.0.154"
 thiserror = "2.0.21"
 tracing = "0.1.44"
 futures-util = "0.3.34"
-sha2 = "0.10"
+sha2 = "0.11.1"
 base64 = "0.23.1"
 rand = "0.10.3"
-pulldown-cmark = "0.12"
+pulldown-cmark = "0.13.6"
 ammonia = "4.2.4"
 # MAPPS-383: shared wire-format DTOs, the single source of truth for types
 # crossing the mokosh-server / mokosh-apps boundary. The URL is HTTPS, not
@@ -84,7 +84,7 @@ version = "1.0.229"
 features = ["derive"]
 
 [dependencies.uuid]
-version = "1.11"
+version = "1.29.0"
 features = [
     "v4",
     "v7",
@@ -107,7 +107,7 @@ version = "1.43.0"
 features = ["serde"]
 
 [dependencies.validator]
-version = "0.19"
+version = "0.21.0"
 features = ["derive"]
 
 # MAPPS-504: the browser bindings. Reachable ONLY from the wasm half of
@@ -116,8 +116,8 @@ features = ["derive"]
 # panics at run time.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 gloo-net = "0.7.0"
-wasm-bindgen = "0.2.129"
-js-sys = "0.3.106"
+wasm-bindgen = "0.2.130"
+js-sys = "0.3.107"
 # MAPPS-299: forward Rust panics in the wasm runtime to console.error with
 # a readable message + stack trace. Without this a panic surfaces as an
 # opaque `RuntimeError: unreachable` at a hex offset (e.g. wasm:0x352c4f)
@@ -130,7 +130,7 @@ console_error_panic_hook = "0.1.7"
 # which returns a promise. The alternative is `FileReader` plus a second
 # forgotten `Closure` for its `load` event, and forgotten closures around
 # dioxus state are what MAPPS-586 was.
-wasm-bindgen-futures = "0.4.79"
+wasm-bindgen-futures = "0.4.80"
 
 # Not called anywhere in `src/`: this entry exists to turn the wasm backend
 # ON for the getrandom version the tree actually compiles. The version pin
@@ -144,15 +144,15 @@ wasm-bindgen-futures = "0.4.79"
 # the tree. The version here moves to 0.4 to follow it; `renovate.json`'s
 # upper bound follows.
 [target.'cfg(target_arch = "wasm32")'.dependencies.getrandom]
-version = "0.4"
+version = "0.4.3"
 features = ["wasm_js"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies.gloo-timers]
-version = "0.3"
+version = "0.4.0"
 features = ["futures"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
-version = "0.3.106"
+version = "0.3.107"
 features = [
     "Window",
     "Document",
@@ -258,7 +258,7 @@ features = [
 ]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.rustls]
-version = "0.23"
+version = "0.23.46"
 default-features = false
 features = ["ring", "logging", "std", "tls12"]
 
@@ -269,7 +269,7 @@ features = ["ring", "logging", "std", "tls12"]
 # `spawn_blocking`, used to keep blocking filesystem writes (MAPPS-1070)
 # off the async worker pool.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.tokio]
-version = "1"
+version = "1.54.1"
 features = [
     "time",
     "net",
@@ -291,7 +291,7 @@ dioxus-ssr = "0.8.0-alpha.3"
 # MAPPS-847: `macros` and `time` added for the resource-reactivity test's
 # `#[tokio::test]` and `tokio::time::sleep` timeout guard.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies.tokio]
-version = "1"
+version = "1.54.1"
 features = ["rt-multi-thread", "macros", "time"]
 
 [profile.release]
