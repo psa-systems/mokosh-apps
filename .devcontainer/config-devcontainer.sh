@@ -6,6 +6,7 @@
 # FIXME: It seems JetBrains does not run postCreateCommand as the user.
 # https://containers.dev/implementors/json_reference/
 # This is run as root.
+# SPEC-1.8.16: this script is the single provisioning step every lifecycle hook invokes.
 
 # Add the user to the host's docker group
 sudoIf() { if [ "$(id -u)" -ne 0 ]; then sudo "$@"; else "$@"; fi }

@@ -34,7 +34,7 @@ if [ "$CURRENT_UID" != "0" ]; then
     exec "$@"
 fi
 
-# PUID/PGID must be numeric and non-zero: the workload never runs as root.
+# SPEC-1.4.8: reject a non-numeric or zero PUID/PGID instead of starting as root.
 check_id() {
     case "$2" in
         ''|*[!0-9]*) echo "entrypoint: $1=$2 is not numeric, refusing to start" >&2; exit 1 ;;
@@ -74,16 +74,19 @@ usermod -o -u "$RESOLVED_UID" -g "$RESOLVED_GID" "$APP_USER"
 
 # Image-specific root steps (e.g. joining the docker socket's group) live in hooks, never in this file.
 export APP_USER RESOLVED_UID RESOLVED_GID
+# SPEC-1.5.6: a failing root hook exits non-zero, refusing to start rather than continuing degraded.
 for hook in /etc/entrypoint.d/*.sh; do
     [ -e "$hook" ] || continue
     echo "entrypoint: running root hook ${hook}" >&2
     sh "$hook" || { rc=$?; echo "entrypoint: root hook ${hook} failed with exit ${rc}, refusing to start" >&2; exit "$rc"; }
 done
 
+# SPEC-1.6.4: chown only what is wrong, so an already-matching volume is left untouched.
 # Chown only what is wrong, so a volume that already matches is untouched.
 for dir in $DATA_DIRS; do
     find "$dir" \( ! -user "$RESOLVED_UID" -o ! -group "$RESOLVED_GID" \) -exec chown "$RESOLVED_UID:$RESOLVED_GID" {} +
 done
 
+# SPEC-1.4.7: drop from root to the resolved non-root user before exec'ing the workload.
 # User form, not uid:gid, so supplementary groups come from /etc/group.
 exec gosu "$APP_USER" "$@"

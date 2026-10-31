@@ -6,6 +6,7 @@
 # The WASM bundle it produces is arch-agnostic, so it is built once
 # and copied into per-arch runtime stages. Building cargo under arm64
 # emulation would be slow and gains nothing for a WASM artifact.
+# SPEC-1.8.2: builder stage produces the platform-independent WASM bundle.
 FROM --platform=$BUILDPLATFORM ghcr.io/niceguyit/rust-builder-glibc:v1.2.0-rust1.98.1-trixie AS builder
 
 WORKDIR /build
@@ -32,6 +33,7 @@ RUN echo "build parallelism: CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}"
 # `<DX_HOME>/binaryen/bin` and the stale symlink went unnoticed).
 ENV DX_HOME=/opt/dx-cache
 ARG DX_BINARYEN_VERSION=129
+# SPEC-1.8.3: fail the build if the installed wasm-opt does not match dx's resolution.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends binaryen \
     && rm -rf /var/lib/apt/lists/* \
@@ -40,6 +42,7 @@ RUN apt-get update \
     && { dx doctor | grep --text --quiet "wasm-opt:.*${DX_HOME}/tools/binaryen-${DX_BINARYEN_VERSION}/bin/wasm-opt" \
          || { echo "ERROR: dx does not see the pre-staged wasm-opt at ${DX_HOME}/tools/binaryen-${DX_BINARYEN_VERSION}/bin; check dx's BINARYEN_VERSION and update DX_BINARYEN_VERSION." >&2; exit 1; }; }
 
+# SPEC-1.6.5: placeholder source so a real source change does not bust this cache layer.
 # --- Dependency caching (no source) ---
 COPY Cargo.toml Cargo.lock ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
@@ -93,6 +96,7 @@ FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c03
 # Copy Caddy from the target-arch stage above
 COPY --from=caddy-bin /usr/bin/caddy /usr/bin/caddy
 
+# SPEC-1.8.4: runtime stage carries the built bundle, root icons/manifest, and startup scripts.
 # Copy static bundle
 COPY --from=builder /build/target/dx/mokosh-apps/release/web/public /usr/share/caddy
 
@@ -151,10 +155,12 @@ COPY --chmod=0755 oci-build/gosu-entrypoint.sh /usr/local/bin/gosu-entrypoint.sh
 # with a fixed 1001:1001 so the image has a stable default; the
 # entrypoint remaps both at start when PUID/PGID or a data dir's
 # ownership says otherwise.
+# SPEC-1.4.7: gosu/shadow/appuser support the non-root startup remap.
 RUN apk add --no-cache gosu shadow \
     && addgroup -g 1001 appuser \
     && adduser -D -H -u 1001 -G appuser appuser
 
+# SPEC-1.3.8, SPEC-1.9.2: container-only defaults; the runtime dir need not survive a recreate.
 ENV PORT=8080 \
     MOKOSH_RUNTIME_DIR=/tmp/mokosh-runtime \
     APP_USER=appuser \

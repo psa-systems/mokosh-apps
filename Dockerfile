@@ -24,6 +24,7 @@ COPY --chown=${UID}:${GID} package.json bun.lock ./
 
 RUN bun install --frozen-lockfile
 
+# SPEC-1.6.5, SPEC-1.8.5: placeholder source so a real source change does not bust this layer.
 # Pre-build dependencies
 RUN mkdir src \
     && echo "fn main() {}" > src/main.rs \
@@ -38,4 +39,5 @@ EXPOSE 4301
 # PMS-884: `--features web` for the same reason the release image passes it -
 # dx substitutes its own feature list for this crate's defaults, so the
 # renderer is named here rather than left to dx's platform-name heuristic.
+# SPEC-1.8.5: dev image runs dx serve with the web feature explicit on container start.
 CMD ["sh", "-c", "bun x @tailwindcss/cli --input input.css --output assets/styles.css && dx serve --features web ${DX_SERVE_ARGS:-} --port 4301 --addr 0.0.0.0"]

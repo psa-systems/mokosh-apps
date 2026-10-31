@@ -18,6 +18,7 @@ Live staging: **<https://msp.a8n.systems>**. This repository is what serves that
 
 Everything else is in [`docs/`](docs/README.md), indexed there in full:
 
+- [specification.md](docs/specification.md) - the normative, numbered requirement set the code cites
 - [quickstart.md](docs/quickstart.md) - get a fresh clone serving in the browser
 - [architecture.md](docs/architecture.md) - the stack, the source layout, the cargo features, and what a build produces
 - [recipes.md](docs/recipes.md) - the task runner, recipe by recipe

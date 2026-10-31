@@ -1,3 +1,4 @@
+# SPEC-1.2.1: single source of truth for operator-facing runtime variables.
 # Operator-facing runtime variables the mokosh-www image reads (MAPPS-1027).
 #
 # `just config-docs` renders docs/configuration.md from this file. `just

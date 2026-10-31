@@ -1,457 +1,406 @@
-# mokosh-apps specification
-
-This document describes the application as implemented in this repository. It is derived from the source code; where
-another document disagrees with the code, the code is authoritative.
-
-## 1. Purpose and scope
-
-mokosh-apps is the client application of the Mokosh Platform, a professional services automation (PSA) product for
-managed service providers (MSPs). It is a single Dioxus (Rust) crate that compiles to:
-
-- a WebAssembly single-page application served as static files by a Caddy container (feature `web`, the default), and
-- a native desktop application using the Dioxus desktop renderer (feature `desktop`).
-
-Users of the application:
-
-- Staff of an MSP (agents, managers, administrators) working in a tenant.
-- Platform administrators, who sign in on a separate credential plane.
-- Portal contacts: people at an MSP's customer companies, who sign in on a third plane and see a capability-limited
-  subset of the same workspace.
-- Anonymous visitors following an emailed link (request forms, password setup, invitations, grant invitations).
-
-What the application does NOT do:
-
-- It has no database, no business logic of record, and no background job processing. All business data lives in the
-  Mokosh API server, which the application calls over HTTP. The wire-format types are taken from a shared types crate
-  (a git dependency pinned by `Cargo.lock`).
-- It does not issue tokens. Staff sessions are obtained from an OpenID Connect provider (OP) or from the API server's
-  standalone login endpoint; portal and platform sessions are obtained from the API server.
-- Security decisions are made by the API server. Client-side role and capability checks only decide what to show.
-
-## 2. Architecture
-
-### 2.1 Build targets and crate layout
-
-One package, `mokosh-apps`, with a library (`src/lib.rs`, crate `mokosh_apps`) and a binary (`src/main.rs`). Cargo
-features:
-
-| Feature | Effect |
-| --- | --- |
-| `web` (default) | Enables `app` and `dioxus/web`. Required for any `wasm32` build; `src/main.rs` fails compilation otherwise. |
-| `desktop` | Enables `app` and `dioxus/desktop`. |
-| `app` | The app-runtime gate: the API client, global signals and page logic. On for both renderers. |
-| `multi-tenant` (default) | Compiles the `/admin/teams` and `/settings/members` routes. |
-| `server` | Gates files that mirror server code; never compiled in this crate (no server dependencies are pulled in). |
-| `dev_admin_bypass` | Debug builds only: when `ADMIN_EMAIL` and `ADMIN_PASSWORD` are set at compile time, starts pre-authenticated as that admin. Off by default. |
-
-Source layout under `src/`:
-
-- `main.rs`: process entry point and the `App` root component.
-- `lib.rs`: the `Route` enum, `AuthGuard`, `RouteErrorFallback`, the contact-forbidden path check, and one wrapper
-  component per route.
-- `pages/`: one module per screen or screen family (plus `pages/contact_portal/` for the portal login flow).
-- `components/`: shared UI (layout shell, forms, tables, modals, Markdown editor, pickers, banners).
-- `hooks/`: fetch layer (`fetch.rs`), authentication (`auth.rs`, `contact_auth.rs`), capability gating, shared caches of
-  reference lists, theme, update check, server-status monitoring.
-- `modules/`: OIDC client (`oidc/`), runtime configuration, feature flags, tenant settings reader, models per domain.
-- `platform/`: the host boundary, implemented once for `wasm32` (browser) and once for native: HTTP, session and durable
-  storage, timers, location, DOM, clipboard, downloads, config. Browser-only crates (`web-sys`, `js-sys`, `gloo-*`,
-  `wasm-bindgen`) are declared only for `wasm32`, so a browser call outside `platform/` does not resolve on the
-  desktop build.
-- `utils/`: pagination, validation rules, Markdown rendering (pulldown-cmark, sanitized with ammonia), money, dates,
-  roles labels, rate-limit parsing, diffs.
-- `build.rs`: bakes `APP_GIT_HASH` (from `GIT_SHA` when set, otherwise `git rev-parse`; 12 characters), `APP_GIT_TAG`
-  (the Cargo package version) and `APP_BUILD_DATE` into the binary.
-
-### 2.2 Runtime and data flow
-
-1. `main` installs the wasm panic hook (wasm) or the `ring` rustls crypto provider (native), snapshots the initial URL
-   query string so the OIDC response survives router mounting, then launches `App`.
-2. `App` mounts app-wide providers and background loops once (auth context, sidebar, page title, shared caches for the
-   user roster, mention directory, work types, asset types, task statuses, KB categories, payment terms, tax rates,
-   ticket saved views, dashboard report; token refresh, standalone token refresh, a 30 second `/auth/me` heartbeat,
-   active organization loader, current user loader, a 60 second feature-map refresh, bfcache invalidation, desktop
-   session-end watcher and close guard, theme and brand application, build update check, server reachability
-   monitor), then renders the stylesheet, the `Router::<Route>` and the desktop close-confirm modal.
-3. Pages call the fetch layer (`hooks::fetch::api`) which builds the URL from the resolved API base, attaches the
-   bearer for the correct plane, classifies the response, and returns typed results or `ApiError`.
-4. Pages re-fetch when `TENANT_GENERATION` changes (bumped when the access token changes, on tenant switch, or on
-   demand).
-
-### 2.3 Routing layers
-
-The `Route` enum has three tiers:
-
-1. Public routes (no guard).
-2. Routes under the `AuthGuard` layout. Within it, chromeless routes (onboarding, TV dashboard, big-view kiosks) and
-   routes under the `AppShell` layout (top bar, sidebar, banners, toasts).
-3. A catch-all `NotFound`.
-
-`AuthGuard` behavior, in order:
-
-1. While a contact session rehydrate may still succeed (web only), render a placeholder and call
-   `POST /contact/auth/refresh`; the guard releases whatever the outcome.
-2. While tokens are loading, render a placeholder.
-3. Not authenticated: allow through if a platform bearer is held; else if a contact session is held, redirect any
-   contact-forbidden path to `/dashboard` and otherwise render the route; else if on a `/portal/*` URL or a stored
-   portal hint exists, redirect to the portal login (`/portal/<portal id>/login`, then the legacy slug login, then
-   `/portal/login`); else if the deployment is standalone, navigate to `/login`; else start the OIDC authorization flow.
-4. Authenticated but the server reports `profile_completed = false` after the first `/auth/me` reconcile: navigate to
-   `/onboarding/profile`.
-5. Otherwise render the route inside an `ErrorBoundary` whose fallback offers "Go to dashboard" and "Reload page".
-
-`pathname_is_contact_forbidden` denies portal contacts these path prefixes: `/companies`, `/contacts`, `/calendar`,
-`/dispatch`, `/scheduling-templates`, `/rate-cards`, `/payments`, `/tax-rates`, `/payment-gateways`, `/reports`,
-`/time`, `/timesheets`, `/dashboards`, `/dashboard/tv`, `/big`, `/admin`, `/pick-tenant`, `/create-org`, `/invite`,
-`/dev`; the KB create and edit paths; and every `/settings/*` path except `/settings`, `/settings/portal-branding`
-and `/settings/appearance`.
-
-### 2.4 Technology stack
-
-Rust 2021, Dioxus 0.8 alpha (router feature), serde, chrono and chrono-tz, rust_decimal, uuid, validator,
-pulldown-cmark and ammonia (Markdown), sha2/base64/rand (PKCE). Browser: gloo-net, web-sys. Native: reqwest (rustls,
-`ring` provider), tokio, dirs, open, iana-time-zone. Styling: Tailwind CSS built from `input.css` with bun into
-`assets/styles.css`. Build tool: the Dioxus CLI (`dx`). Container runtime: Caddy on Alpine.
-
-## 3. Functional requirements
-
-Each statement below is implemented by the pages under `src/pages/` and the routes in section 4.
-
-### 3.1 Authentication and session
-
-- FR-A1: The app supports three sign-in planes: staff (OIDC authorization code with PKCE, or standalone email and
-  password), platform administrator, and portal contact.
-- FR-A2: With no OIDC issuer or no OIDC client id configured, the deployment is standalone and the app uses the API
-  server's `POST /auth/login`; otherwise it redirects to the issuer's `/oauth2/authorize`.
-- FR-A3: `/login` first attempts the platform-administrator login (`POST /platform/login`) when no MFA or approval code
-  is supplied, falls back to the tenant login (`POST /auth/login`) on failure, and handles MFA, sign-in approval code,
-  membership selection (`POST /auth/select-tenant`) and zero-membership setup (`/create-org`).
-- FR-A4: Access tokens are renewed before expiry (within 60 seconds) on the request path and by a 30 second background
-  loop; concurrent renewals share one in-flight refresh. A 401 on the staff bearer triggers one renewal, and a failed
-  renewal ends the session.
-- FR-A5: A `410` response with error code `ACCOUNT_DELETED` raises a terminal overlay; the heartbeat (`/auth/me` every
-  30 seconds while the tab is visible) detects it without user action.
-- FR-A6: Sign-out revokes the API server session (`POST /auth/logout`, or `/auth/logout-all` for sign out everywhere),
-  revokes the OP refresh token, clears local state, and navigates to the OP logout URL or the landing page.
-- FR-A7: Portal contacts sign in by Portal ID plus email and password, or by an emailed single-use link
-  (`/portal/find`, `/portal/pick`); the portal session is rehydrated on cold load from a server-set HttpOnly cookie.
-- FR-A8: Password reset, forgot password, first-time password setup, invitation acceptance, self-signup, MFA setup and
-  disable (staff and platform), and profile completion are provided as screens.
-- FR-A9: A forced onboarding screen collects the user's name when the server reports the profile incomplete.
-
-### 3.2 Workspace areas
-
-For each area the screens list, create, view, edit and (where the route exists) act on records through the API.
-
-- Dashboard: summary dashboard, saved dashboards (list, view, edit layout), a TV view scoped to a team, and
-  chromeless "big view" kiosks for tickets, dispatch and calendar with `?refresh=<seconds>` (default 30), `?status=`
-  and `?priority=` query parameters.
-- Tickets: list with saved views, create, detail with notes, attachments (including inline), SLA, reopen, approvals
-  request; lookups for statuses, priorities, types, queues and categories are editable in settings.
-- Time: time entries, timesheets (submit, withdraw), approvals queue (approve, reject), work-day clock (clock in and
-  out, break start and end, segment edit), and a cross-target "My approvals" page.
-- Projects and tasks, with project types and task statuses configurable.
-- Companies and contacts: CRUD, sites, per-company documentation view, contact import from Google, iCloud, Microsoft 365
-  and vCard files with preview, selection, review queue, per-contact sync locks, portal access grant, revoke, resend
-  and access requests, company-scoped and tenant-wide portal roles, company request-form links.
-- Calendar and dispatch: appointments, dispatch board, scheduling templates.
-- Sales and billing: quotes (send, convert, PDF), contracts and block hours, rate cards, invoices (create, from time
-  entries, pay, void, write off, amend, PDF, delivery options), payments, credit notes (void, PDF), statements (PDF),
-  tax rates, payment gateways, payment terms, products, bills and vendors, expenses and expense categories, invoice
-  issuer integrations (connect, disconnect, mappings).
-- Assets: list with column preferences, detail drawer, catalog and bulk order, asset types, RMM connections, device
-  mappings and alert rules.
-- Knowledge base: categories, articles (Markdown with preview, templates, attachments, inline image paste), versions
-  and restore, comments, inline comments anchored to rendered text, helpful votes, per-company views, article table of
-  contents, and a list of top ticket-driving articles.
-- Reports: ticket, time, billing, project and client reports with export, custom report schema.
-- Administration: audit log, feature toggles (super admin), request-form builder, SLA management (policies, business
-  hours, holiday calendars, targets), invitations, members and teams, platform-account self-service.
-- Settings: organization name, branding (tenant and portal), appearance (theme and accent), tenant modules, invoice
-  numbering, note editing policy, segment editing policy, time tracking limits, scheduling, payment reminders, email
-  (SMTP), Google OAuth client, import and export of tenant data, contact roles.
-
-### 3.3 Cross-cutting behavior
-
-- FR-X1: If the API server is unreachable, an app-wide banner is shown, mutating controls are disabled
-  (`use_can_mutate`), and `/ready` is polled every 10 seconds until it answers. The banner trips after 2 consecutive
-  failures (transport failure or 5xx); any response proves reachability.
-- FR-X2: A feature toggle that is missing, not yet loaded, or failed to load reads as off.
-- FR-X3: Tenant modules (billing, projects, calendar, contracts, assets, knowledge_base, rmm_integration, reports,
-  time_tracking, timesheets) are read from `GET /settings/modules` and hide the corresponding navigation and pages.
-- FR-X4: Organizations (tenant switcher and create-team action) are hidden unless the runtime config
-  `organizations_enabled` is `1`, `true` or `yes` (case-insensitive).
-- FR-X5: Forms validate input with shared rules (required, length, email, uuid, number) and show server-provided field
-  errors next to the field.
-- FR-X6: A 429 response is rendered with the wait derived from `retry_after_seconds` when present.
-- FR-X7: Unsaved-changes guards prompt on tab close or reload (browser, `beforeunload`) and on window close (desktop,
-  through the close-confirm modal).
-- FR-X8: In the browser, the app polls `/_mokosh_config.json` every 5 minutes and on version-skew status codes; when
-  `build_sha` differs from the running bundle it shows an update banner and reloads at the next tab-hidden event or
-  after 30 minutes. The check is inert on desktop and in dev builds with an unknown hash.
-- FR-X9: Rendered Markdown is sanitized with ammonia before display.
-- FR-X10: Lists page with a maximum of 100 items per page.
-
-## 4. Interfaces
-
-### 4.1 UI routes
-
-Public (no guard):
-
-| Path | Screen |
-| --- | --- |
-| `/` | Landing page |
-| `/login` | Unified sign-in (standalone or OIDC kickoff) |
-| `/client/login`, `/platform/login` | Redirect stubs to `/login` |
-| `/pick-tenant`, `/create-org` | Membership picker and zero-membership setup (state from the login flow) |
-| `/auth/callback` | OIDC redirect target |
-| `/forgot-password`, `/reset-password/:token`, `/set-password/:token` | Password flows |
-| `/invite/:token` | Invitation acceptance |
-| `/request-forms/:token` | Client request form (token is the credential) |
-| `/signup`, `/signup/:token` | Self-signup |
-| `/portal/login`, `/portal/:handle/login`, `/portal/:slug/set-password?:token`, `/portal/find?:email`, `/portal/pick?:token` | Portal contact login family. `:handle` is nine ASCII digits (Portal ID) or a legacy slug. |
-
-Under `AuthGuard`, chromeless: `/onboarding/profile`, `/dashboard/tv`, `/big/tickets`, `/big/dispatch`,
-`/big/calendar`.
-
-Under `AuthGuard` and `AppShell`:
-
-- `/dashboard`, `/dashboards`, `/dashboards/:id/view`, `/accept-grant?:token`
-- `/tickets`, `/tickets/new`, `/tickets/:id`
-- `/time`, `/time/new`, `/timesheets`, `/timesheets/approvals`, `/approvals`
-- `/projects`, `/projects/new`, `/projects/:id`, `/projects/:id/tasks`
-- `/companies`, `/companies/new`, `/companies/:id`, `/companies/:id/edit`, `/companies/:company_id/documentation`,
-  `/companies/:company_id/roles/:id`
-- `/contacts`, `/contacts/new`, `/contacts/import-review`, `/contacts/:id`, `/contacts/:id/edit`
-- `/calendar`, `/dispatch`, `/scheduling-templates`
-- `/quotes`, `/quotes/new`, `/quotes/:id`, `/quotes/:id/edit`
-- `/contracts`, `/contracts/new`, `/contracts/:id`, `/contracts/:id/edit`
-- `/rate-cards`, `/rate-cards/new`, `/rate-cards/:id`
-- `/invoices`, `/invoices/new`, `/invoices/:id`, `/bills`, `/bills/:id`, `/expenses`, `/expenses/:id`, `/payments`,
-  `/tax-rates`, `/payment-gateways`, `/credit-notes`, `/credit-notes/:id`, `/statements`
-- `/assets`, `/assets/new`, `/assets/:id`
-- `/kb`, `/kb/articles?:q&:tag&:category`, `/kb/articles/new?:parent_article_id&:visibility`, `/kb/articles/:id`,
-  `/kb/articles/:id/edit`, `/kb/companies/:id`
-- `/reports`, `/reports/:report_type`
-- `/settings` and its sub-routes: `/settings/active-tenant`, `/settings/branding`, `/settings/portal-branding`,
-  `/settings/group/{service-types,billing,tickets,integrations,data}`, `/settings/{work-types,task-statuses,
-  asset-types,company-industries,project-types,sla,scheduling,payment-reminders,appearance,tv-view,time-tracking,
-  rate-cards,tax-rates,gateways,payment-terms,products,vendors,expense-categories,ticket-statuses,ticket-priorities,
-  ticket-types,ticket-queues,ticket-categories,email,integrations,import-export,contact-roles,organization,modules,
-  invoice-numbering,note-editing,segment-editing,payment-methods}`, `/settings/rmm/{connections,device-mappings,
-  alert-rules}`, `/settings/integrations/{google-client,google-contacts,google-contacts/import,icloud-contacts,
-  icloud-contacts/import,microsoft-contacts,microsoft-contacts/import,xero,quickbooks,xero/mappings,
-  quickbooks/mappings,vcard-import}`, `/settings/contact-roles/:id`, `/settings/members?:tab` (`multi-tenant`)
-- `/profile`, `/system-status`, `/dev/buttons`
-- `/admin/audit`, `/admin/features`, `/admin/forms`, `/admin/sla`, `/admin/invitations`, `/admin/team` (redirect),
-  `/admin/teams` (redirect stub, `multi-tenant`), `/admin/platform-account`
-
-Catch-all: `/:..route` renders the not-found page.
-
-### 4.2 API server calls
-
-All calls are relative to the resolved API base (section 6.2), under `/api/v1`. The client never exposes a server; it
-only consumes these. Authentication column: staff = staff bearer, contact = contact bearer plus the HttpOnly session
-cookie, platform = platform bearer, none = unauthenticated.
-
-| Area | Representative paths | Auth |
-| --- | --- | --- |
-| Staff session | `POST /auth/login`, `POST /auth/select-tenant`, `POST /auth/refresh`, `POST /auth/logout`, `POST /auth/logout-all`, `GET/PUT /auth/me`, `POST /auth/me/mfa/{setup,enable,disable}`, `POST /auth/me/complete-onboarding`, `GET /auth/memberships`, `POST /auth/switch-tenant/:id`, `GET /auth/users`, `GET /auth/directory` | none for login, refresh and password flows; staff otherwise |
-| Password flows | `POST /auth/forgot-password`, `POST /auth/reset-password`, `GET /auth/set-password/context/:token` | none |
-| Platform | `POST /platform/login`, `/platform/me/password`, `/platform/me/mfa/{setup,enable,disable}` | none, then platform |
-| Contact | `POST /contact/auth/{login,refresh,logout,set-password,login-link,login-link/redeem,login-link/select,login-link/verify-mfa}`, `GET/PUT /contact/auth/me`, `GET /contact/dashboard/summary`, `/contact/payment-methods`, `/contact/companies/self/branding`, `/contact/portal/:portal/{host,resolve-to-portal-id}` | none for login; contact otherwise |
-| Public | `GET /public/config`, `GET/POST /public/request-forms/:token`, `GET /version`, `GET /ready`, `/public/tenants/:id/logo`, `/public/tickets/attachments/:id` | none |
-| Tickets | `/tickets`, `/tickets/:id`, `/tickets/:id/{notes,attachments,reopen,sla,approvals/request}`, `/tickets/{statuses,priorities,types,queues,categories,saved-views}` | staff or contact |
-| Time | `/time-entries`, `/time-entries/summary`, `/timesheets`, `/timesheets/approvals`, `/timesheets/:user/:week/{submit,withdraw,approve,reject}`, `/workday/{clock-in,clock-out,break/start,break/end}`, `/workday/segments/:id`, `/time-rounding-rules`, `/work-types` | staff |
-| Projects | `/projects`, `/projects/:id`, `/projects/:id/tasks`, `/projects/summary`, `/project-types`, `/task-statuses` | staff |
-| CRM | `/contacts/companies`, `/contacts/contacts`, `/contacts/sites`, `/contacts/portal-roles`, `/contacts/company-industries`, `/contacts/field-values`, `/companies/:id/documentation`, `/portal-roles`, `/form-request-links`, `/forms`, `/forms/drafts` | staff |
-| Calendar | `/calendar`, `/dispatch`, `/appointments/:id`, `/scheduling-templates` | staff |
-| Billing | `/quotes`, `/contracts`, `/contract-items/:id`, `/rate-cards`, `/rate-card-items/:id`, `/invoices`, `/invoices/:id/{pay,void,write-off,amend,pdf,payments,delivery-options,payment-readiness}`, `/payments`, `/credit-notes`, `/statements`, `/statements/pdf`, `/tax-rates`, `/payment-gateways`, `/payment-terms`, `/products`, `/vendors`, `/bills`, `/expenses`, `/expense-categories`, `/invoice-issuer-mappings/*`, `/integrations/invoice-issuer/:provider/*` | staff; some invoice reads also contact |
-| Assets and RMM | `/assets`, `/asset-types`, `/configuration-items/:id`, `/rmm/{connections,device-mappings,alert-rules}`, `/status/companies/:id/backup` | staff |
-| Knowledge base | `/kb/articles`, `/kb/articles/:id/{render,versions,comments,attachments,vote,helpful,not_helpful}`, `/kb/categories`, `/kb/top-ticket-driving-articles` | staff or contact |
-| Reports and audit | `/reports/{tickets,time,billing,projects,clients}`, `/reports/:key/export`, `/reports/custom`, `/reports/dashboard`, `/audit-log` | staff |
-| Contact sync | `/integrations/contact-sync/*` (runs, selection, preview, schedule, review-queue, vcard uploads, per-provider authorize, connect and disconnect), `/public/contact-sync/google/callback` | staff; callback none |
-| Settings | `/settings/:category`, `/settings/modules`, `/settings/feature-toggles`, `/settings/email`, `/tenants/current`, `/tenants/current/{logo,organization,branding/:asset}`, `/data/{export,import,seed-demo}`, `/sla/*`, `/teams`, `/invitations`, `/grants/*`, `/my-grants/*`, `/notifications` | staff |
-
-Request conventions: JSON bodies with `Content-Type: application/json`; multipart for file uploads; `Authorization:
-Bearer <token>` on authenticated calls; `X-Forwarded-Host` carrying the browser host on the unauthenticated typed
-helpers (omitted on desktop). Error envelope: `{"error":{"code","message","errors":[{field,message,code}]}}`; a 429 body
-is `{"error":"rate_limited","message","retry_after_seconds"}`.
-
-### 4.3 OIDC provider calls
-
-When an issuer is configured: `GET <issuer>/oauth2/authorize`, `POST <issuer>/oauth2/token` (authorization code and
-refresh grants), `POST <issuer>/oauth2/revoke`, and `GET <issuer>/v1/auth/logout?url=<target>` for sign-out. Requested
-scope default: `openid email offline_access`.
-
-### 4.4 Static endpoints served by the container
-
-`/_mokosh_config.js` (sets `window.__MOKOSH_CONFIG__`), `/_mokosh_config.json` (same fields as data), `/index.html`
-(patched), and every other path falls back to the patched `index.html`.
-
-## 5. Data model
-
-The application stores no relational data. Its client-side state:
-
-| Store | Key | Content |
-| --- | --- | --- |
-| In memory (thread-local) | staff, portal and contact access tokens; contact refresh token; contact company id and contact id; contact capabilities | Never persisted |
-| sessionStorage (browser) / in-process map (desktop) | `mokosh_auth_bundle_v1` | OIDC access, id and refresh tokens, expiry, scope |
-| same | `mokosh_standalone_session_v1` | Standalone access and refresh tokens, expiry, current user |
-| same | `mokosh_oidc_flow_v1` | Pending OIDC flow: code verifier, state, nonce, return target |
-| same | `mokosh_oidc_callback_retry_v1` | Count of silent login restarts from `/auth/callback` |
-| sessionStorage (browser only; the desktop build holds no platform bearer) | `mokosh:platform_token`, `mokosh:platform_mfa_enabled` | Platform bearer and MFA flag |
-| localStorage (browser) / `prefs.json` in the per-user config directory (desktop) | `mokosh_theme`, `mokosh_accent`, `mokosh_tv_view`, `mokosh_tv_team`, `mokosh_device_id`, `mokosh:contact_last_slug`, `mokosh:contact_last_portal_id`, `mokosh.portal.next`, `mokosh:assets:columns:v1`, `mokosh:assets:signature_dismissed:v1`, `mokosh:contact-new-prefill`, `mokosh-update-dismissed-*`, `kb_density`, `kb_left_rail`, `kb_right_rail` | UI preferences and portal routing hints; never tokens |
-
-The wire-format records (tickets, invoices, contacts, and so on) are defined by the shared types crate and the
-per-domain models in `src/modules/*/models.rs`. The database schema and migrations belong to the API server and are not
-in this repository.
-
-## 6. Configuration
-
-### 6.1 Resolution order
-
-For each runtime field: (1) browser `window.__MOKOSH_CONFIG__.<field>` or, on desktop, environment variable
-`MOKOSH_<FIELD>` then the `config.json` in the per-user config directory (both keyed by the lowercase field name);
-(2) host-prefix derivation for hosts beginning with `msp.`; (3) compile-time `option_env!` defaults. Absent and empty
-values are treated alike. On desktop `config.json` is read once per run; an invalid file is logged at error level.
-
-### 6.2 Runtime fields (container environment variable -> config field)
-
-| Variable | Field | Purpose |
-| --- | --- | --- |
-| `MOKOSH_API_BASE` | `api_base` | API base URL including `/api/v1`; trailing slashes are stripped. Also used to build the CSP `connect-src` and `img-src` origin. |
-| `MOKOSH_OIDC_ISSUER` | `oidc_issuer` | OP base URL. Empty (and not derivable) selects standalone login. |
-| `MOKOSH_OIDC_CLIENT_ID` | `oidc_client_id` | Public client id. Unset selects standalone login. |
-| `MOKOSH_OIDC_REDIRECT_URI` | `oidc_redirect_uri` | Overrides the derived `<origin>/auth/callback`. |
-| `MOKOSH_OIDC_SCOPES` | `oidc_scopes` | Scope string; default `openid email offline_access`. |
-| `MOKOSH_HUB_BASE_URL` | `hub_base_url` | Origin of the identity hub used for legacy login bookmarks and sign-out fallback. Compile-time default `http://localhost:4400`. |
-| `MOKOSH_PORTAL_HOST` | `portal_host` | Bare host the portal is served from; also read at compile time. |
-| `MOKOSH_DOCS_BASE_URL` | `docs_base_url` | Documentation site base URL; hides the Documentation entries when unresolved. The container still honors the deprecated `MOKOSH_DOCS_URL` with a warning. |
-| `MOKOSH_ORGANIZATIONS_ENABLED` | `organizations_enabled` | Shows the organizations surface (`1`, `true`, `yes`). |
-| `MOKOSH_KB_ATTACHMENT_MAX_BYTES` | `kb_attachment_max_bytes` | Client-side attachment size check; default 5 MiB. |
-| `MOKOSH_BRAND_NAME`, `MOKOSH_BRAND_LOGO_URL`, `MOKOSH_BRAND_HERO_URL` | `brand_name`, `brand_logo_url`, `brand_hero_url` | Deployment branding; defaults are the built-in product name and artwork. |
-| `GIT_SHA` | `build_sha` | First 12 characters, used by the update check. |
-
-Derivations when a field is unset and the page host is `msp.<apex>`: API base `https://api.msp.<apex>/api/v1`, issuer
-`https://api.<apex>`, hub `https://<apex>`, docs `https://docs.<apex>`. When the host equals the portal host, the API
-base is `https://api.<portal host without its first label>/api/v1` (same-origin `/api/v1` for `localhost` hosts).
-Otherwise the browser default is the same-origin `/api/v1`; the desktop default is the compile-time `MOKOSH_API_BASE`
-or `http://localhost:8080/api/v1`.
-
-### 6.3 Container-only variables (read by `oci-build/entrypoint.sh`)
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `PORT` | `8080` | Caddy listen port. |
-| `MOKOSH_RUNTIME_DIR` | `/tmp/mokosh-runtime` | Writable directory for the generated config files and patched `index.html`. The entrypoint exits non-zero if it cannot be prepared. |
-| `MOKOSH_BRAND_DESCRIPTION` | `Mokosh Platform - Professional Services Automation for MSPs` | Link-preview description. |
-| `MOKOSH_PUBLIC_URL` | unset | Public base URL used to make a relative brand logo absolute for link previews. |
-| `PUID`, `PGID`, `APP_USER`, `DATA_DIRS` | `APP_USER=appuser`, `DATA_DIRS` empty | Consumed by the shared gosu entrypoint. |
-
-### 6.4 Compile-time variables
-
-`MOKOSH_OIDC_ISSUER`, `MOKOSH_OIDC_CLIENT_ID`, `MOKOSH_OIDC_REDIRECT_URI`, `MOKOSH_OIDC_SCOPES`,
-`MOKOSH_HUB_BASE_URL`, `MOKOSH_DOCS_BASE_URL`, `MOKOSH_PORTAL_HOST`, `MOKOSH_API_BASE` (desktop default), `GIT_SHA`,
-and, with `dev_admin_bypass` in debug builds, `ADMIN_EMAIL` and `ADMIN_PASSWORD`.
-
-## 7. Security
-
-- Staff OIDC uses the authorization code flow with PKCE (S256, 32 random bytes verifier) and random 256-bit `state`
-  and `nonce`. There is no client secret. The ID token is decoded without signature verification; the code exchange
-  runs over TLS directly with the configured issuer.
-- Token storage: access tokens in memory; the staff token bundle and standalone session in sessionStorage (tab-scoped)
-  on the browser and in an in-process map on desktop; tokens are never written to localStorage. Portal contact tokens
-  live in memory, with the durable portal session carried by a server-set HttpOnly cookie.
-- Planes are kept apart: the staff, portal, contact and platform bearers have separate holders, and only a request that
-  carried the held staff bearer can trigger the staff renewal and sign-out path on a 401. Signing in on one plane clears the opposite side.
-- Authorization: the server is authoritative. The client hides navigation and routes using `use_capability`
-  (staff and platform bearers pass; a contact session is checked against its capability snapshot), the contact-forbidden
-  path list, per-page role checks (`is_admin`, `is_super_admin`), and tenant module flags. A test asserts that each
-  `/admin/*` route reads the caller's role.
-- Input handling: shared validation rules, server field errors, URI-component encoding helpers for query strings, Markdown
-  sanitized with ammonia (script stripped, restricted class and attribute allow-lists), `return_to` sanitized to
-  same-origin non-plumbing paths.
-- Transport hardening in the container (Caddy): `Content-Security-Policy` (`default-src 'self'`, `script-src 'self'
-  'wasm-unsafe-eval'`, `style-src 'self' 'unsafe-inline'`, `img-src 'self' data:` plus the API origin, `connect-src
-  'self'` plus the API and OIDC origins, `object-src 'none'`, `base-uri 'self'`, `frame-ancestors 'none'`,
-  `form-action 'self'`), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy:
-  strict-origin-when-cross-origin`; the `Server` header is removed. Content-hashed assets are cacheable for a year;
-  everything else is `no-cache, no-store, must-revalidate`.
-- Rate limits are enforced by the server; the client only parses and displays the wait from a 429.
-- Desktop: the OIDC redirect uses an RFC 8252 loopback listener bound to `127.0.0.1` on an ephemeral port, reading one
-  request line capped at 8 KiB.
-- Secrets: none are stored in the repository or image. `.env.example` documents dev-only compile-time admin bypass
-  values, which are readable by anyone who downloads a bundle built with them.
-
-## 8. Integrations and dependencies
-
-- Mokosh API server: every data call (section 4.2). Origin and CORS are the server's concern; desktop origins are
-  mirrored in `src/platform/desktop_origin.rs` (`dioxus://index.html` on macOS, Linux and iOS,
-  `http://dioxus.index.html` on Windows, `https://dioxus.index.html` on Android).
-- OpenID Connect provider: staff sign-in, token refresh, revocation, logout, and legacy-bookmark redirects to the
-  identity hub.
-- Payment gateway checkout (Stripe Checkout in setup mode) for portal payment methods, reached through the API server.
-- Contact-sync providers (Google, iCloud, Microsoft 365, vCard) and invoice issuers (Xero, QuickBooks), reached through
-  the API server; the OAuth callbacks land on `/settings/integrations/*` pages.
-- The shared wire-format types crate, fetched over anonymous HTTPS git; `scripts/check-types-pin.sh` enforces that `Cargo.lock`
-  tracks the server's head, and a scheduled workflow checks drift.
-- Caddy (static serving), Tailwind CSS via bun, Dioxus CLI.
-
-## 9. Deployment and operations
-
-### 9.1 Build
-
-- Web bundle: `bun x @tailwindcss/cli --input input.css --output assets/styles.css --minify`, then
-  `dx build --release --features web`. `dx` substitutes its own feature list, so `--features web` is mandatory and
-  `src/main.rs` rejects a wasm build without it. `Dioxus.toml` sets wasm-opt level `z`.
-- Release profile: `opt-level = "z"`, fat LTO, `codegen-units = 1`, `panic = "abort"`, stripped. Profiles `wasm-release`
-  (thin LTO) and `wasm-dev` exist for memory-constrained development.
-- Desktop: `dx build|bundle --platform desktop --no-default-features --features desktop,multi-tenant`; bundle identity
-  and icons are in `Dioxus.toml`.
-- The version shown in the UI is the Cargo package version; the commit hash comes from `GIT_SHA` or git.
-
-### 9.2 Image
-
-`oci-build/Dockerfile` is multi-stage: a builder pinned to the build platform produces the WASM bundle; the runtime is
-Alpine with Caddy, gosu and shadow. Root-level icons and the two raw scripts (`theme-init.js`,
-`scrollbar-autohide.js`) are copied into the web root. The container starts as root, remaps `appuser` (uid and gid 1001
-by default) through `gosu-entrypoint.sh`, then runs `entrypoint.sh`, which writes `_mokosh_config.js`,
-`_mokosh_config.json` and a patched `index.html` (config script tag and link-preview metadata) into the runtime
-directory, derives CSP origins, and execs `caddy run --config /etc/caddy/Caddyfile`. A `user:` pin skips the remap and
-runs directly as the pinned uid. Exposed port: 8080. Labels carry source, description and revision. There is no
-volume requirement beyond a writable runtime directory, and no Docker `HEALTHCHECK` is declared.
-
-The Caddyfile derives CSP origins from the request host (`msp.<apex>` -> `https://api.msp.<apex>` for the API and
-`https://api.<apex>` for the OP) when the explicit variables are unset.
-
-### 9.3 Development
-
-`compose.yml` runs `dx serve --features web` on port 4301 with source bind-mounted and cargo and node_modules volumes;
-`Dioxus.toml` proxies `/api/` to the server container on port 8080 so the SPA and API share one origin in dev. `just dev`
-binds to a private LAN address or loopback. `compose.dev-sso.yml` is an overlay that routes the dev server through a reverse proxy with OIDC variables for SSO testing.
-
-### 9.4 CI and checks
-
-Forgejo workflows: `check.yml` (push and pull request), `build-oci-image.yml` (branch and tag pushes, manual),
-`create-release.yml`, `types-pin-drift.yml` (weekly), `renovate.yml` (Saturday 02:00 UTC), `claude-fix.yml` (manual). The
-`just check` umbrella runs clippy on host and wasm targets with `-D warnings`, formatting, the desktop check, and the
-repository guard scripts under `scripts/`.
-
-## 10. Non-functional behavior
-
-- Logging: `tracing` on native; on the browser, errors that are not shown are written to the console through
-  `platform::log`. A route render error is logged under target `route_error_boundary`; auth-guard redirects under
-  `auth_guard`.
-- Error reporting to users: API failures are mapped to toasts or inline messages by `ApiError::user_message`
-  (network, 401/403 plane-aware permission text, 404, 409, 422 field messages, 429 wait text, 5xx generic). Debug builds
-  also show error detail on the fallback page.
-- Panics: the wasm panic hook forwards panics to `console.error`; the release profile aborts on panic, so the route
-  `ErrorBoundary` covers returned errors, not panics.
-- Reachability and staleness are surfaced app-wide by the server-status banner and the update banner.
-- Caching: shared reference lists are fetched once per session; `api_base` and the OIDC configuration are resolved once
-  per process.
-- Accessibility and theming: light, dark and system themes with a curated accent catalog checked against WCAG contrast
-  math; brand colors from the effective branding are applied as CSS custom properties.
-- Observability beyond logs and the in-app System Status page (build versions and `/ready` dependency health) is not
-  provided by the client.
+# Mokosh Platform client specification
+
+This document is normative. Each numbered statement below is a requirement,
+identified by `SPEC-<section>.<n>` (for example `SPEC-9.2.4`), meaning:
+section 9, subsection 2, requirement 4. A requirement uses "must" or "must
+not" for behavior the implementation is required to have; "should" marks a
+recommendation that is not load-bearing for correctness. Every requirement
+describes one behavior: a trigger, the required outcome, and, where it
+matters, the required failure behavior. Numeric section order is fixed
+across the full specification; this revision defines Section 1 only. Later
+sections are reserved for other parts of the client and are added in later
+revisions without renumbering Section 1.
+
+A requirement cites the file and function, script step, or configuration
+block that implements or enforces it. Implementing code carries a matching
+`SPEC-<id>` comment, in the file's own comment syntax, at each site that
+enforces the requirement. The comment cites the id; it does not restate the
+requirement text.
+
+## Purpose and non-goals
+
+This document specifies the observable behavior of the Mokosh Platform's
+Dioxus-based client application: the Rust/WASM web and desktop client, its
+build and packaging, its container runtime image, and the CI automation that
+builds, checks and publishes it. It is the source of truth for what this
+client must do; where the client's behavior and this document disagree, that
+is a defect in one of the two, not a judgment call for whichever reader finds
+it first.
+
+It is not a specification of:
+
+- The Mokosh API server, the OIDC provider, or any other service the client
+  calls. Those are out of scope entirely; this document treats them as
+  external systems reached over HTTP.
+- The business logic of any individual workspace area (tickets, companies,
+  invoicing, scheduling, and so on), or the client-side data hooks and
+  storage keys those areas use. Those belong to later sections of this
+  specification, covering files outside this revision's scope.
+- Operational runbooks, incident procedures, or anything with a mutable
+  status (in progress, planned, deprecated). This document describes
+  required behavior, not current project state.
+
+## Architecture and process model
+
+The client is a single Rust crate (`mokosh-apps`) compiled either to
+`wasm32-unknown-unknown` for the browser or natively for a desktop webview,
+selected by Cargo features rather than by source-level target forks wherever
+practical. A `Route` enum, derived via Dioxus's `Routable`, declares every
+client-side route and nests most of them under an `AuthGuard` layout that
+performs render-time authentication and authorization gating before handing
+off to the matched page component. Configuration is resolved at runtime from
+a small JSON/JS shim the container entrypoint renders from environment
+variables, not baked into the compiled bundle, so one built image serves
+every deployment. The container runtime is a static-file web server (Caddy)
+that also derives security headers and reverse-proxy origins from that same
+configuration. A separate CI pipeline builds, checks, and publishes the
+container image from the same source tree.
+
+## Cross-cutting required areas
+
+Every numbered section states, for the files in its scope, what it does in
+each of the following areas, or says "none for this section" with a reason
+when an area does not apply:
+
+- **Interfaces**: the routes, endpoints, and process entry points the files
+  in scope expose.
+- **Data model**: any schema, structured file format, or persisted state the
+  files in scope define or own.
+- **Configuration**: environment variables, build-time features, and config
+  files the files in scope read, write, or define.
+- **Security**: authentication, authorization, secrets handling, and
+  hardening the files in scope perform or require.
+- **Error handling and observability**: required failure behavior, and what
+  is logged and where.
+- **Concurrency and ordering**: sequencing constraints, race conditions
+  being guarded against, and anything that must happen before or after
+  something else.
+- **Integrations**: other systems, services, or repositories the files in
+  scope talk to or depend on.
+- **Build and deployment**: how the files in scope are built, packaged, and
+  shipped.
+- **Retention and cleanup**: what is kept, what is discarded, and when.
+
+## 1. Foundation, build and deployment
+
+Scope: the application's entry points and router layout
+(`src/main.rs`, `src/lib.rs`, `src/branding.rs`), the build scripts and
+manifests (`build.rs`, `Cargo.toml`, `Dioxus.toml`, `package.json`,
+`index.html`, `input.css`, `renovate.json`, `.env.example`, `.gitmodules`,
+`.dockerignore`, `.gitignore`, `justfile`), the container and compose
+definitions (`Dockerfile`, `compose.yml`, `compose.dev-sso.yml`,
+`config/variables.toml`, and every file under `oci-build/`), the CI
+workflows under `.forgejo/workflows/`, and the dev container definition under
+`.devcontainer/`.
+
+### 1.1 Interfaces
+
+- **SPEC-1.1.1**: The client must expose exactly the routes declared in the
+  `Route` enum in `src/lib.rs`, in three tiers: public routes reachable with
+  no session (sign-in, password reset, invite acceptance, the contact-portal
+  login family, and similar); routes nested under the `AuthGuard` layout,
+  themselves split between a chromeless group (onboarding, the TV dashboard,
+  the "big" board views) and the group nested further under the `AppShell`
+  layout (the staff workspace: tickets, companies, scheduling, billing,
+  knowledge base, reports, settings, and related areas); and a catch-all
+  route matched when no other route does.
+- **SPEC-1.1.2**: A request for a route retired in favor of a renamed one
+  (the legacy client/platform sign-in paths) must still resolve, by
+  redirecting to the current route, rather than falling through to the
+  catch-all.
+- **SPEC-1.1.3**: A request for a path matching none of the declared routes
+  must render the catch-all route's page rather than an unhandled
+  router error.
+- **SPEC-1.1.4**: The container's HTTP server must serve exactly these
+  endpoints at the root of the origin: the runtime configuration shim at
+  `/_mokosh_config.js` and `/_mokosh_config.json`, the static bundle and its
+  content-hashed assets, the HTML entry point (patched at container start),
+  and, for any other path, that same patched HTML entry point, so client-side
+  routing resolves a deep link on first load.
+- **SPEC-1.1.5**: During local development (`dx serve`), requests under
+  `/api/` must be proxied to the API container rather than served by the
+  dev server itself.
+- **SPEC-1.1.6**: The HTML entry point must load its theme-applier and
+  scrollbar scripts as same-origin, non-inline `<script>` tags, consistent
+  with the container's Content-Security-Policy, which refuses inline script
+  execution.
+
+### 1.2 Data model
+
+None of the files in this section's scope define a schema for persisted
+application data; the SPA has no database and no server-side storage of its
+own (that is owned by the API server, out of scope here). The one structured
+format owned by this scope is the operator-facing configuration catalog:
+
+- **SPEC-1.2.1**: `config/variables.toml` is the single source of truth for
+  every operator-facing runtime variable: for each variable, its name,
+  the version it was added in, whether it is required, a one-line summary,
+  and which file reads it; and, separately, which variables have been
+  removed or changed, and when. Generated documentation and its drift check
+  must derive from this file, not restate its contents independently.
+
+### 1.3 Configuration
+
+- **SPEC-1.3.1**: The crate's buildable feature combinations must be exactly
+  those declared in `Cargo.toml`: `app` (shared code with no renderer),
+  `web` and `desktop` (each implying `app` plus the matching Dioxus
+  renderer), `multi-tenant` (on by default), `server` (reserved, never
+  enabled by any build in this scope), and `dev_admin_bypass` (off by
+  default).
+- **SPEC-1.3.2**: `Cargo.toml`'s `release` and `wasm-release` profiles must
+  each be configured for minimum shipped size (optimize for size, abort on
+  panic, strip symbols, and, for the WASM target, thin LTO), independently
+  of the `dev`/`wasm-dev` profiles used for local iteration.
+- **SPEC-1.3.3**: `Dioxus.toml` must be the single source of the application
+  identity, asset directory, WASM optimization level, dev server bind
+  address and port, dev-only API proxy target, and desktop bundle metadata
+  (identifier and icon set) used by every build and packaging step in this
+  scope.
+- **SPEC-1.3.4**: `package.json`'s scripts must be the only place the
+  Tailwind CSS build (minified for production, watched for local
+  development) is invoked from, so every build path (CI, container image,
+  `just` recipes) runs the same command.
+- **SPEC-1.3.5**: `input.css` must be the single Tailwind entry point: it
+  declares the plugins in use, the brand and semantic design tokens
+  (resolved through CSS custom properties so a runtime theme change recolors
+  the app without a rebuild), and every structural and component-level style
+  correction the client depends on.
+- **SPEC-1.3.6**: `.env.example` must document every variable a local
+  `dx serve` run can set, including that the `dev_admin_bypass` credentials
+  it describes are compiled into the bundle and must never be set in a
+  production build.
+- **SPEC-1.3.7**: The container runtime configuration fields written to
+  `_mokosh_config.js`/`.json` (API base URL, OIDC issuer/client id/redirect
+  URI/scopes, hub base URL, portal host, docs base URL with a deprecated
+  fallback name, organizations-enabled flag, KB attachment size limit, the
+  three brand fields, and a build SHA truncated to 12 characters) must be
+  produced by one function in `oci-build/entrypoint.sh`, and the build SHA
+  truncation there must match the truncation `build.rs` applies when it
+  bakes the same value into the compiled bundle's compile-time default.
+- **SPEC-1.3.8**: Container-only variables not forwarded to the browser
+  (listen `PORT`, the writable `MOKOSH_RUNTIME_DIR`, the link-preview-only
+  `MOKOSH_BRAND_DESCRIPTION`, the absolute-URL base `MOKOSH_PUBLIC_URL`, and
+  the ownership/identity variables `PUID`/`PGID`/`APP_USER` read by the
+  startup wrapper) must each resolve to a documented default when unset.
+- **SPEC-1.3.9**: `compose.yml` (the local development stack) must expose a
+  documented override for the `dx serve` arguments, cap the Cargo build job
+  count to bound memory use, and bind the dev server to a configurable host
+  address.
+- **SPEC-1.3.10**: `compose.dev-sso.yml` must be an overlay that supplies the
+  OIDC issuer, redirect URI, scopes and client id needed to exercise a real
+  sign-in flow against a local stack, without altering the base
+  `compose.yml` service definition.
+- **SPEC-1.3.11**: `oci-build/compose.example.yml` must document every
+  operator-facing variable inline, including its fallback behavior, as the
+  self-hosting reference compose file.
+- **SPEC-1.3.12**: `renovate.json` must declare which dependency managers are
+  enabled and how their updates are grouped, and must pin `getrandom` below
+  `0.5` until the ecosystem's rand-core transition lands.
+- **SPEC-1.3.13**: `.devcontainer/devcontainer.json` must pin an exact base
+  image and declare the ports the in-container dev server needs forwarded.
+- **SPEC-1.3.14**: `src/branding.rs` must be the only reader of the
+  `brand_name`, `brand_logo_url` and `brand_hero_url` runtime configuration
+  fields, trimming a configured value and falling back to the built-in
+  default whenever the configured value is absent or blank after trimming.
+
+### 1.4 Security
+
+- **SPEC-1.4.1**: `AuthGuard` must decide and act on the unauthenticated case
+  during the initial render of the guarded subtree, not in an effect that
+  runs after it, so a protected page is never rendered even momentarily
+  before a redirect takes effect.
+- **SPEC-1.4.2**: `AuthGuard` must not treat a visitor as unauthenticated
+  while a contact-session rehydrate from an HttpOnly cookie may still
+  succeed; it must hold rendering in that window rather than deciding early.
+- **SPEC-1.4.3**: `pathname_is_contact_forbidden` must deny a contact session
+  access to every staff-only path prefix it enumerates (companies, contacts,
+  calendar, dispatch, scheduling templates, rate cards, payments, tax rates,
+  payment gateways, reports, time, timesheets, dashboards, the TV dashboard,
+  the "big" board views, admin, tenant switching, org creation, invites, and
+  dev-only tooling), with `/settings/*` denied except the hub and the
+  branding and appearance leaf pages; `AuthGuard` must redirect a contact
+  session matching a denied path to the dashboard rather than render it.
+- **SPEC-1.4.4**: A platform-administrator bearer token must let `AuthGuard`
+  render the guarded subtree without itself granting any additional
+  authorization; per-action authorization remains the API server's
+  responsibility.
+- **SPEC-1.4.5**: When the deployment has no OIDC issuer configured
+  (standalone mode), `AuthGuard` must redirect an unauthenticated visitor to
+  the local sign-in page instead of attempting an OIDC redirect.
+- **SPEC-1.4.6**: The container's HTTP server must set a Content-Security-Policy
+  and the accompanying hardening headers (frame denial, content-type
+  sniffing denial, referrer policy, and no `Server` header) on every
+  response.
+- **SPEC-1.4.7**: The container must not run the application process as root
+  once it has started; the startup wrapper must remap to a non-root user (or
+  verify that the configured start is already non-root) before executing the
+  real entrypoint.
+- **SPEC-1.4.8**: The startup wrapper must reject a non-numeric or zero
+  `PUID`/`PGID` rather than silently falling back to another identity.
+- **SPEC-1.4.9**: The `dev_admin_bypass` feature must default off, and
+  `.env.example` must document that credentials it describes are readable by
+  anyone who downloads a bundle built with it enabled.
+- **SPEC-1.4.10**: Files that can carry secrets (`.env` and its variants,
+  excluding the committed `.env.example`) must be excluded from both version
+  control and the Docker build context.
+- **SPEC-1.4.11**: Every CI check run must include a dependency vulnerability
+  audit with its ignored advisories listed explicitly, and the dependency
+  update automation must alert on OSV vulnerabilities.
+- **SPEC-1.4.12**: The CI workflow that invokes an external coding agent
+  against a pull request must pass untrusted PR-derived strings (PR number,
+  title, branch name) through environment variables, never interpolated
+  directly into a shell script.
+- **SPEC-1.4.13**: Every push and pull request must be scanned for
+  accidentally committed secrets before any other check is considered
+  passing.
+
+### 1.5 Error handling and observability
+
+- **SPEC-1.5.1**: A `wasm32` build that does not enable the `web` feature
+  must fail to compile, rather than compile and panic at launch with no
+  actionable message.
+- **SPEC-1.5.2**: On the web target, the panic hook must be installed before
+  any other startup code runs, so a panic during boot still produces a
+  readable browser console trace.
+- **SPEC-1.5.3**: An error raised while rendering a routed page must be
+  caught by an error boundary and shown with recovery actions (return to the
+  dashboard, or reload), rather than leaving the page frozen with no
+  indication anything failed.
+- **SPEC-1.5.4**: The caught route error must be logged, and the error
+  boundary's documented limitation (it does not catch WASM panics, only
+  propagated errors) must hold.
+- **SPEC-1.5.5**: If the container cannot prepare its writable runtime
+  directory at startup, it must fail fatally rather than start serving stale
+  or absent configuration.
+- **SPEC-1.5.6**: If a startup hook run by the privilege-dropping wrapper
+  fails, the container must abort startup with a message rather than
+  continue with a partially applied environment.
+- **SPEC-1.5.7**: If the git hash or build date cannot be resolved at build
+  time, the build must fall back to a literal placeholder rather than fail.
+- **SPEC-1.5.8**: On desktop, a failed window-icon load must be logged and
+  must not prevent the window from opening.
+- **SPEC-1.5.9**: CI job-level metrics must be reported even when an earlier
+  step in the same job failed.
+- **SPEC-1.5.10**: An unresolvable or non-absolute logo URL for the
+  link-preview tags must result in those tags being omitted, with the reason
+  logged at container start, rather than emitting a URL no crawler can
+  fetch.
+
+### 1.6 Concurrency and ordering
+
+- **SPEC-1.6.1**: The initial page URL's query string must be captured before
+  the client-side router mounts, so a redirect response appended to the URL
+  (an OIDC authorization response) is not lost to a router-driven URL
+  rewrite.
+- **SPEC-1.6.2**: Whether `AuthGuard` must hold rendering for a contact
+  session rehydrate is decided in a signal initializer evaluated during the
+  first render, not in an effect evaluated after it, because an effect
+  cannot prevent the render it is meant to gate.
+- **SPEC-1.6.3**: The container image publish workflow must derive its tag
+  set from the triggering event (a push to the default branch, a release
+  tag, or a manual dispatch), not from a separately computed value, so that
+  two runs triggered by the same release never compute conflicting tags for
+  the same artifact.
+- **SPEC-1.6.4**: The privilege-dropping startup wrapper must change
+  ownership only of files whose ownership does not already match the
+  resolved user and group, not the whole tree unconditionally.
+- **SPEC-1.6.5**: The container image build must compile dependencies
+  against a placeholder source tree before the real source is copied in, so
+  an application source change does not invalidate the cached dependency
+  build.
+
+### 1.7 Integrations
+
+- **SPEC-1.7.1**: The shared wire-format crate must be consumed as a git
+  dependency pinned only through the lockfile (no `rev`, `tag`, or `branch`
+  in the manifest), with drift between the lockfile and the dependency's
+  default branch detected by a dedicated check.
+- **SPEC-1.7.2**: The dependency update automation must group updates to the
+  pinned shared crate separately from the general dependency update stream.
+- **SPEC-1.7.3**: The local development server must proxy API requests to
+  the API container so the client and the API share one origin in
+  development, matching the single-origin assumption the production
+  container's reverse proxy also makes.
+- **SPEC-1.7.4**: The container's reverse proxy must derive the API and OIDC
+  origins used in both the Content-Security-Policy and the runtime
+  configuration shim from the request's own host whenever an explicit origin
+  override is not set.
+- **SPEC-1.7.5**: The container image publish workflow must install
+  multi-architecture emulation before attempting a multi-platform image
+  build, and must mirror a published image to a second registry only by
+  copying its manifest list, never by rebuilding it.
+- **SPEC-1.7.6**: The manual CI-fix workflow must invoke the external coding
+  agent against the failing pull request and push a commit only when the
+  agent's run produced an actual diff.
+- **SPEC-1.7.7**: The release workflow must trigger only on a merged pull
+  request whose source branch follows the release-branch naming convention,
+  and must delegate the actual release steps to the shared, repository-external
+  reusable release workflow.
+
+### 1.8 Build and deployment
+
+- **SPEC-1.8.1**: Building the web bundle must regenerate the Tailwind
+  stylesheet before compiling, and must pass the `web` feature explicitly to
+  the build tool, which otherwise substitutes its own feature list for the
+  crate's declared defaults.
+- **SPEC-1.8.2**: The production container image must be built in two
+  stages: a builder stage that produces the platform-independent WASM
+  bundle, and a minimal runtime stage that serves it with no build toolchain
+  present.
+- **SPEC-1.8.3**: The builder stage must verify that the WASM optimizer
+  version it installs matches the version the build tool itself resolves,
+  and must fail the build on a mismatch rather than risk a build that
+  succeeds with a mismatched optimizer.
+- **SPEC-1.8.4**: The runtime stage must include the built static bundle,
+  the root-level icon and manifest files, and the two startup scripts in the
+  served web root.
+- **SPEC-1.8.5**: The development container image must pre-build
+  dependencies against a placeholder source tree (see SPEC-1.6.5) and must
+  run the dev server with the `web` feature on container start.
+- **SPEC-1.8.6**: The container image checks and builds must run from the
+  repository root using the build tool's multi-platform builder.
+- **SPEC-1.8.7**: The CI check job must run, at minimum, a formatting check,
+  a lint check with warnings treated as errors on both the host and the
+  WASM target, a desktop-feature compilation check, the library test suite,
+  and the dependency audit, in addition to the repository's own guard
+  scripts.
+- **SPEC-1.8.8**: The CI check job must produce a placeholder stylesheet
+  before any guard or compile step runs, because the generated stylesheet is
+  excluded from version control and this job does not render it for real.
+- **SPEC-1.8.9**: The container image publish workflow must resolve exactly
+  one of its publish modes (a tagged release, a rolling "latest" update, a
+  branch build, or a dry run) from the triggering event, and must tag the
+  published image only within that mode's naming convention.
+- **SPEC-1.8.10**: A non-dry-run manual run of the publish workflow must fail
+  immediately if it targets neither the default branch nor a release tag.
+- **SPEC-1.8.11**: The scheduled dependency-pin drift check must run the
+  strict variant of the shared-crate pin check, and its failure must not
+  block any pull request.
+- **SPEC-1.8.12**: The dependency update workflow must run on its schedule or
+  on manual dispatch and must delegate to the shared, repository-external
+  reusable update workflow.
+- **SPEC-1.8.13**: Any CI job that needs the repository's shared recipes must
+  check out the git submodule that provides them.
+- **SPEC-1.8.14**: Build artifacts, dependency caches, and editor or OS
+  files must be excluded from version control; the generated stylesheet must
+  additionally be excluded from the Docker build context.
+- **SPEC-1.8.15**: The Docker build context must exclude development-only
+  compose files, Dockerfiles, and environment files, so they cannot be
+  copied into an image layer.
+- **SPEC-1.8.16**: The dev container's provisioning steps must run
+  identically regardless of which of the dev-container lifecycle hooks
+  invokes them, because not every client runs every hook as the configured
+  user.
+
+### 1.9 Retention and cleanup
+
+- **SPEC-1.9.1**: The container entrypoint must restore a pristine copy of
+  the bundled HTML entry point into the writable runtime directory on every
+  container start, so a previous run's in-place patch never persists across
+  a restart.
+- **SPEC-1.9.2**: The container must require no persistent volume beyond a
+  writable scratch directory for runtime-generated files; that directory's
+  default location must not be expected to survive container recreation.
+- **SPEC-1.9.3**: Generated build artifacts, dependency caches, and editor or
+  OS files must never be committed, so a fresh clone carries no stale
+  generated state (see SPEC-1.8.14).

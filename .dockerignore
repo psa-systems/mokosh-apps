@@ -1,8 +1,10 @@
+# SPEC-1.4.10: secrets must never enter the Docker build context.
 # Secrets - never copy into any build context
 .env
 .env.*
 !.env.example
 
+# SPEC-1.8.14: the generated stylesheet is excluded from the build context too.
 # Build outputs
 target/
 node_modules/
@@ -19,6 +21,7 @@ assets/styles.css
 *.swp
 *~
 
+# SPEC-1.8.15: dev-only compose/Dockerfile/env files must not leak into an image layer.
 # Docker / compose (not needed inside builder)
 compose.yml
 Dockerfile

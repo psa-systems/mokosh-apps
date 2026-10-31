@@ -18,6 +18,7 @@ one of these pages.
 
 | Page | Purpose |
 | --- | --- |
+| [`specification.md`](specification.md) | The normative, numbered requirement set (`SPEC-<section>.<n>`) that the code cites at each implementing or enforcing site. |
 | [`architecture.md`](architecture.md) | The stack, the repository layout, the cargo features, and the two artifacts a build produces. |
 | [`client-server-integration.md`](client-server-integration.md) | The path a request takes out of this client, and what the two repositories share on the wire: the `mokosh-types` crate, the pin guard, and the copies the compiler cannot see. |
 | [`versioning.md`](versioning.md) | Where the displayed version comes from, how a redeploy reaches an open tab, and how a release is cut. |

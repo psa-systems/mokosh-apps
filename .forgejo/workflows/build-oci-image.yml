@@ -95,6 +95,7 @@ jobs:
           docker version
           docker buildx version
 
+      # SPEC-1.7.5: installs the amd64/arm64 binfmt handlers the multi-arch build below needs.
       - name: Set up QEMU for cross-arch emulation
         # Register both amd64 and arm64 binfmt handlers via the
         # privileged tonistiigi/binfmt container directly, rather
@@ -122,6 +123,7 @@ jobs:
           $"REGISTRY_USER=($owner)\n" | save --append $env.GITHUB_ENV
           $"IMAGE_REGISTRY=($env.REGISTRY_PROVIDER)/($owner)\n" | save --append $env.GITHUB_ENV
 
+      # SPEC-1.6.3, SPEC-1.8.9: resolve the publish train/tag from the trigger via get-tags.nu.
       - name: Resolve publish mode, train and tag
         id: resolve
         shell: nu {0}
@@ -155,6 +157,7 @@ jobs:
           # letting one publish for real from a feature branch would write
           # :latest from unmerged code. Refuse it loudly: publish a branch by
           # pushing the branch, which resolves the branch train instead.
+          # SPEC-1.8.10: refuse a non-dry-run manual run that would publish :latest from unmerged code.
           if $event == "workflow_dispatch" and (not $dry_run) and $ref_type != "tag" and $ref_name != "main" {
             error make { msg: $"A workflow_dispatch with dry_run=false is only allowed on main or a v* tag, not on '($ref_name)': it would publish :latest from unmerged code. Push the branch instead to publish its branch tag." }
           }

@@ -13,6 +13,7 @@ on:
 
 jobs:
   create-release:
+    # SPEC-1.7.7: triggers only on a merged pull request from a release/v* branch.
     if: >-
       github.event.pull_request.merged == true
       && startsWith(github.event.pull_request.head.ref, 'release/v')

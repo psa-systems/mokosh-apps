@@ -42,6 +42,7 @@ use components::AppShell;
 ///
 /// Anything the pathname does not match falls through to the shared
 /// Outlet so the contact-permitted routes stay reachable.
+// SPEC-1.4.3: the full staff-only deny list and the /settings/* allowlist.
 pub fn pathname_is_contact_forbidden(path: &str) -> bool {
     // Strip query + trailing slash so the compare is stable
     // regardless of how the browser hands us the URL.
@@ -125,6 +126,7 @@ pub fn pathname_is_contact_forbidden(path: &str) -> bool {
 /// also so the truth table is testable: this is the logic MAPPS-767 got
 /// wrong, and reading hook ordering out of a component is how it stayed
 /// wrong.
+// SPEC-1.4.2, SPEC-1.6.2: decided in a signal initializer, not an effect.
 pub(crate) fn hold_for_contact_rehydrate(
     staff_bearer: bool,
     contact_session: bool,
@@ -148,6 +150,7 @@ pub(crate) fn hold_for_contact_rehydrate(
     contact_refresh_token
 }
 
+// SPEC-1.4.1: decides and acts on the unauthenticated case during render, not after it.
 #[component]
 pub fn AuthGuard() -> Element {
     let auth = hooks::use_auth();
@@ -260,6 +263,7 @@ pub fn AuthGuard() -> Element {
         // bearer AND no tenant auth still bounces to `/login` (or
         // kicks the OIDC flow off), so nothing above this line
         // silently unlocks a route that used to require tenant auth.
+        // SPEC-1.4.4: bypasses tenant AuthGuard without granting extra authorization.
         #[cfg(feature = "web")]
         if crate::hooks::fetch::api::current_platform_access_token().is_some() {
             return rsx! {
@@ -298,6 +302,7 @@ pub fn AuthGuard() -> Element {
                 .unwrap_or_default();
             #[cfg(not(target_arch = "wasm32"))]
             let pathname = String::new();
+            // SPEC-1.4.3: redirect to the dashboard rather than render a denied page.
             if pathname_is_contact_forbidden(&pathname) {
                 nav.replace(Route::Dashboard {});
                 return rsx! {
@@ -379,6 +384,7 @@ pub fn AuthGuard() -> Element {
         // mokosh-contact-login: the pre-pivot portal-host redirect to
         // `Route::PortalLogin` retires with the customer-portal route
         // family (prompt 001). Contact plane replacement in prompt 005.
+        // SPEC-1.4.5: standalone deployments redirect to local sign-in, not OIDC.
         if crate::modules::oidc::is_standalone() {
             nav.replace(Route::Login {});
             return rsx! {
@@ -496,6 +502,7 @@ pub fn AuthGuard() -> Element {
 /// inside each route's `AppLayout`, so they are not present here; the
 /// "Go to dashboard" button clears the boundary AND navigates so the
 /// user lands on a fresh route subtree with chrome restored.
+// SPEC-1.5.3, SPEC-1.5.4: shown on a caught route error; does not catch wasm panics.
 #[component]
 fn RouteErrorFallback(errors: ErrorContext) -> Element {
     let nav = use_navigator();
@@ -559,6 +566,8 @@ fn RouteErrorFallback(errors: ErrorContext) -> Element {
 }
 
 /// Application routes
+// SPEC-1.1.1: the full route table, in its three tiers (public, AuthGuard-gated
+// chromeless, AuthGuard+AppShell-gated workspace) plus the catch-all below.
 #[derive(Clone, Routable, Debug, PartialEq)]
 #[rustfmt::skip]
 pub enum Route {
@@ -586,6 +595,7 @@ pub enum Route {
     #[route("/login")]
     Login {},
 
+    // SPEC-1.1.2: a legacy path must still resolve (via a redirect stub), not 404.
     #[route("/client/login")]
     ClientLoginLegacy {},
 
@@ -1291,6 +1301,7 @@ pub enum Route {
     // mokosh workspace routes with capability gating.
     #[end_layout]
 
+    // SPEC-1.1.3: matches any path no other route does.
     // Catch-all 404
     #[route("/:..route")]
     NotFound { route: Vec<String> },
