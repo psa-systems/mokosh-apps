@@ -915,6 +915,96 @@ fn ContactRoleEditForm(props: ContactRoleEditFormProps) -> Element {
 // Tests
 // ============================================================================
 
+/// MAPPS-1211: both pages refuse a non-admin before they render anything.
+///
+/// `scripts/check-admin-gate.sh` covers the list page, because that one has a
+/// `SETTINGS_SURFACES` entry for the script to start from. The edit page has
+/// none: it is a child route reached from the list, so nothing in the registry
+/// names it and no repository-wide scan can find it. It is also the more
+/// reachable of the two by deep link, since an edit URL carries a role id.
+/// That asymmetry is why this guard is here as well as there.
+///
+/// Scanned as source rather than asserted through a render because what it
+/// defends is an ORDER: the refusal has to come before the body, and a render
+/// test that mounted the gated page would prove only that the gate answers,
+/// not that nothing ran ahead of it.
+#[cfg(test)]
+mod mapps1211_admin_gate_tests {
+    /// The body of `fn <name>(` in this file, by brace depth.
+    fn body_of<'a>(src: &'a str, name: &str) -> &'a str {
+        let at = src
+            .find(&format!("fn {name}("))
+            .unwrap_or_else(|| panic!("{name} is not defined in this file"));
+        let open = src[at..].find('{').expect("a body") + at;
+        let mut depth = 0usize;
+        for (i, c) in src[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &src[open..=open + i];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("{name}'s body does not close");
+    }
+
+    fn head() -> &'static str {
+        let src = include_str!("settings_contact_roles.rs");
+        &src[..src.find("/// MAPPS-1211: both pages").expect("this module")]
+    }
+
+    /// The refusal sits above the body, in both pages.
+    #[test]
+    fn both_pages_refuse_a_non_admin_before_rendering_a_body() {
+        for (page, body) in [
+            ("ContactRolesListPage", "ContactRolesListBody"),
+            ("ContactRoleEditPage", "ContactRoleEditBody"),
+        ] {
+            let src = body_of(head(), page);
+            let gate = src
+                .find("if !crate::pages::settings::use_is_admin() {")
+                .unwrap_or_else(|| panic!("{page} renders its body to a non-admin: {src}"));
+            assert!(
+                src.contains("AdminOnlyNotice {"),
+                "{page} refuses without saying why: {src}"
+            );
+            let renders = src
+                .find(&format!("{body} {{"))
+                .unwrap_or_else(|| panic!("{page} does not delegate to {body}: {src}"));
+            assert!(gate < renders, "{page} renders {body} first: {src}");
+        }
+    }
+
+    /// And the split is real: the work moved into the body rather than the
+    /// gate being parked in front of a shell that still does the work itself.
+    /// A non-admin must not cause a `/portal-roles` request, which is both a
+    /// guaranteed 403 in the log and a hook the gate would then sit below.
+    #[test]
+    fn neither_page_fetches_before_the_gate() {
+        for (page, body) in [
+            ("ContactRolesListPage", "ContactRolesListBody"),
+            ("ContactRoleEditPage", "ContactRoleEditBody"),
+        ] {
+            let gate_src = body_of(head(), page);
+            for forbidden in ["use_resource", "portal-roles", "use_server_reachable"] {
+                assert!(
+                    !gate_src.contains(forbidden),
+                    "{page} does {forbidden} ahead of its own gate: {gate_src}"
+                );
+            }
+            let body_src = body_of(head(), body);
+            assert!(
+                body_src.contains("use_resource"),
+                "{body} holds no loads, so the split moved nothing"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
