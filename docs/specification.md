@@ -404,3 +404,509 @@ format owned by this scope is the operator-facing configuration catalog:
 - **SPEC-1.9.3**: Generated build artifacts, dependency caches, and editor or
   OS files must never be committed, so a fresh clone carries no stale
   generated state (see SPEC-1.8.14).
+
+## 6. Identity, portal and org pages
+
+Scope: `src/pages/accept_grant.rs`, `src/pages/admin_features.rs`,
+`src/pages/auth_callback.rs`, `src/pages/button_showcase.rs`,
+`src/pages/contact_portal/` (all files: `generic_login.rs`, `login.rs`,
+`magic_link_login.rs`, `mod.rs`, `next_target.rs`, `picker.rs`,
+`portal_branding.rs`, `portal_id_login.rs`, `set_password.rs`),
+`src/pages/create_org.rs`, `src/pages/forgot_password.rs`,
+`src/pages/home.rs`, `src/pages/invitations.rs`, `src/pages/login.rs`,
+`src/pages/members.rs`, `src/pages/members_teams_tab.rs`,
+`src/pages/mod.rs`, `src/pages/not_found.rs`, `src/pages/onboarding.rs`,
+`src/pages/pick_tenant.rs`, `src/pages/platform_account.rs`,
+`src/pages/platform_login.rs`, `src/pages/profile.rs`,
+`src/pages/reset_password.rs`, `src/pages/set_password.rs`,
+`src/pages/system_status.rs`, `src/pages/teams.rs`.
+
+`src/pages/mod.rs` is a flat list of `pub mod` declarations with no
+behavior of its own; it is covered by this section but owns no
+`SPEC-6.` id. `src/pages/button_showcase.rs` is a static, dev-only
+style reference with no form, no network call and no state beyond its
+one route; it is covered by SPEC-6.1.19 only.
+
+### 6.1 Interfaces
+
+- **SPEC-6.1.1**: `StandaloneLogin` (`src/pages/login.rs`) must render the
+  staff sign-in form only when the deployment has no OIDC issuer
+  configured, with fields email, password, and, once the server reports
+  it is required, an MFA code field and an approval code field, each
+  shown only while its corresponding flag is set.
+- **SPEC-6.1.2**: `AuthCallbackPage` (`src/pages/auth_callback.rs`) must
+  render a transient "Signing you in..." state while the OIDC code
+  exchange is in flight, and on failure a "Sign-in failed" state with
+  the underlying error text and a "Try again" link back to
+  `Route::Login`.
+- **SPEC-6.1.3**: `PlatformLoginPage` (`src/pages/platform_login.rs`)
+  must render a platform-administrator sign-in form (email, password)
+  independent of the tenant sign-in form, and must show the most recent
+  success banner, if any, above the form.
+- **SPEC-6.1.4**: `PlatformAccountPage` (`src/pages/platform_account.rs`)
+  must redirect to `Route::Login` instead of rendering when no platform
+  bearer token is present, and otherwise must render a password-change
+  card and an MFA card showing the platform admin's current MFA state.
+- **SPEC-6.1.5**: `StandaloneForgotPassword` (`src/pages/forgot_password.rs`)
+  must render an email field and, after submission, replace the form
+  with a fixed confirmation screen, never a per-attempt result.
+- **SPEC-6.1.6**: `StandaloneResetPassword` (`src/pages/reset_password.rs`)
+  must render a new-password and confirm-password pair bound to a reset
+  token taken from the route, and on success replace the form with a
+  confirmation screen and a link back to sign-in.
+- **SPEC-6.1.7**: `SetPasswordPage` (`src/pages/set_password.rs`) must
+  resolve the owning tenant's name from its token before rendering its
+  heading, falling back to a generic heading when that lookup fails,
+  and must render the same new-password/confirm-password pair as
+  SPEC-6.1.6.
+- **SPEC-6.1.8**: `CreateOrgPage` (`src/pages/create_org.rs`) must
+  redirect to `Route::Login` instead of rendering when no pending
+  identity token is held from a prior sign-in, and otherwise must render
+  a team-name field (required) and an optional portal-slug field.
+- **SPEC-6.1.9**: `PickTenantPage` (`src/pages/pick_tenant.rs`) must
+  redirect to `Route::Login` instead of rendering when no pending
+  identity token and membership list are held, and otherwise must list
+  every pending membership with its tenant name and role, each
+  selectable.
+- **SPEC-6.1.10**: `AdminFeaturesPage` (`src/pages/admin_features.rs`)
+  must render a permission notice instead of the toggle list for a
+  non-admin user, and for an admin must list every feature-toggle row
+  with its current on/off state and a button that flips it.
+- **SPEC-6.1.11**: `ContactGenericLoginPage` (`src/pages/contact_portal/generic_login.rs`)
+  must render a single required Company ID field, exactly nine digits,
+  with no link to the staff sign-in page.
+- **SPEC-6.1.12**: `ContactLoginPage` and `ContactLoginByPortalIdPage`
+  (`src/pages/contact_portal/login.rs`, `src/pages/contact_portal/portal_id_login.rs`)
+  must render email, password and, once required, an MFA-code field for
+  a slug- or portal-ID-scoped contact sign-in, and must replace the form
+  with an unavailable-portal notice whenever the resolved tenant's
+  status is not `"active"`.
+- **SPEC-6.1.13**: `ContactMagicLinkLoginPage` (`src/pages/contact_portal/magic_link_login.rs`)
+  must render a required Company ID field and a required, pre-fillable
+  email field, and after submission must always show the same
+  "Check your inbox" confirmation regardless of whether the address is
+  registered.
+- **SPEC-6.1.14**: `ContactPickerPage` (`src/pages/contact_portal/picker.rs`)
+  must classify a redeemed login-link outcome, in order, as a forced
+  password-setup redirect, an MFA prompt, a direct session install, or
+  an invalid-link notice; it must never render the multi-company
+  selection list the server's `candidates` payload could otherwise
+  drive, showing instead a redirect to the Company ID entry page.
+- **SPEC-6.1.15**: `ContactPortalBrandingPage` (`src/pages/contact_portal/portal_branding.rs`)
+  must render the same no-access panel both when the signed-in contact
+  lacks the `settings:manage_company_branding` capability and when the
+  server declines to return the branding payload, so the two cases are
+  visually indistinguishable to the contact.
+- **SPEC-6.1.16**: `ContactSetPasswordPage` (`src/pages/contact_portal/set_password.rs`)
+  must take its slug and token from route props, never from the URL
+  query string, and on success must show a confirmation screen with an
+  explicit "Go to sign in" action rather than redirecting automatically.
+- **SPEC-6.1.17**: `MembersPage` (`src/pages/members.rs`) must expose
+  three tabs, People, Teams and Invitations, selected by a `tab` query
+  parameter defaulting to People for any unrecognized value, and must
+  gate its People/Invitations mutation controls (invite, change role,
+  remove, revoke) on an admin role distinct from the page's own
+  manager-and-up view gate.
+- **SPEC-6.1.18**: `TeamsTab` and its modals (`src/pages/members_teams_tab.rs`)
+  must render a paginated team roster with create and edit affordances
+  gated on an admin role, and the edit modal must render that team's
+  member roster with add and remove affordances.
+- **SPEC-6.1.19**: `ButtonShowcasePage` (`src/pages/button_showcase.rs`)
+  is a static, dev-only button style reference behind the app's normal
+  auth guard; it performs no network call and renders no business data.
+- **SPEC-6.1.20**: `TeamsPage` (`src/pages/teams.rs`) must redirect an
+  admin to `Route::MembersPage` with the Teams tab selected, and must
+  show a permission notice, with no redirect, to a non-admin.
+- **SPEC-6.1.21**: `InvitationsPage` (`src/pages/invitations.rs`) must
+  render a permission notice for a non-admin user and, for an admin, an
+  invite form (email, role, and, on an organization tenant only, a team
+  picker) and a paginated table of pending invitations with a per-row
+  revoke action.
+- **SPEC-6.1.22**: `AcceptGrantPage` (`src/pages/accept_grant.rs`) must
+  render exactly one of: a loading skeleton, an invalid-link notice, an
+  email-mismatch notice, a retryable transient-error notice, or the
+  invitation's accept/decline card, and must omit the accept/decline
+  actions whenever the invitation's own status is not `"pending"`.
+- **SPEC-6.1.23**: `HomePage` (`src/pages/home.rs`) must render a public
+  landing page whose "Learn More" action scrolls the current page to
+  its features section via script, never via an anchor `href`, because
+  the desktop build's webview refuses navigation to any
+  `dioxus://...#fragment` target after the first load.
+- **SPEC-6.1.24**: `SystemStatusPage` (`src/pages/system_status.rs`) must
+  report, independently, the client build's own version, the API
+  server's reachability and version, and the dependency readiness
+  checks it returns, and must never collapse a probe's success/failure
+  state before rendering it.
+- **SPEC-6.1.25**: `NotFoundPage` (`src/pages/not_found.rs`) must render
+  the catch-all 404 content for any unmatched path, with links back to
+  the dashboard, the home page and the knowledge base.
+
+### 6.2 Data model
+
+This scope owns no persisted application schema; it defines the wire
+DTOs these pages exchange with the API server, and the client-side
+storage keys listed under Security and Retention and cleanup below.
+
+- **SPEC-6.2.1**: `members.rs`'s `MemberRow` must decode a row as either
+  a native `User` or an `UnplacedGuest` by its `kind` tag, and every
+  field but `user_id`/`grant_id` must default on absence so an older or
+  newer server payload still decodes.
+- **SPEC-6.2.2**: `members_teams_tab.rs`'s `UpdateTeamBody` must always
+  serialize its `manager_id` field, including as `null`, because the
+  server's update endpoint treats every present field as the value to
+  set; omitting it would be read by the server as "leave unchanged,"
+  not "clear."
+- **SPEC-6.2.3**: `members.rs`'s role-change and remove actions must
+  address a native user through `/users/{id}` and a guest, placed or
+  not yet placed, through `/grants/{grant_id}`, because a guest's role
+  and membership are owned by the grant record, not a users row.
+- **SPEC-6.2.4**: `contact_portal/login.rs`'s and
+  `contact_portal/portal_id_login.rs`'s `ContactSnippet` must default
+  their `company_id` and `contact_id` fields on absence, so a contact
+  plane response from a server older than the identifiers it carries
+  still decodes.
+
+### 6.3 Configuration
+
+- **SPEC-6.3.1**: `login.rs` must persist a generated device identifier
+  under the `mokosh_device_id` preference key and send it as `device_id`
+  on every `/auth/login` call, generating and storing a new one only
+  when none is already stored.
+- **SPEC-6.3.2**: `login.rs` and `platform_login.rs` must store the
+  platform-administrator bearer token under the sessionStorage key
+  `mokosh:platform_token`, distinct from and never overwritten by a
+  tenant sign-in.
+- **SPEC-6.3.3**: `members.rs` and `invitations.rs` must each page their
+  server list at 25 rows per page.
+- **SPEC-6.3.4**: `contact_portal/next_target.rs` must store at most one
+  pending post-sign-in target per tab, under the sessionStorage key
+  `mokosh.portal.next`, capped at 512 characters.
+- **SPEC-6.3.5**: `profile.rs`'s `PreferencesCard` must persist the time
+  format, first-day-of-week and duration-format preferences to local
+  storage under the stable keys `mokosh_time_format`,
+  `mokosh_first_day_of_week` and the shared duration-format preference
+  key, each with its own documented default, and must make no server
+  call to do so.
+- **SPEC-6.3.6**: `onboarding.rs`'s submit path, and every contact- and
+  staff-plane page in this scope that performs a network call, must
+  compile to a no-op on a build that does not enable the `app` or `web`
+  feature it depends on, rather than attempting the call.
+
+### 6.4 Security
+
+- **SPEC-6.4.1**: `login.rs`'s `install_session`, `auth_callback.rs`, and
+  every contact-plane sign-in page in this scope that installs a
+  session (`contact_portal/login.rs`, `contact_portal/picker.rs`,
+  `contact_portal/portal_id_login.rs`) must clear any session of the
+  other plane (staff clears a contact session, contact clears a staff
+  session) before writing the new plane's token, so a browser never
+  holds a live staff and a live contact session together. `create_org.rs`
+  and `pick_tenant.rs` write a staff token without this clear; that gap
+  is tracked as a separate defect (see the PR body) and is not itself a
+  requirement of this section.
+- **SPEC-6.4.2**: `login.rs`'s platform-login-first attempt must be
+  skipped whenever an MFA or approval code is already present, or
+  whenever the current host resolves to a tenant subdomain, and its
+  failure must fall through silently to the ordinary tenant login
+  rather than surfacing a platform-specific error.
+- **SPEC-6.4.3**: `auth_callback.rs` must strip the `code` and `state`
+  query parameters from the browser URL before any further navigation,
+  on both the success and the error path, so an OIDC authorization code
+  never persists in browser history or is sent in a later `Referer`.
+- **SPEC-6.4.4**: `auth_callback.rs`'s `classify_return_to` must restore
+  a same-origin, same-scheme deep link via a hard navigation, and must
+  collapse every other case (no target, off-origin, scheme mismatch, or
+  an auth-plumbing route) to a soft navigation to the dashboard, never
+  following an attacker-controlled off-origin target.
+- **SPEC-6.4.5**: `auth_callback.rs`'s login restart must stop retrying
+  once the attempt count exceeds its configured budget, returning a
+  budget-spent error instead of restarting the flow again.
+- **SPEC-6.4.6**: `forgot_password.rs` and `contact_portal/magic_link_login.rs`
+  must discard the result of their password-reset/login-link request
+  and always show the same confirmation text regardless of the
+  outcome, so neither page discloses whether an address is registered.
+- **SPEC-6.4.7**: `contact_portal/mod.rs`'s `PORTAL_SIGN_IN_FAILED`
+  message, used on a failed contact sign-in across
+  `contact_portal/login.rs` and `contact_portal/portal_id_login.rs`,
+  must read identically whether or not the attempted email has an
+  account, and must never contain an enumeration word ("no account",
+  "not found", "unknown", "no such", "does not exist", "unrecognised",
+  "unrecognized", "register") or an internal term ("platform",
+  "tenant", "plane", "credential", "identity").
+- **SPEC-6.4.8**: `contact_portal/next_target.rs`'s `sanitize` must
+  accept only a same-origin path: non-empty, at most 512 characters, no
+  control character, starting with exactly one `/` (never `//` or a
+  backslash), carrying no URI scheme, and resolving to a real,
+  non-catch-all route; it must reject the value without percent-decoding
+  it first, so a percent-encoded bypass (for example `%2F%2Fevil.example`)
+  is rejected as literal text rather than decoded into an open redirect.
+- **SPEC-6.4.9**: `contact_portal/next_target.rs`'s stored next-target
+  must be sanitized again on read as well as on write, and must be
+  removed from storage on every read regardless of validity, so a
+  rejected or stale value can never redirect a later, unrelated sign-in
+  in the same tab.
+- **SPEC-6.4.10**: Every contact-plane sign-in page in this scope
+  (`contact_portal/login.rs`, `picker.rs`, `portal_id_login.rs`,
+  `generic_login.rs`, `magic_link_login.rs`, `set_password.rs`) must
+  navigate a signed-in contact through `next_target::landing`, never
+  directly to the dashboard route, so the sanitized next-target is
+  always honored.
+- **SPEC-6.4.11**: `contact_portal/portal_id_login.rs` and
+  `contact_portal/generic_login.rs` must carry no link to the staff
+  sign-in page in their shipped rendering, so a contact cannot be
+  routed from the portal into the staff sign-in surface.
+- **SPEC-6.4.12**: `contact_portal/picker.rs`'s `classify_redeem` must
+  treat a non-empty `password_setup_url` in the server's response as
+  taking precedence over an MFA prompt or a direct session install,
+  because a session cannot be installed from a login link whose token
+  was never actually minted.
+- **SPEC-6.4.13**: `contact_portal/picker.rs` must perform the
+  server-supplied `password_setup_url` redirect as a hard, full-page
+  navigation, never through the client-side router, because the router
+  resolves only its own typed routes, not an arbitrary server-supplied
+  path.
+- **SPEC-6.4.14**: `admin_features.rs`'s client-side admin-role gate on
+  the feature-toggle list is cosmetic only; the client must not treat
+  it as sufficient authorization, and every mutating call it makes must
+  rely on the server's own admin check.
+- **SPEC-6.4.15**: `members.rs`'s page-level gate (manager and up) and
+  its row-mutation gate (admin only) must remain distinct: a manager
+  who is not an admin must be able to view the People, Teams and
+  Invitations tabs but must see no invite, role-change, remove or
+  revoke control.
+- **SPEC-6.4.16**: `contact_portal/portal_branding.rs`'s error text for
+  a denied or failed load must never name a capability, role, status
+  code, or other implementation detail to the contact.
+- **SPEC-6.4.17**: `onboarding.rs` must gate its admin-only organization
+  form on the server-confirmed role (`server_loaded`), not on the
+  optimistic default role a fresh session starts with, so an admin
+  whose role has not yet been reconciled from `/auth/me` is shown the
+  loading state rather than the non-admin screen.
+- **SPEC-6.4.18**: `onboarding.rs` must not call `POST /auth/me/complete-onboarding`
+  when the preceding organization save for an admin failed; the submit
+  sequence must stop at the first failed call in its plan.
+- **SPEC-6.4.19**: `profile.rs`'s `UpdateMeRequest` must omit
+  `first_name`, `last_name` and `phone`, since those fields are owned
+  by the identity provider once one is configured, and must include
+  `mobile`.
+- **SPEC-6.4.20**: `profile.rs`'s MFA setup, enable and disable calls
+  must each be gated on the deployment having no OIDC issuer configured,
+  and the disable action must require the current password together
+  with a live authenticator or recovery code.
+- **SPEC-6.4.21**: `platform_account.rs`'s password-change and MFA
+  setup/enable/disable actions must each require the current platform
+  admin password to be resubmitted, and must be disabled, with an
+  explanatory tooltip, whenever the server is unreachable.
+- **SPEC-6.4.22**: `accept_grant.rs` must treat a `403` from the
+  invitation-metadata lookup as the signed-in user not matching the
+  invitation's invited address, and must render that case as a distinct,
+  non-actionable notice rather than retrying or silently failing.
+
+### 6.5 Error handling and observability
+
+- **SPEC-6.5.1**: `login.rs` must show "Enter your email and password."
+  without sending a request when either field is empty, and must map a
+  401 while an approval code is pending to
+  "That code is not valid, check the email or try signing in again.",
+  a 401 otherwise to "Invalid email or password.", and a successful
+  response carrying no user to
+  "Sign-in succeeded but no account was returned. Try again."
+- **SPEC-6.5.2**: `platform_login.rs` must show
+  "Enter your platform admin email and password." on an empty field,
+  and must map a 401 to "Invalid email or password.", clearing any
+  prior success banner on every new submit attempt.
+- **SPEC-6.5.3**: `reset_password.rs`, `set_password.rs` and
+  `contact_portal/set_password.rs` must reject a password shorter than
+  12 characters with "Password must be at least 12 characters." and a
+  mismatched confirmation with "Passwords do not match.", and must map
+  a 400 with an empty server message to a page-specific
+  invalid-or-expired-link message, otherwise showing the server's
+  message verbatim; `contact_portal/set_password.rs` must additionally
+  map a 410 with an empty server message to
+  "This setup link has already been used.".
+- **SPEC-6.5.4**: `create_org.rs` must map a 401 on team creation to
+  clearing the pending identity token and returning to sign-in, a 409
+  to the server's conflict message verbatim, and a 400 to the server's
+  validation message verbatim.
+- **SPEC-6.5.5**: `pick_tenant.rs` must map a 401 on tenant selection to
+  clearing the pending identity token and returning to sign-in, a 404
+  to "You do not have access to that organization. Pick another.", and
+  a successful response carrying no user to
+  "Sign-in succeeded but no account was returned."; `create_org.rs`
+  must map that same no-user case on team creation to
+  "Team created but no session was returned."
+- **SPEC-6.5.6**: `admin_features.rs` must log a warning and render
+  "Could not load feature toggles. Refresh the page to retry." when the
+  toggle list fails to load, and must render
+  "No feature toggles declared." when it loads with zero rows.
+- **SPEC-6.5.7**: `contact_portal/generic_login.rs`'s `classify_verify`
+  must map a 404 Company ID lookup to
+  "Company ID not found. Check the number your MSP sent you." and any
+  transport failure or other status to
+  "Could not reach the portal service. Check your connection and try again."
+- **SPEC-6.5.8**: `contact_portal/login.rs` and
+  `contact_portal/portal_id_login.rs` must log a warning and continue
+  rendering the sign-in form when their tenant host-hint lookup fails,
+  rather than blocking the form on that failure.
+- **SPEC-6.5.9**: `contact_portal/picker.rs` must collapse any redeem or
+  select failure, of any kind, to the single invalid-or-expired-link
+  notice, matching the server's intentionally opaque response for an
+  invalid, expired, replayed or revoked login link.
+- **SPEC-6.5.10**: `members.rs` must log an error and render
+  "Could not load the member list." when the member list fails to
+  load, "Nobody has access to this workspace yet." when it loads with
+  zero rows, and a warning banner
+  "Guest list unavailable: the identity service could not be reached. Native users are shown; guests may be missing."
+  whenever the server reports its guest-identity lookup as unreachable.
+- **SPEC-6.5.11**: `members.rs` must report a failed role change as
+  "Could not change role: {error}" and a failed remove as
+  "Could not remove: {error}", each scoped to its own control rather
+  than the page's other actions; its Invitations tab must report a
+  failed invitation list load as
+  "Couldn't load pending invitations. Refresh to try again." and a
+  failed cancel as "Could not cancel: {error}".
+- **SPEC-6.5.12**: `members_teams_tab.rs` must report an empty team name
+  as "Team name is required." on both create and edit, and a save
+  failure with the server's own message.
+- **SPEC-6.5.13**: `invitations.rs` must distinguish a true outage (the
+  list failed to load and the server is unreachable) from an ordinary
+  empty or failed list: only the former replaces the page with a
+  full-page unavailable notice.
+- **SPEC-6.5.14**: `accept_grant.rs` must report an accept failure and a
+  decline failure each through its own error banner using the server's
+  message, and on either success must show its own confirmation text
+  ("You accepted the invitation..." or "You declined the invitation...")
+  before navigating to the dashboard.
+- **SPEC-6.5.15**: `onboarding.rs` must report a failed organization
+  save either against the `name` field, if the server scopes its error
+  to that field, or as a page-level "Could not save: {error}" otherwise,
+  and must report a failed logo upload as a non-blocking warning toast
+  while still completing onboarding.
+- **SPEC-6.5.16**: `system_status.rs` must render each of the client
+  build, API server and dependency-readiness cards independently: a
+  "Checking..." state while its own probe is pending, and on failure a
+  card-specific message naming the error, without affecting the other
+  cards' state.
+- **SPEC-6.5.17**: `not_found.rs` must render the unmatched path
+  segments whenever the joined path is non-empty, in every build; its
+  own comment's claim that this is development-only does not reflect
+  the code and is tracked as a separate defect (see the PR body).
+
+### 6.6 Concurrency and ordering
+
+- **SPEC-6.6.1**: `login.rs`, `platform_login.rs`, `forgot_password.rs`,
+  `reset_password.rs`, `set_password.rs`, `create_org.rs`,
+  `pick_tenant.rs`, and every contact-plane sign-in page in this scope
+  must ignore a submit while a previous submit from the same form is
+  still in flight, rather than issuing a second concurrent request.
+- **SPEC-6.6.2**: `members.rs`'s member search must debounce 300
+  milliseconds after the last keystroke before refetching, and any
+  change to the search text, role filter, kind filter or team filter
+  must reset the current page to 1.
+- **SPEC-6.6.3**: `members.rs` must reset the current page to 1 after a
+  successful remove, so removing the last row of a page beyond page 1
+  never strands the view on a now-empty page.
+- **SPEC-6.6.4**: `onboarding.rs`'s submit must perform its planned
+  calls (organization save, then logo upload if one was chosen, then
+  complete-onboarding) strictly in that order, and must abort the
+  remaining calls as soon as the organization save fails.
+- **SPEC-6.6.5**: `contact_portal/login.rs`'s on-mount redirect to the
+  portal-ID-scoped route (when the slug resolves to one) and its
+  separate host-hint fetch for branding both fire on mount; only the
+  redirect navigates away, and it must take effect whenever it
+  succeeds regardless of whether the host-hint fetch has yet resolved.
+- **SPEC-6.6.6**: `onboarding.rs`'s redirect for an already-completed
+  profile and `teams.rs`'s redirect for an admin visiting the retired
+  teams route must run on every render as an effect that no-ops rather
+  than being skipped, so the number of hooks the component runs stays
+  constant across renders.
+
+### 6.7 Integrations
+
+- **SPEC-6.7.1**: `login.rs` must call, as applicable, `POST /platform/login`,
+  `POST /auth/login`, and `POST /auth/select-tenant`, in that order for
+  the chained platform-then-tenant attempt.
+- **SPEC-6.7.2**: `auth_callback.rs` must exchange the OIDC
+  authorization code for tokens against the configured issuer for the
+  current origin before installing any session.
+- **SPEC-6.7.3**: `platform_login.rs` must call `POST /platform/login`;
+  `platform_account.rs` must call `PUT /platform/me/password`,
+  `POST /platform/me/mfa/setup`, `POST /platform/me/mfa/enable` and
+  `POST /platform/me/mfa/disable`.
+- **SPEC-6.7.4**: `forgot_password.rs` must call `POST /auth/forgot-password`;
+  `reset_password.rs` and `set_password.rs` must call
+  `POST /auth/reset-password`, and `set_password.rs` must first call
+  `GET /auth/set-password/context/{token}` to resolve the owning
+  tenant's name.
+- **SPEC-6.7.5**: `create_org.rs` must call `POST /tenants/self-serve`;
+  `pick_tenant.rs` must call `POST /auth/select-tenant`.
+- **SPEC-6.7.6**: `admin_features.rs` must call `GET /settings/feature-toggles`
+  and `PUT /settings/feature-toggles/{key}`.
+- **SPEC-6.7.7**: `contact_portal/generic_login.rs` must call
+  `GET /contact/portal/{portal_id}/host`;
+  `contact_portal/login.rs` and `contact_portal/portal_id_login.rs`
+  must call `GET /contact/portal/{slug|portal_id}/host` and
+  `POST /contact/auth/login`; `contact_portal/login.rs` must also call
+  `GET /contact/portal/{slug}/resolve-to-portal-id`.
+- **SPEC-6.7.8**: `contact_portal/magic_link_login.rs` must call
+  `POST /contact/auth/login-link`; `contact_portal/picker.rs` must call
+  `POST /contact/auth/login-link/redeem` and
+  `POST /contact/auth/login-link/select`, reusing each endpoint for its
+  MFA follow-up request.
+- **SPEC-6.7.9**: `contact_portal/portal_branding.rs` must call
+  `GET /contact/companies/self/branding` and
+  `PATCH /contact/companies/self/branding`;
+  `contact_portal/set_password.rs` must call
+  `GET /contact/portal/{slug}/host` and `POST /contact/auth/set-password`.
+- **SPEC-6.7.10**: `members.rs` must call `GET /members`,
+  `GET /teams` (for its team filter), `POST /invitations`,
+  `PUT /users/{id}`, `PATCH /grants/{id}`, `DELETE /grants/{id}`,
+  `GET /invitations` and `DELETE /invitations/{id}`.
+- **SPEC-6.7.11**: `members_teams_tab.rs` must call `GET /teams`,
+  `POST /teams`, `PUT /teams/{id}`, `GET /teams/{id}/members`,
+  `POST /teams/{id}/members` and `DELETE /teams/{id}/members/{uid}`.
+- **SPEC-6.7.12**: `invitations.rs` must call `GET /invitations`,
+  `POST /invitations`, `DELETE /invitations/{id}` and, on an
+  organization tenant, `GET /teams`.
+- **SPEC-6.7.13**: `accept_grant.rs` must call
+  `GET /grants/invitations/by-token/{token}`,
+  `POST /grants/invitations/by-token/{token}/accept` and
+  `POST /grants/invitations/by-token/{token}/decline`.
+- **SPEC-6.7.14**: `profile.rs` must call `GET /auth/me`,
+  `PUT /auth/me`, `POST /me/mfa/setup`, `POST /me/mfa/enable`,
+  `POST /me/mfa/disable`, and, for a contact session,
+  `GET /contact/auth/me` and `PUT /contact/auth/me`.
+- **SPEC-6.7.15**: `onboarding.rs` must call `PUT /tenants/current`,
+  `PUT /tenants/current/logo` and `POST /auth/me/complete-onboarding`.
+- **SPEC-6.7.16**: `system_status.rs` must call `GET /version` and
+  `GET /ready` to populate its API-server and dependency cards.
+
+### 6.8 Build and deployment
+
+None of the files in this section's scope add a build or packaging
+step of their own; they compile under the same `app`/`web`/`desktop`
+feature gating `src/main.rs` and `Cargo.toml` define (see SPEC-1.3.1).
+A page or helper in this scope that performs a network call must be
+gated on the feature its target requires (`app` for logic shared by web
+and desktop, `web` for a wasm-only call), consistent with the pattern
+cited at SPEC-6.3.6.
+
+### 6.9 Retention and cleanup
+
+- **SPEC-6.9.1**: `create_org.rs` and `pick_tenant.rs` must clear the
+  pending-login signal (identity token and candidate memberships) on a
+  successful sign-in, on a 401 indicating the identity token expired,
+  and on an explicit "Back to sign in" action; no other path may leave
+  it populated.
+- **SPEC-6.9.2**: `members.rs` must implement "remove" differently by
+  row kind: a native user's removal deactivates the user record
+  (`status = inactive`, reversible by reactivation), while a guest's
+  removal, placed or not, revokes the grant outright (not reversible;
+  re-invitation is required).
+- **SPEC-6.9.3**: `invitations.rs`'s revoke action must delete the
+  invitation outright with no undo, and its confirmation text must say
+  so before the request is sent.
+- **SPEC-6.9.4**: `contact_portal/next_target.rs` must retain its
+  pending next-target for at most the current tab's session and must
+  consume it (remove it from storage) the first time it is read,
+  regardless of whether that read's value was valid.

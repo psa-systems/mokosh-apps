@@ -85,6 +85,7 @@ pub fn HomePage() -> Element {
                             // desktop webview, whose navigation handler refuses
                             // every `dioxus://` target after the first load, so
                             // the button did nothing there.
+                            // SPEC-6.1.23: scroll via script, never an anchor href.
                             button {
                                 r#type: "button",
                                 onclick: move |_| crate::platform::dom::scroll_into_view("features", true),

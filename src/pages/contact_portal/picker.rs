@@ -169,6 +169,8 @@ pub enum RedeemBranch {
 /// bulky wire types are collapsed to the four cases the page cares
 /// about, so `#[cfg(test)]` can exercise every branch without a
 /// running Dioxus tree.
+// SPEC-6.1.14: setup redirect, then MFA, then session install, then invalid-link, in that order.
+// SPEC-6.4.12: a non-empty password_setup_url always wins; no token was minted to install.
 pub fn classify_redeem(outcome: &LoginLinkRedeemOutcomeWire) -> RedeemBranch {
     if let Some(resp) = &outcome.auto {
         // option-1: password_setup_url wins over both mfa_required and
@@ -365,6 +367,7 @@ pub fn ContactPickerPage(token: String) -> Element {
                         // works on the typed Route enum, not raw
                         // path strings) so hop through
                         // window.location.
+                        // SPEC-6.4.13: hard full-page navigation, never the client router.
                         #[cfg(target_arch = "wasm32")]
                         if let Some(win) = web_sys::window() {
                             let _ = win.location().set_href(&url);
@@ -388,6 +391,7 @@ pub fn ContactPickerPage(token: String) -> Element {
                         state.set(PickerState::Invalid);
                     }
                 },
+                // SPEC-6.5.9: any redeem failure collapses to the single invalid-link notice.
                 Err(()) => {
                     state.set(PickerState::Invalid);
                 }
@@ -488,6 +492,7 @@ pub fn ContactPickerPage(token: String) -> Element {
                             // option-1 first-login gate on the
                             // select path: hard-nav to the setup URL
                             // scoped to the picked contact's Company.
+                            // SPEC-6.4.13: hard full-page navigation, never the client router.
                             #[cfg(target_arch = "wasm32")]
                             if let Some(win) = web_sys::window() {
                                 let _ = win.location().set_href(url);
@@ -569,6 +574,7 @@ pub fn ContactPickerPage(token: String) -> Element {
                         }
                     }
                 },
+                // SPEC-6.1.14: never render the candidates list; redirect to Company ID entry instead.
                 PickerState::Picker(_cands) => {
                     // MAPPS-636: the multi-Company picker retires.
                     // The product intent is one account per portal
@@ -762,6 +768,7 @@ fn install_session_and_go(nav: &Navigator, resp: &ContactLoginResponseWire) {
     let contact_id = resp.contact.as_ref().and_then(|c| c.contact_id);
     // MAPPS-630: cross-plane isolation. Clear any staff bearer +
     // storage before writing the contact session.
+    // SPEC-6.4.1: clear any staff session before installing a contact one.
     crate::hooks::fetch::api::on_contact_signin_clear_staff_side();
     crate::hooks::fetch::api::set_contact_access_token(Some(resp.access_token.clone()));
     crate::hooks::fetch::api::set_contact_refresh_token(Some(resp.refresh_token.clone()));
@@ -776,5 +783,6 @@ fn install_session_and_go(nav: &Navigator, resp: &ContactLoginResponseWire) {
     crate::hooks::capabilities::set_contact_capabilities(Some(caps));
     // MAPPS-761: the page the link that brought them named, else the
     // dashboard, which is where this always went.
+    // SPEC-6.4.10: always navigate through the sanitized next-target.
     nav.replace(super::next_target::landing());
 }

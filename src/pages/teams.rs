@@ -13,6 +13,7 @@ use dioxus::prelude::*;
 
 use crate::Route;
 
+// SPEC-6.1.20: redirect an admin to Members/Teams, show a notice to anyone else.
 #[component]
 pub fn TeamsPage() -> Element {
     let auth = crate::hooks::use_auth();
@@ -30,6 +31,7 @@ pub fn TeamsPage() -> Element {
     // count stays stable across renders. `use_effect` reads `is_admin`
     // and no-ops the navigate when the viewer is not an admin, so the
     // non-admin branch stays on the access-denied line below.
+    // SPEC-6.6.6: runs on every render as a no-op effect, not skipped.
     use_effect(move || {
         if is_admin {
             navigator.replace(Route::MembersPage {

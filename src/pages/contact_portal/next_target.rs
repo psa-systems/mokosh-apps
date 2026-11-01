@@ -46,11 +46,13 @@ const STORAGE_KEY: &str = "mokosh.portal.next";
 
 /// A path longer than this is not a route this app serves, and refusing it
 /// early keeps anything odd out of storage.
+// SPEC-6.3.4: cap, in bytes, on the stored value.
 const MAX_LEN: usize = 512;
 
 /// The route `raw` names, or `None` if it names anything else.
 ///
 /// Pure, so the rules are testable without a browser.
+// SPEC-6.4.8: same-origin-path, no-decode acceptance rule.
 pub(crate) fn sanitize(raw: &str) -> Option<Route> {
     let value = raw.trim();
     if value.is_empty() || value.len() > MAX_LEN {
@@ -84,6 +86,7 @@ pub(crate) fn sanitize(raw: &str) -> Option<Route> {
 /// Called when a contact lands on a portal page. A value that does not
 /// sanitize is dropped silently: the customer still signs in and still gets
 /// the dashboard, which is what they got before this existed.
+// SPEC-6.3.4: at most one pending target per tab, under this storage key.
 pub(crate) fn remember_from_query() {
     let Some(raw) = crate::utils::url::current_query_param("next") else {
         return;
@@ -104,6 +107,7 @@ pub(crate) fn remember_from_query() {
 /// `None` when nothing was remembered, when storage is unavailable, or when
 /// what was stored no longer names a route - a build can ship between the
 /// click and the sign-in.
+// SPEC-6.4.9 / SPEC-6.9.4: re-sanitize on read, and consume on every read.
 pub(crate) fn take() -> Option<Route> {
     let store = crate::platform::store::session().ok()?;
     let raw = store.get_item(STORAGE_KEY).ok().flatten();
@@ -115,6 +119,7 @@ pub(crate) fn take() -> Option<Route> {
 
 /// Where a signed-in contact should land: the remembered target, else the
 /// dashboard, which is where every one of these landed before MAPPS-761.
+// SPEC-6.4.10: every contact-plane sign-in page must land through here.
 pub(crate) fn landing() -> Route {
     take().unwrap_or(Route::Dashboard {})
 }

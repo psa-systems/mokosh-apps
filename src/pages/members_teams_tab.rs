@@ -74,6 +74,7 @@ struct PaginationMeta {
 /// Matches the `per_page` sent server-side, so the requested page size and
 /// the `DataTable`'s pager math agree. Mirrors the tenant / invitation
 /// rosters.
+// SPEC-6.1.18: paginated team roster.
 const PER_PAGE: usize = 25;
 
 /// Team member with joined user fields, from `GET
@@ -107,6 +108,7 @@ struct UpdateTeamBody {
     // MAPPS-819: `null` (not omission) clears the manager server-side
     // (mokosh-server UpdateTeamRequest treats every field as "set to this
     // value", not "set if present"), so this is always sent, never skipped.
+    // SPEC-6.2.2: must always serialize, including as null.
     manager_id: Option<uuid::Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     color: Option<String>,
@@ -142,6 +144,7 @@ struct AddTeamMemberBody {
 /// a manager and the row actions check for admin on their own. The
 /// create button and the Edit action render only when the caller is an
 /// admin; the roster itself renders for every manager.
+// SPEC-6.1.18: paginated team roster, create/edit gated on admin.
 #[component]
 pub fn TeamsTab() -> Element {
     let auth = crate::hooks::use_auth();
@@ -159,6 +162,7 @@ pub fn TeamsTab() -> Element {
             #[cfg(feature = "app")]
             {
                 let token = crate::hooks::fetch::api::current_access_token()?;
+                // SPEC-6.7.11: list the team roster page.
                 let path = format!("/teams?page={current_page}&per_page={PER_PAGE}");
                 crate::hooks::fetch::api::get_with_auth::<PaginatedTeams>(&path, &token)
                     .await
@@ -350,6 +354,7 @@ fn CreateTeamModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Elem
             return;
         }
         let n = name.read().trim().to_string();
+        // SPEC-6.5.12: empty team name is rejected with this message.
         if n.is_empty() {
             error.set("Team name is required.".to_string());
             return;
@@ -377,6 +382,7 @@ fn CreateTeamModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Elem
                     #[allow(dead_code)]
                     id: uuid::Uuid,
                 }
+                // SPEC-6.7.11: create the team.
                 match crate::hooks::fetch::api::post_authed_typed::<TeamId, _>("/teams", &body)
                     .await
                 {
@@ -384,6 +390,7 @@ fn CreateTeamModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Elem
                         crate::hooks::toast::push_toast(AlertType::Success, "Team created.");
                         onsaved.call(());
                     }
+                    // SPEC-6.5.12: a save failure shows the server's own message.
                     Err(e) => error.set(e.user_message()),
                 }
             }
@@ -488,6 +495,7 @@ fn EditTeamModal(
             return;
         }
         let n = name.read().trim().to_string();
+        // SPEC-6.5.12: empty team name is rejected with this message, on edit too.
         if n.is_empty() {
             error.set("Team name is required.".to_string());
             return;
@@ -510,11 +518,13 @@ fn EditTeamModal(
                     #[allow(dead_code)]
                     id: uuid::Uuid,
                 }
+                // SPEC-6.7.11: update the team.
                 match crate::hooks::fetch::api::put_authed_typed::<TeamId, _>(&path, &body).await {
                     Ok(_) => {
                         crate::hooks::toast::push_toast(AlertType::Success, "Team updated.");
                         onsaved.call(());
                     }
+                    // SPEC-6.5.12: a save failure shows the server's own message.
                     Err(e) => error.set(e.user_message()),
                 }
             }
@@ -613,6 +623,7 @@ struct MembersSectionProps {
     saving_parent: Signal<bool>,
 }
 
+// SPEC-6.1.18: the edit modal's team member roster, with add and remove.
 #[component]
 fn MembersSection(props: MembersSectionProps) -> Element {
     let team_id = props.team_id;
@@ -620,6 +631,7 @@ fn MembersSection(props: MembersSectionProps) -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         #[cfg(feature = "app")]
         {
+            // SPEC-6.7.11: list the team's members.
             let path = format!("/teams/{team_id}/members");
             crate::hooks::fetch::api::get_authed::<Vec<RemoteTeamMember>>(&path)
                 .await
@@ -662,6 +674,7 @@ fn MembersSection(props: MembersSectionProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
+                // SPEC-6.7.11: remove a team member.
                 let path = format!("/teams/{team_id}/members/{uid}");
                 match crate::hooks::fetch::api::delete_authed(&path).await {
                     Ok(_) => {
@@ -691,6 +704,7 @@ fn MembersSection(props: MembersSectionProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
+                // SPEC-6.7.11: add a team member.
                 let path = format!("/teams/{team_id}/members");
                 let body = AddTeamMemberBody {
                     user_id: uid,

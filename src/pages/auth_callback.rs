@@ -34,6 +34,7 @@ use crate::Route;
 /// navigation itself failed.
 fn restart_login(underlying: &str) -> Result<(), String> {
     let attempt = bump_callback_retry()?;
+    // SPEC-6.4.5: stop retrying once the restart budget is spent.
     if attempt > MAX_CALLBACK_RETRIES {
         return Err(format!(
             "restart budget spent ({MAX_CALLBACK_RETRIES} allowed, this is attempt {attempt})"
@@ -54,6 +55,7 @@ pub fn AuthCallbackPage() -> Element {
 
     use_future(move || async move {
         let cfg = OidcConfig::for_current_origin();
+        // SPEC-6.7.2: exchange the code against the issuer before any session install.
         let exchange_result = complete_login(&cfg).await;
         // MAPPS-336: strip `?code=` + `?state=` from window.location BEFORE
         // any further navigation runs. Relying on the Dioxus router's
@@ -65,6 +67,7 @@ pub fn AuthCallbackPage() -> Element {
         // MAPPS-504: browser-only, and it has nothing to strip anywhere
         // else - the desktop build never reaches this route, because it
         // has no redirect to come back from (MAPPS-505).
+        // SPEC-6.4.3: strip code/state before any further navigation, success or error.
         crate::platform::location::replace_state("/auth/callback");
         match exchange_result {
             Ok((tokens, return_to)) => {
@@ -101,6 +104,7 @@ pub fn AuthCallbackPage() -> Element {
                 // bearer, so the tab reads as staff from this point
                 // on and the AuthGuard cold-load bootstrap can not
                 // resurrect a stale portal session.
+                // SPEC-6.4.1: clear any contact session before installing a staff one.
                 crate::hooks::fetch::api::on_staff_signin_clear_contact_side();
                 // Make the access token available to api::*_authed
                 // helpers across the app. Stored in the same in-memory
@@ -189,6 +193,7 @@ pub fn AuthCallbackPage() -> Element {
                 //   token bundle was saved to sessionStorage above, so
                 //   `rehydrate_from_storage` re-authes the rebooted tree - no
                 //   re-login loop.
+                // SPEC-6.4.4: restore a same-origin deep link, else collapse to the dashboard.
                 match crate::modules::oidc::classify_return_to(&return_to) {
                     crate::modules::oidc::ReturnTarget::Restore => {
                         if let Err(e) = crate::platform::location::set_href(&return_to) {
@@ -226,6 +231,7 @@ pub fn AuthCallbackPage() -> Element {
         }
     });
 
+    // SPEC-6.1.2: transient signing-in state, or a failed-exchange state with a retry link.
     rsx! {
         div { class: "min-h-screen flex items-center justify-center",
             div { class: "text-center space-y-4",

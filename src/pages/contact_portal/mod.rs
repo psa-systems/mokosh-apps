@@ -86,6 +86,7 @@ pub const PORTAL_FORGOT_PASSWORD_GUIDANCE: &str =
 
 /// What a refused sign-in says. Names no account, and points at the way through
 /// for the customer who never set a password in the first place.
+// SPEC-6.4.7: identical text, no enumeration or internal wording, regardless of account existence.
 pub const PORTAL_SIGN_IN_FAILED: &str =
     "That email and password do not match. If you have not set a portal password yet, sign in without one below.";
 

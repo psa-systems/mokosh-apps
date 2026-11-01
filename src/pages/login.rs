@@ -67,6 +67,7 @@ struct LoginBody {
 /// MAPPS-373). Generated once with UUID v4 and persisted via
 /// `crate::utils::prefs` (`localStorage` in the browser, the per-user
 /// config file on desktop) so it survives reloads and future logins.
+// SPEC-6.3.1: generated once and persisted under this key; sent as device_id.
 #[cfg(feature = "app")]
 const DEVICE_ID_KEY: &str = "mokosh_device_id";
 
@@ -85,6 +86,7 @@ fn device_id() -> String {
 /// unified into `/login`) writes its bearer to. Kept in sync with
 /// `pages::platform_login::PLATFORM_TOKEN_KEY` and
 /// `components::layout::PLATFORM_TOKEN_KEY`.
+// SPEC-6.3.2: platform bearer stored here, distinct from the tenant token.
 #[cfg(target_arch = "wasm32")]
 const PLATFORM_TOKEN_KEY: &str = "mokosh:platform_token";
 
@@ -178,6 +180,7 @@ struct LoginResp {
     memberships: Option<Vec<MembershipItem>>,
 }
 
+// SPEC-6.1.1: staff sign-in form, standalone-mode only.
 #[component]
 pub fn StandaloneLogin() -> Element {
     let mut auth = crate::hooks::use_auth();
@@ -207,6 +210,7 @@ pub fn StandaloneLogin() -> Element {
                                     user: CurrentUser| {
         // MAPPS-630: cross-plane isolation. See auth_callback.rs
         // for the OIDC-flow twin of this call.
+        // SPEC-6.4.1: clear any contact session before installing a staff one.
         crate::hooks::fetch::api::on_staff_signin_clear_contact_side();
         crate::hooks::fetch::api::set_access_token(Some(access_token.clone()));
         save_standalone(&StandaloneSession {
@@ -229,12 +233,14 @@ pub fn StandaloneLogin() -> Element {
         nav.replace(Route::Dashboard {});
     };
 
+    // SPEC-6.6.1: ignore a submit while a previous one is still in flight.
     let mut handle_submit = move |_| {
         if saving() {
             return;
         }
         let em = email.read().trim().to_string();
         let pw = password.read().clone();
+        // SPEC-6.5.1: empty field(s) block the submit with this message.
         if em.is_empty() || pw.is_empty() {
             error.set("Enter your email and password.".to_string());
             return;
@@ -285,7 +291,9 @@ pub fn StandaloneLogin() -> Element {
                 //
                 // MAPPS-553: skip this branch entirely on portal
                 // hosts (see host_slug derivation above).
+                // SPEC-6.4.2: skip the platform-first attempt with an MFA/approval code or on a tenant subdomain.
                 let can_try_platform = !on_portal && mfa.is_none() && approval.is_none();
+                // SPEC-6.7.1: chained platform-then-tenant login attempt.
                 if can_try_platform {
                     let platform_body = PlatformLoginBody {
                         email: em.clone(),
@@ -430,6 +438,7 @@ pub fn StandaloneLogin() -> Element {
                             saving.set(false);
                             return;
                         }
+                        // SPEC-6.4.2: any platform-login failure falls through silently.
                         Err(ApiError::Status { code: 401, .. }) => {
                             // Not a platform admin (or wrong platform
                             // password). Fall through to try the
@@ -463,6 +472,7 @@ pub fn StandaloneLogin() -> Element {
                     .await
                 {
                     // MAPPS-397: approval-required challenge.
+                    // SPEC-6.5.1: approval-required message.
                     Ok(resp) if resp.approval_required => {
                         approval_needed.set(true);
                         error.set(
@@ -566,12 +576,14 @@ pub fn StandaloneLogin() -> Element {
                             );
                         }
                         None => {
+                            // SPEC-6.5.1: success with no user is reported, not navigated.
                             error.set(
                                 "Sign-in succeeded but no account was returned. Try again."
                                     .to_string(),
                             );
                         }
                     },
+                    // SPEC-6.5.1: 401 while an approval code is pending gets its own message.
                     Err(ApiError::Status { code: 401, .. }) if approval_needed() => {
                         error.set(
                             "That code is not valid, check the email or try signing in again."

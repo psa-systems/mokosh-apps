@@ -115,6 +115,7 @@ struct UpdateContactMeRequest {
 /// can see the current bunyip-sourced values; the wire strips them so the
 /// request stops pretending to persist edits it never persisted. Nothing
 /// here may send a field the server does not accept.
+// SPEC-6.4.19: omit first_name/last_name/phone; include mobile.
 #[derive(Clone, Debug, Serialize)]
 struct UpdateMeRequest {
     mobile: Option<String>,
@@ -297,6 +298,7 @@ fn StaffProfilePage() -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         #[cfg(feature = "app")]
         {
+            // SPEC-6.7.14: load the profile.
             crate::hooks::fetch::api::get_authed_typed::<MeResponse>("/auth/me").await
         }
         #[cfg(not(feature = "app"))]
@@ -366,6 +368,7 @@ fn StaffProfilePage() -> Element {
                     // standalone-mode account-management path; a hub deployment
                     // stays authoritative for MFA (mirrors the profile-hub-link
                     // gate MAPPS-816 adds for the links above).
+                    // SPEC-6.4.20: MFA is gated on no OIDC issuer configured.
                     if !crate::modules::oidc::OidcConfig::for_current_origin().has_issuer() {
                         MfaCard {
                             mfa_enabled: me.mfa_enabled,
@@ -580,6 +583,7 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-6.7.14: save the profile.
                 match crate::hooks::fetch::api::put_authed_typed::<MeResponse, _>("/auth/me", &body)
                     .await
                 {
@@ -760,6 +764,7 @@ fn MfaSetupModal(props: MfaSetupModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-6.7.14: start MFA setup.
                 match crate::hooks::fetch::api::post_authed_typed::<MfaSetupResponse, ()>(
                     "/auth/me/mfa/setup",
                     &(),
@@ -799,6 +804,7 @@ fn MfaSetupModal(props: MfaSetupModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-6.7.14: confirm the TOTP code and enable MFA.
                 match crate::hooks::fetch::api::post_authed_typed::<MfaEnableResponse, _>(
                     "/auth/me/mfa/enable",
                     &body,
@@ -933,12 +939,14 @@ fn MfaDisableModal(props: MfaDisableModalProps) -> Element {
         }
         submitting.set(true);
         error.set(String::new());
+        // SPEC-6.4.20: disable requires the current password.
         let body = MfaDisableRequest {
             password: password(),
         };
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-6.7.14: disable MFA.
                 match crate::hooks::fetch::api::post_authed_json_no_content(
                     "/auth/me/mfa/disable",
                     &body,
@@ -1424,6 +1432,8 @@ mod profile_layout_tests {
 /// Local-only preferences. No server writes; everything persists to
 /// `localStorage` via `utils::prefs`. Applies immediately on
 /// selection.
+// SPEC-6.3.5: persist time format, first day of week and duration format
+// to local storage under their stable keys, with no server call.
 #[component]
 fn PreferencesCard() -> Element {
     let mut time_format = use_signal(|| prefs::get_str(PREF_TIME_FORMAT, "12h"));
@@ -1553,6 +1563,7 @@ fn ContactProfilePage() -> Element {
     let me_resource = use_resource(|| async {
         #[cfg(feature = "web")]
         {
+            // SPEC-6.7.14: load the contact's own profile.
             crate::hooks::fetch::api::get_contact_authed::<ContactMeResponse>("/contact/auth/me")
                 .await
         }
@@ -1713,6 +1724,7 @@ fn ContactPersonalInfoForm(props: ContactPersonalInfoFormProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
+                // SPEC-6.7.14: save the contact's own profile.
                 match crate::hooks::fetch::api::put_contact_authed_typed::<ContactMeResponse, _>(
                     "/contact/auth/me",
                     &body,
