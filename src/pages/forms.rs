@@ -45,6 +45,7 @@ use crate::Route;
 /// working editor whose every save 403s, including the draft autosave that
 /// exists so half-built work survives.
 #[component]
+// SPEC-14.3.1: client-side gate only, a convenience; the server enforces admin on every write.
 pub fn FormsBuilderPage() -> Element {
     use_page_title("Request Forms");
     let auth = crate::hooks::use_auth();
@@ -98,6 +99,7 @@ fn FormsBuilderContent() -> Element {
     // rather than only ever stumbled on by reopening the right row. Loaded
     // here rather than inside the editor because both surfaces need it and the
     // restore decision has to be made once, at open time.
+    // SPEC-14.3.2: a draft-list fetch failure is best-effort: logged and treated as no drafts.
     let mut drafts = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _token = crate::hooks::fetch::api::current_access_token()?;
@@ -142,6 +144,7 @@ fn FormsBuilderContent() -> Element {
     // name the same MSP. PMS-752: and it has to be the same VALUE the email
     // uses, which is mokosh's own `tenants.name`.
     let (tenant_name, tenant_logo) = use_org_identity();
+    // SPEC-14.3.3: an unreachable server shows ContentUnavailable instead of the list/error banner.
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Request Forms".to_string() }
@@ -188,6 +191,7 @@ fn FormsBuilderContent() -> Element {
             }
         }
 
+        // SPEC-14.3.3: a reachable server that still failed the fetch shows a retry banner.
         if fetch_failed {
             ErrorBanner { class: "mb-3", "Could not load request forms. Refresh the page to retry." }
         }
@@ -273,6 +277,7 @@ fn FormsBuilderContent() -> Element {
         }
 
         // MAPPS-436: the DELETE fires from `onconfirm` only.
+        // SPEC-14.3.4: a destructive draft discard requires explicit confirmation.
         if let Some((discard_id, discard_label)) = pending_discard {
             crate::components::ConfirmDialog {
                 open: true,
@@ -291,6 +296,7 @@ fn FormsBuilderContent() -> Element {
                             Ok(()) => drafts.restart(),
                             // MAPPS-436: a failed discard used to leave the row
                             // in place with no explanation.
+                            // SPEC-14.3.5: a failed discard is reported by toast.
                             Err(err) => crate::hooks::push_toast(
                                 crate::components::AlertType::Error,
                                 format!("Could not discard the draft: {err}"),
@@ -472,6 +478,7 @@ fn FormsBuilderContent() -> Element {
 /// submissions against one, so issuing a link for it would hand the client a
 /// page that rejects them. Mirrors the `?active_only=true` filter the send
 /// modal already applies to its own form picker.
+// SPEC-14.3.6: only an active definition offers Send; a retired one refuses submissions server-side.
 fn is_sendable(def: &FormDefinition) -> bool {
     def.is_active
 }
@@ -625,6 +632,7 @@ impl EditorState {
 /// about the link-stable identifier. Mirrors the server's `validate_slug`
 /// shape (lowercase alphanumerics, single hyphens, no leading or trailing
 /// hyphen) rather than approximating it.
+// SPEC-14.3.7: slug shape must mirror mokosh-server's validate_slug.
 fn slugify(name: &str) -> String {
     let mut out = String::new();
     let mut last_hyphen = true; // suppresses a leading hyphen
@@ -660,8 +668,10 @@ fn slugify(name: &str) -> String {
 /// server. Short enough that a tab closed mid-thought loses at most half a
 /// second of work on top of what the instant local write already holds, long
 /// enough that a sentence typed at speed is one request rather than forty.
+// SPEC-14.3.8: the server-draft autosave debounce, in milliseconds.
 const DRAFT_DEBOUNCE_MS: u32 = 500;
 
+// SPEC-14.3.9: the local draft storage key format, distinct for a new vs existing definition.
 fn draft_key(id: Option<&str>) -> String {
     match id {
         Some(id) => format!("mokosh.form-draft.{id}"),
@@ -675,6 +685,7 @@ fn draft_key(id: Option<&str>) -> String {
 /// JSON outlives the build that wrote it, so the editor's internals are free to
 /// change without a stale draft failing to parse; `field_type` is a string here
 /// for the same reason, and because [`FieldType`] carries no serde derives.
+// SPEC-14.3.10: a draft's persisted wire shape is distinct from EditorState, so it outlives it.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 struct DraftForm {
     #[serde(default)]
@@ -788,6 +799,7 @@ impl DraftForm {
                     // MAPPS-535: the draft stores the wire value as a string;
                     // an unrecognised one falls back rather than dropping the
                     // row, since a draft is work in progress.
+                    // SPEC-14.3.10: an unrecognised stored field_type falls back to Text.
                     field_type: FieldType::from_str(&f.field_type).unwrap_or(FieldType::Text),
                     is_required: f.is_required,
                     max_length: f.max_length,
@@ -886,6 +898,7 @@ impl ServerDraft {
     /// are comparable. An unparseable timestamp reads as arbitrarily old,
     /// which resolves to "keep what is in this browser" rather than silently
     /// replacing local work with a copy of unknown age.
+    // SPEC-14.3.11: an unparseable server timestamp reads as arbitrarily old, never as "now".
     fn saved_at(&self) -> f64 {
         chrono::DateTime::parse_from_rfc3339(&self.updated_at)
             .map(|t| t.timestamp_millis() as f64)
@@ -923,6 +936,7 @@ struct StoredDraft {
 /// Newest wins. Neither tier is authoritative: the local one is written
 /// instantly and so is usually ahead on the machine that typed it, and the
 /// server one is the only thing that exists on any other machine.
+// SPEC-14.3.11: the newer-timestamped draft wins between the local and server tiers.
 fn newest_draft(
     local: Option<(DraftForm, f64)>,
     server: Option<&ServerDraft>,
@@ -1025,6 +1039,7 @@ fn field_name_from_label(label: &str) -> String {
 /// rather than approximating it. Without this a hand-edited "Last Name" is only
 /// refused after a round trip, by a 400 that lands in the banner at the top of a
 /// modal the operator has scrolled past.
+// SPEC-14.3.12: reference-name shape must mirror mokosh-server's validate_field_name.
 fn field_name_problem(name: &str) -> Option<&'static str> {
     if name.is_empty() {
         return Some("A reference name is required.");
@@ -1045,6 +1060,7 @@ fn field_name_problem(name: &str) -> Option<&'static str> {
 /// Anything else that is not an `i32` is reported on the row and logged: it
 /// used to become "no limit" too, so a typo silently published a field weaker
 /// than the limit the operator asked for (MAPPS-703).
+// SPEC-14.3.13: blank is no limit; a non-integer is rejected with a message and logged, never silently dropped.
 fn parse_max_length(raw: &str) -> Result<Option<i32>, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -1066,6 +1082,7 @@ fn parse_max_length(raw: &str) -> Result<Option<i32>, String> {
 /// there is no field a person could correct if it happened. It is logged
 /// rather than left silent because the substitution unlinks the form from its
 /// procedure and the log is the only witness (MAPPS-703).
+// SPEC-14.3.14: blank is no article; a non-UUID value falls back to no article and is logged.
 fn picked_article_id(raw: &str) -> Option<uuid::Uuid> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -1456,6 +1473,7 @@ fn FormEditorModal(
                 // alone rather than deleted, because a delete on every
                 // keystroke that happens to match the saved state would race
                 // the writes around it; saving the form is what retires it.
+                // SPEC-14.3.15: the local draft is cleared once state returns to saved.
                 crate::utils::prefs::clear(&key);
                 return;
             }
@@ -1481,6 +1499,7 @@ fn FormEditorModal(
                     // shared `Rc`. A later keystroke replaces the signal's
                     // Rc, so the ptr no longer matches ours and this task
                     // bails out without touching the network.
+                    // SPEC-14.3.16: a superseded debounced autosave (by Rc identity) drops instead of sending.
                     let still_current = latest_snapshot()
                         .as_ref()
                         .is_some_and(|latest| Rc::ptr_eq(latest, &snapshot));
@@ -1491,6 +1510,7 @@ fn FormEditorModal(
                         "form_definition_id": definition_id,
                         "payload": &*snapshot,
                     });
+                    // SPEC-14.3.17: a draft is persisted server-side via PUT /forms/drafts.
                     match crate::hooks::fetch::api::put_authed_typed::<ServerDraft, _>(
                         "/forms/drafts",
                         &body,
@@ -1503,6 +1523,7 @@ fn FormEditorModal(
                         // half and nothing the operator can act on; a toast on
                         // every keystroke of an offline session would be worse
                         // than the thing it reports.
+                        // SPEC-14.3.18: a failed server-draft autosave is silent, logged at debug only.
                         Err(e) => tracing::debug!("form draft autosave failed: {e:?}"),
                     }
                 }
@@ -1537,10 +1558,12 @@ fn FormEditorModal(
         rules.set(base.rules.clone());
         field_errors.set(Vec::new());
         problems.set(ProblemCounts::default());
+        // SPEC-14.3.19: discarding a restored draft clears the local copy.
         crate::utils::prefs::clear(&draft_key_for_discard);
         draft_restored.set(false);
         // PMS-759: and the server's copy, or the next open on any machine
         // restores exactly what was just discarded.
+        // SPEC-14.3.19: and the server-held copy, or the next open restores what was just discarded.
         if let Some(id) = server_draft_id() {
             server_draft_id.set(None);
             spawn(async move {
@@ -1549,6 +1572,7 @@ fn FormEditorModal(
                 {
                     // The local state is already reverted; say so rather than
                     // leave a server draft that reappears on the next open.
+                    // SPEC-14.3.5: a failed server-draft discard is reported by toast.
                     crate::hooks::push_toast(
                         crate::components::AlertType::Error,
                         format!("Could not discard the saved draft: {err}"),
@@ -1834,6 +1858,7 @@ fn FormEditorModal(
                         // and update, because a draft exists to survive the
                         // browser going away and so cannot depend on the
                         // browser to tidy up.
+                        // SPEC-14.3.20: a successful save clears only the local draft; the server retires its own.
                         crate::utils::prefs::clear(&draft_key_for_save);
                         // MAPPS-424: naming the next step here, because saving
                         // is the moment the user expects a link and does not
@@ -1844,6 +1869,7 @@ fn FormEditorModal(
                         );
                         onsaved.call(());
                     }
+                    // SPEC-14.3.21: a save failure surfaces the server's error message in the form banner.
                     Err(err) => {
                         // The server's own per-field errors are keyed
                         // `fields[3].options` / `rules[0].field`, which have no
@@ -2002,6 +2028,7 @@ fn FormEditorModal(
                     }
                 }
                 // MAPPS-436: the revert and the DELETE fire from `onconfirm` only.
+                // SPEC-14.3.4: discarding a restored draft requires explicit confirmation.
                 crate::components::ConfirmDialog {
                     open: confirming_draft_discard(),
                     title: "Discard draft".to_string(),
@@ -2312,6 +2339,7 @@ fn preview_from_definition(
     tenant_name: &str,
     logo_url: Option<&str>,
 ) -> PublicForm {
+    // SPEC-14.3.22: fields are previewed and sent to a client in sort_order, not arrival order.
     let mut fields: Vec<&crate::modules::forms::FormField> = def.fields.iter().collect();
     fields.sort_by_key(|f| f.sort_order);
 
@@ -2514,6 +2542,7 @@ fn ClientPreviewModal(def: PublicForm, unsaved: bool, onclose: EventHandler<()>)
                     // read the way they will on the real thing.
                     div { class: "bg-app rounded-lg p-6",
                         div { class: "max-w-xl mx-auto bg-surface rounded-lg shadow-lg p-8",
+                            // SPEC-14.3.23: the preview renders through the same component the public client page uses.
                             RequestFormBody {
                                 def: def.clone(),
                                 answers,
