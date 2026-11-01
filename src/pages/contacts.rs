@@ -623,6 +623,8 @@ pub fn CompanyListPage() -> Element {
             // the instant the server comes back (paired with the recovery poll).
             let _reachable = crate::hooks::use_server_reachable();
             let token = crate::hooks::fetch::api::current_access_token()?;
+            // SPEC-7.7.1: company pages' endpoint set, listed in full at
+            // the spec id, not repeated at every call site below.
             let mut path = format!("/contacts/companies?page={current_page}&per_page={PER_PAGE}");
             if !q.is_empty() {
                 path.push_str(&format!("&q={}", urlencoding_minimal(&q)));
@@ -2276,6 +2278,8 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
             .ok()
         }
     });
+    // SPEC-7.7.4: this and the sibling resources below are
+    // CompanyDetailPage's child-relationship cards' full endpoint set.
     let tickets_resource = use_resource(move || {
         let id = company_id_for_tickets.clone();
         async move {
@@ -3544,6 +3548,8 @@ fn CompanyContactsCard(
 /// [`CompanyContactsCard`] resource, which is capped at 5 for preview purposes.
 /// Companies with more than ~20 contacts are rare; the ceiling is a soft cap
 /// to keep the roster inline.
+// SPEC-7.4.7/SPEC-7.6.4: Invite disabled with no email; every mutation
+// disabled while unreachable; per-row toggling isolated by contact id.
 #[component]
 fn CompanyPortalAccessCard(
     company_id: String,
@@ -6173,6 +6179,7 @@ fn CompanyBrandingCard(
     let tenant_snap = tenant_defaults_resource.read_unchecked();
     let tenant_defaults = tenant_snap.clone().flatten().unwrap_or_default();
     let id = company_id.clone();
+    // SPEC-7.6.6: ignore a second submit while one is still in flight.
     let on_save = move |block: CompanyBranding| {
         if saving() {
             return;
@@ -6291,6 +6298,8 @@ pub fn ContactListPage() -> Element {
             // the instant the server comes back (paired with the recovery poll).
             let _reachable = crate::hooks::use_server_reachable();
             let token = crate::hooks::fetch::api::current_access_token()?;
+            // SPEC-7.7.2: contact pages' endpoint set, listed in full at
+            // the spec id, not repeated at every call site below.
             let mut path = format!("/contacts/contacts?page={current_page}&per_page={PER_PAGE}");
             // MAPPS-249: scope to one company when a context card's "View All"
             // passes `?company_id=<uuid>`.
@@ -8722,6 +8731,7 @@ struct ContactPortalCardProps {
 /// post-PMS-928 body carrying the 9-digit numeric Portal ID assigned
 /// to the Company by `ensure_portal_id`. When `None`, the card falls
 /// back to the legacy slug-based setup URL.
+// SPEC-7.4.8: no setup link or other credential-bearing field on this wire.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct PortalGrantOutcomeWire {
     portal_slug: String,
@@ -9119,8 +9129,8 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
             .await
             {
                 Ok(outcome) => {
-                    // The server no longer returns the setup link; it says
-                    // whether the invite email went out via
+                    // SPEC-7.4.8: the server no longer returns the setup
+                    // link; it says whether the invite email went out via
                     // `password_email_queued`, which stays false on a
                     // role-only edit and is what the toast keys on.
                     let is_role_only_edit = !outcome.password_email_queued;

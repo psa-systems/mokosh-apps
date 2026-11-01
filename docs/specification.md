@@ -1091,10 +1091,12 @@ DTOs these pages exchange with the API server.
   mutation (grant, resend invite, revoke, change roles) on this scope's
   pages must be disabled whenever `!can_mutate` (the server is
   unreachable), consistent with SPEC-1's reachability gating.
-- **SPEC-7.4.8**: `PortalGrantOutcomeWire` must carry only
-  `password_email_queued: bool`; no response rendered by
-  `ContactPortalCard` may surface a setup link or any other
-  credential-bearing value to the screen.
+- **SPEC-7.4.8**: `PortalGrantOutcomeWire` (`portal_slug`, `portal_id`,
+  `password_email_queued: bool`) must carry no setup link or other
+  credential-bearing field; `password_email_queued` tells the caller
+  whether a setup email was queued without ever carrying the token
+  itself, and no response rendered by the portal-access cards may
+  surface a setup link to the screen.
 - **SPEC-7.4.9**: `DocCredential` (`company_documentation.rs:58-68`)
   must carry no password, secret, or username field; a credential's
   secret value is reachable only through the separate, independently
