@@ -765,6 +765,66 @@ mod tests {
         );
     }
 
+    /// MAPPS-1213: no control on this page calls a route the server removed.
+    ///
+    /// This replaces `toggle_capability_and_poll_save_toggle_the_same_busy_signal_connect_does`,
+    /// which pinned MAPPS-1019's in-flight guard across the four mutation
+    /// handlers. There are no mutation handlers: PMS-1571 removed
+    /// `GET`/`PUT /integrations/{provider}` and
+    /// `POST /integrations/{provider}/connect` and `/disconnect`, because the
+    /// only credential home that surface can connect is
+    /// `CredentialHome::Integration` and no provider takes it.
+    ///
+    /// Scanned as source, because the way this comes back is somebody adding
+    /// a control that reads correctly against a route that is not there, which
+    /// is exactly how it got here: the page drew capability checkboxes whose
+    /// every tick answered 404 for three tickets running, and nothing failed.
+    ///
+    /// If the routes return, they return with the server: mokosh-server's
+    /// `registry::tests::an_integration_home_provider_needs_the_per_provider_routes_back`
+    /// fails first and says so. Then this test is the one to update, which is
+    /// why it names what to put back rather than only what to keep out.
+    #[test]
+    fn no_control_calls_a_route_the_server_removed() {
+        let src = include_str!("settings_integrations.rs");
+        let all = &src[..src.find("mod tests").expect("this module")];
+        // Comments are exempt: this file explains what was removed and why,
+        // and a guard that cannot be documented gets reworded rather than
+        // understood. What it defends is the code.
+        let head: String = all
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let head = head.as_str();
+
+        for gone in [
+            "/connect",
+            "/disconnect",
+            "put_authed",
+            "post_authed",
+            "delete_authed",
+        ] {
+            assert!(
+                !head.contains(gone),
+                "{gone} is back on this page, and the route it would call is not"
+            );
+        }
+        // The page reads the catalog and nothing else. It does that through
+        // `load_operator_setting`, the shared helper that distinguishes a 403
+        // from a failure (PMS-1280), so exactly one call to it is also the
+        // statement that no second request was added beside it.
+        assert_eq!(
+            head.matches("load_operator_setting").count(),
+            1,
+            "this page makes exactly one request, the catalog read"
+        );
+        assert!(
+            head.contains("INTEGRATIONS_PATH,"),
+            "and it reads the catalog path, not a path built per provider"
+        );
+    }
+
     /// The page holds no provider list, no capability list and no status
     /// vocabulary of its own.
     ///
