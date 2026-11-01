@@ -70,6 +70,7 @@ pub struct SignatureTemplateSuggestion {
 
 // -- Signature banner ----------------------------------------------
 
+// SPEC-13.3.5: dismiss-for-30-days preference key.
 const DISMISS_PREFS_KEY: &str = "mokosh:assets:signature_dismissed:v1";
 
 /// Local-storage sentinel: once set, the banner hides until the stored
@@ -83,6 +84,8 @@ fn is_dismiss_fresh() -> bool {
     until > now_s
 }
 
+// SPEC-13.3.5: persists the dismissal for 30 days from the click, independent
+// of the active tenant (this is a local-storage key, not a tenant-scoped one).
 fn mark_dismissed_for_30_days() {
     let until = chrono::Utc::now().timestamp() + 60 * 60 * 24 * 30;
     crate::platform::prefs::set(DISMISS_PREFS_KEY, &until.to_string());
@@ -99,6 +102,9 @@ pub struct SignatureBannerProps {
 #[component]
 pub fn SignatureBanner(props: SignatureBannerProps) -> Element {
     let mut dismissed = use_signal(is_dismiss_fresh);
+    // SPEC-13.1.6, SPEC-13.3.4, SPEC-13.7.2: GET /asset-models/signature-detector.
+    // Any failure, including a 404 when the `assets_catalog` toggle is off,
+    // collapses to `None` via `.ok()` below rather than surfacing an error.
     let signature = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_authed_any::<SignatureCandidate>(
@@ -108,6 +114,8 @@ pub fn SignatureBanner(props: SignatureBannerProps) -> Element {
         .inspect_err(|e| tracing::warn!("asset signature detector load failed: {e}"))
         .ok()
     });
+    // SPEC-13.1.6: render nothing while dismissed, while still loading, or
+    // when the detector lookup failed or 404'd (no candidate yet).
     if dismissed() {
         return rsx! {};
     }
@@ -196,8 +204,11 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
     // once per keystroke. 400ms matches the shape used elsewhere in the
     // SPA (asset list search is 300; bulk-create is one weightier POST,
     // so err slightly longer).
+    // SPEC-13.6.2: 400ms debounce before the /assets/exists lookup.
     let serials_debounced = crate::hooks::use_debounced_signal(serials_raw, 400);
 
+    // SPEC-13.1.7, SPEC-13.3.4, SPEC-13.7.2: model typeahead against
+    // GET /asset-models?q=.
     // Typeahead against /asset-models?q=. Returns an empty vec on 404
     // (feature off) so the modal fails gracefully with a message.
     let model_options = use_resource(move || {
@@ -223,6 +234,9 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
         }
     });
 
+    // SPEC-13.5.6: dedup count, already-exists count and final-create count
+    // are tracked as separate values below so the UI can report each one
+    // distinctly as the operator types.
     let serials_vec: Vec<String> = serials_raw
         .read()
         .lines()
@@ -243,6 +257,8 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
         }
     };
 
+    // SPEC-13.6.2, SPEC-13.3.4: debounced (400ms) collision lookup; a 404
+    // from the endpoint means the assets_catalog toggle is off.
     // Pre-flight collision lookup. Fires once per debounced pause after
     // the operator pastes serials AND picks a company. 404 from the
     // endpoint (feature off / older server) returns an empty vec so the
@@ -274,6 +290,7 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
                 #[serde(default)]
                 existing: Vec<String>,
             }
+            // SPEC-13.7.2: POST /assets/exists.
             match crate::hooks::fetch::api::post_authed_typed::<Resp, _>("/assets/exists", &body)
                 .await
             {
@@ -299,7 +316,7 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
         .collect();
     let serials_to_create_count = serials_to_create.len();
     let serials_count_str = format!("{serials_to_create_count}");
-    // 500-cap applies to what the server will actually see post-dedup
+    // SPEC-13.3.2: 500-cap applies to what the server will actually see post-dedup
     // AND post-exists-trim, so a paste of 501 lines where one is already
     // present is 500 unique new and submits.
     let serials_over_cap = serials_to_create_count > 500;
@@ -323,7 +340,7 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
     let model_picked = selected_model.read().is_some();
     let model_typed = !model_query.read().trim().is_empty();
     let company_picked = selected_company_id.read().parse::<Uuid>().is_ok();
-    // The submit button is enabled only when every field is valid.
+    // SPEC-13.1.7: the submit button is enabled only when every field is valid.
     // The on-submit guards below stay as a safety net for races (the
     // click lands before the latest signal read), but the operator
     // never sees a confident "Create 501 assets" that cannot fire.
@@ -339,6 +356,8 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
     let oncreated = props.oncreated;
     let onclose = props.onclose;
 
+    // SPEC-13.1.7: on-submit guard re-checking model, company and at least
+    // one serial-to-create before the POST /assets/bulk-create fires.
     let on_submit = move |_| {
         let model = selected_model.read().clone();
         let company_raw = selected_company_id.read().clone();
@@ -378,6 +397,8 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
             err.set("Paste at least one serial.".to_string());
             return;
         }
+        // SPEC-13.3.2: reject over the 500 cap with this message rather
+        // than truncating the batch silently.
         if serials.len() > 500 {
             err.set("Up to 500 serials per batch; split into two.".to_string());
             return;
@@ -390,6 +411,7 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
         };
         submitting.set(true);
         err.set(String::new());
+        // SPEC-13.7.2: POST /assets/bulk-create.
         spawn(async move {
             match crate::hooks::fetch::api::post_authed_typed::<serde_json::Value, _>(
                 "/assets/bulk-create",
@@ -401,7 +423,7 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
                     submitting.set(false);
                     oncreated.call(count);
                     onclose.call(());
-                    // Reset the modal state so the next open starts clean.
+                    // SPEC-13.9.6: reset the modal state so the next open starts clean.
                     model_query.set(String::new());
                     selected_model.set(None);
                     selected_company_id.set(String::new());
@@ -451,6 +473,8 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
                 }
             },
             div { class: "space-y-4",
+                // SPEC-13.3.4: shown instead of an error when the typeahead
+                // 404'd (the assets_catalog toggle is off).
                 if !feature_on {
                     ErrorBanner {
                         "Asset catalog is not enabled on this deployment. Ask an admin to flip the `assets_catalog` toggle."
@@ -505,6 +529,7 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
                         }
                     }
                 }
+                // SPEC-13.1.7: company select, required before submit (see can_submit above).
                 Select {
                     name: "bulk-company",
                     label: "Company".to_string(),
@@ -530,6 +555,7 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
                         rows: 8,
                         oninput: move |e: FormEvent| serials_raw.set(e.value()),
                     }
+                    // SPEC-13.5.6: duplicate-count hint, with a five-item preview.
                     if dup_count > 0 {
                         p { class: "mt-1 text-xs text-amber-700 dark:text-amber-400",
                             "{serials_raw_count} lines pasted, {dup_count} duplicate(s) dropped: "
@@ -537,6 +563,7 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
                             ". {serials_dedup_count} remain."
                         }
                     }
+                    // SPEC-13.5.6: already-exists-at-company count hint.
                     if existing_count > 0 {
                         p { class: "mt-1 text-xs text-amber-700 dark:text-amber-400",
                             if selected_company_name.is_empty() {
@@ -565,6 +592,7 @@ pub fn AssetBulkCreateModal(props: AssetBulkCreateModalProps) -> Element {
     }
 }
 
+// SPEC-13.6.8: exact-match, order-preserving dedup; each duplicate reported once.
 /// Return `(unique, duplicate_values)` from `input`, preserving the first
 /// occurrence of each value and reporting each duplicated serial exactly
 /// once. Exact-match comparison on purpose: serial numbers are case- and
