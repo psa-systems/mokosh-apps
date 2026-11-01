@@ -910,3 +910,522 @@ cited at SPEC-6.3.6.
   pending next-target for at most the current tab's session and must
   consume it (remove it from storage) the first time it is read,
   regardless of whether that read's value was valid.
+
+## 9. Tickets, SLA and requests
+
+Scope: `src/pages/tickets.rs`, `src/pages/approvals.rs`, `src/pages/sla.rs`,
+`src/pages/request_form.rs`, `src/pages/request_links.rs`,
+`src/pages/work_day.rs`.
+
+All six files are page or sub-page components mounted by routes declared
+outside this scope (`src/lib.rs`); none of the six declares a `Route`
+variant of its own. `work_day.rs` exports one component, `WorkDayStrip`,
+embedded by the Time page rather than being a page itself; it is in scope
+because its behavior (clock in/out, break tracking, segment correction) is
+part of this section's subject matter.
+
+### 9.1 Interfaces
+
+- **SPEC-9.1.1**: `TicketListPage` (`tickets.rs`) must render the ticket
+  list body for a session holding the `tickets:read` capability and must
+  render nothing usable otherwise.
+- **SPEC-9.1.2**: The ticket list must fetch `/tickets/statuses`,
+  `/tickets/priorities`, and `/tickets/queues` to populate the Status,
+  Priority, and Queue filter selects, degrading each independently to an
+  empty list on its own fetch failure.
+- **SPEC-9.1.3**: The ticket list's search box must debounce input by
+  300ms before the value is included in the list request.
+- **SPEC-9.1.4**: Changing the search text, status filter, priority
+  filter, queue filter, or sort column must reset the list to page 1.
+- **SPEC-9.1.5**: The "Clear filters" control shown on a filtered empty
+  state must clear the status, priority, and queue filters together, not a
+  subset.
+- **SPEC-9.1.6**: Bulk ticket deletion must snapshot the selected ids at
+  the moment the confirmation dialog is opened, issue one `DELETE` per
+  snapshotted id in parallel, then show a single combined
+  success/partial-failure count, clear the selection, and refresh the list.
+- **SPEC-9.1.7**: `TicketNewPage` must seed the Description field from a
+  knowledge-base-article prefill and the Company field from a company
+  prefill, both read from the URL query string, and must auto-select the
+  tenant's default priority (or the first available priority if none is
+  marked default) only while the Priority field is still empty, so it
+  never overwrites an in-progress user selection.
+- **SPEC-9.1.8**: The ticket create form must hide the Team field
+  entirely, not merely disable it, for a personal tenant.
+- **SPEC-9.1.9**: `TicketDetailPage` must render the detail body for a
+  `tickets:read`-capable session and nothing usable otherwise.
+- **SPEC-9.1.10**: The ticket title and description editor must edit the
+  page content in place; it must never open as a modal. The detail page
+  must render exactly three modals: the approval-request dialog, the
+  save-view dialog, and the rename-view dialog.
+- **SPEC-9.1.11**: Cancelling an untouched (non-dirty) title/description
+  edit must close it immediately with no confirmation; cancelling a dirty
+  edit must show a confirmation dialog first.
+- **SPEC-9.1.12**: Every Markdown-bearing field on the ticket pages (the
+  create-form description, the in-page description edit, the note
+  composer, and inline note editing) must use the shared Markdown editor
+  component, never a bare text area, and a rendered note must display
+  through the shared Markdown renderer rather than as preformatted raw
+  text.
+- **SPEC-9.1.13**: A ticket "family" card must render only when the
+  ticket is a child (showing a link to its parent) or a parent with at
+  least one child (listing the children); a parent with zero children, or
+  a ticket with no family relation, must render no family card.
+- **SPEC-9.1.14**: The "Request approval" action on the ticket sidebar
+  must be disabled whenever the session cannot mutate the ticket, and its
+  dialog must require exactly one of a chosen approver user or a chosen
+  approver role before it can be submitted.
+- **SPEC-9.1.15**: `ApprovalsPage` (`approvals.rs`) must render exactly
+  one of: a loading state, a fetch-failed state, a filtered-to-nothing
+  state, an empty-queue state, or the row list, never more than one at a
+  time.
+- **SPEC-9.1.16**: Each pending-approval row must render a target-kind
+  badge, an entity reference (a link to the ticket detail page when the
+  target is a ticket and an id is present, otherwise plain unlinked text),
+  a requester line, an approver line, and Approve/Reject actions.
+- **SPEC-9.1.17**: `SlaManagementPage` (`sla.rs`) must render a permission
+  notice instead of any tab content for a non-admin session, and otherwise
+  must render exactly one of its three tabs (Policies, Business Hours,
+  Holiday Calendars) at a time.
+- **SPEC-9.1.18**: The Policies tab's policy form must require a
+  non-empty name, and must offer a Business Hours selector seeded with a
+  "No profile (runs 24/7)" option plus every loaded business-hours row.
+- **SPEC-9.1.19**: The Targets modal must render one row per tenant
+  ticket priority, pre-filled from any existing SLA target for that
+  (policy, priority) pair, each row offering first-response hours,
+  resolution hours, and an operational-hours mode of `24x7` or
+  `business_hours`.
+- **SPEC-9.1.20**: The Business Hours form must require a non-empty name
+  and must offer a schedule as a JSON text area; the Holiday Calendars
+  form must require a non-empty name and must offer a holidays list as a
+  JSON text area.
+- **SPEC-9.1.21**: `RequestFormPage` (`request_form.rs`) must render
+  exactly one of a terminal state (submitted, already submitted, retired,
+  unusable), a loading state, a load-failed state, or the live form body,
+  never more than one at a time.
+- **SPEC-9.1.22**: The request-form body must render every field the
+  server returns, in server-given order, using the field's declared type
+  to choose its widget (text, email, date, select, checkbox, or
+  multi-line text), and must render an unrecognized field type as a plain
+  text input rather than dropping it.
+- **SPEC-9.1.23**: A multi-person request form that still has submissions
+  remaining after a successful submit must offer an "add the next person"
+  action that re-fetches the form definition rather than only clearing the
+  local answers.
+- **SPEC-9.1.24**: `CompanyRequestFormsCard` (`request_links.rs`) must
+  render a per-company table of sent request-form links with a "Send a
+  form" action, disabled whenever the session cannot mutate.
+  `SentRequestLinksPanel` must render the same table shape across every
+  company in the tenant, truncated to the 8 most recent rows with a count
+  of how many older rows are hidden.
+- **SPEC-9.1.25**: `SendRequestLinkModal` must require a chosen form, a
+  chosen company, a people count between 1 and 50 inclusive, and at least
+  one of a chosen contact or a typed email address, before its "Send
+  link" action is enabled; the action must additionally be disabled, with
+  a distinct reason, whenever no active form definition exists or the
+  session cannot mutate.
+- **SPEC-9.1.26**: `WorkDayStrip` (`work_day.rs`) must render nothing on
+  the first, still-loading fetch of the day and must keep showing the
+  last successfully loaded day while a later periodic refetch is in
+  flight, rather than blanking the card every 60 seconds.
+- **SPEC-9.1.27**: The clock card must show a "Clock in" action when the
+  viewed user is clocked out; "Clock out" and, when break tracking is on
+  for the tenant, "Start break"/"End break" when clocked in or on break;
+  none of the three actions may render while viewing another user's day.
+- **SPEC-9.1.28**: An admin viewing another user's day must be offered a
+  "Viewing" selector defaulting to "My day"; the selector must render only
+  when the admin's user roster is non-empty.
+- **SPEC-9.1.29**: Each clocked segment must offer a "Correct" action when
+  correction is allowed and no other segment's correction form is
+  already open; the open correction form must offer Save, Reopen (only
+  when the segment is already closed), Remove, and Cancel.
+
+### 9.2 Data model
+
+- **SPEC-9.2.1**: A ticket's SLA status must default to "not applicable"
+  when the server omits it or sends an unrecognized value, and the local
+  SLA-status enum's match against the server's own SLA-status type must
+  be exhaustive, so a new server-side status value fails to compile
+  rather than silently defaulting.
+- **SPEC-9.2.2**: A ticket update request body's assignee and asset
+  fields must each distinguish three states on the wire: omitted (leave
+  unchanged), explicit null (clear/unassign), and a value (set); omitting
+  the field from the request and sending it as null must never be
+  conflated.
+- **SPEC-9.2.3**: The ticket create request must send exactly: title,
+  description, company, contact, priority, asset, type, category,
+  assignee, scheduled end, source knowledge-base article, and team. All
+  other fields the server's create-ticket contract accepts are
+  deliberately not offered by this form.
+- **SPEC-9.2.4**: The ticket update request must send exactly: title,
+  description, status, priority, assignee, and asset. All other fields
+  the server's update-ticket contract accepts are deliberately not
+  editable from this page.
+- **SPEC-9.2.5**: A ticket's displayed "Time Logged" total must be
+  computed by summing the page's own fetched time entries, never read
+  directly from the ticket record's own total field, so the two cannot
+  disagree.
+- **SPEC-9.2.6**: A note's structured follow-up flag must render as "Not
+  needed" when false, as "Needed - {description} (target {date})" when
+  true, and as "Invalid follow-up data" when the key is missing or is not
+  a boolean (including the string `"true"`).
+- **SPEC-9.2.7**: A note's type must decode as a plain string, not a
+  closed set of known values, so an unrecognized note type still decodes
+  and renders as a plain note rather than failing the entire journal.
+- **SPEC-9.2.8**: A pending approval record must decode with every field
+  except its id defaulted, so a server payload missing any of the
+  polymorphic subject fields still decodes; its target kind must default
+  to `"ticket"` when absent.
+- **SPEC-9.2.9**: A pending approval's displayed subject must prefer a
+  resolved reference or label; when both are empty it must fall back to
+  an 8-character prefix of the entity id, or to a plain dash when no
+  entity id exists either.
+- **SPEC-9.2.10**: An SLA target's hours fields accept a plain decimal
+  number or an `H:MM` duration; an empty value (after trimming) must mean
+  "no commitment for this dimension," not zero.
+- **SPEC-9.2.11**: An SLA target row's operational-hours mode must default
+  to `24x7` whenever the stored value is empty or absent, both when the
+  row is first loaded and when it is saved.
+- **SPEC-9.2.12**: A request-form submission's answers must be stored as
+  a single string-keyed map, with a boolean field's answer represented as
+  the literal string `"true"` or `"false"`, never a native boolean.
+- **SPEC-9.2.13**: A request-form submission payload must omit a blank or
+  whitespace-only text answer, but must always send an explicit boolean
+  for every boolean field (defaulting to false when unanswered), never
+  omitting a boolean field's key.
+- **SPEC-9.2.14**: A request link's status must rank, in order, submitted
+  (has a used-at timestamp), expired (past its expiry), partly submitted
+  (fewer submissions remain than the people count), then awaiting; this
+  page must never recompute that ranking itself.
+- **SPEC-9.2.15**: A work day's segment kind must default to the empty
+  string when absent; any value other than the literal `"break"` must
+  render as a work segment, not a validated closed set.
+- **SPEC-9.2.16**: A work day record's user id, date, module-derived
+  flags, segment list, and the clocked/break/logged/unlogged minute
+  totals must each default to a safe empty value (no user, empty date,
+  all flags false, empty segments, zero minutes) so an older or newer
+  server payload still decodes.
+- **SPEC-9.2.17**: Reopening an already-closed work segment must send its
+  end time as an explicit null, distinct from omitting the field, which
+  the wire format treats as "leave the end time alone."
+
+### 9.3 Configuration
+
+- **SPEC-9.3.1**: The ticket list must page at 25 rows per page.
+- **SPEC-9.3.2**: The ticket journal must show at most 50 merged entries,
+  with an explicit "Showing N of M" notice whenever more exist.
+- **SPEC-9.3.3**: A ticket attachment must be rejected client-side before
+  any upload request is sent whenever it exceeds 5 MiB.
+- **SPEC-9.3.4**: A saved ticket view's name must be capped at 100
+  characters on submit.
+- **SPEC-9.3.5**: A contact-facing approval-request note must be between
+  1 and 2000 characters.
+- **SPEC-9.3.6**: A request-form link's people count is capped at 50.
+- **SPEC-9.3.7**: `SentRequestLinksPanel` must show at most the 8 most
+  recently sent links before truncating, with a count of how many older
+  links are hidden.
+- **SPEC-9.3.8**: A work day is considered stale, for client-side display
+  purposes only, after 16 hours; this is a fixed client constant because
+  no tenant-level setting for it exists server-side.
+- **SPEC-9.3.9**: None beyond the above for `sla.rs`: it reads no
+  environment variable, feature flag, or config key of its own beyond the
+  shared `app`/`web` build-feature gates described in SPEC-9.8.1.
+
+### 9.4 Security
+
+- **SPEC-9.4.1**: The ticket Reopen action must require both a status
+  name containing "closed" or "resolved" (case-insensitive) and the
+  `tickets:reopen` capability; a status missing either condition must
+  hide the action even when the capability is present.
+- **SPEC-9.4.2**: A contact may edit a ticket's title and description only
+  when the session holds the `tickets:edit_own` capability and the
+  ticket's contact id exactly matches the caller's own contact id; a
+  missing id on either side must fail closed (no edit access).
+- **SPEC-9.4.3**: Ticket deletion must require the manager-or-above role
+  tier independent of mutate/online state, showing the reason "Only a
+  manager or above can delete a ticket" when that tier is absent; it must
+  separately disable, with a distinct reason, whenever the server is
+  unreachable, and disable with no reason while a delete for that ticket
+  is already in flight.
+- **SPEC-9.4.4**: A contact session must never see the ticket audit
+  history, the staff approvals section, or staff-only time entries; the
+  staff approvals section must be hidden entirely, not merely disabled,
+  for a contact session.
+- **SPEC-9.4.5**: A contact session's note composer must default new
+  notes to the public note type; a staff session's composer must default
+  to the internal note type.
+- **SPEC-9.4.6**: A contact session's ticket edit must go through the
+  partial-update endpoint (title and description only), while a staff
+  session's edit must go through the full-update endpoint; the choice
+  must be made by session plane, not by which fields changed.
+- **SPEC-9.4.7**: A note editable per the server's own answer wins
+  outright when the server supplies one; otherwise local fallback rules
+  require either the admin role or (author match and the note's own
+  row-state rules), and an unrecognized note type must offer no edit
+  control.
+- **SPEC-9.4.8**: A note that was emailed to a customer, authored by a
+  contact, or of the time-entry type must never be editable, even by an
+  admin, regardless of the fallback rules' outcome.
+- **SPEC-9.4.9**: The "email this note to the client" control must be
+  absent, not merely disabled, on any note type other than the public
+  type.
+- **SPEC-9.4.10**: `SlaManagementPage` must gate every one of its three
+  tabs on the admin role client-side; this is a display gate only, and
+  every mutating SLA endpoint remains server-enforced independent of it.
+- **SPEC-9.4.11**: Every SLA-mutating control (create, edit, save, remove,
+  across policies, business hours, holiday calendars, and targets) must
+  be disabled, with an explanatory tooltip, whenever the server is
+  unreachable.
+- **SPEC-9.4.12**: `RequestFormPage` must never attach a bearer or session
+  token to either its load or its submit request; the token embedded in
+  the route path is the sole credential.
+- **SPEC-9.4.13**: `RequestFormPage` must not disclose, in its own copy,
+  why a link is unusable beyond the two 410 cases the server's own message
+  text distinguishes (already submitted vs. retired); all other failure
+  causes (expired, unknown, malformed token) must collapse to the single
+  message "This link is expired or invalid."
+- **SPEC-9.4.14**: `RequestFormPage` performs no CAPTCHA or client-side
+  rate-limit tracking of its own; a 429 response is treated as
+  non-terminal and surfaced through the same generic error path as any
+  other non-terminal failure.
+- **SPEC-9.4.15**: `SendRequestLinkModal` must offer only contacts that
+  have a non-empty email address as selectable recipients.
+- **SPEC-9.4.16**: `SendRequestLinkModal` must send the typed email
+  address, when present, as the request's recipient address, overriding
+  any address implied by a chosen contact; when the typed field is empty,
+  the request must omit the recipient address and let the server resolve
+  it from the chosen contact.
+- **SPEC-9.4.17**: `WorkDayStrip`'s correction permission is a display
+  gate only: an "off" policy must hide the Correct action for every
+  viewer including the segment's own owner; an "owner_or_manager" policy
+  must show it for the owner or any manager; any other or unrecognized
+  policy value must fall back to owner-or-admin, matching the server's
+  own documented fallback.
+- **SPEC-9.4.18**: A correction time typed in `HH:MM` form must be
+  resolved against the viewer's own profile time zone, never the
+  browser's local zone, and must be rejected, not guessed, when that
+  local time does not exist (a spring-forward gap) or is ambiguous (a
+  fall-back overlap) in that zone.
+
+### 9.5 Error handling and observability
+
+- **SPEC-9.5.1**: A ticket detail fetch failure while the server is
+  unreachable must render the shared unreachable-content state; the same
+  failure while the server is reachable (a real not-found) must render a
+  distinct "Ticket not found" page with a link back to the list.
+- **SPEC-9.5.2**: A failed journal source (notes, history, or time
+  entries) must degrade that one source out of the merged journal rather
+  than failing the whole ticket detail page; the page must list which
+  sources failed.
+- **SPEC-9.5.3**: A note-edit refusal from the server must render next to
+  the note being edited, not as a page-level toast or banner.
+- **SPEC-9.5.4**: Bulk ticket deletion must report one combined
+  success/partial-failure toast after all deletions settle, never one
+  toast per ticket.
+- **SPEC-9.5.5**: The ticket create submit must route a server field
+  error to the title, description, or company field in that priority
+  order before falling back to a generic banner.
+- **SPEC-9.5.6**: A pending-approvals fetch failure while the server is
+  unreachable must render the shared unreachable-content state; the same
+  failure while the server is reachable must render an inline error
+  banner instead.
+- **SPEC-9.5.7**: A failed approval decision must set a single
+  page-level error message and must not remove the row from the list; a
+  successful decision must show a success toast and refresh the list.
+  Because this error message is a single page-level field rather than
+  scoped per row, a later successful decision on a different row does
+  not clear an earlier row's still-visible failure message; this is
+  tracked as a defect, not a requirement of this section.
+- **SPEC-9.5.8**: An SLA primary-list load failure must render the shared
+  unreachable-content state when the server is unreachable, and an inline
+  error banner otherwise; each of the three SLA tabs (policies, business
+  hours, holiday calendars) must log its own distinct failure message.
+- **SPEC-9.5.9**: A business-hours save with a schedule field that fails
+  client-side JSON parsing must show the parse error inline on that
+  field and must send no request; an invalid IANA time zone string must
+  show a dedicated error and send no request; an empty time zone must be
+  accepted and coerced to `UTC`.
+- **SPEC-9.5.10**: A server-side validation failure on an SLA
+  business-hours or holiday-calendar save that names the schedule or
+  holidays field must be shown inline on that field; any other save
+  error must be shown as a page-level banner.
+- **SPEC-9.5.11**: `RequestFormPage`'s client-side required-field check on
+  submit must evaluate every field and collect every failing field before
+  returning, never stopping at the first failure.
+- **SPEC-9.5.12**: `RequestFormPage`'s server-side 422 field errors on
+  submit must be split: an error naming a field that exists on the form
+  goes to that field; an error naming an unknown field, or one about the
+  submission as a whole, is joined into the page-level banner.
+- **SPEC-9.5.13**: `request_links.rs`'s per-company and tenant-wide link
+  list fetch failures must each log their own distinct message and each
+  render as "Could not load request forms."/"Could not load sent forms."
+  respectively, distinct from their own empty-result message.
+- **SPEC-9.5.14**: A send-link failure must route a server field error
+  naming the recipient address or the people count to that field; any
+  other failure must fall back to a generic error banner.
+- **SPEC-9.5.15**: A work-day load failure must log a warning and resolve
+  to the shared "Could not load today's clock." banner, distinct from the
+  module-off notice shown when the timesheets or time-tracking module is
+  disabled for the tenant.
+- **SPEC-9.5.16**: A failed segment-edit policy load must fall back
+  silently to the default policy rather than surfacing an error to the
+  user.
+- **SPEC-9.5.17**: A work-day correction whose typed time does not exist
+  in the viewer's time zone must show "That start/end time does not exist
+  on this day in your time zone."; a work day whose own date fails to
+  parse must show "This day's date could not be read, so a correction
+  cannot be timed." and must send no request.
+
+### 9.6 Concurrency and ordering
+
+- **SPEC-9.6.1**: The ticket detail page's own resource value must be
+  read through the hook's documented non-reactive accessor, not its
+  reactive one, to avoid a known rendering panic and a stale Edit button.
+- **SPEC-9.6.2**: Every hook called by the ticket detail body (including
+  the auth hook) must be called unconditionally before any early return
+  in that component, so the render framework's per-render hook ordering
+  stays consistent.
+- **SPEC-9.6.3**: The ticket journal's render loop must be keyed on each
+  entry's own id (or, failing that, its timestamp), never on list
+  position, so prepending a new entry cannot hand a newly-added row the
+  in-progress draft state of whatever entry used to sit at that position.
+- **SPEC-9.6.4**: The merged ticket journal (notes, history, time
+  entries) must be built by a stable sort on each entry's timestamp,
+  newest first, so entries sharing a timestamp keep their original
+  relative order.
+- **SPEC-9.6.5**: Each inline sidebar field edit (status, priority,
+  assignee) on the ticket detail page must send only its own changed
+  field, independent of the others, and must refresh both the ticket
+  record and its history after a successful save.
+- **SPEC-9.6.6**: The ticket family card's fetch must depend on whether
+  the ticket has a parent: it must fetch children only when the ticket
+  has no parent of its own, never fetching both a parent and a children
+  list for the same ticket.
+- **SPEC-9.6.7**: The pending-approvals fetch must refetch on tenant
+  switch, on a server-reachability transition, and on an explicit
+  version bump after a decision; the version bump and the resource
+  restart after a decision both trigger a refetch, which is redundant
+  but not contradictory.
+- **SPEC-9.6.8**: Each SLA form's (policy, business hours, holiday
+  calendar, target) save or delete action must no-op immediately if a
+  save or delete for that same form or row is already in flight, so a
+  double-click cannot issue a second concurrent request.
+- **SPEC-9.6.9**: An SLA target's delete must be two-step: opening its
+  confirmation dialog must not itself delete anything; the delete request
+  fires only on explicit confirmation, and the dialog's in-flight state
+  must not clear until the request settles.
+- **SPEC-9.6.10**: `RequestFormPage`'s submit action must no-op
+  immediately if a submission for that form is already in flight.
+- **SPEC-9.6.11**: `RequestFormPage`'s "add the next person" action must
+  set the page back to its loading state and clear any terminal state
+  before re-fetching, so the next person can never submit against the
+  stale form definition from the prior person.
+- **SPEC-9.6.12**: `request_links.rs`'s send-link action must no-op
+  immediately if a send for that modal is already in flight.
+- **SPEC-9.6.13**: `WorkDayStrip`'s clock-in, clock-out, break, and
+  segment mutations must each no-op immediately if a mutation from that
+  same strip is already in flight, so only one can be outstanding at a
+  time.
+- **SPEC-9.6.14**: `WorkDayStrip` must run two independent timers: one
+  that restarts the day fetch every 60 seconds, and one that only forces
+  a re-render every 10 seconds to advance the visible elapsed time without
+  a matching fetch.
+- **SPEC-9.6.15**: `WorkDayStrip`'s live clocked-minutes, break-minutes,
+  and session-minutes figures must all be derived from one single
+  "now" reading per render, so the three figures can never disagree with
+  each other within the same render.
+- **SPEC-9.6.16**: `WorkDayStrip`'s module-flag check that decides
+  whether to skip the day fetch must be read from inside the fetch's own
+  async closure, not via the reactive module-flags hook called from the
+  component body, to keep the render framework's hook hook-hook ordering
+  stable across renders.
+
+### 9.7 Integrations
+
+- **SPEC-9.7.1**: The ticket detail page's SLA panel must fetch
+  `GET /tickets/{id}/sla` on the dual-plane (contact-or-staff) bearer
+  path, not the staff-only path, so a contact session can see it too.
+- **SPEC-9.7.2**: An inline image uploaded from any Markdown field on the
+  ticket detail page must post to the inline-attachment endpoint, distinct
+  from the whole-file attach flow's endpoint; the create-ticket form's
+  editor must offer no inline-image upload at all, since no ticket exists
+  yet to attach to.
+- **SPEC-9.7.3**: The contact-facing "Request approval" sidebar action
+  must post only a note to a ticket-specific request endpoint, distinct
+  from the staff approvals section's full approver-assignment endpoint;
+  the two must never be conflated into one flow.
+- **SPEC-9.7.4**: The staff approvals section's endpoint must be
+  parameterized by entity kind (ticket, quote, change request, or time
+  entry) so the same component serves all four, rather than being
+  ticket-specific.
+- **SPEC-9.7.5**: The ticket attach-file flow must check the file's size
+  against the 5 MiB limit before uploading, and the hidden file input
+  must clear its own previous value before each open, so re-selecting the
+  same file still fires a fresh upload.
+- **SPEC-9.7.6**: Toggling a task-list checkbox rendered inside a ticket's
+  description must save only the description field, then refresh both
+  the ticket record and its history.
+- **SPEC-9.7.7**: `ApprovalsPage` must fetch the pending queue and post a
+  decision on the dual-plane bearer path, never the staff-only path, so a
+  contact holding the decide capability can act on the contact plane.
+- **SPEC-9.7.8**: Each SLA tab's primary list (policies, business hours,
+  holiday calendars) and its related sub-resources (business-hours
+  options, targets, ticket priorities) must each be fetched from their
+  own dedicated endpoint; a target save must use a single upsert endpoint
+  that the server keys on the (policy, priority) pair, so the same
+  request both creates and updates a target.
+- **SPEC-9.7.9**: `RequestFormPage`'s load and submit must each call the
+  one public, token-keyed request-form endpoint; no other endpoint may
+  be used to read or submit a public request form.
+- **SPEC-9.7.10**: `request_links.rs` must load the contacts for a
+  company's recipient picker through the paged, uncapped listing path,
+  not a path that clamps to the server's 100-row page limit.
+- **SPEC-9.7.11**: Sending a request-form link (from either the
+  company-card entry point or the forms-builder entry point) must go
+  through the single shared send-link endpoint, so the two entry points
+  cannot drift into different request shapes or validation.
+- **SPEC-9.7.12**: `WorkDayStrip` must fetch the day's clock state from
+  the workday endpoint (optionally parameterized by date and viewed
+  user), the segment-edit policy from the settings endpoint, and must
+  issue clock-in, clock-out, break-start, break-end, segment-update, and
+  segment-delete each against its own dedicated endpoint.
+- **SPEC-9.7.13**: `WorkDayStrip`'s "Viewing" picker must source its user
+  list from the shared user-roster cache, not from a fetch owned by this
+  component.
+
+### 9.8 Build and deployment
+
+- **SPEC-9.8.1**: Every network-calling code path in this section's files
+  must compile to a no-op on a build that does not enable the `app`
+  feature it depends on, consistent with the pattern established in
+  SPEC-6.3.6, except where noted as a defect in the PR body.
+- **SPEC-9.8.2**: `work_day.rs`'s test module covering its async resource
+  dependency tracking must be additionally gated to exclude the
+  `wasm32` target, because it depends on a dev-only async runtime
+  unavailable there.
+
+### 9.9 Retention and cleanup
+
+- **SPEC-9.9.1**: The ticket journal must state that it excludes
+  attachments and approvals, since no audit row exists for either, in a
+  permanent footer note.
+- **SPEC-9.9.2**: Closing the ticket attach-file dialog without
+  completing an upload must clear the hidden file input's previous
+  selection before it can be reopened.
+- **SPEC-9.9.3**: Closing an SLA policy, business-hours, or
+  holiday-calendar form without saving must discard all in-progress
+  edits with no draft retained.
+- **SPEC-9.9.4**: Removing an SLA target is an immediate, non-reversible
+  delete; the policy reverts to having no commitment for that priority
+  until a new target is set.
+- **SPEC-9.9.5**: `RequestFormPage`'s "add the next person" action must
+  clear the current person's answers and field errors before fetching the
+  next slot, so no prior person's answers can leak into the next
+  person's submission.
+- **SPEC-9.9.6**: `RequestFormPage` must discard a blank or
+  whitespace-only text answer from the submission payload entirely,
+  matching the server's own "blank is absent" rule.
+- **SPEC-9.9.7**: `WorkDayStrip`'s open correction form and its pending
+  "removing" confirmation must each be cleared immediately before the
+  corresponding mutation is sent, so a stale open form cannot be
+  resubmitted against an id the mutation has already made stale.
