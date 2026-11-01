@@ -1205,3 +1205,158 @@ mod tests {
         );
     }
 }
+
+/// MAPPS-1212: what a [`Checkbox`] bound to server state can and cannot fix.
+///
+/// A checkbox is not a controlled input in the browser. A click toggles the DOM
+/// node's own `checked` property immediately, whatever the `checked` the vdom
+/// carries, so any flow that asks the user to confirm before writing starts
+/// from a node that already shows the unconfirmed value.
+///
+/// Putting it back is not a re-render. `dioxus-html` marks `value` and
+/// `selected` `volatile`, which makes dioxus rewrite them on every render even
+/// when the value is unchanged; `checked` is not on that list. So the diff
+/// takes the `!value_changed && !volatile` early return, emits nothing, and the
+/// node keeps whatever the browser left there.
+///
+/// These two tests are the measurement rather than the claim, because three
+/// contact-sync pages were written around the opposite belief: that re-reading
+/// the server (`overview.restart()`) would re-tick the box. It cannot. Only a
+/// rendered value that DIFFERS from the last rendered value moves that node.
+#[cfg(test)]
+mod mapps1212_checkbox_resync_tests {
+    use super::*;
+    use dioxus::dioxus_core::Mutation;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    type Handles = Rc<RefCell<Option<(Signal<bool>, Signal<u32>)>>>;
+
+    /// A checkbox bound to `checked`, plus a second signal that forces a
+    /// re-render without touching it. The handles escape so the test can
+    /// write either one between renders.
+    fn harness() -> (VirtualDom, Handles) {
+        let handles: Handles = Rc::new(RefCell::new(None));
+        let dom = VirtualDom::new_with_props(
+            |handles: Handles| {
+                let checked = use_signal(|| true);
+                let nudge = use_signal(|| 0u32);
+                *handles.borrow_mut() = Some((checked, nudge));
+                rsx! {
+                    span { "{nudge}" }
+                    Checkbox {
+                        name: "enabled",
+                        label: "Allow this",
+                        checked: checked(),
+                        onchange: move |_| {},
+                    }
+                }
+            },
+            handles.clone(),
+        );
+        (dom, handles)
+    }
+
+    fn wrote_checked(edits: &[Mutation]) -> bool {
+        edits
+            .iter()
+            .any(|m| matches!(m, Mutation::SetAttribute { name, .. } if name == "checked"))
+    }
+
+    /// The mechanism behind the bug: re-rendering with the value the box
+    /// already had writes nothing, so a server re-read cannot undo a click.
+    #[test]
+    fn rerendering_with_the_same_value_writes_nothing_to_the_box() {
+        let (mut dom, handles) = harness();
+        dom.rebuild_in_place();
+        let (_, mut nudge) = handles.borrow().expect("the first render ran");
+
+        dom.in_runtime(|| nudge += 1);
+        let edits = dom.render_immediate_to_vec().edits;
+
+        assert!(
+            !edits.is_empty(),
+            "the nudge must actually have re-rendered the component"
+        );
+        assert!(
+            !wrote_checked(&edits),
+            "an unchanged `checked` reached the DOM, so this bug does not exist \
+             and three pages can drop their intent signal: {edits:?}"
+        );
+    }
+
+    /// The whole confirm-then-cancel flow, in the shape the contact-sync
+    /// pages use: the server says on, the click records an intent to turn
+    /// off, and cancelling drops the intent. The last step is the one that
+    /// has to write, and it writes `true` because the render before it
+    /// carried `false`.
+    #[test]
+    fn an_intent_then_a_cancel_writes_the_box_back_on() {
+        type Intent = Rc<RefCell<Option<Signal<Option<bool>>>>>;
+
+        let handle: Intent = Rc::new(RefCell::new(None));
+        let mut dom = VirtualDom::new_with_props(
+            |handle: Intent| {
+                // Stands in for the overview resource: the server's answer,
+                // which never changes here because nothing is ever saved.
+                let from_server = true;
+                let wanted = use_signal(|| None::<bool>);
+                *handle.borrow_mut() = Some(wanted);
+                rsx! {
+                    Checkbox {
+                        name: "enabled",
+                        label: "Allow this",
+                        checked: wanted().unwrap_or(from_server),
+                        onchange: move |_| {},
+                    }
+                }
+            },
+            handle.clone(),
+        );
+        dom.rebuild_in_place();
+        let mut wanted = handle.borrow().expect("the first render ran");
+
+        // The click. The browser has already unticked the node; recording the
+        // intent is what makes the vdom agree with it.
+        dom.in_runtime(|| wanted.set(Some(false)));
+        let edits = dom.render_immediate_to_vec().edits;
+        assert!(
+            wrote_checked(&edits),
+            "the intent did not reach the box: {edits:?}"
+        );
+
+        // Cancel.
+        dom.in_runtime(|| wanted.set(None));
+        let edits = dom.render_immediate_to_vec().edits;
+        assert!(
+            edits.iter().any(|m| matches!(
+                m,
+                Mutation::SetAttribute { name, value, .. }
+                    if name == "checked"
+                        && matches!(value, dioxus::dioxus_core::AttributeValue::Bool(true))
+            )),
+            "cancelling left the box unticked: {edits:?}"
+        );
+    }
+
+    /// And the fix: a value that differs from the last rendered one is
+    /// written, which is why the pages render the user's intent and drop it
+    /// again rather than re-reading the server.
+    #[test]
+    fn rerendering_with_a_different_value_writes_the_box() {
+        let (mut dom, handles) = harness();
+        dom.rebuild_in_place();
+        let (mut checked, _) = handles.borrow().expect("the first render ran");
+
+        dom.in_runtime(|| checked.set(false));
+        let edits = dom.render_immediate_to_vec().edits;
+        assert!(wrote_checked(&edits), "false was not written: {edits:?}");
+
+        dom.in_runtime(|| checked.set(true));
+        let edits = dom.render_immediate_to_vec().edits;
+        assert!(
+            wrote_checked(&edits),
+            "true was not written back: {edits:?}"
+        );
+    }
+}

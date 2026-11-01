@@ -78,6 +78,7 @@ comment):
 | `check-ci-parity.sh` | Every command a `check` recipe runs, including its `--self-test`, has a matching step in `.forgejo/workflows/check.yml`. |
 | `check-class-omissions.sh` | Three specific Tailwind class omissions (auth heading, form-grid breakpoint, table name-cell colour) stay fixed. |
 | `check-company-id-copy.sh` | No "Portal ID" copy under `src/pages/contact_portal/`; the user-facing name is "Company ID". |
+| `check-confirmed-toggle.sh` | A checkbox that asks for confirmation renders the user's intent, so cancelling puts the box back. |
 | `check-confirm-destructive.sh` | A destructive mutation never fires straight from a button `onclick`. |
 | `check-csp-host-derived-origin.sh` | The served Content-Security-Policy header names the same host-derived origin the app derives itself. |
 | `check-defined-colors.sh` | No class references a Tailwind colour token nobody defined. |

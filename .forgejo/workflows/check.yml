@@ -257,6 +257,16 @@ jobs:
           bash scripts/check-admin-gate.sh --self-test
           bash scripts/check-admin-gate.sh
 
+      # MAPPS-1212: the browser toggles a checkbox's own node on click, and
+      # dioxus does not mark `checked` volatile, so a re-render computing the
+      # same value emits nothing and a cancelled turn-off leaves the box
+      # showing a value nothing wrote. Two pages shipped that way, one with a
+      # comment claiming a server re-read would fix it.
+      - name: Confirmed-toggle guard
+        run: |
+          bash scripts/check-confirmed-toggle.sh --self-test
+          bash scripts/check-confirmed-toggle.sh
+
       # MAPPS-659: the pre-hydration theme applier read `localStorage.theme`
       # while the app has always written `mokosh_theme`, so it never found a
       # stored preference and every load painted its first frame from the OS
