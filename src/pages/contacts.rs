@@ -1344,6 +1344,8 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         // parse-and-return the typed values the body uses, so they are kept; the
         // results are carried past the single bail and unwrapped once validation
         // passes.
+        // SPEC-7.5.2: collect every field's failure in one pass, then focus
+        // the first invalid field in on-screen order.
         let mut guard = FormGuard::new();
         let name_res = validate_name_field(&name.read());
         if let Err(msg) = &name_res {
@@ -1501,6 +1503,8 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         // MAPPS-210 / MAPPS-213) so each cue persists after the
                         // failed submit. Unmatched fields, or a non-422 failure,
                         // fall back to the top-of-form banner.
+                        // SPEC-7.5.3: a named 422 field routes inline; an
+                        // unmapped error routes to the top banner.
                         let fields = err.field_errors();
                         if fields.is_empty() {
                             error.set(format!("Could not save company: {}", err.user_message()));
@@ -4838,6 +4842,7 @@ fn CompanySitesCard(
                                                         },
                                                         delete_path,
                                                         delete_label: "site".to_string(),
+                                                        // SPEC-7.6.5: restart both resources on delete too.
                                                         on_deleted: move |_| {
                                                             sites_resource.restart();
                                                             company_resource.restart();
@@ -4859,6 +4864,8 @@ fn CompanySitesCard(
             SiteFormModal {
                 state,
                 onclose: move |_| { editing.set(None); },
+                // SPEC-7.6.5: restart both resources on save so the site
+                // count updates without a manual reload.
                 onsaved: move |_| {
                     editing.set(None);
                     sites_resource.restart();
@@ -4977,6 +4984,8 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
         // so it stays on the banner; the rest use their per-field slots. The
         // bespoke validators that parse-and-return are kept and unwrapped past
         // the single bail.
+        // SPEC-7.5.4: a company_id/name parse failure routes to the banner;
+        // phone/timezone/postal/country route to their own inline slots.
         let mut guard = FormGuard::new();
         if name.read().trim().is_empty() {
             error.set("Site name is required.".to_string());
@@ -7292,6 +7301,8 @@ fn ContactForm(props: ContactFormProps) -> Element {
         // PMS-518: validate every field and report all failures at once, then
         // focus the first invalid field (in on-screen order). note_invalid keeps
         // the first id it is given, so the calls below run in field order.
+        // SPEC-7.5.2: collect every field's failure in one pass, then focus
+        // the first invalid field in on-screen order.
         let mut guard = FormGuard::new();
 
         // MAPPS-281: trim required names so a whitespace-only value cannot satisfy
@@ -7426,6 +7437,8 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         // `errors[]` envelope onto their inline fields so the cue
                         // persists after a failed submit; unmatched fields or a
                         // non-422 failure fall back to the top-of-form banner.
+                        // SPEC-7.5.3: a named 422 field routes inline; an
+                        // unmapped error routes to the top banner.
                         let fields = err.field_errors();
                         if fields.is_empty() {
                             error.set(format!("Could not save contact: {}", err.user_message()));
@@ -7905,6 +7918,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     // feed). Secondary like the tickets list above, but the `Result` is kept
     // rather than `.ok()`-ed so the card can report a failed read instead of
     // rendering it as an empty history.
+    // SPEC-7.5.5: the Result must be kept, not discarded via .ok().
     let notes_resource = use_resource(move || {
         let id = id_for_notes.clone();
         async move {
@@ -8617,6 +8631,7 @@ fn fmt_datetime(
 /// The resource keeps its `Result` rather than `.ok()`-ing it: a failed fetch
 /// renders the server's reason, because "no notes" and "could not read the
 /// notes" are different facts.
+// SPEC-7.5.5: renders a load-error message distinct from "no notes yet".
 #[component]
 fn ContactNotesCard(notes_resource: Resource<Result<Vec<ContactNote>, String>>) -> Element {
     // MAPPS-939: resolve once for the whole notes list, not once per note.
@@ -8753,6 +8768,7 @@ pub(crate) struct PortalRoleSummaryWire {
 /// empty-and-error-free resolution, so it must read false like the
 /// `Err` case rather than falling through to the same `true` an
 /// actually-empty catalog produces (MAPPS-1021).
+// SPEC-7.5.7: false while pending or failed; true only once resolved empty.
 fn assign_portal_roles_no_roles_configured(
     roles_snap: &Option<Result<Vec<PortalRoleSummaryWire>, String>>,
 ) -> bool {
@@ -11340,6 +11356,7 @@ mod mapps568_contact_notes_tests {
 
 /// MAPPS-692: a fetch that fails says why, in the log, before the `Option` that
 /// drives the empty state replaces it.
+// SPEC-7.5.6: enforces no .ok()-discarded fetch Result without .inspect_err.
 #[cfg(test)]
 mod mapps692_fetch_error_logging_tests {
     const SRC: &str = include_str!("contacts.rs");
@@ -12212,6 +12229,8 @@ mod access_request_tests {
     }
 }
 
+// SPEC-7.4.5: enforces no serde_json::json! request body literal and every
+// *Body struct destructured against its DTO, over the shipping file.
 #[cfg(test)]
 mod shared_dto_guard_tests {
     const SRC: &str = include_str!("contacts.rs");
