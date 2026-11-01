@@ -31,6 +31,7 @@ use crate::pages::settings_contact_sync_import::{estimate, label_help, summary, 
 use crate::Route;
 
 /// The server's group for records in no group at all (`UNGROUPED_ID`).
+// SPEC-8.2.4: shared sentinel, identical to the vCard wizard's own UNGROUPED.
 pub const UNGROUPED: &str = "mokosh:ungrouped";
 
 /// What differs between the two providers this page serves (MAPPS-1124).
@@ -69,6 +70,8 @@ pub const MICROSOFT: Vendor = Vendor {
     testid: "microsoft",
 };
 
+// SPEC-8.4.6: every shared endpoint call below carries `?provider=`, so a
+// Microsoft group import can never be mistaken by the server for a Google one.
 fn preview_path(vendor: Vendor) -> String {
     format!(
         "/integrations/contact-sync/preview?provider={}",
@@ -89,6 +92,8 @@ fn runs_path(vendor: Vendor) -> String {
         vendor.provider
     )
 }
+// SPEC-8.7.6: the preview/selection/runs calls above plus this status read are
+// the full set of endpoints this page calls.
 const STATUS_PATH: &str = "/integrations/contact-sync";
 
 /// One iCloud group as the picker lists it.
@@ -104,6 +109,8 @@ pub struct GroupRow {
 
 /// The groups in the order they are offered: the account's own by name, then the
 /// ungrouped row last.
+// SPEC-8.1.20: renames the ungrouped bucket regardless of the server's own
+// name for it, and always sorts it after the case-insensitively named groups.
 pub fn group_rows(preview: &Preview) -> Vec<GroupRow> {
     let mut rows: Vec<GroupRow> = preview
         .groups
@@ -152,6 +159,7 @@ enum Step {
 #[component]
 pub fn ICloudContactsImportPage() -> Element {
     use_page_title("Import iCloud Contacts");
+    // SPEC-8.4.1: AdminOnlyNotice instead of the body for a non-admin.
     if !crate::pages::settings::use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Import iCloud Contacts" } };
     }
@@ -162,12 +170,15 @@ pub fn ICloudContactsImportPage() -> Element {
 #[component]
 pub fn MicrosoftContactsImportPage() -> Element {
     use_page_title("Import Microsoft 365 Contacts");
+    // SPEC-8.4.1: AdminOnlyNotice instead of the body for a non-admin.
     if !crate::pages::settings::use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Import Microsoft 365 Contacts" } };
     }
     rsx! { GroupImportBody { vendor: MICROSOFT } }
 }
 
+// SPEC-8.1.19: one component parameterized by `vendor`, rendered by each page
+// above behind its own admin-only gate.
 #[component]
 fn GroupImportBody(vendor: Vendor) -> Element {
     // The saved selection, so changing groups later starts from it.
@@ -188,6 +199,11 @@ fn GroupImportBody(vendor: Vendor) -> Element {
         crate::hooks::fetch::api::post_authed::<Preview, _>(&path, &PreviewBody { group_ids: None })
             .await
             .map_err(|e| {
+                // SPEC-8.5.9: this is meant to name whichever vendor's preview
+                // failed, not a vendor fixed at compile time; hardcoding
+                // "icloud" here even for a Microsoft import is a known,
+                // separately tracked defect (MAPPS-1209), not fixed by this
+                // comment.
                 tracing::error!("icloud contact sync preview failed: {e}");
                 e
             })
@@ -204,6 +220,8 @@ fn GroupImportBody(vendor: Vendor) -> Element {
     // the render body: writing a signal while rendering re-renders forever.
     use_effect(move || {
         if let Some(Some(o)) = overview.read().as_ref() {
+            // SPEC-8.6.5: seeded at most once; a later overview refresh never
+            // overwrites an in-progress local choice.
             if selected.peek().is_none() {
                 let seeded: BTreeSet<String> = o
                     .connection_for(vendor.provider)
@@ -232,6 +250,7 @@ fn GroupImportBody(vendor: Vendor) -> Element {
                 .map(|p| p.totals);
                 exact.set(Some(result.map_err(|e| e.to_string())));
             }
+            // SPEC-8.3.6: no-op on a build without the `app` feature.
             #[cfg(not(feature = "app"))]
             let _ = ids;
         });
@@ -246,12 +265,15 @@ fn GroupImportBody(vendor: Vendor) -> Element {
                 let body = SelectionBody {
                     group_ids: ids.into_iter().collect(),
                 };
+                // SPEC-8.6.4: the selection write happens before the run-start
+                // call, and a failure here aborts before that call fires.
                 if let Err(e) = crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
                     &selection_path(vendor),
                     &body,
                 )
                 .await
                 {
+                    // SPEC-8.5.6: selection-save failure.
                     error.set(format!("Could not save the groups: {e}"));
                     starting.set(false);
                     return;
@@ -270,6 +292,7 @@ fn GroupImportBody(vendor: Vendor) -> Element {
                         }
                     }
                     Err(e) => {
+                        // SPEC-8.5.6: run-start failure after a saved selection.
                         error.set(format!(
                             "The groups are saved, but the import did not start: {e}"
                         ));
@@ -277,6 +300,7 @@ fn GroupImportBody(vendor: Vendor) -> Element {
                     }
                 }
             }
+            // SPEC-8.3.6: no-op on a build without the `app` feature.
             #[cfg(not(feature = "app"))]
             {
                 let _ = (ids, navigator);
@@ -323,6 +347,7 @@ fn GroupImportBody(vendor: Vendor) -> Element {
                 p { class: "sr-only", role: "status", "Reading the account's groups" }
             },
             (Some(Err(e)), _) => rsx! {
+                // SPEC-8.5.6: initial group-preview load failure.
                 Card { ErrorBanner { {format!("Could not read the {} account: {e}", vendor.display)} } }
             },
             (Some(Ok(data)), Step::Choose) => {
@@ -360,6 +385,9 @@ fn GroupImportBody(vendor: Vendor) -> Element {
                                             row.member_count.map(|n| format!(" ({n})")).unwrap_or_default()
                                         ),
                                         checked: chosen.contains(&row.id),
+                                        // SPEC-8.6.1: every group checkbox, not
+                                        // just the button that triggered it, is
+                                        // disabled for the duration of a start.
                                         disabled: starting(),
                                         help: label_help(&row.counts),
                                         onchange: move |e: FormEvent| {
@@ -418,6 +446,8 @@ fn GroupImportBody(vendor: Vendor) -> Element {
                             },
                         }
                         div { class: "mt-4 flex flex-wrap gap-3",
+                            // SPEC-8.1.21: Start stays disabled until the
+                            // exact-selection preview has resolved successfully.
                             Button {
                                 disabled: starting() || !can_mutate || !matches!(exact(), Some(Ok(_))),
                                 onclick: move |_| start(chosen_now.clone()),

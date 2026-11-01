@@ -1388,9 +1388,12 @@ one `Vendor`-parameterized `GroupImportBody` component.
   pages) must show the provider's fixed consent-point list before the
   connect call fires; turning the organization switch off must show a
   confirmation naming what is kept before writing it, while turning it on
-  must write the setting immediately with no confirmation; cancelling the
-  turn-off confirmation must re-sync the checkbox from the server rather
-  than leaving it in its optimistic unticked state.
+  must write the setting immediately with no confirmation. Only
+  `settings_contact_sync.rs` (Google) additionally re-syncs the checkbox
+  from the server when the turn-off confirmation is cancelled, rather
+  than leaving it in its optimistic unticked state; the iCloud and
+  Microsoft pages' cancel path does not do this, tracked as a separate
+  parity defect, not a requirement of this section.
 - **SPEC-8.1.18**: `settings_contact_sync.rs`'s `return_banner` must map a
   `contact_sync` query parameter of `"connected"`, `"reconnected"`, or
   `"failed"` to one fixed success or error banner each, and any other value
@@ -1521,15 +1524,19 @@ one `Vendor`-parameterized `GroupImportBody` component.
 
 ### 8.4 Security
 
-- **SPEC-8.4.1**: Every settings and import page in this scope
-  (`ContactRolesListPage`, `ContactRoleEditPage`, `GoogleContactsSettingsPage`,
+- **SPEC-8.4.1**: Every settings and import page in this scope except
+  `ContactRolesListPage` and `ContactRoleEditPage` (`GoogleContactsSettingsPage`,
   `ICloudContactsSettingsPage`, `MicrosoftContactsSettingsPage`,
   `GoogleContactsImportPage`, `ICloudContactsImportPage`,
   `MicrosoftContactsImportPage`, `VcardImportPage`) must render
   `AdminOnlyNotice` instead of its body for a non-admin; this client-side
   gate is not itself sufficient authorization, and every mutating call
   these pages make must rely on the server's own admin check, consistent
-  with SPEC-6.4.14.
+  with SPEC-6.4.14. `ContactRolesListPage` and `ContactRoleEditPage` render
+  no such in-page gate even though their Settings-surface registration is
+  staff-admin-only (`SurfaceVisibility::StaffAdmin` in `settings.rs`), unlike
+  every other page in this list; this gap is tracked as a separate defect,
+  not a requirement of this section.
 - **SPEC-8.4.2**: `ContactRoleEditForm`'s capability checkboxes must be
   rendered disabled for a built-in role and its submit must never send a
   changed `capabilities` value for one (SPEC-8.2.2), as a client-side
@@ -1565,9 +1572,10 @@ one `Vendor`-parameterized `GroupImportBody` component.
   answer fails.
 - **SPEC-8.5.2**: `settings_contact_roles.rs` must log an error and show
   "Could not load portal roles. Refresh the page to retry." on a list-load
-  failure, and must log a separate error and degrade the capability
-  descriptors to raw keys (rather than blocking the form) when the
-  capability-descriptor fetch fails.
+  failure, and must log a separate error and render the edit form with an
+  empty capability list ("No capabilities available. The server did not
+  return any capability descriptors.", rather than blocking the form)
+  when the capability-descriptor fetch fails.
 - **SPEC-8.5.3**: `ContactRoleEditForm` must reject an empty (after
   trimming) name with "Name is required.", a name over 64 characters with
   "Name must be 64 characters or fewer.", and, only when creating a new
@@ -1586,10 +1594,17 @@ one `Vendor`-parameterized `GroupImportBody` component.
   not change the setting: {e}".
 - **SPEC-8.5.5**: `settings_contact_sync_icloud.rs` and
   `settings_contact_sync_microsoft.rs` must apply the same error-message
-  shapes as SPEC-8.5.4 for their own connect, sync-now, disconnect and
-  enable/disable actions, each naming its own provider; the Microsoft
-  page's failed connect on a non-wasm build must show "Open this to
-  continue: {url}" in the same reused banner.
+  shapes as SPEC-8.5.4 for their own sync-now, disconnect and
+  enable/disable actions, each naming its own provider. For a failed
+  connect attempt, `settings_contact_sync_microsoft.rs` must additionally
+  match SPEC-8.5.4's connect shape ("Could not start the connection: {e}",
+  or on a non-wasm build "Open this to continue: {url}" once the
+  authorize call itself succeeded, or "Could not open Microsoft's
+  sign-in page: {e}" when the authorize call itself fails), while
+  `settings_contact_sync_icloud.rs` must instead show the connect
+  endpoint's own error text verbatim with no added wrapper, since its
+  connect flow is a direct credential submission rather than an
+  authorize-URL redirect.
 - **SPEC-8.5.6**: `settings_contact_sync_group_import.rs` must show "Could
   not read the {vendor.display} account: {e}" when the initial group
   preview fails, "Could not save the groups: {e}" when the selection save
