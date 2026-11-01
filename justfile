@@ -78,7 +78,7 @@ default:
 # desktop, clippy, fmt, and the rest of the project's linting/consistency
 # checks).
 [group: 'check']
-check: check-justfile check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-scrollbars check-refresh-token-storage check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-em-dash check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging check-loading-recipe check-company-id-copy check-card-headings check-config-docs
+check: check-justfile check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-scrollbars check-refresh-token-storage check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-em-dash check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-admin-gate check-page-width check-fetch-error-logging check-loading-recipe check-company-id-copy check-card-headings check-config-docs
 
 # MAPPS-682: clippy, not check, and `-D warnings`, so the browser target fails
 # on a finding instead of printing it. Mirrors check-clippy and check.yml.
@@ -133,6 +133,13 @@ check-field-value-binding:
 check-page-width:
     bash scripts/check-page-width.sh --self-test
     bash scripts/check-page-width.sh
+
+# MAPPS-1211: `SurfaceVisibility::StaffAdmin` only hides a tile from the hub. The route stays reachable, so a StaffAdmin page that never refuses shows a non-admin an editor they cannot save from. --self-test first, so a guard that stopped guarding fails loudly.
+[doc("Fail if a StaffAdmin settings surface renders its page to a non-admin (MAPPS-1211).")]
+[group: 'check']
+check-admin-gate:
+    bash scripts/check-admin-gate.sh --self-test
+    bash scripts/check-admin-gate.sh
 
 # MAPPS-602: a hook after an early return poisons the Dioxus runtime.
 [doc("Fail if a component calls a hook after an early return (MAPPS-602).")]
