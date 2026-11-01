@@ -11,6 +11,8 @@
 //!   - `PUT  /api/v1/contacts/companies/{company_id}/portal-roles/{id}`
 //!   - `GET  /api/v1/portal-roles/capabilities`  (unchanged, shared)
 //!
+//! SPEC-7.7.3: this is the full endpoint set this page's surfaces call.
+//!
 //! On success the page navigates back to the parent Company detail
 //! page (`Route::CompanyDetail`), which is where the newly created /
 //! edited role becomes visible in the `CompanyRolesCard` list.
@@ -50,6 +52,7 @@ struct ListCapabilitiesResponseWire {
 /// (and by the POST / PUT responses). A Company-scoped role always
 /// has `company_id = Some(<company_id>)`; a defensive check on load
 /// rejects a tenant-wide row silently returned by a pre-PMS-929 server.
+// SPEC-7.2.5: company_id must decode as present on a Company-scoped role.
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 struct PortalRoleDetailWire {
     #[allow(dead_code)]
@@ -78,6 +81,7 @@ struct CreateCompanyRoleBody {
 /// `company_id` is intentionally absent - a role's scope is immutable
 /// once created (per prompt 012 spec, `update_role` rejects a scope
 /// change with 400). The server infers the scope from the existing row.
+// SPEC-7.4.6: company_id must never be sent on this request.
 #[derive(Serialize)]
 struct UpdateCompanyRoleBody {
     name: Option<String>,
@@ -103,6 +107,8 @@ enum RoleLoad {
 
 /// `/companies/{company_id}/roles/{id}` - create (id == "new") or edit
 /// a Company-scoped portal role.
+// SPEC-7.1.4: create on id == "new", else fetch and edit; 404 and other
+// fetch failures must render distinct states.
 #[component]
 pub fn CompanyRoleEditPage(company_id: String, id: String) -> Element {
     let is_new = id == "new";
@@ -125,6 +131,7 @@ pub fn CompanyRoleEditPage(company_id: String, id: String) -> Element {
             if id == "new" {
                 return RoleLoad::New;
             }
+            // SPEC-7.3.3: fetch gated per-call behind the web feature.
             #[cfg(feature = "web")]
             {
                 let path = format!("/contacts/companies/{company_id}/portal-roles/{id}");
@@ -181,7 +188,7 @@ pub fn CompanyRoleEditPage(company_id: String, id: String) -> Element {
         };
     }
 
-    // 404 on the role fetch (existing edit only). "Role does not exist"
+    // SPEC-7.5.8: 404 on the role fetch (existing edit only). "Role does not exist"
     // is a distinct recovery affordance from a generic fetch failure:
     // the operator likely landed here from a stale link or a role
     // whose Company scope changed, and the fastest way out is back
@@ -361,7 +368,10 @@ fn CompanyRoleEditForm(props: CompanyRoleEditFormProps) -> Element {
     let id_for_submit = props.id.clone();
     let initial_caps_for_submit = initial_caps.clone();
     let initial_name_for_submit = initial_name.clone();
+    // SPEC-7.5.9: name required, <=64 chars, and (create only) at least
+    // one capability, each checked before any request is sent.
     let submit = move |_| {
+        // SPEC-7.6.6: ignore a second submit while one is still in flight.
         if *saving.read() || !can_mutate {
             return;
         }
@@ -387,6 +397,7 @@ fn CompanyRoleEditForm(props: CompanyRoleEditFormProps) -> Element {
         let initial_caps_snapshot = initial_caps_for_submit.clone();
         let initial_name_snapshot = initial_name_for_submit.clone();
         spawn(async move {
+            // SPEC-7.3.3: submit gated per-call behind the web feature.
             #[cfg(feature = "web")]
             {
                 use crate::hooks::fetch::api;

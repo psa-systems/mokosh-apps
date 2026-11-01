@@ -27,6 +27,7 @@ use uuid::Uuid;
 
 use crate::components::{use_page_title, Card, DetailSkeleton, ErrorBanner, PageHeader};
 
+// SPEC-7.2.7: every field but id/name/title defaults on absence.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct CompanyDocumentation {
     #[serde(default)]
@@ -55,6 +56,8 @@ pub struct DocAsset {
     pub model: Option<String>,
 }
 
+// SPEC-7.4.9/SPEC-7.2.7: no password, secret, or username field; a secret
+// is reachable only through the independently audited vault reveal endpoint.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct DocCredential {
     pub id: Uuid,
@@ -86,6 +89,9 @@ pub struct CompanyDocumentationPageProps {
     pub company_id: String,
 }
 
+// SPEC-7.1.8/SPEC-7.5.10: one screen composed from a single aggregate call;
+// skeleton while pending, ErrorBanner on failure, one empty card only when
+// all three lists are empty.
 #[component]
 pub fn CompanyDocumentationPage(props: CompanyDocumentationPageProps) -> Element {
     use_page_title("Documentation");
