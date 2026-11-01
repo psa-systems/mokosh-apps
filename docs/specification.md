@@ -911,6 +911,359 @@ cited at SPEC-6.3.6.
   consume it (remove it from storage) the first time it is read,
   regardless of whether that read's value was valid.
 
+## 7. Contacts and companies
+
+Scope: `src/pages/contacts.rs`, `src/pages/contact_provenance.rs`,
+`src/pages/company_documentation.rs`, `src/pages/company_role_edit.rs`.
+
+### 7.1 Interfaces
+
+- **SPEC-7.1.1**: `CompanyListPage` must render a paginated, searchable,
+  filterable (type, status) table of companies, defaulting the status
+  filter to `active`, and must distinguish, with a "Clear filters"
+  recovery action, a filtered-to-nothing result from a truly empty
+  account (`contacts.rs:551-813`).
+- **SPEC-7.1.2**: `CompanyNewPage` and `CompanyEditPage` must render the
+  shared `CompanyForm` in Create or Edit mode respectively, `CompanyEditPage`
+  loading its initial values from `GET /contacts/companies/{id}` and
+  showing breadcrumbs that fall back to a generic "Company" label while
+  the record name is not yet loaded (`contacts.rs:875-1054`).
+- **SPEC-7.1.3**: `CompanyDetailPage` must render the company record plus
+  independent cards for its contacts, sites, tickets, contracts,
+  projects, invoices, assets, opportunities, knowledge-base articles,
+  backup status, portal access, roles, and branding, each card
+  resolving from its own resource (`contacts.rs:2176-6193`).
+- **SPEC-7.1.4**: `CompanyRoleEditPage` (`company_role_edit.rs:107-251`)
+  must render, at `/companies/{company_id}/roles/{id}`, a create form
+  when `id == "new"` and otherwise fetch and edit the existing
+  Company-scoped portal role, rendering a distinct "This role doesn't
+  exist." state on a 404 and a distinct "Could not load this role."
+  state on any other fetch failure.
+- **SPEC-7.1.5**: `ContactListPage` must render a paginated, searchable
+  table of contacts with the same filtered-vs-empty distinction as
+  SPEC-7.1.1 (`contacts.rs:6194-6567`).
+- **SPEC-7.1.6**: `ContactNewPage` and `ContactEditPage` must render the
+  shared `ContactForm` in Create or Edit mode respectively;
+  `ContactNewPage` must prefill the linked company, in order, from the
+  session-storage stash described at SPEC-7.3.2, then the live URL
+  query string, then the OIDC-flow's captured initial query string,
+  falling back to no prefill only when all three carry no company id
+  (`contacts.rs:6568-6762`).
+- **SPEC-7.1.7**: `ContactDetailPage` must render the contact record plus
+  independent cards for its tickets, ticket-comment notes, portal access
+  and access requests, provenance (via `ImportCard`, SPEC-7.1.9), and the
+  billing-contact relationship of each company it is linked to
+  (`contacts.rs:7803-11200` and surrounding card components).
+- **SPEC-7.1.8**: `CompanyDocumentationPage` (`company_documentation.rs:90-141`)
+  must render one screen composing a company's assets, credential
+  references, and knowledge-base articles from a single
+  `GET /companies/{company_id}/documentation` call, rendering a single
+  "Nothing is documented for this client yet." card only when all three
+  lists are empty, and otherwise one card per list.
+- **SPEC-7.1.9**: `ImportCard` (`contact_provenance.rs`) must render
+  nothing when a contact carries no provenance link, and otherwise must
+  render the current link's origin, account or file source, and any
+  field locks, with an "Unlink" action shown only while the link is
+  still live and a "Remove imported data" action shown only to an admin
+  (`contact_provenance.rs:216-607`, exact range per the component body).
+- **SPEC-7.1.10**: The company list's `Company` column and the contact
+  list's `Name` column are the only sortable columns either list exposes
+  (`CompanySortKey`, `ContactSortKey`, `contacts.rs:111-131`), because no
+  other column's key is in the server's sort allow-list.
+
+### 7.2 Data model
+
+This scope owns no persisted application schema; it defines the wire
+DTOs these pages exchange with the API server.
+
+- **SPEC-7.2.1**: `RemoteCompany` and `RemoteContact` (`contacts.rs:256-382`)
+  must default every field but `id` on absence, so a server response
+  missing a field (an older server, or a field this page does not use)
+  still decodes instead of failing the whole list.
+- **SPEC-7.2.2**: `RemoteContact.phones`/`companies` must stay the
+  authoritative list for a contact's phone numbers and company links;
+  the mirrored `phone`/`company_id`/`company_name` fields on the same
+  struct are read only as a fallback when the list is empty, for a
+  server that predates PMS-806 (`contacts.rs:342-382`).
+- **SPEC-7.2.3**: `CompanyFormBody`, `ContactFormBody`, `UpdateCompanyBody`,
+  `UpdateContactBody`, `SiteFormBody`, `GrantPortalAccessBody`,
+  `ResolveAccessRequestBody`, and `CreateCompanyFromNameBody`
+  (`contacts.rs:401-547`) must each mirror the corresponding
+  `mokosh-types` request DTO field for field; a `#[cfg(test)]` module
+  in `contacts.rs` must destructure every such DTO against the matching
+  body struct so that a server-side field add, remove, rename, or
+  retype fails this crate's build rather than silently 422ing at
+  runtime (MAPPS-687, `contacts.rs:11381-12132`).
+- **SPEC-7.2.4**: `UpdateCompanyBody` and `UpdateContactBody` must omit a
+  field the firing control did not set (via `skip_serializing_if`)
+  rather than sending it as JSON `null`, except `CompanyFormBody.fax`,
+  which carries no such attribute and so sends an explicit `null` when
+  the field is cleared, matching the server's distinction between "not
+  present" (leave unchanged) and "present as null" (clear) on that one
+  field (`contacts.rs:407-442`, `contacts.rs:1708-1710`).
+- **SPEC-7.2.5**: `PortalRoleDetailWire` (`company_role_edit.rs:53-64`)
+  must decode `company_id` as present on a Company-scoped role; the
+  page performs no server-side scope check of its own and relies on the
+  nested endpoint path to exclude a tenant-wide row.
+- **SPEC-7.2.6**: `Provenance` (`contact_provenance.rs`) must treat
+  `links.first()` as the contact's current import link, relying on the
+  server to return the live link first (or, absent one, the most recent)
+  rather than re-deriving "current" client-side.
+- **SPEC-7.2.7**: `CompanyDocumentation`, `DocAsset`, `DocCredential`,
+  and `DocArticle` (`company_documentation.rs:30-82`) must decode every
+  field but each type's `id`/`name`/`title` on absence; `DocCredential`
+  must declare no field capable of carrying an encrypted secret
+  (password, secret data, or username), so the aggregate endpoint's
+  payload cannot carry one at the type level.
+
+### 7.3 Configuration
+
+- **SPEC-7.3.1**: The company and contact list pages must page their
+  server list at `PER_PAGE = 25` rows (`contacts.rs:23`), and the
+  company-detail page's child-list previews (contacts, tickets,
+  contracts, projects, invoices, assets) must fetch 5 rows but render at
+  most 3, each with a "View all" link to the full filtered list
+  (`contacts.rs` card components, e.g. `contacts.rs:3336-3511` and the
+  5213-6193 range).
+- **SPEC-7.3.2**: `ContactNewPage`'s company prefill must be written to
+  session storage by `stash_contact_new_prefill` before navigation and
+  read exactly once by `take_stashed_contact_new_prefill` on mount,
+  because the Dioxus 0.7 router strips a `?company_id=...` query string
+  via `history.replaceState()` on mount for a route with no declared
+  query parameters (`contacts.rs:6568-6762` and the stash helpers it
+  calls).
+- **SPEC-7.3.3**: Every network call in this scope must compile to a
+  no-op (or, for a `use_resource` body, resolve to its failure/empty
+  variant) on a build that does not enable the `web` feature it
+  depends on, consistent with SPEC-6.3.6; `company_role_edit.rs` gates
+  each of its fetch and submit paths individually behind
+  `#[cfg(feature = "web")]` (`company_role_edit.rs:128-165`, `390-471`).
+- **SPEC-7.3.4**: The company form's Address State field must offer
+  exactly the 55 US states, territories, and the District of Columbia
+  listed in `US_STATES` (`contacts.rs:29-82`), keyed by USPS code.
+- **SPEC-7.3.5**: The contact form's phone-type select must offer
+  exactly the five values in `PHONE_TYPES` (mobile, work, home, fax,
+  other), matching PMS-806's `contact_phones.phone_type` CHECK
+  constraint (`contacts.rs:1846-1852`).
+
+### 7.4 Security
+
+- **SPEC-7.4.1**: `validate_website_field` (`contacts.rs:1999-2045`) must
+  reject any value containing whitespace or a control character, must
+  reject any explicit scheme other than `http`/`https` (rejecting
+  `javascript:`, `data:`, `vbscript:`, `mailto:`, and any other scheme),
+  must require a non-empty host when a `http`/`https` scheme is given,
+  and must normalize a scheme-less, host-shaped value (at least two
+  non-empty, dot-separated, host-charset labels, `is_host_like`,
+  `contacts.rs:2056-2065`) to `https://<value>`; every other case must
+  return the error "Website must be a domain or http(s) URL (e.g.
+  example.com or https://example.com)." before any request is sent.
+- **SPEC-7.4.2**: `safe_href` must gate every company website link
+  rendered on `CompanyDetailPage` before it is used as an anchor `href`
+  (`contacts.rs`, the company sidebar website link), so a value that
+  slipped past SPEC-7.4.1 (an older stored record) cannot run as script
+  at render time.
+- **SPEC-7.4.3**: `contact_provenance.rs`'s `release_lock_disabled(busy,
+  can_mutate, can_manage)` must be `true` whenever the field release is
+  already in flight, the server is unreachable, or the signed-in user
+  lacks a manager-or-above role, mirroring the server's `RequireManager`
+  guard on `DELETE /contacts/contacts/{id}/sync/locks/{field}`; a
+  technician session must not be able to release a field lock even when
+  `can_mutate` is true (`contact_provenance.rs:592-594`).
+- **SPEC-7.4.4**: `ImportCard`'s "Remove imported data" action must be
+  rendered only for an admin session, and its confirm dialog must
+  require a non-empty reason before the removal request fires; neither
+  gate may be bypassed by a direct call to the handler
+  (`contact_provenance.rs`, `ImportCard`'s `remove` handler and its
+  confirm dialog).
+- **SPEC-7.4.5**: No request body in this scope may be constructed as a
+  `serde_json::json!` literal; every `POST`/`PUT`/`PATCH` body must be a
+  typed struct destructured against its DTO per SPEC-7.2.3. A
+  `#[cfg(test)]` source scan (`contacts.rs:12171-12262`) enforces this
+  for the shipping portion of `contacts.rs`.
+- **SPEC-7.4.6**: A Company-scoped portal role's `company_id` must never
+  be sent on `PUT /contacts/companies/{company_id}/portal-roles/{id}`
+  (`UpdateCompanyRoleBody`, `company_role_edit.rs:81-85`); a role's
+  scope is immutable once created and the server rejects a scope change
+  with 400.
+- **SPEC-7.4.7**: `CompanyPortalAccessCard`'s "Invite" action must be
+  disabled for a contact with no email address, and every portal-access
+  mutation (grant, resend invite, revoke, change roles) on this scope's
+  pages must be disabled whenever `!can_mutate` (the server is
+  unreachable), consistent with SPEC-1's reachability gating.
+- **SPEC-7.4.8**: `PortalGrantOutcomeWire` (`portal_slug`, `portal_id`,
+  `password_email_queued: bool`) must carry no setup link or other
+  credential-bearing field; `password_email_queued` tells the caller
+  whether a setup email was queued without ever carrying the token
+  itself, and no response rendered by the portal-access cards may
+  surface a setup link to the screen.
+- **SPEC-7.4.9**: `DocCredential` (`company_documentation.rs:58-68`)
+  must carry no password, secret, or username field; a credential's
+  secret value is reachable only through the separate, independently
+  audited credential-vault reveal endpoint, never through the
+  documentation aggregate.
+
+### 7.5 Error handling and observability
+
+- **SPEC-7.5.1**: Every list and detail resource in this scope that
+  fails to load while the server remains reachable must render
+  "Could not load {noun}." (companies, contacts, sites, tickets,
+  contracts, projects, invoices, assets, roles, opportunities, articles,
+  backup status) scoped to its own card, never collapsing the whole
+  page; a failure while the server is unreachable must instead render
+  `ContentUnavailable` for the page's primary resource, consistent with
+  the MAPPS-357 pattern already stated at SPEC-6's error-handling
+  sections.
+- **SPEC-7.5.2**: `CompanyForm` and `ContactForm`'s `handle_submit` must
+  collect every field's validation failure via `FormGuard` in one pass
+  rather than stopping at the first invalid field, and must move focus
+  to the first invalid field in on-screen order (`contacts.rs:1298-1500`,
+  `contacts.rs:7220-7420`).
+- **SPEC-7.5.3**: A 409 on a company or contact save must be mapped to
+  a name-field conflict message ("Could not save company: ..." /
+  "Could not save contact: ...", carrying the server's message); a 422
+  whose `field_errors()` names a field on the form must route to that
+  field's inline error, and any remaining, unmapped error must route to
+  the form's top error banner rather than being dropped
+  (`contacts.rs:1484-1510`, `contacts.rs:7389-7420`).
+- **SPEC-7.5.4**: `SiteFormModal.handle_save` must validate every field
+  via `FormGuard` and report every failure at once; a `company_id` or
+  Site `name` parse failure, which has no dedicated inline slot, must
+  route to the modal's banner ("...could not be read, so nothing was
+  saved."), while phone, timezone, postal, and country failures use
+  their own per-field inline slots (`contacts.rs:4938-5032`).
+- **SPEC-7.5.5**: `ContactDetailPage`'s notes resource (`contacts.rs:7864`)
+  must keep the fetch's `Result`, not discard it via `.ok()`; `ContactNotesCard`
+  (`contacts.rs:8577`) must render "Could not load comments for this
+  contact: {err}" on a failed load and the distinct text "This contact
+  has not commented on any tickets yet." on a genuinely empty feed.
+- **SPEC-7.5.6**: No awaited fetch result in the shipping portion of
+  `contacts.rs` may be discarded via `.ok()` without first being logged
+  through `.inspect_err(...)`; a `#[cfg(test)]` source scan
+  (`contacts.rs:11300`, module `mapps692_fetch_error_logging_tests`)
+  enforces this over the whole file.
+- **SPEC-7.5.7**: `assign_portal_roles_no_roles_configured`
+  (`contacts.rs:8712`) must return `false` while the role list is still
+  loading (pending) or has failed to load, and `true` only once the
+  list has resolved successfully and is empty, so a role-assignment
+  submit button is never disabled on the basis of a fetch that has not
+  yet told the page there are no roles.
+- **SPEC-7.5.8**: `CompanyRoleEditPage` must distinguish a 404 on the
+  role fetch (rendered as "This role doesn't exist." with a link back
+  to the Company page) from any other fetch failure (rendered as "Could
+  not load this role. Refresh the page to retry.", or, while the server
+  is unreachable, `ContentUnavailable`) (`company_role_edit.rs:184-231`).
+- **SPEC-7.5.9**: `CompanyRoleEditForm`'s submit must reject an empty
+  name with "Name is required.", a name over 64 characters with "Name
+  must be 64 characters or fewer.", and, on create only, an empty
+  capability selection with "Pick at least one capability.", each
+  checked before any request is sent (`company_role_edit.rs:364-381`).
+- **SPEC-7.5.10**: `CompanyDocumentationPage` must render a
+  `DetailSkeleton` while its fetch is pending, the server's own message
+  via `ErrorBanner` ("Could not load documentation: {e.user_message()}")
+  on failure, and the distinct empty-state copy described at
+  SPEC-7.1.8 only when all three lists resolve empty
+  (`company_documentation.rs:109-140`).
+
+### 7.6 Concurrency and ordering
+
+- **SPEC-7.6.1**: `CompanyDetailPage` and `ContactDetailPage` must run
+  each card's data as an independent `use_resource`, so one card's
+  failure or slow load must not block or delay another card's render
+  (`contacts.rs:2176-3089`, `contacts.rs:7803-8842`).
+- **SPEC-7.6.2**: `CompanyDetailPage`'s deletion-preview resource must
+  fetch only while the delete-confirmation dialog is open, never
+  eagerly on page load (`contacts.rs`, the `deletion_preview` resource
+  near `contacts.rs:2448-2470`).
+- **SPEC-7.6.3**: The company and contact list pages must debounce
+  their search input 300 milliseconds after the last keystroke before
+  issuing a request, and any change to the search text, type filter, or
+  status filter must reset the current page to 1 (`contacts.rs:594-601`,
+  mirroring SPEC-6.6.2).
+- **SPEC-7.6.4**: `CompanyPortalAccessCard` must isolate its per-contact
+  "toggling" loading state to a `HashSet<Uuid>` keyed by contact id, so
+  toggling one row's portal state must not show every row as loading.
+- **SPEC-7.6.5**: `CompanySitesCard`'s save and delete handlers must
+  restart both the sites resource and the company resource on success,
+  so the company detail page's site count updates without a manual
+  reload (`contacts.rs:4810-4835`).
+- **SPEC-7.6.6**: `CompanyRoleEditForm`'s and `CompanyBrandingCard`'s
+  submit handlers must ignore a second submit while a previous submit
+  from the same form is still in flight (`saving`/`can_mutate` guard),
+  consistent with SPEC-6.6.1.
+### 7.7 Integrations
+
+- **SPEC-7.7.1**: The company pages in this scope must call
+  `GET /contacts/companies`, `POST /contacts/companies`,
+  `GET /contacts/companies/{id}`, `PUT /contacts/companies/{id}`,
+  `GET /contacts/companies/{id}/deletion-preview`,
+  `GET /contacts/companies/{id}/contacts`,
+  `GET /contacts/companies/{id}/sites`, `POST /contacts/sites`,
+  `PUT /contacts/sites/{id}`, `DELETE /contacts/sites/{id}`,
+  `GET /contacts/company-industries`, and `GET /companies/website-probe`.
+- **SPEC-7.7.2**: The contact pages in this scope must call
+  `GET /contacts/contacts`, `POST /contacts/contacts`,
+  `GET /contacts/contacts/{id}`, `PUT /contacts/contacts/{id}`,
+  `GET /contacts/{id}/notes`, `GET /contacts/contacts/{id}/sync`,
+  `POST /contacts/contacts/{id}/grant-portal-access`,
+  `POST /contacts/contacts/{id}/resend-portal-invite`,
+  `POST /contacts/contacts/{id}/revoke-portal-access`,
+  `GET /contacts/contacts/{id}/access-requests`, and
+  `POST /contacts/contacts/access-requests/{id}/resolve`.
+- **SPEC-7.7.3**: The portal-roles surfaces in this scope must call
+  `GET /contacts/portal-roles`, `GET /contacts/companies/{id}/portal-roles`,
+  `GET /contacts/companies/{company_id}/portal-roles/{id}`,
+  `POST /contacts/companies/{company_id}/portal-roles`, and
+  `PUT /contacts/companies/{company_id}/portal-roles/{id}`
+  (`company_role_edit.rs:9-12`), plus the shared
+  `GET /portal-roles/capabilities`.
+- **SPEC-7.7.4**: `CompanyDetailPage`'s child-relationship cards must
+  call `GET /tickets?company_id={id}`, `GET /contracts?company_id={id}`,
+  `GET /projects?company_id={id}`, `GET /invoices?company_id={id}`,
+  `GET /assets?company_id={id}`, `GET /crm/opportunities?company_id={id}&closed=false`,
+  `GET /kb/companies/{company_id}`, `GET /status/companies/{id}/backup`,
+  and `GET /tenants/current` (for branding defaults).
+- **SPEC-7.7.5**: `contact_provenance.rs`'s `ImportCard` must call
+  `DELETE /contacts/contacts/{id}/sync/locks/{field}`,
+  `POST /contacts/contacts/{id}/sync/unlink`, and
+  `POST /contacts/contacts/{id}/sync/remove-imported-data`.
+- **SPEC-7.7.6**: `CompanyDocumentationPage` must call
+  `GET /companies/{company_id}/documentation`.
+
+### 7.8 Build and deployment
+
+None of the files in this section's scope add a build or packaging step
+of their own; they compile under the same `app`/`web`/`desktop` feature
+gating `src/main.rs` and `Cargo.toml` define (see SPEC-1.3.1), per the
+per-call gating described at SPEC-7.3.3.
+
+### 7.9 Retention and cleanup
+
+- **SPEC-7.9.1**: A company's own tenant record is never offered for
+  deletion; the delete-confirmation dialog on `CompanyDetailPage` must
+  instead offer "Archive instead" (`PUT /contacts/companies/{id}` with
+  `status = inactive`) whenever the deletion-preview response reports
+  the record as blocked from deletion, and must offer no archive bypass
+  at all for the tenant's own company record.
+- **SPEC-7.9.2**: `ImportCard.unlink()` must leave the contact record
+  itself untouched (a local record going forward, no longer updated by
+  a later sync); `ImportCard.remove()` must delete the contact outright
+  only when the server reports `contact_deleted == true` (the import
+  created the record and no other data was added since), and otherwise
+  must keep the contact and remove only what the import attached,
+  reporting each outcome with its own distinct success toast.
+- **SPEC-7.9.3**: `ImportCard.remove()`'s confirmation text and the
+  server's own removal behavior must agree that the link and
+  review-queue data are deleted, that the record will not be
+  re-imported by a later sync, that the audit log retains a record of
+  the removal event (not the removed details), and that the contact's
+  tickets and invoices are never touched by the removal.
+- **SPEC-7.9.4**: `ContactNewPage`'s stashed company prefill
+  (SPEC-7.3.2) must be removed from session storage the first time it
+  is read (`take_stashed_contact_new_prefill`), so a stale prefill
+  cannot apply to an unrelated later visit to the New Contact page in
+  the same tab.
+
 ## 8. Contact sync and import
 
 Scope: `src/pages/contact_sync_review.rs`, `src/pages/settings_contact_roles.rs`,
