@@ -22,11 +22,13 @@ use crate::utils::{FormGuard, Paginated};
 use crate::Route;
 
 /// Rows per page for the client-side paginated list views (F3).
+// SPEC-7.3.1: list pages must page at this exact size.
 const PER_PAGE: usize = 25;
 
 /// PMS-581: US states / territories for the company Address State dropdown.
 /// `(USPS code, name)`; the stored value is the code. The product is US-only,
 /// so this is the canonical region list.
+// SPEC-7.3.4: exactly these 55 states/territories/DC, keyed by USPS code.
 const US_STATES: &[(&str, &str)] = &[
     ("AL", "Alabama"),
     ("AK", "Alaska"),
@@ -103,6 +105,7 @@ struct IndustryOption {
 /// here. `Type` mapped to `company_type`, which the server discards, so the
 /// header rendered a sort the rows never had; its affordance is gone until
 /// the server allow-lists the key.
+// SPEC-7.1.10: Company is the only sortable column the company list exposes.
 #[derive(Clone, Copy, PartialEq)]
 enum CompanySortKey {
     Company,
@@ -119,6 +122,7 @@ impl CompanySortKey {
 ///
 /// MAPPS-527: `Company` mapped to `company_name`, which is absent from
 /// `CONTACT_SORT_KEYS`, so it is no longer offered.
+// SPEC-7.1.10: Name is the only sortable column the contact list exposes.
 #[derive(Clone, Copy, PartialEq)]
 enum ContactSortKey {
     Name,
@@ -253,6 +257,7 @@ fn humanize_company_type(raw: &str) -> String {
 /// Subset of mokosh-server's `CompanyResponse` we render in the list. The
 /// server returns more fields; serde silently drops the ones we don't ask
 /// for, so adding columns later just means extending this struct.
+// SPEC-7.2.1: every field but id must default on absence.
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteCompany {
     id: uuid::Uuid,
@@ -331,6 +336,7 @@ struct RemoteCompanyLink {
 /// (`phone_primary`, `job_title`) silently parsed as `None` because
 /// `#[serde(default)]` swallowed the absent fields, which is why the
 /// company-detail Contacts card showed blank Phone and Role columns.
+// SPEC-7.2.1: every field but id must default on absence.
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteContact {
     id: uuid::Uuid,
@@ -362,6 +368,8 @@ struct RemoteContact {
     is_portal_user: bool,
     // MAPPS-481: `#[serde(default)]` so a server that predates PMS-806 still
     // deserializes; the `phone` / `company_id` mirrors above cover that case.
+    // SPEC-7.2.2: these lists are authoritative; the mirror fields are read
+    // only as a fallback when empty.
     #[serde(default)]
     phones: Vec<RemotePhone>,
     #[serde(default)]
@@ -390,6 +398,10 @@ struct PaginatedContacts {
 
 // ---- MAPPS-687: the bodies this page sends -------------------------------
 //
+// SPEC-7.2.3: each body struct below must mirror its mokosh-types request
+// DTO field for field, enforced at compile time by the shared_dto_tests
+// module.
+//
 // `mokosh-types` derives `Deserialize` on the request DTOs, which is the
 // server's half of the wire, so this page cannot post one of them. These
 // structs are the substitute: each mirrors the shared request DTO field for
@@ -411,6 +423,8 @@ struct CompanyFormBody {
     industry: Option<String>,
     website: Option<String>,
     phone: Option<String>,
+    // SPEC-7.2.4: no skip_serializing_if here; clearing fax sends an
+    // explicit null, unlike every other optional field on this body.
     fax: Option<String>,
     address: Address,
     /// MAPPS-614: always a string, never null, which is why this is a `String`
@@ -423,6 +437,8 @@ struct CompanyFormBody {
 /// portal toggle (MAPPS-651) and the per-Company branding patch (MAPPS-619). A
 /// field the control that fired did not set is omitted rather than sent as
 /// null, which is what the `json!` literals these replaced sent.
+// SPEC-7.2.4: a field the firing control did not set is omitted via
+// skip_serializing_if, never sent as JSON null.
 #[derive(Debug, Default, Serialize)]
 struct UpdateCompanyBody {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -547,6 +563,8 @@ struct SiteFormBody {
 }
 
 /// Company list page
+// SPEC-7.1.1: paginated, searchable, filterable; distinguishes a
+// filtered-to-nothing result from a truly empty account.
 #[component]
 pub fn CompanyListPage() -> Element {
     let mut search = use_signal(String::new);
@@ -591,6 +609,7 @@ pub fn CompanyListPage() -> Element {
     // MAPPS-855: debounce the search dependency so a burst of keystrokes
     // fires one full-page refetch per pause in typing rather than one per
     // keystroke.
+    // SPEC-7.6.3: 300ms debounce; search/filter changes reset page to 1.
     let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let companies_resource = use_resource(move || {
         let q = search_debounced.read().trim().to_string();
@@ -871,6 +890,7 @@ fn CompanyRow(props: CompanyRowProps) -> Element {
 }
 
 /// New company page
+// SPEC-7.1.2: renders the shared CompanyForm in Create mode.
 #[component]
 pub fn CompanyNewPage() -> Element {
     // MAPPS-357: N/A for a ContentUnavailable state - this page fetches no
@@ -893,6 +913,8 @@ pub struct CompanyEditPageProps {
     pub id: String,
 }
 
+// SPEC-7.1.2: loads initial values from GET /contacts/companies/{id}
+// and falls back to a generic "Company" breadcrumb label while loading.
 #[component]
 pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
     let id_for_resource = props.id.clone();
@@ -1996,6 +2018,8 @@ fn validate_postal_field(raw: &str) -> Result<Option<String>, String> {
 /// instead of hitting an opaque server 422 (MAPPS-213). The scheme check
 /// reuses `utils::url::scheme_of`, the same whitespace-collapsing detection
 /// `safe_href` applies at render time, so `java\tscript:` cannot slip through.
+// SPEC-7.4.1: rejects whitespace/control chars, non-http(s) schemes, and an
+// empty host; normalizes a host-shaped value to https://, else MSG below.
 fn validate_website_field(raw: &str) -> Result<Option<String>, String> {
     // MAPPS-582: an invisible character never belongs in a URL either, and it
     // is one more way a scheme can disguise itself from the check below.
@@ -2053,6 +2077,7 @@ fn validate_website_field(raw: &str) -> Result<Option<String>, String> {
 /// the first `/` is what `scheme_of` reads as a scheme, so `example.com:8443`
 /// is rejected above as an unknown scheme. The server allows ports 80 and 443
 /// only, so nothing useful is lost.
+// SPEC-7.4.1: at least two non-empty, dot-separated, host-charset labels.
 fn is_host_like(host: &str) -> bool {
     if !host
         .chars()
@@ -2172,6 +2197,8 @@ pub struct CompanyDetailPageProps {
     pub id: String,
 }
 
+// SPEC-7.1.3/SPEC-7.6.1: renders the record plus independent per-card
+// resources; one card's failure or slow load must not block another's.
 #[component]
 pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     let company_id_str = props.id.clone();
@@ -2393,6 +2420,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     // closed tickets and none open reads as deletable there and is refused.
     // Fetched when the dialog opens rather than on page load, because a page
     // view is not an intent to delete.
+    // SPEC-7.6.2: fetches only while the delete-confirmation dialog is open.
     let preview_id = company_id_str.clone();
     let deletion_preview = use_resource(move || {
         let id = preview_id.clone();
@@ -2594,6 +2622,8 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                     // control rather than an instruction to go and find it.
                     // Absent on the own-company refusal, where archiving is not
                     // the answer either.
+                    // SPEC-7.9.1: own tenant record never offered deletion or an
+                    // archive bypass; a blocked non-own record offers Archive instead.
                     alternative: (blocked && !preview.is_own_company).then(|| rsx! {
                         Button {
                             variant: ButtonVariant::Secondary,
@@ -2930,6 +2960,8 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                                     // Only render a live link when the value carries a
                                                     // safe URL scheme; `javascript:`/`data:`/`vbscript:`
                                                     // values fall back to plain text (MAPPS-149).
+                                                    // SPEC-7.4.2: gates this link even for a value that
+                                                    // slipped past SPEC-7.4.1 (an older stored record).
                                                     if let Some(href) = safe_href(&website) {
                                                         a {
                                                             href: "{href}",
@@ -6190,6 +6222,7 @@ fn CompanyBrandingCard(
 }
 
 /// Contact list page
+// SPEC-7.1.5: same filtered-vs-empty distinction as CompanyListPage (SPEC-7.1.1).
 #[component]
 pub fn ContactListPage() -> Element {
     let mut search = use_signal(String::new);
@@ -6234,6 +6267,7 @@ pub fn ContactListPage() -> Element {
     // MAPPS-855: debounce the search dependency so a burst of keystrokes
     // fires one full-page refetch per pause in typing rather than one per
     // keystroke.
+    // SPEC-7.6.3: 300ms debounce; search/filter changes reset page to 1.
     let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let contacts_resource = use_resource(move || {
         let q = search_debounced.read().trim().to_string();
@@ -6564,6 +6598,7 @@ fn ContactRow(props: ContactRowProps) -> Element {
 /// "Add Contact" button on the company detail page does this) the
 /// CompanyPicker pre-fills with that company and the user only has
 /// to fill in the contact's own fields.
+// SPEC-7.1.6: renders ContactForm in Create mode with the resolved prefill.
 #[component]
 pub fn ContactNewPage() -> Element {
     // MAPPS-357: N/A for a ContentUnavailable state - this page fetches no
@@ -6646,6 +6681,8 @@ struct CompanyPrefill {
     name: String,
 }
 
+// SPEC-7.1.6/SPEC-7.3.2: tries the stash, then the live URL query, then the
+// OIDC-captured initial query, in that order, falling back to no prefill.
 fn read_company_prefill_from_url() -> CompanyPrefill {
     #[cfg(feature = "app")]
     {
@@ -6690,6 +6727,8 @@ const CONTACT_NEW_PREFILL_KEY: &str = "mokosh:contact-new-prefill";
 /// `/contacts/new` mount reads it. Best-effort: a browser with sessionStorage
 /// disabled logs at `warn` and the destination falls back to the URL / OIDC
 /// snapshot readers below, which is the pre-PMS-1331 shape.
+// SPEC-7.3.2: written before navigation so a stripped query string on
+// mount still carries the prefill.
 #[cfg_attr(not(feature = "app"), allow(dead_code))]
 fn stash_contact_new_prefill(id: &str, name: &str) {
     let prefill = CompanyPrefill {
@@ -6717,6 +6756,8 @@ fn stash_contact_new_prefill(id: &str, name: &str) {
 /// common case for a direct visit to `/contacts/new`); a clear failure is
 /// logged and treated as "nothing to hand back" so the caller falls through
 /// to the URL / OIDC snapshot readers.
+// SPEC-7.9.4: removed from session storage the first time it is read,
+// regardless of whether the stored value turns out to be valid.
 #[cfg_attr(not(feature = "app"), allow(dead_code))]
 fn take_stashed_contact_new_prefill() -> Option<CompanyPrefill> {
     let store = crate::platform::store::session().ok()?;
@@ -6758,6 +6799,7 @@ pub struct ContactEditPageProps {
     pub id: String,
 }
 
+// SPEC-7.1.6: renders the shared ContactForm in Edit mode.
 #[component]
 pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
     let id_for_resource = props.id.clone();
@@ -7798,6 +7840,8 @@ pub struct ContactDetailPageProps {
     pub id: String,
 }
 
+// SPEC-7.1.7/SPEC-7.6.1: renders the record plus independent per-card
+// resources; one card's failure or slow load must not block another's.
 #[component]
 #[allow(unused_variables)]
 pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
