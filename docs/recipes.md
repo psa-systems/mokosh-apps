@@ -89,6 +89,7 @@ comment):
 | `check-empty-state.sh` | Settings type-editor lists render the full `EmptyState`, never `TableEmpty`'s bare-message mode. |
 | `check-fetch-error-logging.sh` | An awaited fetch that fails logs why before the error is discarded. |
 | `check-field-value-binding.sh` | A form field's value is set as an attribute, never as a text child. |
+| `check-admin-gate.sh` | Every settings surface marked `StaffAdmin` refuses a non-admin in its own page, not only on the hub. |
 | `check-hooks-before-return.sh` | Every hook in a component runs before any early return. |
 | `check-kit-adoption.sh` | No DaisyUI classes, and the shared layout, file field, and dropdown-panel recipes stay in use. |
 | `check-link-preview.sh` | The served page carries its link-preview tags, verified against a real Caddy and entrypoint stack. |
