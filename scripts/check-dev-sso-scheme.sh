@@ -21,6 +21,8 @@
 #   generated fixtures to prove it still rejects a plain-http value and still
 #   accepts https, a comment and the allow marker, so a future edit cannot
 #   quietly neuter it.
+# SPEC-2.1.1: no-arg invocation, exit 0 / nonzero FAIL contract.
+# SPEC-2.1.3: --self-test runs the detection logic against generated fixtures.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -66,12 +68,16 @@ fi
 
 hits=$(
   awk '
+    # SPEC-2.3.1: skip the violation on any line carrying the
+    # dev-sso-scheme-guard-allow opt-out marker.
     /dev-sso-scheme-guard-allow/ { next }
     {
       # Drop the comment tail so a `#` explanation naming an http URL is prose,
       # not a value. A `#` inside a value would be a comment to YAML too.
       line = $0
       sub(/#.*$/, "", line)
+      # SPEC-2.4.2: bare http:// URL detection in compose.dev-sso.yml (or an
+      # explicit target file).
       if (line ~ /http:\/\//)
         print FILENAME ":" FNR ": " $0
     }

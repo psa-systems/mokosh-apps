@@ -23,6 +23,16 @@
 #   Checks input.css always. Also checks assets/styles.css when the Tailwind
 #   build has been run, since that is the artifact the browser loads; CI does
 #   not build the CSS, so its absence is not a failure.
+#
+# SPEC-2.1.1: invocable with no arguments, scanning the fixed default
+# targets above, exiting with a `guard: OK`/`guard: FAIL (<reason>)` line.
+# SPEC-2.1.3: --self-test runs the detection logic against generated
+# fixtures proving it still rejects every violation shape and still accepts
+# the real input.css.
+# SPEC-2.6.3: cascade-layer precedence is resolved by first mention, not by
+# source position of the full block, so the corrections' bare `@layer`
+# declaration must be the first mention of that layer, after the Tailwind
+# import.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -41,12 +51,15 @@ run_guard() {
     index($0, sel) && name != "" { print name; exit }
   ' "$css")
 
+  # SPEC-2.5.25: fail if no @layer block containing the corrections selector exists.
   if [ -z "$layer" ]; then
     echo "prose-layer guard: FAIL ($css has no @layer block containing \`$SELECTOR\`)"
     echo "  The Markdown corrections must sit in a named layer so their order is stated."
     return 1
   fi
 
+  # SPEC-2.5.25: fail if the corrections' layer is one of Tailwind's own
+  # four built-in layers.
   for name in $BUILT_LAYERS; do
     if [ "$layer" = "$name" ]; then
       echo "prose-layer guard: FAIL (the corrections are in \`@layer $layer\`)"
@@ -60,6 +73,8 @@ run_guard() {
 
   # The bare declaration is what fixes the order. Without it the layer is first
   # named by its block, which sorts it wherever the block sits rather than last.
+  # SPEC-2.5.25: fail if there is no bare `@layer <name>;` declaration
+  # positioned after the Tailwind import.
   if ! grep -qE "^@layer $layer;" "$css"; then
     echo "prose-layer guard: FAIL (\`@layer $layer;\` is never declared in $css)"
     echo "  A layer first named by its block sorts by position, not by intent."
@@ -80,6 +95,9 @@ run_guard() {
   # the file existing does not mean the CSS was built. A stylesheet that never
   # names `utilities` was not built by Tailwind, and reporting that as a
   # cascade-order failure would fail every CI run for the wrong reason.
+  # SPEC-2.5.25: when a real built assets/styles.css exists, fail if its
+  # combined @layer statement never names the corrections' layer, or names
+  # it before `utilities`.
   local theirs=""
   [ -f "$built" ] &&
     theirs=$(grep -nE '^@layer [a-z, -]*\butilities\b' "$built" | head -1 | cut -d: -f1)
@@ -98,6 +116,8 @@ run_guard() {
     fi
   fi
 
+  # SPEC-2.5.25: fail if the file no longer contains the `content: none;`
+  # rule that neutralizes the typography plugin's backtick glyphs.
   if ! grep -qF "$MARKER" "$css"; then
     echo "prose-layer guard: FAIL ($css no longer neutralises the plugin's backticks)"
     fail=1

@@ -27,10 +27,12 @@
 #                     exits non-zero at start with a message naming
 #                     the path.
 #
+# SPEC-2.1.1: invocable with no arguments, running the default scenarios.
 # Usage: check-oci-runtime.sh [--self-test]
 #   --self-test runs scenario 1 against an entrypoint that writes the
 #   shim to a UID-owned path, so a check that stopped checking fails
 #   on the uid-override case even though scenario 1 would pass.
+#   SPEC-2.1.3: this is that --self-test mode.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -48,6 +50,8 @@ failures=0
 # invocation that happened to reuse the shell's PID (CONTAINER_BASE
 # embeds `$$`) then hit "container name already in use" and failed
 # `docker create` outright.
+# SPEC-2.7.1: starts the real caddy:2-alpine serving stack and must stop and
+# remove every container it started, regardless of outcome.
 cleanup() {
     for suffix in default-uid uid-override unwritable selftest; do
         name="${CONTAINER_BASE}-${suffix}"
@@ -58,6 +62,7 @@ cleanup() {
         rm -rf "$WORKDIR"
     fi
 }
+# SPEC-2.9.1: remove every temp dir and container on exit, via trap EXIT.
 trap cleanup EXIT
 
 # Defence against PID reuse across the two bash invocations the CI job
@@ -172,6 +177,8 @@ assert_contains() {
     fi
 }
 
+# SPEC-2.3.4: the uid scenarios are configured via the container's --user
+# flag (passed in by the caller), not via a script-level environment variable.
 check_uid() {
     scenario="$1"
     shift
@@ -188,6 +195,8 @@ check_uid() {
     assert_contains "$scenario" "/index.html" "$index" '<script src="/_mokosh_config.js"></script>'
     assert_contains "$scenario" "/index.html" "$index" 'MAPPS-477 link-preview metadata'
 
+    # SPEC-2.4.6: must fail on a case-insensitive "permission denied" in the
+    # startup log under either the default uid or an explicit --user override.
     # No "Permission denied" line from Caddy / sh / sed anywhere in
     # the server's own log. Both uids must boot cleanly.
     name="${CONTAINER_BASE}-${scenario}"
@@ -199,6 +208,9 @@ check_uid() {
     fi
 }
 
+# SPEC-2.3.4: the read-only-runtime-directory scenario is configured via
+# MOKOSH_RUNTIME_DIR pointed at a mount the test container cannot write
+# under any uid.
 check_unwritable() {
     scenario="unwritable"
     name="${CONTAINER_BASE}-${scenario}"
@@ -238,11 +250,15 @@ check_unwritable() {
     rm -f /tmp/mapps963-stdout.log /tmp/mapps963-stderr.log
     docker rm "$name" >/dev/null 2>&1 || true
 
+    # SPEC-2.4.6: must not start successfully when the writable runtime
+    # directory is mounted read-only to every uid.
     if [ "$code" -eq 0 ]; then
         fail "${scenario}: entrypoint exited 0 on a read-only runtime dir; it must refuse to boot"
     else
         pass "${scenario}: entrypoint exited non-zero (${code}) on a read-only runtime dir"
     fi
+    # SPEC-2.4.6: a refused boot on an unwritable runtime directory must log
+    # FATAL and the directory path to stderr.
     assert_contains "$scenario" "stderr" "$stderr" "FATAL"
     assert_contains "$scenario" "stderr" "$stderr" "/ro/runtime"
 }
@@ -256,6 +272,8 @@ main() {
         esac
     done
 
+    # SPEC-2.5.26: Docker is a required precondition; exit 2 naming Docker
+    # if absent, rather than letting the absence surface further down.
     if ! command -v docker >/dev/null 2>&1; then
         echo "docker is required for check-oci-runtime.sh" >&2
         exit 2

@@ -21,6 +21,12 @@
 #   3. explicit MOKOSH_API_BASE/MOKOSH_OIDC_ISSUER on an msp.<tld> host - the
 #                                      operator's origin wins, not the
 #                                      host-derived guess.
+#
+# SPEC-2.1.1: invocable with no arguments, exiting 0/nonzero with an
+# `ok`/`<failures> failure(s)` line naming the reason.
+# SPEC-2.1.3: this script carries no --self-test mode; the spec treats these
+# three live HTTP scenarios run against the real stack as the guard's own
+# test, since there is no synthetic fixture that stands in for a served CSP.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -29,6 +35,8 @@ CONTAINER="mokosh-csp-origin-$$"
 WORKDIR=""
 failures=0
 
+# SPEC-2.7.1: stop and remove every container this script starts, regardless
+# of outcome.
 remove_container() {
   docker stop --timeout 2 "$CONTAINER" >/dev/null 2>&1
   docker rm "$CONTAINER" >/dev/null 2>&1
@@ -46,6 +54,9 @@ fail() {
   failures=$((failures + 1))
 }
 
+# SPEC-2.7.1: starts the real caddy:2-alpine serving stack in a container.
+# SPEC-2.3.3: MOKOSH_API_BASE/MOKOSH_OIDC_ISSUER (when passed via "$@") are
+# set only as env vars into this container, never read from the host shell.
 # Start the serving stack with a bare index.html and print the host port.
 serve() {
   cp index.html "$WORKDIR/index.html" || return 1
@@ -83,6 +94,8 @@ csp() {
     --dump-header - --output /dev/null | tr -d '\r' | grep -i '^content-security-policy:'
 }
 
+# SPEC-2.5.26: require Docker to be present, failing with exit 2 and a
+# message naming Docker rather than letting its absence surface further down.
 command -v docker >/dev/null 2>&1 || {
   echo "check-csp-host-derived-origin: docker is required (it runs the real Caddy serving stack)" >&2
   exit 2
@@ -93,6 +106,8 @@ docker image inspect "$CADDY_IMAGE" >/dev/null 2>&1 || docker pull "$CADDY_IMAGE
 }
 WORKDIR="$(mktemp --directory)"
 
+# SPEC-2.4.3: on a zero-config msp.<tld> host, connect-src/img-src must name
+# the API/OIDC origins the client itself derives from that host.
 # --- Scenario 1: zero-config, msp.<tld> host ---------------------------------
 port="$(serve)" || {
   echo "check-csp-host-derived-origin: could not start the zero-config server" >&2
@@ -109,6 +124,8 @@ case "$header" in
 esac
 remove_container
 
+# SPEC-2.4.3: on a non-msp.<tld> host with no explicit origin, the policy
+# must not add any derived API origin at all.
 # --- Scenario 2: zero-config, non-msp host -----------------------------------
 port="$(serve)" || {
   echo "check-csp-host-derived-origin: could not start the zero-config server" >&2
@@ -121,6 +138,9 @@ case "$header" in
 esac
 remove_container
 
+# SPEC-2.4.3: with MOKOSH_API_BASE/MOKOSH_OIDC_ISSUER explicitly set, the
+# policy must show the operator's origin and not fall back to the
+# host-derived one.
 # --- Scenario 3: explicit origin on an msp.<tld> host ------------------------
 explicit_env=(
   --env "MOKOSH_API_BASE=https://api.example.org/api/v1"
