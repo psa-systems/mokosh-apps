@@ -247,6 +247,16 @@ jobs:
           bash scripts/check-hooks-before-return.sh --self-test
           bash scripts/check-hooks-before-return.sh
 
+      # MAPPS-1211: `SurfaceVisibility::StaffAdmin` is a hub-visibility flag and
+      # nothing else. The route stays reachable, so Settings > Contact Roles
+      # showed a non-admin the whole capability editor to anybody who typed the
+      # URL. Nothing in the types joins the registry's data to the page's
+      # control flow, which is why a script holds it.
+      - name: Admin-gate guard
+        run: |
+          bash scripts/check-admin-gate.sh --self-test
+          bash scripts/check-admin-gate.sh
+
       # MAPPS-1212: the browser toggles a checkbox's own node on click, and
       # dioxus does not mark `checked` volatile, so a re-render computing the
       # same value emits nothing and a cancelled turn-off leaves the box
