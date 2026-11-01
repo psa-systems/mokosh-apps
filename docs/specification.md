@@ -1206,6 +1206,12 @@ part of this section's subject matter.
   browser's local zone, and must be rejected, not guessed, when that
   local time does not exist (a spring-forward gap) or is ambiguous (a
   fall-back overlap) in that zone.
+- **SPEC-9.4.19**: `ApprovalsPage` must read the `approvals:decide`
+  capability unconditionally before any early return; when the session
+  lacks it, the pending-queue fetch must not call the network and the
+  page must render a plain permission sentence, not a 403-styled banner.
+- **SPEC-9.4.20**: Each approval row's Approve and Reject actions must be
+  disabled whenever the session cannot mutate.
 
 ### 9.5 Error handling and observability
 

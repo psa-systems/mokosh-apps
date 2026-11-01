@@ -59,6 +59,8 @@ pub fn SlaManagementPage() -> Element {
     // receives this signal and writes it. This component only reads it.
     let tab = use_signal(|| SlaTab::Policies);
 
+    // SPEC-9.1.17: non-admin renders a permission notice, not tab content.
+    // SPEC-9.4.10: display-only gate; mutating endpoints are server-enforced.
     if !is_admin {
         return rsx! {
             PageHeader { title: "SLA Management" }
@@ -78,6 +80,7 @@ pub fn SlaManagementPage() -> Element {
     // instead of nesting a second AppLayout inside this one.
     let current = *tab.read();
 
+    // SPEC-9.1.17: exactly one of the three tabs renders at a time.
     match current {
         SlaTab::Policies => rsx! { SlaPoliciesTab { tab } },
         SlaTab::BusinessHours => rsx! { BusinessHoursTab { tab } },
@@ -177,6 +180,7 @@ fn SlaPoliciesTab(tab: Signal<SlaTab>) -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
         let _token = crate::hooks::fetch::api::current_access_token()?;
+        // SPEC-9.5.8: this tab logs its own distinct failure message.
         crate::hooks::fetch::api::get_all_authed::<SlaPolicy>("/sla/policies")
             .await
             .inspect_err(|e| tracing::error!("SLA policy load failed: {e}"))
@@ -203,7 +207,9 @@ fn SlaPoliciesTab(tab: Signal<SlaTab>) -> Element {
     // the nav + banner) instead of an empty table. A fetch that fails while the
     // server is still reachable (a 4xx) keeps the inline banner below. Writes
     // are blocked while down; `can_mutate` disables the create control.
+    // SPEC-9.5.8: unreachable server renders the shared unavailable state here.
     let reachable = crate::hooks::use_server_reachable();
+    // SPEC-9.4.11: disables every SLA-mutating control below while unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
         return rsx! {
@@ -299,6 +305,8 @@ fn SlaPoliciesTab(tab: Signal<SlaTab>) -> Element {
         if let Some(state) = editing.read().clone() {
             PolicyFormModal {
                 state,
+                // SPEC-9.9.3: closing without saving discards the modal's
+                // in-progress edits; no draft is retained.
                 onclose: move |_| { editing.set(None); },
                 onsaved: move |_| {
                     editing.set(None);
@@ -416,9 +424,11 @@ fn PolicyFormModal(props: PolicyFormModalProps) -> Element {
 
     let save_id = initial.id.clone();
     let handle_save = move |_| {
+        // SPEC-9.6.8: no-op if a save for this form is already in flight.
         if *saving.read() {
             return;
         }
+        // SPEC-9.1.18: policy name is required before save.
         if name.read().trim().is_empty() {
             error.set("Policy name is required.".to_string());
             return;
@@ -470,6 +480,7 @@ fn PolicyFormModal(props: PolicyFormModalProps) -> Element {
 
     // MAPPS-357: block the save while the server is unreachable so a click
     // cannot silently fail (edits are discarded, not queued).
+    // SPEC-9.4.11: disables the save control while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
     let footer = rsx! {
         Button {
@@ -513,6 +524,8 @@ fn PolicyFormModal(props: PolicyFormModalProps) -> Element {
                     value: description.read().clone(),
                     oninput: move |e: FormEvent| description.set(e.value()),
                 }
+                // SPEC-9.1.18: seeded with "No profile" plus every loaded
+                // business-hours row.
                 crate::components::Select {
                     name: "policy_business_hours",
                     label: "Business Hours",
@@ -569,8 +582,10 @@ fn TargetsModal(props: TargetsModalProps) -> Element {
         let pid = pid_for_targets.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // SPEC-9.8.1: no-op (returns None) on a build without the `app` feature.
             #[cfg(feature = "app")]
             {
+                // SPEC-9.7.8: targets are fetched from their own dedicated endpoint.
                 let path = format!("/sla/policies/{pid}/targets");
                 crate::hooks::fetch::api::get_all_authed::<SlaTarget>(&path)
                     .await
@@ -663,6 +678,8 @@ fn TargetsModal(props: TargetsModalProps) -> Element {
                             message: "No ticket priorities defined. Create priorities first.".to_string(),
                         }
                     } else {
+                        // SPEC-9.1.19: one row per tenant priority, prefilled
+                        // from any existing target for that (policy, priority).
                         TableBody {
                             for priority in priority_rows.into_iter() {
                                 {
@@ -713,6 +730,7 @@ fn TargetRow(props: TargetRowProps) -> Element {
         .and_then(|t| t.resolution_hours)
         .map(|d| d.to_string())
         .unwrap_or_default();
+    // SPEC-9.2.11: operational-hours mode defaults to 24x7 when empty/absent.
     let init_ops = existing
         .as_ref()
         .map(|t| t.operational_hours.clone())
@@ -740,6 +758,7 @@ fn TargetRow(props: TargetRowProps) -> Element {
     let save_policy_id = policy_id.clone();
     let save_priority_id = priority_id.clone();
     let handle_save = move |_| {
+        // SPEC-9.6.8: no-op if a save or delete for this row is in flight.
         if *saving.read() || *deleting.read() {
             return;
         }
@@ -766,6 +785,7 @@ fn TargetRow(props: TargetRowProps) -> Element {
                 return;
             }
         };
+        // SPEC-9.2.11: coerce an empty operational-hours value to 24x7 on save too.
         let ops = {
             let v = operational_hours.read().clone();
             if v.is_empty() {
@@ -785,6 +805,8 @@ fn TargetRow(props: TargetRowProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-9.7.8: single upsert endpoint keyed on (policy, priority);
+                // the same request both creates and updates the target.
                 // Upsert: the server keys on (policy, priority) so POST
                 // both creates and updates a target for this priority.
                 let path = format!("/sla/policies/{pid}/targets");
@@ -809,8 +831,10 @@ fn TargetRow(props: TargetRowProps) -> Element {
     // `on_confirm_delete` below when the user clicks Remove inside the
     // ConfirmDialog. Clone `target_id` for each closure so neither
     // takes ownership of the other's copy.
+    // SPEC-9.6.9: opening the confirmation dialog does not itself delete anything.
     let open_target_id = target_id.clone();
     let open_delete_confirm = move |_| {
+        // SPEC-9.6.8: no-op if a save or delete for this row is in flight.
         if open_target_id.is_none() || *saving.read() || *deleting.read() {
             return;
         }
@@ -823,6 +847,7 @@ fn TargetRow(props: TargetRowProps) -> Element {
             let Some(id) = delete_target_id.clone() else {
                 return;
             };
+            // SPEC-9.6.8: no-op if a delete for this row is already in flight.
             if *deleting.read() {
                 return;
             }
@@ -830,6 +855,8 @@ fn TargetRow(props: TargetRowProps) -> Element {
             spawn(async move {
                 #[cfg(feature = "app")]
                 {
+                    // SPEC-9.9.4: immediate, non-reversible delete; the policy
+                    // reverts to no commitment for this priority until re-set.
                     let path = format!("/sla/targets/{id}");
                     match crate::hooks::fetch::api::delete_authed_typed(&path).await {
                         Ok(()) => {
@@ -842,6 +869,7 @@ fn TargetRow(props: TargetRowProps) -> Element {
                         Err(err) => crate::hooks::push_api_error(&err),
                     }
                 }
+                // SPEC-9.6.9: in-flight state clears only once the request settles.
                 deleting.set(false);
                 confirming_delete.set(false);
             });
@@ -851,6 +879,7 @@ fn TargetRow(props: TargetRowProps) -> Element {
     let has_target = target_id.is_some();
 
     // MAPPS-357: block save / remove while the server is unreachable.
+    // SPEC-9.4.11: disables the row's save/remove controls while unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
 
     rsx! {
@@ -958,6 +987,7 @@ fn BusinessHoursTab(tab: Signal<SlaTab>) -> Element {
         #[cfg(feature = "app")]
         {
             let _token = crate::hooks::fetch::api::current_access_token()?;
+            // SPEC-9.5.8: this tab logs its own distinct failure message.
             crate::hooks::fetch::api::get_all_authed::<BusinessHours>("/sla/business-hours")
                 .await
                 .inspect_err(|e| tracing::error!("SLA business-hours load failed: {e}"))
@@ -984,7 +1014,9 @@ fn BusinessHoursTab(tab: Signal<SlaTab>) -> Element {
     // MAPPS-357: outage (failed load while flagged down) -> honest unavailable
     // page, not an empty set. A reachable 4xx keeps the inline banner below.
     // Writes are blocked while down via `can_mutate`.
+    // SPEC-9.5.8: unreachable server renders the shared unavailable state here.
     let reachable = crate::hooks::use_server_reachable();
+    // SPEC-9.4.11: disables every SLA-mutating control below while unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
         return rsx! {
@@ -1161,16 +1193,19 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
 
     let save_id = initial.id.clone();
     let handle_save = move |_| {
+        // SPEC-9.6.8: no-op if a save for this form is already in flight.
         if *saving.read() {
             return;
         }
         schedule_err.set(String::new());
+        // SPEC-9.1.20: business hours name is required before save.
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
         }
         // Parse the schedule blob before sending so a typo surfaces inline on
         // the field rather than as an opaque 422 from the server.
+        // SPEC-9.5.9: a schedule JSON parse failure shows inline and sends no request.
         let schedule = match serde_json::from_str::<serde_json::Value>(schedule_json.read().trim())
         {
             Ok(v) => v,
@@ -1181,6 +1216,8 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
         };
         // Validate the timezone as an IANA name (empty defaults to UTC) so a
         // typo surfaces here instead of as an opaque 422 (MAPPS-240).
+        // SPEC-9.5.9: invalid IANA zone shows a dedicated error and sends no
+        // request; an empty zone is accepted and coerced to UTC.
         let timezone_value = {
             let tz = timezone.read().trim().to_string();
             if tz.is_empty() {
@@ -1231,6 +1268,8 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
                         // PMS-604: a malformed-schedule 422 is keyed onto the
                         // `schedule` field; show it inline. Anything else stays
                         // in the banner.
+                        // SPEC-9.5.10: field-named save error shown inline on
+                        // that field; any other error goes to the page banner.
                         if let Some(msg) = err.field_message("schedule") {
                             schedule_err.set(msg);
                         } else {
@@ -1268,6 +1307,8 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
             size: crate::components::ModalSize::Large,
             onclose: move |_| onclose.call(()),
             footer,
+            // SPEC-9.4.11: save control above is disabled while the server is
+            // unreachable (see `can_mutate`).
             div { class: "space-y-4",
                 if !error.read().is_empty() {
                     ErrorBanner { "{error.read()}" }
@@ -1289,6 +1330,7 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
                         oninput: move |e: FormEvent| timezone.set(e.value()),
                     }
                 }
+                // SPEC-9.1.20: schedule is offered as a JSON text area.
                 crate::components::Textarea {
                     name: "bh_schedule",
                     label: "Schedule (JSON)",
@@ -1330,6 +1372,7 @@ fn HolidayCalendarsTab(tab: Signal<SlaTab>) -> Element {
         #[cfg(feature = "app")]
         {
             let _token = crate::hooks::fetch::api::current_access_token()?;
+            // SPEC-9.5.8: this tab logs its own distinct failure message.
             crate::hooks::fetch::api::get_all_authed::<HolidayCalendar>("/sla/holiday-calendars")
                 .await
                 .inspect_err(|e| tracing::error!("SLA holiday calendar load failed: {e}"))
@@ -1356,7 +1399,9 @@ fn HolidayCalendarsTab(tab: Signal<SlaTab>) -> Element {
     // MAPPS-357: outage (failed load while flagged down) -> honest unavailable
     // page, not an empty set. A reachable 4xx keeps the inline banner below.
     // Writes are blocked while down via `can_mutate`.
+    // SPEC-9.5.8: unreachable server renders the shared unavailable state here.
     let reachable = crate::hooks::use_server_reachable();
+    // SPEC-9.4.11: disables every SLA-mutating control below while unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
         return rsx! {
@@ -1510,10 +1555,12 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
 
     let save_id = initial.id.clone();
     let handle_save = move |_| {
+        // SPEC-9.6.8: no-op if a save for this form is already in flight.
         if *saving.read() {
             return;
         }
         holidays_err.set(String::new());
+        // SPEC-9.1.20: holiday calendar name is required before save.
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
@@ -1565,6 +1612,8 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
                         // PMS-604: a malformed-holidays 422 is keyed onto the
                         // `holidays` field; show it inline. Anything else stays
                         // in the banner.
+                        // SPEC-9.5.10: field-named save error shown inline on
+                        // that field; any other error goes to the page banner.
                         if let Some(msg) = err.field_message("holidays") {
                             holidays_err.set(msg);
                         } else {
@@ -1578,6 +1627,7 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
     };
 
     // MAPPS-357: block the save while the server is unreachable.
+    // SPEC-9.4.11: disables the save control while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
     let footer = rsx! {
         Button {
@@ -1614,6 +1664,7 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
                     value: name.read().clone(),
                     oninput: move |e: FormEvent| name.set(e.value()),
                 }
+                // SPEC-9.1.20: holidays list is offered as a JSON text area.
                 crate::components::Textarea {
                     name: "hol_holidays",
                     label: "Holidays (JSON)",
@@ -1650,6 +1701,7 @@ fn parse_hours(value: &str) -> Option<rust_decimal::Decimal> {
     if trimmed.is_empty() {
         return None;
     }
+    // SPEC-9.2.10: accepts a plain decimal or an H:MM duration.
     // Accept H:MM as well as a plain decimal (PMS-340). For H:MM, reuse the
     // shared minute parser (so validation matches the Log Time field) and
     // convert to exact Decimal hours; a plain decimal keeps its exact value.
@@ -1668,6 +1720,7 @@ fn parse_hours(value: &str) -> Option<rust_decimal::Decimal> {
 fn validate_hours(value: &str) -> Result<Option<rust_decimal::Decimal>, &'static str> {
     // MAPPS-582: the H:MM / decimal parsers are ASCII-only.
     let value = crate::utils::text::clean_strict(value);
+    // SPEC-9.2.10: an empty value means "no commitment", not zero.
     if value.is_empty() {
         return Ok(None);
     }
