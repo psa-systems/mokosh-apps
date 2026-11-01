@@ -103,6 +103,7 @@ pub fn CompanyDocumentationPage(props: CompanyDocumentationPageProps) -> Element
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let _reachable = crate::hooks::use_server_reachable();
+            // SPEC-7.7.6: this page's one endpoint.
             crate::hooks::fetch::api::get_authed_typed::<CompanyDocumentation>(&format!(
                 "/companies/{id}/documentation"
             ))

@@ -746,6 +746,9 @@ pub fn CompanyListPage() -> Element {
             }
         }
 
+        // SPEC-7.5.1: scoped to this card, not the whole page; every
+        // other list/detail resource in this file follows the same
+        // "Could not load {noun}." pattern.
         if let Some(msg) = fetch_error.as_deref() {
             ErrorBanner { class: "mb-3", "Could not load companies: {msg}" }
         }
@@ -1871,6 +1874,7 @@ fn validate_phone_field(raw: &str, label: &str) -> Result<Option<String>, String
 
 /// The five `contact_phones.phone_type` values PMS-806's CHECK constraint
 /// allows, paired with their labels and in the order the form offers them.
+// SPEC-7.3.5: exactly these five values, in this order.
 const PHONE_TYPES: &[(&str, &str)] = &[
     ("mobile", "Mobile"),
     ("work", "Work"),
