@@ -72,6 +72,7 @@ pub enum VerifyBranch {
 
 /// Pure classifier for the fetch outcome. Consumed by the submit
 /// handler + unit tests.
+// SPEC-6.5.7: maps the host-lookup outcome to the page's error branches.
 pub fn classify_verify(
     status: Option<u16>,
     network_ok: bool,
@@ -99,11 +100,13 @@ pub fn ContactGenericLoginPage() -> Element {
     let mut error = use_signal(String::new);
     let mut saving = use_signal(|| false);
 
+    // SPEC-6.6.1: ignore a submit while a previous one is still in flight.
     let mut submit = move |_| {
         if saving() {
             return;
         }
         let pid_raw = portal_id.read().trim().to_string();
+        // SPEC-6.1.11: a single required Company ID field.
         if pid_raw.is_empty() {
             error.set("Enter your Company ID.".to_string());
             return;
@@ -121,6 +124,7 @@ pub fn ContactGenericLoginPage() -> Element {
             #[cfg(feature = "web")]
             {
                 use crate::hooks::fetch::api::ApiError;
+                // SPEC-6.7.7: resolve the Company ID's host/branding hint.
                 let path = format!("/contact/portal/{pid_for_store}/host");
                 let branch =
                     match crate::hooks::fetch::api::get_typed::<PortalHostSnippet>(&path).await {
@@ -139,11 +143,13 @@ pub fn ContactGenericLoginPage() -> Element {
                         crate::hooks::fetch::api::set_contact_last_portal_id(&pid);
                         nav.replace(Route::ContactHandleLogin { handle: pid });
                     }
+                    // SPEC-6.5.7: 404 maps to this message.
                     VerifyBranch::Miss => {
                         error.set(
                             "Company ID not found. Check the number your MSP sent you.".to_string(),
                         );
                     }
+                    // SPEC-6.5.7: any transport failure or other status maps to this message.
                     VerifyBranch::NetworkError => {
                         error.set(
                             "Could not reach the portal service. Check your connection and try again."
@@ -165,6 +171,7 @@ pub fn ContactGenericLoginPage() -> Element {
         });
     };
 
+    // SPEC-6.1.11 / SPEC-6.4.11: single required Company ID field, no link to staff sign-in.
     rsx! {
         AuthLayout {
             div { class: "text-center mb-6",

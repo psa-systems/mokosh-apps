@@ -87,6 +87,7 @@ enum Tab {
 }
 
 impl Tab {
+    // SPEC-6.1.17: unrecognized tab values default to People.
     fn from_query(q: &str) -> Self {
         match q {
             "teams" => Tab::Teams,
@@ -132,6 +133,7 @@ impl Tab {
 // server's whenever either changes.
 
 /// One row of the unified list.
+// SPEC-6.2.1: decode by the kind tag, every field but the id defaults.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MemberRow {
@@ -193,6 +195,7 @@ pub struct MembersResponse {
 /// Matches the `per_page` sent server-side, so the requested page size and
 /// the `DataTable`'s pager math agree. Mirrors the Teams tab
 /// (`members_teams_tab.rs`) and the rest of the app's list pages.
+// SPEC-6.3.3: page the server list at this size.
 const PER_PAGE: usize = 25;
 
 /// Filter values threaded into `fetch_members_page`'s query string. Each
@@ -229,6 +232,7 @@ impl MembersFilters {
 /// filter settle, the same server-side pagination pattern the Teams tab
 /// (`members_teams_tab.rs:154-173`) already uses, instead of the retired
 /// `fetch_all_members` helper's page-walking loop.
+// SPEC-6.7.10: list the member roster page.
 #[cfg(feature = "app")]
 async fn fetch_members_page(
     filters: &MembersFilters,
@@ -255,6 +259,7 @@ async fn fetch_members_page(
 /// Pick the HTTP path that answers "change the role on this row". Native
 /// users route through `/users`; guests (placed or unplaced) route through
 /// `/grants` because the role lives on the grant, not on the users row.
+// SPEC-6.2.3: address a native user through /users, a guest through /grants.
 pub fn change_role_path(row: &MemberRow) -> String {
     match row {
         MemberRow::User {
@@ -273,6 +278,7 @@ pub fn change_role_path(row: &MemberRow) -> String {
 /// Pick the HTTP path that answers "remove this row". A native user is
 /// deactivated via `/users?status=inactive`; a guest (placed or unplaced)
 /// has its grant revoked.
+// SPEC-6.2.3: address a native user through /users, a guest through /grants.
 pub fn remove_action_path(row: &MemberRow) -> String {
     match row {
         MemberRow::User {
@@ -390,6 +396,7 @@ fn row_granted_at_label(row: &MemberRow) -> String {
 /// through `PATCH /grants` because the role lives on the grant, not on
 /// the users row. The pure path functions above are used so a refactor
 /// that touches the URL table has one place to look.
+// SPEC-6.7.10: change role via PUT /users/{id} or PATCH /grants/{id}.
 #[cfg(feature = "app")]
 async fn change_role(row: &MemberRow, new_role: &str) -> Result<(), String> {
     let path = change_role_path(row);
@@ -419,6 +426,8 @@ async fn change_role(row: &MemberRow, new_role: &str) -> Result<(), String> {
 /// the operator (the row disappears from the roster) but differ in what
 /// gets written: the users row stays, tombstoned, where the grant row is
 /// updated with `revoked_at`.
+// SPEC-6.7.10: remove via PUT /users/{id} (deactivate) or DELETE /grants/{id} (revoke).
+// SPEC-6.9.2: deactivate (reversible) a user, revoke (not reversible) a guest.
 #[cfg(feature = "app")]
 async fn remove(row: &MemberRow) -> Result<(), String> {
     let path = remove_action_path(row);
@@ -450,6 +459,7 @@ async fn remove(row: &MemberRow) -> Result<(), String> {
 /// no way back to page one. Extracted as a free function, mirroring
 /// `set_ticket_search` in `tickets.rs:1342`, so a `VirtualDom` test can
 /// exercise the reset without driving the real `remove()` network call.
+// SPEC-6.6.3: reset to page 1 after a successful remove.
 fn reset_page_after_remove(current_page: &mut Signal<usize>) {
     current_page.set(1);
 }
@@ -537,6 +547,8 @@ pub fn MembersPage(props: MembersPageProps) -> Element {
     // Phase 3 T28: the page gate is "manager and up" so a non-admin
     // manager still reads the roster; the row-level actions below render
     // only when the stricter admin gate also holds.
+    // SPEC-6.1.17: page gate is manager-and-up, distinct from the admin gate on mutation controls below.
+    // SPEC-6.4.15: the view gate and the mutation gate must stay distinct.
     let can_manage = auth
         .read()
         .user
@@ -616,6 +628,7 @@ pub fn MembersPage(props: MembersPageProps) -> Element {
                 }
             }
         }
+        // SPEC-6.1.17: three tabs, People/Teams/Invitations.
         match active {
             Tab::People => rsx! { PeoplePane { can_mutate: is_admin } },
             Tab::Teams => rsx! {
@@ -680,6 +693,7 @@ fn InviteUserModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Elem
                     #[allow(dead_code)]
                     id: uuid::Uuid,
                 }
+                // SPEC-6.7.10: send the invitation.
                 match crate::hooks::fetch::api::post_authed::<Created, _>("/invitations", &body)
                     .await
                 {
@@ -760,6 +774,7 @@ fn PeoplePane(can_mutate: bool) -> Element {
     let mut team_filter = use_signal(String::new);
     // MAPPS-855 pattern: debounce the search box so a burst of keystrokes
     // fires one refetch per pause in typing rather than one per keystroke.
+    // SPEC-6.6.2: 300ms debounce; search/filter changes reset the current page.
     let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     // MAPPS-1069: paging state for the roster, reset to page 1 on every
     // search/filter change (the `assets.rs` pattern) so a stale page number
@@ -774,6 +789,7 @@ fn PeoplePane(can_mutate: bool) -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         #[cfg(feature = "app")]
         {
+            // SPEC-6.7.10: load the team filter options.
             crate::hooks::fetch::api::get_all_authed::<TeamOption>("/teams")
                 .await
                 .inspect_err(|e| tracing::warn!("team filter load failed: {e}"))
@@ -818,6 +834,7 @@ fn PeoplePane(can_mutate: bool) -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let _reachable = crate::hooks::use_server_reachable();
+            // SPEC-6.5.10: log on a failed load.
             fetch_members_page(&filters, page)
                 .await
                 .inspect_err(|e| tracing::error!("members list load failed: {e}"))
@@ -845,6 +862,7 @@ fn PeoplePane(can_mutate: bool) -> Element {
             {
                 match change_role(&row, &new_role).await {
                     Ok(()) => members.restart(),
+                    // SPEC-6.5.11: failed role change, scoped to this control.
                     Err(e) => role_error.set(format!("Could not change role: {e}")),
                 }
             }
@@ -871,6 +889,7 @@ fn PeoplePane(can_mutate: bool) -> Element {
                         reset_page_after_remove(&mut current_page);
                         members.restart();
                     }
+                    // SPEC-6.5.11: failed remove, scoped to the confirm dialog.
                     Err(e) => {
                         remove_busy.set(false);
                         remove_error.set(format!("Could not remove: {e}"));
@@ -1021,6 +1040,7 @@ fn PeopleBody(props: PeopleBodyProps) -> Element {
     let total_items = payload.as_ref().map(|p| p.total as usize).unwrap_or(0);
 
     rsx! {
+        // SPEC-6.5.10: guest-identity-lookup-unreachable warning banner.
         if let Some(payload) = &payload {
             if !payload.bunyip_reachable {
                 StatusBanner { tone: BannerTone::Warning, class: "mb-3".to_string(),
@@ -1050,11 +1070,13 @@ fn PeopleBody(props: PeopleBodyProps) -> Element {
                 }
                 if loading {
                     TableLoading { columns, rows: 3 }
+                // SPEC-6.5.10: failed-load message.
                 } else if payload.is_none() {
                     TableEmpty {
                         columns,
                         message: "Could not load the member list.".to_string(),
                     }
+                // SPEC-6.5.10: empty-roster message.
                 } else if rows.is_empty() {
                     TableEmpty {
                         columns,
@@ -1195,6 +1217,7 @@ fn InvitationsTab(can_mutate: bool) -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         #[cfg(feature = "app")]
         {
+            // SPEC-6.7.10: list pending invitations.
             crate::hooks::fetch::api::get_all_authed::<TeamInvitation>("/invitations")
                 .await
                 .inspect_err(|e| tracing::error!("invitations list load failed: {e}"))
@@ -1220,12 +1243,14 @@ fn InvitationsTab(can_mutate: bool) -> Element {
             #[cfg(feature = "app")]
             {
                 let path = format!("/invitations/{invite_id}");
+                // SPEC-6.7.10: cancel the invitation.
                 match crate::hooks::fetch::api::delete_authed(&path).await {
                     Ok(()) => {
                         pending_cancel.set(None);
                         cancelling.set(false);
                         invites.restart();
                     }
+                    // SPEC-6.5.11: failed cancel, scoped to this row.
                     Err(e) => {
                         cancelling.set(false);
                         cancel_error.set(format!("Could not cancel: {e}"));
@@ -1286,6 +1311,7 @@ fn InvitationsTab(can_mutate: bool) -> Element {
                 }
                 if loading {
                     TableLoading { columns, rows: 3 }
+                // SPEC-6.5.11: failed invitation list load message.
                 } else if load_failed {
                     TableEmpty {
                         columns,

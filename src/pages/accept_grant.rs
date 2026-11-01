@@ -124,6 +124,8 @@ pub(crate) fn humanize_role(role: &str) -> String {
     }
 }
 
+// SPEC-6.1.22: exactly one of loading, invalid, mismatch, transient-error,
+// or the accept/decline card, with no accept/decline on a non-pending status.
 /// MAPPS-1084 AC (a): the by-token accept-grant page.
 #[component]
 pub fn AcceptGrantPage(token: String) -> Element {
@@ -144,6 +146,7 @@ pub fn AcceptGrantPage(token: String) -> Element {
     let mut metadata = use_resource(use_reactive(&token_for_resource, |token| async move {
         #[cfg(feature = "app")]
         {
+            // SPEC-6.7.13: fetch the invitation metadata.
             let path = format!("/grants/invitations/by-token/{token}");
             crate::hooks::fetch::api::get_authed_typed::<InvitationMetadata>(&path)
                 .await
@@ -174,6 +177,7 @@ pub fn AcceptGrantPage(token: String) -> Element {
             spawn(async move {
                 #[cfg(feature = "app")]
                 {
+                    // SPEC-6.7.13: accept the invitation.
                     let path = format!("/grants/invitations/by-token/{token}/accept");
                     let outcome =
                         crate::hooks::fetch::api::post_authed_typed::<AcceptResponse, ()>(
@@ -188,11 +192,13 @@ pub fn AcceptGrantPage(token: String) -> Element {
                             // refetches; the memberships loader picks the
                             // new grant up on its next read.
                             *crate::hooks::fetch::TENANT_GENERATION.write() += 1;
+                            // SPEC-6.5.14: confirmation text before navigating away.
                             done_message.set(Some(
                                 "You accepted the invitation. The team now shows up in your switcher.".to_string(),
                             ));
                             navigator.replace(Route::Dashboard {});
                         }
+                        // SPEC-6.5.14: accept failure in its own banner, server's message.
                         Err(err) => submit_error.set(err.user_message()),
                     }
                 }
@@ -218,6 +224,7 @@ pub fn AcceptGrantPage(token: String) -> Element {
             spawn(async move {
                 #[cfg(feature = "app")]
                 {
+                    // SPEC-6.7.13: decline the invitation.
                     let path = format!("/grants/invitations/by-token/{token}/decline");
                     let outcome = crate::hooks::fetch::api::post_authed_typed::<
                         serde_json::Value,
@@ -226,11 +233,13 @@ pub fn AcceptGrantPage(token: String) -> Element {
                     .await;
                     match outcome {
                         Ok(_) => {
+                            // SPEC-6.5.14: confirmation text before navigating away.
                             done_message.set(Some(
                                 "You declined the invitation. It stays on record but will not be acted on.".to_string(),
                             ));
                             navigator.replace(Route::Dashboard {});
                         }
+                        // SPEC-6.5.14: decline failure in its own banner, server's message.
                         Err(err) => submit_error.set(err.user_message()),
                     }
                 }
@@ -271,6 +280,8 @@ pub fn AcceptGrantPage(token: String) -> Element {
                         }
                     }
                 },
+                // SPEC-6.4.22: a 403 on the metadata lookup is treated as an
+                // address mismatch, rendered as its own non-actionable notice.
                 Some(Err(MetadataError::EmailMismatch)) => rsx! {
                     Card { title: "This invitation is addressed to someone else".to_string(), class: "mt-4",
                         p { class: "text-sm text-content",

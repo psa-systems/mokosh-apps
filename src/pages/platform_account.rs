@@ -77,6 +77,7 @@ struct MfaDisableRequest {
 /// instead of rendering an all-401 shell.
 #[component]
 pub fn PlatformAccountPage() -> Element {
+    // SPEC-6.1.4: redirect to sign-in instead of rendering with no platform bearer.
     #[cfg(feature = "web")]
     {
         if crate::hooks::fetch::api::current_platform_access_token().is_none() {
@@ -99,6 +100,7 @@ pub fn PlatformAccountPage() -> Element {
             title: "Platform Admin Account",
             subtitle: "Password and two-factor authentication for your platform-admin sign-in, independent of any tenant.",
         }
+        // SPEC-6.1.4: password card and MFA-state card.
         // MAPPS-966: the two cards are gapped, not stacked edge to edge.
         div { class: "space-y-6",
             PlatformPasswordCard {}
@@ -136,6 +138,7 @@ fn PlatformPasswordCard() -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-6.4.21 / SPEC-6.7.3: requires current_password, resubmitted here.
                 match crate::hooks::fetch::api::put_platform_authed_json_no_content(
                     "/platform/me/password",
                     &body,
@@ -205,6 +208,7 @@ fn PlatformPasswordCard() -> Element {
                             || new_password().is_empty()
                             || confirm_password().is_empty(),
                         loading: saving(),
+                        // SPEC-6.4.21: disabled, with tooltip, when the server is unreachable.
                         title: (!can_mutate).then(|| "Can't change password while the server is unreachable".to_string()),
                         "Change password"
                     }
@@ -347,6 +351,7 @@ fn PlatformMfaSetupModal(props: PlatformMfaSetupModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-6.4.21 / SPEC-6.7.3: requires current_password.
                 match crate::hooks::fetch::api::post_platform_authed_typed::<MfaSetupResponse, _>(
                     "/platform/me/mfa/setup",
                     &body,
@@ -383,6 +388,7 @@ fn PlatformMfaSetupModal(props: PlatformMfaSetupModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-6.4.21 / SPEC-6.7.3: requires current_password resent here.
                 match crate::hooks::fetch::api::post_platform_authed_typed::<MfaEnableResponse, _>(
                     "/platform/me/mfa/enable",
                     &body,
@@ -554,6 +560,7 @@ fn PlatformMfaDisableModal(props: PlatformMfaDisableModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-6.4.21 / SPEC-6.7.3: requires current_password with a live or recovery code.
                 match crate::hooks::fetch::api::post_platform_authed_json_no_content(
                     "/platform/me/mfa/disable",
                     &body,

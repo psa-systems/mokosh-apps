@@ -71,6 +71,7 @@ struct StatusReport {
 
 /// Probe `GET /api/v1/version`. A non-2xx or unparseable body is an
 /// error; a clean parse is the server's build info.
+// SPEC-6.7.16: probe the API server's version.
 async fn probe_server_version() -> Result<ServerVersion, String> {
     #[cfg(feature = "app")]
     {
@@ -88,6 +89,7 @@ async fn probe_server_version() -> Result<ServerVersion, String> {
 
 /// Probe `GET /api/v1/ready`. Parses the JSON body on both `200` and
 /// `503`; only a transport failure or an unparseable body is an error.
+// SPEC-6.7.16: probe dependency readiness.
 async fn probe_readiness() -> Result<Readiness, String> {
     #[cfg(feature = "app")]
     {
@@ -137,6 +139,7 @@ fn StatusRow(label: String, value: String) -> Element {
 /// error states, so the "outage renders as empty/default content" lie this
 /// issue targets cannot occur here. The Refresh button re-probes (a read),
 /// not a write, so there is no mutating control to gate on `use_can_mutate`.
+// SPEC-6.1.24: report each probe independently, never collapsing success/failure.
 #[component]
 pub fn SystemStatusPage() -> Element {
     use_page_title("System Status");
@@ -210,6 +213,7 @@ pub fn SystemStatusPage() -> Element {
                     }
                 },
 
+                // SPEC-6.5.16: this card's pending/error state is independent of the others.
                 match snapshot.as_ref().map(|r| &r.server) {
                     None => rsx! {
                         p { class: "text-sm text-muted", "Checking the API server…" }
@@ -242,6 +246,7 @@ pub fn SystemStatusPage() -> Element {
                     }
                 },
 
+                // SPEC-6.5.16: this card's pending/error state is independent of the others.
                 match snapshot.as_ref().map(|r| &r.readiness) {
                     None => rsx! {
                         p { class: "text-sm text-muted", "Checking dependencies…" }

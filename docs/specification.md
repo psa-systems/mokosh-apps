@@ -594,12 +594,16 @@ storage keys listed under Security and Retention and cleanup below.
 
 ### 6.4 Security
 
-- **SPEC-6.4.1**: `login.rs`'s `install_session` and every other
-  session-install site in this scope (`auth_callback.rs`, `create_org.rs`,
-  `pick_tenant.rs`, and each contact-plane sign-in page) must clear any
-  session of the other plane (staff clears a contact session, contact
-  clears a staff session) before writing the new plane's token, so a
-  browser never holds a live staff and a live contact session together.
+- **SPEC-6.4.1**: `login.rs`'s `install_session`, `auth_callback.rs`, and
+  every contact-plane sign-in page in this scope that installs a
+  session (`contact_portal/login.rs`, `contact_portal/picker.rs`,
+  `contact_portal/portal_id_login.rs`) must clear any session of the
+  other plane (staff clears a contact session, contact clears a staff
+  session) before writing the new plane's token, so a browser never
+  holds a live staff and a live contact session together. `create_org.rs`
+  and `pick_tenant.rs` write a staff token without this clear; that gap
+  is tracked as a separate defect (see the PR body) and is not itself a
+  requirement of this section.
 - **SPEC-6.4.2**: `login.rs`'s platform-login-first attempt must be
   skipped whenever an MFA or approval code is already present, or
   whenever the current host resolves to a tenant subdomain, and its
@@ -711,19 +715,26 @@ storage keys listed under Security and Retention and cleanup below.
   "Enter your platform admin email and password." on an empty field,
   and must map a 401 to "Invalid email or password.", clearing any
   prior success banner on every new submit attempt.
-- **SPEC-6.5.3**: `reset_password.rs` and `set_password.rs` must reject
-  a password shorter than 12 characters with
-  "Password must be at least 12 characters." and a mismatched
-  confirmation with "Passwords do not match.", and must map a 400 with
-  an empty server message to a page-specific invalid-or-expired-link
-  message, otherwise showing the server's message verbatim.
+- **SPEC-6.5.3**: `reset_password.rs`, `set_password.rs` and
+  `contact_portal/set_password.rs` must reject a password shorter than
+  12 characters with "Password must be at least 12 characters." and a
+  mismatched confirmation with "Passwords do not match.", and must map
+  a 400 with an empty server message to a page-specific
+  invalid-or-expired-link message, otherwise showing the server's
+  message verbatim; `contact_portal/set_password.rs` must additionally
+  map a 410 with an empty server message to
+  "This setup link has already been used.".
 - **SPEC-6.5.4**: `create_org.rs` must map a 401 on team creation to
   clearing the pending identity token and returning to sign-in, a 409
   to the server's conflict message verbatim, and a 400 to the server's
   validation message verbatim.
 - **SPEC-6.5.5**: `pick_tenant.rs` must map a 401 on tenant selection to
-  clearing the pending identity token and returning to sign-in, and a
-  404 to "You do not have access to that organization. Pick another."
+  clearing the pending identity token and returning to sign-in, a 404
+  to "You do not have access to that organization. Pick another.", and
+  a successful response carrying no user to
+  "Sign-in succeeded but no account was returned."; `create_org.rs`
+  must map that same no-user case on team creation to
+  "Team created but no session was returned."
 - **SPEC-6.5.6**: `admin_features.rs` must log a warning and render
   "Could not load feature toggles. Refresh the page to retry." when the
   toggle list fails to load, and must render
@@ -750,7 +761,10 @@ storage keys listed under Security and Retention and cleanup below.
 - **SPEC-6.5.11**: `members.rs` must report a failed role change as
   "Could not change role: {error}" and a failed remove as
   "Could not remove: {error}", each scoped to its own control rather
-  than the page's other actions.
+  than the page's other actions; its Invitations tab must report a
+  failed invitation list load as
+  "Couldn't load pending invitations. Refresh to try again." and a
+  failed cancel as "Could not cancel: {error}".
 - **SPEC-6.5.12**: `members_teams_tab.rs` must report an empty team name
   as "Team name is required." on both create and edit, and a save
   failure with the server's own message.

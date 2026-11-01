@@ -52,8 +52,11 @@ struct PaginationMeta {
 
 /// MAPPS-838: matches the `per_page` sent server-side, so the requested
 /// page size and the `DataTable`'s pager math agree.
+// SPEC-6.3.3: page the server list at this size.
 const PER_PAGE: usize = 25;
 
+// SPEC-6.1.21: permission notice for non-admin, invite form and paginated
+// pending list with per-row revoke for an admin.
 #[component]
 pub fn InvitationsPage() -> Element {
     // MAPPS-939: resolve once for the whole row list, not once per row's
@@ -104,6 +107,7 @@ pub fn InvitationsPage() -> Element {
             let _reachable = crate::hooks::use_server_reachable();
             #[cfg(feature = "app")]
             {
+                // SPEC-6.7.12: list pending invitations.
                 let path = format!("/invitations?page={current_page}&per_page={PER_PAGE}");
                 crate::hooks::fetch::api::get_authed::<PaginatedInvitations>(&path)
                     .await
@@ -155,6 +159,7 @@ pub fn InvitationsPage() -> Element {
             // through the paging helper: it walks page after page until a
             // short one, so a tenant with more teams than `MAX_PER_PAGE`
             // still fills the dropdown without silently truncating.
+            // SPEC-6.7.12: team picker, organization tenant only.
             crate::hooks::fetch::api::get_all_authed::<TeamOption>("/teams")
                 .await
                 .inspect_err(|e| tracing::warn!("team picker load failed: {e}"))
@@ -207,6 +212,7 @@ pub fn InvitationsPage() -> Element {
                     #[allow(dead_code)]
                     id: uuid::Uuid,
                 }
+                // SPEC-6.7.12: send the invitation.
                 match crate::hooks::fetch::api::post_authed::<Created, _>("/invitations", &body)
                     .await
                 {
@@ -257,6 +263,8 @@ pub fn InvitationsPage() -> Element {
     // the nav + banner) instead of an empty invitations table. A fetch that
     // fails while still reachable (a 4xx) keeps the normal empty-state below.
     // Writes are blocked while down; `can_mutate` disables the buttons.
+    // SPEC-6.5.13: only an unreachable server replaces the page with this
+    // notice; an ordinary empty or failed list keeps the normal table.
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Team".to_string() }
@@ -360,6 +368,7 @@ pub fn InvitationsPage() -> Element {
                 .as_ref()
                 .map(|(_, e)| e.clone())
                 .unwrap_or_default();
+            // SPEC-6.9.3: revoke deletes outright with no undo; say so before sending.
             let message = if email_label.is_empty() {
                 "Revoke this invitation? The invitee will not be able to accept it.".to_string()
             } else {
@@ -379,6 +388,7 @@ pub fn InvitationsPage() -> Element {
                 spawn(async move {
                     #[cfg(feature = "app")]
                     {
+                        // SPEC-6.7.12: revoke the invitation.
                         match crate::hooks::fetch::api::delete_authed(&format!(
                             "/invitations/{id}"
                         ))

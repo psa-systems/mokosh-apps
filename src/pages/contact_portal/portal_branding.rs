@@ -50,6 +50,7 @@ pub fn ContactPortalBrandingPage() -> Element {
     let mut error: Signal<String> = use_signal(String::new);
     let _toast: Signal<String> = use_signal(String::new);
     let mut saving = use_signal(|| false);
+    // SPEC-6.1.15: same panel as the server-decline branch below.
     if !has_cap {
         return rsx! { NoAccessPanel {} };
     }
@@ -69,6 +70,7 @@ pub fn ContactPortalBrandingPage() -> Element {
     };
     let loading = (*snap).is_none();
     let load_declined = matches!(&*snap, Some(None));
+    // SPEC-6.1.15: same panel as the missing-capability branch above.
     if load_declined {
         return rsx! { NoAccessPanel {} };
     }
@@ -165,6 +167,8 @@ pub fn ContactPortalBrandingPage() -> Element {
 /// codes, or anything a portal user would not recognize. Falls back
 /// to the brand's support contact block so the reader has one place
 /// to click for the ask.
+// SPEC-6.4.16: never names a capability, role, status code, or other
+// implementation detail to the contact.
 #[component]
 fn NoAccessPanel() -> Element {
     let brand = crate::hooks::branding::EFFECTIVE_BRANDING.read();
