@@ -27,6 +27,9 @@
 #     checkout of THIS repository, so failing it is the intended behaviour. The
 #     convention both repos settled on is a code span, not a link.
 #
+# SPEC-2.1.1: no-argument invocation, default root, and the clean/FAIL stdout
+# line contract.
+#
 # Usage: check-doc-links.sh [--self-test | ROOT]
 #   No argument checks every tracked Markdown file. ROOT limits the walk to one
 #   directory, which is how --self-test points it at fixtures.
@@ -41,6 +44,8 @@ cd "$(dirname "$0")/.." || exit 2
 # inside a fence as example text, and a naive scan reports it.
 targets_in() {
   awk '
+    # SPEC-2.5.19 (skip condition): a target inside a fenced code block must
+    # not be evaluated.
     # Fence toggling. A closing fence must match the opener s length or longer,
     # but three backticks is what this repo writes, so the simple form is
     # enough - and being generous here only ever skips more, never less.
@@ -49,6 +54,8 @@ targets_in() {
 
     { line = $0 }
 
+    # SPEC-2.5.19 (skip condition): a target inside an HTML comment must not
+    # be evaluated.
     # HTML comments, single- and multi-line.
     comment {
       if (line ~ /-->/) { sub(/^.*-->/, "", line); comment = 0 } else { next }
@@ -99,15 +106,19 @@ targets_in() {
 # The path a target names in this repository, or empty when it names none.
 path_of() {
   local target="$1"
+  # SPEC-2.5.19 (skip conditions): anchor-only and protocol-relative targets
+  # must not be evaluated.
   case "$target" in
     '#'*) return ;;      # same-document anchor
     '//'*) return ;;     # protocol-relative URL
   esac
-  # Any scheme (http:, https:, mailto:, tel:, javascript:) resolves outside the
-  # tree.
+  # SPEC-2.5.19 (skip condition, cont.): a scheme-qualified target (http:,
+  # https:, mailto:, tel:, javascript:, etc.) must not be evaluated.
   if printf '%s' "$target" | grep -qE '^[a-zA-Z][a-zA-Z0-9+.-]*:'; then
     return
   fi
+  # SPEC-2.5.19 (resolution logic): strip any fragment or query before the
+  # target is resolved.
   local path="${target%%#*}"
   path="${path%%\?*}"
   path="${path//%20/ }"
@@ -139,6 +150,8 @@ run_over() { # run_over <root>
       path=$(path_of "$target")
       [ -n "$path" ] || continue
       checked=$((checked + 1))
+      # SPEC-2.5.19 (resolution logic, cont.): resolve relative to the file's
+      # own directory, not the repository root, and the target must exist.
       local resolved
       case "$path" in
         /*) resolved=".${path}" ;;
@@ -164,6 +177,9 @@ run_over() { # run_over <root>
   return 0
 }
 
+# SPEC-2.1.3: self-test mode runs detection against generated fixtures only,
+# proving it still rejects a broken link and the depth defect, and still
+# accepts valid links, skip-cases, and fences/comments.
 if [ "${1:-}" = "--self-test" ]; then
   fixtures=$(mktemp -d) || exit 2
   trap 'rm -rf "$fixtures"' EXIT

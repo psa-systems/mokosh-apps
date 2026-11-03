@@ -17,6 +17,9 @@
 # Scope: `*.nu`, the `justfile`, and the `run:` block of every `shell: nu` step
 # in `.forgejo/workflows/*.yml`. Opt out on a line with `nu-interp-guard-allow`.
 #
+# SPEC-2.1.1: no-argument invocation, default root, and the clean/FAIL stdout
+# line contract.
+#
 # Usage: check-nu-interpolation.sh [ROOT | --self-test]
 #   ROOT defaults to the repo root. `--self-test` re-runs the guard over
 #   generated fixtures to prove it still rejects a literal parenthesis and
@@ -36,6 +39,8 @@ scan() {
       }
       return n + 1
     }
+    # SPEC-2.5.13: detect a literal, unescaped `(` inside a Nushell $"..."
+    # interpolated string that is outside a ($...) subexpression.
     # Walk an interpolated string body from i, reporting the first literal
     # parenthesis. A `($...)` subexpression is skipped whole, so a nested
     # paren inside one is never mistaken for prose.
@@ -76,14 +81,17 @@ scan() {
       }
     }
     function indent(line) { match(line, /^ */); return RLENGTH }
-    # A step is buffered whole and scanned at its end, so `shell:` and `run:`
-    # may appear in either order without the block being silently skipped.
+    # SPEC-2.5.13 (cont.): CI-step-key-order handling. A step is buffered
+    # whole and scanned at its end, so `shell:` and `run:` may appear in
+    # either order within the same step without the block being silently
+    # skipped.
     function emit(   i) {
       if (step_nu) for (i = 1; i <= nbuf; i++) scanline(buf[i], buffile[i], bufln[i])
       nbuf = 0; step_nu = 0; in_run = 0
     }
 
     FNR == 1 { emit(); yaml = (FILENAME ~ /\.ya?ml$/) }
+    # SPEC-2.3.1: skip the violation on any line carrying nu-interp-guard-allow.
     /nu-interp-guard-allow/ { next }
 
     # A YAML file is scanned only inside the run: block of a `shell: nu` step.
@@ -104,6 +112,8 @@ scan() {
   ' "$@"
 }
 
+# SPEC-2.1.3: self-test mode runs detection against generated fixtures only,
+# proving both violation shapes still fail and the corrected shapes still pass.
 if [ "${1:-}" = "--self-test" ]; then
   fixtures=$(mktemp -d) || exit 2
   trap 'rm -rf "$fixtures"' EXIT
@@ -159,6 +169,8 @@ else
     find "$root" \( -path "$root/target" -o -path "$root/node_modules" -o -path "$root/common" \) -prune -o \
       \( -name '*.nu' -o -name 'justfile' -o -path '*/.forgejo/workflows/*.yml' \) -print0 | sort -z
   )
+  # SPEC-2.5.1: this script is the named exception that exits 1, not 2, when
+  # the scan matches zero files to check.
   if [ "${#files[@]}" -eq 0 ]; then
     echo "nu-interpolation guard: FAIL (no nu sources found under $root)"
     exit 1

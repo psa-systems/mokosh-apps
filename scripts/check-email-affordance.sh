@@ -33,6 +33,9 @@
 # in the `rsx!`, far apart; that is a separate change with its own false
 # positives.
 #
+# SPEC-2.1.1: no-argument invocation, default root, and the clean/FAIL stdout
+# line contract.
+#
 # Usage: check-email-affordance.sh [ROOT | --self-test]
 #   ROOT defaults to `src`. `--self-test` re-runs the guard over generated
 #   fixtures to prove it still rejects a call site missing the icon and one
@@ -53,6 +56,9 @@ cd "$(dirname "$0")/.." || exit 2
 # so keying on the URL shape would demand these affordances of a file that has
 # nothing to do with email. It keys on `invoice_send_path(` instead, a helper
 # that exists because the call sends mail.
+# SPEC-2.2.4: this hardcoded table is the complete set of server paths whose
+# callers are required to render both a mail icon and an email preview; it is
+# read from no file other than this script.
 EMAIL_PATHS=(
   '"/form-request-links|POST /form-request-links (emails a client a request-form link)'
   '"/invitations"|POST /invitations (emails a colleague an invitation)'
@@ -67,6 +73,9 @@ EMAIL_PATHS=(
   '"/tickets/\{[A-Za-z_]+\}/notes"|POST /tickets/{id}/notes with send_email (emails the ticket contact a public note)'
 )
 
+# SPEC-2.1.3: self-test mode runs detection against generated fixtures only,
+# proving both checks still reject their violation shapes and still accept
+# the corrected shape.
 if [ "${1:-}" = "--self-test" ]; then
   fixtures=$(mktemp -d) || exit 2
   trap 'rm -rf "$fixtures"' EXIT
@@ -186,6 +195,8 @@ for entry in "${EMAIL_PATHS[@]}"; do
     | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
     | cut -d: -f1 | sort -u)
 
+  # SPEC-2.5.18 (check 1 of 2): no file under src calls a listed pattern at
+  # all means the pattern list has drifted.
   if [ -z "$callers" ]; then
     echo "email-affordance guard: FAIL (nothing under $root/ calls $label)"
     echo "The path list in $(basename "$0") has drifted. Remove the entry, or fix the pattern if the call site was renamed."
@@ -193,6 +204,8 @@ for entry in "${EMAIL_PATHS[@]}"; do
     continue
   fi
 
+  # SPEC-2.5.18 (check 2 of 2): a calling file must render both MailIcon and
+  # EmailPreview.
   for file in $callers; do
     # MAPPS-539: match the RENDERED element, not the string. `grep -q MailIcon`
     # was satisfied by the `use crate::components::{... MailIcon ...}` import

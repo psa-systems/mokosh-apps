@@ -18,6 +18,8 @@
 # component looks like a local, not like a hook.
 #
 # Usage: check-hooks-before-return.sh [--self-test]
+# SPEC-2.1.1, SPEC-2.1.3: no-arg clean/FAIL contract; --self-test runs fixtures.
+# SPEC-2.6.1: the ordering invariant this guard holds (hook order fixed per render).
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -56,6 +58,7 @@ run_guard() {
 
       # And the hook has to be at that level too: a `use_*` nested deeper is
       # inside a closure, which is its own (different) bug and not this one.
+      # SPEC-2.5.11: a hook call after an early return at this indentation fails.
       seen_return && indent <= 8 && match(line, /(^|[^[:alnum:]_.])(use_[a-z_]+)[[:space:]]*\(/, m) {
         printf "%s:%d: %s\n", file, FNR, m[2]
       }
@@ -63,6 +66,7 @@ run_guard() {
   done
 }
 
+# SPEC-2.1.2: ROOT overrides the default scan target.
 TARGET="${1:-src}"
 
 if [ "${1:-}" = "--self-test" ]; then
