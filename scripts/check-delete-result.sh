@@ -28,6 +28,11 @@
 #   ROOT defaults to `src`. `--self-test` re-runs the guard over generated
 #   fixtures to prove it still catches both banned shapes (on one line and
 #   wrapped), and still passes the `match` form and the aggregating form.
+#
+# SPEC-2.1.1: invocable with no arguments, scanning the default root (src)
+# and exiting with a `guard: clean`/`guard: FAIL` line.
+# SPEC-2.1.3: --self-test proves the detection logic against generated
+# fixtures covering both banned shapes and both accepted shapes.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -45,6 +50,8 @@ run_guard() {
       gsub(/[ \t]+/, "", t)
       return t
     }
+    # SPEC-2.4.5: fail a delete_authed* call whose result is reduced to
+    # .is_ok() or dropped via `let _ =` within WINDOW lines of the call.
     function process(   i, t) {
       for (i = 1; i <= n_lines; i++) {
         if (src[i] !~ /delete_authed[A-Za-z_]*\(/) continue
