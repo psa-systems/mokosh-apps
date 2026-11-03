@@ -14,6 +14,7 @@ use crate::utils::Paginated;
 use crate::Route;
 
 /// `GET /api/v1/reports/dashboard`.
+// SPEC-14.4.7: aggregate report backing the staff dashboard's stat tiles.
 #[derive(Clone, Debug, Default, Deserialize)]
 struct DashboardReport {
     #[serde(default)]
@@ -134,6 +135,8 @@ fn epoch_now() -> DateTime<Utc> {
 /// consumes the returned `Route`. Unknown kinds route back to the
 /// dashboard so the click still lands on a real page rather than the
 /// 404 catch-all.
+// SPEC-14.4.1: an unrecognized activity kind routes back to /dashboard
+// rather than a dead link.
 fn activity_route(kind: &str, id: &uuid::Uuid) -> Route {
     let id_s = id.to_string();
     match kind {
@@ -162,6 +165,8 @@ fn activity_kind_label(kind: &str) -> &'static str {
 /// rather than a demo count. This body is only mounted when
 /// [`has_contact_session`] returns true; the staff dashboard body sits
 /// below and is unchanged.
+// SPEC-14.4.3: contact-plane dashboard renders capability-gated stat tiles
+// and a recent-activity list sourced from one summary endpoint.
 #[component]
 fn ContactDashboardBody() -> Element {
     // MAPPS-939: resolve once for the whole activity list, not once per row.
@@ -185,6 +190,7 @@ fn ContactDashboardBody() -> Element {
 
     use_page_title("Dashboard");
 
+    // SPEC-14.4.6: loading state captured before the resource value is read.
     let snap = summary_resource.read_unchecked();
     let is_loading = snap.is_none();
     let summary: ContactDashboardSummaryWire = match &*snap {
@@ -201,6 +207,7 @@ fn ContactDashboardBody() -> Element {
     // the caller may not open; render only the tiles whose read cap the
     // caller holds. A tile whose cap is missing would otherwise send
     // the visitor into a 403 loop.
+    // SPEC-14.4.3: one capability check per tile; a missing read cap hides it.
     let can_read_tickets = crate::hooks::capabilities::use_capability("tickets:read");
     let can_read_invoices = crate::hooks::capabilities::use_capability("invoices:read");
     let can_read_quotes = crate::hooks::capabilities::use_capability("quotes:read");
@@ -210,6 +217,8 @@ fn ContactDashboardBody() -> Element {
     // of the 4-tile grid + empty activity list. Skipped when the load
     // hasn't returned yet so an incoming caps snapshot doesn't flicker
     // the empty state.
+    // SPEC-14.4.4: a caller with no granted capability sees an explanatory
+    // empty state instead of an all-hidden tile grid.
     if !is_loading && crate::hooks::capabilities::contact_has_no_capabilities() {
         return rsx! {
             PageHeader {
@@ -362,6 +371,8 @@ fn ContactDashboardBody() -> Element {
 /// owns none) so MAPPS-602 (hooks-before-return guard) stays green:
 /// the two bodies live in their own components and each runs its own
 /// hooks unconditionally.
+// SPEC-14.4.2: the contact-vs-staff body choice happens before any hook
+// fires, so each body owns its own unconditional hook order.
 #[component]
 pub fn DashboardPage() -> Element {
     #[cfg(feature = "web")]
@@ -388,6 +399,8 @@ fn StaffDashboardBody() -> Element {
     // is down) we render the honest ContentUnavailable body instead of an
     // empty, misleading dashboard. (These hooks run unconditionally and in
     // a fixed order before any early return, per the rules of hooks.)
+    // SPEC-14.4.5: the primary resource's failure renders ContentUnavailable
+    // instead of a zeroed/empty dashboard.
     let report_data = crate::hooks::use_remote_resource(|| async {
         crate::hooks::fetch::api::get_authed::<DashboardReport>("/reports/dashboard").await
     });
@@ -401,6 +414,7 @@ fn StaffDashboardBody() -> Element {
     // the server aggregates. So this is a deliberate top-5, not a whole-table
     // read - paging every ticket in the tenant to show five of them would be
     // the same bug in the other direction.
+    // SPEC-14.4.7: deliberate top-5 fetch, not a whole-table read.
     let tickets = crate::hooks::use_remote_resource(|| async {
         crate::hooks::fetch::api::get_authed::<Paginated<DashTicket>>("/tickets?per_page=5")
             .await
@@ -410,6 +424,7 @@ fn StaffDashboardBody() -> Element {
     // Summed, not counted, so the rows are needed - but only this week's. The
     // server takes `date_from`, so the sum is bounded by the same window the
     // tile reports instead of pulling the tenant's entire time history.
+    // SPEC-14.4.7: summed over a server-bounded window (date_from=Monday).
     let time_entries = crate::hooks::use_remote_resource(|| async {
         let week_start = monday_of_week(Utc::now().date_naive());
         crate::hooks::fetch::api::get_all_authed::<DashTimeEntry>(&format!(
@@ -420,6 +435,7 @@ fn StaffDashboardBody() -> Element {
     .value_or_default();
     // A count, and nothing else. `meta.total` off a one-row request is the
     // whole answer; the rows themselves are never rendered.
+    // SPEC-14.4.8: tile reads only meta.total off a one-row request.
     let active_project_count = crate::hooks::use_remote_resource(|| async {
         crate::hooks::fetch::api::get_authed::<Paginated<DashProject>>(
             "/projects?status=active&per_page=1",
@@ -441,6 +457,7 @@ fn StaffDashboardBody() -> Element {
     // MAPPS-404: capture the loading state before value_or_default() consumes
     // the resource, so the body below can gate on the primary report's first
     // fetch and show a skeleton instead of zeroed stats / empty tables.
+    // SPEC-14.4.6: loading state captured before the resource value is read.
     let is_loading = report_data.is_loading();
     let report = report_data.value_or_default();
 
@@ -702,6 +719,7 @@ fn short_id(id: &uuid::Uuid) -> String {
 /// pinned (the endpoint scopes to one team, not a union). Every resource
 /// re-runs on org switch (`active_tenant_generation()`) and on a 30s
 /// timer so an unattended monitor stays current.
+// SPEC-14.4.9: team-scoped board; SPEC-14.4.10: 30s auto-refresh tick.
 #[component]
 pub fn DashboardTvPage() -> Element {
     // MAPPS-939: resolve once for the whole appointment list, not once per
@@ -713,6 +731,7 @@ pub fn DashboardTvPage() -> Element {
     // Periodic refresh for the unattended wall monitor. Bumps a counter
     // every 30s; each resource reads it so it re-fetches. Mirrors the
     // token-refresh loop in hooks/auth.rs.
+    // SPEC-14.4.10: the refresh loop only runs under the "app" feature.
     let mut tick = use_signal(|| 0u32);
     use_future(move || async move {
         loop {
@@ -741,6 +760,8 @@ pub fn DashboardTvPage() -> Element {
             async move {
                 let _gen = crate::hooks::fetch::active_tenant_generation();
                 let _tick = tick();
+                // SPEC-14.4.9: a pinned team scopes to it; otherwise the
+                // server resolves the caller's own teams union.
                 let path = if team.is_empty() {
                     "/tickets?my_teams=true".to_string()
                 } else {
@@ -766,6 +787,7 @@ pub fn DashboardTvPage() -> Element {
             let team = team.clone();
             async move {
                 let _tick = tick();
+                // SPEC-14.4.9: team-scoped only when a single team is pinned.
                 let path = if team.is_empty() {
                     "/reports/dashboard".to_string()
                 } else {
@@ -796,6 +818,8 @@ pub fn DashboardTvPage() -> Element {
             );
             // An empty board is also what a day with nothing scheduled looks
             // like, so both outcomes name themselves.
+            // SPEC-14.4.11: a failed dispatch fetch logs and falls back to an
+            // empty board rather than surfacing an error state.
             crate::hooks::fetch::api::get_authed::<DispatchResponse>(&path)
                 .await
                 .inspect(|d| {
@@ -819,6 +843,8 @@ pub fn DashboardTvPage() -> Element {
     // cache attempts the fetch regardless; a non-privileged viewer just gets
     // an empty cached roster back). MAPPS-860: shared roster cache, not a
     // per-page fetch re-run on every kiosk auto-refresh tick.
+    // SPEC-14.4.9: roster lookup is gated server-side; a non-privileged
+    // viewer's cached roster comes back empty rather than erroring.
     let users_resource = crate::hooks::use_user_roster(true);
 
     let tickets = tickets_resource
@@ -839,6 +865,8 @@ pub fn DashboardTvPage() -> Element {
     let users_map: std::collections::HashMap<uuid::Uuid, String> = users
         .iter()
         .map(|u| {
+            // SPEC-14.4.12: a roster user with no server-side name logs an
+            // unresolved reference and falls back to "Unknown".
             let name = u.display_name().unwrap_or_else(|| {
                 let shown = "Unknown".to_string();
                 let _ =
@@ -917,6 +945,8 @@ pub fn DashboardTvPage() -> Element {
                                             {
                                                 Some(name) => (name, None),
                                                 None => {
+                                                    // SPEC-14.4.12: unresolved
+                                                    // technician id, same pattern.
                                                     let shown = short_id(&a.assigned_to_id);
                                                     let title = crate::utils::unresolved(
                                                         "dashboard.appointment_tech",
@@ -1036,6 +1066,8 @@ fn short_id_str(id: &str) -> String {
 /// stale indicator instead of `report.sla_warnings` / `report.sla_breached`,
 /// which default to 0 on a failed fetch and would otherwise be
 /// indistinguishable from a tenant with zero breaches.
+// SPEC-14.4.13: an unavailable SLA fetch renders an explicit notice instead
+// of a zero, while an independently-loaded tile still renders normally.
 #[component]
 fn TvKpiStrip(
     open_tickets: i64,
