@@ -52,6 +52,7 @@ pub fn ContactSetPasswordPage(slug: String, token: String) -> Element {
         async move {
             #[cfg(feature = "web")]
             {
+                // SPEC-6.7.9: resolve the host/branding hint.
                 let path = format!("/contact/portal/{slug}/host");
                 crate::hooks::fetch::api::get_typed::<HostHint>(&path)
                     .await
@@ -83,12 +84,14 @@ pub fn ContactSetPasswordPage(slug: String, token: String) -> Element {
     };
 
     let token_for_submit = token.clone();
+    // SPEC-6.6.1: ignore a submit while a previous one is still in flight.
     let mut submit = move |_| {
         if saving() {
             return;
         }
         let pw = new_pw.read().clone();
         let confirm = confirm_pw.read().clone();
+        // SPEC-6.5.3: minimum length and confirmation-match checks.
         if pw.len() < 12 {
             error.set("Password must be at least 12 characters.".to_string());
             return;
@@ -108,6 +111,7 @@ pub fn ContactSetPasswordPage(slug: String, token: String) -> Element {
                     token: tok,
                     password: pw,
                 };
+                // SPEC-6.7.9: redeem the contact setup token.
                 match crate::hooks::fetch::api::post_typed_no_content(
                     "/contact/auth/set-password",
                     &body,
@@ -117,6 +121,7 @@ pub fn ContactSetPasswordPage(slug: String, token: String) -> Element {
                     Ok(()) => {
                         done.set(true);
                     }
+                    // SPEC-6.5.3: empty 400 message maps to this page's invalid-link text.
                     Err(ApiError::Status {
                         code: 400, message, ..
                     }) => {
@@ -126,6 +131,7 @@ pub fn ContactSetPasswordPage(slug: String, token: String) -> Element {
                             message
                         });
                     }
+                    // SPEC-6.5.3: empty 410 message maps to this already-used text.
                     Err(ApiError::Status {
                         code: 410, message, ..
                     }) => {
@@ -147,6 +153,7 @@ pub fn ContactSetPasswordPage(slug: String, token: String) -> Element {
     };
 
     let slug_for_link = slug.clone();
+    // SPEC-6.1.16: slug/token from route props; explicit "Go to sign in" action on success.
     rsx! {
         AuthLayout {
             if done() {

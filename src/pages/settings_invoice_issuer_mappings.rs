@@ -346,7 +346,7 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
     // are the people whose claims cannot be paid back through it.
     let people = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        let names = crate::pages::expenses::member_names().await;
+        let (names, _truncated) = crate::pages::expenses::member_names().await;
         let mapped =
             crate::hooks::fetch::api::get_authed::<UserMappings>("/invoice-issuer-mappings/people")
                 .await

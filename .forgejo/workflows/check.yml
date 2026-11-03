@@ -36,6 +36,7 @@ jobs:
         # historical release reappear in the Recently-added window.
         uses: https://code.forgejo.org/actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          # SPEC-1.8.13: submodules checked out so the common submodule's shared recipes resolve.
           submodules: true
           fetch-depth: 0
           fetch-tags: true
@@ -67,6 +68,7 @@ jobs:
       # never renders CSS, so an empty file is enough to satisfy the
       # `asset!("/assets/styles.css")` macro in src/main.rs. The real CSS is
       # built by oci-build/Dockerfile for deployment.
+      # SPEC-1.8.8: a placeholder is enough to satisfy the asset!() macro for compile-only validation.
       - name: Stub generated CSS asset
         run: mkdir -p assets && touch assets/styles.css
 
@@ -245,6 +247,26 @@ jobs:
           bash scripts/check-hooks-before-return.sh --self-test
           bash scripts/check-hooks-before-return.sh
 
+      # MAPPS-1211: `SurfaceVisibility::StaffAdmin` is a hub-visibility flag and
+      # nothing else. The route stays reachable, so Settings > Contact Roles
+      # showed a non-admin the whole capability editor to anybody who typed the
+      # URL. Nothing in the types joins the registry's data to the page's
+      # control flow, which is why a script holds it.
+      - name: Admin-gate guard
+        run: |
+          bash scripts/check-admin-gate.sh --self-test
+          bash scripts/check-admin-gate.sh
+
+      # MAPPS-1212: the browser toggles a checkbox's own node on click, and
+      # dioxus does not mark `checked` volatile, so a re-render computing the
+      # same value emits nothing and a cancelled turn-off leaves the box
+      # showing a value nothing wrote. Two pages shipped that way, one with a
+      # comment claiming a server re-read would fix it.
+      - name: Confirmed-toggle guard
+        run: |
+          bash scripts/check-confirmed-toggle.sh --self-test
+          bash scripts/check-confirmed-toggle.sh
+
       # MAPPS-659: the pre-hydration theme applier read `localStorage.theme`
       # while the app has always written `mokosh_theme`, so it never found a
       # stored preference and every load painted its first frame from the OS
@@ -358,6 +380,7 @@ jobs:
           bash scripts/check-card-headings.sh --self-test
           bash scripts/check-card-headings.sh
 
+      # SPEC-1.8.7: formatting, lint, and the wasm/desktop build/test matrix, all in this one job.
       - name: Check formatting
         run: cargo fmt --all --check
 
@@ -380,6 +403,7 @@ jobs:
 
       # MAPPS-975: the CI image ships no cargo-audit, so the audit below was a
       # silent no-op. crates.io has no digest, so the crate version is the pin.
+      # SPEC-1.4.11: a dependency vulnerability check on every CI run.
       - name: Install cargo-audit
         run: cargo install cargo-audit --version 0.22.2 --locked
 
@@ -404,16 +428,36 @@ jobs:
             --ignore RUSTSEC-2026-0173 \
             --ignore RUSTSEC-2024-0429
 
+      # SPEC-1.5.9: report metrics with `if: always()` so an earlier step's failure still reports.
       - name: Report job metrics
         if: always()
         uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/job-metrics-report@e728773130496a6e84e0d87de9390f3d98939019 # main
 
   secrets:
-    uses: psa-systems/common/.forgejo/workflows/check-secrets.yml@7987236da3d1a4aee8897ecd9e2be16e6d5b65ac # main
-    secrets: inherit
-    with:
-      # Nosey Parker's Generic Secret rule flags the 40-character commit SHA
-      # this job is pinned to above (MAPPS-954): a SHA pin isn't a
-      # credential, so suppress this one finding by id rather than reverting
-      # the pin.
-      noseyparker_findings_exclude: 5ea6a266e38a359ff88be14c9235d517260ad043
+    # Base image, medium size: the scanners read the tree and compile nothing.
+    # Explicit runs-on here because a cross-repo reusable `uses:` on this
+    # Forgejo instance does not resolve the caller's `vars.*`, so the runner
+    # wait message comes back with empty labels. Shaped like bunyip's secrets
+    # job (BUNYIP-786): the composite action runs as named steps of this job,
+    # a failing scanner is named in the UI, and the URL-form stops Renovate's
+    # github-actions manager from treating `psa-systems/common` as github.com.
+    runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_MEDIUM }}
+    defaults:
+      run:
+        shell: nu {0}
+    steps:
+      - name: Clone the repository
+        uses: https://code.forgejo.org/actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # SPEC-1.4.13: every push and pull request is scanned for committed secrets.
+      - name: Secrets scan
+        uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/check-secrets@7987236da3d1a4aee8897ecd9e2be16e6d5b65ac # main
+        with:
+          # Nosey Parker's Generic Secret rule flags the 40-character commit
+          # SHA the composite action is pinned to above (MAPPS-954): a SHA
+          # pin isn't a credential, so suppress this one finding by id
+          # rather than reverting the pin.
+          noseyparker_findings_exclude: 5ea6a266e38a359ff88be14c9235d517260ad043

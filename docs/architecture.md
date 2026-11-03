@@ -6,7 +6,7 @@ build produces.
 
 ## Tech stack
 
-- **[Dioxus](https://dioxuslabs.com/) 0.7** (`0.7.7`), with the `router`
+- **[Dioxus](https://dioxuslabs.com/) 0.8** (`0.8.0-alpha.3`), with the `router`
   feature and exactly one renderer feature, `web` or `desktop`.
 - **`wasm32-unknown-unknown`** for the SPA; the host target for the desktop app.
 - **[Tailwind CSS](https://tailwindcss.com/) v4** via [Bun](https://bun.sh/)
@@ -77,8 +77,9 @@ sequencing that produced it and [`desktop.md`](desktop.md) has the build.
   [`desktop.md`](desktop.md); the desktop recipes pass
   `--no-default-features --features desktop,multi-tenant`, because dropping the
   defaults is what turns the web renderer off.
-- `multi-tenant` (default) and `single-tenant` select the tenancy build. They
-  are mutually exclusive.
+- `multi-tenant` (default) gates the tenancy build. There is no
+  `single-tenant` feature; the non-multi-tenant build is simply
+  `multi-tenant` turned off.
 - `server` is never enabled by any build here. It gates the mirrored server
   halves of `src/modules/*` and `src/utils/error.rs`, which are byte-identical
   copies of mokosh-server code kept for diffing, so the gate excludes them from

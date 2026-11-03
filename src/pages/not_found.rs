@@ -15,6 +15,7 @@ pub struct NotFoundPageProps {
 pub fn NotFoundPage(props: NotFoundPageProps) -> Element {
     let path = props.route.join("/");
 
+    // SPEC-6.1.25: catch-all 404 content with links back to dashboard, home and KB.
     rsx! {
         div { class: "min-h-screen flex items-center justify-center bg-app px-4",
             div { class: "max-w-lg w-full text-center",
@@ -32,6 +33,7 @@ pub fn NotFoundPage(props: NotFoundPageProps) -> Element {
                 }
 
                 // Debug info (only shown in development)
+                // SPEC-6.5.17: renders whenever path is non-empty, in every build.
                 if !path.is_empty() {
                     p { class: "text-sm text-subtle mb-8 font-mono",
                         "/{path}"

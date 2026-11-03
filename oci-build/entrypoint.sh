@@ -39,6 +39,7 @@ CONFIG_JSON="${RUNTIME_DIR}/_mokosh_config.json"
 INDEX="${RUNTIME_DIR}/index.html"
 INCLUDE_TAG='<script src="/_mokosh_config.js"></script>'
 
+# SPEC-1.5.5: fail the container start, not just log, when the runtime dir cannot be prepared.
 # MAPPS-963: prepare the runtime directory and refresh the index copy
 # every start. The directory lives under /tmp so any uid can write
 # it; a failure here is fatal because the Caddyfile's matched root
@@ -52,6 +53,7 @@ mkdir -p "$RUNTIME_DIR" 2>/dev/null || fail_runtime_dir "cannot create runtime d
 if [ ! -w "$RUNTIME_DIR" ]; then
     fail_runtime_dir "runtime directory is not writable"
 fi
+# SPEC-1.9.1: restore the pristine index.html every start so patches never accumulate.
 # Start every run from the pristine image copy of index.html so the
 # patches below are idempotent and a prior restart's edits cannot
 # accumulate.
@@ -100,6 +102,7 @@ emit_field() {
     fi
 }
 
+# SPEC-1.3.7: the full set of container runtime configuration fields written to the SPA.
 # The one list of runtime-config fields (MAPPS-812): every field the SPA
 # can read at runtime, as "name<TAB>value" lines. `render_config_fields`
 # below is the only consumer, and it drives both `_mokosh_config.js` and
@@ -260,6 +263,7 @@ absolute_image_url() {
     printf '}'
 } > "$CONFIG_JSON" || fail_runtime_dir "cannot write ${CONFIG_JSON#$RUNTIME_DIR/} to"
 
+# SPEC-1.1.4: patch in the runtime-config shim tag so the served index.html loads it.
 # Inject the script tag into <head>. The runtime copy of index.html is
 # refreshed from the pristine bundle on every start (see cp above), so
 # this always edits the un-patched version; no idempotence check needed.
@@ -279,6 +283,7 @@ OG_MARKER='<!-- MAPPS-477 link-preview metadata -->'
 og_title="$(escape_html "${MOKOSH_BRAND_NAME:-Mokosh Platform}")"
 og_desc="$(escape_html "${MOKOSH_BRAND_DESCRIPTION:-Mokosh Platform - Professional Services Automation for MSPs}")"
 og_image_raw="$(absolute_image_url "${MOKOSH_BRAND_LOGO_URL:-}")"
+# SPEC-1.5.10: drop the image tags instead of emitting an unresolvable logo URL.
 if [ -n "${MOKOSH_BRAND_LOGO_URL:-}" ] && [ -z "$og_image_raw" ]; then
     echo "[entrypoint] WARN: MOKOSH_BRAND_LOGO_URL='${MOKOSH_BRAND_LOGO_URL}' is not absolute and MOKOSH_PUBLIC_URL is unset; og:image/twitter:image omitted because a link-preview crawler cannot resolve a relative image URL. Set MOKOSH_PUBLIC_URL to the site's public base URL." >&2
 fi
@@ -323,6 +328,7 @@ rm -f "$og_blockfile"
 # (one image serves every deployment). Export the Caddyfile's `map`
 # placeholder name instead of an empty string in that case, so the CSP header
 # picks up the SAME derivation from the actual request's Host header.
+# SPEC-1.7.4: derive and export the origin-scoped API/OIDC env for the Caddyfile's CSP.
 if [ -n "${MOKOSH_API_BASE:-}" ]; then
     MOKOSH_API_ORIGIN="$(origin_of "${MOKOSH_API_BASE}")"
 else

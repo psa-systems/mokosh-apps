@@ -1198,7 +1198,9 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         }
     });
     // MAPPS-940: shared task-statuses cache, not a per-page fetch.
-    let statuses_resource = crate::hooks::use_task_statuses(true);
+    // Mut so the Add Task button can restart the cache on open and
+    // pick up a row created out-of-band.
+    let mut statuses_resource = crate::hooks::use_task_statuses(true);
     // MAPPS-860: shared roster cache, not a per-page fetch.
     let users_resource = crate::hooks::use_user_roster(true);
 
@@ -1461,6 +1463,12 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                             return;
                         }
                         t_error.set(String::new());
+                        // Refresh the shared task-statuses cache so a
+                        // row created in another session or by a
+                        // sibling (admin page, API client, test harness)
+                        // appears in the Status select without a page
+                        // reload.
+                        statuses_resource.restart();
                         show_task_modal.set(true);
                     },
                     PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
@@ -1522,22 +1530,23 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
             {
                 let p = project.clone().unwrap();
                 let (status_variant, status_label) = status_badge(&p.status);
-                // MAPPS-1044: render the project manager from the server's
-                // own `project_manager_name` (PMS-1481); the client-side
-                // roster join that used to supply it is gone. The
-                // unresolved case still logs via `user_name_with_tooltip`
-                // when the id did not resolve server-side.
-                let (pm, pm_title) = match p.project_manager_name.as_deref() {
-                    Some(name) if !name.trim().is_empty() => (name.to_string(), None),
-                    _ => match p.project_manager_id {
-                        Some(_) => user_name_with_tooltip(
-                            &[],
-                            &p.project_manager_id,
-                            "projects.project_manager",
-                        ),
-                        None => ("Unassigned".to_string(), None),
-                    },
-                };
+                // MAPPS-1044: the server's own `project_manager_name`
+                // (PMS-1481) first, then this page's roster, then the
+                // unresolved hint.
+                //
+                // MAPPS-1210: through the shared helper, with the roster this
+                // component already loaded. The precedence used to be spelled
+                // out again here and handed `&[]`, so the fallback could
+                // never resolve anybody and every project whose manager the
+                // server had not joined read "Unknown" while the name sat in
+                // `users`. The helper is where that order lives, and the task
+                // assignee below has always used it.
+                let (pm, pm_title) = user_name_with_tooltip_prefer(
+                    &users,
+                    &p.project_manager_id,
+                    p.project_manager_name.as_deref(),
+                    "projects.project_manager",
+                );
                 let spent = p.actual_amount.unwrap_or(0.0);
                 let budget = p.budget_amount.unwrap_or(0.0);
                 let remaining = budget - spent;
@@ -2845,6 +2854,111 @@ mod validation_tests {
         // Genuinely non-numeric input still reports the format message.
         let bad = validate_budget_hours("abc").unwrap_err();
         assert!(bad.contains("must be a number"), "got: {bad}");
+    }
+}
+
+#[cfg(test)]
+mod mapps1210_project_manager_fallback_tests {
+    use super::{user_name_with_tooltip_prefer, RemoteUser};
+
+    const PM: &str = "33333333-3333-4333-8333-333333333333";
+    const SURFACE: &str = "projects.project_manager";
+
+    fn roster() -> Vec<RemoteUser> {
+        vec![
+            serde_json::from_str(&format!(r#"{{"id":"{PM}","full_name":"Mina Okonkwo"}}"#))
+                .expect("deserialise user"),
+        ]
+    }
+
+    fn id() -> Option<uuid::Uuid> {
+        Some(PM.parse().expect("a uuid"))
+    }
+
+    /// The defect: with no server-sent name, the roster this page already
+    /// loaded resolves the manager. It used to be handed an empty slice, so
+    /// this case rendered "Unknown" with a tooltip while the name sat in
+    /// `users`.
+    #[test]
+    fn no_server_name_falls_back_to_the_roster() {
+        let (name, tooltip) = user_name_with_tooltip_prefer(&roster(), &id(), None, SURFACE);
+        assert_eq!(name, "Mina Okonkwo");
+        assert_eq!(tooltip, None, "a resolved name needs no hint");
+    }
+
+    /// A blank server-sent name is not a name: it falls back too, which is
+    /// what the hand-rolled `match` got right and is worth keeping.
+    #[test]
+    fn a_blank_server_name_falls_back_as_well() {
+        let (name, _) = user_name_with_tooltip_prefer(&roster(), &id(), Some("   "), SURFACE);
+        assert_eq!(name, "Mina Okonkwo");
+    }
+
+    /// The server's name still wins when it has one, so this change cannot
+    /// reintroduce the client-side join PMS-1481 removed.
+    #[test]
+    fn the_servers_name_wins() {
+        let (name, tooltip) =
+            user_name_with_tooltip_prefer(&roster(), &id(), Some("Server Name"), SURFACE);
+        assert_eq!(name, "Server Name");
+        assert_eq!(tooltip, None);
+    }
+
+    /// An id in neither place is still "Unknown" with the unresolved hint:
+    /// the fix is about reading the roster, not about hiding a dangling
+    /// reference.
+    #[test]
+    fn an_id_nothing_holds_is_unknown_with_a_hint() {
+        let missing: Option<uuid::Uuid> = Some(
+            "44444444-4444-4444-8444-444444444444"
+                .parse()
+                .expect("a uuid"),
+        );
+        let (name, tooltip) = user_name_with_tooltip_prefer(&roster(), &missing, None, SURFACE);
+        assert_eq!(name, "Unknown");
+        assert!(
+            tooltip.is_some_and(|t| t.contains("44444444")),
+            "the hint names the id that did not resolve"
+        );
+    }
+
+    /// No manager at all is "Unassigned", never "Unknown": one is a project
+    /// nobody is running and the other is a reference that went bad, and the
+    /// page must not say the second when it means the first.
+    #[test]
+    fn no_manager_is_unassigned() {
+        let (name, tooltip) = user_name_with_tooltip_prefer(&roster(), &None, None, SURFACE);
+        assert_eq!(name, "Unassigned");
+        assert_eq!(tooltip, None);
+    }
+
+    /// The call site passes the roster and goes through the shared helper.
+    ///
+    /// The precedence was spelled out a second time at that site, which is
+    /// how `&[]` got in: one copy read the roster and the other was written
+    /// without it. Scanned so a future edit cannot quietly re-open it.
+    #[test]
+    fn the_call_site_uses_the_helper_and_the_roster() {
+        let src = include_str!("projects.rs");
+        let head = &src[..src
+            .find("mod mapps1210_project_manager_fallback_tests")
+            .expect("this module")];
+        let at = head
+            .find("let (pm, pm_title)")
+            .expect("the project manager binding");
+        let call = &head[at..(at + 320).min(head.len())];
+        assert!(
+            call.contains("user_name_with_tooltip_prefer"),
+            "the precedence lives in the helper: {call}"
+        );
+        assert!(
+            call.contains("&users"),
+            "and it is handed this page's roster: {call}"
+        );
+        assert!(
+            !call.contains("&[]"),
+            "an empty roster can never resolve anybody: {call}"
+        );
     }
 }
 

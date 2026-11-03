@@ -89,6 +89,7 @@ pub struct FieldLock {
 impl Provenance {
     /// The link the card describes: the live one, else the most recent (the
     /// server answers live first).
+    // SPEC-7.2.6: trusts server ordering rather than re-deriving "current".
     pub fn current(&self) -> Option<&ProvenanceLink> {
         self.links.first()
     }
@@ -243,6 +244,8 @@ struct RemoveResult {
 
 /// The detail page's account of the import. Renders nothing for a contact
 /// that was never imported.
+// SPEC-7.1.9: renders nothing with no provenance link, else origin, source,
+// and locks, gating Unlink/Remove by link liveness and admin role.
 #[component]
 pub fn ImportCard(
     contact_id: String,
@@ -307,6 +310,7 @@ pub fn ImportCard(
     let disabled = busy() || !can_mutate;
     let release_disabled = release_lock_disabled(busy(), can_mutate, can_manage);
 
+    // SPEC-7.7.5: DELETE releases one field lock.
     let release = {
         let contact_id = contact_id.clone();
         move |field: String| {
@@ -325,6 +329,7 @@ pub fn ImportCard(
             });
         }
     };
+    // SPEC-7.7.5/SPEC-7.9.2: unlink leaves the contact record itself untouched.
     let unlink = {
         let path = format!("/contacts/contacts/{contact_id}/sync/unlink");
         move || {
@@ -343,6 +348,8 @@ pub fn ImportCard(
             });
         }
     };
+    // SPEC-7.7.5/SPEC-7.9.2/SPEC-7.9.3: deletes the contact only when the
+    // server reports contact_deleted; otherwise removes only import data.
     let remove = {
         let path = format!("/contacts/contacts/{contact_id}/sync/remove-imported-data");
         move || {
@@ -500,6 +507,7 @@ pub fn ImportCard(
                             "Unlink from {provider}"
                         }
                     }
+                    // SPEC-7.4.4: "Remove imported data" is admin-only.
                     if is_admin {
                         Button {
                             variant: ButtonVariant::Danger,
@@ -561,6 +569,7 @@ pub fn ImportCard(
                     oninput: move |e: FormEvent| reason.set(e.value()),
                 }
             },
+            // SPEC-7.4.4: a non-empty reason is required before the request fires.
             onconfirm: move |_| {
                 if reason().trim().is_empty() {
                     return;
@@ -589,11 +598,14 @@ pub fn release_message(field: &str, provider: &str) -> String {
 /// `DELETE /contacts/contacts/{id}/sync/locks/{field}`
 /// (`mokosh-server/src/modules/contact_sync/routes.rs`), which allows
 /// `super_admin`/`admin`/`manager`.
+// SPEC-7.4.3: disabled whenever busy, unreachable, or below manager.
 fn release_lock_disabled(busy: bool, can_mutate: bool, can_manage: bool) -> bool {
     busy || !can_mutate || !can_manage
 }
 
 /// What removal will do, stated before it happens (PSA-70 K).
+// SPEC-7.9.3: states the link/review-queue deletion, no re-import, the
+// audit-event-not-details retention, and tickets/invoices being untouched.
 pub fn remove_message(origin: Option<&str>, provider: &str) -> String {
     let what = match origin {
         Some("created") => "The import created this contact, so the contact is deleted.",

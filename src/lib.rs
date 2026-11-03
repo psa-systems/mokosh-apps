@@ -42,6 +42,7 @@ use components::AppShell;
 ///
 /// Anything the pathname does not match falls through to the shared
 /// Outlet so the contact-permitted routes stay reachable.
+// SPEC-1.4.3: the full staff-only deny list and the /settings/* allowlist.
 pub fn pathname_is_contact_forbidden(path: &str) -> bool {
     // Strip query + trailing slash so the compare is stable
     // regardless of how the browser hands us the URL.
@@ -125,6 +126,7 @@ pub fn pathname_is_contact_forbidden(path: &str) -> bool {
 /// also so the truth table is testable: this is the logic MAPPS-767 got
 /// wrong, and reading hook ordering out of a component is how it stayed
 /// wrong.
+// SPEC-1.4.2, SPEC-1.6.2: decided in a signal initializer, not an effect.
 pub(crate) fn hold_for_contact_rehydrate(
     staff_bearer: bool,
     contact_session: bool,
@@ -140,23 +142,28 @@ pub(crate) fn hold_for_contact_rehydrate(
     if contact_session {
         return false;
     }
-    // No mirrored token means no rehydrate is coming, so waiting would hang.
+    // MAPPS-1169: whether a rehydrate can succeed is now a server-side
+    // question (the HttpOnly cookie), not something this client can read.
+    // `contact_refresh_token` is always `true` on the web target; keeping
+    // the parameter instead of hardcoding `true` inline keeps the truth
+    // table (and the MAPPS-630 short-circuit above it) testable.
     contact_refresh_token
 }
 
+// SPEC-1.4.1: decides and acts on the unauthenticated case during render, not after it.
 #[component]
 pub fn AuthGuard() -> Element {
     let auth = hooks::use_auth();
     let nav = use_navigator();
     // mokosh-contact-login prompt 005: cold-load bootstrap for the
     // contact plane. Fires once on mount; if there is no in-memory
-    // contact access token but a refresh token is mirrored in
-    // localStorage, kick off `/contact/auth/refresh` in the
-    // background. This races the first render (intentionally) and
-    // mirrors the staff-bearer bootstrap in hooks/auth.rs: a hard
-    // refresh on `/dashboard` under a contact session may transiently
-    // fall through the guard's next branch, then re-render once the
-    // refresh lands.
+    // contact access token, kick off `/contact/auth/refresh` in the
+    // background and let the server decide, from its HttpOnly cookie,
+    // whether the rehydrate can succeed (MAPPS-1169). This races the
+    // first render (intentionally) and mirrors the staff-bearer
+    // bootstrap in hooks/auth.rs: a hard refresh on `/dashboard` under
+    // a contact session may transiently fall through the guard's next
+    // branch, then re-render once the refresh lands.
     // MAPPS-767 / MAPPS-769: whether a contact rehydrate is still in flight.
     //
     // The effect below races the first render on purpose, which is fine while
@@ -173,9 +180,10 @@ pub fn AuthGuard() -> Element {
     // navigates - it can never gate the one render that does the damage. That
     // is what shipped under MAPPS-767 and why the bounce survived it.
     //
-    // `current_contact_refresh_token` reads localStorage and caches into the
-    // thread-local when memory is empty, so this answers correctly on a cold
-    // load, which is the only situation that matters here.
+    // MAPPS-1169: there is no client-side token to check any more (the
+    // refresh token lives only in the HttpOnly cookie), so the gate below
+    // holds unconditionally on a cold load and lets the server's cookie
+    // check decide whether the refresh succeeds.
     let mut contact_rehydrating = use_signal(|| {
         #[cfg(feature = "web")]
         {
@@ -184,7 +192,10 @@ pub fn AuthGuard() -> Element {
             hold_for_contact_rehydrate(
                 crate::hooks::fetch::api::current_access_token().is_some(),
                 crate::hooks::fetch::api::has_contact_session(),
-                crate::hooks::fetch::api::current_contact_refresh_token().is_some(),
+                // MAPPS-1169: whether a refresh can succeed belongs to the
+                // server reading the HttpOnly cookie, not to a client-side
+                // token the client no longer holds.
+                true,
             )
         }
         #[cfg(not(feature = "web"))]
@@ -194,19 +205,15 @@ pub fn AuthGuard() -> Element {
     });
     #[cfg(feature = "web")]
     use_effect(move || {
-        // MAPPS-630: skip the contact rehydrate when a staff bearer
-        // is present. The two planes are mutually exclusive within
-        // one browser origin, and blindly rehydrating a stale
-        // contact refresh token here (localStorage IS cross-tab)
-        // would resurrect a portal session inside a freshly-opened
-        // staff tab, shadowing the staff sidebar via the MAPPS-625
-        // "contact wins" precedence.
-        if crate::hooks::fetch::api::current_access_token().is_some() {
-            return;
-        }
-        if !crate::hooks::fetch::api::has_contact_session()
-            && crate::hooks::fetch::api::current_contact_refresh_token().is_some()
-        {
+        // Same three conditions the initialiser acts on (MAPPS-630 on the
+        // staff bearer; MAPPS-1169 on the always-true refresh condition),
+        // read again here because a staff bearer can arrive between the
+        // initialiser's read and this effect's.
+        if hold_for_contact_rehydrate(
+            crate::hooks::fetch::api::current_access_token().is_some(),
+            crate::hooks::fetch::api::has_contact_session(),
+            true,
+        ) {
             spawn(async move {
                 let _ = crate::hooks::contact_auth::refresh_contact_session().await;
                 // Cleared whatever the outcome. A refresh that FAILS has to
@@ -216,10 +223,8 @@ pub fn AuthGuard() -> Element {
                 contact_rehydrating.set(false);
             });
         } else {
-            // Nothing to wait for: the initialiser and this effect read the
-            // same three values, but a staff bearer can arrive between them,
-            // and a signal left raised with no spawn to lower it would hang
-            // the guard on its placeholder forever.
+            // Nothing to wait for: a signal left raised with no spawn to
+            // lower it would hang the guard on its placeholder forever.
             contact_rehydrating.set(false);
         }
     });
@@ -258,6 +263,7 @@ pub fn AuthGuard() -> Element {
         // bearer AND no tenant auth still bounces to `/login` (or
         // kicks the OIDC flow off), so nothing above this line
         // silently unlocks a route that used to require tenant auth.
+        // SPEC-1.4.4: bypasses tenant AuthGuard without granting extra authorization.
         #[cfg(feature = "web")]
         if crate::hooks::fetch::api::current_platform_access_token().is_some() {
             return rsx! {
@@ -296,6 +302,7 @@ pub fn AuthGuard() -> Element {
                 .unwrap_or_default();
             #[cfg(not(target_arch = "wasm32"))]
             let pathname = String::new();
+            // SPEC-1.4.3: redirect to the dashboard rather than render a denied page.
             if pathname_is_contact_forbidden(&pathname) {
                 nav.replace(Route::Dashboard {});
                 return rsx! {
@@ -377,6 +384,7 @@ pub fn AuthGuard() -> Element {
         // mokosh-contact-login: the pre-pivot portal-host redirect to
         // `Route::PortalLogin` retires with the customer-portal route
         // family (prompt 001). Contact plane replacement in prompt 005.
+        // SPEC-1.4.5: standalone deployments redirect to local sign-in, not OIDC.
         if crate::modules::oidc::is_standalone() {
             nav.replace(Route::Login {});
             return rsx! {
@@ -494,6 +502,7 @@ pub fn AuthGuard() -> Element {
 /// inside each route's `AppLayout`, so they are not present here; the
 /// "Go to dashboard" button clears the boundary AND navigates so the
 /// user lands on a fresh route subtree with chrome restored.
+// SPEC-1.5.3, SPEC-1.5.4: shown on a caught route error; does not catch wasm panics.
 #[component]
 fn RouteErrorFallback(errors: ErrorContext) -> Element {
     let nav = use_navigator();
@@ -557,6 +566,8 @@ fn RouteErrorFallback(errors: ErrorContext) -> Element {
 }
 
 /// Application routes
+// SPEC-1.1.1: the full route table, in its three tiers (public, AuthGuard-gated
+// chromeless, AuthGuard+AppShell-gated workspace) plus the catch-all below.
 #[derive(Clone, Routable, Debug, PartialEq)]
 #[rustfmt::skip]
 pub enum Route {
@@ -584,6 +595,7 @@ pub enum Route {
     #[route("/login")]
     Login {},
 
+    // SPEC-1.1.2: a legacy path must still resolve (via a redirect stub), not 404.
     #[route("/client/login")]
     ClientLoginLegacy {},
 
@@ -1289,6 +1301,7 @@ pub enum Route {
     // mokosh workspace routes with capability gating.
     #[end_layout]
 
+    // SPEC-1.1.3: matches any path no other route does.
     // Catch-all 404
     #[route("/:..route")]
     NotFound { route: Vec<String> },
@@ -2873,20 +2886,26 @@ fn NotFound(route: Vec<String>) -> Element {
 mod contact_rehydrate_hold {
     use super::hold_for_contact_rehydrate;
 
-    /// The case the issue is about: a cold load with a mirrored refresh token
-    /// and nothing in memory yet. A customer returning from a completed
-    /// payment is always in this state, and deciding here sends them to a
-    /// sign-in page holding a charged card.
+    /// MAPPS-1169 regression: AuthGuard's cold-load path, `has_contact_session()
+    /// == false` and no in-memory refresh token present (the production
+    /// call sites pass `true` for the third argument unconditionally, since
+    /// whether a refresh can succeed is now the server's call on the
+    /// HttpOnly cookie, not something read from memory). A customer
+    /// returning from a completed payment is always in this state, so this
+    /// must hold the guard and attempt `POST /contact/auth/refresh` rather
+    /// than deciding early and bouncing them to sign-in.
     #[test]
-    fn a_cold_load_with_a_mirrored_token_waits() {
+    fn a_cold_load_with_no_in_memory_token_still_attempts_refresh() {
         assert!(hold_for_contact_rehydrate(false, false, true));
     }
 
-    /// Nothing to wait for: no token means no rehydrate is coming, and
-    /// waiting would hang the guard on its placeholder rather than letting
-    /// the visitor reach the sign-in page they need.
+    /// The pure function still supports a `false` third argument so the
+    /// truth table stays fully specified, even though no production caller
+    /// passes it any more: with nothing to wait for, waiting would hang the
+    /// guard on its placeholder rather than letting the visitor reach the
+    /// sign-in page they need.
     #[test]
-    fn no_token_means_no_wait() {
+    fn no_wait_condition_means_no_wait() {
         assert!(!hold_for_contact_rehydrate(false, false, false));
     }
 
@@ -2898,9 +2917,9 @@ mod contact_rehydrate_hold {
         assert!(!hold_for_contact_rehydrate(false, true, false));
     }
 
-    /// MAPPS-630: a staff bearer wins outright, token or not. localStorage is
-    /// cross-tab, so waiting on a stale contact token here would resurrect a
-    /// portal session inside a freshly opened staff tab.
+    /// MAPPS-630: a staff bearer wins outright, unconditionally. Attempting a
+    /// contact refresh here would resurrect a portal session inside a
+    /// freshly opened staff tab.
     #[test]
     fn a_staff_bearer_never_waits() {
         for contact_session in [true, false] {
