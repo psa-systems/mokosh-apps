@@ -23,6 +23,7 @@ use crate::utils::Paginated;
 /// `per_page` and the other list pages' `PER_PAGE`.
 const PER_PAGE: usize = 25;
 
+// SPEC-14.6.7: fixed verb-to-color mapping; unknown verbs fall through to gray.
 /// Badge color per audit action verb. Unknown verbs fall through to
 /// gray so future server-side actions still render legibly.
 fn action_variant(action: &str) -> BadgeVariant {
@@ -42,6 +43,7 @@ fn action_variant(action: &str) -> BadgeVariant {
 /// "%b %-d, %Y %H:%M:%S" shape, in that same timezone, when unset.
 /// MAPPS-939: takes `pref`/`tz` explicitly so the list resolves the user's
 /// timezone once per render pass instead of once per row.
+// SPEC-14.6.6: user pref/timezone format, falling back to the fixed "%b %-d, %Y %H:%M:%S %Z" shape.
 fn format_timestamp(
     when: chrono::DateTime<chrono::Utc>,
     pref: Option<&str>,
@@ -50,6 +52,7 @@ fn format_timestamp(
     crate::utils::datetime::fmt_user_dt_in(when, pref, tz, Some("%b %-d, %Y %H:%M:%S %Z"))
 }
 
+// SPEC-14.6.8: 8-char id prefix fallback when no resolved name is available.
 /// Render an optional UUID as a short hex prefix (first 8 chars) so the
 /// table stays scannable; the full value is available in the expanded
 /// detail row. Empty -> em-dash placeholder.
@@ -77,6 +80,7 @@ fn pretty_json(value: &Option<serde_json::Value>) -> String {
 /// MAPPS-860: the shared roster row, not a page-local fetch shape.
 type RemoteUser = crate::hooks::UserRow;
 
+// SPEC-14.6.11: the fixed set of user-FK keys the diff resolves to a name.
 /// Field keys whose values are user ids the SPA can resolve to a name. Other
 /// FK ids (companies, contacts, etc.) stay as their raw value because the
 /// audit page does not cache those lists (PMS-365).
@@ -96,6 +100,7 @@ fn is_user_fk(key: &str) -> bool {
     )
 }
 
+// SPEC-14.6.11: strip trailing "_id" and sentence-case the rest.
 /// Turn a snake_case field key into a display label, dropping a trailing `_id`
 /// so a FK reads as the entity ("project_manager_id" -> "Project manager")
 /// instead of the raw column name (PMS-365).
@@ -109,6 +114,7 @@ fn humanize_field_key(key: &str) -> String {
     }
 }
 
+// SPEC-14.6.11: resolve user-FK values to a cached name; absent/null/blank render "(empty)".
 /// Render one JSON field value for the diff. Resolves user-FK fields to a name
 /// when the SPA has that user cached; otherwise shows the scalar. Absent, null,
 /// or empty renders as `(empty)` (PMS-365).
@@ -132,6 +138,7 @@ fn display_field_value(
                     // or beyond this page of /auth/users): short prefix, not the
                     // full noisy UUID. MAPPS-1063: log the unresolved reference
                     // via the shared helper so the substitution is findable.
+                    // SPEC-14.6.19: unresolved user-FK is logged, not silently dropped.
                     let shown: String = s.chars().take(8).collect();
                     let _ = crate::utils::unresolved("audit_log.user_fk", "user", Some(id), &shown);
                     return shown;
@@ -166,6 +173,7 @@ fn field_diff_is_object_payload(
     old.as_ref().is_some_and(|v| v.is_object()) || new.as_ref().is_some_and(|v| v.is_object())
 }
 
+// SPEC-14.6.10: per-field diff only when at least one side is a JSON object; drops keys blank on both sides.
 /// Build the per-field diff rows `(label, old, new)` from the entry's
 /// `old_values` / `new_values` JSON objects, keeping only keys whose value
 /// actually changed (PSA-1035). Returns an empty vec when neither payload is
@@ -226,6 +234,7 @@ fn field_diff_rows(
 pub fn AuditLogPage() -> Element {
     use_page_title("Audit Log");
     let auth = crate::hooks::use_auth();
+    // SPEC-14.6.1, SPEC-14.6.15: client-side admin gate; the server is the real enforcement boundary.
     // Role gate: only org admins / super-admins may view the audit log.
     // Uses the `UserRole::is_admin()` helper on the cached CurrentUser so
     // the gate matches the server's `RequireAdmin` extractor. Loading
@@ -274,6 +283,7 @@ fn AuditLogContent() -> Element {
     let mut to_filter = use_signal(String::new);
     let mut page = use_signal(|| 1usize);
 
+    // SPEC-14.6.14: entity_type/action/user_id/from/to filters; see onchange/oninput below for the page-1 reset.
     let action_options = vec![
         SelectOption::new("", "All Actions"),
         SelectOption::new("create", "Create"),
@@ -299,6 +309,7 @@ fn AuditLogContent() -> Element {
     let user_for_resource = user_text.clone();
     let from_for_resource = from_text.clone();
     let to_for_resource = to_text.clone();
+    // SPEC-14.6.2, SPEC-14.6.21: re-fetches on filter/page/tenant-generation change and server reachability.
     let audit_resource = use_resource(move || {
         let entity_type = entity_for_resource.clone();
         let action = action_for_resource.clone();
@@ -310,6 +321,7 @@ fn AuditLogContent() -> Element {
             // MAPPS-357: subscribe to reachability so the log auto-refetches the
             // instant the server comes back (paired with the recovery poll).
             let _reachable = crate::hooks::use_server_reachable();
+            // SPEC-14.6.2: fixed per_page=25; other filters appended only when non-empty.
             let mut path = format!("/audit-log?page={current_page}&per_page={PER_PAGE}");
             if !entity_type.is_empty() {
                 path.push_str(&format!(
@@ -323,6 +335,7 @@ fn AuditLogContent() -> Element {
             if !user_id.is_empty() {
                 path.push_str(&format!("&user_id={}", urlencoding_minimal(&user_id)));
             }
+            // SPEC-14.6.3: widen each date-only bound to a full UTC day (inclusive range).
             // The server parses `from`/`to` as RFC3339 `DateTime<Utc>`.
             // The native date input yields `YYYY-MM-DD`; widen each bound
             // to a full-day UTC instant so the filter matches what the
@@ -339,6 +352,7 @@ fn AuditLogContent() -> Element {
                     urlencoding_minimal(&format!("{to}T23:59:59Z"))
                 ));
             }
+            // SPEC-14.6.16: authenticated fetch carries the session for the list request.
             crate::hooks::fetch::api::get_authed_typed::<Paginated<AuditLogEntry>>(&path).await
         }
     });
@@ -347,6 +361,7 @@ fn AuditLogContent() -> Element {
     // assigned_to_id, ...) and the name filter dropdown from the shared
     // roster cache instead of its own fetch.
     let users_resource = crate::hooks::use_user_roster(true);
+    // SPEC-14.6.18: a failed secondary roster fetch degrades to an empty list, not a page error.
     let users: Vec<RemoteUser> = users_resource.read_unchecked().clone().unwrap_or_default();
 
     // PMS-584: user filter as a pick-by-name dropdown (value = user id). A
@@ -391,6 +406,7 @@ fn AuditLogContent() -> Element {
     // fails while still reachable (a 4xx) keeps the inline error banner below.
     // The raw `Result` is preserved (not collapsed to `.ok()`) so that inline
     // `error_message` distinction survives.
+    // SPEC-14.6.17: unreachable-server failure renders the outage state; a reachable-server failure keeps the table with an inline banner.
     let fetch_failed = matches!(*resource_snapshot, Some(Err(_)));
     let reachable = crate::hooks::use_server_reachable();
     if fetch_failed && !reachable {
@@ -410,6 +426,7 @@ fn AuditLogContent() -> Element {
     // anchor target so we get the `Content-Disposition` filename
     // verbatim and the Authorization header isn't an issue (the
     // session cookie carries through on same-origin navigations).
+    // SPEC-14.6.4: export URL carries the same filter query params as the list fetch.
     let export_href = {
         let mut q = Vec::<String>::new();
         if !entity_text.is_empty() {
@@ -449,6 +466,7 @@ fn AuditLogContent() -> Element {
         };
         // `api_base()` returns the API origin + `/api/v1`; the route
         // prefix matches the list endpoint above.
+        // SPEC-14.6.16: same-origin anchor navigation carries the session cookie; no Authorization header is attached.
         let base = crate::hooks::fetch::api::api_base();
         format!("{base}/audit-log/export.csv{qstr}")
     };
@@ -459,6 +477,7 @@ fn AuditLogContent() -> Element {
     // Computed at render time (not memoised) so an operator who
     // leaves the page open across midnight still gets today's date
     // on the next click.
+    // SPEC-14.6.4: "download" attribute forces a UTC-dated filename, overriding the server's Content-Disposition name.
     let export_filename = format!("audit-log-{}.csv", chrono::Utc::now().format("%Y-%m-%d"));
 
     rsx! {
@@ -490,6 +509,7 @@ fn AuditLogContent() -> Element {
                     label: "Entity type",
                     placeholder: "e.g. ticket",
                     value: entity_type_filter.read().clone(),
+                    // SPEC-14.6.14: any filter change resets the page number to 1.
                     oninput: move |e: FormEvent| {
                         entity_type_filter.set(e.value());
                         page.set(1);
@@ -540,6 +560,7 @@ fn AuditLogContent() -> Element {
             ErrorBanner { class: "mb-3", "{message}" }
         }
 
+        // SPEC-14.6.5: fixed 7 columns (Timestamp, Action, Entity, Record, User, IP, Details).
         // Audit table
         DataTable {
             loading: is_loading,
@@ -599,6 +620,7 @@ fn AuditLogContent() -> Element {
 /// address the dataset does not know, or a deployment with no dataset
 /// configured. Only a malformed IP is a `400`, and a transport failure or a
 /// `403` arrives here as an `Err` and stays one.
+// SPEC-14.6.23, SPEC-14.6.20: 400 only for a malformed address; 200+null is "nothing to report", never a failure.
 async fn lookup_enrichment(addr: &str) -> EnrichState {
     let path = format!("/ip-enrichment?ip={}", urlencoding_minimal(addr));
     match crate::hooks::fetch::api::get_authed_typed::<Option<IpEnrichment>>(&path).await {
@@ -616,6 +638,7 @@ async fn lookup_enrichment(addr: &str) -> EnrichState {
 /// the lookup broke when it answered. Collapsing it the other way is worse: a
 /// 403 or a dropped connection would read as "this address is unremarkable".
 #[derive(Clone, PartialEq)]
+// SPEC-14.6.20, SPEC-14.6.22: lookup fires only on demand, at most once per address while not Idle.
 enum EnrichState {
     /// Never asked. The lookup is explicit per address, never automatic: the
     /// endpoint is admin-gated and per-address, and a 25-row page must not fire
@@ -654,6 +677,7 @@ fn AuditRow(props: AuditRowProps) -> Element {
     let mut enrich_open = use_signal(|| false);
     let mut enrich = use_signal(|| EnrichState::Idle);
 
+    // SPEC-14.6.9: Details toggle appears only when the entry has old/new values or a user agent.
     let has_detail =
         entry.old_values.is_some() || entry.new_values.is_some() || entry.user_agent.is_some();
 
@@ -699,6 +723,7 @@ fn AuditRow(props: AuditRowProps) -> Element {
     // when it can't (entity deleted, new entity_type with no resolver
     // yet) we render the short UUID prefix so the row still says
     // SOMETHING the reader can correlate with logs.
+    // SPEC-14.6.8: resolved name when non-empty, else short id prefix (entity) or "System" (user).
     let entity_label = entry
         .entity_name
         .clone()
@@ -711,6 +736,7 @@ fn AuditRow(props: AuditRowProps) -> Element {
         Some(name) => name,
         None => match entry.user_id {
             Some(id) => {
+                // SPEC-14.6.19: a user id with no resolved name is logged as unresolved, not silent.
                 let shown = "System".to_string();
                 let _ = crate::utils::unresolved("audit_log.actor", "user", Some(id), &shown);
                 shown
@@ -731,6 +757,7 @@ fn AuditRow(props: AuditRowProps) -> Element {
             TableCell { "{entity_label}" }
             TableCell { "{user_label}" }
             TableCell { class: "text-muted",
+                // SPEC-14.6.12: a row with no IP renders inert text, never a lookup control.
                 // The address itself is the control. A row with no IP has
                 // nothing to look up, so it stays inert text rather than a
                 // button that would answer 400.
@@ -744,6 +771,7 @@ fn AuditRow(props: AuditRowProps) -> Element {
                     Button {
                         variant: ButtonVariant::Link,
                         class: "font-mono text-xs",
+                        // SPEC-14.6.12, SPEC-14.6.22: fetches only when opening from Idle; a loaded/failed state is not re-fetched.
                         onclick: move |_| {
                             let opening = !*enrich_open.read();
                             enrich_open.set(opening);
@@ -785,6 +813,7 @@ fn AuditRow(props: AuditRowProps) -> Element {
                     colspan: "7",
                     class: "px-6 py-4 bg-surface-2",
                     div { class: "text-xs",
+                        // SPEC-14.6.13: Failed is distinct from Loaded(None); only Failed shows an error and a retry control.
                         match &*enrich.read() {
                             EnrichState::Idle | EnrichState::Loading => rsx! {
                                 p { class: "text-muted", "Looking up the network for this address\u{2026}" }
@@ -876,6 +905,7 @@ fn AuditRow(props: AuditRowProps) -> Element {
                                 dd { class: "text-content break-all","{user_agent}" }
                             }
                         }
+                        // SPEC-14.6.10: raw JSON for a non-object payload; per-field rows when changed; else "No field changes recorded".
                         if !is_object_payload {
                             // Non-object payloads: keep the raw JSON view.
                             div {
