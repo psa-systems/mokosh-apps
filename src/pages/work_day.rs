@@ -424,9 +424,7 @@ pub fn WorkDayStrip() -> Element {
     // switch of whose day (or which tenant's day) is being read falls back to
     // the first-load silent state instead of flashing the previous selection's
     // segments under the new label.
-    let mut last_day = use_signal(
-        || None::<(LastDayKey, Box<RemoteWorkDay>, DateTime<Utc>)>,
-    );
+    let mut last_day = use_signal(|| None::<(LastDayKey, Box<RemoteWorkDay>, DateTime<Utc>)>);
     // MAPPS-754: which segment's correction form is open, and what is typed
     // in it. One at a time: two open forms on a strip this size is a way to
     // save the wrong one.
