@@ -2,6 +2,8 @@
 # MAPPS-917 guard: the portal and contact refresh tokens are never written to
 # localStorage. They live in sessionStorage (tab-scoped) until an HttpOnly
 # cookie flow exists. Usage: check-refresh-token-storage.sh [--self-test]
+# SPEC-2.1.1: no-arg invocation, exit 0 / nonzero contract.
+# SPEC-2.1.3: --self-test runs the detection logic against a generated fixture.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -10,6 +12,8 @@ FILE='src/hooks/fetch.rs'
 
 # A localStorage handle is only acceptable in the functions that do not touch
 # a refresh key, so flag any `local_storage()` within 6 lines of a key constant.
+# SPEC-2.4.1: proximity heuristic, +/-6 lines, between a local_storage() call
+# and a PORTAL_/CONTACT_REFRESH_STORAGE_KEY reference.
 check_file() {
     awk '
         /local_storage\(\)/ { ls[NR] = 1 }
