@@ -28,6 +28,7 @@ const DEFAULT_REFRESH_SECS: u32 = 30;
 /// Read `?refresh=<seconds>` from the URL, clamped to a sane range. The
 /// default 30s keeps the screen in step with the server without
 /// hammering it; operators tune via the query param.
+// SPEC-14.4.32: ?refresh= overrides the default, clamped to 5..=600 seconds.
 fn read_refresh_seconds() -> u32 {
     #[cfg(feature = "app")]
     {
@@ -43,6 +44,7 @@ fn read_refresh_seconds() -> u32 {
 /// Returns a signal that monotonically ticks every `seconds`. Resources
 /// that want to auto-refresh read this in their closure so Dioxus
 /// re-runs the fetch on each tick.
+// SPEC-14.4.33: the refresh loop only runs under the "app" feature.
 fn use_periodic_tick(seconds: u32) -> Signal<u64> {
     let mut tick = use_signal(|| 0u64);
     use_effect(move || {
@@ -136,6 +138,8 @@ struct BigStatusRef {
     name: String,
 }
 
+// SPEC-14.4.31: /big/tickets renders full-screen, chromeless, outside
+// AppShell.
 #[component]
 pub fn BigTicketsPage() -> Element {
     let refresh_secs = read_refresh_seconds();
@@ -151,6 +155,7 @@ pub fn BigTicketsPage() -> Element {
     // `active_tenant_generation`, so we drop the explicit `_gen` line but keep
     // the periodic-tick read (the hook does not know about it) and hand back
     // the raw `Result` (no `.ok()/.unwrap_or_default()`).
+    // SPEC-14.4.34: fetches up to 50 tickets in the shared recent-first order.
     let tickets_data = crate::hooks::use_remote_resource(move || async move {
         // Subscribe to the tick so Dioxus re-fetches on every interval
         // firing. The value is otherwise unused.
@@ -168,6 +173,8 @@ pub fn BigTicketsPage() -> Element {
     // - would be wrong here; render the notice inside the same BigLayout so the
     // title strip + clock stay put. `use_remote_resource` auto-refetches on
     // reconnect, so the live grid returns on its own with no operator action.
+    // SPEC-14.4.34: an outage renders an inline notice inside this page's
+    // own BigLayout, never the AppShell-mounting ContentUnavailable.
     if tickets_data.is_unavailable() {
         return rsx! {
             BigLayout { title: "Tickets - Live Queue".to_string(),
@@ -185,6 +192,8 @@ pub fn BigTicketsPage() -> Element {
     // instead of the "No tickets match" empty board.
     let is_loading = tickets_data.is_loading();
     let tickets = tickets_data.value_or_default();
+    // SPEC-14.4.35: ?status= and ?priority= filter client-side by a
+    // case-insensitive match against the status/priority name field.
     let filtered: Vec<BigTicketRow> = tickets
         .into_iter()
         .filter(|t| {
@@ -243,6 +252,8 @@ fn BigTicketCard(props: BigTicketCardProps) -> Element {
     // through the shared helper so the "Unassigned" substitution is findable.
     let (assignee, assignee_title) = match t.assigned_to_name.clone() {
         Some(name) => (name, None),
+        // SPEC-14.4.36: an assignee id with no server-sent name logs an
+        // unresolved reference and falls back to "Unassigned".
         None => match t.assigned_to_id {
             Some(uid) => {
                 let shown = "Unassigned".to_string();
@@ -279,6 +290,9 @@ fn BigTicketCard(props: BigTicketCardProps) -> Element {
 // /big/dispatch
 // ===========================================================================
 
+// SPEC-14.4.31: /big/dispatch, chromeless, outside AppShell.
+// SPEC-14.4.37: delegates to calendar.rs's DispatchBoardPage, which owns
+// the data fetch and its own outage state; this page fetches nothing.
 #[component]
 pub fn BigDispatchPage() -> Element {
     let refresh_secs = read_refresh_seconds();
@@ -305,6 +319,9 @@ pub fn BigDispatchPage() -> Element {
 // /big/calendar
 // ===========================================================================
 
+// SPEC-14.4.31: /big/calendar, chromeless, outside AppShell.
+// SPEC-14.4.37: delegates to calendar.rs's CalendarPage, which owns the
+// data fetch and its own outage state; this page fetches nothing.
 #[component]
 pub fn BigCalendarPage() -> Element {
     let refresh_secs = read_refresh_seconds();
