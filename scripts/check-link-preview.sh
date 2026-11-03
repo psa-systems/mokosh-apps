@@ -33,9 +33,11 @@
 #                 with MOKOSH_BRAND_NAME changed, serves the NEW name and the
 #                 rewritten index.html still carries exactly one OG_MARKER.
 #
+# SPEC-2.1.1: invocable with no arguments, scanning the default target.
 # Usage: check-link-preview.sh [--self-test]
 #   --self-test serves the un-injected index.html and requires the scenario-1
 #   assertions to FAIL, so a check that stopped checking cannot report clean.
+#   SPEC-2.1.3: this is that --self-test mode.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -85,6 +87,8 @@ ns_curl() {
   docker run --rm --network "container:$CONTAINER" "$CURL_IMAGE" "$@"
 }
 
+# SPEC-2.7.1: starts the real caddy:2-alpine serving stack and must stop and
+# remove every container it started, regardless of outcome.
 cleanup() {
   remove_container
   [ -n "$WORKDIR" ] && rm --recursive "$WORKDIR"
@@ -195,10 +199,14 @@ branded_env=(
   --env "MOKOSH_PUBLIC_URL=https://psa.example.com/"
 )
 
+# SPEC-2.5.26: Docker is a required precondition; exit 2 naming Docker if
+# absent, rather than letting the absence surface further down the script.
 command -v docker >/dev/null 2>&1 || {
   echo "check-link-preview: docker is required (it runs the real Caddy serving stack)" >&2
   exit 2
 }
+# SPEC-2.7.2: depends on curlimages/curl:8.16.0, attempting a local pull of
+# any required image it cannot find cached before failing.
 for image in "$CADDY_IMAGE" "$CURL_IMAGE"; do
   docker image inspect "$image" >/dev/null 2>&1 || docker pull "$image" >/dev/null || {
     echo "check-link-preview: could not obtain $image" >&2
@@ -224,6 +232,8 @@ if [ "${1:-}" = "--self-test" ]; then
   exit 0
 fi
 
+# SPEC-2.5.21: branded configuration scenario, root URL and a deep
+# unrouted path, both served via the SPA fallback.
 # --- Scenario 1: branded, root URL and a deep client-side route -------------
 port="$(serve yes yes "${branded_env[@]}")" || {
   echo "check-link-preview: could not start the branded server" >&2
@@ -238,6 +248,9 @@ code="$(ns_curl --silent --output /dev/null --write-out '%{http_code}' --user-ag
 [ "$code" = "200" ] || fail "crawler GET /tickets/12345: expected HTTP 200, got $code"
 remove_container
 
+# SPEC-2.5.21: a second entrypoint run against the same container filesystem
+# with branding env vars changed must show the new values and exactly one
+# metadata marker comment.
 # --- Scenario 4: restart with changed branding (MAPPS-826) ------------------
 # Reuses $WORKDIR/caddy/index.html as scenario 1 left it (copy_fresh=no), which is
 # what a restart of the same container filesystem looks like, and changes
@@ -253,10 +266,13 @@ body="$(crawl "$port" "/")"
 expect_tag "$body" '<meta property="og:title" content="Renamed Inc">' "restart"
 reject_tag "$body" 'content="Acme &quot;PSA&quot; &amp; Co"' "restart"
 snapshot_index
+# SPEC-2.5.21: the re-run check on the metadata marker count.
 marker_count="$(grep -c -F '<!-- MAPPS-477 link-preview metadata -->' "$WORKDIR/served-index.html")"
 [ "$marker_count" = "1" ] || fail "restart: expected exactly one OG_MARKER in index.html after a restart, found $marker_count"
 remove_container
 
+# SPEC-2.5.21: no configuration at all scenario (built-in defaults,
+# twitter:card of summary, no image tags).
 # --- Scenario 2: no branding env at all ------------------------------------
 port="$(serve yes yes)" || {
   echo "check-link-preview: could not start the default server" >&2
@@ -271,6 +287,8 @@ reject_tag "$body" 'og:image' "default"
 reject_tag "$body" 'twitter:image' "default"
 remove_container
 
+# SPEC-2.5.21: relative logo with no public base URL scenario (image tags
+# omitted entirely, with the reason logged).
 # --- Scenario 3: relative logo with no MOKOSH_PUBLIC_URL --------------------
 port="$(serve yes yes --env "MOKOSH_BRAND_LOGO_URL=/branding/logo.svg")" || {
   echo "check-link-preview: could not start the relative-logo server" >&2

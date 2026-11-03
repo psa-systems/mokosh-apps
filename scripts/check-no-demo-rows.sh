@@ -18,6 +18,8 @@
 #   `--self-test` re-runs the guard over generated fixtures to prove it still
 #   rejects each violation and still accepts the migrated form, so a future
 #   edit cannot quietly neuter it.
+# SPEC-2.1.1: no-arg invocation, exit 0 / nonzero FAIL contract.
+# SPEC-2.1.3: --self-test runs the detection logic against generated fixtures.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -99,8 +101,12 @@ hits=$(
       code = $0
       sub(/^[ \t]*/, "", code)
       if (code ~ /^\/\//) next
+      # SPEC-2.5.6 (1/2): independently fail on a bare Demo token naming a
+      # data-source variant.
       if ($0 ~ /(^|[^A-Za-z0-9_])Demo([^A-Za-z0-9_]|$)/)
         print FILENAME ":" FNR ": demo row source: " code
+      # SPEC-2.5.6 (2/2): independently fail on copy admitting (case-
+      # insensitively) that the displayed rows are "demo rows".
       else if (tolower($0) ~ /demo rows/)
         print FILENAME ":" FNR ": copy admits the rows are fabricated: " code
     }
