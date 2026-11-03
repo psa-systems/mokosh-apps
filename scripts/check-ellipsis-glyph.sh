@@ -24,6 +24,8 @@
 #   ROOT defaults to `src`. `--self-test` re-runs the guard over generated
 #   fixtures to prove it still rejects a three-dot ellipsis and still accepts
 #   the glyph and an elision, so a future edit cannot quietly neuter it.
+# SPEC-2.1.1: no-arg invocation, exit 0 / nonzero FAIL contract.
+# SPEC-2.1.3: --self-test runs the detection logic against generated fixtures.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -87,6 +89,8 @@ hits=$(
       }
       return out
     }
+    # SPEC-2.3.1: skip the violation on any line carrying the
+    # ellipsis-guard-allow opt-out marker.
     /ellipsis-guard-allow/ { next }
     {
       if (strings($0) ~ /[A-Za-z0-9]\.\.\./)

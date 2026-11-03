@@ -46,6 +46,8 @@ struct UpdateDashboardBody {
     is_default: Option<bool>,
 }
 
+// SPEC-14.4.14: /dashboards lists, creates, pins default, and deletes
+// the caller's own saved dashboards.
 #[component]
 pub fn SavedDashboardsPage() -> Element {
     use_page_title("Dashboards");
@@ -60,6 +62,7 @@ pub fn SavedDashboardsPage() -> Element {
     // use_remote_resource additionally auto-refetches on reconnect and on org
     // switch. A failed load while the server is down now renders
     // ContentUnavailable instead of a misleading "No saved dashboards" empty.
+    // SPEC-14.4.19: bumping `version` after a mutation re-runs this fetch.
     let rows_resource = crate::hooks::use_remote_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _ = version.read();
@@ -76,12 +79,15 @@ pub fn SavedDashboardsPage() -> Element {
 
     // MAPPS-357: writes (create / pin default / delete) are blocked while the
     // server is unreachable; `can_mutate` disables their buttons below.
+    // SPEC-14.4.16: create, pin, and delete are all blocked while unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
 
     // MAPPS-357: early return placed AFTER every use_* hook so hook order is
     // preserved (rules of hooks). A fetch that fails while the server is still
     // reachable (a 4xx) degrades to an empty list and keeps the normal
     // empty-state; only a real outage swaps in ContentUnavailable.
+    // SPEC-14.4.15: an outage renders ContentUnavailable; a reachable 4xx
+    // degrades to an empty list instead.
     if rows_resource.is_unavailable() {
         return rsx! {
             crate::components::ContentUnavailable { title: "Dashboards".to_string() }
@@ -99,6 +105,7 @@ pub fn SavedDashboardsPage() -> Element {
                 is_default: Some(true),
                 ..Default::default()
             };
+            // SPEC-14.4.14: pin default via PATCH /dashboards/{id}.
             match crate::hooks::fetch::api::patch_authed::<SavedDashboard, _>(
                 &format!("/dashboards/{id}"),
                 &body,
@@ -117,6 +124,8 @@ pub fn SavedDashboardsPage() -> Element {
     };
 
     // MAPPS-436: the DELETE fires from the ConfirmDialog's `onconfirm` only.
+    // SPEC-14.4.17: delete fires only from this confirm handler, and a
+    // second call while one is already in flight is a no-op.
     let on_confirm_delete = move |_: ()| {
         let Some((id, _)) = pending_delete.read().clone() else {
             return;
@@ -143,6 +152,8 @@ pub fn SavedDashboardsPage() -> Element {
         });
     };
 
+    // SPEC-14.4.18: an empty (trimmed) name is rejected client-side, with
+    // no request sent. SPEC-14.4.14: create via POST /dashboards.
     let on_create_submit = move |_| {
         let name = new_name.read().trim().to_string();
         if name.is_empty() {
@@ -374,6 +385,7 @@ pub fn SavedDashboardsPage() -> Element {
 // (the SPA's widget renderer will own it). Keeping the field on the
 // DTO so it round-trips through the API; suppress the unused-read
 // warning until the widget surface lands.
+// SPEC-14.4.20: the layout blob is passed through opaquely by this page.
 #[allow(dead_code)]
 fn _layout_anchor(d: &SavedDashboard) -> &serde_json::Value {
     &d.layout
