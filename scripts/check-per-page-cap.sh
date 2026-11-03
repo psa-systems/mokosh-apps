@@ -19,6 +19,9 @@
 # What passes: `per_page={PER_PAGE}` where the const is under the cap; a
 # `per_page=` inside a `//` comment; and a line marked `per-page-guard-allow`.
 #
+# SPEC-2.1.1: no-argument invocation, default root, and the clean/FAIL stdout
+# line contract.
+#
 # Usage: check-per-page-cap.sh [DIR | --self-test]
 #   DIR defaults to `src`. `--self-test` re-runs the guard over generated
 #   fixtures to prove it still rejects an over-cap literal and an over-cap
@@ -31,6 +34,8 @@ cd "$(dirname "$0")/.." || exit 2
 # `get_all_*` helpers that every whole-collection read goes through.
 helpers="src/hooks/fetch.rs"
 
+# SPEC-2.1.3: self-test mode runs detection against generated fixtures only,
+# proving both violation shapes still fail and the corrected shapes still pass.
 if [ "${1:-}" = "--self-test" ]; then
   fixtures=$(mktemp -d) || exit 2
   trap 'rm -rf "$fixtures"' EXIT
@@ -106,6 +111,7 @@ hits=$(
     function report(file, line, text, why) {
       printf "%s:%d: %s\n         (%s)\n", file, line, text, why
     }
+    # SPEC-2.3.1: skip the violation on any line carrying per-page-guard-allow.
     /per-page-guard-allow/ { next }
     {
       # Drop the comment tail so prose naming an old page size is not a value.
@@ -125,6 +131,8 @@ hits=$(
         const_value[FILENAME, name] = value + 0
       }
 
+      # SPEC-2.5.12: a literal per_page=N at or above 100, outside
+      # src/hooks/fetch.rs (excluded from the scanned file list above).
       # A spelled-out page size at or above the cap.
       rest = line
       while (match(rest, /per_page=[0-9]+/)) {
@@ -144,6 +152,8 @@ hits=$(
         rest = substr(rest, RSTART + RLENGTH)
       }
     }
+    # SPEC-2.5.12 (cont.): a per_page={CONST} interpolation resolving to a
+    # const defined >= 100 in the same file.
     END {
       for (key in used) {
         if (!((key) in const_value))

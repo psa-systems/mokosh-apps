@@ -26,6 +26,8 @@ use crate::utils::Paginated;
 /// view + editor surfaces deserialise from. Unknown widget keys render
 /// as an "Unknown widget" placeholder so a forward-compatible server
 /// row never blank-screens the page.
+// SPEC-14.4.22: layout schema the server stores as opaque JSONB; an
+// unknown widget_key still deserializes and renders as a placeholder.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct DashboardLayout {
     #[serde(default)]
@@ -47,6 +49,7 @@ pub struct WidgetSpec {
     pub filter_scope: Option<serde_json::Value>,
 }
 
+// SPEC-14.4.22: col/row default to 1; the span defaults to 4.
 fn default_grid_one() -> u32 {
     1
 }
@@ -80,6 +83,7 @@ pub struct WidgetCatalogEntry {
     pub placeholder: &'static str,
 }
 
+// SPEC-14.4.23: the fixed set of widget keys the editor and renderer know.
 pub const WIDGET_CATALOG: &[WidgetCatalogEntry] = &[
     WidgetCatalogEntry {
         key: "tickets_by_status",
@@ -113,6 +117,8 @@ pub fn catalog_lookup(key: &str) -> Option<&'static WidgetCatalogEntry> {
 }
 
 /// View one saved dashboard by id. Toggles into the editor inline.
+// SPEC-14.4.21: /dashboards/:id/view shows one saved dashboard with an
+// inline editor toggle.
 #[component]
 pub fn SavedDashboardViewPage(id: String) -> Element {
     let version = use_signal(|| 0u32);
@@ -144,6 +150,8 @@ pub fn SavedDashboardViewPage(id: String) -> Element {
         .map(|d| d.name.clone())
         .unwrap_or_else(|| "Dashboard".to_string());
     use_page_title(&title);
+    // SPEC-14.4.25: a load failure on the primary resource renders
+    // ContentUnavailable rather than a perpetual loading state.
     if row_resource.is_unavailable() {
         return rsx! {
             crate::components::ContentUnavailable { title: "Dashboard".to_string() }
@@ -193,6 +201,8 @@ pub fn SavedDashboardViewPage(id: String) -> Element {
 /// branches to the contact-summary path) BEFORE any hook fires, so
 /// MAPPS-602 (hooks-before-return guard) stays green: the staff body
 /// lives in its own component and runs its hooks unconditionally.
+// SPEC-14.4.21: /dashboard resolves to a pinned saved dashboard, or the
+// hardcoded dashboard if the caller has none pinned.
 #[component]
 pub fn DefaultDashboardPage() -> Element {
     #[cfg(feature = "web")]
@@ -225,6 +235,9 @@ fn StaffDefaultDashboardBody() -> Element {
         .map(|d| d.name.clone())
         .unwrap_or_else(|| "Dashboard".to_string());
     use_page_title(&title);
+    // SPEC-14.4.26: an outage renders ContentUnavailable; a genuine absence
+    // of a pinned dashboard (Ready(None)) falls through to the hardcoded
+    // dashboard below instead.
     if default_resource.is_unavailable() {
         // This is the /dashboard entrypoint, so no self-referential link.
         return rsx! {
@@ -253,6 +266,8 @@ fn render_read_only(d: SavedDashboardRow) -> Element {
     }
 }
 
+// SPEC-14.4.27: only Save is blocked while unreachable; Cancel and the
+// draft-editing controls stay enabled since they never reach the server.
 fn render_with_editor(d: SavedDashboardRow, mut version: Signal<u32>, can_mutate: bool) -> Element {
     let initial: DashboardLayout = serde_json::from_value(d.layout.clone()).unwrap_or_default();
     let mut editing = use_signal(|| false);
@@ -261,6 +276,8 @@ fn render_with_editor(d: SavedDashboardRow, mut version: Signal<u32>, can_mutate
     let dashboard_id = d.id;
     let name = d.name.clone();
 
+    // SPEC-14.4.28: save round-trips the draft layout through
+    // PATCH /dashboards/{id} and bumps `version` to refetch on success.
     let on_save = move |_| {
         let layout = draft.read().clone();
         spawn(async move {
@@ -424,6 +441,8 @@ fn render_editor_grid(draft: Signal<DashboardLayout>, dirty: Signal<bool>) -> El
 
 fn render_widget_cell(w: &WidgetSpec, idx: usize) -> Element {
     let entry = catalog_lookup(&w.widget_key);
+    // SPEC-14.4.22: an unrecognized widget_key still renders, as a
+    // placeholder, instead of blank-screening the page.
     let title = entry.map(|e| e.title).unwrap_or_else(|| {
         // MAPPS-1063: a widget_key the catalog does not know is an
         // unresolved reference, not a legitimately-blank widget. Log
@@ -569,6 +588,8 @@ fn render_widget_body(key: &str) -> Element {
     }
 }
 
+// SPEC-14.4.24: col/row floor at 1, col_span clamps to the 12-column grid,
+// row_span has no upper bound.
 fn grid_style(w: &WidgetSpec) -> String {
     let col_start = w.grid_col.max(1);
     let row_start = w.grid_row.max(1);
@@ -607,6 +628,8 @@ fn widget_failed() -> Element {
     }
 }
 
+// SPEC-14.4.29: loading, unavailable, and empty render as three distinct
+// states; SPEC-14.4.30: backed by the shared dashboard-report aggregate.
 #[component]
 fn WidgetTicketsByStatus() -> Element {
     let report = crate::hooks::use_dashboard_report();
@@ -641,6 +664,8 @@ fn WidgetTimeThisWeek() -> Element {
     // in the test module) is kept but keyed on the summary endpoint. Named
     // without the symbol the guard greps for so the test's substring check
     // does not trip on the historical reference.
+    // SPEC-14.4.30: backed by the server-side summary aggregate, not a
+    // client-side paging loop.
     let summary = crate::hooks::use_remote_resource(|| async {
         let week_start = monday_of_week(Utc::now().date_naive());
         crate::hooks::fetch::api::get_authed::<TimeEntrySummaryLite>(&format!(
@@ -708,6 +733,7 @@ fn WidgetOpenInvoices() -> Element {
     // directly, so the widget no longer pages the whole filtered collection to
     // derive the two numbers it prints. The MAPPS-842 recurrence guard below
     // is kept but keyed on the summary endpoint.
+    // SPEC-14.4.30: backed by the server-side summary aggregate.
     let summary = crate::hooks::use_remote_resource(|| async {
         crate::hooks::fetch::api::get_authed::<InvoiceSummaryLite>("/invoices/summary?status=sent")
             .await
@@ -744,6 +770,7 @@ fn WidgetRecentAuditLog() -> Element {
     // MAPPS-939: resolve once for the whole row list, not once per row.
     let tz = crate::utils::datetime::user_timezone();
     let pref = crate::utils::datetime::user_format_pref();
+    // SPEC-14.4.30: fixed first-page, 5-row request.
     let entries = crate::hooks::use_remote_resource(|| async {
         crate::hooks::fetch::api::get_authed::<Paginated<AuditEntryLite>>(
             "/audit-log?page=1&per_page=5",

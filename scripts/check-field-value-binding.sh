@@ -27,6 +27,14 @@
 # `textarea` elsewhere with no programmatic writer is not what broke.
 #
 # Usage: check-field-value-binding.sh [--self-test]
+#
+# SPEC-2.1.1: invocable with no arguments, scanning the fixed default target
+# (TARGET below) and exiting with a `guard: OK`/`guard: FAIL` line.
+# SPEC-2.1.3: --self-test proves the guard still rejects both violation
+# shapes and still accepts the corrected shape, against generated fixtures.
+# SPEC-2.6.2: a textarea's displayed value must be driven by `value:` on
+# every render after the first, because the text child only seeds the
+# element's initial "clean" DOM value, before the user's first keystroke.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -43,10 +51,12 @@ run_guard() {
       # A bare string literal on its own line inside the element is a child.
       if ($0 ~ /^[[:space:]]*"[^"]*"[[:space:]]*$/) child = FNR
       if (depth <= 0) {
+        # SPEC-2.5.10: fail a textarea whose value is passed as a trailing string child.
         if (child) {
           printf "%s:%d: the textarea passes its value as a CHILD (line %d), which is only the default value\n", FILE, start, child
           bad = 1
         }
+        # SPEC-2.5.10: fail a textarea with no `value:` attribute at all.
         if (!has_value) {
           printf "%s:%d: the textarea has no `value:` attribute, so nothing can set it programmatically\n", FILE, start
           bad = 1

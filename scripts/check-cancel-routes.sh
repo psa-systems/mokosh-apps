@@ -13,6 +13,11 @@
 #    is expressed differs, so those files move to the second list below.
 # 2. Tailwind v4's preflight sets `button { cursor: default }`. The base-layer
 #    rule in input.css is the app's only compensation; fail if it is dropped.
+#
+# SPEC-2.1.1: no-arg invocation, exit 0 / nonzero FAIL contract.
+# SPEC-2.1.3: intentionally no --self-test mode - the pinned-list diff and the
+# live knowledge_base.rs/input.css checks below run against real source on
+# every invocation, which is this guard's own test.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -52,6 +57,8 @@ actual=$(
   done | sort
 )
 
+# SPEC-2.5.5 (1/3): fail if the sorted set of Link-rendered Cancel
+# destinations differs at all from the pinned expected set, diffing them.
 if [ "$actual" != "$(printf '%s\n' "$expected" | sort)" ]; then
   echo "cancel-route guard: FAIL (Cancel destinations changed)"
   echo "--- expected (pinned) / +++ found:"
@@ -71,6 +78,8 @@ fi
 # `dirty() || auto_created()`. What is being guarded is that SOMETHING gates the
 # prompt, not the exact expression - a form with nothing to lose still leaves at
 # once, and the page's own test pins the full condition.
+# SPEC-2.5.5 (2/3): separately and unconditionally check
+# knowledge_base.rs's non-Link confirm-before-cancel control.
 for f in src/pages/knowledge_base.rs; do
   # Only the shipping code. These files carry tests that quote the very
   # patterns below to assert on them, so a whole-file grep would match the
@@ -92,6 +101,8 @@ for f in src/pages/knowledge_base.rs; do
   fi
 done
 
+# SPEC-2.5.5 (3/3): separately and unconditionally check input.css's
+# base-layer cursor: pointer rule on enabled buttons.
 if ! grep -qE '^\s*button:not\(:disabled\),' input.css ||
   ! grep -qE '^\s*cursor: pointer;' input.css; then
   echo "cursor-pointer guard: FAIL (input.css lost the base-layer pointer rule)"
