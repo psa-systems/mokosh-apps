@@ -28,15 +28,17 @@
 # `Result::ok`, and is skipped by the receiver rule below: it is a bare binding
 # (`response.ok()`), never a link in a method chain.
 #
-# Deliberate exceptions carry an allow marker with a reason, on any line of the
-# statement:
+# SPEC-2.3.1: Deliberate exceptions carry an allow marker with a reason, on
+# any line of the statement:
 #   // fetch-error-logging-allow: <why dropping the reason is correct here>
-# A marker with no reason after the colon does not count.
+# SPEC-2.3.2: A marker with no reason after the colon does not count.
 #
+# SPEC-2.1.1: invocable with no arguments, scanning the default root.
 # Usage: check-fetch-error-logging.sh [ROOT | --self-test]
 #   ROOT defaults to `src`. `--self-test` re-runs the guard over generated
 #   fixtures to prove it still catches a stripped log line, and still passes the
 #   logged form, the allow marker and `Response::ok()`.
+#   SPEC-2.1.3: this is that --self-test mode.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -106,6 +108,8 @@ run_guard() {
       }
 
       {
+        # SPEC-2.3.2: the marker requires a non-whitespace reason after the
+        # colon; a bare marker must not suppress the violation.
         allow[FNR] = ($0 ~ /fetch-error-logging-allow:[ \t]*[^ \t]/) ? 1 : 0
         code = strip($0)
         gsub(/[ \t]+/, " ", code)
@@ -135,6 +139,9 @@ run_guard() {
         scan(".unwrap_or(")
       }
 
+      # SPEC-2.5.24: an .ok()/.unwrap_or_default()/.unwrap_or_else(/.unwrap_or(
+      # call chained onto .await on a Result, within 200 chars and no
+      # statement boundary, with no tracing:: call between.
       function scan(tok,   p, cur, last, a, between, lo, hi, n) {
         n = length(tok)
         cur = 1; last = 0
