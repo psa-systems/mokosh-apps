@@ -602,7 +602,7 @@ storage keys listed under Security and Retention and cleanup below.
   session) before writing the new plane's token, so a browser never
   holds a live staff and a live contact session together. `create_org.rs`
   and `pick_tenant.rs` write a staff token without this clear; that gap
-  is tracked as a separate defect (see the PR body) and is not itself a
+  is tracked as MAPPS-1199 and is not itself a
   requirement of this section.
 - **SPEC-6.4.2**: `login.rs`'s platform-login-first attempt must be
   skipped whenever an MFA or approval code is already present, or
@@ -790,7 +790,7 @@ storage keys listed under Security and Retention and cleanup below.
 - **SPEC-6.5.17**: `not_found.rs` must render the unmatched path
   segments whenever the joined path is non-empty, in every build; its
   own comment's claim that this is development-only does not reflect
-  the code and is tracked as a separate defect (see the PR body).
+  the code and is tracked as MAPPS-1198.
 
 ### 6.6 Concurrency and ordering
 
