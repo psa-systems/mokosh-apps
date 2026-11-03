@@ -64,6 +64,7 @@ pub fn ContactMagicLinkLoginPage(email: String) -> Element {
     let mut saving = use_signal(|| false);
     let mut done = use_signal(|| false);
 
+    // SPEC-6.6.1: ignore a submit while a previous one is still in flight.
     let mut submit = move |_| {
         if saving() {
             return;
@@ -99,6 +100,7 @@ pub fn ContactMagicLinkLoginPage(email: String) -> Element {
                 // Fail-quiet: even a 4xx / 5xx is treated as sent-anyway
                 // so the response shape does not leak account existence.
                 // Mirrors the forgot-password posture from prompt 005.
+                // SPEC-6.4.6 / SPEC-6.7.8: discard the result, always show the same confirmation.
                 let _ = crate::hooks::fetch::api::post_typed_no_content(
                     "/contact/auth/login-link",
                     &body,
@@ -115,6 +117,7 @@ pub fn ContactMagicLinkLoginPage(email: String) -> Element {
         });
     };
 
+    // SPEC-6.1.13: required Company ID and pre-fillable email, always the same confirmation.
     rsx! {
         AuthLayout {
             if done() {

@@ -73,6 +73,7 @@ pub fn SetPasswordPage(token: String) -> Element {
         async move {
             #[cfg(feature = "web")]
             {
+                // SPEC-6.7.4: resolve the owning tenant's name before rendering the heading.
                 let path = format!("/auth/set-password/context/{}", token);
                 crate::hooks::fetch::api::get_typed::<SetPasswordContext>(&path)
                     .await
@@ -126,18 +127,21 @@ pub fn SetPasswordPage(token: String) -> Element {
             tenant_slug_state.set(next);
         }
     });
+    // SPEC-6.1.7: generic heading fallback when the tenant-name lookup fails.
     let heading = match tenant_name.as_deref() {
         Some(name) => format!("Set your password for {name}"),
         None => "Set your password".to_string(),
     };
 
     let token_for_submit = token.clone();
+    // SPEC-6.6.1: ignore a submit while a previous one is still in flight.
     let mut submit = move |_| {
         if saving() {
             return;
         }
         let pw = new_pw.read().clone();
         let confirm = confirm_pw.read().clone();
+        // SPEC-6.5.3: minimum length and confirmation-match checks.
         if pw.len() < 12 {
             error.set("Password must be at least 12 characters.".to_string());
             return;
@@ -158,12 +162,14 @@ pub fn SetPasswordPage(token: String) -> Element {
                     new_password: pw,
                     confirm_password: confirm,
                 };
+                // SPEC-6.7.4: redeem the setup token.
                 match crate::hooks::fetch::api::post_typed_no_content("/auth/reset-password", &body)
                     .await
                 {
                     Ok(()) => {
                         done.set(true);
                     }
+                    // SPEC-6.5.3: empty 400 message maps to this page's invalid-link text.
                     Err(ApiError::Status {
                         code: 400, message, ..
                     }) => {
@@ -184,6 +190,7 @@ pub fn SetPasswordPage(token: String) -> Element {
         });
     };
 
+    // SPEC-6.1.7: new/confirm password pair.
     rsx! {
         AuthLayout {
             if done() {

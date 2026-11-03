@@ -27,6 +27,7 @@ fn ShowcaseRow(title: String, usage: String, children: Element) -> Element {
 }
 
 /// Canonical button reference page.
+// SPEC-6.1.19: static, dev-only reference; no network call, no business data.
 #[component]
 pub fn ButtonShowcasePage() -> Element {
     use_page_title("Button Variants");

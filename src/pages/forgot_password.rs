@@ -27,6 +27,7 @@ pub fn StandaloneForgotPassword() -> Element {
     let mut saving = use_signal(|| false);
     let mut done = use_signal(|| false);
 
+    // SPEC-6.6.1: ignore a submit while a previous one is still in flight.
     let mut submit = move |_| {
         if saving() {
             return;
@@ -42,6 +43,7 @@ pub fn StandaloneForgotPassword() -> Element {
             #[cfg(feature = "web")]
             {
                 let body = ForgotBody { email: em };
+                // SPEC-6.4.6 / SPEC-6.7.4: discard the result, always show the same confirmation.
                 // Ignore the result: the endpoint is fail-quiet by
                 // design (200 for both registered + unregistered
                 // emails). Even a 500 shouldn't leak; treat it as
@@ -55,6 +57,7 @@ pub fn StandaloneForgotPassword() -> Element {
         });
     };
 
+    // SPEC-6.1.5: form replaced by a fixed confirmation screen, never a per-attempt result.
     rsx! {
         AuthLayout {
             if done() {

@@ -44,12 +44,14 @@ pub fn PickTenantPage() -> Element {
     // Redirect to /login when the pending state is empty. Runs on
     // every render so a browser refresh (which wipes the global
     // signal) bounces the operator back to sign in cleanly.
+    // SPEC-6.1.9: redirect to sign-in instead of rendering with no pending identity/memberships.
     let pending = PENDING_LOGIN.read().clone();
     if pending.identity_token.is_none() || pending.memberships.is_empty() {
         nav.replace(Route::Login {});
         return rsx! { Fragment {} };
     }
 
+    // SPEC-6.6.1: ignore a submit while a previous one is still in flight.
     let mut pick = move |tenant_id: String| {
         if saving() {
             return;
@@ -68,6 +70,7 @@ pub fn PickTenantPage() -> Element {
                     identity_token: token,
                     tenant_id,
                 };
+                // SPEC-6.7.5: select the pending tenant.
                 match crate::hooks::fetch::api::post_typed::<LoginResp, _>(
                     "/auth/select-tenant",
                     &body,
@@ -76,6 +79,8 @@ pub fn PickTenantPage() -> Element {
                 {
                     Ok(resp) => {
                         if let Some(user) = resp.user {
+                            // MAPPS-1199: no on_staff_signin_clear_contact_side() call here,
+                            // unlike every other staff session-install site; see linked bug.
                             crate::hooks::fetch::api::set_access_token(Some(
                                 resp.access_token.clone(),
                             ));
@@ -99,9 +104,11 @@ pub fn PickTenantPage() -> Element {
                             *PENDING_LOGIN.write() = PendingLogin::default();
                             nav.replace(Route::Dashboard {});
                         } else {
+                            // SPEC-6.5.5: success with no user is reported, not navigated.
                             error.set("Sign-in succeeded but no account was returned.".to_string());
                         }
                     }
+                    // SPEC-6.5.5 / SPEC-6.9.1: 401 clears the pending identity token and returns to sign-in.
                     Err(ApiError::Status { code: 401, .. }) => {
                         // Identity token expired; wipe state and route
                         // back to /login so the operator re-enters
@@ -109,6 +116,7 @@ pub fn PickTenantPage() -> Element {
                         *PENDING_LOGIN.write() = PendingLogin::default();
                         nav.replace(Route::Login {});
                     }
+                    // SPEC-6.5.5: 404 maps to this message.
                     Err(ApiError::Status { code: 404, .. }) => {
                         error.set(
                             "You do not have access to that organization. Pick another."
@@ -122,6 +130,7 @@ pub fn PickTenantPage() -> Element {
         });
     };
 
+    // SPEC-6.1.9: list every pending membership with tenant name and role, each selectable.
     rsx! {
         AuthLayout {
             div { class: "text-center mb-6",
@@ -161,6 +170,7 @@ pub fn PickTenantPage() -> Element {
                     r#type: "button".to_string(),
                     disabled: saving(),
                     class: "w-full".to_string(),
+                    // SPEC-6.9.1: explicit back-to-sign-in action clears the pending signal.
                     onclick: move |_| {
                         *PENDING_LOGIN.write() = PendingLogin::default();
                         nav.replace(Route::Login {});

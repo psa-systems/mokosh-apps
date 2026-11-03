@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::{AuthLayout, Button, ButtonVariant, Input};
 
+// SPEC-6.3.2: platform bearer stored here, distinct from the tenant token.
 #[cfg(target_arch = "wasm32")]
 const PLATFORM_TOKEN_KEY: &str = "mokosh:platform_token";
 
@@ -51,18 +52,21 @@ pub fn PlatformLoginPage() -> Element {
     let mut saving = use_signal(|| false);
     let mut done_greeting = use_signal(String::new);
 
+    // SPEC-6.6.1: ignore a submit while a previous one is still in flight.
     let mut submit = move |_| {
         if saving() {
             return;
         }
         let em = email.read().trim().to_string();
         let pw = password.read().clone();
+        // SPEC-6.5.2: empty-field message, no request sent.
         if em.is_empty() || pw.is_empty() {
             error.set("Enter your platform admin email and password.".to_string());
             return;
         }
         saving.set(true);
         error.set(String::new());
+        // SPEC-6.5.2: clear any prior success banner on every new submit attempt.
         // MAPPS-518 walkthrough fix: clear the success greeting on every
         // submit too. Without this a failed re-attempt renders the stale
         // "Signed in as ..." banner from a previous success alongside
@@ -77,6 +81,7 @@ pub fn PlatformLoginPage() -> Element {
                     email: em,
                     password: pw,
                 };
+                // SPEC-6.7.3: platform admin sign-in call.
                 match crate::hooks::fetch::api::post_typed::<PlatformLoginResp, _>(
                     "/platform/login",
                     &body,
@@ -104,6 +109,7 @@ pub fn PlatformLoginPage() -> Element {
                             resp.admin.first_name, resp.admin.last_name, resp.admin.email
                         ));
                     }
+                    // SPEC-6.5.2: 401 maps to this message.
                     Err(ApiError::Status { code: 401, .. }) => {
                         error.set("Invalid email or password.".to_string());
                     }
@@ -114,6 +120,7 @@ pub fn PlatformLoginPage() -> Element {
         });
     };
 
+    // SPEC-6.1.3: standalone platform admin sign-in form and most-recent success banner.
     rsx! {
         AuthLayout {
             div { class: "text-center mb-6",
