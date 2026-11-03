@@ -788,9 +788,9 @@ storage keys listed under Security and Retention and cleanup below.
   card-specific message naming the error, without affecting the other
   cards' state.
 - **SPEC-6.5.17**: `not_found.rs` must render the unmatched path
-  segments whenever the joined path is non-empty, in every build; its
-  own comment's claim that this is development-only does not reflect
-  the code and is tracked as a separate defect (see the PR body).
+  segments only in `debug_assertions` builds, and only when the joined
+  path is non-empty. Release builds show the generic "Page not found"
+  copy with no path echo.
 
 ### 6.6 Concurrency and ordering
 
