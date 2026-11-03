@@ -54,6 +54,8 @@ use crate::Route;
 /// clamped into a fixed daytime window, and the grid scrolls inside its
 /// own box (opening on the working-hours window below) instead of the
 /// page scrolling. Axis labels stay 12-hour AM/PM via `hour_label`.
+// SPEC-14.2.13: the grid spans the full 24-hour day; it is never clamped
+// to the working-hours window below.
 const GRID_START_HOUR: u32 = 0;
 const GRID_END_HOUR: u32 = 24;
 const GRID_TOTAL_HOURS: f64 = (GRID_END_HOUR - GRID_START_HOUR) as f64;
@@ -67,6 +69,8 @@ const GRID_TOTAL_HOURS: f64 = (GRID_END_HOUR - GRID_START_HOUR) as f64;
 const WORK_START_HOUR: u32 = 7;
 const WORK_END_HOUR: u32 = 19;
 
+// SPEC-14.2.13: the working-hours window is a display hint only (initial
+// scroll position and out-of-hours shading), never a scheduling bound.
 /// True for an hour inside the working-hours window (MAPPS-387).
 fn is_work_hour(hour: u32) -> bool {
     (WORK_START_HOUR..WORK_END_HOUR).contains(&hour)
@@ -93,6 +97,8 @@ fn scroll_grid_to_work_hours(id: &str) {
     crate::platform::dom::scroll_to_fraction(id, true, frac);
 }
 
+// SPEC-14.2.3: the calendar offers Month, Week and Day views, defaulting
+// to Month.
 /// Which calendar layout is active. Month is the default; Week and Day
 /// are now real views (previously disabled "coming soon" stubs).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -165,6 +171,8 @@ fn week_dates(date: NaiveDate) -> Vec<NaiveDate> {
 /// build the `from`/`to` query the server expands recurrence over. We
 /// pad the month view to whole grid weeks so appointments on
 /// leading/trailing days from adjacent months still show.
+// SPEC-14.2.3: month view pads to whole grid weeks (Sunday first), week
+// view is the 7 days starting Sunday, day view is the single active day.
 fn visible_range(active: NaiveDate, view: CalendarView) -> (NaiveDate, NaiveDate) {
     match view {
         CalendarView::Month => {
@@ -186,6 +194,9 @@ fn visible_range(active: NaiveDate, view: CalendarView) -> (NaiveDate, NaiveDate
 /// `from`/`to` go to the server as RFC 3339 UTC; building them from the
 /// local midnight keeps the visible local range aligned with what the
 /// user sees regardless of the browser's offset.
+// SPEC-14.2.9: every date/time shown or queried is interpreted in the
+// user's profile timezone and converted to UTC at the local midnight
+// boundary, so the visible range matches what the user sees.
 fn local_date_start_utc(d: NaiveDate) -> DateTime<Utc> {
     let naive = d.and_hms_opt(0, 0, 0).unwrap_or_else(|| {
         // 00:00 is always valid; this branch is unreachable in practice.
@@ -293,6 +304,11 @@ const APPT_DESCRIPTION_MAX: i64 = 2000;
 /// a valid `FREQ` is present, that every key is a known RRULE part, that
 /// `COUNT` and `UNTIL` are not both set, and that the common numeric / keyword
 /// values are well-formed. It does not evaluate the rule semantically.
+// SPEC-14.2.22: a recurrence value is rejected before submit unless it is
+// a well-formed RFC 5545 RRULE: a known FREQ is present, every part is a
+// recognised RRULE key, COUNT and UNTIL are not both set, and numeric /
+// BYDAY / UNTIL / WKST values are well-formed; each failure returns a
+// specific inline message.
 fn validate_rrule(rule: &str) -> Result<(), String> {
     // MAPPS-582: an RRULE is a fixed ASCII grammar, and a pasted rule is
     // exactly the kind of value that carries an invisible character.
@@ -508,6 +524,8 @@ fn appointment_type_label(appointment_type: &str) -> &'static str {
 /// current/future appointments. Paired with the blocks' existing `hover:opacity-*`
 /// so hovering a past event un-mutes it. Back-dating is intentional (tracking),
 /// so past appointments are shown, just dimmed.
+// SPEC-14.2.12: an appointment whose end time has passed renders muted
+// (not hidden) across every view; back-dating is intentional for tracking.
 fn past_class(appt: &AppointmentResponse) -> &'static str {
     if appt.end_time < Utc::now() {
         "opacity-50"
@@ -519,6 +537,8 @@ fn past_class(appt: &AppointmentResponse) -> &'static str {
 /// Appointment type options shared by the create/edit form and any
 /// type-driven UI. Values match the server's CHECK constraint
 /// (`ticket`, `project`, `meeting`, `other`).
+// SPEC-14.2.14: appointment_type is one of ticket, project, meeting,
+// other, matching the server's CHECK constraint.
 fn appointment_type_options() -> Vec<SelectOption> {
     vec![
         SelectOption::new("meeting", "Meeting"),
@@ -530,6 +550,8 @@ fn appointment_type_options() -> Vec<SelectOption> {
 
 /// Appointment status options (server CHECK: scheduled / in_progress /
 /// completed / cancelled). Only surfaced in the edit form.
+// SPEC-14.2.14: status is one of scheduled, in_progress, completed,
+// cancelled, matching the server's CHECK constraint.
 fn appointment_status_options() -> Vec<SelectOption> {
     vec![
         SelectOption::new("scheduled", "Scheduled"),
@@ -541,6 +563,8 @@ fn appointment_status_options() -> Vec<SelectOption> {
 
 /// Scheduling-template `kind` options for the management form (MAPPS-253).
 /// Values match the server CHECK (`dispatch` / `calendar`).
+// SPEC-14.2.15: template kind is one of dispatch, calendar, matching the
+// server's CHECK constraint.
 fn template_kind_options() -> Vec<SelectOption> {
     vec![
         SelectOption::new("dispatch", "Dispatch (on-site work)"),
@@ -587,6 +611,9 @@ fn template_option_label(t: &SchedulingTemplateResponse) -> String {
 /// `None` when both are zero / the template is a calendar template
 /// (MAPPS-253). The buffers are display-only for this issue: the saved
 /// appointment spans only the on-site duration.
+// SPEC-14.2.15: travel buffers are meaningful only for a dispatch
+// template; a calendar template's buffers are always zero and never
+// surfaced.
 fn travel_buffer_help(t: &SchedulingTemplateResponse) -> Option<String> {
     if t.kind != "dispatch" {
         return None;
@@ -645,6 +672,9 @@ fn use_templates_resource(kind: Option<&'static str>) -> Resource<Vec<Scheduling
 /// lower roles would get a 403. Skip the fetch for them: the dropdown
 /// just shows the "Select technician…" placeholder and the user can
 /// only self-assign anyway. Saves a noisy console error per page load.
+// SPEC-14.2.17: the user roster fetch is skipped for a signed-in user
+// without manage-users permission, since the server-side endpoint is
+// gated to Admin/Manager and would otherwise 403.
 fn use_users_resource() -> Resource<Vec<RemoteUser>> {
     let auth = crate::hooks::use_auth();
     let can_manage = auth
@@ -694,6 +724,10 @@ pub fn CalendarPage() -> Element {
             // chrono's `DateTime<Utc>` parser after decoding and the
             // request 400s. `SecondsFormat::Secs, use_z=true` yields
             // `2026-05-31T04:00:00Z` which round-trips cleanly.
+            // SPEC-14.2.1: appointments for the visible range are fetched from
+            // GET /calendar/appointments?from=<rfc3339>&to=<rfc3339>, with the
+            // UTC offset emitted as a literal Z so the query string survives
+            // URL decoding.
             let path = format!(
                 "/calendar/appointments?from={}&to={}",
                 from_utc.to_rfc3339_opts(SecondsFormat::Secs, true),
@@ -724,6 +758,11 @@ pub fn CalendarPage() -> Element {
     // server is still reachable (a 4xx) keeps the inline banner below. Writes
     // are blocked while down; `can_mutate` disables the New Appointment button
     // and the create/edit modal's Save + Delete.
+    // SPEC-14.2.25: a failed fetch while the server is flagged unreachable
+    // renders ContentUnavailable instead of an empty grid; a failed fetch
+    // while still reachable keeps the inline error banner below and treats
+    // the result as an empty list. SPEC-14.2.16: write actions are disabled
+    // while the server is unreachable.
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
@@ -911,6 +950,8 @@ pub fn CalendarPage() -> Element {
                 users: users.clone(),
                 default_date: active_date(),
                 onclose: move |_| form_state.set(None),
+                // SPEC-14.2.28: a successful save or delete refetches the
+                // active resource so the view reflects server state.
                 onsaved: move |_| {
                     form_state.set(None);
                     appts_resource.restart();
@@ -929,6 +970,8 @@ pub fn CalendarPage() -> Element {
 /// that the browser silently reparents - so the behaviour is supplied by hand.
 /// Both keys, because a screen reader has already announced the element as a
 /// button and Space is what a button user presses.
+// SPEC-14.2.8: every element that announces itself as a button
+// (`role="button"`) must be activatable by Enter or Space.
 fn is_activation_key(e: &KeyboardEvent) -> bool {
     e.key() == Key::Named(NamedKey::Enter) || e.key() == Key::Character(" ".to_string())
 }
@@ -1067,6 +1110,10 @@ fn MonthDayCell(props: MonthDayCellProps) -> Element {
             // MAPPS-319: the whole cell is clickable; the click opens the
             // New Appointment modal pre-filled with this day. Appointment
             // chips below stop propagation so their own onpick fires instead.
+            // SPEC-14.2.7: an empty-area click on a month cell opens the
+            // create-appointment modal pre-filled with this day; an
+            // appointment chip's own click (below) opens it for edit
+            // instead and stops propagation.
             div {
                 class: "min-h-24 p-2 cursor-pointer {bg_class}",
                 role: "button",
@@ -1387,6 +1434,9 @@ fn block_geometry(appt: &AppointmentResponse) -> (f64, f64) {
 /// `left = lane/lane_count`. Every event in a connected overlap cluster shares
 /// the cluster's column count (the conventional calendar layout), guaranteeing
 /// no two blocks visually overlap.
+// SPEC-14.2.27: overlapping appointments are split into side-by-side
+// lanes so no two overlapping blocks visually collide; every event in a
+// connected overlap cluster shares that cluster's column count.
 fn lanes_from_intervals(intervals: &[(DateTime<Utc>, DateTime<Utc>)]) -> Vec<(usize, usize)> {
     let n = intervals.len();
     let mut result = vec![(0usize, 1usize); n];
@@ -1703,6 +1753,8 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
 
     let existing = props.existing.clone();
     let is_edit = existing.is_some();
+    // SPEC-14.2.2: an expanded recurring instance cannot be edited or
+    // deleted individually, since its id is the series master's.
     // Expanded recurring instances cannot be edited individually: their
     // id is the series master's, so a PUT/DELETE would hit the master.
     let is_recurring_instance = existing
@@ -1915,10 +1967,13 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
         let title_val = title.read().trim().to_string();
         let assigned_to_id = uuid::Uuid::parse_str(assignee.read().trim()).ok();
         let mut blocked = false;
+        // SPEC-14.2.18: Title is required; blocked with "Title is required."
         if title_val.is_empty() {
             title_err.set("Title is required.".to_string());
             blocked = true;
         }
+        // SPEC-14.2.19: a technician must be assigned (a valid UUID); blocked
+        // with "Pick a technician to assign."
         if assigned_to_id.is_none() {
             assignee_err.set("Pick a technician to assign.".to_string());
             blocked = true;
@@ -1930,6 +1985,9 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
         let is_all_day = all_day();
         // Resolve the start/end instants from whichever editor is active:
         // an all-day date span, or the timed start + duration model.
+        // SPEC-14.2.20: an all-day appointment requires both dates, and the
+        // end date must be on/after the start date, else the field-specific
+        // error below blocks submit.
         let (start_time, end_time) = if is_all_day {
             let Some(start_date) = parse_date_value(&start_date_value.read()) else {
                 start_err.set("Enter a valid start date.".to_string());
@@ -1943,19 +2001,22 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                 end_err.set("End date must be on or after the start date.".to_string());
                 return;
             }
-            // Span whole local days: Start at local 00:00 of the start date,
-            // End at local 00:00 of the day after the (inclusive) end date,
-            // so a single-day all-day event is a 24h span the grids render.
+            // SPEC-14.2.10: the persisted span runs from local 00:00 of the
+            // start date to local 00:00 of the day after the (inclusive) end
+            // date, so a single-day all-day event is a 24h span the grids
+            // render.
             let start = local_date_start_utc(start_date);
             let end = local_date_start_utc(end_date + Duration::days(1));
             (start, end)
         } else {
+            // SPEC-14.2.21: a timed appointment requires a valid start time.
             let Some(start) = parse_local_datetime_to_utc(&start_value.read()) else {
                 start_err.set("Enter a valid start time.".to_string());
                 return;
             };
-            // End follows Start + the chosen duration. The custom path stores
-            // an explicit End in `end_value`; presets store minutes directly.
+            // SPEC-14.2.11: End follows Start + the chosen preset duration,
+            // never stored independently; the Custom path stores an explicit
+            // End in `end_value` instead.
             let end = if duration_choice.read().as_str() == DURATION_CUSTOM {
                 let Some(custom_end) = parse_local_datetime_to_utc(&end_value.read()) else {
                     end_err.set("Enter a valid end time.".to_string());
@@ -1967,6 +2028,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
             };
             (start, end)
         };
+        // SPEC-14.2.21: End must be on or after Start.
         // Defensive guard: a non-positive custom duration would invert the
         // span. Presets and the all-day path can never trip this.
         if end_time < start_time {
@@ -1985,6 +2047,8 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
 
         // Reject a malformed RRULE at the field before submit so an invalid
         // rule is never persisted (MAPPS-219). Empty -> one-off, no rule.
+        // SPEC-14.2.22: a malformed RRULE blocks submit with the field's
+        // own validation message.
         if let Some(rule) = rrule.as_deref() {
             if let Err(msg) = validate_rrule(rule) {
                 recurrence_error.set(msg);
@@ -1993,12 +2057,16 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
         }
         recurrence_error.set(String::new());
 
+        // SPEC-14.2.26: `saving` blocks a re-entrant submit until the
+        // request resolves.
         saving.set(true);
         error.set(String::new());
 
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-14.2.2: create POSTs to /appointments; update PUTs to
+                // /appointments/{id}.
                 let result: Result<(), crate::hooks::fetch::api::ApiError> = match edit_id {
                     None => {
                         let body = CreateAppointmentRequest {
@@ -2048,6 +2116,8 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                         .map(|_| ())
                     }
                 };
+                // SPEC-14.2.26: a save failure shows "Could not save
+                // appointment: <server message>".
                 match result {
                     Ok(()) => onsaved.call(()),
                     Err(e) => {
@@ -2078,6 +2148,8 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
     // MAPPS-189: the Delete button opens the styled ConfirmDialog instead
     // of the native window.confirm(); the DELETE fires from
     // `on_confirm_delete` once the user confirms.
+    // SPEC-14.2.24: Delete opens a confirmation dialog; the DELETE request
+    // fires only once the user confirms.
     let mut confirming_delete = use_signal(|| false);
     let handle_delete = move |_| {
         if edit_id.is_none() || saving() || deleting() {
@@ -2095,6 +2167,9 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-14.2.2: delete sends DELETE /appointments/{id}.
+                // SPEC-14.2.26: a delete failure shows "Could not delete
+                // appointment: <server message>".
                 let path = format!("/appointments/{id}");
                 match crate::hooks::fetch::api::delete_authed_typed(&path).await {
                     Ok(()) => onsaved.call(()),
@@ -2169,6 +2244,10 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                         tone: BannerTone::Info,
                         "You are scheduling an appointment now. To save a reusable shape (type, duration, title) for next time, create a template on the Scheduling Templates page instead."
                     }
+                    // SPEC-14.2.6: selecting a template pre-fills type,
+                    // title, location and duration from the template's
+                    // defaults (blanks never clobber an existing field), and
+                    // stashes its linked ticket id for the create request.
                     Select {
                         name: "appt_template",
                         label: "Start from a template",
@@ -2512,6 +2591,9 @@ pub fn DispatchBoardPage() -> Element {
             // `to_rfc3339()` produces a value that fails chrono's
             // `DateTime<Utc>` parser after decoding and the request 400s
             // (same fix as the calendar list call above).
+            // SPEC-14.2.4: the dispatch board fetches the aggregated
+            // GET /dispatch?from&to payload (appointments, availability,
+            // time off, on-call) for the active Day/Week/Month range.
             let path = format!(
                 "/dispatch?from={}&to={}",
                 from_utc.to_rfc3339_opts(SecondsFormat::Secs, true),
@@ -2544,6 +2626,9 @@ pub fn DispatchBoardPage() -> Element {
     // empty timeline. A fetch that fails while still reachable (a 4xx) keeps
     // the inline banner below. Writes are blocked while down; `can_mutate`
     // disables the Schedule Appointment button and the modal's Save + Delete.
+    // SPEC-14.2.25: a failed load while the server is flagged unreachable
+    // renders ContentUnavailable instead of an empty timeline. SPEC-14.2.16:
+    // write actions are disabled while the server is unreachable.
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
@@ -3052,6 +3137,8 @@ pub fn SchedulingTemplatesPage() -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         #[cfg(feature = "app")]
         {
+            // SPEC-14.2.5: the management page lists templates via
+            // GET /scheduling-templates.
             crate::hooks::fetch::api::get_all_authed::<SchedulingTemplateResponse>(
                 "/scheduling-templates",
             )
@@ -3077,6 +3164,8 @@ pub fn SchedulingTemplatesPage() -> Element {
     // A fetch that fails while still reachable (a 4xx) keeps the empty state
     // below. Writes are blocked while down; `can_mutate` disables the New
     // Template buttons and the create/edit modal's Save + Delete.
+    // SPEC-14.2.25: a failed load while the server is flagged unreachable
+    // renders ContentUnavailable instead of an empty-state list.
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
@@ -3170,6 +3259,8 @@ pub fn SchedulingTemplatesPage() -> Element {
             TemplateFormModal {
                 existing: editing,
                 onclose: move |_| form_state.set(None),
+                // SPEC-14.2.28: a successful save or delete refetches the
+                // template list.
                 onsaved: move |_| {
                     form_state.set(None);
                     templates_resource.restart();
@@ -3263,6 +3354,10 @@ fn TemplateFormModal(props: TemplateFormModalProps) -> Element {
         if saving() || deleting() {
             return;
         }
+        // SPEC-14.2.23: template Name is required, Duration must be a
+        // positive whole number of minutes, and (dispatch kind only) the
+        // travel buffers must be non-negative whole numbers, each with its
+        // own inline error message.
         let name_val = name.read().trim().to_string();
         if name_val.is_empty() {
             error.set("Name is required.".to_string());
@@ -3300,6 +3395,8 @@ fn TemplateFormModal(props: TemplateFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-14.2.5: create POSTs to /scheduling-templates;
+                // update PUTs to /scheduling-templates/{id}.
                 let result: Result<(), crate::hooks::fetch::api::ApiError> = match edit_id {
                     None => {
                         let body = CreateSchedulingTemplateRequest {
@@ -3362,6 +3459,8 @@ fn TemplateFormModal(props: TemplateFormModalProps) -> Element {
         });
     };
 
+    // SPEC-14.2.24: Delete opens a confirmation dialog before the DELETE
+    // request fires.
     let handle_delete = move |_| {
         if edit_id.is_none() || saving() || deleting() {
             return;
@@ -3378,6 +3477,7 @@ fn TemplateFormModal(props: TemplateFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-14.2.5: delete sends DELETE /scheduling-templates/{id}.
                 let path = format!("/scheduling-templates/{id}");
                 match crate::hooks::fetch::api::delete_authed_typed(&path).await {
                     Ok(()) => onsaved.call(()),
@@ -3514,6 +3614,8 @@ fn TemplateFormModal(props: TemplateFormModalProps) -> Element {
                 }
             }
         }
+        // SPEC-14.2.29: deleting a template never deletes or modifies any
+        // appointment previously created from it.
         crate::components::ConfirmDialog {
             open: confirming_delete(),
             title: "Delete template".to_string(),
