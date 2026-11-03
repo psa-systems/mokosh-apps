@@ -32,6 +32,9 @@
 # (`bg-blue-50 dark:bg-blue-900/20`, `border-blue-200 dark:border-blue-900`,
 # ...), which pass validates separately via the text pairing above.
 #
+# SPEC-2.1.1: no-argument invocation, default root, and the clean/FAIL stdout
+# line contract.
+#
 # Usage: check-theme-tokens.sh [ROOT | --self-test]
 #   ROOT defaults to `src`. `--self-test` re-runs all three passes over
 #   generated fixtures to prove they still reject a hardcoded gray, an
@@ -40,6 +43,9 @@
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
+# SPEC-2.1.3: self-test mode runs detection against generated fixtures only,
+# proving both independent checks still reject their violation shapes and
+# still accept the corrected shapes.
 if [ "${1:-}" = "--self-test" ]; then
   fixtures=$(mktemp -d) || exit 2
   trap 'rm -rf "$fixtures"' EXIT
@@ -108,6 +114,8 @@ fi
 root="${1:-src}"
 status=0
 
+# SPEC-2.5.16 (check 1 of 2): a hardcoded neutral gray or bg-white utility
+# outside src/modules/theme/ and src/components/theme_picker.rs.
 # Pass 1 (MAPPS-259): hardcoded neutrals.
 # dark: optional prefix; bg-white, or {bg,text,border,ring,divide,placeholder}-gray-NNN.
 pattern='(dark:)?(bg-white\b|(bg|text|border|ring|divide|placeholder)-gray-[0-9]{2,3})'
@@ -125,6 +133,8 @@ if [ -n "$hits" ]; then
   status=1
 fi
 
+# SPEC-2.5.16 (check 2 of 2): a state-hue text-* utility, or a ring-blue-*
+# utility, with no dark: sibling pair in the same variant chain.
 # Pass 2 (MAPPS-444, extended by MAPPS-797): every state-hue TEXT utility
 # carries a dark-mode pair.
 #

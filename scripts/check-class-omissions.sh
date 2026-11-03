@@ -13,6 +13,10 @@
 #
 # Each check also fails if it stops matching anything, so a refactor that moves
 # the shape out from under a pattern is loud instead of silently clean.
+#
+# SPEC-2.1.1: invocable with no arguments; scans the fixed default root (src)
+# and prints a `guard: clean`/`guard: FAIL (<reason>)` line per check below.
+# SPEC-2.1.3: this script has no --self-test mode (no generated-fixture pass).
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -57,6 +61,8 @@ if [ -n "$heading_hits" ]; then
   printf '%s\n' "$heading_hits"
   status=1
 fi
+# SPEC-2.5.2: fail if the heading-weight pass matched under 50 headings,
+# so a refactor that moves the shape out from under the pattern is loud.
 if [ "$heading_total" -lt 50 ]; then
   echo "heading-weight guard: FAIL (only $heading_total headings matched; the pattern stopped finding them)"
   status=1
@@ -112,6 +118,8 @@ if [ -n "$cell_hits" ]; then
   printf '%s\n' "$cell_hits"
   status=1
 fi
+# SPEC-2.5.2: fail if the table-name-cell pass matched under 15 spans,
+# so a refactor that moves the shape out from under the pattern is loud.
 if [ "$cell_total" -lt 15 ]; then
   echo "name-cell guard: FAIL (only $cell_total table cell spans matched; the pattern stopped finding them)"
   status=1
