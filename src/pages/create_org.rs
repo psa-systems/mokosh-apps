@@ -43,12 +43,14 @@ pub fn CreateOrgPage() -> Element {
     let mut error = use_signal(String::new);
     let mut saving = use_signal(|| false);
 
+    // SPEC-6.1.8: redirect to sign-in instead of rendering with no pending identity token.
     let has_token = PENDING_LOGIN.read().identity_token.is_some();
     if !has_token {
         nav.replace(Route::Login {});
         return rsx! { Fragment {} };
     }
 
+    // SPEC-6.6.1: ignore a submit while a previous one is still in flight.
     let mut submit = move |_| {
         if saving() {
             return;
@@ -58,6 +60,7 @@ pub fn CreateOrgPage() -> Element {
             return;
         };
         let n = name.read().trim().to_string();
+        // SPEC-6.5.4: team-name required.
         if n.is_empty() {
             error.set("Enter a team name.".to_string());
             return;
@@ -75,6 +78,7 @@ pub fn CreateOrgPage() -> Element {
                     tenant_name: n,
                     tenant_slug: s,
                 };
+                // SPEC-6.7.5: create the self-serve tenant.
                 match crate::hooks::fetch::api::post_typed::<LoginResp, _>(
                     "/tenants/self-serve",
                     &body,
@@ -83,6 +87,8 @@ pub fn CreateOrgPage() -> Element {
                 {
                     Ok(resp) => match resp.user {
                         Some(user) => {
+                            // MAPPS-1199: no on_staff_signin_clear_contact_side() call here,
+                            // unlike every other staff session-install site; see linked bug.
                             crate::hooks::fetch::api::set_access_token(Some(
                                 resp.access_token.clone(),
                             ));
@@ -106,19 +112,23 @@ pub fn CreateOrgPage() -> Element {
                             *PENDING_LOGIN.write() = PendingLogin::default();
                             nav.replace(Route::Dashboard {});
                         }
+                        // SPEC-6.5.5: success with no session is reported, not navigated.
                         None => {
                             error.set("Team created but no session was returned.".to_string());
                         }
                     },
+                    // SPEC-6.5.4 / SPEC-6.9.1: 401 clears the pending identity token and returns to sign-in.
                     Err(ApiError::Status { code: 401, .. }) => {
                         *PENDING_LOGIN.write() = PendingLogin::default();
                         nav.replace(Route::Login {});
                     }
+                    // SPEC-6.5.4: 409 conflict message shown verbatim.
                     Err(ApiError::Status {
                         code: 409, message, ..
                     }) => {
                         error.set(message);
                     }
+                    // SPEC-6.5.4: 400 validation message shown verbatim.
                     Err(ApiError::Status {
                         code: 400, message, ..
                     }) => {
@@ -131,6 +141,7 @@ pub fn CreateOrgPage() -> Element {
         });
     };
 
+    // SPEC-6.1.8: required team-name field and optional portal-slug field.
     rsx! {
         AuthLayout {
             div { class: "text-center mb-6",
@@ -189,6 +200,7 @@ pub fn CreateOrgPage() -> Element {
                         r#type: "button".to_string(),
                         disabled: saving(),
                         class: "w-full".to_string(),
+                        // SPEC-6.9.1: explicit back-to-sign-in action clears the pending signal.
                         onclick: move |_| {
                             *PENDING_LOGIN.write() = PendingLogin::default();
                             nav.replace(Route::Login {});

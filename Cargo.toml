@@ -13,6 +13,7 @@ repository = "https://dev.a8n.run/psa-systems/mokosh-apps"
 name = "mokosh-apps"
 path = "src/main.rs"
 
+# SPEC-1.3.1: the full set of buildable feature combinations.
 [features]
 default = [
     "web",
@@ -43,6 +44,7 @@ server = []
 # even in debug builds so a debug WASM that ships to staging by accident
 # does not auto-grant Admin. Flip on locally via
 # `cargo run --features dev_admin_bypass` (and set the env vars).
+# SPEC-1.4.9: must default off; see .env.example for the credential-exposure warning.
 dev_admin_bypass = []
 
 [lib]
@@ -66,6 +68,7 @@ ammonia = "4.2.4"
 # no `rev`/`tag`/`branch`: MAPPS-525 keeps the resolved commit in Cargo.lock at
 # the server's head instead, enforced by scripts/check-types-pin.sh, so a DTO
 # change over there turns this build red rather than drifting unnoticed.
+# SPEC-1.7.1: pinned only through Cargo.lock, no rev/tag/branch here.
 [dependencies.mokosh-types]
 git = "https://dev.a8n.run/psa-systems/mokosh-server.git"
 # MAPPS-726: MAPPS-617 had pinned a `rev` on the server's
@@ -294,6 +297,7 @@ dioxus-ssr = "0.8.0-alpha.3"
 version = "1"
 features = ["rt-multi-thread", "macros", "time"]
 
+# SPEC-1.3.2: release/wasm-release optimize for minimum shipped size.
 [profile.release]
 opt-level = "z"
 lto = true

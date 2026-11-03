@@ -208,7 +208,13 @@ fn GroupImportBody(vendor: Vendor) -> Element {
         crate::hooks::fetch::api::post_authed::<Preview, _>(&path, &PreviewBody { group_ids: None })
             .await
             .map_err(|e| {
-                tracing::error!("icloud contact sync preview failed: {e}");
+                // MAPPS-1209: the failing vendor, not a literal. This body
+                // serves both pickers (MAPPS-1124), so a hardcoded name sends
+                // whoever reads the log for a failed Microsoft 365 import
+                // looking at iCloud. The slug rather than the display name,
+                // because it is what `?provider=` carries and what the
+                // server's own lines are keyed by.
+                tracing::error!("{} contact sync preview failed: {e}", vendor.provider);
                 e
             })
     });
@@ -290,7 +296,11 @@ fn GroupImportBody(vendor: Vendor) -> Element {
                 .await
                 {
                     Ok(_) => {
-                        navigator.push(Route::SettingsICloudContacts {});
+                        if vendor.provider == MICROSOFT.provider {
+                            navigator.push(Route::SettingsMicrosoftContacts {});
+                        } else {
+                            navigator.push(Route::SettingsICloudContacts {});
+                        }
                     }
                     Err(e) => {
                         error.set(format!(
@@ -570,6 +580,74 @@ mod tests {
         assert_eq!(estimate(&data.records, &none), Totals::default());
         let src = include_str!("settings_contact_sync_group_import.rs");
         assert!(src.contains("Nothing chosen yet, so nothing would be imported."));
+    }
+
+    /// MAPPS-1209: a diagnostic from this shared body names the vendor that
+    /// failed, never a literal.
+    ///
+    /// The same defect class as the case below, and found the same way: this
+    /// body was written against iCloud and parameterized later (MAPPS-1124),
+    /// so the preview failure still said "icloud" and sent whoever read the
+    /// log for a failed Microsoft 365 import looking at the wrong provider.
+    ///
+    /// Scanned over every `tracing::` call rather than asserting on the one
+    /// line that was wrong, because the next diagnostic added here would be
+    /// just as easy to hardcode. A window after the macro name, not a slice
+    /// to the next `);`, since these calls end inside a closure.
+    #[test]
+    fn no_diagnostic_hardcodes_a_vendor() {
+        let src = include_str!("settings_contact_sync_group_import.rs");
+        let head = &src[..src.find("mod tests").expect("this module")];
+        let mut calls = 0;
+        for (at, _) in head.match_indices("tracing::") {
+            let call = &head[at..(at + 240).min(head.len())];
+            calls += 1;
+            for literal in ["icloud", "iCloud", "microsoft", "Microsoft"] {
+                assert!(
+                    !call.contains(literal),
+                    "a diagnostic names {literal} instead of the vendor that failed: {call}"
+                );
+            }
+        }
+        assert!(
+            calls > 0,
+            "the scan matched no diagnostics; needle is stale"
+        );
+        // Formatting-independent: rustfmt is free to put that call on one
+        // line or four, and an assertion that pinned the layout failed the
+        // first time `just fmt` ran.
+        let preview_failure = head
+            .find("contact sync preview failed")
+            .map(|at| &head[at.saturating_sub(80)..(at + 120).min(head.len())])
+            .expect("the preview failure diagnostic");
+        assert!(
+            preview_failure.contains("vendor.provider"),
+            "the preview failure interpolates the vendor: {preview_failure}"
+        );
+    }
+
+    /// MAPPS-1171: a successful import lands the admin on the vendor's OWN
+    /// settings page, not always iCloud's, which is what happened when `start`
+    /// was written once against the iCloud route and never parameterized.
+    #[test]
+    fn starting_an_import_names_both_vendors_own_route() {
+        let src = include_str!("settings_contact_sync_group_import.rs");
+        let start = &src[src.find("let mut start = move").expect("the start closure")
+            ..src
+                .find("let preview_snap")
+                .expect("after the start closure")];
+        assert!(
+            start.contains("vendor.provider == MICROSOFT.provider"),
+            "start must branch on the vendor before pushing a route"
+        );
+        assert!(
+            start.contains("navigator.push(Route::SettingsMicrosoftContacts {})"),
+            "a Microsoft 365 import must land on the Microsoft contacts page"
+        );
+        assert!(
+            start.contains("navigator.push(Route::SettingsICloudContacts {})"),
+            "an iCloud import must land on the iCloud contacts page"
+        );
     }
 }
 

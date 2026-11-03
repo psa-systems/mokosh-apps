@@ -4,6 +4,7 @@
 }
 
 :{$PORT} {
+    # SPEC-1.1.4: serves the runtime shim, the static bundle, and the SPA fallback at the root origin.
     # MAPPS-963: `_mokosh_config.js`, `_mokosh_config.json` and the
     # link-preview-patched `index.html` are rendered by entrypoint.sh
     # into `$MOKOSH_RUNTIME_DIR` (default /tmp/mokosh-runtime) so the
@@ -62,6 +63,7 @@
     # an operator-set origin always wins (see MOKOSH_API_ORIGIN/
     # MOKOSH_OIDC_ORIGIN export in entrypoint.sh). A non-`msp.`-prefixed host
     # maps to "", same as the SPA deriving nothing.
+    # SPEC-1.7.4: derives the API/OIDC origin from the request host when no operator origin is configured.
     map {http.request.host} {mokosh_api_origin_fallback} {
         ~^msp\.(.+)$ "https://api.msp.${1}"
         default ""
@@ -72,6 +74,7 @@
     }
 
     header {
+        # SPEC-1.4.6: sets the Content-Security-Policy and the other hardening headers below.
         # Default: never pin a response in the browser. index.html, the
         # runtime-config shim, and every client-side route (served
         # index.html via `try_files`, i.e. a path with no file on disk)

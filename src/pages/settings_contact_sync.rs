@@ -39,7 +39,7 @@ use uuid::Uuid;
 
 use crate::components::{
     use_page_title, Badge, BadgeVariant, BannerTone, Button, ButtonVariant, Card, Checkbox,
-    ConfirmDialog, ContextualHelpLink, ErrorBanner, PageHeader, StatusBanner,
+    ConfirmDialog, ContextualHelpLink, ErrorBanner, PageHeader, Select, SelectOption, StatusBanner,
 };
 use crate::pages::settings::{AdminOnlyNotice, SettingsBreadcrumb};
 use crate::Route;
@@ -131,6 +131,11 @@ pub struct Connection {
     pub last_error: Option<String>,
     #[serde(default)]
     pub selected_groups: Vec<String>,
+    /// How often the worker polls this connection, in minutes (server
+    /// PMS-1315). A server that predates the field polls at its own default
+    /// of an hour, which is what this one shows.
+    #[serde(default = "default_interval_minutes")]
+    pub sync_interval_minutes: i32,
     #[serde(default)]
     pub consecutive_failures: i32,
     #[serde(default)]
@@ -139,6 +144,113 @@ pub struct Connection {
     pub deleted_in_source: i64,
     #[serde(default)]
     pub latest_run: Option<Run>,
+}
+
+/// An hour, which is the column's own default on the server.
+fn default_interval_minutes() -> i32 {
+    60
+}
+
+/// The cadences the card offers, in minutes (MAPPS-1174).
+///
+/// A fixed list rather than a number field: the server takes 5 to 1440 and
+/// refuses the rest, and a list cannot produce a refusal. These are the
+/// intervals an MSP would actually pick, from a service desk that lives in
+/// the address book to a directory that barely moves.
+pub fn cadence_minutes() -> &'static [i32] {
+    &[10, 15, 30, 60, 120, 240, 480, 1440]
+}
+
+/// How one cadence reads to an admin (MAPPS-1174).
+pub fn cadence_label(minutes: i32) -> String {
+    match minutes {
+        1440 => "Once a day".to_string(),
+        m if m % 60 == 0 && m > 60 => format!("Every {} hours", m / 60),
+        60 => "Every hour".to_string(),
+        m => format!("Every {m} minutes"),
+    }
+}
+
+/// How often this connection is polled, as a control (MAPPS-1174).
+///
+/// One component for all three providers, because the route takes the
+/// provider as a query parameter and three copies of this would be three
+/// places for the option list to drift. A server value the list does not
+/// offer is still shown: somebody set it by hand or an older list had it,
+/// and replacing it silently with the nearest option would change a
+/// setting nobody asked to change.
+#[component]
+pub fn SyncCadence(
+    provider: String,
+    minutes: i32,
+    disabled: bool,
+    on_saved: EventHandler<()>,
+) -> Element {
+    let mut error = use_signal(String::new);
+    let mut saving = use_signal(|| false);
+
+    let mut options: Vec<SelectOption> = cadence_minutes()
+        .iter()
+        .map(|m| SelectOption::new(m.to_string(), cadence_label(*m)))
+        .collect();
+    if !cadence_minutes().contains(&minutes) {
+        options.insert(
+            0,
+            SelectOption::new(minutes.to_string(), cadence_label(minutes)),
+        );
+    }
+
+    let save = move |event: FormEvent| {
+        let Ok(chosen) = event.value().parse::<i32>() else {
+            return;
+        };
+        if chosen == minutes {
+            return;
+        }
+        let provider = provider.clone();
+        saving.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "app")]
+            {
+                let body = ScheduleWrite {
+                    sync_interval_minutes: chosen,
+                };
+                let path = format!("/integrations/contact-sync/schedule?provider={provider}");
+                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                    .await
+                {
+                    Ok(_) => on_saved.call(()),
+                    Err(e) => error.set(format!("Could not change how often this syncs: {e}")),
+                }
+            }
+            #[cfg(not(feature = "app"))]
+            let _ = (chosen, provider);
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        div { class: "max-w-xs", "data-testid": "contact-sync-cadence",
+            Select {
+                name: "sync_interval_minutes",
+                label: "Sync every",
+                help: "How often Mokosh checks for changes. Turn the integration off to stop syncing altogether.",
+                options,
+                value: "{minutes}",
+                disabled: disabled || saving(),
+                onchange: save,
+            }
+            if !error().is_empty() {
+                p { class: "mt-1 text-sm text-red-600 dark:text-red-400", "{error}" }
+            }
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ScheduleWrite {
+    sync_interval_minutes: i32,
 }
 
 /// One import run (`contact_sync_runs`, PMS-1215).
@@ -580,6 +692,18 @@ fn GoogleContactsSettingsBody() -> Element {
     let mut confirm_disconnect = use_signal(|| false);
     let mut confirm_off = use_signal(|| false);
     let mut confirm_connect = use_signal(|| false);
+    // MAPPS-1212: what the user's last click asked for, until the server's
+    // answer catches up. `None` renders what the server says.
+    //
+    // A checkbox is not a controlled input: the click toggles the DOM node
+    // itself, so between an unticking click and the confirmation the browser
+    // shows off while the server still says on. Putting it back takes a
+    // RENDERED value that differs from the last rendered one, because dioxus
+    // does not mark `checked` volatile and so writes nothing when a re-render
+    // computes the same value (`components::form::mapps1212_checkbox_resync_tests`
+    // measures both halves). Rendering the intent is what gives the cancel
+    // path that difference to carry.
+    let mut wanted = use_signal(|| None::<bool>);
     let navigator = use_navigator();
     let can_mutate = crate::hooks::use_can_mutate();
 
@@ -680,7 +804,13 @@ fn GoogleContactsSettingsBody() -> Element {
                 .await
                 {
                     Ok(_) => overview.restart(),
-                    Err(e) => error.set(format!("Could not change the setting: {e}")),
+                    Err(e) => {
+                        error.set(format!("Could not change the setting: {e}"));
+                        // The save did not happen, so the box goes back to
+                        // what the server still says rather than sitting on
+                        // an intent nothing honoured.
+                        wanted.set(None);
+                    }
                 }
             }
             #[cfg(not(feature = "app"))]
@@ -761,6 +891,16 @@ fn GoogleContactsSettingsBody() -> Element {
                             }
                             if let Some(connection) = connection.as_ref() {
                                 ConnectionFacts { connection: connection.clone() }
+                                // MAPPS-1174: the cadence sits with the facts
+                                // rather than among the buttons, because it is
+                                // a setting the card shows and not an action
+                                // the admin takes once.
+                                SyncCadence {
+                                    provider: "google".to_string(),
+                                    minutes: connection.sync_interval_minutes,
+                                    disabled,
+                                    on_saved: move |_| overview.restart(),
+                                }
                             }
                             div { class: "flex flex-wrap gap-3 pt-2",
                                 if actions.choose_labels && matches!(state, CardState::NoLabelsChosen { .. }) {
@@ -830,10 +970,11 @@ fn GoogleContactsSettingsBody() -> Element {
                             Checkbox {
                                 name: "google_contacts_enabled",
                                 label: "Allow Google Contacts for this organization",
-                                checked: data.enabled,
+                                checked: wanted().unwrap_or(data.enabled),
                                 disabled,
                                 help: "Off stops every sync and hides Connect for everyone. The connection and imported contacts are kept.",
                                 onchange: move |e: FormEvent| {
+                                    wanted.set(Some(e.checked()));
                                     if e.checked() {
                                         write_enabled(true);
                                     } else {
@@ -888,9 +1029,13 @@ fn GoogleContactsSettingsBody() -> Element {
                         },
                         oncancel: move |_| {
                             confirm_off.set(false);
-                            // The checkbox already unticked itself; re-read so
-                            // it shows what the server still says.
-                            overview.restart();
+                            // Dropping the intent renders the server's value
+                            // again, which differs from the unticked value the
+                            // last render carried, so the box is written back
+                            // on. The re-read this used to do instead computed
+                            // the same value it had just rendered and so wrote
+                            // nothing at all.
+                            wanted.set(None);
                         },
                     }
                 }
@@ -1090,6 +1235,83 @@ fn ConnectionFacts(connection: Connection) -> Element {
                 }
             }
         }
+    }
+}
+
+/// MAPPS-1212: the enable checkbox renders the user's intent, not only the
+/// server's answer.
+///
+/// A scan rather than a render, because what has to hold is that four places
+/// agree: the `checked` binding reads the intent, the change handler records
+/// it, the cancel path drops it, and a failed save drops it too. Any one of
+/// them reverted leaves a box that shows off while the server says on, and the
+/// page looks correct in every other condition.
+///
+/// `components::form::mapps1212_checkbox_resync_tests` is the behaviour half:
+/// it measures that an unchanged `checked` reaches no DOM node, which is why
+/// re-reading the server cannot stand in for this.
+#[cfg(test)]
+mod mapps1212_enable_intent_tests {
+    #[test]
+    fn the_enable_checkbox_renders_the_intent_and_every_path_clears_it() {
+        let src = include_str!("settings_contact_sync.rs");
+        let head = &src[..src
+            .find("mod mapps1212_enable_intent_tests")
+            .expect("this module")];
+
+        assert!(
+            head.contains("let mut wanted = use_signal(|| None::<bool>);"),
+            "Google Contacts keeps no record of what the click asked for"
+        );
+        assert!(
+            head.contains("checked: wanted().unwrap_or(data.enabled)"),
+            "Google Contacts's checkbox is bound to the server's answer alone, so a \
+             cancelled turn-off leaves it unticked"
+        );
+        assert!(
+            head.contains("wanted.set(Some(e.checked()));"),
+            "Google Contacts does not record the click, so there is no intent to drop"
+        );
+        assert_eq!(
+            head.matches("wanted.set(None);").count(),
+            2,
+            "Google Contacts must drop the intent on BOTH the cancel path and the \
+             failed-save path"
+        );
+    }
+
+    /// The cancel path no longer re-reads the server to fix the box. That call
+    /// computed the same `checked` it had just rendered and so wrote nothing;
+    /// keeping it would spend a request per cancel and still imply it was the
+    /// fix.
+    #[test]
+    fn cancelling_does_not_re_read_the_server() {
+        let src = include_str!("settings_contact_sync.rs");
+        let head = &src[..src
+            .find("mod mapps1212_enable_intent_tests")
+            .expect("this module")];
+        // Delimited by the handler's own braces rather than a character
+        // window: the explanation inside it is longer than any window worth
+        // guessing, and a window is what MAPPS-1209's first guard got wrong.
+        let at = head
+            .find("oncancel: move |_| {")
+            .expect("a cancel handler with a body");
+        let end = head[at..]
+            .find("\n                        },")
+            .expect("the handler closes");
+        let cancel = &head[at..at + end];
+        assert!(
+            cancel.contains("confirm_off.set(false);"),
+            "this is some other dialog's cancel handler, not the turn-off one: {cancel}"
+        );
+        assert!(
+            cancel.contains("wanted.set(None);"),
+            "the cancel path does not drop the intent: {cancel}"
+        );
+        assert!(
+            !cancel.contains("overview.restart()"),
+            "the cancel path re-reads the server, which cannot move the box: {cancel}"
+        );
     }
 }
 
@@ -1431,6 +1653,94 @@ mod tests {
             None,
             "no total yet is no percent, not zero"
         );
+    }
+
+    /// MAPPS-1174: every cadence the card offers is one the server takes.
+    ///
+    /// The server refuses anything outside 5 to 1440 minutes (PMS-1315), and
+    /// a list that could produce a refusal would be a control that reports an
+    /// error for a value it put in front of the admin itself.
+    #[test]
+    fn every_cadence_offered_is_one_the_server_accepts() {
+        let minutes = cadence_minutes();
+        assert!(
+            minutes.iter().all(|m| (5..=1440).contains(m)),
+            "{minutes:?} has a value outside the server's range"
+        );
+        assert!(
+            minutes.windows(2).all(|w| w[0] < w[1]),
+            "the list reads shortest first: {minutes:?}"
+        );
+        assert!(
+            minutes.contains(&60),
+            "the server's own default has to be selectable, or an admin cannot \
+             go back to it: {minutes:?}"
+        );
+    }
+
+    /// The cadence reads as a sentence, not as a number of minutes.
+    #[test]
+    fn a_cadence_reads_the_way_somebody_would_say_it() {
+        assert_eq!(cadence_label(10), "Every 10 minutes");
+        assert_eq!(cadence_label(60), "Every hour");
+        assert_eq!(cadence_label(120), "Every 2 hours");
+        assert_eq!(cadence_label(480), "Every 8 hours");
+        assert_eq!(cadence_label(1440), "Once a day");
+        assert_eq!(
+            cadence_label(45),
+            "Every 45 minutes",
+            "a value the list does not offer still reads properly, because a \
+             server set by hand will send one"
+        );
+    }
+
+    /// A connection from a server that predates the field polls at the hour
+    /// that server polls at, which is what the card then shows.
+    #[test]
+    fn a_missing_cadence_reads_as_the_servers_own_default() {
+        let overview = connection(serde_json::json!({}));
+        assert_eq!(
+            overview.connection.as_ref().unwrap().sync_interval_minutes,
+            60
+        );
+    }
+
+    /// Every provider's card offers the cadence, and each one names its own
+    /// provider on the write.
+    ///
+    /// Three pages, one component, and the provider is a query parameter: a
+    /// page that passed the wrong one would change another connection's
+    /// cadence, which no screen would show.
+    #[test]
+    fn each_contact_source_offers_its_own_cadence() {
+        for (src, provider) in [
+            (
+                include_str!("settings_contact_sync.rs"),
+                "provider: \"google\".to_string()",
+            ),
+            (
+                include_str!("settings_contact_sync_microsoft.rs"),
+                "provider: \"microsoft\".to_string()",
+            ),
+            (
+                include_str!("settings_contact_sync_icloud.rs"),
+                "provider: \"icloud\".to_string()",
+            ),
+        ] {
+            let head = &src[..src.find("mod tests").expect("a test module")];
+            let cadence = head
+                .find("SyncCadence {")
+                .map(|at| &head[at..(at + 220).min(head.len())])
+                .unwrap_or_else(|| panic!("this card offers no cadence control"));
+            assert!(
+                cadence.contains(provider),
+                "the card names its own provider: {cadence}"
+            );
+            assert!(
+                cadence.contains("minutes: connection.sync_interval_minutes"),
+                "and shows what the server says it is: {cadence}"
+            );
+        }
     }
 
     /// The page is admin only, and the one animation respects reduced motion.

@@ -49,6 +49,7 @@ pub fn AdminFeaturesPage() -> Element {
         .map(|u| u.role.is_admin())
         .unwrap_or(false);
 
+    // SPEC-6.1.10 / SPEC-6.4.14: client-side admin gate, cosmetic only; server enforces the real check.
     if !is_admin {
         return rsx! {
             PageHeader { title: "Feature toggles", subtitle: "Runtime switches for optional features" }
@@ -75,10 +76,12 @@ fn AdminFeaturesContent() -> Element {
         #[cfg(feature = "app")]
         {
             let _token = crate::hooks::fetch::api::current_access_token()?;
+            // SPEC-6.7.6: list the feature-toggle registry.
             crate::hooks::fetch::api::get_authed::<Vec<FeatureToggleRow>>(
                 "/settings/feature-toggles",
             )
             .await
+            // SPEC-6.5.6: log a warning on a failed load.
             .inspect_err(|e| tracing::warn!("feature-toggles list failed: {e}"))
             .ok()
         }
@@ -102,6 +105,7 @@ fn AdminFeaturesContent() -> Element {
             None => rsx! {
                 crate::components::DetailSkeleton {}
             },
+            // SPEC-6.5.6: failed-load message.
             Some(None) => rsx! {
                 Card {
                     div { class: "py-12 text-center",
@@ -116,11 +120,13 @@ fn AdminFeaturesContent() -> Element {
                             ErrorBanner { "{save_error}" }
                         }
                     }
+                    // SPEC-6.5.6: empty-list message.
                     if rows.is_empty() {
                         div { class: "py-12 text-center",
                             p { class: "text-sm text-muted", "No feature toggles declared." }
                         }
                     } else {
+                        // SPEC-6.1.10: list every feature-toggle row with its current state and a flip button.
                         ul { class: "divide-y divide-line",
                             for row in rows.iter().cloned() {
                                 FeatureRow {
@@ -138,6 +144,7 @@ fn AdminFeaturesContent() -> Element {
                                             {
                                                 let path = format!("/settings/feature-toggles/{k}");
                                                 let body = FlipRequest { enabled: next };
+                                                // SPEC-6.7.6: flip a single toggle.
                                                 match crate::hooks::fetch::api::put_authed_typed::<
                                                     serde_json::Value,
                                                     _,

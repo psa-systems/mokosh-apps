@@ -20,6 +20,7 @@ use mokosh_apps::Route;
 // to staging, because `dx build` does not take this crate's default features:
 // it picks the crate feature whose name matches the platform. Fail at compile
 // time instead, so a bundle that cannot start cannot be built.
+// SPEC-1.5.1: fail at compile time, not at launch, when a wasm build lacks a renderer.
 #[cfg(all(target_arch = "wasm32", not(feature = "web")))]
 compile_error!(
     "a wasm build needs the `web` feature (it is what enables `dioxus/web`); \
@@ -36,6 +37,7 @@ fn main() {
     // instead of an opaque `RuntimeError: unreachable` at a hex offset.
     // Web-only: the desktop / native builds inherit the default Rust
     // panic handler, which already writes to stderr.
+    // SPEC-1.5.2: install before anything else so a boot-time panic is still readable.
     #[cfg(target_arch = "wasm32")]
     console_error_panic_hook::set_once();
 
@@ -56,6 +58,7 @@ fn main() {
     // route definition), which would erase the OAuth response before
     // AuthCallbackPage ever reads it. By capturing here, the OIDC flow
     // sees what the OP actually sent.
+    // SPEC-1.6.1: capture before the router mounts, so it cannot rewrite the query away.
     mokosh_apps::modules::oidc::snapshot_initial_search();
 
     launch();
@@ -87,6 +90,7 @@ fn launch() {
         // Not fatal - the window opens with the toolkit default - but it
         // is a packaging mistake worth seeing rather than a blank icon
         // nobody can explain.
+        // SPEC-1.5.8: log and continue; a missing icon must not block the window opening.
         Err(e) => tracing::error!("could not load the window icon: {e}"),
     }
 

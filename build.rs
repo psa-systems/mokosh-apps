@@ -23,6 +23,8 @@ fn main() {
     println!("cargo:rerun-if-changed=.git/refs");
     println!("cargo:rerun-if-changed=.git/index");
 
+    // SPEC-1.3.7: truncate to 12 chars, matching oci-build/entrypoint.sh's build_sha.
+    // SPEC-1.5.7: fall back to the literal "unknown" rather than fail the build.
     let git_hash = std::env::var("GIT_SHA")
         .ok()
         .filter(|s| !s.is_empty())

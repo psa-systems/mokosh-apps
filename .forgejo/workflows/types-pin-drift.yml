@@ -20,6 +20,7 @@ name: mokosh-types pin drift
 
 on:
   schedule:
+    # SPEC-1.8.11: the weekly strict pin-drift check, ungated from any pull request.
     # 07:00 UTC on Mondays: a distance to close during the week, not a
     # notification that arrives mid-review.
     - cron: '0 7 * * 1'

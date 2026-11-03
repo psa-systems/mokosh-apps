@@ -102,6 +102,7 @@ enum OnboardingCall {
 /// A non-admin sends the stamp alone: the org save would 403, and the page
 /// refuses (deliberately) to stamp after a failed org save, so including it
 /// would trap the user on this screen.
+// SPEC-6.6.4: the planned calls, strictly in this order.
 fn planned_calls(is_admin: bool, has_logo: bool) -> Vec<OnboardingCall> {
     if !is_admin {
         return vec![OnboardingCall::CompleteOnboarding];
@@ -159,6 +160,7 @@ pub fn Onboarding() -> Element {
     // so by the time this effect runs the auth signal is settled.
     // If this effect still fires unexpectedly the tracing line below
     // is what surfaces it in console logs for the next bug round.
+    // SPEC-6.6.6: runs on every render as a no-op effect, not skipped.
     use_effect(move || {
         let a = auth.read();
         if !a.server_loaded {
@@ -233,6 +235,7 @@ pub fn Onboarding() -> Element {
                                     support_email: email.clone(),
                                 },
                             };
+                            // SPEC-6.7.15: save the organization.
                             let saved = crate::hooks::fetch::api::put_authed_typed::<
                                 serde_json::Value,
                                 _,
@@ -257,6 +260,8 @@ pub fn Onboarding() -> Element {
                                         .unwrap_or(name.as_str());
                                     auth.write().set_active_org_name(stored);
                                 }
+                                // SPEC-6.5.15: field-scoped or page-level save error.
+                                // SPEC-6.4.18: stop the plan here; do not stamp onboarding.
                                 Err(e) => {
                                     match e.field_message("name") {
                                         Some(m) => org_name_error.set(m),
@@ -276,6 +281,7 @@ pub fn Onboarding() -> Element {
                         // over it would trap the user.
                         OnboardingCall::UploadLogo => {
                             if let Some((file_name, mime, bytes)) = logo.read().clone() {
+                                // SPEC-6.7.15: upload the logo.
                                 if let Err(e) = crate::hooks::fetch::api::put_file_authed::<
                                     serde_json::Value,
                                 >(
@@ -283,6 +289,8 @@ pub fn Onboarding() -> Element {
                                 )
                                 .await
                                 {
+                                    // SPEC-6.5.15: a failed logo upload is a
+                                    // non-blocking warning toast.
                                     crate::hooks::push_toast(
                                         crate::components::AlertType::Warning,
                                         format!(
@@ -298,6 +306,7 @@ pub fn Onboarding() -> Element {
                         // different records: one is the tenant, one is the
                         // user.
                         OnboardingCall::CompleteOnboarding => {
+                            // SPEC-6.7.15: stamp the profile as onboarded.
                             match crate::hooks::fetch::api::post_authed_typed::<OnboardingResponse, _>(
                                 "/auth/me/complete-onboarding",
                                 &serde_json::json!({}),
@@ -325,6 +334,7 @@ pub fn Onboarding() -> Element {
                     }
                 }
             }
+            // SPEC-6.3.6: no-op on a build without the `app` feature.
             #[cfg(not(feature = "app"))]
             {
                 let _ = (name, contact, phone, email, is_admin);
@@ -337,6 +347,7 @@ pub fn Onboarding() -> Element {
 
     // MAPPS-524: hold the screen until /me has reconciled, so the branch below
     // reads the authoritative role rather than the rehydrate's default.
+    // SPEC-6.4.17: gate the admin form on server_loaded, not the optimistic default.
     if !server_loaded {
         return rsx! {
             AuthLayout {

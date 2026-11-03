@@ -65,6 +65,7 @@ dev_extra_volumes := "dev-mokosh-apps-target"
 em_dash_paths := "src docs"
 em_dash_en_dash := "true"
 
+# SPEC-1.8.13: shared recipes from the common submodule.
 import 'common/common.just'
 
 # List available recipes. Keep FIRST: just picks the default recipe by source order.
@@ -77,7 +78,7 @@ default:
 # desktop, clippy, fmt, and the rest of the project's linting/consistency
 # checks).
 [group: 'check']
-check: check-justfile check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-scrollbars check-refresh-token-storage check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-em-dash check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-page-width check-fetch-error-logging check-loading-recipe check-company-id-copy check-card-headings check-config-docs
+check: check-justfile check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-theme-storage-key check-scrollbars check-refresh-token-storage check-defined-colors check-runner-labels check-nu-interpolation check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-em-dash check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer check-field-value-binding check-hooks-before-return check-admin-gate check-confirmed-toggle check-page-width check-fetch-error-logging check-loading-recipe check-company-id-copy check-card-headings check-config-docs
 
 # MAPPS-682: clippy, not check, and `-D warnings`, so the browser target fails
 # on a finding instead of printing it. Mirrors check-clippy and check.yml.
@@ -132,6 +133,20 @@ check-field-value-binding:
 check-page-width:
     bash scripts/check-page-width.sh --self-test
     bash scripts/check-page-width.sh
+
+# MAPPS-1211: `SurfaceVisibility::StaffAdmin` only hides a tile from the hub. The route stays reachable, so a StaffAdmin page that never refuses shows a non-admin an editor they cannot save from. --self-test first, so a guard that stopped guarding fails loudly.
+[doc("Fail if a StaffAdmin settings surface renders its page to a non-admin (MAPPS-1211).")]
+[group: 'check']
+check-admin-gate:
+    bash scripts/check-admin-gate.sh --self-test
+    bash scripts/check-admin-gate.sh
+
+# MAPPS-1212: a click toggles a checkbox's DOM node whatever the vdom carries, and dioxus does not mark `checked` volatile, so a cancelled confirmation leaves the box showing a value nothing wrote. --self-test first, so a guard that stopped guarding fails loudly.
+[doc("Fail if a checkbox that asks for confirmation renders only the server's answer (MAPPS-1212).")]
+[group: 'check']
+check-confirmed-toggle:
+    bash scripts/check-confirmed-toggle.sh --self-test
+    bash scripts/check-confirmed-toggle.sh
 
 # MAPPS-602: a hook after an early return poisons the Dioxus runtime.
 [doc("Fail if a component calls a hook after an early return (MAPPS-602).")]
@@ -285,6 +300,7 @@ check-ci-parity:
     bash scripts/check-ci-parity.sh
 
 # MAPPS-1027: fails if docs/configuration.md disagrees with config/variables.toml or with the actual `${MOKOSH_...}` reads in oci-build/entrypoint.sh. --self-test first, so a guard that stopped guarding fails loudly.
+# SPEC-1.2.1: generated docs must derive from config/variables.toml, checked for drift here.
 [group: 'check']
 check-config-docs:
     nu scripts/config-docs.nu self-test
@@ -306,12 +322,14 @@ config-release-notes version:
     nu scripts/config-docs.nu release-notes {{version}}
 
 # MAPPS-525: fail when a shared-DTO change on mokosh-server main would otherwise sit unnoticed behind a pin nobody advances. MAPPS-537 narrowed it to moves where crates/mokosh-types actually differs, so another repository merging anything at all no longer turns this red. Needs network. --self-test first, so a guard that stopped guarding fails loudly.
+# SPEC-1.7.1, SPEC-1.5.9: pin-drift guard; --self-test runs before the real check.
 [group: 'check']
 check-types-pin:
     bash scripts/check-types-pin.sh --self-test
     bash scripts/check-types-pin.sh
 
 # MAPPS-537: the pre-MAPPS-537 rule, where any lock move is a finding. What `types-pin-drift.yml` runs weekly, kept here so the catch-up distance can be read on demand. Not part of `just check`: it is deliberately allowed to be red.
+# SPEC-1.8.11: the strict variant the weekly drift workflow runs.
 [group: 'check']
 check-types-pin-strict:
     bash scripts/check-types-pin.sh --self-test
@@ -528,6 +546,7 @@ test:
 # Build release WASM bundle. PMS-884: `--features web` because dx substitutes
 # its own feature list for this crate's defaults; without a renderer feature
 # the bundle builds and then panics on launch.
+# SPEC-1.8.1: regenerate the stylesheet, then build with the web feature explicit.
 [group: 'build']
 build: css-build
     dx build --release --features web
@@ -564,6 +583,7 @@ check-oci-runtime:
     bash scripts/check-oci-runtime.sh --self-test
     bash scripts/check-oci-runtime.sh
 
+# SPEC-1.8.6: build oci-build/Dockerfile with buildx from the repository root.
 # Build OCI image for validation
 [group: 'check']
 check-docker:

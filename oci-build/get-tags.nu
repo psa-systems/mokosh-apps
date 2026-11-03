@@ -1,5 +1,6 @@
 #!/usr/bin/env nu
 
+# SPEC-1.6.3, SPEC-1.8.9: derive the publish train from the trigger, resolving exactly one tag.
 # Resolve the single publish tag and train for the build workflow.
 #
 # The publish MODE is derived from the workflow TRIGGER (not from `git

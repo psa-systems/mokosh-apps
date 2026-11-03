@@ -63,6 +63,7 @@ struct LoginResp {
     contact: Option<ContactSnippet>,
 }
 
+// SPEC-6.2.4: defaults every field on absence so an older server payload still decodes.
 #[derive(Deserialize, Clone, Debug, Default)]
 struct ContactSnippet {
     #[serde(default)]
@@ -124,12 +125,14 @@ pub fn ContactLoginPage(slug: String) -> Element {
     // network, or 5xx) falls through to the slug form below - the
     // server's dual-accept login still honours the slug during the
     // compat window, so a mid-transition visitor is never stranded.
+    // SPEC-6.6.5: this on-mount redirect and the host-hint fetch below both fire on mount.
     let slug_for_resolve = slug.clone();
     use_effect(move || {
         let slug = slug_for_resolve.clone();
         spawn(async move {
             #[cfg(feature = "web")]
             {
+                // SPEC-6.7.7: resolve the legacy slug to a Company ID.
                 let path = format!("/contact/portal/{slug}/resolve-to-portal-id");
                 if let Ok(resp) =
                     crate::hooks::fetch::api::get_typed::<ResolveToPortalIdResp>(&path).await
@@ -154,9 +157,11 @@ pub fn ContactLoginPage(slug: String) -> Element {
         async move {
             #[cfg(feature = "web")]
             {
+                // SPEC-6.7.7: fetch the host/branding hint.
                 let path = format!("/contact/portal/{slug}/host");
                 crate::hooks::fetch::api::get_typed::<HostHint>(&path)
                     .await
+                    // SPEC-6.5.8: log a warning and keep rendering the form on failure.
                     .inspect_err(|e| tracing::warn!("portal host hint load failed for {slug}: {e}"))
                     .ok()
             }
@@ -193,6 +198,7 @@ pub fn ContactLoginPage(slug: String) -> Element {
     // is suspended / terminated. A missing host hint (network / 404)
     // falls through to the form so a bad slug still lets the visitor
     // see a coherent page (submit will 401 or fail closed).
+    // SPEC-6.1.12: replace the form with the unavailable-portal notice when not active.
     let tenant_inactive = host_loaded && tenant_status != "active";
 
     // MAPPS-616: drop the "at {tenant_display_name}" suffix here too
@@ -213,6 +219,7 @@ pub fn ContactLoginPage(slug: String) -> Element {
     };
 
     let slug_for_submit = slug.clone();
+    // SPEC-6.6.1: ignore a submit while a previous one is still in flight.
     let mut submit = move |_| {
         if saving() {
             return;
@@ -242,6 +249,7 @@ pub fn ContactLoginPage(slug: String) -> Element {
                     password: pw,
                     mfa_code: mfa,
                 };
+                // SPEC-6.7.7: contact sign-in call.
                 match crate::hooks::fetch::api::post_typed::<LoginResp, _>(
                     "/contact/auth/login",
                     &body,
@@ -266,6 +274,7 @@ pub fn ContactLoginPage(slug: String) -> Element {
                         // + its sessionStorage bundle BEFORE we write the
                         // fresh contact session so the tab reads as a
                         // contact from this point on.
+                        // SPEC-6.4.1: clear any staff session before installing a contact one.
                         crate::hooks::fetch::api::on_contact_signin_clear_staff_side();
                         crate::hooks::fetch::api::set_contact_access_token(Some(resp.access_token));
                         crate::hooks::fetch::api::set_contact_refresh_token(Some(
@@ -282,8 +291,10 @@ pub fn ContactLoginPage(slug: String) -> Element {
                         // MAPPS-761: the page the link that brought them
                         // named, else the dashboard, which is where this
                         // always went.
+                        // SPEC-6.4.10: always navigate through the sanitized next-target.
                         nav.replace(super::next_target::landing());
                     }
+                    // SPEC-6.4.7: identical failure text regardless of account existence.
                     Err(ApiError::Status { code: 401, .. }) => {
                         error.set(super::PORTAL_SIGN_IN_FAILED.to_string());
                     }
@@ -306,6 +317,7 @@ pub fn ContactLoginPage(slug: String) -> Element {
     // to `/portal/login` (step 1 by Company ID). tenant_inactive still
     // wins if the host DID resolve but the tenant is suspended.
     let host_not_found = matches!(&*host_snap, Some(None));
+    // SPEC-6.1.12: email/password/MFA fields, replaced by the unavailable notice when inactive.
     rsx! {
         AuthLayout {
             if host_not_found {

@@ -1,22 +1,9 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended",
-    ":semanticCommits",
-    ":prHourlyLimitNone"
+    "local>psa-systems/common:renovate-default"
   ],
-  "platform": "forgejo",
-  "endpoint": "https://dev.a8n.run/api/v1/",
   "gitAuthor": "renovate-bot <renovate-bot@users.noreply.dev.a8n.run>",
-  "autodiscover": false,
-  "onboarding": false,
-  "prConcurrentLimit": 10,
-  "rangeStrategy": "bump",
-  "rebaseWhen": "behind-base-branch",
-  "vulnerabilityAlerts": {
-    "enabled": true,
-    "labels": ["security"]
-  },
   "osvVulnerabilityAlerts": true,
   "enabledManagers": [
     "cargo",
@@ -26,14 +13,26 @@
     "github-actions"
   ],
   "packageRules": [
-    { "groupName": "rust toolchain", "matchPackageNames": ["rust", "rustc"] },
-    { "groupName": "dioxus family", "matchPackagePatterns": ["^dioxus"] },
-    { "groupName": "mokosh crates", "matchPackageNames": ["/^mokosh-/"] },
-    { "groupName": "serde family", "matchPackagePatterns": ["^serde"] },
-    { "groupName": "tracing family", "matchPackagePatterns": ["^tracing"] },
+    {
+      "description": "Rust toolchain stays on its own: a toolchain bump has to land before any crate update that needs its new MSRV, so it cannot be folded into the general stream.",
+      "groupName": "rust toolchain",
+      "matchPackageNames": [
+        "rust",
+        "rustc"
+      ]
+    },
+    {
+      "description": "mokosh-types is the single-crate shared-DTO dependency pinned by `scripts/check-types-pin.sh`; its bumps are governed by MAPPS-1161's weekly drift guard and must stay reviewable on their own, not folded into the general stream.",
+      "groupName": "mokosh crates",
+      "matchPackageNames": [
+        "/^mokosh-/"
+      ]
+    },
     {
       "description": "getrandom is declared only to enable the wasm backend for the version the tree compiles (0.4, via rand_core 0.10). A major bump moves the feature off that copy and breaks the wasm32 build. Lift this when rand_core 0.10 leaves the tree.",
-      "matchPackageNames": ["getrandom"],
+      "matchPackageNames": [
+        "getrandom"
+      ],
       "allowedVersions": "<0.5"
     }
   ]

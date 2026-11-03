@@ -22,11 +22,13 @@ use crate::utils::{FormGuard, Paginated};
 use crate::Route;
 
 /// Rows per page for the client-side paginated list views (F3).
+// SPEC-7.3.1: list pages must page at this exact size.
 const PER_PAGE: usize = 25;
 
 /// PMS-581: US states / territories for the company Address State dropdown.
 /// `(USPS code, name)`; the stored value is the code. The product is US-only,
 /// so this is the canonical region list.
+// SPEC-7.3.4: exactly these 55 states/territories/DC, keyed by USPS code.
 const US_STATES: &[(&str, &str)] = &[
     ("AL", "Alabama"),
     ("AK", "Alaska"),
@@ -103,6 +105,7 @@ struct IndustryOption {
 /// here. `Type` mapped to `company_type`, which the server discards, so the
 /// header rendered a sort the rows never had; its affordance is gone until
 /// the server allow-lists the key.
+// SPEC-7.1.10: Company is the only sortable column the company list exposes.
 #[derive(Clone, Copy, PartialEq)]
 enum CompanySortKey {
     Company,
@@ -119,6 +122,7 @@ impl CompanySortKey {
 ///
 /// MAPPS-527: `Company` mapped to `company_name`, which is absent from
 /// `CONTACT_SORT_KEYS`, so it is no longer offered.
+// SPEC-7.1.10: Name is the only sortable column the contact list exposes.
 #[derive(Clone, Copy, PartialEq)]
 enum ContactSortKey {
     Name,
@@ -253,6 +257,7 @@ fn humanize_company_type(raw: &str) -> String {
 /// Subset of mokosh-server's `CompanyResponse` we render in the list. The
 /// server returns more fields; serde silently drops the ones we don't ask
 /// for, so adding columns later just means extending this struct.
+// SPEC-7.2.1: every field but id must default on absence.
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteCompany {
     id: uuid::Uuid,
@@ -331,6 +336,7 @@ struct RemoteCompanyLink {
 /// (`phone_primary`, `job_title`) silently parsed as `None` because
 /// `#[serde(default)]` swallowed the absent fields, which is why the
 /// company-detail Contacts card showed blank Phone and Role columns.
+// SPEC-7.2.1: every field but id must default on absence.
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteContact {
     id: uuid::Uuid,
@@ -362,6 +368,8 @@ struct RemoteContact {
     is_portal_user: bool,
     // MAPPS-481: `#[serde(default)]` so a server that predates PMS-806 still
     // deserializes; the `phone` / `company_id` mirrors above cover that case.
+    // SPEC-7.2.2: these lists are authoritative; the mirror fields are read
+    // only as a fallback when empty.
     #[serde(default)]
     phones: Vec<RemotePhone>,
     #[serde(default)]
@@ -390,6 +398,10 @@ struct PaginatedContacts {
 
 // ---- MAPPS-687: the bodies this page sends -------------------------------
 //
+// SPEC-7.2.3: each body struct below must mirror its mokosh-types request
+// DTO field for field, enforced at compile time by the shared_dto_tests
+// module.
+//
 // `mokosh-types` derives `Deserialize` on the request DTOs, which is the
 // server's half of the wire, so this page cannot post one of them. These
 // structs are the substitute: each mirrors the shared request DTO field for
@@ -411,6 +423,8 @@ struct CompanyFormBody {
     industry: Option<String>,
     website: Option<String>,
     phone: Option<String>,
+    // SPEC-7.2.4: no skip_serializing_if here; clearing fax sends an
+    // explicit null, unlike every other optional field on this body.
     fax: Option<String>,
     address: Address,
     /// MAPPS-614: always a string, never null, which is why this is a `String`
@@ -423,6 +437,8 @@ struct CompanyFormBody {
 /// portal toggle (MAPPS-651) and the per-Company branding patch (MAPPS-619). A
 /// field the control that fired did not set is omitted rather than sent as
 /// null, which is what the `json!` literals these replaced sent.
+// SPEC-7.2.4: a field the firing control did not set is omitted via
+// skip_serializing_if, never sent as JSON null.
 #[derive(Debug, Default, Serialize)]
 struct UpdateCompanyBody {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -547,6 +563,8 @@ struct SiteFormBody {
 }
 
 /// Company list page
+// SPEC-7.1.1: paginated, searchable, filterable; distinguishes a
+// filtered-to-nothing result from a truly empty account.
 #[component]
 pub fn CompanyListPage() -> Element {
     let mut search = use_signal(String::new);
@@ -591,6 +609,7 @@ pub fn CompanyListPage() -> Element {
     // MAPPS-855: debounce the search dependency so a burst of keystrokes
     // fires one full-page refetch per pause in typing rather than one per
     // keystroke.
+    // SPEC-7.6.3: 300ms debounce; search/filter changes reset page to 1.
     let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let companies_resource = use_resource(move || {
         let q = search_debounced.read().trim().to_string();
@@ -604,6 +623,8 @@ pub fn CompanyListPage() -> Element {
             // the instant the server comes back (paired with the recovery poll).
             let _reachable = crate::hooks::use_server_reachable();
             let token = crate::hooks::fetch::api::current_access_token()?;
+            // SPEC-7.7.1: company pages' endpoint set, listed in full at
+            // the spec id, not repeated at every call site below.
             let mut path = format!("/contacts/companies?page={current_page}&per_page={PER_PAGE}");
             if !q.is_empty() {
                 path.push_str(&format!("&q={}", urlencoding_minimal(&q)));
@@ -725,6 +746,9 @@ pub fn CompanyListPage() -> Element {
             }
         }
 
+        // SPEC-7.5.1: scoped to this card, not the whole page; every
+        // other list/detail resource in this file follows the same
+        // "Could not load {noun}." pattern.
         if let Some(msg) = fetch_error.as_deref() {
             ErrorBanner { class: "mb-3", "Could not load companies: {msg}" }
         }
@@ -871,6 +895,7 @@ fn CompanyRow(props: CompanyRowProps) -> Element {
 }
 
 /// New company page
+// SPEC-7.1.2: renders the shared CompanyForm in Create mode.
 #[component]
 pub fn CompanyNewPage() -> Element {
     // MAPPS-357: N/A for a ContentUnavailable state - this page fetches no
@@ -893,6 +918,8 @@ pub struct CompanyEditPageProps {
     pub id: String,
 }
 
+// SPEC-7.1.2: loads initial values from GET /contacts/companies/{id}
+// and falls back to a generic "Company" breadcrumb label while loading.
 #[component]
 pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
     let id_for_resource = props.id.clone();
@@ -1322,6 +1349,8 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         // parse-and-return the typed values the body uses, so they are kept; the
         // results are carried past the single bail and unwrapped once validation
         // passes.
+        // SPEC-7.5.2: collect every field's failure in one pass, then focus
+        // the first invalid field in on-screen order.
         let mut guard = FormGuard::new();
         let name_res = validate_name_field(&name.read());
         if let Err(msg) = &name_res {
@@ -1479,6 +1508,8 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         // MAPPS-210 / MAPPS-213) so each cue persists after the
                         // failed submit. Unmatched fields, or a non-422 failure,
                         // fall back to the top-of-form banner.
+                        // SPEC-7.5.3: a named 422 field routes inline; an
+                        // unmapped error routes to the top banner.
                         let fields = err.field_errors();
                         if fields.is_empty() {
                             error.set(format!("Could not save company: {}", err.user_message()));
@@ -1843,6 +1874,7 @@ fn validate_phone_field(raw: &str, label: &str) -> Result<Option<String>, String
 
 /// The five `contact_phones.phone_type` values PMS-806's CHECK constraint
 /// allows, paired with their labels and in the order the form offers them.
+// SPEC-7.3.5: exactly these five values, in this order.
 const PHONE_TYPES: &[(&str, &str)] = &[
     ("mobile", "Mobile"),
     ("work", "Work"),
@@ -1996,6 +2028,8 @@ fn validate_postal_field(raw: &str) -> Result<Option<String>, String> {
 /// instead of hitting an opaque server 422 (MAPPS-213). The scheme check
 /// reuses `utils::url::scheme_of`, the same whitespace-collapsing detection
 /// `safe_href` applies at render time, so `java\tscript:` cannot slip through.
+// SPEC-7.4.1: rejects whitespace/control chars, non-http(s) schemes, and an
+// empty host; normalizes a host-shaped value to https://, else MSG below.
 fn validate_website_field(raw: &str) -> Result<Option<String>, String> {
     // MAPPS-582: an invisible character never belongs in a URL either, and it
     // is one more way a scheme can disguise itself from the check below.
@@ -2053,6 +2087,7 @@ fn validate_website_field(raw: &str) -> Result<Option<String>, String> {
 /// the first `/` is what `scheme_of` reads as a scheme, so `example.com:8443`
 /// is rejected above as an unknown scheme. The server allows ports 80 and 443
 /// only, so nothing useful is lost.
+// SPEC-7.4.1: at least two non-empty, dot-separated, host-charset labels.
 fn is_host_like(host: &str) -> bool {
     if !host
         .chars()
@@ -2172,6 +2207,8 @@ pub struct CompanyDetailPageProps {
     pub id: String,
 }
 
+// SPEC-7.1.3/SPEC-7.6.1: renders the record plus independent per-card
+// resources; one card's failure or slow load must not block another's.
 #[component]
 pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     let company_id_str = props.id.clone();
@@ -2245,6 +2282,8 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
             .ok()
         }
     });
+    // SPEC-7.7.4: this and the sibling resources below are
+    // CompanyDetailPage's child-relationship cards' full endpoint set.
     let tickets_resource = use_resource(move || {
         let id = company_id_for_tickets.clone();
         async move {
@@ -2393,6 +2432,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     // closed tickets and none open reads as deletable there and is refused.
     // Fetched when the dialog opens rather than on page load, because a page
     // view is not an intent to delete.
+    // SPEC-7.6.2: fetches only while the delete-confirmation dialog is open.
     let preview_id = company_id_str.clone();
     let deletion_preview = use_resource(move || {
         let id = preview_id.clone();
@@ -2594,6 +2634,8 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                     // control rather than an instruction to go and find it.
                     // Absent on the own-company refusal, where archiving is not
                     // the answer either.
+                    // SPEC-7.9.1: own tenant record never offered deletion or an
+                    // archive bypass; a blocked non-own record offers Archive instead.
                     alternative: (blocked && !preview.is_own_company).then(|| rsx! {
                         Button {
                             variant: ButtonVariant::Secondary,
@@ -2930,6 +2972,8 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                                     // Only render a live link when the value carries a
                                                     // safe URL scheme; `javascript:`/`data:`/`vbscript:`
                                                     // values fall back to plain text (MAPPS-149).
+                                                    // SPEC-7.4.2: gates this link even for a value that
+                                                    // slipped past SPEC-7.4.1 (an older stored record).
                                                     if let Some(href) = safe_href(&website) {
                                                         a {
                                                             href: "{href}",
@@ -3508,6 +3552,8 @@ fn CompanyContactsCard(
 /// [`CompanyContactsCard`] resource, which is capped at 5 for preview purposes.
 /// Companies with more than ~20 contacts are rare; the ceiling is a soft cap
 /// to keep the roster inline.
+// SPEC-7.4.7/SPEC-7.6.4: Invite disabled with no email; every mutation
+// disabled while unreachable; per-row toggling isolated by contact id.
 #[component]
 fn CompanyPortalAccessCard(
     company_id: String,
@@ -4806,6 +4852,7 @@ fn CompanySitesCard(
                                                         },
                                                         delete_path,
                                                         delete_label: "site".to_string(),
+                                                        // SPEC-7.6.5: restart both resources on delete too.
                                                         on_deleted: move |_| {
                                                             sites_resource.restart();
                                                             company_resource.restart();
@@ -4827,6 +4874,8 @@ fn CompanySitesCard(
             SiteFormModal {
                 state,
                 onclose: move |_| { editing.set(None); },
+                // SPEC-7.6.5: restart both resources on save so the site
+                // count updates without a manual reload.
                 onsaved: move |_| {
                     editing.set(None);
                     sites_resource.restart();
@@ -4945,6 +4994,8 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
         // so it stays on the banner; the rest use their per-field slots. The
         // bespoke validators that parse-and-return are kept and unwrapped past
         // the single bail.
+        // SPEC-7.5.4: a company_id/name parse failure routes to the banner;
+        // phone/timezone/postal/country route to their own inline slots.
         let mut guard = FormGuard::new();
         if name.read().trim().is_empty() {
             error.set("Site name is required.".to_string());
@@ -6132,6 +6183,7 @@ fn CompanyBrandingCard(
     let tenant_snap = tenant_defaults_resource.read_unchecked();
     let tenant_defaults = tenant_snap.clone().flatten().unwrap_or_default();
     let id = company_id.clone();
+    // SPEC-7.6.6: ignore a second submit while one is still in flight.
     let on_save = move |block: CompanyBranding| {
         if saving() {
             return;
@@ -6190,6 +6242,7 @@ fn CompanyBrandingCard(
 }
 
 /// Contact list page
+// SPEC-7.1.5: same filtered-vs-empty distinction as CompanyListPage (SPEC-7.1.1).
 #[component]
 pub fn ContactListPage() -> Element {
     let mut search = use_signal(String::new);
@@ -6234,6 +6287,7 @@ pub fn ContactListPage() -> Element {
     // MAPPS-855: debounce the search dependency so a burst of keystrokes
     // fires one full-page refetch per pause in typing rather than one per
     // keystroke.
+    // SPEC-7.6.3: 300ms debounce; search/filter changes reset page to 1.
     let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let contacts_resource = use_resource(move || {
         let q = search_debounced.read().trim().to_string();
@@ -6248,6 +6302,8 @@ pub fn ContactListPage() -> Element {
             // the instant the server comes back (paired with the recovery poll).
             let _reachable = crate::hooks::use_server_reachable();
             let token = crate::hooks::fetch::api::current_access_token()?;
+            // SPEC-7.7.2: contact pages' endpoint set, listed in full at
+            // the spec id, not repeated at every call site below.
             let mut path = format!("/contacts/contacts?page={current_page}&per_page={PER_PAGE}");
             // MAPPS-249: scope to one company when a context card's "View All"
             // passes `?company_id=<uuid>`.
@@ -6564,6 +6620,7 @@ fn ContactRow(props: ContactRowProps) -> Element {
 /// "Add Contact" button on the company detail page does this) the
 /// CompanyPicker pre-fills with that company and the user only has
 /// to fill in the contact's own fields.
+// SPEC-7.1.6: renders ContactForm in Create mode with the resolved prefill.
 #[component]
 pub fn ContactNewPage() -> Element {
     // MAPPS-357: N/A for a ContentUnavailable state - this page fetches no
@@ -6646,6 +6703,8 @@ struct CompanyPrefill {
     name: String,
 }
 
+// SPEC-7.1.6/SPEC-7.3.2: tries the stash, then the live URL query, then the
+// OIDC-captured initial query, in that order, falling back to no prefill.
 fn read_company_prefill_from_url() -> CompanyPrefill {
     #[cfg(feature = "app")]
     {
@@ -6690,6 +6749,8 @@ const CONTACT_NEW_PREFILL_KEY: &str = "mokosh:contact-new-prefill";
 /// `/contacts/new` mount reads it. Best-effort: a browser with sessionStorage
 /// disabled logs at `warn` and the destination falls back to the URL / OIDC
 /// snapshot readers below, which is the pre-PMS-1331 shape.
+// SPEC-7.3.2: written before navigation so a stripped query string on
+// mount still carries the prefill.
 #[cfg_attr(not(feature = "app"), allow(dead_code))]
 fn stash_contact_new_prefill(id: &str, name: &str) {
     let prefill = CompanyPrefill {
@@ -6717,6 +6778,8 @@ fn stash_contact_new_prefill(id: &str, name: &str) {
 /// common case for a direct visit to `/contacts/new`); a clear failure is
 /// logged and treated as "nothing to hand back" so the caller falls through
 /// to the URL / OIDC snapshot readers.
+// SPEC-7.9.4: removed from session storage the first time it is read,
+// regardless of whether the stored value turns out to be valid.
 #[cfg_attr(not(feature = "app"), allow(dead_code))]
 fn take_stashed_contact_new_prefill() -> Option<CompanyPrefill> {
     let store = crate::platform::store::session().ok()?;
@@ -6758,6 +6821,7 @@ pub struct ContactEditPageProps {
     pub id: String,
 }
 
+// SPEC-7.1.6: renders the shared ContactForm in Edit mode.
 #[component]
 pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
     let id_for_resource = props.id.clone();
@@ -7250,6 +7314,8 @@ fn ContactForm(props: ContactFormProps) -> Element {
         // PMS-518: validate every field and report all failures at once, then
         // focus the first invalid field (in on-screen order). note_invalid keeps
         // the first id it is given, so the calls below run in field order.
+        // SPEC-7.5.2: collect every field's failure in one pass, then focus
+        // the first invalid field in on-screen order.
         let mut guard = FormGuard::new();
 
         // MAPPS-281: trim required names so a whitespace-only value cannot satisfy
@@ -7384,6 +7450,8 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         // `errors[]` envelope onto their inline fields so the cue
                         // persists after a failed submit; unmatched fields or a
                         // non-422 failure fall back to the top-of-form banner.
+                        // SPEC-7.5.3: a named 422 field routes inline; an
+                        // unmapped error routes to the top banner.
                         let fields = err.field_errors();
                         if fields.is_empty() {
                             error.set(format!("Could not save contact: {}", err.user_message()));
@@ -7798,6 +7866,8 @@ pub struct ContactDetailPageProps {
     pub id: String,
 }
 
+// SPEC-7.1.7/SPEC-7.6.1: renders the record plus independent per-card
+// resources; one card's failure or slow load must not block another's.
 #[component]
 #[allow(unused_variables)]
 pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
@@ -7861,6 +7931,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     // feed). Secondary like the tickets list above, but the `Result` is kept
     // rather than `.ok()`-ed so the card can report a failed read instead of
     // rendering it as an empty history.
+    // SPEC-7.5.5: the Result must be kept, not discarded via .ok().
     let notes_resource = use_resource(move || {
         let id = id_for_notes.clone();
         async move {
@@ -8573,6 +8644,7 @@ fn fmt_datetime(
 /// The resource keeps its `Result` rather than `.ok()`-ing it: a failed fetch
 /// renders the server's reason, because "no notes" and "could not read the
 /// notes" are different facts.
+// SPEC-7.5.5: renders a load-error message distinct from "no notes yet".
 #[component]
 fn ContactNotesCard(notes_resource: Resource<Result<Vec<ContactNote>, String>>) -> Element {
     // MAPPS-939: resolve once for the whole notes list, not once per note.
@@ -8663,6 +8735,7 @@ struct ContactPortalCardProps {
 /// post-PMS-928 body carrying the 9-digit numeric Portal ID assigned
 /// to the Company by `ensure_portal_id`. When `None`, the card falls
 /// back to the legacy slug-based setup URL.
+// SPEC-7.4.8: no setup link or other credential-bearing field on this wire.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct PortalGrantOutcomeWire {
     portal_slug: String,
@@ -8709,6 +8782,7 @@ pub(crate) struct PortalRoleSummaryWire {
 /// empty-and-error-free resolution, so it must read false like the
 /// `Err` case rather than falling through to the same `true` an
 /// actually-empty catalog produces (MAPPS-1021).
+// SPEC-7.5.7: false while pending or failed; true only once resolved empty.
 fn assign_portal_roles_no_roles_configured(
     roles_snap: &Option<Result<Vec<PortalRoleSummaryWire>, String>>,
 ) -> bool {
@@ -9059,8 +9133,8 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
             .await
             {
                 Ok(outcome) => {
-                    // The server no longer returns the setup link; it says
-                    // whether the invite email went out via
+                    // SPEC-7.4.8: the server no longer returns the setup
+                    // link; it says whether the invite email went out via
                     // `password_email_queued`, which stays false on a
                     // role-only edit and is what the toast keys on.
                     let is_role_only_edit = !outcome.password_email_queued;
@@ -11296,6 +11370,7 @@ mod mapps568_contact_notes_tests {
 
 /// MAPPS-692: a fetch that fails says why, in the log, before the `Option` that
 /// drives the empty state replaces it.
+// SPEC-7.5.6: enforces no .ok()-discarded fetch Result without .inspect_err.
 #[cfg(test)]
 mod mapps692_fetch_error_logging_tests {
     const SRC: &str = include_str!("contacts.rs");
@@ -12168,6 +12243,8 @@ mod access_request_tests {
     }
 }
 
+// SPEC-7.4.5: enforces no serde_json::json! request body literal and every
+// *Body struct destructured against its DTO, over the shipping file.
 #[cfg(test)]
 mod shared_dto_guard_tests {
     const SRC: &str = include_str!("contacts.rs");

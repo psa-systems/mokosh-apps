@@ -27,6 +27,7 @@
     <!-- MAPPS-356: FOUC-prevention theme applier. External same-origin file
          because the CSP `script-src 'self' 'wasm-unsafe-eval'` refuses inline
          script execution. The WASM app takes over the theme once it boots. -->
+    <!-- SPEC-1.1.6: same-origin script tag, consistent with the CSP's script-src. -->
     <script src="/assets/theme-init.js"></script>
 
     <!-- MAPPS-970: auto-hiding scrollbars. Same-origin for the same CSP reason; `defer` so the

@@ -46,6 +46,7 @@ struct LoginResp {
     contact: Option<ContactSnippet>,
 }
 
+// SPEC-6.2.4: defaults every field on absence so an older server payload still decodes.
 #[derive(Deserialize, Clone, Debug, Default)]
 struct ContactSnippet {
     #[serde(default)]
@@ -126,7 +127,9 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
         async move {
             #[cfg(feature = "web")]
             {
+                // SPEC-6.7.7: resolve the host/branding hint.
                 let path = format!("/contact/portal/{pid}/host");
+                // SPEC-6.5.8: log a warning and keep rendering the form on failure.
                 crate::hooks::fetch::api::get_typed::<HostHint>(&path)
                     .await
                     .inspect_err(|e| tracing::warn!("portal host hint load failed for {pid}: {e}"))
@@ -166,6 +169,7 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
     // the owning tenant is not active. A missing host hint falls
     // through to the form so a bad Company ID still lets the visitor
     // see a coherent page (submit will 401 or fail closed).
+    // SPEC-6.1.12: replace the form with the unavailable-portal notice when not active.
     let tenant_inactive = host_loaded && tenant_status != "active";
 
     // MAPPS-616 (prompt 014 followup): heading drops the "at
@@ -195,6 +199,7 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
     };
 
     let portal_id_for_submit = portal_id.clone();
+    // SPEC-6.6.1: ignore a submit while a previous one is still in flight.
     let mut submit = move |_| {
         if saving() {
             return;
@@ -232,6 +237,7 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
                     password: pw,
                     mfa_code: mfa,
                 };
+                // SPEC-6.7.7: contact sign-in call.
                 match crate::hooks::fetch::api::post_typed::<LoginResp, _>(
                     "/contact/auth/login",
                     &body,
@@ -246,6 +252,7 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
                     Ok(resp) => {
                         install_session(&nav, resp, &pid_str);
                     }
+                    // SPEC-6.4.7: identical failure text regardless of account existence.
                     Err(ApiError::Status { code: 401, .. }) => {
                         error.set(super::PORTAL_SIGN_IN_FAILED.to_string());
                     }
@@ -261,6 +268,7 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
     };
 
     let portal_id_readonly = portal_id.clone();
+    // SPEC-6.1.12: email/password/MFA fields, replaced by the unavailable notice when inactive.
     rsx! {
         AuthLayout {
             if tenant_inactive {
@@ -372,6 +380,7 @@ pub fn ContactLoginByPortalIdPage(portal_id: String) -> Element {
                     }
                 }
             }
+            // SPEC-6.4.11: no link to the staff sign-in page.
             // MAPPS-806: no "MSP staff sign in instead" here. Only customers
             // are sent to this page, by invoice, quote and sign-in emails, and
             // a customer who clicked it landed on a staff sign-in they cannot
@@ -401,6 +410,7 @@ fn install_session(nav: &dioxus::router::Navigator, resp: LoginResp, portal_id_s
     let response_contact_id = resp.contact.as_ref().and_then(|c| c.contact_id);
     // MAPPS-630: cross-plane isolation. Clear any staff bearer +
     // storage before writing the contact session.
+    // SPEC-6.4.1: clear any staff session before installing a contact one.
     crate::hooks::fetch::api::on_contact_signin_clear_staff_side();
     crate::hooks::fetch::api::set_contact_access_token(Some(resp.access_token));
     crate::hooks::fetch::api::set_contact_refresh_token(Some(resp.refresh_token));
@@ -425,6 +435,7 @@ fn install_session(nav: &dioxus::router::Navigator, resp: LoginResp, portal_id_s
     crate::hooks::capabilities::set_contact_capabilities(Some(caps));
     // MAPPS-761: the page the link that brought them named, else the
     // dashboard, which is where this always went.
+    // SPEC-6.4.10: always navigate through the sanitized next-target.
     nav.replace(super::next_target::landing());
 }
 
