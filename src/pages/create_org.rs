@@ -87,8 +87,12 @@ pub fn CreateOrgPage() -> Element {
                 {
                     Ok(resp) => match resp.user {
                         Some(user) => {
-                            // MAPPS-1199: no on_staff_signin_clear_contact_side() call here,
-                            // unlike every other staff session-install site; see linked bug.
+                            // Cross-plane isolation: a tab must never hold a live
+                            // staff AND a live contact session at once. Every other
+                            // staff session-install site clears the contact side
+                            // first; this one is reached by the `needs_setup` branch
+                            // of `/auth/login` and had been missed.
+                            crate::hooks::fetch::api::on_staff_signin_clear_contact_side();
                             crate::hooks::fetch::api::set_access_token(Some(
                                 resp.access_token.clone(),
                             ));
