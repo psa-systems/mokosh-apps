@@ -56,13 +56,9 @@
 
 use dioxus::prelude::*;
 use mokosh_types::integrations::IntegrationStatus;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::Deserialize;
 
-use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, Checkbox, ErrorBanner, Input,
-    PageHeader,
-};
+use crate::components::{use_page_title, Badge, BadgeVariant, Card, ErrorBanner, PageHeader};
 use crate::pages::settings::{AdminOnlyNotice, SettingsBreadcrumb};
 use crate::Route;
 
@@ -235,47 +231,27 @@ impl Integration {
         };
         (heading, self.supported_capabilities.clone())
     }
-
-    /// Whether Connect should collect a credential.
-    ///
-    /// Exactly when the server did not say the credential lives somewhere else.
-    /// By presence rather than by a provider list, so a provider that moves home
-    /// moves with it.
-    fn takes_credential(&self) -> bool {
-        self.connectable() && self.credential_elsewhere.is_none()
-    }
 }
 
-/// `PUT /integrations/{provider}`: the capability set, nothing else here.
-#[derive(Debug, Serialize)]
-struct UpdateBody {
-    capabilities: Vec<String>,
-}
+// MAPPS-1213: `takes_credential` was here, `self.connectable() &&
+// self.credential_elsewhere.is_none()`: whether Connect should collect a
+// credential. There is no Connect button to collect one for.
+//
+// What it encoded is worth keeping and is kept, as assertions on the two
+// fields rather than on a helper nothing calls. `managed_elsewhere` and
+// `credential_elsewhere` answer two different questions, which is why
+// PMS-1447 serves both: a provider can be connected here while its credential
+// is typed on another page, and the reverse. A helper alive only for its own
+// tests would have said the same thing less honestly.
 
-/// `PUT /integrations/{provider}` for the poll interval alone.
-#[derive(Debug, Serialize)]
-struct PollBody {
-    poll_interval_minutes: Option<i32>,
-}
-
-/// `POST /integrations/{provider}/connect`.
-///
-/// `credential` is omitted entirely for a provider whose credential is entered
-/// elsewhere, because the server refuses one that is sent rather than ignoring
-/// it.
-#[derive(Debug, Serialize)]
-struct ConnectBody {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    credential: Option<Value>,
-}
-
-/// `POST /integrations/{provider}/disconnect` takes no fields.
-///
-/// A type rather than a `json!({})` literal, because MAPPS-685's rule is that a
-/// request body is a type: a literal object is where a field gets added one day
-/// with nothing to check it against. The guard in this file's tests enforces it.
-#[derive(Debug, Serialize)]
-struct NoBody {}
+// PMS-1571 / MAPPS-1213: `UpdateBody`, `PollBody`, `ConnectBody` and
+// `NoBody` lived here, the request types for `PUT /integrations/{provider}`
+// and `POST /integrations/{provider}/connect` and `/disconnect`. The server
+// removed those routes because the only credential home that surface can
+// connect is `CredentialHome::Integration` and no provider takes it, so they
+// answered 404 for every provider; this page never called them either,
+// because it draws its controls off `configurable_here`, which is false for
+// all of them.
 
 /// How a card presents the capability set, which the `connected` sentence has
 /// to agree with.
@@ -286,9 +262,12 @@ struct NoBody {}
 /// for a control that is not there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CapabilityForm {
-    /// Checkboxes an admin can change, on a provider the routes will take.
-    Ticked,
     /// A list of what is delegated, on a card with no controls.
+    ///
+    /// MAPPS-1213 dropped a third form, `Ticked`, whose copy said "the
+    /// capabilities ticked below". There are no ticks: the routes a tick
+    /// would have called are gone, and the card that would have drawn them
+    /// never did.
     Listed,
     /// Nothing is delegated, so there is no list of it to point at.
     Nothing,
@@ -313,7 +292,6 @@ fn status_copy(
             "Connected",
             BadgeVariant::Green,
             match form {
-                CapabilityForm::Ticked => "Delegating the capabilities ticked below.",
                 CapabilityForm::Listed => "Delegating the capabilities listed below.",
                 CapabilityForm::Nothing => "Connected, with nothing delegated to it.",
             },
@@ -374,9 +352,12 @@ pub fn IntegrationsPage() -> Element {
 
 #[component]
 fn IntegrationsList() -> Element {
-    let mut error = use_signal(String::new);
+    // MAPPS-1213: no `error` signal here any more. The only thing that ever
+    // set it was a card reporting a failed mutation, and a card cannot
+    // mutate: the routes are gone. A failed LOAD has its own banner below,
+    // off `fetch_failed`.
 
-    let mut resource = use_resource(move || async move {
+    let resource = use_resource(move || async move {
         let _reachable = crate::hooks::use_server_reachable();
         crate::pages::settings::load_operator_setting::<Vec<Integration>>(
             INTEGRATIONS_PATH,
@@ -406,9 +387,6 @@ fn IntegrationsList() -> Element {
         }
 
         div { class: "space-y-6",
-            if !error().is_empty() {
-                ErrorBanner { class: "mb-4", "{error()}" }
-            }
             if fetch_failed {
                 Card { ErrorBanner { "Could not load the integrations." } }
             }
@@ -425,40 +403,19 @@ fn IntegrationsList() -> Element {
             // Server order, not sorted here: the registry decides what comes
             // first and re-sorting would be a second opinion about it.
             for integration in integrations {
-                IntegrationCard {
-                    integration: integration.clone(),
-                    on_changed: move |_| resource.restart(),
-                    on_error: move |message: String| error.set(message),
-                }
+                IntegrationCard { integration: integration.clone() }
             }
         }
     }
 }
 
 #[component]
-fn IntegrationCard(
-    integration: Integration,
-    on_changed: EventHandler<()>,
-    on_error: EventHandler<String>,
-) -> Element {
-    let mut busy = use_signal(|| false);
-    let mut credential = use_signal(String::new);
-    let mut poll_minutes = use_signal(|| {
-        integration
-            .poll_interval_minutes
-            .or_else(|| integration.polling.as_ref().map(|p| p.default_minutes))
-            .map(|m| m.to_string())
-            .unwrap_or_default()
-    });
-    let can_mutate = crate::hooks::use_can_mutate();
-
+fn IntegrationCard(integration: Integration) -> Element {
     // MAPPS-1121: an unbuilt provider is not "Not connected", which reads as an
     // invitation. The status is true and useless here; what an admin needs to
     // know is that there is nothing to connect it to yet.
     let (summary_heading, summary_items) = integration.capability_summary();
-    let form = if integration.connectable() {
-        CapabilityForm::Ticked
-    } else if integration.delegated().is_empty() {
+    let form = if integration.delegated().is_empty() {
         CapabilityForm::Nothing
     } else {
         CapabilityForm::Listed
@@ -473,183 +430,6 @@ fn IntegrationCard(
              it yet, so there is nothing to connect.",
         )
     };
-    let provider = integration.provider.clone();
-    let connected = matches!(
-        integration.status,
-        IntegrationStatus::Connected | IntegrationStatus::Error
-    );
-
-    // Each call reports the server's own message. The server refuses six
-    // distinct things here (a capability outside the supported set, a
-    // credential for a provider that takes none, a missing credential for one
-    // that needs it, a provider managed elsewhere, a poll interval under the
-    // floor, a config that is not an object) and a generic "something went
-    // wrong" would waste all six.
-    let call = move |path: String, body: Value| {
-        let on_changed = on_changed;
-        let on_error = on_error;
-        async move {
-            #[cfg(feature = "app")]
-            {
-                match crate::hooks::fetch::api::post_authed_json_no_content(&path, &body).await {
-                    Ok(()) => on_changed.call(()),
-                    Err(err) => {
-                        crate::hooks::push_api_error(&err);
-                        on_error.call(err.user_message());
-                    }
-                }
-            }
-            #[cfg(not(feature = "app"))]
-            {
-                let _ = (path, body);
-            }
-        }
-    };
-
-    let handle_connect = {
-        let provider = provider.clone();
-        let takes_credential = integration.takes_credential();
-        move |_| {
-            if busy() {
-                return;
-            }
-            let raw = credential.read().trim().to_string();
-            if takes_credential && raw.is_empty() {
-                on_error.call(
-                    "This provider's credential is entered here, so Connect needs one.".to_string(),
-                );
-                return;
-            }
-            let body = ConnectBody {
-                credential: if takes_credential {
-                    Some(Value::String(raw))
-                } else {
-                    None
-                },
-            };
-            let path = format!("{INTEGRATIONS_PATH}/{provider}/connect");
-            let body = serde_json::to_value(&body).unwrap_or(Value::Null);
-            busy.set(true);
-            spawn(async move {
-                call(path, body).await;
-                credential.set(String::new());
-                busy.set(false);
-            });
-        }
-    };
-
-    let handle_disconnect = {
-        let provider = provider.clone();
-        move |_| {
-            if busy() {
-                return;
-            }
-            let path = format!("{INTEGRATIONS_PATH}/{provider}/disconnect");
-            let body = serde_json::to_value(NoBody {}).unwrap_or(Value::Null);
-            busy.set(true);
-            spawn(async move {
-                call(path, body).await;
-                busy.set(false);
-            });
-        }
-    };
-
-    // A capability change is a PUT of the whole set, which is what the server
-    // takes: it stores the resolved list in registry order, so sending the
-    // delta would mean reimplementing that ordering here.
-    // `use_callback` rather than a plain closure: this is called once per
-    // checkbox inside a loop, so it has to be `Copy`.
-    let toggle_capability = use_callback({
-        let provider = provider.clone();
-        let enabled = integration.enabled_capabilities.clone();
-        move |(key, on): (String, bool)| {
-            if busy() {
-                return;
-            }
-            let mut next: Vec<String> = enabled.clone();
-            if on {
-                if !next.contains(&key) {
-                    next.push(key);
-                }
-            } else {
-                next.retain(|k| k != &key);
-            }
-            let path = format!("{INTEGRATIONS_PATH}/{provider}");
-            let body =
-                serde_json::to_value(UpdateBody { capabilities: next }).unwrap_or(Value::Null);
-            let on_changed = on_changed;
-            let on_error = on_error;
-            busy.set(true);
-            spawn(async move {
-                #[cfg(feature = "app")]
-                {
-                    match crate::hooks::fetch::api::put_authed_typed::<Integration, _>(&path, &body)
-                        .await
-                    {
-                        Ok(_updated) => on_changed.call(()),
-                        Err(err) => {
-                            crate::hooks::push_api_error(&err);
-                            on_error.call(err.user_message());
-                        }
-                    }
-                }
-                #[cfg(not(feature = "app"))]
-                {
-                    let _ = (path, body);
-                }
-                busy.set(false);
-            });
-        }
-    });
-
-    let handle_poll_save = {
-        let provider = provider.clone();
-        move |_| {
-            if busy() {
-                return;
-            }
-            let raw = poll_minutes.read().trim().to_string();
-            let parsed = if raw.is_empty() {
-                None
-            } else {
-                match raw.parse::<i32>() {
-                    Ok(v) => Some(v),
-                    Err(_) => {
-                        on_error.call("Enter the poll interval in whole minutes.".to_string());
-                        return;
-                    }
-                }
-            };
-            let path = format!("{INTEGRATIONS_PATH}/{provider}");
-            let body = serde_json::to_value(PollBody {
-                poll_interval_minutes: parsed,
-            })
-            .unwrap_or(Value::Null);
-            let on_changed = on_changed;
-            let on_error = on_error;
-            busy.set(true);
-            spawn(async move {
-                #[cfg(feature = "app")]
-                {
-                    match crate::hooks::fetch::api::put_authed_typed::<Integration, _>(&path, &body)
-                        .await
-                    {
-                        Ok(_updated) => on_changed.call(()),
-                        Err(err) => {
-                            crate::hooks::push_api_error(&err);
-                            on_error.call(err.user_message());
-                        }
-                    }
-                }
-                #[cfg(not(feature = "app"))]
-                {
-                    let _ = (path, body);
-                }
-                busy.set(false);
-            });
-        }
-    };
-
     rsx! {
         Card {
             // MAPPS-967: the provider IS this card's label, and its status badge is
@@ -711,95 +491,6 @@ fn IntegrationCard(
                     }
                 }
 
-                if integration.connectable() {
-                    div { class: "space-y-4",
-                        // The capability set. Bounded by what the server says
-                        // the provider supports; ticking anything else is a 400
-                        // naming the legal set, so the list is never invented
-                        // here.
-                        if !integration.supported_capabilities.is_empty() {
-                            div { class: "space-y-2",
-                                p { class: "text-sm font-medium text-content", "What it may do" }
-                                for capability in integration.supported_capabilities.iter() {
-                                    Checkbox {
-                                        name: "{integration.provider}_{capability.key}",
-                                        label: capability.label.clone(),
-                                        help: capability.description.clone(),
-                                        checked: integration.enabled_capabilities.contains(&capability.key),
-                                        disabled: !can_mutate || busy(),
-                                        onchange: {
-                                            let key = capability.key.clone();
-                                            move |e: FormEvent| {
-                                                toggle_capability.call((key.clone(), e.value() == "true"))
-                                            }
-                                        },
-                                    }
-                                }
-                            }
-                        }
-
-                        // A poll interval only where the provider polls, with
-                        // the floor the database enforces stated rather than
-                        // discovered through a 400.
-                        if let Some(polling) = integration.polling.as_ref() {
-                            div { class: "max-w-xs",
-                                Input {
-                                    name: "{integration.provider}_poll",
-                                    label: "Check every (minutes)",
-                                    r#type: "number".to_string(),
-                                    value: poll_minutes(),
-                                    disabled: !can_mutate || busy(),
-                                    help: format!("At least {} minutes. Blank uses the default of {}.", polling.min_minutes, polling.default_minutes),
-                                    oninput: move |e: FormEvent| poll_minutes.set(e.value()),
-                                }
-                                div { class: "flex justify-end pt-2",
-                                    Button {
-                                        variant: ButtonVariant::Secondary,
-                                        disabled: !can_mutate || busy(),
-                                        onclick: handle_poll_save,
-                                        "Save Interval"
-                                    }
-                                }
-                            }
-                        }
-
-                        // The credential, exactly when the server did not say it
-                        // is entered elsewhere.
-                        if integration.takes_credential() && !connected {
-                            Input {
-                                name: "{integration.provider}_credential",
-                                label: "Credential",
-                                r#type: "password".to_string(),
-                                value: credential(),
-                                disabled: !can_mutate || busy(),
-                                help: "Write-only: never shown once saved.".to_string(),
-                                oninput: move |e: FormEvent| credential.set(e.value()),
-                            }
-                        }
-
-                        div { class: "flex flex-wrap gap-3 pt-2",
-                            if connected {
-                                Button {
-                                    variant: ButtonVariant::Danger,
-                                    loading: busy(),
-                                    disabled: !can_mutate,
-                                    onclick: handle_disconnect,
-                                    data_testid: "integration-disconnect-{integration.provider}",
-                                    "Disconnect"
-                                }
-                            } else {
-                                Button {
-                                    variant: ButtonVariant::Primary,
-                                    loading: busy(),
-                                    disabled: !can_mutate,
-                                    onclick: handle_connect,
-                                    data_testid: "integration-connect-{integration.provider}",
-                                    "Connect"
-                                }
-                            }
-                        }
-                    }
-                }
             }
         }
     }
@@ -827,20 +518,24 @@ mod tests {
         serde_json::from_value(base).expect("the fixture deserialises")
     }
 
-    /// Connect is offered unless the CONNECTION is managed elsewhere, and a
-    /// credential is collected unless the CREDENTIAL is.
+    /// Where a provider is CONNECTED and where its credential is TYPED are
+    /// two different questions.
     ///
-    /// The two are separate questions and this is the table that says so. A
-    /// page that collapsed them would either hide Connect from Stripe, whose
-    /// connection is ours, or offer it for Google, whose is not, and both were
-    /// states this surface exists to get right (PMS-1312, PMS-1447).
+    /// This was the table behind Connect and the credential field. MAPPS-1213
+    /// removed both controls along with the routes they called, so it is now a
+    /// table about the two server fields, which is where the distinction
+    /// actually lives. A page that collapsed them would either hide Connect
+    /// from Stripe, whose connection is ours, or offer it for Google, whose is
+    /// not, and both are states this surface exists to get right (PMS-1312,
+    /// PMS-1447). The day the controls come back, they come back off these
+    /// fields.
     #[test]
     fn connect_and_the_credential_field_answer_two_different_questions() {
         let ours = integration(serde_json::json!({}));
         assert!(ours.connectable());
         assert!(
-            ours.takes_credential(),
-            "QuickBooks' credential arrives here"
+            ours.credential_elsewhere.is_none(),
+            "QuickBooks' credential arrives here, so nothing says it is typed elsewhere"
         );
 
         // MAPPS-1129: the payment providers' CONNECTION is ours since PMS-1312,
@@ -862,8 +557,9 @@ mod tests {
             "a provider the routes refuse offers no control, whoever owns its connection"
         );
         assert!(
-            !payments.takes_credential(),
-            "and their keys are entered on the payments surface, so Connect takes none"
+            payments.credential_elsewhere.is_some(),
+            "and their keys are entered on the payments surface, which the server states per \
+             provider rather than leaving a client to infer it from the name"
         );
 
         let google = integration(serde_json::json!({
@@ -875,7 +571,10 @@ mod tests {
             !google.connectable(),
             "connecting Google here is a 409 until PMS-1315"
         );
-        assert!(!google.takes_credential());
+        assert!(
+            google.credential_elsewhere.is_some(),
+            "and Google's grant is made on its own page"
+        );
     }
 
     /// MAPPS-1129: no provider in this build renders a capability checkbox, and
@@ -1039,11 +738,11 @@ mod tests {
         ];
         let badges: Vec<&str> = all
             .iter()
-            .map(|s| status_copy(*s, CapabilityForm::Ticked).0)
+            .map(|s| status_copy(*s, CapabilityForm::Listed).0)
             .collect();
         let lines: Vec<&str> = all
             .iter()
-            .map(|s| status_copy(*s, CapabilityForm::Ticked).2)
+            .map(|s| status_copy(*s, CapabilityForm::Listed).2)
             .collect();
         for set in [&badges, &lines] {
             let mut seen = set.clone();
@@ -1052,70 +751,78 @@ mod tests {
             assert_eq!(seen.len(), all.len(), "two statuses read the same: {set:?}");
         }
         assert!(
-            status_copy(IntegrationStatus::Disconnected, CapabilityForm::Ticked)
+            status_copy(IntegrationStatus::Disconnected, CapabilityForm::Listed)
                 .2
                 .contains("kept"),
             "disconnected has to say the capability set survives"
         );
         assert!(
             matches!(
-                status_copy(IntegrationStatus::Error, CapabilityForm::Ticked).1,
+                status_copy(IntegrationStatus::Error, CapabilityForm::Listed).1,
                 BadgeVariant::Red
             ),
             "an integration that is failing cannot look the same as one that is off"
         );
     }
 
-    /// `toggle_capability` and `handle_poll_save` are a second and third
-    /// mutation against the same integration record, so they have to respect
-    /// the one in-flight guard `handle_connect` and `handle_disconnect`
-    /// already honor (MAPPS-1019), not just read it in their `disabled`
-    /// attribute.
+    /// MAPPS-1213: no control on this page calls a route the server removed.
     ///
-    /// Scanned as source rather than rendered, because `busy` is a
-    /// component-local signal with no handle exposed to a test outside a full
-    /// Dioxus render, and the earlier handlers are already verified this way
-    /// above.
+    /// This replaces `toggle_capability_and_poll_save_toggle_the_same_busy_signal_connect_does`,
+    /// which pinned MAPPS-1019's in-flight guard across the four mutation
+    /// handlers. There are no mutation handlers: PMS-1571 removed
+    /// `GET`/`PUT /integrations/{provider}` and
+    /// `POST /integrations/{provider}/connect` and `/disconnect`, because the
+    /// only credential home that surface can connect is
+    /// `CredentialHome::Integration` and no provider takes it.
+    ///
+    /// Scanned as source, because the way this comes back is somebody adding
+    /// a control that reads correctly against a route that is not there, which
+    /// is exactly how it got here: the page drew capability checkboxes whose
+    /// every tick answered 404 for three tickets running, and nothing failed.
+    ///
+    /// If the routes return, they return with the server: mokosh-server's
+    /// `registry::tests::an_integration_home_provider_needs_the_per_provider_routes_back`
+    /// fails first and says so. Then this test is the one to update, which is
+    /// why it names what to put back rather than only what to keep out.
     #[test]
-    fn toggle_capability_and_poll_save_toggle_the_same_busy_signal_connect_does() {
+    fn no_control_calls_a_route_the_server_removed() {
         let src = include_str!("settings_integrations.rs");
-        let start = src.find("fn IntegrationCard").expect("the component");
-        let tests_at = src.find("mod tests").expect("this module");
-        let body = &src[start..tests_at];
+        let all = &src[..src.find("mod tests").expect("this module")];
+        // Comments are exempt: this file explains what was removed and why,
+        // and a guard that cannot be documented gets reworded rather than
+        // understood. What it defends is the code.
+        let head: String = all
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let head = head.as_str();
 
-        let handler_body = |name: &str| -> &str {
-            let handler_at = body.find(name).unwrap_or_else(|| panic!("{name} exists"));
-            let after = &body[handler_at..];
-            let brace_at = after.find('{').expect("a block follows the let");
-            let mut depth = 0i32;
-            let mut end = None;
-            for (i, ch) in after[brace_at..].char_indices() {
-                match ch {
-                    '{' => depth += 1,
-                    '}' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            end = Some(brace_at + i + 1);
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            &after[..end.expect("the block closes")]
-        };
-
-        for name in ["toggle_capability", "handle_poll_save"] {
-            let handler = handler_body(name);
+        for gone in [
+            "/connect",
+            "/disconnect",
+            "put_authed",
+            "post_authed",
+            "delete_authed",
+        ] {
             assert!(
-                handler.contains("busy.set(true)"),
-                "{name} must set busy before its request, as handle_connect does"
-            );
-            assert!(
-                handler.contains("busy.set(false)"),
-                "{name} must clear busy once its request resolves, as handle_connect does"
+                !head.contains(gone),
+                "{gone} is back on this page, and the route it would call is not"
             );
         }
+        // The page reads the catalog and nothing else. It does that through
+        // `load_operator_setting`, the shared helper that distinguishes a 403
+        // from a failure (PMS-1280), so exactly one call to it is also the
+        // statement that no second request was added beside it.
+        assert_eq!(
+            head.matches("load_operator_setting").count(),
+            1,
+            "this page makes exactly one request, the catalog read"
+        );
+        assert!(
+            head.contains("INTEGRATIONS_PATH,"),
+            "and it reads the catalog path, not a path built per provider"
+        );
     }
 
     /// The page holds no provider list, no capability list and no status
@@ -1200,7 +907,7 @@ mod mapps1121_availability_tests {
             "no Connect button for a provider with nothing behind it"
         );
         assert!(
-            !planned.takes_credential(),
+            !planned.connectable(),
             "and no field for a credential that would be stored and never read"
         );
     }
@@ -1246,7 +953,7 @@ mod mapps1121_availability_tests {
         let old = integration(serde_json::json!({}));
         assert!(old.available);
         assert!(old.connectable());
-        assert!(old.takes_credential());
+        assert!(old.credential_elsewhere.is_none());
     }
 
     /// An available provider is untouched by any of this.
@@ -1254,7 +961,7 @@ mod mapps1121_availability_tests {
     fn an_available_provider_still_connects_as_before() {
         let xero_today = integration(serde_json::json!({ "available": true }));
         assert!(xero_today.connectable());
-        assert!(xero_today.takes_credential());
+        assert!(xero_today.credential_elsewhere.is_none());
     }
 }
 
@@ -1352,6 +1059,9 @@ mod mapps1122_panel_tests {
             "setup": { "kind": "contact_sync_google", "label": "Settings > Google Contacts" },
         }));
         assert!(!google.connectable());
-        assert!(!google.takes_credential());
+        assert!(
+            google.setup.is_some(),
+            "and the card has a page to send the operator to, which is its whole job now"
+        );
     }
 }
