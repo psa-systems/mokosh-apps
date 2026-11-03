@@ -32,6 +32,9 @@
 #     a string and cannot hold either);
 #   - an empty-state message whose first line is styled as a heading but is prose.
 #
+# SPEC-2.1.1: no-argument invocation, default root, and the clean/FAIL stdout
+# line contract.
+#
 # Usage: check-card-headings.sh [--self-test]
 set -euo pipefail
 
@@ -44,6 +47,8 @@ scan() {
         while IFS= read -r line; do
             n=$((n + 1))
             local trimmed="${line#"${line%%[![:space:]]*}"}"
+            # SPEC-2.3.1: skip the violation on any line marked
+            # card-heading-allow:.
             case "$trimmed" in
                 "// card-heading-allow:"*) allow=1; continue ;;
                 "Card {"*|"Card{"*) in_card=1; continue ;;
@@ -53,6 +58,10 @@ scan() {
                 case "$trimmed" in
                     ""|"//"*) continue ;;
                 esac
+                # SPEC-2.5.15: fail a Card block (through any number of
+                # wrapper divs, handled by the div-continuation case below)
+                # whose first rendered element, other than a prop line or an
+                # allow-marked line, is h2 or h3.
                 # The heading check comes FIRST. An element line carries
                 # attributes (`h2 { class: ... }`), so a "looks like a prop"
                 # test placed before it matches the heading too and the guard
@@ -89,6 +98,9 @@ scan() {
     return "$violations"
 }
 
+# SPEC-2.1.3: self-test mode must run detection against generated fixtures
+# only, proving each violation shape still fails and the corrected shape
+# still passes, and must exit nonzero if any case did not behave as expected.
 self_test() {
     local tmp
     tmp="$(mktemp -d)"
@@ -172,6 +184,7 @@ EOF
     echo "card-heading guard self-test: clean"
 }
 
+# SPEC-2.1.3: --self-test entry point.
 if [ "${1:-}" = "--self-test" ]; then
     self_test
     exit $?

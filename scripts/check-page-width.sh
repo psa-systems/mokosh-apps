@@ -12,6 +12,9 @@
 # added without its wrapper is full width by accident rather than by decision.
 # Both are the same failure: nobody chose the width.
 #
+# SPEC-2.1.1: no-argument invocation, default root, and the clean/FAIL stdout
+# line contract.
+#
 # Usage: check-page-width.sh [--self-test | --files LIB LAYOUT]
 set -u
 cd "$(dirname "$0")/.." || exit 2
@@ -70,6 +73,7 @@ run_guard() {
   done
 
   # 1. The shell caps nothing. Its `main` carries the shared padding instead.
+  # SPEC-2.5.14 (check 1 of 4): AppShell must not re-apply a max-w- class.
   shell_body=$(fn_body "$layout" AppShell)
   if [ -z "$shell_body" ]; then
     echo "page-width guard: FAIL ($layout has no AppShell component)"
@@ -81,6 +85,8 @@ run_guard() {
     echo "  ones that opted out. The cap belongs on the route component."
     fail=1
   fi
+  # SPEC-2.5.14 (check 1 of 4, cont.): AppShell must still supply the shared
+  # padding on its main.
   if ! printf '%s\n' "$shell_body" | grep -qF 'px-4 sm:px-6 lg:px-8'; then
     echo "page-width guard: FAIL (AppShell in $layout no longer supplies the shared padding)"
     echo "  \`main\` owns \`px-4 sm:px-6 lg:px-8\`; without it every page renders"
@@ -96,6 +102,8 @@ run_guard() {
   fi
   for name in $routes; do
     body=$(fn_body "$lib" "$name")
+    # SPEC-2.5.14 (check 2 of 4): a route nested under #[layout(AppShell)]
+    # must be found as a named component.
     if [ -z "$body" ]; then
       echo "page-width guard: FAIL (route $name has no component in $lib)"
       fail=1
@@ -106,12 +114,15 @@ run_guard() {
       [ "$name" = "$allowed" ] && listed=1
     done
     if [ "$listed" -eq 1 ]; then
+      # SPEC-2.5.14 (check 3 of 4): a full-width allowlist route must not
+      # still carry the max-w-7xl mx-auto cap.
       if printf '%s\n' "$body" | grep -qF "$CAP"; then
         echo "page-width guard: FAIL ($name is listed as full width but caps itself)"
         echo "  Either drop the \`$CAP\` wrapper or take $name out of FULL_WIDTH"
         echo "  in this script, so the list still says what the code does."
         fail=1
       fi
+    # SPEC-2.5.14 (check 4 of 4): any other route must carry the cap.
     elif ! printf '%s\n' "$body" | grep -qF "$CAP"; then
       echo "page-width guard: FAIL ($name renders with no width of its own in $lib)"
       echo "  Wrap its top-level element in \`div { class: \"$CAP\", ... }\` to match"
@@ -124,11 +135,15 @@ run_guard() {
   return "$fail"
 }
 
+# SPEC-2.1.6: --files LIB LAYOUT overrides the default src/lib.rs /
+# src/components/layout.rs pair with an explicit file pair.
 if [ "${1:-}" = "--files" ]; then
   run_guard "$2" "$3"
   exit "$?"
 fi
 
+# SPEC-2.1.3: self-test mode runs detection against generated fixtures only,
+# proving both violation shapes still fail and the corrected shapes still pass.
 if [ "${1:-}" = "--self-test" ]; then
   tmp=$(mktemp -d) || exit 2
   trap 'rm -r "$tmp"' EXIT
