@@ -19,6 +19,16 @@ on:
     branches:
       - main
 
+# Supersede obsolete runs. `github.ref` differs between the pull_request
+# ref (refs/pull/<N>/merge) and the main push (refs/heads/main), so PRs
+# never share a group with each other or with the main push that primes
+# the cache for them. A back-to-back main push does share the group, and
+# that is the one case where cancel-in-progress matters here: two
+# concurrent runs on the same main commit are a wasted compile.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     name: fmt + clippy + tests
@@ -59,8 +69,18 @@ jobs:
         uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/build-parallelism@e728773130496a6e84e0d87de9390f3d98939019 # main
 
       - name: Cache Rust build
+        # `shared-key: check` is the cross-ref cache contract. On forgejo-
+        # runner a `pull_request` event writes under the per-PR isolation
+        # key (`refs/pull/<N>/...`) only that PR can read, but a `push`
+        # event writes under the empty key every later run in the repo can
+        # read. check.yml fires on both triggers, so the push-to-main run
+        # here doubles as the cache prime for subsequent PR runs; without
+        # `shared-key`, rust-cache falls back to per-ref keys and no PR
+        # benefits from the main push's compile. Match the key name in
+        # any future mokosh-apps cache-warm workflow.
         uses: https://github.com/Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
+          shared-key: check
           cache-on-failure: true
 
       # `assets/styles.css` is a gitignored Tailwind build artifact, so it is
@@ -404,8 +424,43 @@ jobs:
       # MAPPS-975: the CI image ships no cargo-audit, so the audit below was a
       # silent no-op. crates.io has no digest, so the crate version is the pin.
       # SPEC-1.4.11: a dependency vulnerability check on every CI run.
+      #
+      # A pinned release archive replaces `cargo install --locked cargo-audit`,
+      # which compiled cargo-audit and its dependency tree from source on every
+      # run (60-120s cold). cargo-audit publishes a prebuilt
+      # linux-musl archive on GitHub releases (statically linked, runs on
+      # the glibc builder image too); get the sha256 by downloading once and
+      # pinning the hash the same way nextest/machete are pinned in
+      # mokosh-server.
+      #
+      # `ghcr.io/niceguyit/rust-builder-glibc` sets CARGO_HOME=/usr/local/cargo
+      # and puts only that on PATH, not `~/.cargo/bin`.
+      # `${CARGO_HOME:-$HOME/.cargo}/bin` is where `cargo` actually looks.
+      - name: Cache cargo-audit tarball
+        # Version-keyed tarball cache. A hit skips the ~5s download; a
+        # version bump misses the key, downloads once, and the sha256 check
+        # below is the safety net if a wrong-version file comes back.
+        uses: https://github.com/actions/cache@v4
+        with:
+          path: /tmp/cargo-audit.tgz
+          key: cargo-audit-tarball-0.22.2-linux
+
       - name: Install cargo-audit
-        run: cargo install cargo-audit --version 0.22.2 --locked
+        env:
+          CARGO_AUDIT_VERSION: "0.22.2"
+          CARGO_AUDIT_SHA256: "7fb9497f8594b389e5fce5ef9b92db08432996895b2e0c5a0167a69ed445c428"
+        run: |
+          set -euo pipefail
+          archive="cargo-audit-x86_64-unknown-linux-musl-v${CARGO_AUDIT_VERSION}.tgz"
+          if [ ! -s /tmp/cargo-audit.tgz ]; then
+            curl --silent --fail --location --output /tmp/cargo-audit.tgz \
+              "https://github.com/rustsec/rustsec/releases/download/cargo-audit%2Fv${CARGO_AUDIT_VERSION}/${archive}"
+          fi
+          echo "${CARGO_AUDIT_SHA256}  /tmp/cargo-audit.tgz" | sha256sum --check --strict
+          tar --extract --gzip --file /tmp/cargo-audit.tgz --directory /tmp
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          mkdir -p "${cargo_bin}"
+          install -m 755 "/tmp/cargo-audit-x86_64-unknown-linux-musl-v${CARGO_AUDIT_VERSION}/cargo-audit" "${cargo_bin}/cargo-audit"
 
       # MAPPS-918/MAPPS-976: block the build on any new RUSTSEC advisory
       # against Cargo.lock. The four ignores below are the full backlog from
