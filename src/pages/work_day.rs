@@ -1588,18 +1588,20 @@ mod mapps746_strip_says_why_tests {
         let head = &src[..src
             .find("mod mapps746_strip_says_why_tests")
             .expect("this module")];
-        assert!(
-            head.contains("None => return rsx! {},"),
-            "the FIRST load stays silent"
-        );
-        // MAPPS-753: and only the first. A restarted resource reads `None`
-        // again, so a bare `None => rsx! {}` made the whole card disappear
-        // every time the refetch tick fired. The cached day is what keeps it
-        // on the page; losing this arm brings the blink back and nothing
-        // fails.
+        // MAPPS-753 / MAPPS-1205: the FIRST load stays silent when nothing
+        // matches `last_day`. A restarted resource reads `None` again, so a
+        // bare `None => rsx! {}` made the whole card disappear on every
+        // refetch tick; the match arm above routes through `last_day()` and
+        // falls through to `_ => return rsx! {},` when the cached day is
+        // missing or its key does not match the current viewing context
+        // (MAPPS-1205), which is still the first-load silent state.
         assert!(
             head.contains("None => match last_day() {"),
             "a refetch re-renders the last day rather than blanking the card"
+        );
+        assert!(
+            head.contains("_ => return rsx! {},"),
+            "the FIRST load (no matching cached day) stays silent"
         );
         assert!(
             !head
