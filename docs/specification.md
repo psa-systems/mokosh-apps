@@ -405,6 +405,504 @@ format owned by this scope is the operator-facing configuration catalog:
   OS files must never be committed, so a fresh clone carries no stale
   generated state (see SPEC-1.8.14).
 
+## 2. Repository check scripts
+
+Scope: every file under `scripts/`: the 35 `check-*.sh` lint/invariant scripts
+and `config-docs.nu`, the configuration-documentation generator. Each
+`check-*.sh` script is a standalone, repeatable guard against one named
+regression (most carry an issue id in their header comment); each is invoked
+from `justfile` and, for the ones `just check` depends on, from
+`.forgejo/workflows/check.yml`. This section does not cover the files these
+scripts read as fixtures or targets (`src/**`, `input.css`, `justfile`,
+`.forgejo/workflows/*.yml`, `config/variables.toml`, `docs/configuration.md`)
+except to state what the scripts in this section's scope require of them;
+those files' own behavior belongs to the sections that own them.
+
+### 2.1 Interfaces
+
+- **SPEC-2.1.1**: Every `check-*.sh` script must be invocable with no
+  arguments and, unless stated otherwise below, must then scan a fixed
+  default root (`src`, or the one file the guard is named for) and exit 0
+  with a `<name> guard: clean` (or `: OK`) line on stdout if the invariant
+  holds, or a nonzero exit with a `<name> guard: FAIL (<reason>)` line
+  naming the reason if it does not.
+- **SPEC-2.1.2**: A `check-*.sh` script whose default target can be
+  overridden (by ROOT, DIR, or FILE) must accept that override as its first
+  positional argument, scanning the given path instead of the default.
+- **SPEC-2.1.3**: A `check-*.sh` script that accepts a `--self-test` first
+  argument must, when given it, run its own detection logic against
+  generated fixtures proving it still rejects every violation shape it
+  exists to catch and still accepts the corrected/migrated shape, print one
+  line per fixture case stating whether that case behaved as expected, and
+  exit 0 only if every case behaved as expected, exit nonzero otherwise; the
+  script must not scan the real tree in this mode.
+  `check-company-id-copy.sh`, `check-auth-error-prose.sh`,
+  `check-runner-labels.sh`, `check-cancel-routes.sh`, and
+  `check-csp-host-derived-origin.sh` carry no `--self-test` mode (the first
+  three have no synthetic fixture to construct; `check-cancel-routes.sh`'s
+  pinned-list diff and `check-csp-host-derived-origin.sh`'s three live HTTP
+  scenarios run against real source on every invocation, which is their own
+  test of the guard).
+- **SPEC-2.1.4**: `check-types-pin.sh` must additionally accept a `--strict`
+  flag before `--self-test` or the real run, selecting the unnarrowed
+  pre-MAPPS-537 rule (every lock move not just a `mokosh-types`-touching
+  one); `check-types-pin.sh` and `check-types-pin.sh --compare OLD NEW
+  [STATE]` must accept that explicit two/three-argument form for driving the
+  comparison directly off two lock-file snapshots instead of running
+  `cargo update` itself.
+- **SPEC-2.1.5**: `check-theme-storage-key.sh` must additionally accept
+  `--compare RUST_FILE JS_FILE` to run its key-equality and stray-read checks
+  against an explicit file pair instead of the repo's own
+  `src/hooks/theme.rs` / `assets/theme-init.js`, and must reject any other
+  unrecognized first argument with exit 2.
+- **SPEC-2.1.6**: `check-page-width.sh` must additionally accept `--files
+  LIB LAYOUT` to run its AppShell/route-cap checks against an explicit file
+  pair instead of the repo's own `src/lib.rs` / `src/components/layout.rs`.
+- **SPEC-2.1.7**: `config-docs.nu` must expose exactly five subcommands:
+  `generate` (rewrite the generated parts of `docs/configuration.md`),
+  `check` (fail if that file disagrees with the facts), `since <version>`
+  (list every configuration change after a given release, optionally as
+  `--json`), `release-notes <version> [--ref REF]` (emit release-note prose
+  for one release), and `self-test` (prove its own fact-checking logic
+  against an in-memory fixture, touching neither `config/variables.toml` nor
+  `docs/configuration.md`); invoked with no subcommand it must print a one
+  line usage summary and exit 0.
+
+### 2.2 Data model
+
+- **SPEC-2.2.1**: `config-docs.nu` must read three kinds of fact records
+  from `config/variables.toml`: `[[variable]]` (`name`, `since`, `required`
+  defaulting to false, optional `required_since`, optional `deprecated =
+  { release, replacement, issue }`), `[[removed]]` (`name`, `since`,
+  `removed`, `issue`, optional `action` defaulting to empty, optional
+  `breaking` defaulting to empty), and `[[change]]` (`release`, `group` one
+  of Added/Changed/Deprecated/Removed, `variables`, optional `issue`
+  defaulting to empty, optional `action` defaulting to empty, optional
+  `breaking` defaulting to empty, optional `feature` defaulting to empty),
+  and must derive from them a flat list of changelog entries, one per
+  (release, group, variable) combination, each carrying whether the
+  variable was required as of that release and a breaking level of `""`,
+  `"wont-start"`, or `"feature-off"`.
+- **SPEC-2.2.2**: `config-docs.nu generate` must maintain exactly two
+  generated regions of `docs/configuration.md`: the block between the
+  literal marker lines `<!-- BEGIN GENERATED: recently-added (just
+  config-docs) -->` and `<!-- END GENERATED: recently-added -->` under the
+  "Recently added" heading, and the Required/Added-in columns of every row
+  under the `## All variables` heading matching `| <a
+  id="..."></a>\`VAR\` | Required | Added in | ...`; it must leave every
+  other column and every other part of the file untouched.
+- **SPEC-2.2.3**: `check-ci-parity.sh` must treat `justfile`'s `check:`
+  recipe's `check-*`-named dependencies as the authoritative set of checks
+  that must run in `.forgejo/workflows/check.yml`, resolving each
+  dependency's command lines from the root justfile or, failing that, from
+  one level of its `import '...'` files, and falling back to a synthetic
+  `just <recipe>` line when a recipe's body is a shebang script or contains
+  `{{` interpolation it cannot statically resolve.
+- **SPEC-2.2.4**: `check-loading-recipe.sh` must treat its hardcoded
+  per-file baseline table as the ceiling on pre-existing `"Loading` string
+  literals for the files it lists, and zero for every other file, and
+  `check-email-affordance.sh` must treat its hardcoded `EMAIL_PATHS` table
+  (pattern plus human label) as the complete set of server paths whose
+  callers are required to render both a mail icon and an email preview;
+  neither table is read from any file other than the script itself.
+
+### 2.3 Configuration
+
+- **SPEC-2.3.1**: A `check-*.sh` script that recognizes a per-line opt-out
+  marker (`theme-guard-allow`, `card-heading-allow:`, `dev-sso-scheme-guard-
+  allow`, `sort-key-guard-allow`, `ellipsis-guard-allow`, `loading-guard-
+  allow`, `per-page-guard-allow`, `nu-interp-guard-allow`, `fetch-error-
+  logging-allow:`) must skip the violation it would otherwise report on any
+  line carrying that marker, and must not treat the marker's presence
+  elsewhere in the file as an opt-out for a different line.
+- **SPEC-2.3.2**: `check-fetch-error-logging.sh`'s `fetch-error-logging-
+  allow:` marker must require a non-whitespace reason after the colon; a bare
+  marker with nothing following it must not suppress the violation.
+- **SPEC-2.3.3**: `check-csp-host-derived-origin.sh` must read
+  `MOKOSH_API_BASE` and `MOKOSH_OIDC_ISSUER` only as environment variables
+  passed into the container it starts under test, never from the host
+  environment the script itself runs in, so the guard's three scenarios
+  (zero-config, zero-config on a non-derived host, explicit origin) are
+  reproducible regardless of the invoking shell's environment.
+- **SPEC-2.3.4**: `check-oci-runtime.sh` must configure its read-only-
+  runtime-directory scenario via `MOKOSH_RUNTIME_DIR` pointed at a mount the
+  test container cannot write under any uid, and must configure its uid
+  scenarios via the container's `--user` flag, not via a script-level
+  environment variable the entrypoint reads.
+
+### 2.4 Security
+
+- **SPEC-2.4.1**: `check-refresh-token-storage.sh` must fail if
+  `src/hooks/fetch.rs` writes a portal or contact refresh token
+  (`PORTAL_REFRESH_STORAGE_KEY` or `CONTACT_REFRESH_STORAGE_KEY`) via
+  `local_storage()` within 6 lines of the key reference, rather than
+  `sessionStorage`, because a refresh token in `localStorage` outlives the
+  tab and survives an XSS payload's exfiltration window; this is a
+  proximity heuristic bound to +/-6 lines; a discard spread wider is out of
+  the guard's reach.
+- **SPEC-2.4.2**: `check-dev-sso-scheme.sh` must fail if
+  `compose.dev-sso.yml` (or an explicit target file) contains a bare
+  `http://` URL outside a `#` comment and not marked
+  `dev-sso-scheme-guard-allow`, because the dev-SSO overlay is TLS-routed
+  and a plain-http absolute URL baked into it bypasses that routing.
+- **SPEC-2.4.3**: `check-csp-host-derived-origin.sh` must fail if, serving
+  the real container stack with no explicit origin configured on an
+  `msp.<tld>` request host, the served `Content-Security-Policy`'s
+  `connect-src` and `img-src` do not name the API/OIDC origins the client
+  itself derives from that host; must fail if, on a non-`msp.<tld>` host
+  with no explicit origin, the served policy adds any derived API origin at
+  all; and must fail if, with `MOKOSH_API_BASE`/`MOKOSH_OIDC_ISSUER`
+  explicitly set, the served policy either drops the operator's origin or
+  still names the host-derived one.
+- **SPEC-2.4.4**: `check-confirm-destructive.sh` must fail if any
+  `onclick:` handler issues a delete (`delete_authed`, `delete_authed_typed`,
+  or `delete_lookup`, directly or through a traced local alias) without the
+  action first passing through a confirmation step, and must fail loudly,
+  not silently pass, when its own brace/string parse of a file cannot
+  close (ends at nonzero depth, or ends inside an unterminated string or raw
+  string), rather than reporting that file clean because it could not be
+  parsed.
+- **SPEC-2.4.5**: `check-delete-result.sh` must fail if a `delete_authed*`
+  call's result is reduced to `.is_ok()` or dropped via `let _ =` within 3
+  lines of the call, because the discarded `Result`'s `Err` string is the
+  server's own refusal reason and the UI's only way to show it; collecting
+  results across a bulk delete (counting failures rather than discarding
+  them) must not be flagged.
+- **SPEC-2.4.6**: `check-oci-runtime.sh` must fail if the container's
+  entrypoint starts successfully (exit 0) when its writable runtime
+  directory is mounted read-only to every uid, and must fail if its startup
+  log contains a case-insensitive "permission denied" under either the
+  default uid or an explicit `--user` override; it must require that a
+  refused boot on an unwritable runtime directory logs `FATAL` and the
+  directory path to stderr.
+- **SPEC-2.4.7**: `check-types-pin.sh` must fail if `cargo update --package
+  mokosh-types` moves `Cargo.lock` while the git revision it reports for
+  `crates/mokosh-types` on `mokosh-server`'s default branch is unchanged
+  from the currently pinned revision (meaning something else in the lock
+  moved, not the dependency this guard exists to catch), and must fail,
+  never silently pass, when it cannot determine whether the crate itself
+  changed (no local git mirror, either revision absent from it, or `git
+  diff` erroring) rather than assuming either outcome; under the default
+  (non-`--strict`) mode it must treat a pin move as clean when the crate's
+  own source is provably unchanged (a catch-up-only move), and under
+  `--strict` that same catch-up-only move must still fail.
+
+### 2.5 Error handling and observability
+
+- **SPEC-2.5.1**: A `check-*.sh` script must exit 2, not 0 or 1, when it
+  cannot evaluate the invariant at all: a required target file or directory
+  does not exist, a `find`/`awk` sub-process it depends on exits nonzero, or
+  (except `check-nu-interpolation.sh`, which exits 1 for this case) the scan
+  matches zero files to check; "found nothing to check" must never be
+  reported as a pass.
+- **SPEC-2.5.2**: `check-class-omissions.sh`'s heading-weight and
+  table-name-cell passes must each fail if the number of elements they
+  matched across the whole scan falls under a fixed floor (50 headings, 15
+  table-cell spans respectively), so a refactor that silently moves the
+  shape out from under the detection pattern is loud rather than passing
+  with zero matches.
+- **SPEC-2.5.3**: `check-auth-error-prose.sh` must fail independently on
+  each of two conditions in `src/pages/auth_callback.rs` (a `.starts_with`/
+  `.ends_with`/`.contains("` string match on an error message; the absence
+  of a call to `classify_flow_error`), printing both failures when both
+  occur rather than stopping at the first.
+- **SPEC-2.5.4**: `check-runner-labels.sh` must independently check, and
+  report every failing one of, three conditions on `.forgejo/workflows/*.yml`:
+  the Rust-build job in `check.yml` requesting the heavy runner label, no
+  workflow referencing a retired `*_LATEST` runner label, and `check.yml`
+  not installing OS packages at run time.
+- **SPEC-2.5.5**: `check-cancel-routes.sh` must fail if the sorted set of
+  `Link`-rendered Cancel destinations across `src/pages/*.rs` differs at all
+  from its pinned expected set, printing a diff of expected versus actual so
+  a new, removed, or retargeted Cancel site is visible, and must separately
+  and unconditionally check `src/pages/knowledge_base.rs`'s non-Link
+  confirm-before-cancel control (routes to the record being edited, asks
+  only when the form is dirty) and `input.css`'s base-layer `cursor:
+  pointer` rule on enabled buttons, reporting every one of the checks that
+  fails rather than stopping at the first.
+- **SPEC-2.5.6**: `check-no-demo-rows.sh` must fail independently for each
+  of two patterns found anywhere under `src/pages`: a bare `Demo` token
+  naming a data-source variant, and rendered copy admitting (case-
+  insensitively) that displayed rows are "demo rows"; on a failed fetch a
+  page must render the failure, never backend-absent invented rows.
+- **SPEC-2.5.7**: `check-empty-state.sh` must fail a `TableEmpty { .. }`
+  block in the checked file (`src/pages/settings.rs` by default) that uses
+  the bare `message:` prop, that lacks `title:`, `description:`, or
+  `actions:`, whose `actions:` carries no `Button` with a "New <thing>"
+  label, or whose copy instructs the user to click a named button in prose,
+  reporting every one of those conditions that holds rather than only the
+  first.
+- **SPEC-2.5.8**: `check-status-banner.sh` must fail if any page under
+  `src/pages` hand-rolls a state-hue banner fill (`bg-{red,green,amber,
+  blue}-50`) instead of rendering `StatusBanner`, and must independently
+  fail if `src/components/error_banner.rs` is missing, if any of the four
+  `BannerTone` recipes it must carry (red, green, amber, blue, each an exact
+  class string) is not present in it exactly once, or if any of those
+  recipes is copied verbatim into another component file.
+- **SPEC-2.5.9**: `check-defined-colors.sh` must fail on any colour-shaped
+  Tailwind utility class in `src/**/*.rs` whose bare colour name is neither
+  one of `input.css`'s own `--color-*` tokens nor a recognized non-colour
+  Tailwind keyword, because Tailwind v4 emits no CSS at all (no error, no
+  fallback) for an unresolvable name.
+- **SPEC-2.5.10**: `check-field-value-binding.sh` must fail a `textarea {
+  .. }` in `src/components/form.rs` that has no `value:` attribute, and must
+  independently fail one whose value is passed as a trailing string child,
+  because a `<textarea>`'s text child is only its default value and stops
+  reflecting the signal the moment the user types.
+- **SPEC-2.5.11**: `check-hooks-before-return.sh` must fail any `use_*`
+  hook call that appears, at component-body or single-level-`if`-body
+  indentation, after an early `return` within the same `#[component]`
+  function or custom `use_*` hook function, because Dioxus identifies a hook
+  by call order and a hook skipped on one render desyncs every later
+  render.
+- **SPEC-2.5.12**: `check-per-page-cap.sh` must fail a literal `per_page=N`
+  with N at or above 100, or a `per_page={CONST}` interpolation resolving to
+  such a constant, anywhere outside `src/hooks/fetch.rs`, because the server
+  enforces that cap itself.
+- **SPEC-2.5.13**: `check-nu-interpolation.sh` must fail a literal,
+  unescaped `(` inside a Nushell `$"..."` interpolated string (outside a
+  `($...)` subexpression) in any `*.nu` file, `justfile`, or the `run:` body
+  of a `shell: nu` step in `.forgejo/workflows/*.yml`, because Nushell
+  parses it as a subexpression open rather than a literal character; a
+  `shell:` and `run:` key may appear in either order within the same CI
+  step.
+- **SPEC-2.5.14**: `check-page-width.sh` must fail if
+  `src/components/layout.rs`'s `AppShell` re-applies a `max-w-` class or no
+  longer supplies `px-4 sm:px-6 lg:px-8` padding on its `main`, if any route
+  nested under `#[layout(AppShell)]` in `src/lib.rs` is not found as a named
+  component, if a route named in the full-width allowlist still carries the
+  `max-w-7xl mx-auto` cap, or if any other such route does not carry it.
+- **SPEC-2.5.15**: `check-card-headings.sh` must fail a `Card { .. }`
+  block (including through any number of wrapper `div`s) whose first
+  rendered element, other than a prop line or a line marked
+  `card-heading-allow:`, is an `h2` or `h3`, because the card's heading must
+  come from its `title` prop; a heading rendered after other content in the
+  card is out of this guard's narrow scope by design.
+- **SPEC-2.5.16**: `check-theme-tokens.sh` must fail a hardcoded neutral
+  gray or `bg-white` utility outside `src/modules/theme/` and
+  `src/components/theme_picker.rs`, and must independently fail a
+  state-hue `text-*` utility (red, green, yellow, amber, orange, blue) or a
+  `ring-blue-*` utility with no `dark:`-prefixed sibling pair in the same
+  variant chain, because an unpaired light-mode state colour fails contrast
+  on the dark surface.
+- **SPEC-2.5.17**: `check-theme-storage-key.sh` must fail if
+  `src/hooks/theme.rs` and `assets/theme-init.js` do not each declare
+  exactly one `THEME_KEY` constant, if the two declared values differ, or if
+  the JS applier reads or writes `localStorage` by any path other than
+  `THEME_KEY` (a bare property, an `in` check, or a literal-string
+  `getItem`/`setItem`/`removeItem` call).
+- **SPEC-2.5.18**: `check-email-affordance.sh` must fail if no file under
+  `src` calls one of its listed email-sending patterns at all (the pattern
+  list has drifted), and independently must fail any calling file that
+  renders no `MailIcon { ` or no `EmailPreview { ` alongside that call.
+- **SPEC-2.5.19**: `check-doc-links.sh` must fail a Markdown link, image,
+  reference definition, or raw HTML `href`/`src` in a tracked `.md` file
+  whose target, resolved relative to that file's own directory (not the
+  repository root) and stripped of any fragment or query, does not exist on
+  disk; it must not evaluate a target inside a fenced code block or an HTML
+  comment, and must not evaluate an anchor-only, protocol-relative, or
+  scheme-qualified (`http:`, `mailto:`, etc.) target.
+- **SPEC-2.5.20**: `check-kit-adoption.sh` must fail a DaisyUI
+  `input-bordered` class anywhere under `src` (the build has no plugin for
+  it, so it renders unstyled); must fail if the set of pages using
+  `min-h-screen` is not exactly `{home.rs, not_found.rs, auth_callback.rs}`;
+  must fail if `AuthLayout` no longer renders the product-name helper or
+  `VersionFooter`, or if `login.rs`, `onboarding.rs`, or `request_form.rs`
+  no longer render `AuthLayout`; must fail a hand-copied file-input class
+  recipe (`file:mr-3`) outside `components/form.rs`, or that recipe present
+  there other than exactly once, or a raw `r#type: "file"` element outside
+  `components/form.rs`'s own two; must fail `input.css`'s `.dropdown-panel`
+  rule declared other than exactly once; must fail a hand-copied floating-
+  panel recipe (`bg-raised` with `shadow-lg` and no `dropdown-panel` class),
+  any untokenized `ring-black`, or a hand-copied accent-button recipe
+  (`bg-accent` with `text-on-accent`) outside `components/button.rs` and the
+  one documented `components/table.rs` exception.
+- **SPEC-2.5.21**: `check-link-preview.sh` must fail if, serving the real
+  container stack, a crawler request to `/` or to an unrouted deep path
+  (served via the SPA fallback) does not carry every expected `og:`/
+  `twitter:` tag for each of: branded configuration, no configuration at all
+  (built-in defaults, `twitter:card` of `summary`, no image tags), and a
+  relative logo URL with no public base URL configured (image tags omitted
+  entirely, with the reason logged); must fail if a second entrypoint run
+  against the same container filesystem, with the branding env vars changed,
+  still shows the old values or leaves more than one copy of the metadata
+  marker comment in the served HTML.
+- **SPEC-2.5.22**: `check-ci-parity.sh` must fail if any command line
+  belonging to a `check:`-recipe dependency in `justfile` does not appear
+  verbatim anywhere in `.forgejo/workflows/check.yml`, naming the missing
+  recipe and command; it must fail with exit 2, not 1, if it cannot even
+  parse the justfile's `check:` dependency line or a named recipe's
+  commands, since that is the guard's own precondition failing, not the
+  invariant it is checking.
+- **SPEC-2.5.23**: `check-scrollbars.sh` must fail `input.css` (and, when
+  it is non-empty, the built `assets/styles.css`) if it sets
+  `scrollbar-width: none` or hides a `::-webkit-scrollbar*` rule anywhere,
+  declares `scrollbar-width`/`scrollbar-color` outside the Firefox
+  `@supports not selector(::-webkit-scrollbar)` block, references
+  `--sb-alpha` inside that block, paints a background other than
+  transparent on anything but the webkit thumb, or sets
+  `scrollbar-gutter: stable`; it must independently fail if any of the
+  required declarations (a 14px-wide and -tall webkit scrollbar, a
+  transparent webkit track, an alpha-mixed webkit thumb colour, the
+  `@property --sb-alpha` declaration, the Firefox block itself and its
+  `thin`/idle/active `scrollbar-color` rules, and `html`/`body` both set to
+  `height: 100%; overflow: hidden`) is missing; it must fail
+  `assets/theme-init.js` (or the configured JS file) if `SCROLLBAR_IDLE_MS`
+  is declared other than exactly once or its value falls outside
+  5000-7000ms; an empty or absent built `assets/styles.css` must not itself
+  be treated as a failure, since CI stubs it without building it.
+- **SPEC-2.5.24**: `check-fetch-error-logging.sh` must fail an `.ok()`,
+  `.unwrap_or_default()`, `.unwrap_or_else(`, or `.unwrap_or(` call chained
+  (through no more than 200 characters and no statement boundary) directly
+  onto an `.await` on a `Result`, with no `tracing::` call between the
+  `.await` and the collapse, because that drops the awaited error instead of
+  logging it.
+- **SPEC-2.5.25**: `check-prose-layer.sh` must fail `input.css` if no
+  `@layer` block containing the Markdown-correction selector
+  `.prose :where(code)` exists, if that layer is one of Tailwind's own four
+  built-in layers (`theme`, `base`, `components`, `utilities`), if the layer
+  has no bare `@layer <name>;` declaration positioned after the Tailwind
+  import, or if the file no longer contains the `content: none;` rule that
+  neutralizes the typography plugin's backtick glyphs; when a real built
+  `assets/styles.css` exists (one whose combined `@layer` statement names
+  `utilities`), it must additionally fail if that file's combined `@layer`
+  statement never names the corrections' layer, or names it before
+  `utilities`.
+- **SPEC-2.5.26**: `check-oci-runtime.sh`, `check-link-preview.sh`, and
+  `check-csp-host-derived-origin.sh` must each require Docker to be present,
+  failing with exit 2 and a message naming Docker as the requirement if it
+  is not on PATH, rather than letting the absence surface as an
+  unexplained failure further down the script.
+- **SPEC-2.5.27**: `config-docs.nu check` must fail (stderr, exit 1) if
+  `docs/configuration.md` disagrees with `config/variables.toml`'s facts, or
+  with the actual `${MOKOSH_...}` reads in `oci-build/entrypoint.sh`,
+  listing every disagreement found: a catalog name declared more than once;
+  a release field not shaped `vX.Y.Z`; a `required_since` set without
+  `required` or not later than `since`; a `[[change]]` record naming an
+  unknown group, an unrecognized `breaking` level, a variable not in the
+  catalog, or (for a non-`Changed` group) one with no matching derived
+  fact; a breaking entry missing its required action text, issue id, or (for
+  `feature-off`) its feature name; a name read by the entrypoint but absent
+  from the catalog, or a catalog name the entrypoint no longer reads; a
+  malformed, missing, duplicated, or extra "All variables" table row, or one
+  whose anchor, Required, or Added-in column disagrees with the facts; and a
+  malformed "Recently added" entry, one naming a change the facts do not
+  record, one whose Required/Breaking-mark/issue/feature/anchor text
+  disagrees with the facts, or a fact inside the current release window with
+  no matching entry in that block.
+- **SPEC-2.5.28**: `config-docs.nu generate` must fail (stderr, exit 1)
+  before writing anything if the underlying facts in
+  `config/variables.toml` are inconsistent by the same catalog/change-record
+  rules `check` applies to the facts (duplicate names, malformed releases,
+  invalid `required_since`, invalid `[[change]]` records); it must leave
+  `docs/configuration.md` unmodified and print `docs/configuration.md is
+  current` if regenerating the two generated regions produces byte-identical
+  output, and otherwise overwrite the file and print that it rewrote the
+  generated parts.
+- **SPEC-2.5.29**: `config-docs.nu since <version>` must reject a
+  `<version>` argument not shaped `vX.Y.Z`; `config-docs.nu release-notes
+  <version>` performs no such validation and instead reports an unmatched
+  version the same way it reports a real release with zero changes
+  ("No configuration changes in `<version>`"), which this specification
+  records as the stated behavior of `release-notes`, not a defect.
+
+### 2.6 Concurrency and ordering
+
+- **SPEC-2.6.1**: `check-hooks-before-return.sh` encodes the ordering
+  invariant that every Dioxus hook call in a component or custom hook
+  function must execute on every render in the same relative order,
+  specifically before any `return` that could skip it on some renders and
+  not others (see SPEC-2.5.11).
+- **SPEC-2.6.2**: `check-field-value-binding.sh` encodes the ordering
+  invariant that a `textarea`'s displayed value must be driven by the
+  `value:` attribute on every render after the first, because a text child
+  is copied into the DOM value only while the element is still in its
+  initial "clean" state, before the user's first keystroke (see
+  SPEC-2.5.10).
+- **SPEC-2.6.3**: `check-prose-layer.sh` encodes the ordering invariant
+  that CSS cascade-layer precedence is resolved by first mention, not by
+  source position of the full block, so the Markdown corrections' bare
+  `@layer` declaration must be the first mention of that layer and must
+  itself appear after the Tailwind import (see SPEC-2.5.25).
+- **SPEC-2.6.4**: None of the check scripts in this section's scope impose
+  an ordering requirement between each other; `justfile`'s `check:` recipe
+  order and `check-ci-parity.sh`'s command-line comparison (SPEC-2.5.22) are
+  the only place script invocation order is required to match anything, and
+  that match is against `.forgejo/workflows/check.yml`'s command text, not
+  against a required run order within either file.
+
+### 2.7 Integrations
+
+- **SPEC-2.7.1**: `check-csp-host-derived-origin.sh`, `check-link-
+  preview.sh`, and `check-oci-runtime.sh` must each start the real
+  `caddy:2-alpine` serving stack (`oci-build/entrypoint.sh` plus
+  `oci-build/Caddyfile`) in a Docker container to observe behavior that only
+  exists once Caddy's `map` directives evaluate a real request, and must
+  stop and remove every container they started, regardless of outcome.
+- **SPEC-2.7.2**: `check-link-preview.sh` must additionally depend on the
+  `curlimages/curl:8.16.0` image to issue its no-JS crawler requests, and
+  must attempt a local pull of any required image it cannot find cached
+  before failing.
+- **SPEC-2.7.3**: `check-types-pin.sh` must integrate with the local Cargo
+  git mirror of `mokosh-server` (under `~/.cargo/git/db/`) to decide whether
+  `crates/mokosh-types` itself changed between two pinned revisions, and
+  with the network (`cargo update --package mokosh-types`) to produce the
+  candidate new lock in its default (non-`--compare`) mode; either
+  dependency being unavailable must surface as `unknown` (see SPEC-2.4.7),
+  not as a crash.
+- **SPEC-2.7.4**: `check-ci-parity.sh` integrates `justfile` with
+  `.forgejo/workflows/check.yml`, requiring the latter to run, verbatim,
+  every command line the former's `check:` recipe depends on (see
+  SPEC-2.5.22); this is the one script in this section whose subject is the
+  relationship between two other files in this repository rather than
+  between source code and a rendered or served artifact.
+- **SPEC-2.7.5**: `config-docs.nu` integrates `config/variables.toml`,
+  `oci-build/entrypoint.sh`, and `docs/configuration.md` with each other
+  (see SPEC-2.2.1, SPEC-2.5.27) and with this repository's git tags (`vX.Y.Z`
+  reachable from the current history) to decide which releases are
+  "unreleased" versus already tagged when rendering or checking the
+  "Recently added" window (SPEC-2.5.27) and when forming a
+  `release-notes` link to `<repo>/src/tag/<ref>/...`.
+
+### 2.8 Build and deployment
+
+- **SPEC-2.8.1**: `justfile` must run every `check-*.sh` script that has a
+  `--self-test` mode with `--self-test` before running it for real in the
+  same recipe, so a guard whose own detection logic has been neutered fails
+  the recipe before the real scan would have passed falsely.
+- **SPEC-2.8.2**: `.forgejo/workflows/check.yml` must run every command
+  that `justfile`'s `check:` recipe's dependencies run, enforced
+  mechanically by `check-ci-parity.sh` (SPEC-2.5.22, SPEC-2.7.4).
+- **SPEC-2.8.3**: `check-types-pin.sh`'s plain invocation (no `--compare`)
+  must run `cargo update --package mokosh-types` only inside a temporary
+  copy of the repository's `Cargo.lock`, and must restore the working
+  tree's original `Cargo.lock` on every exit path (success, failure, or a
+  parse/strict failure), so the guard never leaves a bumped lock file behind
+  for the caller to accidentally commit; a failure to restore it must itself
+  be reported as a guard failure (exit 2) naming the risk.
+- **SPEC-2.8.4**: `config-docs.nu generate` is the only member of this
+  section's scope that writes a file under version control
+  (`docs/configuration.md`); every other script in this section is read-only
+  with respect to the repository, writing only to a temporary directory it
+  creates and removes.
+
+### 2.9 Retention and cleanup
+
+- **SPEC-2.9.1**: A `check-*.sh` script's `--self-test` mode, and
+  `check-csp-host-derived-origin.sh`, `check-link-preview.sh`, and
+  `check-oci-runtime.sh`'s real runs, must remove every temporary directory
+  and Docker container they created on exit, via a `trap ... EXIT`, so a
+  failing run leaves no fixture files or running containers behind.
+- **SPEC-2.9.2**: `check-loading-recipe.sh`'s per-file baseline table
+  (SPEC-2.2.4) is a ceiling, not a target: existing `"Loading` debt in a
+  listed file must never be allowed to grow past its recorded count, and
+  must trend toward zero as files are migrated to the shared skeleton
+  components, but the guard does not itself require that migration.
+- **SPEC-2.9.3**: `check-types-pin.sh` must discard the candidate
+  `Cargo.lock` it produced for comparison once a run completes (see
+  SPEC-2.8.3); no retained artifact of a `check-types-pin.sh` run may
+  persist outside the restored `Cargo.lock` itself.
+
 ## 6. Identity, portal and org pages
 
 Scope: `src/pages/accept_grant.rs`, `src/pages/admin_features.rs`,
@@ -602,7 +1100,7 @@ storage keys listed under Security and Retention and cleanup below.
   session) before writing the new plane's token, so a browser never
   holds a live staff and a live contact session together. `create_org.rs`
   and `pick_tenant.rs` write a staff token without this clear; that gap
-  is tracked as a separate defect (see the PR body) and is not itself a
+  is tracked as MAPPS-1199 and is not itself a
   requirement of this section.
 - **SPEC-6.4.2**: `login.rs`'s platform-login-first attempt must be
   skipped whenever an MFA or approval code is already present, or
@@ -790,7 +1288,7 @@ storage keys listed under Security and Retention and cleanup below.
 - **SPEC-6.5.17**: `not_found.rs` must render the unmatched path
   segments whenever the joined path is non-empty, in every build; its
   own comment's claim that this is development-only does not reflect
-  the code and is tracked as a separate defect (see the PR body).
+  the code and is tracked as MAPPS-1198.
 
 ### 6.6 Concurrency and ordering
 
@@ -910,6 +1408,359 @@ cited at SPEC-6.3.6.
   pending next-target for at most the current tab's session and must
   consume it (remove it from storage) the first time it is read,
   regardless of whether that read's value was valid.
+
+## 7. Contacts and companies
+
+Scope: `src/pages/contacts.rs`, `src/pages/contact_provenance.rs`,
+`src/pages/company_documentation.rs`, `src/pages/company_role_edit.rs`.
+
+### 7.1 Interfaces
+
+- **SPEC-7.1.1**: `CompanyListPage` must render a paginated, searchable,
+  filterable (type, status) table of companies, defaulting the status
+  filter to `active`, and must distinguish, with a "Clear filters"
+  recovery action, a filtered-to-nothing result from a truly empty
+  account (`contacts.rs:551-813`).
+- **SPEC-7.1.2**: `CompanyNewPage` and `CompanyEditPage` must render the
+  shared `CompanyForm` in Create or Edit mode respectively, `CompanyEditPage`
+  loading its initial values from `GET /contacts/companies/{id}` and
+  showing breadcrumbs that fall back to a generic "Company" label while
+  the record name is not yet loaded (`contacts.rs:875-1054`).
+- **SPEC-7.1.3**: `CompanyDetailPage` must render the company record plus
+  independent cards for its contacts, sites, tickets, contracts,
+  projects, invoices, assets, opportunities, knowledge-base articles,
+  backup status, portal access, roles, and branding, each card
+  resolving from its own resource (`contacts.rs:2176-6193`).
+- **SPEC-7.1.4**: `CompanyRoleEditPage` (`company_role_edit.rs:107-251`)
+  must render, at `/companies/{company_id}/roles/{id}`, a create form
+  when `id == "new"` and otherwise fetch and edit the existing
+  Company-scoped portal role, rendering a distinct "This role doesn't
+  exist." state on a 404 and a distinct "Could not load this role."
+  state on any other fetch failure.
+- **SPEC-7.1.5**: `ContactListPage` must render a paginated, searchable
+  table of contacts with the same filtered-vs-empty distinction as
+  SPEC-7.1.1 (`contacts.rs:6194-6567`).
+- **SPEC-7.1.6**: `ContactNewPage` and `ContactEditPage` must render the
+  shared `ContactForm` in Create or Edit mode respectively;
+  `ContactNewPage` must prefill the linked company, in order, from the
+  session-storage stash described at SPEC-7.3.2, then the live URL
+  query string, then the OIDC-flow's captured initial query string,
+  falling back to no prefill only when all three carry no company id
+  (`contacts.rs:6568-6762`).
+- **SPEC-7.1.7**: `ContactDetailPage` must render the contact record plus
+  independent cards for its tickets, ticket-comment notes, portal access
+  and access requests, provenance (via `ImportCard`, SPEC-7.1.9), and the
+  billing-contact relationship of each company it is linked to
+  (`contacts.rs:7803-11200` and surrounding card components).
+- **SPEC-7.1.8**: `CompanyDocumentationPage` (`company_documentation.rs:90-141`)
+  must render one screen composing a company's assets, credential
+  references, and knowledge-base articles from a single
+  `GET /companies/{company_id}/documentation` call, rendering a single
+  "Nothing is documented for this client yet." card only when all three
+  lists are empty, and otherwise one card per list.
+- **SPEC-7.1.9**: `ImportCard` (`contact_provenance.rs`) must render
+  nothing when a contact carries no provenance link, and otherwise must
+  render the current link's origin, account or file source, and any
+  field locks, with an "Unlink" action shown only while the link is
+  still live and a "Remove imported data" action shown only to an admin
+  (`contact_provenance.rs:216-607`, exact range per the component body).
+- **SPEC-7.1.10**: The company list's `Company` column and the contact
+  list's `Name` column are the only sortable columns either list exposes
+  (`CompanySortKey`, `ContactSortKey`, `contacts.rs:111-131`), because no
+  other column's key is in the server's sort allow-list.
+
+### 7.2 Data model
+
+This scope owns no persisted application schema; it defines the wire
+DTOs these pages exchange with the API server.
+
+- **SPEC-7.2.1**: `RemoteCompany` and `RemoteContact` (`contacts.rs:256-382`)
+  must default every field but `id` on absence, so a server response
+  missing a field (an older server, or a field this page does not use)
+  still decodes instead of failing the whole list.
+- **SPEC-7.2.2**: `RemoteContact.phones`/`companies` must stay the
+  authoritative list for a contact's phone numbers and company links;
+  the mirrored `phone`/`company_id`/`company_name` fields on the same
+  struct are read only as a fallback when the list is empty, for a
+  server that predates PMS-806 (`contacts.rs:342-382`).
+- **SPEC-7.2.3**: `CompanyFormBody`, `ContactFormBody`, `UpdateCompanyBody`,
+  `UpdateContactBody`, `SiteFormBody`, `GrantPortalAccessBody`,
+  `ResolveAccessRequestBody`, and `CreateCompanyFromNameBody`
+  (`contacts.rs:401-547`) must each mirror the corresponding
+  `mokosh-types` request DTO field for field; a `#[cfg(test)]` module
+  in `contacts.rs` must destructure every such DTO against the matching
+  body struct so that a server-side field add, remove, rename, or
+  retype fails this crate's build rather than silently 422ing at
+  runtime (MAPPS-687, `contacts.rs:11381-12132`).
+- **SPEC-7.2.4**: `UpdateCompanyBody` and `UpdateContactBody` must omit a
+  field the firing control did not set (via `skip_serializing_if`)
+  rather than sending it as JSON `null`, except `CompanyFormBody.fax`,
+  which carries no such attribute and so sends an explicit `null` when
+  the field is cleared, matching the server's distinction between "not
+  present" (leave unchanged) and "present as null" (clear) on that one
+  field (`contacts.rs:407-442`, `contacts.rs:1708-1710`).
+- **SPEC-7.2.5**: `PortalRoleDetailWire` (`company_role_edit.rs:53-64`)
+  must decode `company_id` as present on a Company-scoped role; the
+  page performs no server-side scope check of its own and relies on the
+  nested endpoint path to exclude a tenant-wide row.
+- **SPEC-7.2.6**: `Provenance` (`contact_provenance.rs`) must treat
+  `links.first()` as the contact's current import link, relying on the
+  server to return the live link first (or, absent one, the most recent)
+  rather than re-deriving "current" client-side.
+- **SPEC-7.2.7**: `CompanyDocumentation`, `DocAsset`, `DocCredential`,
+  and `DocArticle` (`company_documentation.rs:30-82`) must decode every
+  field but each type's `id`/`name`/`title` on absence; `DocCredential`
+  must declare no field capable of carrying an encrypted secret
+  (password, secret data, or username), so the aggregate endpoint's
+  payload cannot carry one at the type level.
+
+### 7.3 Configuration
+
+- **SPEC-7.3.1**: The company and contact list pages must page their
+  server list at `PER_PAGE = 25` rows (`contacts.rs:23`), and the
+  company-detail page's child-list previews (contacts, tickets,
+  contracts, projects, invoices, assets) must fetch 5 rows but render at
+  most 3, each with a "View all" link to the full filtered list
+  (`contacts.rs` card components, e.g. `contacts.rs:3336-3511` and the
+  5213-6193 range).
+- **SPEC-7.3.2**: `ContactNewPage`'s company prefill must be written to
+  session storage by `stash_contact_new_prefill` before navigation and
+  read exactly once by `take_stashed_contact_new_prefill` on mount,
+  because the Dioxus 0.7 router strips a `?company_id=...` query string
+  via `history.replaceState()` on mount for a route with no declared
+  query parameters (`contacts.rs:6568-6762` and the stash helpers it
+  calls).
+- **SPEC-7.3.3**: Every network call in this scope must compile to a
+  no-op (or, for a `use_resource` body, resolve to its failure/empty
+  variant) on a build that does not enable the `web` feature it
+  depends on, consistent with SPEC-6.3.6; `company_role_edit.rs` gates
+  each of its fetch and submit paths individually behind
+  `#[cfg(feature = "web")]` (`company_role_edit.rs:128-165`, `390-471`).
+- **SPEC-7.3.4**: The company form's Address State field must offer
+  exactly the 55 US states, territories, and the District of Columbia
+  listed in `US_STATES` (`contacts.rs:29-82`), keyed by USPS code.
+- **SPEC-7.3.5**: The contact form's phone-type select must offer
+  exactly the five values in `PHONE_TYPES` (mobile, work, home, fax,
+  other), matching PMS-806's `contact_phones.phone_type` CHECK
+  constraint (`contacts.rs:1846-1852`).
+
+### 7.4 Security
+
+- **SPEC-7.4.1**: `validate_website_field` (`contacts.rs:1999-2045`) must
+  reject any value containing whitespace or a control character, must
+  reject any explicit scheme other than `http`/`https` (rejecting
+  `javascript:`, `data:`, `vbscript:`, `mailto:`, and any other scheme),
+  must require a non-empty host when a `http`/`https` scheme is given,
+  and must normalize a scheme-less, host-shaped value (at least two
+  non-empty, dot-separated, host-charset labels, `is_host_like`,
+  `contacts.rs:2056-2065`) to `https://<value>`; every other case must
+  return the error "Website must be a domain or http(s) URL (e.g.
+  example.com or https://example.com)." before any request is sent.
+- **SPEC-7.4.2**: `safe_href` must gate every company website link
+  rendered on `CompanyDetailPage` before it is used as an anchor `href`
+  (`contacts.rs`, the company sidebar website link), so a value that
+  slipped past SPEC-7.4.1 (an older stored record) cannot run as script
+  at render time.
+- **SPEC-7.4.3**: `contact_provenance.rs`'s `release_lock_disabled(busy,
+  can_mutate, can_manage)` must be `true` whenever the field release is
+  already in flight, the server is unreachable, or the signed-in user
+  lacks a manager-or-above role, mirroring the server's `RequireManager`
+  guard on `DELETE /contacts/contacts/{id}/sync/locks/{field}`; a
+  technician session must not be able to release a field lock even when
+  `can_mutate` is true (`contact_provenance.rs:592-594`).
+- **SPEC-7.4.4**: `ImportCard`'s "Remove imported data" action must be
+  rendered only for an admin session, and its confirm dialog must
+  require a non-empty reason before the removal request fires; neither
+  gate may be bypassed by a direct call to the handler
+  (`contact_provenance.rs`, `ImportCard`'s `remove` handler and its
+  confirm dialog).
+- **SPEC-7.4.5**: No request body in this scope may be constructed as a
+  `serde_json::json!` literal; every `POST`/`PUT`/`PATCH` body must be a
+  typed struct destructured against its DTO per SPEC-7.2.3. A
+  `#[cfg(test)]` source scan (`contacts.rs:12171-12262`) enforces this
+  for the shipping portion of `contacts.rs`.
+- **SPEC-7.4.6**: A Company-scoped portal role's `company_id` must never
+  be sent on `PUT /contacts/companies/{company_id}/portal-roles/{id}`
+  (`UpdateCompanyRoleBody`, `company_role_edit.rs:81-85`); a role's
+  scope is immutable once created and the server rejects a scope change
+  with 400.
+- **SPEC-7.4.7**: `CompanyPortalAccessCard`'s "Invite" action must be
+  disabled for a contact with no email address, and every portal-access
+  mutation (grant, resend invite, revoke, change roles) on this scope's
+  pages must be disabled whenever `!can_mutate` (the server is
+  unreachable), consistent with SPEC-1's reachability gating.
+- **SPEC-7.4.8**: `PortalGrantOutcomeWire` (`portal_slug`, `portal_id`,
+  `password_email_queued: bool`) must carry no setup link or other
+  credential-bearing field; `password_email_queued` tells the caller
+  whether a setup email was queued without ever carrying the token
+  itself, and no response rendered by the portal-access cards may
+  surface a setup link to the screen.
+- **SPEC-7.4.9**: `DocCredential` (`company_documentation.rs:58-68`)
+  must carry no password, secret, or username field; a credential's
+  secret value is reachable only through the separate, independently
+  audited credential-vault reveal endpoint, never through the
+  documentation aggregate.
+
+### 7.5 Error handling and observability
+
+- **SPEC-7.5.1**: Every list and detail resource in this scope that
+  fails to load while the server remains reachable must render
+  "Could not load {noun}." (companies, contacts, sites, tickets,
+  contracts, projects, invoices, assets, roles, opportunities, articles,
+  backup status) scoped to its own card, never collapsing the whole
+  page; a failure while the server is unreachable must instead render
+  `ContentUnavailable` for the page's primary resource, consistent with
+  the MAPPS-357 pattern already stated at SPEC-6's error-handling
+  sections.
+- **SPEC-7.5.2**: `CompanyForm` and `ContactForm`'s `handle_submit` must
+  collect every field's validation failure via `FormGuard` in one pass
+  rather than stopping at the first invalid field, and must move focus
+  to the first invalid field in on-screen order (`contacts.rs:1298-1500`,
+  `contacts.rs:7220-7420`).
+- **SPEC-7.5.3**: A 409 on a company or contact save must be mapped to
+  a name-field conflict message ("Could not save company: ..." /
+  "Could not save contact: ...", carrying the server's message); a 422
+  whose `field_errors()` names a field on the form must route to that
+  field's inline error, and any remaining, unmapped error must route to
+  the form's top error banner rather than being dropped
+  (`contacts.rs:1484-1510`, `contacts.rs:7389-7420`).
+- **SPEC-7.5.4**: `SiteFormModal.handle_save` must validate every field
+  via `FormGuard` and report every failure at once; a `company_id` or
+  Site `name` parse failure, which has no dedicated inline slot, must
+  route to the modal's banner ("...could not be read, so nothing was
+  saved."), while phone, timezone, postal, and country failures use
+  their own per-field inline slots (`contacts.rs:4938-5032`).
+- **SPEC-7.5.5**: `ContactDetailPage`'s notes resource (`contacts.rs:7864`)
+  must keep the fetch's `Result`, not discard it via `.ok()`; `ContactNotesCard`
+  (`contacts.rs:8577`) must render "Could not load comments for this
+  contact: {err}" on a failed load and the distinct text "This contact
+  has not commented on any tickets yet." on a genuinely empty feed.
+- **SPEC-7.5.6**: No awaited fetch result in the shipping portion of
+  `contacts.rs` may be discarded via `.ok()` without first being logged
+  through `.inspect_err(...)`; a `#[cfg(test)]` source scan
+  (`contacts.rs:11300`, module `mapps692_fetch_error_logging_tests`)
+  enforces this over the whole file.
+- **SPEC-7.5.7**: `assign_portal_roles_no_roles_configured`
+  (`contacts.rs:8712`) must return `false` while the role list is still
+  loading (pending) or has failed to load, and `true` only once the
+  list has resolved successfully and is empty, so a role-assignment
+  submit button is never disabled on the basis of a fetch that has not
+  yet told the page there are no roles.
+- **SPEC-7.5.8**: `CompanyRoleEditPage` must distinguish a 404 on the
+  role fetch (rendered as "This role doesn't exist." with a link back
+  to the Company page) from any other fetch failure (rendered as "Could
+  not load this role. Refresh the page to retry.", or, while the server
+  is unreachable, `ContentUnavailable`) (`company_role_edit.rs:184-231`).
+- **SPEC-7.5.9**: `CompanyRoleEditForm`'s submit must reject an empty
+  name with "Name is required.", a name over 64 characters with "Name
+  must be 64 characters or fewer.", and, on create only, an empty
+  capability selection with "Pick at least one capability.", each
+  checked before any request is sent (`company_role_edit.rs:364-381`).
+- **SPEC-7.5.10**: `CompanyDocumentationPage` must render a
+  `DetailSkeleton` while its fetch is pending, the server's own message
+  via `ErrorBanner` ("Could not load documentation: {e.user_message()}")
+  on failure, and the distinct empty-state copy described at
+  SPEC-7.1.8 only when all three lists resolve empty
+  (`company_documentation.rs:109-140`).
+
+### 7.6 Concurrency and ordering
+
+- **SPEC-7.6.1**: `CompanyDetailPage` and `ContactDetailPage` must run
+  each card's data as an independent `use_resource`, so one card's
+  failure or slow load must not block or delay another card's render
+  (`contacts.rs:2176-3089`, `contacts.rs:7803-8842`).
+- **SPEC-7.6.2**: `CompanyDetailPage`'s deletion-preview resource must
+  fetch only while the delete-confirmation dialog is open, never
+  eagerly on page load (`contacts.rs`, the `deletion_preview` resource
+  near `contacts.rs:2448-2470`).
+- **SPEC-7.6.3**: The company and contact list pages must debounce
+  their search input 300 milliseconds after the last keystroke before
+  issuing a request, and any change to the search text, type filter, or
+  status filter must reset the current page to 1 (`contacts.rs:594-601`,
+  mirroring SPEC-6.6.2).
+- **SPEC-7.6.4**: `CompanyPortalAccessCard` must isolate its per-contact
+  "toggling" loading state to a `HashSet<Uuid>` keyed by contact id, so
+  toggling one row's portal state must not show every row as loading.
+- **SPEC-7.6.5**: `CompanySitesCard`'s save and delete handlers must
+  restart both the sites resource and the company resource on success,
+  so the company detail page's site count updates without a manual
+  reload (`contacts.rs:4810-4835`).
+- **SPEC-7.6.6**: `CompanyRoleEditForm`'s and `CompanyBrandingCard`'s
+  submit handlers must ignore a second submit while a previous submit
+  from the same form is still in flight (`saving`/`can_mutate` guard),
+  consistent with SPEC-6.6.1.
+### 7.7 Integrations
+
+- **SPEC-7.7.1**: The company pages in this scope must call
+  `GET /contacts/companies`, `POST /contacts/companies`,
+  `GET /contacts/companies/{id}`, `PUT /contacts/companies/{id}`,
+  `GET /contacts/companies/{id}/deletion-preview`,
+  `GET /contacts/companies/{id}/contacts`,
+  `GET /contacts/companies/{id}/sites`, `POST /contacts/sites`,
+  `PUT /contacts/sites/{id}`, `DELETE /contacts/sites/{id}`,
+  `GET /contacts/company-industries`, and `GET /companies/website-probe`.
+- **SPEC-7.7.2**: The contact pages in this scope must call
+  `GET /contacts/contacts`, `POST /contacts/contacts`,
+  `GET /contacts/contacts/{id}`, `PUT /contacts/contacts/{id}`,
+  `GET /contacts/{id}/notes`, `GET /contacts/contacts/{id}/sync`,
+  `POST /contacts/contacts/{id}/grant-portal-access`,
+  `POST /contacts/contacts/{id}/resend-portal-invite`,
+  `POST /contacts/contacts/{id}/revoke-portal-access`,
+  `GET /contacts/contacts/{id}/access-requests`, and
+  `POST /contacts/contacts/access-requests/{id}/resolve`.
+- **SPEC-7.7.3**: The portal-roles surfaces in this scope must call
+  `GET /contacts/portal-roles`, `GET /contacts/companies/{id}/portal-roles`,
+  `GET /contacts/companies/{company_id}/portal-roles/{id}`,
+  `POST /contacts/companies/{company_id}/portal-roles`, and
+  `PUT /contacts/companies/{company_id}/portal-roles/{id}`
+  (`company_role_edit.rs:9-12`), plus the shared
+  `GET /portal-roles/capabilities`.
+- **SPEC-7.7.4**: `CompanyDetailPage`'s child-relationship cards must
+  call `GET /tickets?company_id={id}`, `GET /contracts?company_id={id}`,
+  `GET /projects?company_id={id}`, `GET /invoices?company_id={id}`,
+  `GET /assets?company_id={id}`, `GET /crm/opportunities?company_id={id}&closed=false`,
+  `GET /kb/companies/{company_id}`, `GET /status/companies/{id}/backup`,
+  and `GET /tenants/current` (for branding defaults).
+- **SPEC-7.7.5**: `contact_provenance.rs`'s `ImportCard` must call
+  `DELETE /contacts/contacts/{id}/sync/locks/{field}`,
+  `POST /contacts/contacts/{id}/sync/unlink`, and
+  `POST /contacts/contacts/{id}/sync/remove-imported-data`.
+- **SPEC-7.7.6**: `CompanyDocumentationPage` must call
+  `GET /companies/{company_id}/documentation`.
+
+### 7.8 Build and deployment
+
+None of the files in this section's scope add a build or packaging step
+of their own; they compile under the same `app`/`web`/`desktop` feature
+gating `src/main.rs` and `Cargo.toml` define (see SPEC-1.3.1), per the
+per-call gating described at SPEC-7.3.3.
+
+### 7.9 Retention and cleanup
+
+- **SPEC-7.9.1**: A company's own tenant record is never offered for
+  deletion; the delete-confirmation dialog on `CompanyDetailPage` must
+  instead offer "Archive instead" (`PUT /contacts/companies/{id}` with
+  `status = inactive`) whenever the deletion-preview response reports
+  the record as blocked from deletion, and must offer no archive bypass
+  at all for the tenant's own company record.
+- **SPEC-7.9.2**: `ImportCard.unlink()` must leave the contact record
+  itself untouched (a local record going forward, no longer updated by
+  a later sync); `ImportCard.remove()` must delete the contact outright
+  only when the server reports `contact_deleted == true` (the import
+  created the record and no other data was added since), and otherwise
+  must keep the contact and remove only what the import attached,
+  reporting each outcome with its own distinct success toast.
+- **SPEC-7.9.3**: `ImportCard.remove()`'s confirmation text and the
+  server's own removal behavior must agree that the link and
+  review-queue data are deleted, that the record will not be
+  re-imported by a later sync, that the audit log retains a record of
+  the removal event (not the removed details), and that the contact's
+  tickets and invoices are never touched by the removal.
+- **SPEC-7.9.4**: `ContactNewPage`'s stashed company prefill
+  (SPEC-7.3.2) must be removed from session storage the first time it
+  is read (`take_stashed_contact_new_prefill`), so a stale prefill
+  cannot apply to an unrelated later visit to the New Contact page in
+  the same tab.
 
 ## 9. Tickets, SLA and requests
 
@@ -1435,3 +2286,798 @@ part of this section's subject matter.
   "removing" confirmation must each be cleared immediately before the
   corresponding mutation is sent, so a stale open form cannot be
   resubmitted against an id the mutation has already made stale.
+## 14. Time, calendar, forms, dashboards, reports and audit
+
+Scope: `src/pages/time.rs`, `src/pages/calendar.rs`, `src/pages/forms.rs`,
+`src/pages/dashboard.rs`, `src/pages/dashboards.rs`,
+`src/pages/dashboards_view.rs`, `src/pages/reports.rs`,
+`src/pages/audit_log.rs`, `src/pages/big_view.rs`.
+
+### 14.1 Time
+
+Scope: `src/pages/time.rs`.
+
+#### 14.1.1 Interfaces
+
+- **SPEC-14.1.9**: The time-entries list must fetch via `GET /time-entries`;
+  a fetch that fails while the server stays reachable degrades to an empty
+  list, while a fetch that fails because the server is unreachable renders
+  the shared outage state instead.
+- **SPEC-14.1.11**: The Log Time route's `?ticket_id=` and `?project_id=`
+  query parameters must pre-select the corresponding work item on the entry
+  form.
+- **SPEC-14.1.14**: An entry's Work item, Work type, and Description are
+  each required; a blank value blocks submit with a field-specific message.
+- **SPEC-14.1.15**: Hours accepts either a decimal value ("2.5") or an
+  H:MM value ("2:30"); any other shape is rejected.
+- **SPEC-14.1.16**: A client-side pre-flight blocks a submit that would
+  exceed the per-day hour cap before it reaches the server.
+- **SPEC-14.1.17**: A "General" work-item selection attributes the entry to
+  the MSP itself rather than to a ticket or project.
+- **SPEC-14.1.18**: Only a project with a matching billing configuration
+  offers the billable toggle on the entry form.
+- **SPEC-14.1.19**: The weekly timesheet grid is pivoted client-side from
+  the user's own fetched entries; it issues no week-specific fetch of its
+  own.
+- **SPEC-14.1.20**: A pending (submitted) week can only be withdrawn back to
+  draft; a draft or rejected week can only be (re)submitted; an approved
+  week can be neither withdrawn nor resubmitted.
+- **SPEC-14.1.21**: Submitting a week requires the certification checkbox
+  to be checked; submit is blocked until it is.
+- **SPEC-14.1.24**: The approvals queue, and its approve, reject, and
+  history actions, are available only to a manager; a non-manager sees a
+  fixed notice in place of the queue.
+- **SPEC-14.1.25**: When the approvals queue's status filter is "pending",
+  a week that was never submitted is excluded, since "pending" means
+  awaiting approval, not simply unsubmitted.
+- **SPEC-14.1.26**: Rejecting a submitted week requires a non-empty reason;
+  the reject action is blocked until one is entered.
+- **SPEC-14.1.28**: The approval history modal is read-only; it stays
+  enabled regardless of the server's reachability state.
+- **SPEC-14.1.31**: The entry edit modal cannot change an entry's underlying
+  work item (ticket or project); that association is fixed at creation.
+- **SPEC-14.1.32**: On the edit form, Work type and Date are both required.
+- **SPEC-14.1.34**: An entry's `ticket_id`/`project_id` are re-sent
+  unchanged on every edit submit, since the edit form never offers to
+  change them.
+- **SPEC-14.1.35**: Deleting a time entry requires confirmation through the
+  styled confirm dialog; the delete request fires only once confirmed.
+
+#### 14.1.2 Data model
+
+- **SPEC-14.1.2**: The Monday-Sunday work week is closed at both ends
+  (inclusive of both boundary days) when grouping entries into a week.
+- **SPEC-14.1.3**: The weekly timesheet's day-by-day pivot groups entries by
+  work-item id, never by the work item's display label, so two work items
+  that happen to share a label are never merged.
+- **SPEC-14.1.5**: An entry's displayed label follows a fixed precedence:
+  ticket first, then project (with its client name), then the general
+  fallback.
+- **SPEC-14.1.6**: An entry counts as the MSP's own (employee) time only
+  when the server's own classification says so, never inferred client-side
+  from the work item alone.
+- **SPEC-14.1.7**: "Non-Billable" excludes the MSP's own (employee) time;
+  the two categories are disjoint.
+- **SPEC-14.1.8**: A "general" work-item selection is the only one the
+  server never bills; both the Billable checkbox and the submit body key
+  off this same classification.
+- **SPEC-14.1.10**: Every dashboard stat tile (Today, This week, Billable,
+  Non-billable, Own time) is scoped to the same user-local week.
+- **SPEC-14.1.22**: A week's history is derived client-side from its
+  entries and submission state, never fetched from a dedicated history
+  endpoint; a "Logged" event is synthesized from an entry's own timestamps.
+- **SPEC-14.1.33**: The edit form's Hours parse enforces the same decimal/
+  H:MM bound as the create form (SPEC-14.1.15).
+
+#### 14.1.3 Configuration
+
+- **SPEC-14.1.1**: The per-entry hard upper bound on logged hours is also
+  the fallback per-day cap when no explicit per-day setting is configured.
+- **SPEC-14.1.12**: The per-day cap setting must hold a whole positive
+  number; any other stored value is treated as unset.
+- **SPEC-14.1.29**: The per-day cap line is shown only for a setting that
+  is actually configured; an unset cap shows no line rather than a zero.
+
+#### 14.1.4 Security
+
+None: this page performs no authorization check of its own beyond the
+manager-only approvals-queue gate already covered under Interfaces
+(SPEC-14.1.24), which is a client-side convenience; the server is the
+actual enforcement boundary for every write this page makes.
+
+#### 14.1.5 Error handling and observability
+
+- **SPEC-14.1.4**: An entry whose linked ticket or project cannot be
+  resolved shows a placeholder label and is logged through the shared
+  unresolved-reference helper rather than failing the whole list render.
+- **SPEC-14.1.23**: A blank reviewer name on an approval/rejection event is
+  reported as an unresolved reference rather than rendered as empty.
+- **SPEC-14.1.30**: One undecodable rounding rule is skipped and logged; it
+  does not fail the whole rounding-rules list.
+- **SPEC-14.1.36**: Every time-tracking write (create, edit, delete,
+  submit, withdraw, approve, reject) is disabled while the server is
+  flagged unreachable.
+
+#### 14.1.6 Concurrency and ordering
+
+- **SPEC-14.1.13**: Today's running total is scoped to the user's own
+  day, recomputed client-side from the already-fetched entries rather than
+  a separate fetch.
+- **SPEC-14.1.27**: In range mode, the approvals queue's `from`/`to` query
+  is capped to a bounded span rather than allowed to request an unbounded
+  range.
+
+#### 14.1.7 Integrations
+
+None: every endpoint this page calls (`/time-entries` and its approval
+actions) is already named under Interfaces and Error handling above.
+
+#### 14.1.8 Build and deployment
+
+None: this file is a page component with no build-time or deployment
+behavior of its own beyond the crate-wide build already covered in
+Section 1.
+
+#### 14.1.9 Retention and cleanup
+
+None: time-entry and approval retention is owned by the server; this page
+keeps no client-side cache beyond the currently fetched entries and
+derived week/history views.
+
+### 14.2 Calendar
+
+Scope: `src/pages/calendar.rs`.
+
+#### 14.2.1 Interfaces
+
+- **SPEC-14.2.1**: The calendar's appointment fetch must request
+  `GET /calendar/appointments?from=<rfc3339>&to=<rfc3339>` for the active
+  view's visible range, with the UTC offset emitted as a literal `Z` so the
+  query string survives URL decoding.
+- **SPEC-14.2.2**: Creating an appointment must `POST /appointments`;
+  updating a one-off appointment must `PUT /appointments/{id}`; deleting
+  must `DELETE /appointments/{id}`. An expanded recurring instance cannot be
+  edited or deleted individually, since its id is the series master's.
+- **SPEC-14.2.3**: The calendar must offer Month, Week, and Day views,
+  defaulting to Month; Month view pads to whole grid weeks (Sunday first),
+  Week view is the 7 days starting Sunday, and Day view is the single
+  active day.
+- **SPEC-14.2.4**: The dispatch board must fetch the aggregated
+  `GET /dispatch?from&to` payload (appointments, availability, time off,
+  on-call) for the active Day/Week/Month range.
+- **SPEC-14.2.5**: The scheduling-templates management page must list
+  templates via `GET /scheduling-templates`, create via
+  `POST /scheduling-templates`, update via `PUT /scheduling-templates/{id}`,
+  and delete via `DELETE /scheduling-templates/{id}`.
+- **SPEC-14.2.6**: Selecting a template in the appointment form must
+  pre-fill type, title, location, and duration from the template's
+  defaults, never clobbering an existing field with a blank, and must
+  stash the template's linked ticket id for the create request.
+- **SPEC-14.2.7**: An empty-area click on a month cell must open the
+  create-appointment modal pre-filled with that day; an appointment chip's
+  own click must open it for edit instead and stop propagation.
+- **SPEC-14.2.8**: Every element that announces itself as a button
+  (`role="button"`) must be activatable by Enter or Space.
+- **SPEC-14.2.9**: Every date/time shown or queried by the calendar must be
+  interpreted in the user's profile timezone and converted to UTC at the
+  local midnight boundary, so the visible range matches what the user sees.
+- **SPEC-14.2.10**: An all-day appointment's persisted span must run from
+  local 00:00 of the start date to local 00:00 of the day after the
+  (inclusive) end date, so a single-day all-day event is a 24-hour span the
+  grids render.
+- **SPEC-14.2.11**: For a timed appointment, End must follow Start plus the
+  chosen preset duration and is never stored independently; the Custom path
+  stores an explicit End instead.
+- **SPEC-14.2.12**: An appointment whose end time has passed must render
+  muted (not hidden) across every view; back-dating is intentional for
+  tracking, so past appointments are shown, just dimmed.
+- **SPEC-14.2.13**: The day/week time grid spans the full 24-hour day and is
+  never clamped to the working-hours window; the working-hours window is a
+  display hint only (initial scroll position and out-of-hours shading),
+  never a scheduling bound.
+- **SPEC-14.2.14**: `appointment_type` must be one of ticket, project,
+  meeting, other, and `status` must be one of scheduled, in_progress,
+  completed, cancelled, matching the server's CHECK constraints.
+- **SPEC-14.2.15**: A scheduling template's `kind` must be one of dispatch,
+  calendar, matching the server's CHECK constraint; travel buffers are
+  meaningful only for a dispatch template, and a calendar template's
+  buffers are always zero and never surfaced.
+- **SPEC-14.2.17**: The user roster fetch is skipped for a signed-in user
+  without manage-users permission, since the server-side endpoint is gated
+  to Admin/Manager and would otherwise return a 403.
+- **SPEC-14.2.18**: An appointment's Title is required; an empty title
+  blocks submit with "Title is required."
+- **SPEC-14.2.19**: An appointment must have a technician assigned (a valid
+  UUID); a missing or invalid assignee blocks submit with "Pick a
+  technician to assign."
+- **SPEC-14.2.20**: An all-day appointment requires both a start and end
+  date, and the end date must be on or after the start date, else a
+  field-specific error blocks submit.
+- **SPEC-14.2.21**: A timed appointment requires a valid start time; End
+  must be on or after Start.
+- **SPEC-14.2.22**: A recurrence value is rejected before submit unless it
+  is a well-formed RFC 5545 RRULE: a known FREQ is present, every part is a
+  recognised RRULE key, COUNT and UNTIL are not both set, and numeric/
+  BYDAY/UNTIL/WKST values are well-formed; each failure returns a specific
+  inline message.
+- **SPEC-14.2.23**: A scheduling template's Name is required, Duration must
+  be a positive whole number of minutes, and (dispatch kind only) the
+  travel buffers must be non-negative whole numbers, each with its own
+  inline error message.
+- **SPEC-14.2.24**: Delete, for both an appointment and a scheduling
+  template, opens a confirmation dialog; the DELETE request fires only once
+  the user confirms.
+- **SPEC-14.2.27**: Overlapping appointments are split into side-by-side
+  lanes so no two overlapping blocks visually collide; every event in a
+  connected overlap cluster shares that cluster's column count.
+- **SPEC-14.2.29**: Deleting a scheduling template never deletes or
+  modifies any appointment previously created from it.
+
+#### 14.2.2 Data model
+
+None: this page renders the server-owned `AppointmentResponse`,
+`DispatchResponse`, and `SchedulingTemplateResponse` shapes; its own
+`PaginatedAppointments` type is a thin decode wrapper with no independent
+schema.
+
+#### 14.2.3 Configuration
+
+None: this file reads no environment variable or build feature of its own;
+the working-hours display window and grid bounds are fixed internal
+constants, not operator-facing settings.
+
+#### 14.2.4 Security
+
+- **SPEC-14.2.16**: Write actions (create, update, delete, for both
+  appointments and scheduling templates) are disabled while the server is
+  flagged unreachable.
+
+#### 14.2.5 Error handling and observability
+
+- **SPEC-14.2.25**: A failed fetch while the server is flagged unreachable
+  renders `ContentUnavailable` instead of an empty grid, timeline, or
+  list, for the calendar, the dispatch board, and the scheduling-templates
+  management page alike; a failed fetch while the server is still
+  reachable keeps the inline error banner and treats the result as an
+  empty list.
+- **SPEC-14.2.26**: A re-entrant submit is blocked until the in-flight
+  request resolves; a save failure shows "Could not save appointment: 
+  <server message>" and a delete failure shows "Could not delete
+  appointment: <server message>" (the scheduling-template delete failure
+  mirrors the same pattern without an inline `saving` guard message).
+
+#### 14.2.6 Concurrency and ordering
+
+- **SPEC-14.2.28**: A successful save or delete refetches the active
+  resource (appointments or templates) so the view reflects server state.
+
+#### 14.2.7 Integrations
+
+None: every endpoint this page calls is already named under Interfaces
+above.
+
+#### 14.2.8 Build and deployment
+
+None: this file is a page component with no build-time or deployment
+behavior of its own beyond the crate-wide build already covered in
+Section 1.
+
+#### 14.2.9 Retention and cleanup
+
+None: appointment, dispatch, and scheduling-template retention is owned by
+the server; this page keeps no client-side cache beyond the current view's
+fetched resources.
+
+### 14.3 Forms
+
+Scope: `src/pages/forms.rs`.
+
+#### 14.3.1 Interfaces
+
+- **SPEC-14.3.6**: Only an active form definition offers Send; a retired
+  definition refuses submissions server-side.
+- **SPEC-14.3.7**: A form's slug, derived from its name, must mirror
+  mokosh-server's `validate_slug` shape (lowercase alphanumerics, single
+  hyphens, no leading or trailing hyphen) rather than approximating it.
+- **SPEC-14.3.12**: A field's reference name must mirror mokosh-server's
+  `validate_field_name` shape.
+- **SPEC-14.3.17**: A draft must be persisted server-side via
+  `PUT /forms/drafts`.
+- **SPEC-14.3.22**: Fields are previewed and sent to a client in
+  `sort_order`, never arrival order.
+- **SPEC-14.3.23**: The editor's own preview must render through the same
+  component the public client-facing form page uses.
+
+#### 14.3.2 Data model
+
+- **SPEC-14.3.9**: The local draft's storage key format is distinct for a
+  new definition versus an existing one, so editing two definitions cannot
+  cross-contaminate.
+- **SPEC-14.3.10**: A draft's persisted wire shape (`DraftForm`) is its own
+  type, distinct from the editor's in-memory `EditorState`, so a draft
+  written by an older build still parses; an unrecognised stored
+  `field_type` falls back to Text rather than failing to deserialize.
+
+#### 14.3.3 Configuration
+
+- **SPEC-14.3.8**: The server-draft autosave debounce is a fixed 500ms
+  internal constant, not an operator-facing setting.
+
+#### 14.3.4 Security
+
+- **SPEC-14.3.1**: The builder page's admin-only gate is a client-side
+  convenience only; the server enforces admin on every write.
+
+#### 14.3.5 Error handling and observability
+
+- **SPEC-14.3.2**: A draft-list fetch failure is best-effort: logged and
+  treated as no drafts, never surfaced as a page-level error.
+- **SPEC-14.3.3**: An unreachable server shows `ContentUnavailable` instead
+  of the list; a reachable server that still failed the fetch instead shows
+  a retry banner and treats the result as an empty list.
+- **SPEC-14.3.4**: A destructive draft discard, whether of a drafts-list row
+  or of a just-restored draft, requires explicit confirmation before it
+  fires.
+- **SPEC-14.3.5**: A failed draft discard, whether client-local or
+  server-held, is reported by toast rather than failing silently.
+- **SPEC-14.3.13**: A field's max-length input treats blank as no limit; a
+  non-integer value is rejected with an inline message and logged, never
+  silently dropped.
+- **SPEC-14.3.14**: A field's linked-article picker treats blank as no
+  article; a non-UUID value falls back to no article and is logged.
+- **SPEC-14.3.18**: A failed server-draft autosave is silent to the
+  operator, logged at debug level only.
+- **SPEC-14.3.21**: A save failure surfaces the server's own error message
+  in the form banner.
+
+#### 14.3.6 Concurrency and ordering
+
+- **SPEC-14.3.11**: A server timestamp that fails to parse reads as
+  arbitrarily old, never as "now"; between a local and a server-held draft
+  tier, the newer-timestamped draft wins.
+- **SPEC-14.3.15**: The local draft is cleared once editor state returns to
+  saved.
+- **SPEC-14.3.16**: A superseded debounced autosave, identified by `Rc`
+  identity, drops instead of sending a stale request.
+- **SPEC-14.3.19**: Discarding a restored draft clears both the local copy
+  and the server-held copy; otherwise the next open would restore what was
+  just discarded.
+- **SPEC-14.3.20**: A successful save clears only the local draft; the
+  server retires its own draft on create and update.
+
+#### 14.3.7 Integrations
+
+None: the drafts and definition endpoints this page calls are already
+named under Interfaces, Error handling, and Concurrency above.
+
+#### 14.3.8 Build and deployment
+
+None: this file is a page component with no build-time or deployment
+behavior of its own beyond the crate-wide build already covered in
+Section 1.
+
+#### 14.3.9 Retention and cleanup
+
+None: a form definition's and server-side draft's retention is owned by
+the server; this page's own local draft is cleared on save or discard as
+described under Concurrency and ordering above, and is otherwise left to
+the browser's own storage lifetime.
+
+### 14.4 Dashboards
+
+Scope: `src/pages/dashboard.rs`, `src/pages/dashboards.rs`,
+`src/pages/dashboards_view.rs`, `src/pages/big_view.rs`.
+
+#### 14.4.1 Interfaces
+
+- **SPEC-14.4.1**: An unrecognized contact-dashboard activity kind must route
+  to `/dashboard` rather than a dead link.
+- **SPEC-14.4.3**: The contact-plane dashboard must render one capability
+  check per stat tile (tickets, invoices, quotes, contracts); a tile whose
+  read capability the caller lacks must not render, and the body as a whole
+  renders a capability-gated stat grid plus a recent-activity list sourced
+  from one summary endpoint.
+- **SPEC-14.4.4**: A contact caller with no granted capability must see a
+  fixed explanatory empty state instead of an all-hidden tile grid.
+- **SPEC-14.4.14**: `/dashboards` must list, create (`POST /dashboards`),
+  pin-default (`PATCH /dashboards/{id}`), and delete
+  (`DELETE /dashboards/{id}`) the caller's own saved dashboards.
+- **SPEC-14.4.17**: A saved-dashboard delete must fire only from the confirm
+  dialog's confirm handler, and a second confirm while one delete is already
+  in flight must be a no-op.
+- **SPEC-14.4.18**: A saved-dashboard create with an empty (post-trim) name
+  must be rejected client-side with no request sent.
+- **SPEC-14.4.20**: The saved dashboard's `layout` blob is passed through
+  opaquely by the management list page; this page reads and writes it but
+  interprets none of its contents.
+- **SPEC-14.4.21**: `/dashboards/:id/view` must show one saved dashboard with
+  an inline editor toggle, and `/dashboard` must resolve to the caller's
+  pinned saved dashboard if one exists, or the hardcoded dashboard body
+  otherwise.
+- **SPEC-14.4.22**: The saved dashboard's `layout` JSONB must deserialize
+  into a typed schema whose `grid_col`/`grid_row` default to 1 and
+  `grid_col_span` defaults to 4; a widget entry whose `widget_key` is not in
+  the fixed catalog must still deserialize and render as a placeholder
+  rather than blank-screening the page.
+- **SPEC-14.4.23**: The widget catalog is a fixed set of five keys
+  (`tickets_by_status`, `time_this_week`, `sla_at_risk`, `open_invoices`,
+  `recent_audit_log`), shared by the renderer and the editor's add-widget
+  panel.
+- **SPEC-14.4.24**: A widget's grid placement must floor `grid_col`/
+  `grid_row` at 1, clamp `grid_col_span` to the 1..=12 range of the 12-column
+  grid, and leave `grid_row_span` floored at 1 with no upper bound.
+- **SPEC-14.4.27**: Only the editor's Save control is blocked while the
+  server is unreachable; Cancel and the draft-editing controls (add widget,
+  per-widget coordinate inputs, remove) stay enabled because they mutate only
+  the in-memory draft and never reach the server.
+- **SPEC-14.4.28**: Save must round-trip the draft layout through
+  `PATCH /dashboards/{id}` and bump the page's refetch version on success.
+- **SPEC-14.4.31**: `/big/tickets`, `/big/dispatch`, and `/big/calendar` must
+  each render full-screen and chromeless (no `AppLayout` sidebar, top bar, or
+  feedback launcher).
+- **SPEC-14.4.32**: The Big View `?refresh=<seconds>` query parameter must
+  override the default 30-second auto-refresh tick, clamped to the 5..=600
+  second range.
+- **SPEC-14.4.35**: The Big Tickets view's `?status=` and `?priority=` query
+  parameters must filter the fetched tickets client-side by a
+  case-insensitive match against the ticket's status/priority name field.
+- **SPEC-14.4.37**: `BigDispatchPage` and `BigCalendarPage` must fetch
+  nothing of their own; each embeds `calendar.rs`'s `DispatchBoardPage` or
+  `CalendarPage`, which owns the data fetch and its own outage state.
+
+#### 14.4.2 Data model
+
+None: these pages render server-owned report, saved-dashboard, and ticket/
+time/invoice/audit summary payloads; the only client-owned schema is the
+saved-dashboard `layout` JSONB shape covered under Interfaces (SPEC-14.4.22).
+
+#### 14.4.3 Configuration
+
+None: these files read no environment variable or build feature of their
+own; the Big View routes' refresh interval is a per-request URL parameter,
+not a build-time or operator config setting.
+
+#### 14.4.4 Security
+
+- **SPEC-14.4.16**: Saved-dashboard create, pin-default, and delete must all
+  be blocked client-side (their controls disabled) while the server is
+  flagged unreachable, so a write cannot be attempted and silently fail.
+
+#### 14.4.5 Error handling and observability
+
+- **SPEC-14.4.2**: The contact-vs-staff dashboard body choice must happen
+  before any hook fires, so each body's own component owns an unconditional
+  hook order regardless of which body renders.
+- **SPEC-14.4.5**: On the staff dashboard, the primary report resource's
+  failure must render the shared `ContentUnavailable` state instead of a
+  zeroed or empty dashboard.
+- **SPEC-14.4.6**: A dashboard's loading state must be captured before its
+  resource value is consumed, so the body can show a loading skeleton on the
+  first fetch instead of transiently rendering zeroed stats or empty tables.
+- **SPEC-14.4.7**: Each dashboard tile's resource fetch must be scoped to
+  exactly what that tile needs (a top-5 ticket fetch, a time-entry sum
+  bounded to the current server-filtered week) rather than reading the
+  server's default page and treating it as the whole table.
+- **SPEC-14.4.8**: The active-projects tile must read only `meta.total` off
+  a one-row `?status=active&per_page=1` request; no field of a project row
+  is ever rendered.
+- **SPEC-14.4.9**: The TV board's team-scoped resources (tickets, KPI
+  aggregate, technician roster) must scope to the single pinned team when
+  one is set, and otherwise to the server-resolved union of the caller's own
+  teams; a non-privileged viewer's roster lookup must come back as an empty
+  cached roster rather than erroring.
+- **SPEC-14.4.11**: A failed dispatch fetch on the TV board must log the
+  failure and fall back to an empty board rather than surfacing an error
+  state.
+- **SPEC-14.4.12**: A roster user with no server-side name, and an
+  appointment's technician id with no matching roster entry, must each log
+  an unresolved reference through the shared helper and fall back to
+  "Unknown"/a short id prefix.
+- **SPEC-14.4.13**: An unavailable SLA fetch on the TV board must render an
+  explicit "SLA data unavailable" notice instead of a zero, while an
+  independently-loaded tile (open tickets) still renders normally.
+- **SPEC-14.4.15**: An outage on the saved-dashboards list renders
+  `ContentUnavailable`; a fetch failure while the server stays reachable
+  (a 4xx) degrades to an empty list and the normal empty-state instead.
+- **SPEC-14.4.25**: A load failure on a single saved dashboard's primary
+  resource renders `ContentUnavailable` rather than a perpetual loading
+  state.
+- **SPEC-14.4.26**: On `/dashboard`, an outage on the pinned-default lookup
+  renders `ContentUnavailable`; a genuine absence of a pinned dashboard
+  (a successful fetch returning none) falls through to the hardcoded
+  dashboard body instead.
+- **SPEC-14.4.29**: Each dashboard widget must render loading, unavailable,
+  and empty as three distinct states rather than collapsing a failed fetch
+  and a genuinely empty result to the same zero.
+- **SPEC-14.4.30**: Each dashboard widget's fetch must be backed by a
+  server-side summary/aggregate endpoint (dashboard report, time-entries
+  summary, invoices summary, a 5-row audit-log page) rather than a
+  client-side paging loop over the full collection.
+- **SPEC-14.4.36**: A Big Tickets card's assignee id with no server-sent name
+  must log an unresolved reference and fall back to "Unassigned".
+
+#### 14.4.6 Concurrency and ordering
+
+- **SPEC-14.4.10**: The TV board's periodic refresh loop, which drives every
+  resource's auto-refetch, must run only under the "app" feature.
+- **SPEC-14.4.19**: Bumping the saved-dashboards list page's refetch version
+  after a create, pin, or delete must re-run the list fetch in the same
+  update cycle.
+- **SPEC-14.4.33**: The Big View periodic-tick loop, which drives each
+  route's auto-refresh, must run only under the "app" feature.
+- **SPEC-14.4.34**: The Big Tickets fetch requests up to 50 tickets in the
+  shared recent-first sort order; an outage renders an inline notice inside
+  this page's own `BigLayout`, never the `AppLayout`-mounting
+  `ContentUnavailable`.
+
+#### 14.4.7 Integrations
+
+None: every integration point here (the dashboard report, saved-dashboards,
+widget summary, and Big View ticket/dispatch endpoints) is already named
+under Interfaces and Error handling above.
+
+#### 14.4.8 Build and deployment
+
+None: these files are page components with no build-time or deployment
+behavior of their own beyond the crate-wide build already covered in
+Section 1.
+
+#### 14.4.9 Retention and cleanup
+
+None: these pages hold no state beyond the currently fetched report, saved
+dashboard, or widget data; retention of saved dashboards and their layout is
+owned by the server.
+
+### 14.5 Reports
+
+Scope: `src/pages/reports.rs`.
+
+#### 14.5.1 Interfaces
+
+- **SPEC-14.5.1**: The reports landing page must render a static, hard-coded
+  catalog of report categories and report links; it must issue no fetch and
+  expose no write control.
+- **SPEC-14.5.2**: The report detail route's `report_type` path parameter
+  must select both the page title and, through the report-kind mapping (see
+  SPEC-14.5.6), which backend report the page reads.
+- **SPEC-14.5.3**: A `report_type` of `report-builder` must render the
+  interactive custom report builder instead of a fixed report view.
+- **SPEC-14.5.4**: A supported report must show "Download CSV" and
+  "Download PDF" actions whose target is `/reports/<key>/export` with
+  `format=csv` or `format=pdf`, where `<key>` is the single backend report
+  the page's kind reads (see SPEC-14.5.16); an unsupported kind must show
+  neither action.
+- **SPEC-14.5.5**: The custom report builder must fetch its source/dimension/
+  measure catalog from `GET /reports/custom/schema`, and must enable running
+  a report only once a source and at least one measure are chosen; running a
+  report must `POST /reports/custom` a spec containing the chosen source,
+  dimensions, measures, an optional `from`/`to` date range, and a fixed row
+  limit of 500.
+- **SPEC-14.5.6**: `report_type` must map to exactly one of five backend
+  report kinds (Tickets, Time, Billing, Projects, Clients) by a fixed table
+  of sixteen known `report_type` values; any `report_type` outside that
+  table must map to the Unsupported kind.
+- **SPEC-14.5.13**: An Unsupported report kind must render exactly this
+  message: "This report isn't available yet. The reports service powers the
+  ticket, time, billing, project, and client reports. The custom report
+  builder is planned but not implemented."
+- **SPEC-14.5.15**: Changing the custom report builder's data source must
+  clear the chosen dimensions, the chosen measures, and any prior run
+  result, in the same update as the source change.
+- **SPEC-14.5.17**: A breakdown or summary value must be parsed for charting
+  as a plain integer, a decimal, a currency string (for example `$1,234.56`
+  or `1,234.56 USD`), or a percentage (for example `87%`); a value that does
+  not parse as one of these must be dropped from the chart while remaining
+  in the table.
+
+#### 14.5.2 Data model
+
+- **SPEC-14.5.7**: Every field of every backend report payload struct
+  (`Bucket`, `IdCount`, `TicketsReport`, `TimeReport`, `AgingBucket`,
+  `BillingReport`, `DashReport`, `ProjectsReport`, `ClientsReport`, and the
+  custom builder's `CustomResult` columns/rows/totals) must default rather
+  than fail deserialization when the field is missing or does not parse.
+
+#### 14.5.3 Configuration
+
+None: this file reads no environment variable, build feature, or config
+file of its own.
+
+#### 14.5.4 Security
+
+- **SPEC-14.5.8**: The billing report's role requirement is enforced only by
+  the server; a session lacking the required role must still receive a
+  supported (but empty) billing view from a `403`, never a client-side role
+  check that would suppress the fetch.
+
+#### 14.5.5 Error handling and observability
+
+- **SPEC-14.5.9**: A primary report fetch that fails while the server is
+  still reachable (a role-gated `403`, a one-off decode error) must degrade
+  to that report type's default value; a primary report fetch that fails
+  because the server is unreachable must propagate as an error so the page
+  renders the outage state instead of a report full of zeros.
+- **SPEC-14.5.10**: A failure of the Tickets kind's secondary KPI aggregate
+  fetch (`/reports/dashboard`) must log an error and degrade the SLA
+  warning/breach figures to zero rather than failing the whole report.
+- **SPEC-14.5.11**: A failed schema fetch in the custom report builder must
+  render exactly this message: "Could not load the report catalog. The
+  reports service may be unavailable."
+- **SPEC-14.5.12**: A failed custom report run must render "Report failed:
+  {error}" using the run's own error message.
+
+#### 14.5.6 Concurrency and ordering
+
+- **SPEC-14.5.14**: The report-view resource hook must be called
+  unconditionally, before the report-builder's early return, so the
+  component's hook order stays stable when the route's `report_type`
+  parameter flips between the builder and a fixed report.
+
+#### 14.5.7 Integrations
+
+- **SPEC-14.5.16**: The five backend report endpoints this page reads, one
+  per kind, are: `/reports/tickets` (plus `/reports/dashboard` for the SLA
+  KPI aggregate), `/reports/time`, `/reports/billing`, `/reports/projects`,
+  and `/reports/clients`; the custom builder additionally reads
+  `/reports/custom/schema` and writes `/reports/custom`.
+
+#### 14.5.8 Build and deployment
+
+None: this file is a page component with no build-time or deployment
+behavior of its own beyond the crate-wide build already covered in Section 1.
+
+#### 14.5.9 Retention and cleanup
+
+None: this page holds no state beyond the current report view and the
+in-progress custom report run; it persists nothing of its own.
+
+### 14.6 Audit log
+
+Scope: `src/pages/audit_log.rs`.
+
+#### 14.6.1 Interfaces
+
+- **SPEC-14.6.1**: The audit log route must render the full filterable table
+  only for a user whose cached role satisfies the admin check; a non-admin
+  user must see a fixed "Admins only" notice instead, with the data-fetching
+  hooks never mounted for that render (they live in a separate inner
+  component so the outer gate's hook order never changes with auth state).
+- **SPEC-14.6.2**: The audit list fetch must request
+  `GET /audit-log?page=<n>&per_page=25`, with `entity_type`, `action`,
+  `user_id`, `from`, and `to` query parameters appended only when their
+  filter value is non-empty.
+- **SPEC-14.6.3**: A non-empty `from`/`to` date filter must be widened from
+  its `YYYY-MM-DD` input value to a full UTC day before being sent: `from`
+  as `<date>T00:00:00Z`, `to` as `<date>T23:59:59Z`.
+- **SPEC-14.6.4**: The "Download CSV" action must link to
+  `<api base>/audit-log/export.csv` with the same filter query parameters as
+  the list fetch, and must set the anchor's `download` attribute to
+  `audit-log-<YYYY-MM-DD>.csv` using the current UTC date computed at render
+  time, overriding whatever filename the server's response would otherwise
+  suggest.
+- **SPEC-14.6.5**: The audit table must render exactly seven columns, in
+  order: Timestamp, Action, Entity, Record, User, IP, Details.
+- **SPEC-14.6.6**: The timestamp cell must use the viewer's saved date-format
+  preference and profile timezone, falling back to the fixed shape
+  `%b %-d, %Y %H:%M:%S %Z` when no preference is set; the cell's `<time>`
+  element must always carry the full RFC3339 instant in its `datetime`
+  attribute regardless of the display format.
+- **SPEC-14.6.7**: The action cell must render a badge whose color is fixed
+  per verb: `create` green, `update` blue, `delete` red, `login` purple,
+  `logout` gray, and any other verb gray.
+- **SPEC-14.6.8**: The entity and user cells must show the entry's resolved
+  name when it is non-empty; otherwise the entity cell shows the first 8
+  characters of the entity id (or "-" when absent) and the user cell shows
+  "System".
+- **SPEC-14.6.9**: The Details toggle control must render only when the
+  entry carries `old_values`, `new_values`, or a user agent; otherwise the
+  cell shows a plain "-" placeholder. Each row's expanded/collapsed state is
+  independent of every other row.
+- **SPEC-14.6.10**: The expanded detail panel must render the raw
+  pretty-printed JSON of `old_values` and `new_values` (an absent side as the
+  literal string "null") whenever neither side is a JSON object; whenever at
+  least one side is a JSON object, it must instead render one row per key
+  whose value differs between the two sides, keys from the new payload first
+  (alphabetical, since the underlying map is a BTreeMap) followed by any
+  key present only in the old payload, and must render "No field changes
+  recorded" instead of an empty row list when every key is unchanged.
+- **SPEC-14.6.11**: Within the per-field diff, a key must be rendered with
+  its trailing `_id` suffix stripped and the remainder sentence-cased (for
+  example `project_manager_id` becomes "Project manager"); a value for one of
+  the fixed set of user-reference keys (`project_manager_id`, `manager_id`,
+  `assigned_to_id`, `assigned_to`, `assigned_technician_id`,
+  `technician_id`, `user_id`, `owner_id`, `created_by`, `updated_by`) must
+  resolve to the matching cached user's full name when known, or else the
+  first 8 characters of the id; every other value renders as its raw scalar;
+  an absent, null, or blank/whitespace-only string value renders as
+  "(empty)".
+- **SPEC-14.6.12**: The IP cell must render a clickable control for a
+  non-empty actor address, and must render inert text (never a control) when
+  the entry has no address.
+- **SPEC-14.6.13**: The on-demand IP enrichment result must render exactly
+  one of four states: idle/loading shows a fixed "looking up" message;
+  `Loaded(None)` shows a fixed explanation that nothing is available for the
+  address; `Loaded(Some(..))` shows every returned (label, value) pair plus a
+  fixed advisory-only disclaimer; `Failed` shows an error banner with the
+  failure message and a "Try again" control (no other state offers a retry
+  control).
+- **SPEC-14.6.14**: The filter row must offer a free-text entity-type field,
+  single-select Action and User dropdowns (Action options fixed to
+  All/Create/Update/Delete/Login/Logout; User options built from the cached
+  user roster by name, plus a synthetic short-id option when the active
+  filter value is not in that roster), and From/To date fields; changing any
+  filter's value must reset the page number to 1 in the same update.
+
+#### 14.6.2 Data model
+
+None: the page owns no schema of its own. It renders the server-owned
+`AuditLogEntry` and `IpEnrichment` records and keeps no client-side state
+beyond per-component UI signals and the current page's fetched rows.
+
+#### 14.6.3 Configuration
+
+None: the page reads no environment variable, build feature, or config file
+of its own; its page-size constant is a fixed internal value, not an
+operator-facing setting.
+
+#### 14.6.4 Security
+
+- **SPEC-14.6.15**: The admin-only render gate described in SPEC-14.6.1 is a
+  client-side convenience only; the server's own authorization check on the
+  underlying endpoints is the actual enforcement boundary.
+- **SPEC-14.6.16**: The list fetch, the enrichment lookup, and the CSV
+  export must all ride the viewer's existing authenticated session: the list
+  and enrichment requests through the shared authenticated-fetch helper, and
+  the export through a same-origin anchor navigation that relies on the
+  session cookie rather than attaching its own Authorization header.
+
+#### 14.6.5 Error handling and observability
+
+- **SPEC-14.6.17**: A failed list fetch while the server is flagged
+  unreachable must render the shared unavailable/outage state in place of
+  the table; a failed list fetch while the server is still reachable must
+  keep the normal table and filters and show an inline error banner with the
+  failure's user-facing message.
+- **SPEC-14.6.18**: A failed fetch of the secondary user roster (used for
+  name resolution and the user filter) must degrade to an empty roster
+  rather than block or error the page.
+- **SPEC-14.6.19**: A user-reference value or actor user id that has no
+  matching entry in the cached roster must still render its fallback label
+  (short id prefix, or "System") and must also be logged once through the
+  shared unresolved-reference helper, tagged by call site, so the
+  substitution is traceable.
+- **SPEC-14.6.20**: A transport failure or non-2xx response from the IP
+  enrichment lookup must never render as "nothing available" (`Loaded(None)`),
+  and a successful response carrying no data must never render as a failure;
+  only a malformed address is expected to produce a 400 from that endpoint.
+
+#### 14.6.6 Concurrency and ordering
+
+- **SPEC-14.6.21**: The audit list resource must re-run whenever any filter
+  value, the current page, or the active tenant generation changes, and
+  must also depend on server-reachability so it refetches automatically once
+  the server becomes reachable again.
+- **SPEC-14.6.22**: Each row's IP enrichment lookup is independent per row
+  and must fetch at most once per opened address: the click handler issues a
+  request only while that row's enrichment state is idle; reopening a panel
+  already in a loaded or failed state must not re-fetch.
+
+#### 14.6.7 Integrations
+
+- **SPEC-14.6.23**: The IP enrichment lookup calls the server's
+  `/ip-enrichment` endpoint, whose contract is: a malformed address answers
+  `400`; a private or reserved address, an address unknown to the dataset, or
+  a deployment with no enrichment dataset configured all answer `200` with a
+  JSON `null`; any other address answers `200` with a populated object; any
+  transport failure or a `403` surfaces as an error to the caller.
+
+#### 14.6.8 Build and deployment
+
+None: this file is a page component with no build-time or deployment
+behavior of its own beyond the crate-wide build already covered in Section 1.
+
+#### 14.6.9 Retention and cleanup
+
+None: audit-entry retention is owned by the server; this page keeps no
+client-side cache of entries beyond the in-memory resource for the currently
+displayed page.

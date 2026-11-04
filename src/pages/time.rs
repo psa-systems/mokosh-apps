@@ -150,6 +150,7 @@ struct RejectTimesheetBody {
 
 /// Hard upper bound on a single entry's duration, and the fallback per-day
 /// cap when the tenant has not configured one. Kept as minutes.
+// SPEC-14.1.1: hard upper bound on one entry; also the fallback per-day cap.
 const MAX_SINGLE_ENTRY_MINUTES: i64 = 24 * 60;
 const DEFAULT_MAX_MINUTES_PER_DAY: i64 = 24 * 60;
 
@@ -213,6 +214,8 @@ fn billing_status_label(status: BillingStatus) -> &'static str {
 /// The upper bound is the half that was missing: `date >= week_start` with
 /// nothing above it counted a future-dated entry as this week's, and a time
 /// entry can be dated forward.
+// SPEC-14.1.2: the Monday-Sunday week is closed at both ends, including a
+// future-dated entry.
 pub(crate) fn week_bounds(today: NaiveDate) -> (NaiveDate, NaiveDate) {
     let start = monday_of_week(today);
     (start, start + Duration::days(6))
@@ -262,6 +265,7 @@ struct TimesheetRow {
 /// entirely. The id is always distinct per ticket/project even when its
 /// name is not, so the pivot groups on this instead.
 #[derive(PartialEq, Eq, Clone, Copy)]
+// SPEC-14.1.3: the pivot groups by work-item id, never by its display label.
 enum WorkItemKey {
     Ticket(uuid::Uuid),
     Project(uuid::Uuid),
@@ -293,6 +297,8 @@ fn work_item_key(e: &RemoteTimeEntry) -> WorkItemKey {
 /// the task into it would split one project row into one row per task. That is
 /// a change to what the grid counts, not to where a name comes from, and
 /// MAPPS-1038 is the latter.
+// SPEC-14.1.4: an unresolved ticket/project shows a placeholder label and
+// logs the unresolved reference, never a fabricated name from an id.
 fn grid_work_item(e: &RemoteTimeEntry) -> (String, Option<String>, Option<Route>) {
     use crate::utils::unresolved_person::unresolved;
     if let Some(tid) = e.ticket_id {
@@ -367,6 +373,8 @@ fn pivot_timesheet_rows(entries: &[RemoteTimeEntry], start: NaiveDate) -> Vec<Ti
     rows
 }
 
+// SPEC-14.1.5: entry-list label precedence: ticket, then project (with
+// task), then "General" for a server-classified overhead entry, else "-".
 fn work_item_label(e: &RemoteTimeEntry) -> String {
     if e.ticket_id.is_some() {
         match (e.ticket_number.as_deref(), e.ticket_title.as_deref()) {
@@ -398,6 +406,8 @@ fn work_item_label(e: &RemoteTimeEntry) -> String {
 /// the kind), so a list that only knows "billable" and "non-billable" files
 /// the MSP's own overhead in with client work that simply has not been billed
 /// yet, and nothing on the row says which is which.
+// SPEC-14.1.6: an entry is the MSP's own time only when the server's
+// `entry_kind` says "employee"; absent on an older server reads as client.
 fn is_employee_time(e: &RemoteTimeEntry) -> bool {
     e.entry_kind.as_deref() == Some("employee")
 }
@@ -406,6 +416,7 @@ fn is_employee_time(e: &RemoteTimeEntry) -> bool {
 /// "Non-Billable" figure has always meant. Employee time is non-billable by
 /// construction since PMS-942, so it is excluded here rather than inflating
 /// every tenant's unbilled client work by the whole of its own overhead.
+// SPEC-14.1.7: "Non-Billable" excludes the MSP's own (employee) time.
 fn is_unbilled_client_work(e: &RemoteTimeEntry) -> bool {
     !e.is_billable && !is_employee_time(e)
 }
@@ -420,11 +431,16 @@ fn is_unbilled_client_work(e: &RemoteTimeEntry) -> bool {
 /// One definition, because two places act on the answer: the Billable
 /// checkbox, which must not offer what the server will discard, and the
 /// request body, which must not send it.
+// SPEC-14.1.8: "general" is the only work-item selection the server bills
+// never; the Billable checkbox and the submit body both key off this.
 fn work_item_is_own_time(work_item: &str) -> bool {
     work_item == "general"
 }
 
 /// Time entry list page
+// SPEC-14.1.9: GET /time-entries drives the list; a reachable fetch failure
+// shows the inline error with an empty table, an unreachable server shows
+// ContentUnavailable instead of an empty list.
 #[component]
 pub fn TimeEntryListPage() -> Element {
     use_page_title("Time Entries");
@@ -480,6 +496,8 @@ pub fn TimeEntryListPage() -> Element {
     // different scales - and the unscoped three were not even all-time, they
     // were "however many rows this client managed to fetch", which is bounded
     // by `MAX_PAGES` and drifts as a tenant's history grows.
+    // SPEC-14.1.10: every stat tile (Today, This week, Billable,
+    // Non-billable, Own time) is scoped to the same user-local week.
     let today = crate::utils::datetime::user_today();
     let (week_start, week_end) = week_bounds(today);
     let this_week = |e: &RemoteTimeEntry| in_window(e.date, week_start, week_end);
@@ -690,6 +708,8 @@ fn short_id(id: uuid::Uuid) -> String {
 ///
 /// MAPPS-683: read off the router rather than the browser URL, so the
 /// desktop build gets the prefill the `Link` actually carried.
+// SPEC-14.1.11: `?ticket_id=` / `?project_id=` on the Log Time route
+// preselects that work item; an unparseable or absent id leaves it empty.
 fn read_ticket_prefill_from_url() -> String {
     #[cfg(feature = "app")]
     {
@@ -798,6 +818,9 @@ pub fn TimeEntryNewPage() -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         #[cfg(feature = "app")]
         {
+            // SPEC-14.1.12: the per-day cap setting must hold a whole number
+            // of hours from 1 to 24; any other value, an unset setting, or a
+            // read failure falls back to the 24h default and logs why.
             match crate::modules::tenant_settings::get("time_tracking", "max_hours_per_day").await {
                 Ok(Some(value)) => {
                     match value.as_i64().filter(|h| (1..=24).contains(h)) {
@@ -829,6 +852,9 @@ pub fn TimeEntryNewPage() -> Element {
     // MAPPS-244: minutes already logged by this user for today, so the cap
     // check below sees the day's running total. The page always logs against
     // today (see `date` in the submit handler). Any failure falls back to 0.
+    // SPEC-14.1.13: today's running total is scoped to the user's own day
+    // and paged in full; a read failure is treated as 0 and logged, which
+    // skips the client pre-flight cap check but not the server's own check.
     let today_total_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         // MAPPS-752: the user's day, not the UTC one. A cap check against the
@@ -947,6 +973,8 @@ pub fn TimeEntryNewPage() -> Element {
     // is no primary resource whose absence means "no meaningful content". We only
     // gate the write: block the submit while the server is unreachable so a click
     // can't silently fail (`can_mutate` re-enables itself on reconnect).
+    // SPEC-14.1.36: every time-tracking write (create, edit, delete, submit,
+    // withdraw, approve, reject) is blocked while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
 
     rsx! {
@@ -971,6 +999,9 @@ pub fn TimeEntryNewPage() -> Element {
                     // never validated). The cross-field resolution and per-day cap
                     // errors below have no single field, so they stay on the
                     // form-level banner.
+                    // SPEC-14.1.14: Work item, Work type and Description are
+                    // required on the Log Time form; every violation surfaces
+                    // at once, each in its own field slot.
                     let mut guard = FormGuard::new();
                     work_item_error
                         .set(guard.field("work_item", &wi, "Work item", &[Rule::Required]));
@@ -983,6 +1014,10 @@ pub fn TimeEntryNewPage() -> Element {
                     // decimal), so it keeps its custom parse: 0 < t <= 24h (the
                     // hard single-entry bound, MAPPS-244 AC6). It reports through
                     // the guard so it joins the same up-front pass.
+                    // SPEC-14.1.15: Hours accepts decimal ("2.5") or H:MM
+                    // ("1:30") free text; the parsed duration must be greater
+                    // than 0 and at most 24h, or the field reports an error
+                    // and the submit is blocked.
                     let duration_minutes =
                         match crate::utils::duration::parse_input_to_minutes(&hrs) {
                             Some(m) if m > 0 && m <= MAX_SINGLE_ENTRY_MINUTES => {
@@ -1010,6 +1045,10 @@ pub fn TimeEntryNewPage() -> Element {
                     // existing total is known, block (before the network
                     // call) any entry that would push the day over the
                     // configured cap, naming the cap and the minutes left.
+                    // SPEC-14.1.16: client pre-flight blocks a submit that
+                    // would push today's logged total over the configured
+                    // per-day cap, naming the cap and the minutes left; the
+                    // server still enforces the cap itself on every submit.
                     if let Some(existing) = existing_today_minutes {
                         if existing + duration_minutes > cap_minutes {
                             let remaining = (cap_minutes - existing).max(0);
@@ -1029,6 +1068,9 @@ pub fn TimeEntryNewPage() -> Element {
                     // one). MAPPS-243: a "general" selection carries no work
                     // item and attributes to the tenant's own company; the
                     // server classifies it via work_category (PMS-394).
+                    // SPEC-14.1.17: a General selection attributes to the
+                    // tenant's own company when one exists, else to none,
+                    // never blocked for lacking an internal company.
                     let (ticket_id, project_id, task_id, company_id, work_category) =
                         if wi == "general" {
                             // MAPPS-626: the MSP's own time. Send the tenant's
@@ -1074,6 +1116,9 @@ pub fn TimeEntryNewPage() -> Element {
                                         };
                                         (None, Some(p.id), tk, Some(cid), "project")
                                     }
+                                    // SPEC-14.1.18: only a project with a
+                                    // company is pickable; a companyless one
+                                    // is refused rather than sent.
                                     None => {
                                         error.set(
                                             "That project has no company; pick a ticket or a project with a company."
@@ -1306,6 +1351,8 @@ pub fn TimeEntryNewPage() -> Element {
 /// `time_entries` for the selected week (the `/timesheets` summary endpoint
 /// returns week totals, not the per-work-item/day breakdown the grid needs),
 /// shows the week's approval status, and wires the Submit action.
+// SPEC-14.1.19: the weekly grid is pivoted client-side from the user's own
+// time entries for the selected week, keyed by the user's local day.
 #[component]
 pub fn TimesheetsPage() -> Element {
     use_page_title("Timesheets");
@@ -1405,9 +1452,10 @@ pub fn TimesheetsPage() -> Element {
         "pending" => (BadgeVariant::Yellow, "Pending approval"),
         _ => (BadgeVariant::Gray, "Not submitted"),
     };
+    // SPEC-14.1.20: a pending week can only be withdrawn back to draft; a
+    // draft or rejected week can only be (re)submitted; an approved week can
+    // be neither.
     let already_approved = approval == "approved";
-    // A week that has been submitted (pending) can be withdrawn; one that is
-    // draft/rejected can be (re)submitted.
     let is_pending = approval == "pending";
     // PMS-310: make the empty-week state self-explanatory. The current week
     // drives the "jump back" control; the hint explains why Submit is greyed
@@ -1677,6 +1725,8 @@ pub fn TimesheetsPage() -> Element {
 
         // PMS-183 submit confirmation with required certification.
         {
+            // SPEC-14.1.21: submit requires the certification checkbox to be
+            // checked; an unsubmitted/unchecked submit is a no-op.
             let do_submit = move |_| {
                 if !certified() || submitting {
                     return;
@@ -1874,6 +1924,9 @@ struct DecisionEvent {
 /// `created_at` and, when `updated_at` is strictly later, an `Edited` event;
 /// the decision (if any) contributes the terminal `Approved`/`Rejected` event.
 /// Events are returned oldest-first so the reader follows the progression.
+// SPEC-14.1.22: history is derived, never fetched directly: a "Logged" event
+// per entry's created_at, an "Edited" event only when updated_at is strictly
+// later, plus the week's decision event when decided; sorted oldest-first.
 fn build_timesheet_history(
     entries: &[RemoteTimeEntry],
     employee: &str,
@@ -1919,6 +1972,8 @@ fn build_timesheet_history(
         events.push(HistoryEvent {
             at: d.at,
             kind,
+            // SPEC-14.1.23: a blank reviewer name is reported as an
+            // unresolved reference and shown as "Unknown reviewer".
             actor: if d.actor.trim().is_empty() {
                 // MAPPS-1063: no reviewer name on the wire and no id to key
                 // on either (the server sends neither); log the substitution
@@ -1971,6 +2026,9 @@ struct HistoryTarget {
 }
 
 /// Manager/admin timesheet approvals queue.
+// SPEC-14.1.24: the approvals queue and its approve/reject/history actions
+// require the manage-users role; the page re-checks client-side as a UX
+// affordance only, the server is the real authorization boundary.
 #[component]
 pub fn TimesheetApprovalsPage() -> Element {
     use_page_title("Timesheet Approvals & History");
@@ -2066,6 +2124,7 @@ pub fn TimesheetApprovalsPage() -> Element {
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
 
+    // SPEC-14.1.24: a non-manager sees a notice in place of the queue.
     if !can_manage {
         return rsx! {
             PageHeader {
@@ -2117,6 +2176,9 @@ pub fn TimesheetApprovalsPage() -> Element {
     // stays applied only when the status filter is `pending` so an empty
     // never-submitted week does not pollute the action queue.
     let active_status = status_filter.read().clone();
+    // SPEC-14.1.25: when the status filter is "pending", a never-submitted
+    // week (no entries) is excluded from the queue even if the server
+    // returns it as pending.
     let rows: Vec<ApprovalSummary> = summaries
         .iter()
         .filter(|s| {
@@ -2183,6 +2245,8 @@ pub fn TimesheetApprovalsPage() -> Element {
                         name: "ts_range_mode",
                         label: "Range mode",
                         checked: in_range_mode,
+                        // SPEC-14.1.27: range mode's from/to query is capped
+                        // server-side at a 26-week scan.
                         help: "Span multiple weeks. Server caps the scan at 26 weeks.",
                         onchange: move |e: FormEvent| {
                             action_msg.set(String::new());
@@ -2473,6 +2537,8 @@ pub fn TimesheetApprovalsPage() -> Element {
                 let Some((uid, week, _)) = reject_target.read().clone() else {
                     return;
                 };
+                // SPEC-14.1.26: a reject requires a non-empty reason; it is
+                // sent to the server and shown to the employee.
                 let reason = reject_reason.read().trim().to_string();
                 if reason.is_empty() || rejecting {
                     return;
@@ -2593,6 +2659,8 @@ struct TimesheetHistoryModalProps {
     onclose: EventHandler<()>,
 }
 
+// SPEC-14.1.28: the history modal is read-only; it stays enabled while the
+// server is unreachable and on an already-decided week.
 #[component]
 fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
     // MAPPS-939: resolve once for the whole event list, not once per event.
@@ -2622,6 +2690,9 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
             .await
             // An unset cap and a broken settings read both omit the line, so
             // the log is the only thing that tells them apart.
+            // SPEC-14.1.29: the cap line is shown only for a setting that
+            // holds an integer from 1 to 24; an unset cap or a read failure
+            // both silently omit the line (the failure is still logged).
             .map_err(|e| tracing::warn!("history cap load failed, omitting the cap line: {e}"))
             .ok()
             .flatten()
@@ -2642,11 +2713,11 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
         Some(
             rows.into_iter()
                 .filter_map(
+                    // SPEC-14.1.30: one undecodable rounding rule is skipped
+                    // and logged; it does not fail the whole rules list.
                     |item| match serde_json::from_value::<RoundingRuleRow>(item) {
                         Ok(rule) => Some(rule),
                         Err(e) => {
-                            // One undecodable row must not fail the list, but a
-                            // silently dropped rule is invisible in the panel.
                             tracing::warn!("skipping an undecodable rounding rule: {e}");
                             None
                         }
@@ -2829,6 +2900,9 @@ struct TimeEntryEditModalProps {
     onsaved: EventHandler<()>,
 }
 
+// SPEC-14.1.31: the edit modal cannot change an entry's work item (ticket or
+// project); moving an entry to a different work item requires delete and
+// re-log.
 #[component]
 fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
     let entry = props.entry.clone();
@@ -2895,6 +2969,8 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
         // PMS-518: validate every required field through the shared FormGuard
         // so all "you forgot to fill X" failures surface at once (each in its
         // own inline slot) and the first invalid field is focused.
+        // SPEC-14.1.32: Work type and Date are required on the edit form;
+        // every violation surfaces at once, each in its own field slot.
         let mut guard = FormGuard::new();
         work_type_error.set(guard.field("edit_work_type", &wtid, "Work type", &[Rule::Required]));
         date_error.set(guard.field("edit_date", &d, "Date", &[Rule::Required]));
@@ -2902,6 +2978,8 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
         // Hours is free-text (it accepts H:MM as well as decimal), so it keeps
         // its custom parse: 0 < t <= 24h. It reports through the guard so it
         // joins the same up-front pass, surfaced inline via `hours_error`.
+        // SPEC-14.1.33: the edit form's Hours parse has the same bound as
+        // the create form: greater than 0, at most 24h.
         let duration_minutes = match crate::utils::duration::parse_input_to_minutes(&hrs) {
             Some(m) if m > 0 && m <= 24 * 60 => {
                 hours_error.set(String::new());
@@ -2958,6 +3036,10 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                 // `task_id` is intentionally omitted: the response does not
                 // carry it, so we cannot echo the current value; PMS-328 makes
                 // the server preserve task_id when it is absent (COALESCE).
+                // SPEC-14.1.34: ticket_id/project_id are re-sent unchanged on
+                // every edit because the server direct-sets them with no
+                // COALESCE; task_id is omitted because the response does not
+                // carry it, and the server preserves it when absent.
                 let body = UpdateTimeEntryBody {
                     date: Some(date_value),
                     duration_minutes: Some(duration_minutes),
@@ -2985,6 +3067,8 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
     // of the native window.confirm(); the DELETE fires from
     // `on_confirm_delete` once the user confirms.
     let mut confirming_delete = use_signal(|| false);
+    // SPEC-14.1.35: delete requires confirmation through the styled dialog,
+    // never a native confirm; the DELETE fires only on confirm.
     let handle_delete = move |_| {
         if *saving.read() || *deleting.read() {
             return;
