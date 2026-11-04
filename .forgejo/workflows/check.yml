@@ -203,7 +203,7 @@ jobs:
     #
     # check-runner-labels.sh validates that THIS file contains
     # BASE_HEAVY (the cargo job does, so the string-level grep passes)
-    # and that no job runs a `zypper/apt-get install`.
+    # and that no job installs OS packages at run time.
     runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_MEDIUM }}
 
     # Backstop, not a target. The guard set is ~38 shell/nu/just
