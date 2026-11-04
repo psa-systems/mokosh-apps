@@ -19,6 +19,11 @@
 #   `--self-test` re-runs the guard over generated fixtures to prove it still
 #   rejects each violation and still accepts the rich form, so a future edit
 #   cannot quietly neuter it.
+#
+# SPEC-2.1.1: invocable with no arguments, scanning the default target below,
+# exiting with a `guard: clean`/`guard: FAIL (<reason>)` line.
+# SPEC-2.1.3: --self-test runs the detection logic against generated
+# fixtures covering every violation shape plus the corrected shape.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -98,12 +103,16 @@ hits=$(
   awk -v file="$file" '
     function flush(   where) {
       where = file ":" start ": "
+      # SPEC-2.5.7: fail a TableEmpty block using the bare `message:` prop.
       if (has_message)  print where "TableEmpty uses the bare `message:` mode"
+      # SPEC-2.5.7: fail a TableEmpty block missing title:/description:/actions:.
       if (!has_title)   print where "TableEmpty has no `title:`"
       if (!has_desc)    print where "TableEmpty has no `description:`"
       if (!has_actions) print where "TableEmpty has no `actions:` CTA"
+      # SPEC-2.5.7: fail actions: that carry no "New <thing>" Button.
       if (has_actions && !(has_button && has_new)) \
                         print where "TableEmpty `actions:` passes no \"New <thing>\" Button"
+      # SPEC-2.5.7: fail copy that instructs the user to click a named button.
       if (prose)        print where "TableEmpty copy names a button in prose"
     }
     {

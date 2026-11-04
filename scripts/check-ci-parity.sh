@@ -27,15 +27,24 @@
 # Steps CI runs that no recipe asks for are fine and are not reported - CI does
 # checkout, caching and a CSS stub that a local run has no need of.
 #
+# SPEC-2.1.1: invocable with no arguments, checking this repository's own
+# justfile/workflow pair.
+# SPEC-2.7.4: integrates justfile with check.yml, requiring the latter to run
+# every command line the former's check: recipe depends on.
+# SPEC-2.8.2: this is the mechanical enforcement that check.yml runs every
+# command the check: recipe deps run.
 # Usage: check-ci-parity.sh [--self-test | --compare JUSTFILE WORKFLOW]
 #   No argument checks this repository's own pair.
 #   `--compare` is the pure comparison, split out so `--self-test` can prove
 #   offline that the guard still catches a dropped command and still accepts a
 #   complete workflow. A parity guard that quietly matches nothing reports
 #   clean forever, which is the failure mode this file exists to prevent.
+#   SPEC-2.1.3: this is that --self-test mode.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
+# SPEC-2.2.3: treats the check: recipe's check-*-named dependencies as the
+# authoritative set of checks that must run in check.yml.
 # The recipes `just check` depends on, read off its dependency line.
 check_recipes() {
   awk '
@@ -60,6 +69,9 @@ check_recipes() {
 # interpolation (e.g. a recipe imported from `common.just` like
 # `check-em-dash`) only renders to a real command when `just` runs it, so it
 # gets the same `just <recipe>` treatment.
+# SPEC-2.2.3: resolves command lines from the root justfile, falling back to
+# a synthetic `just <recipe>` line for a shebang-script recipe it cannot
+# statically resolve line by line.
 recipe_commands_in() {
   local file="$1" recipe="$2" first out
   first=$(awk -v recipe="$recipe" '
@@ -81,6 +93,8 @@ recipe_commands_in() {
       print
     }
   ' "$file")
+  # SPEC-2.2.3: also falls back to the synthetic `just <recipe>` line when a
+  # recipe's body contains `{{` interpolation it cannot statically resolve.
   case "$out" in
     *'{{'*) printf 'just %s\n' "$recipe"; return ;;
   esac
@@ -92,6 +106,8 @@ recipe_commands_in() {
 # check-justfile is common-owned and lives in common.just, not the root
 # justfile, so a recipe search scoped to the root file alone would report it
 # missing and fail the guard on every repo that depends on it.
+# SPEC-2.2.3: resolves a recipe from one level of the justfile's import
+# files when it is not defined locally.
 recipe_commands() {
   local justfile="$1" recipe="$2" dir imp out
   out=$(recipe_commands_in "$justfile" "$recipe")
@@ -119,6 +135,8 @@ compare() {
     fi
   done
 
+  # SPEC-2.5.22: exit 2, not 1, if the justfile's check: dependency line
+  # cannot be parsed - that is the guard's own precondition failing.
   recipes=$(check_recipes "$justfile")
   if [ -z "$recipes" ]; then
     echo "CI-parity guard: FAIL (no 'check:' recipe with check-* dependencies in $justfile)"
@@ -129,6 +147,8 @@ compare() {
   for recipe in $recipes; do
     local commands
     commands=$(recipe_commands "$justfile" "$recipe")
+    # SPEC-2.5.22: exit 2, not 1, if a named recipe's commands cannot be
+    # parsed.
     if [ -z "$commands" ]; then
       echo "CI-parity guard: FAIL (recipe $recipe has no commands in $justfile)"
       echo "Either the recipe is missing or this guard has stopped parsing the justfile."
@@ -136,6 +156,9 @@ compare() {
     fi
     while IFS= read -r cmd; do
       total=$((total + 1))
+      # SPEC-2.5.22: fail if a command line belonging to a check: dependency
+      # does not appear verbatim anywhere in check.yml, naming the missing
+      # recipe and command.
       if ! grep -qF -- "$cmd" "$workflow"; then
         if [ "$missing" -eq 0 ]; then
           echo "CI-parity guard: FAIL ($workflow does not run everything 'just check' runs)"

@@ -33,9 +33,19 @@
 #   fixtures to prove it still rejects a fresh hand-rolled "Loading" line and
 #   still accepts a skeleton component, a comment, and the allow marker, so a
 #   future edit cannot quietly neuter it.
+#
+# SPEC-2.1.1: invocable with no arguments, scanning the default root (src)
+# and exiting with a `guard: clean`/`guard: FAIL (<reason>)` line.
+# SPEC-2.1.3: --self-test proves the detection logic against a generated
+# fresh violation and the accepted skeleton/comment/allow-marker shapes.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
+# SPEC-2.2.4 / SPEC-2.9.2: this hardcoded per-file baseline table is the
+# ceiling on pre-existing "Loading string literals, zero for every other
+# file; it is a ceiling, not a target - debt here must never grow, and
+# should trend toward zero as files migrate to the shared skeletons, but
+# this guard does not itself require that migration.
 # Files that already carried "Loading" string literals when this guard
 # landed, capped at that count. A file not listed here starts at zero.
 baseline_file() { # baseline_file <path>
@@ -86,6 +96,7 @@ hits_in() { # hits_in <file>
       }
       return out
     }
+    # SPEC-2.3.1: skip the violation on any line carrying loading-guard-allow.
     /loading-guard-allow/ { next }
     { if (strings($0) ~ /Loading/) print FILENAME ":" FNR ": " $0 }
   ' "$1"
