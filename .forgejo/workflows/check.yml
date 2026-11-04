@@ -1,7 +1,8 @@
 ---
 
-# Validate code on every push and pull request by running 'just check'
-# Mirrors the local `just check` + `just test` recipes (which use ./dev/cargo).
+# Validate code on every push and pull request. Historically one serial
+# job; now split so the ~35 bash guards and the cargo compile matrix
+# ride different runners in parallel.
 #
 # MAPPS-452: this stays a private workflow rather than calling
 # psa-systems/common's reusable check.yml, because the reusable one runs a
@@ -9,58 +10,90 @@
 # wasm32 SPA build plus the no-default-features desktop feature set) or the
 # guard scripts the CI-parity guard pins to it. The two justfile guards the
 # reusable workflow would have contributed run below instead.
+#
+# The split: `cargo` on BASE_HEAVY compiles fmt / clippy / wasm / desktop
+# / unit tests / cargo-audit (the dev image's C toolchain is the only
+# reason this needs HEAVY). `guards` on BASE_MEDIUM runs every bash /
+# nu / just guard plus the doc-link + config-docs + CI-parity checks
+# (no compiler involved, no reason to hold a scarce HEAVY slot).
+# `secrets` keeps its own base-medium job unchanged.
+#
+# check-ci-parity.sh compares `just check` command lines against
+# `run:` blocks in THIS file (not per-job), so splitting is safe for
+# that guard: every command still appears in some job's run block.
+# check-runner-labels.sh looks for the BASE_HEAVY string anywhere in
+# check.yml, which the cargo job below still carries.
 name: Check
 
 on:
+  # paths-ignore: these files cannot affect what any guard, compile, or
+  # audit step here proves. docs-touching files (docs/**, **.md) are NOT
+  # listed because this repo runs doc-link, config-docs and CLAUDE.md
+  # guards on them; pure-doc PRs still trigger. paths-ignore skips a
+  # run only when EVERY changed path matches, so one non-ignored edit
+  # triggers the full suite.
   push:
     branches:
       - main
+    paths-ignore:
+      - "LICENSE"
+      - ".gitignore"
+      - ".editorconfig"
+      - "renovate.json"
+      - "CHANGELOG.md"
   pull_request:
     branches:
       - main
+    paths-ignore:
+      - "LICENSE"
+      - ".gitignore"
+      - ".editorconfig"
+      - "renovate.json"
+      - "CHANGELOG.md"
+
+# Supersede obsolete runs. `github.ref` differs between the pull_request
+# ref (refs/pull/<N>/merge) and the main push (refs/heads/main), so PRs
+# never share a group with each other or with the main push that primes
+# the cache for them. A back-to-back main push does share the group, and
+# that is the one case where cancel-in-progress matters here: two
+# concurrent runs on the same main commit are a wasted compile.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  check:
-    name: fmt + clippy + tests
+  cargo:
+    name: fmt + clippy + wasm + desktop + tests + audit
     # Heavy label: compiles and links Rust (clippy, wasm, desktop, tests) on the
     # runner, which needs the dev image's C toolchain.
     runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_HEAVY }}
 
     steps:
       - name: Clone the repository
-        # `submodules: true` for the justfile guards below: cargo does not need
-        # common/, but `import 'common/common.just'` does.
-        # `fetch-tags: true` + `fetch-depth: 0` so scripts/config-docs.nu
-        # (MAPPS-1027) can read the release tag list. Without them the script
-        # sees zero tags, treats every entry as unreleased, and demands every
-        # historical release reappear in the Recently-added window.
+        # No submodules here: nothing in this job calls `just`. Shallow by
+        # default, which is fine because no step walks git log.
         uses: https://code.forgejo.org/actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          # SPEC-1.8.13: submodules checked out so the common submodule's shared recipes resolve.
-          submodules: true
-          fetch-depth: 0
-          fetch-tags: true
 
-      # MAPPS-452: a justfile that does not parse takes every recipe and the
-      # git hook down with it, and the hook is bypassable with --no-verify, so
-      # both guards run here too. `--summary` parses the file and its imports
-      # without executing a recipe body.
       - name: Start job metrics sampler
         uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/job-metrics-start@e728773130496a6e84e0d87de9390f3d98939019 # main
-
-      - name: Validate the justfile
-        run: just --summary
-
-      - name: Check for shadowed common recipes
-        run: just check-justfile
 
       - name: Build parallelism
         # The runner owns CARGO_BUILD_JOBS; this warns and falls back when unset.
         uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/build-parallelism@e728773130496a6e84e0d87de9390f3d98939019 # main
 
       - name: Cache Rust build
+        # `shared-key: check` is the cross-ref cache contract. On forgejo-
+        # runner a `pull_request` event writes under the per-PR isolation
+        # key (`refs/pull/<N>/...`) only that PR can read, but a `push`
+        # event writes under the empty key every later run in the repo can
+        # read. check.yml fires on both triggers, so the push-to-main run
+        # here doubles as the cache prime for subsequent PR runs; without
+        # `shared-key`, rust-cache falls back to per-ref keys and no PR
+        # benefits from the main push's compile. Match the key name in
+        # any future mokosh-apps cache-warm workflow.
         uses: https://github.com/Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
+          shared-key: check
           cache-on-failure: true
 
       # `assets/styles.css` is a gitignored Tailwind build artifact, so it is
@@ -71,6 +104,145 @@ jobs:
       # SPEC-1.8.8: a placeholder is enough to satisfy the asset!() macro for compile-only validation.
       - name: Stub generated CSS asset
         run: mkdir -p assets && touch assets/styles.css
+
+      # SPEC-1.8.7: formatting, lint, and the wasm/desktop build/test matrix, all in this one job.
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Check web/WASM build
+        run: cargo clippy --locked --all-targets --target wasm32-unknown-unknown -- -D warnings
+
+      # MAPPS-534: CI had never compiled this feature combination. The steps
+      # above cover wasm and the host default, so a desktop-only break - a
+      # `#[cfg(feature = "desktop")]` arm, or a web-only import the desktop
+      # feature set does not satisfy - merged green and surfaced to whoever
+      # next built the desktop app.
+      - name: Check desktop build
+        run: cargo check --locked --no-default-features --features desktop,multi-tenant
+
+      - name: Unit tests
+        run: cargo test --locked --lib
+
+      # MAPPS-975: the CI image ships no cargo-audit, so the audit below was a
+      # silent no-op. crates.io has no digest, so the crate version is the pin.
+      # SPEC-1.4.11: a dependency vulnerability check on every CI run.
+      #
+      # A pinned release archive replaces `cargo install --locked cargo-audit`,
+      # which compiled cargo-audit and its dependency tree from source on every
+      # run (60-120s cold). cargo-audit publishes a prebuilt
+      # linux-musl archive on GitHub releases (statically linked, runs on
+      # the glibc builder image too); get the sha256 by downloading once and
+      # pinning the hash the same way nextest/machete are pinned in
+      # mokosh-server.
+      #
+      # `ghcr.io/niceguyit/rust-builder-glibc` sets CARGO_HOME=/usr/local/cargo
+      # and puts only that on PATH, not `~/.cargo/bin`.
+      # `${CARGO_HOME:-$HOME/.cargo}/bin` is where `cargo` actually looks.
+      - name: Cache cargo-audit tarball
+        # Version-keyed tarball cache. A hit skips the ~5s download; a
+        # version bump misses the key, downloads once, and the sha256 check
+        # below is the safety net if a wrong-version file comes back.
+        uses: https://github.com/actions/cache@v4
+        with:
+          path: /tmp/cargo-audit.tgz
+          key: cargo-audit-tarball-0.22.2-linux
+
+      - name: Install cargo-audit
+        env:
+          CARGO_AUDIT_VERSION: "0.22.2"
+          CARGO_AUDIT_SHA256: "7fb9497f8594b389e5fce5ef9b92db08432996895b2e0c5a0167a69ed445c428"
+        run: |
+          set -euo pipefail
+          archive="cargo-audit-x86_64-unknown-linux-musl-v${CARGO_AUDIT_VERSION}.tgz"
+          if [ ! -s /tmp/cargo-audit.tgz ]; then
+            curl --silent --fail --location --output /tmp/cargo-audit.tgz \
+              "https://github.com/rustsec/rustsec/releases/download/cargo-audit%2Fv${CARGO_AUDIT_VERSION}/${archive}"
+          fi
+          echo "${CARGO_AUDIT_SHA256}  /tmp/cargo-audit.tgz" | sha256sum --check --strict
+          tar --extract --gzip --file /tmp/cargo-audit.tgz --directory /tmp
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          mkdir -p "${cargo_bin}"
+          install -m 755 "/tmp/cargo-audit-x86_64-unknown-linux-musl-v${CARGO_AUDIT_VERSION}/cargo-audit" "${cargo_bin}/cargo-audit"
+
+      # MAPPS-918/MAPPS-976: block the build on any new RUSTSEC advisory
+      # against Cargo.lock. The four ignores below are the full backlog from
+      # MAPPS-976's triage, each with no fix available:
+      #   - RUSTSEC-2024-0436 (paste 1.0.15): unmaintained, last release
+      #     (https://github.com/dtolnay/paste/issues/99); desktop-only, via
+      #     dioxus-desktop -> image -> rav1e/ravif AVIF encoding.
+      #   - RUSTSEC-2024-0370 (proc-macro-error 1.0.4): unmaintained, last
+      #     release; desktop-only, via dioxus-desktop's gtk3-macros.
+      #   - RUSTSEC-2026-0173 (proc-macro-error2 2.0.1): unmaintained, last
+      #     release; compile-time-only, via our own `validator` derive.
+      #   - RUSTSEC-2024-0429 (glib 0.18.5): unsound Variant iterator, fixed
+      #     only in the breaking glib 0.19+, pinned by dioxus-desktop's
+      #     gtk-rs 0.18 chain; our code never calls glib::Variant iteration.
+      - name: Audit dependencies
+        run: |
+          cargo audit \
+            --ignore RUSTSEC-2024-0436 \
+            --ignore RUSTSEC-2024-0370 \
+            --ignore RUSTSEC-2026-0173 \
+            --ignore RUSTSEC-2024-0429
+
+      # SPEC-1.5.9: report metrics with `if: always()` so an earlier step's failure still reports.
+      - name: Report job metrics
+        if: always()
+        uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/job-metrics-report@e728773130496a6e84e0d87de9390f3d98939019 # main
+
+  guards:
+    name: bash + nu + just guards
+    # Base-medium label: nothing in this job invokes `cargo`. Every step
+    # is a bash / nu / just invocation that greps source files, reads
+    # manifests, resolves Markdown links, or compares strings. The dev
+    # image's compile toolchain would sit idle, so take a base-medium
+    # slot and leave BASE_HEAVY for the cargo job above.
+    #
+    # check-runner-labels.sh validates that THIS file contains
+    # BASE_HEAVY (the cargo job does, so the string-level grep passes)
+    # and that no job installs OS packages at run time.
+    runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_MEDIUM }}
+
+    # Backstop, not a target. The guard set is ~38 shell/nu/just
+    # invocations that each take seconds; the full job runs in well
+    # under a minute on a warm runner.
+    timeout-minutes: 15
+
+    steps:
+      - name: Clone the repository
+        # `submodules: true` for the justfile guards below: cargo does not need
+        # common/, but `import 'common/common.just'` does.
+        uses: https://code.forgejo.org/actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # SPEC-1.8.13: submodules checked out so the common submodule's shared recipes resolve.
+          submodules: true
+
+      # scripts/config-docs.nu (MAPPS-1027) reads the release tag list via
+      # `git tag --list "v*"`. The Forgejo build of `actions/checkout` honours
+      # `fetch-tags: true` only when combined with `fetch-depth: 0`, which
+      # pulls full history for a job that never walks `git log`; an explicit
+      # one-shot `git fetch --tags` keeps the clone shallow and still populates
+      # the tag refs. Without tags the script treats every entry as unreleased
+      # and demands every historical release reappear in the Recently-added
+      # window.
+      - name: Fetch release tags
+        run: git fetch --tags --no-recurse-submodules --depth=1
+
+      - name: Start job metrics sampler
+        uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/job-metrics-start@e728773130496a6e84e0d87de9390f3d98939019 # main
+
+      # MAPPS-452: a justfile that does not parse takes every recipe and the
+      # git hook down with it, and the hook is bypassable with --no-verify, so
+      # both guards run here too. `--summary` parses the file and its imports
+      # without executing a recipe body.
+      - name: Validate the justfile
+        run: just --summary
+
+      - name: Check for shadowed common recipes
+        run: just check-justfile
 
       - name: Runner-label guard
         run: bash scripts/check-runner-labels.sh
@@ -379,54 +551,6 @@ jobs:
         run: |
           bash scripts/check-card-headings.sh --self-test
           bash scripts/check-card-headings.sh
-
-      # SPEC-1.8.7: formatting, lint, and the wasm/desktop build/test matrix, all in this one job.
-      - name: Check formatting
-        run: cargo fmt --all --check
-
-      - name: Clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
-
-      - name: Check web/WASM build
-        run: cargo clippy --locked --all-targets --target wasm32-unknown-unknown -- -D warnings
-
-      # MAPPS-534: CI had never compiled this feature combination. The steps
-      # above cover wasm and the host default, so a desktop-only break - a
-      # `#[cfg(feature = "desktop")]` arm, or a web-only import the desktop
-      # feature set does not satisfy - merged green and surfaced to whoever
-      # next built the desktop app.
-      - name: Check desktop build
-        run: cargo check --locked --no-default-features --features desktop,multi-tenant
-
-      - name: Unit tests
-        run: cargo test --locked --lib
-
-      # MAPPS-975: the CI image ships no cargo-audit, so the audit below was a
-      # silent no-op. crates.io has no digest, so the crate version is the pin.
-      # SPEC-1.4.11: a dependency vulnerability check on every CI run.
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --version 0.22.2 --locked
-
-      # MAPPS-918/MAPPS-976: block the build on any new RUSTSEC advisory
-      # against Cargo.lock. The four ignores below are the full backlog from
-      # MAPPS-976's triage, each with no fix available:
-      #   - RUSTSEC-2024-0436 (paste 1.0.15): unmaintained, last release
-      #     (https://github.com/dtolnay/paste/issues/99); desktop-only, via
-      #     dioxus-desktop -> image -> rav1e/ravif AVIF encoding.
-      #   - RUSTSEC-2024-0370 (proc-macro-error 1.0.4): unmaintained, last
-      #     release; desktop-only, via dioxus-desktop's gtk3-macros.
-      #   - RUSTSEC-2026-0173 (proc-macro-error2 2.0.1): unmaintained, last
-      #     release; compile-time-only, via our own `validator` derive.
-      #   - RUSTSEC-2024-0429 (glib 0.18.5): unsound Variant iterator, fixed
-      #     only in the breaking glib 0.19+, pinned by dioxus-desktop's
-      #     gtk-rs 0.18 chain; our code never calls glib::Variant iteration.
-      - name: Audit dependencies
-        run: |
-          cargo audit \
-            --ignore RUSTSEC-2024-0436 \
-            --ignore RUSTSEC-2024-0370 \
-            --ignore RUSTSEC-2026-0173 \
-            --ignore RUSTSEC-2024-0429
 
       # SPEC-1.5.9: report metrics with `if: always()` so an earlier step's failure still reports.
       - name: Report job metrics

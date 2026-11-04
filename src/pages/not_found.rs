@@ -32,9 +32,8 @@ pub fn NotFoundPage(props: NotFoundPageProps) -> Element {
                     "Sorry, we couldn't find the page you're looking for."
                 }
 
-                // Debug info (only shown in development)
-                // SPEC-6.5.17: renders whenever path is non-empty, in every build.
-                if !path.is_empty() {
+                // Debug info: dev builds only (SPEC-6.5.17).
+                if cfg!(debug_assertions) && !path.is_empty() {
                     p { class: "text-sm text-subtle mb-8 font-mono",
                         "/{path}"
                     }

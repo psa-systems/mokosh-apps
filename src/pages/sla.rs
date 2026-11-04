@@ -176,11 +176,18 @@ fn SlaPoliciesTab(tab: Signal<SlaTab>) -> Element {
     let mut policies = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
-        let _token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_all_authed::<SlaPolicy>("/sla/policies")
-            .await
-            .inspect_err(|e| tracing::error!("SLA policy load failed: {e}"))
-            .ok()
+        #[cfg(feature = "app")]
+        {
+            let _token = crate::hooks::fetch::api::current_access_token()?;
+            crate::hooks::fetch::api::get_all_authed::<SlaPolicy>("/sla/policies")
+                .await
+                .inspect_err(|e| tracing::error!("SLA policy load failed: {e}"))
+                .ok()
+        }
+        #[cfg(not(feature = "app"))]
+        {
+            None::<Vec<SlaPolicy>>
+        }
     });
 
     // Editing state: Some(None-id) => create, Some(Some(id)) => edit.
@@ -382,25 +389,33 @@ fn PolicyFormModal(props: PolicyFormModalProps) -> Element {
     // optional server-side).
     let bh_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        let _token = crate::hooks::fetch::api::current_access_token()?;
-        // An empty business-hours dropdown is what a tenant that has defined
-        // none looks like too, so each outcome says which it is.
-        match crate::hooks::fetch::api::get_all_authed::<BusinessHours>("/sla/business-hours").await
+        #[cfg(feature = "app")]
         {
-            Ok(rows) => {
-                if rows.is_empty() {
-                    tracing::info!(
-                        "SLA business-hours option load succeeded and this tenant has none"
-                    );
+            let _token = crate::hooks::fetch::api::current_access_token()?;
+            // An empty business-hours dropdown is what a tenant that has defined
+            // none looks like too, so each outcome says which it is.
+            match crate::hooks::fetch::api::get_all_authed::<BusinessHours>("/sla/business-hours")
+                .await
+            {
+                Ok(rows) => {
+                    if rows.is_empty() {
+                        tracing::info!(
+                            "SLA business-hours option load succeeded and this tenant has none"
+                        );
+                    }
+                    Some(rows)
                 }
-                Some(rows)
+                Err(e) => {
+                    tracing::error!(
+                        "SLA business-hours option load failed, the dropdown will be empty: {e}"
+                    );
+                    None
+                }
             }
-            Err(e) => {
-                tracing::error!(
-                    "SLA business-hours option load failed, the dropdown will be empty: {e}"
-                );
-                None
-            }
+        }
+        #[cfg(not(feature = "app"))]
+        {
+            None::<Vec<BusinessHours>>
         }
     });
     let bh_options: Vec<(String, String)> = match &*bh_resource.read_unchecked() {
