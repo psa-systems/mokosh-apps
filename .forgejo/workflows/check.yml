@@ -215,18 +215,21 @@ jobs:
       - name: Clone the repository
         # `submodules: true` for the justfile guards below: cargo does not need
         # common/, but `import 'common/common.just'` does.
-        # `fetch-tags: true` so scripts/config-docs.nu (MAPPS-1027) can read
-        # the release tag list via `git tag --list "v*"`. Without it the
-        # script sees zero tags, treats every entry as unreleased, and
-        # demands every historical release reappear in the Recently-added
-        # window. `fetch-tags: true` brings tag REFS without requiring full
-        # commit history, so a shallow `fetch-depth: 1` works here: no step
-        # in this job walks `git log`.
         uses: https://code.forgejo.org/actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           # SPEC-1.8.13: submodules checked out so the common submodule's shared recipes resolve.
           submodules: true
-          fetch-tags: true
+
+      # scripts/config-docs.nu (MAPPS-1027) reads the release tag list via
+      # `git tag --list "v*"`. The Forgejo build of `actions/checkout` honours
+      # `fetch-tags: true` only when combined with `fetch-depth: 0`, which
+      # pulls full history for a job that never walks `git log`; an explicit
+      # one-shot `git fetch --tags` keeps the clone shallow and still populates
+      # the tag refs. Without tags the script treats every entry as unreleased
+      # and demands every historical release reappear in the Recently-added
+      # window.
+      - name: Fetch release tags
+        run: git fetch --tags --no-recurse-submodules --depth=1
 
       - name: Start job metrics sampler
         uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/job-metrics-start@e728773130496a6e84e0d87de9390f3d98939019 # main
